@@ -1377,8 +1377,16 @@ dependencies = [
 name = "poller-stations"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "clap",
  "common",
+ "dotenv",
+ "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
