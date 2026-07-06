@@ -6,7 +6,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use common::{IncidentMessage, StationReference, TocReference};
+use common::{IncidentMessage, StationReference, StationSample, TocReference};
 use serde::Serialize;
 
 use crate::app::{App, Router};
@@ -17,6 +17,7 @@ pub fn router() -> Router {
         .route("/incidents", axum::routing::post(post_incidents))
         .route("/stations", axum::routing::post(post_stations))
         .route("/tocs", axum::routing::post(post_tocs))
+        .route("/station-samples", axum::routing::post(post_station_samples))
 }
 
 #[derive(Debug, Serialize)]
@@ -39,6 +40,16 @@ async fn post_stations(
     Json(stations): Json<Vec<StationReference>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
     let upserted = queries::upsert_stations(&app.database, &stations)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+async fn post_station_samples(
+    State(app): State<App>,
+    Json(samples): Json<Vec<StationSample>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = queries::upsert_station_samples(&app.database, &samples)
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))

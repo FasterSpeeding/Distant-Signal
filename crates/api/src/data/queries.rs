@@ -9,7 +9,7 @@
 //! warrant.
 
 use anyhow::Result;
-use common::{IncidentMessage, StationReference, TocReference};
+use common::{IncidentMessage, StationReference, StationSample, TocReference};
 use sqlx::PgPool;
 
 /// The subset of an existing `incidents` row needed to decide whether an
@@ -156,6 +156,38 @@ pub async fn upsert_stations(pool: &PgPool, stations: &[StationReference]) -> Re
         .bind(station.longitude)
         .bind(&station.station_operator)
         .bind(&station.accessibility)
+        .execute(&mut *tx)
+        .await?;
+
+        count += 1;
+    }
+
+    tx.commit().await?;
+    Ok(count)
+}
+
+/// Upserts a batch of station samples (LDBWS departure-board snapshots).
+/// No history — this is a point-in-time sample, wholesale-replaced per
+/// poll, same rationale as `upsert_stations`/`upsert_tocs`.
+pub async fn upsert_station_samples(pool: &PgPool, samples: &[StationSample]) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+    let mut count = 0u64;
+
+    for sample in samples {
+        let departures_json = serde_json::to_value(&sample.departures)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO station_samples (crs, polled_at, departures)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (crs) DO UPDATE SET
+                polled_at  = EXCLUDED.polled_at,
+                departures = EXCLUDED.departures
+            "#,
+        )
+        .bind(&sample.crs)
+        .bind(sample.polled_at)
+        .bind(&departures_json)
         .execute(&mut *tx)
         .await?;
 
