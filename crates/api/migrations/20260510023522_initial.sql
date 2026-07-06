@@ -5,8 +5,12 @@
 -- -------------------------------------------------------------------------
 -- Incidents
 -- Raw Knowledgebase incident messages, written by the KB poller.
--- Rows are upserted on incident_id; the poller deletes rows whose
--- valid_to has passed and that are no longer in the feed.
+-- Rows are upserted on incident_id; there is no delete behavior — an
+-- incident that leaves the feed simply stops being refreshed. Whether an
+-- incident is still active is read from `is_cleared` (see the later
+-- reference-data migration, which replaces the columns below with
+-- `priority`, `validity_periods`, and `is_cleared` to match the real
+-- Knowledgebase schema).
 -- -------------------------------------------------------------------------
 
 CREATE TABLE incidents (

@@ -41,6 +41,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       BIND_URL: 0.0.0.0:8080
       INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "${API_HOST_PORT:-8080}:8080"
     healthcheck:

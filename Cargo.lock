@@ -308,10 +308,12 @@ dependencies = [
  "anyhow",
  "chrono",
  "glob",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_repr",
  "toml",
+ "tracing",
 ]
 
 [[package]]

@@ -56,5 +56,8 @@ async fn post_tocs(
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "ingestion upsert failed");
-    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "ingestion failed".to_string(),
+    )
 }

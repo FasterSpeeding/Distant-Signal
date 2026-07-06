@@ -9,10 +9,9 @@ use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
+use common::ingest::INTERNAL_TOKEN_HEADER;
 
 use crate::app::App;
-
-const INTERNAL_TOKEN_HEADER: &str = "x-internal-token";
 
 /// `axum::middleware::from_fn` handler enforcing the shared-secret header.
 /// Applied only to `private_router()` — `public_router()` never sees this.

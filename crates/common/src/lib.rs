@@ -7,6 +7,8 @@ use glob::glob;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
+pub mod ingest;
+
 /// Status severity scale. Mirrors TfL's `statusSeverity` codes 0–14 where the
 /// meanings carry over, with NR-specific extensions above 14. Lower is worse,
 /// except 0 (Special Service) and 10 (Good Service) which are canonical "fine"

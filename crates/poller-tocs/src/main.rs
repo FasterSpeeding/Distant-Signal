@@ -13,18 +13,9 @@ mod schema;
 use std::time::Duration;
 
 use clap::Parser;
-use common::TocReference;
+use common::ingest::{self, RDM_AUTH_HEADER_NAME};
 use config::Config;
 use reqwest::Client;
-
-/// Header RDM uses for API-key auth, per RSPS5050 P-03-00 Rev A §3 —
-/// corroborated for the RDM platform generally via a different product's
-/// confirmed example, not proven specifically for this product. Isolated
-/// behind this one constant so it's a one-line fix if it turns out wrong.
-const RDM_AUTH_HEADER_NAME: &str = "x-apikey";
-
-/// Must match `crates/api/src/auth.rs`'s `INTERNAL_TOKEN_HEADER`.
-const INTERNAL_TOKEN_HEADER: &str = "x-internal-token";
 
 /// Per-request timeout for both the RDM fetch and the ingestion POST.
 /// Without this, a peer that accepts the TCP connection but never responds
@@ -62,12 +53,20 @@ async fn poll_once(client: &Client, config: &Config) -> anyhow::Result<()> {
 
     tracing::info!(count = tocs.len(), "parsed TOCs from RDM feed");
 
-    post_tocs(client, config, &tocs).await?;
-
-    Ok(())
+    ingest::post_batch(
+        client,
+        &config.api_ingest_url,
+        &config.internal_token,
+        &tocs,
+        "TOCs",
+    )
+    .await
 }
 
 async fn fetch_tocs_xml(client: &Client, config: &Config) -> anyhow::Result<String> {
+    // Header per RSPS5050 P-03-00 Rev A §3 — corroborated for the RDM
+    // platform generally via a different product's confirmed example, not
+    // proven specifically for this product.
     let response = client
         .get(&config.rdm_tocs_base_url)
         .header(RDM_AUTH_HEADER_NAME, &config.rdm_api_key)
@@ -76,22 +75,4 @@ async fn fetch_tocs_xml(client: &Client, config: &Config) -> anyhow::Result<Stri
         .error_for_status()?;
 
     Ok(response.text().await?)
-}
-
-async fn post_tocs(client: &Client, config: &Config, tocs: &[TocReference]) -> anyhow::Result<()> {
-    let response = client
-        .post(&config.api_ingest_url)
-        .header(INTERNAL_TOKEN_HEADER, &config.internal_token)
-        .json(tocs)
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        tracing::info!(count = tocs.len(), "posted TOCs to ingestion API");
-        Ok(())
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        anyhow::bail!("ingestion POST failed: {status} {text}");
-    }
 }

@@ -14,20 +14,9 @@ mod schema;
 use std::time::Duration;
 
 use clap::Parser;
-use common::StationReference;
+use common::ingest::{self, RDM_AUTH_HEADER_NAME};
 use config::Config;
 use reqwest::Client;
-
-/// Header RDM uses for API-key auth. Not stated specifically for the
-/// Stations product in RSPS5050 P-03-00 Rev A §6 ("An API Key will be
-/// required to access the JSON feed via RDM" — no header name given); this
-/// is the same working assumption used for `poller-incidents` (Task 3),
-/// isolated behind this one constant so it's a one-line fix if it turns out
-/// wrong for this product.
-const RDM_AUTH_HEADER_NAME: &str = "x-apikey";
-
-/// Must match `crates/api/src/auth.rs`'s `INTERNAL_TOKEN_HEADER`.
-const INTERNAL_TOKEN_HEADER: &str = "x-internal-token";
 
 /// Per-request timeout for both the RDM fetch and the ingestion POST. A
 /// peer that accepts the TCP connection but never responds would otherwise
@@ -64,12 +53,21 @@ async fn poll_once(client: &Client, config: &Config) -> anyhow::Result<()> {
 
     tracing::info!(count = stations.len(), "parsed stations from RDM feed");
 
-    post_stations(client, config, &stations).await?;
-
-    Ok(())
+    ingest::post_batch(
+        client,
+        &config.api_ingest_url,
+        &config.internal_token,
+        &stations,
+        "stations",
+    )
+    .await
 }
 
 async fn fetch_stations_json(client: &Client, config: &Config) -> anyhow::Result<String> {
+    // Header not stated specifically for the Stations product in
+    // RSPS5050 P-03-00 Rev A §6 ("An API Key will be required to access
+    // the JSON feed via RDM" — no header name given); this is the same
+    // working assumption used for `poller-incidents` (Task 3).
     let response = client
         .get(format!("{}/stations", config.rdm_stations_base_url))
         .header(RDM_AUTH_HEADER_NAME, &config.rdm_api_key)
@@ -88,26 +86,4 @@ async fn fetch_stations_json(client: &Client, config: &Config) -> anyhow::Result
     tracing::debug!(body = %body, "raw stations response body");
 
     Ok(body)
-}
-
-async fn post_stations(
-    client: &Client,
-    config: &Config,
-    stations: &[StationReference],
-) -> anyhow::Result<()> {
-    let response = client
-        .post(&config.api_ingest_url)
-        .header(INTERNAL_TOKEN_HEADER, &config.internal_token)
-        .json(stations)
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        tracing::info!(count = stations.len(), "posted stations to ingestion API");
-        Ok(())
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        anyhow::bail!("ingestion POST failed: {status} {text}");
-    }
 }
