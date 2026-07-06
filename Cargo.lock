@@ -1393,8 +1393,16 @@ dependencies = [
 name = "poller-tocs"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "clap",
  "common",
+ "dotenv",
+ "quick-xml",
+ "reqwest",
+ "serde",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
