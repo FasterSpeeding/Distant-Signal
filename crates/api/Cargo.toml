@@ -12,7 +12,8 @@ dotenv = "0.15.0"
 glob = "0.3.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde-inline-default = "1.0.1"
-sqlx = { version = "0.8.6", features = ["macros", "migrate", "postgres", "runtime-tokio", "tls-native-tls"] }
+serde_json = "1.0.149"
+sqlx = { version = "0.8.6", features = ["macros", "migrate", "postgres", "runtime-tokio", "tls-native-tls", "json"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "fs", "tracing"] }
 toml = { version = "1.1.2", features = ["serde"] }
 tower = "0.5.3"

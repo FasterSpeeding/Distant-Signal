@@ -26,8 +26,15 @@ CREATE TABLE incidents (
 CREATE INDEX incidents_affected_stations_gin ON incidents USING GIN (affected_stations);
 CREATE INDEX incidents_operators_gin         ON incidents USING GIN (operators);
 -- Partial index over currently-active incidents for the common query path.
+-- NOTE: the predicate here is intentionally just `valid_to IS NULL`, not
+-- `valid_to IS NULL OR valid_to > NOW()` — Postgres requires partial-index
+-- predicates to be IMMUTABLE, and NOW() is only STABLE, so the NOW()
+-- variant is rejected outright at CREATE INDEX time ("functions in index
+-- predicate must be marked IMMUTABLE"). This index is superseded by a
+-- rebuilt `incidents_active` in a later migration once the table gains an
+-- `is_cleared` column to key off instead.
 CREATE INDEX incidents_active ON incidents (valid_from)
-    WHERE valid_to IS NULL OR valid_to > NOW();
+    WHERE valid_to IS NULL;
 
 
 -- -------------------------------------------------------------------------

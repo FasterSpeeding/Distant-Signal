@@ -3,6 +3,7 @@ use tower_http::trace::TraceLayer;
 use crate::app::{AppState, Router};
 
 pub mod app;
+pub mod auth;
 pub mod data;
 pub mod routes;
 
@@ -14,7 +15,7 @@ async fn main() -> anyhow::Result<()> {
 
     let router = Router::new()
         .nest("/public", routes::public_router())
-        .nest("/private", routes::private_router())
+        .nest("/private", routes::private_router(app.clone()))
         .layer(TraceLayer::new_for_http())
         .with_state(app.clone());
 

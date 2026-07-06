@@ -51,6 +51,10 @@ pub struct ServiceArguments {
     pub bind_url: String,
     #[arg(short, long, env)]
     pub database_url: String,
+    /// Shared secret pollers must present via `X-Internal-Token` to reach
+    /// `private_router()` endpoints.
+    #[arg(long, env)]
+    pub internal_token: String,
     #[arg(long, value_parser = parse_toml_path::<Defaults>, value_hint = ValueHint::FilePath, value_name = "FILE")]
     pub defaults_file: Option<Defaults>,
     #[arg(long = "lines-dir", value_parser = parse_lines, value_hint = ValueHint::FilePath, value_name = "DIR")]

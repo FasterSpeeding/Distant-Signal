@@ -94,6 +94,7 @@ dependencies = [
  "glob",
  "serde",
  "serde-inline-default",
+ "serde_json",
  "sqlx",
  "tokio",
  "toml",
