@@ -111,5 +111,29 @@ services:
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_TOCS:-86400}
       RUST_LOG: ${RUST_LOG:-info}
 
+  poller-ldbws:
+    build:
+      context: .
+      dockerfile: docker/poller-ldbws.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # crates/poller-ldbws/src/config.rs: Config. GAP: RDM product-slug
+      # segment is unconfirmed (two variants seen in research); GAP: this
+      # feed's real rate limit is unconfirmed (see the implementation
+      # plan's Global Constraints).
+      LDBWS_BASE_URL: ${LDBWS_BASE_URL}
+      RDM_API_KEY: ${LDBWS_API_KEY}
+      NUM_ROWS: ${LDBWS_NUM_ROWS:-10}
+      API_SAMPLE_STATIONS_URL: http://api:8080/private/sample-stations
+      API_INGEST_URL: http://api:8080/private/station-samples
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      # DESIGN.md §4 target cadence is 30-60s; 60 is the conservative end
+      # given this feed's rate limit is unconfirmed.
+      POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_LDBWS:-60}
+      RUST_LOG: ${RUST_LOG:-info}
+
 volumes:
   postgres_data:
