@@ -194,9 +194,29 @@ repeated in each of Task 3/4/5 below so each task brief is self-contained.
 **Depends on:** Task 1 (needs the `common` crate's `IncidentMessage`,
 `StationReference`, `TocReference` types and the `crates/api` layout).
 
+**Note from Task 1's review:** the migrations directory now lives at
+`crates/api/migrations/` (moved there in Task 1 because `sqlx::migrate!()`
+resolves relative to `CARGO_MANIFEST_DIR`, which is now `crates/api/`, not
+the repo root). All migration paths below are relative to that directory.
+
+**Also from Task 1's review — a pre-existing bug you must fix as part of
+this task:** `crates/api/migrations/20260510023522_initial.sql`'s
+`incidents_active` index is `CREATE INDEX incidents_active ON incidents
+(valid_from) WHERE valid_to IS NULL OR valid_to > NOW();`. Postgres rejects
+`NOW()` in a partial index predicate ("functions in index predicate must be
+marked IMMUTABLE") — confirmed by directly running this DDL against a real
+Postgres 16 instance. Since this task already alters the `incidents` table's
+columns (dropping `valid_to` entirely in favor of `validity_periods
+JSONB`), fold the fix into that same migration: `DROP INDEX
+incidents_active;` before the column changes (you cannot drop a column an
+index depends on without dropping the index first), and do not recreate an
+equivalent partial index on `validity_periods` — querying "active"
+incidents against a JSONB array is a query-time concern, not an index
+predicate; leave that to whatever later work adds the read endpoints.
+
 **What to implement:**
 
-1. New migration `migrations/<timestamp>_reference_data.sql`:
+1. New migration `crates/api/migrations/<timestamp>_reference_data.sql`:
    ```sql
    CREATE TABLE stations (
        crs               CHAR(3)     PRIMARY KEY,

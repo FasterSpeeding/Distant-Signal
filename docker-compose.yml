@@ -1,0 +1,115 @@
+# Local dev stack: postgres + api + the three RDM pollers.
+#
+# Real secrets/URLs go in a git-ignored `.env` (copy `.env.example` and fill
+# it in) — docker compose reads `.env` in this directory automatically for
+# the `${VAR}` substitutions below. Nothing in this file or in
+# `.env.example` is a real Rail Data Marketplace endpoint or credential; see
+# `.env.example` for why the RDM_*_BASE_URL placeholders are deliberately
+# non-functional (`*.example.invalid`).
+#
+# Usage:
+#   cp .env.example .env   # then fill in real values where you have them
+#   docker compose up
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # crates/api/src/data/config.rs: ServiceArguments
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      BIND_URL: 0.0.0.0:8080
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "${API_HOST_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/public/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  poller-incidents:
+    build:
+      context: .
+      dockerfile: docker/poller-incidents.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # crates/poller-incidents/src/config.rs: Config. GAP: no confirmed RDM
+      # endpoint path for this product — RDM_INCIDENTS_BASE_URL is a
+      # placeholder until real account data resolves it (see .env.example).
+      RDM_INCIDENTS_BASE_URL: ${RDM_INCIDENTS_BASE_URL}
+      RDM_API_KEY: ${RDM_INCIDENTS_API_KEY}
+      API_INGEST_URL: http://api:8080/private/incidents
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_INCIDENTS:-300}
+      RUST_LOG: ${RUST_LOG:-info}
+
+  poller-stations:
+    build:
+      context: .
+      dockerfile: docker/poller-stations.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # crates/poller-stations/src/config.rs: Config. GAP: exact JSON field
+      # casing for this feed is unconfirmed (see schema.rs module docs).
+      RDM_STATIONS_BASE_URL: ${RDM_STATIONS_BASE_URL}
+      RDM_API_KEY: ${RDM_STATIONS_API_KEY}
+      API_INGEST_URL: http://api:8080/private/stations
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      # Real-world cadence per RSPS5050 P-03-00 Rev A §6 is 86400s (24h);
+      # shortened here via .env for local verification of the poll loop.
+      POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_STATIONS:-86400}
+      RUST_LOG: ${RUST_LOG:-info}
+
+  poller-tocs:
+    build:
+      context: .
+      dockerfile: docker/poller-tocs.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # crates/poller-tocs/src/config.rs: Config. GAP: no confirmed RDM
+      # endpoint path for this product — RDM_TOCS_BASE_URL is a placeholder
+      # until real account data resolves it (see .env.example).
+      RDM_TOCS_BASE_URL: ${RDM_TOCS_BASE_URL}
+      RDM_API_KEY: ${RDM_TOCS_API_KEY}
+      API_INGEST_URL: http://api:8080/private/tocs
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      # Real-world cadence per RSPS5050 P-03-00 Rev A §3 is 86400s (24h);
+      # shortened here via .env for local verification of the poll loop.
+      POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_TOCS:-86400}
+      RUST_LOG: ${RUST_LOG:-info}
+
+volumes:
+  postgres_data:
