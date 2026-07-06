@@ -7,7 +7,13 @@ pub mod health;
 pub mod ingest;
 
 pub fn public_router() -> Router {
-    Router::new().nest("/health", health::router())
+    // `health::router()` already declares its own `/health` route, so this
+    // must `merge` (mount directly under `/public`) rather than `nest`
+    // another `/health` prefix on top of it — nesting here previously
+    // produced `/public/health/health` instead of the intended
+    // `/public/health`, discovered while wiring up the docker-compose
+    // healthcheck in Task 6's end-to-end verification.
+    Router::new().merge(health::router())
 }
 
 /// Takes the app state directly (rather than picking it up later via

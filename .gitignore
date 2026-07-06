@@ -1,3 +1,7 @@
 /target
 __pycache__/
 *.pyc
+
+# Local secrets/config for docker-compose (see .env.example for the
+# documented, placeholder-only template that IS committed).
+.env
