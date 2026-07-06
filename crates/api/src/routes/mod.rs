@@ -5,6 +5,7 @@ use crate::auth::require_internal_token;
 
 pub mod health;
 pub mod ingest;
+pub mod samples;
 
 pub fn public_router() -> Router {
     // `health::router()` already declares its own `/health` route, so this
@@ -24,5 +25,6 @@ pub fn public_router() -> Router {
 pub fn private_router(app: App) -> Router {
     Router::new()
         .merge(ingest::router())
+        .merge(samples::router())
         .layer(middleware::from_fn_with_state(app, require_internal_token))
 }

@@ -42,6 +42,7 @@ RUN apt-get update \
     && useradd --system --no-create-home --shell /usr/sbin/nologin api
 
 COPY --from=builder /app/target/release/api /usr/local/bin/api
+COPY --chown=api:api lines/ /app/lines/
 
 USER api
 
