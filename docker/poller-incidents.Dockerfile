@@ -21,8 +21,11 @@ FROM debian:bookworm-slim
 # the one binary.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --no-create-home --shell /usr/sbin/nologin poller
 
 COPY --from=builder /app/target/release/poller-incidents /usr/local/bin/poller-incidents
+
+USER poller
 
 ENTRYPOINT ["/usr/local/bin/poller-incidents"]

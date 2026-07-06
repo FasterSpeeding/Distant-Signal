@@ -26,6 +26,14 @@ const RDM_AUTH_HEADER_NAME: &str = "x-apikey";
 /// Must match `crates/api/src/auth.rs`'s `INTERNAL_TOKEN_HEADER`.
 const INTERNAL_TOKEN_HEADER: &str = "x-internal-token";
 
+/// Per-request timeout for both the RDM fetch and the ingestion POST.
+/// Without this, a peer that accepts the TCP connection but never responds
+/// (unlike the connection-refused case) would hang `poll_once` forever —
+/// the process wouldn't panic, but it would also never poll again, which
+/// defeats the "log and keep the loop alive" resilience goal. 30s is
+/// comfortably short relative to the 300s recommended poll interval.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
@@ -35,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::parse();
-    let client = Client::new();
+    let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
 
     let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
 
