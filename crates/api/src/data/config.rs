@@ -6,7 +6,7 @@ use clap::ValueHint;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_inline_default::serde_inline_default;
 
-use crate::data::lines::LineDefinition;
+use crate::data::LineDefinition;
 
 #[serde_inline_default]
 #[derive(Clone, Deserialize, Debug)]

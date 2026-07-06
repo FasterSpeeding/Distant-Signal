@@ -1,0 +1,8 @@
+[package]
+name = "poller-tocs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+common = { path = "../common" }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }

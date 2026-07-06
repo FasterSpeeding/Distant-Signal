@@ -83,6 +83,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "common",
+ "dotenv",
+ "glob",
+ "serde",
+ "serde-inline-default",
+ "sqlx",
+ "tokio",
+ "toml",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -278,6 +299,19 @@ name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
+
+[[package]]
+name = "common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "glob",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "toml",
+]
 
 [[package]]
 name = "concurrent-queue"
@@ -1098,28 +1132,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nr-status-v2"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "clap",
- "dotenv",
- "glob",
- "serde",
- "serde-inline-default",
- "serde_repr",
- "sqlx",
- "tokio",
- "toml",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1311,6 +1323,30 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
+
+[[package]]
+name = "poller-incidents"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "tokio",
+]
+
+[[package]]
+name = "poller-stations"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "tokio",
+]
+
+[[package]]
+name = "poller-tocs"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "tokio",
+]
 
 [[package]]
 name = "potential_utf"
