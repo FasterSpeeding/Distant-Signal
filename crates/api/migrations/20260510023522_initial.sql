@@ -95,8 +95,9 @@ CREATE INDEX line_status_history_line_time ON line_status_history (line_id, comp
 -- -------------------------------------------------------------------------
 -- Incident history
 -- Snapshot of an incident each time the poller sees it change (summary,
--- description, valid_to, or stations differ from the stored row). Lets
--- us reconstruct how an incident evolved.
+-- description, or validity_periods differ from the stored row — see the
+-- reference-data migration, which also updates this table's columns to
+-- match). Lets us reconstruct how an incident evolved.
 -- -------------------------------------------------------------------------
 
 CREATE TABLE incident_history (

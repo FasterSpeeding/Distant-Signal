@@ -133,6 +133,7 @@ pub async fn upsert_incidents(pool: &PgPool, incidents: &[IncidentMessage]) -> R
 /// reference data, not an event stream (see the reference-data migration's
 /// comment).
 pub async fn upsert_stations(pool: &PgPool, stations: &[StationReference]) -> Result<u64> {
+    let mut tx = pool.begin().await?;
     let mut count = 0u64;
 
     for station in stations {
@@ -155,18 +156,20 @@ pub async fn upsert_stations(pool: &PgPool, stations: &[StationReference]) -> Re
         .bind(station.longitude)
         .bind(&station.station_operator)
         .bind(&station.accessibility)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
         count += 1;
     }
 
+    tx.commit().await?;
     Ok(count)
 }
 
 /// Upserts a batch of TOC reference records. No history, same rationale as
 /// `upsert_stations`.
 pub async fn upsert_tocs(pool: &PgPool, tocs: &[TocReference]) -> Result<u64> {
+    let mut tx = pool.begin().await?;
     let mut count = 0u64;
 
     for toc in tocs {
@@ -187,12 +190,13 @@ pub async fn upsert_tocs(pool: &PgPool, tocs: &[TocReference]) -> Result<u64> {
         .bind(&toc.legal_name)
         .bind(toc.atoc_member)
         .bind(toc.station_operator)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
         count += 1;
     }
 
+    tx.commit().await?;
     Ok(count)
 }
 
