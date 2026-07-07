@@ -232,6 +232,70 @@ pub async fn upsert_tocs(pool: &PgPool, tocs: &[TocReference]) -> Result<u64> {
     Ok(count)
 }
 
+/// One row from `line_status`, deserialized into the shape `render.rs`
+/// consumes.
+pub struct LineStatusRow {
+    pub id: String,
+    pub name: String,
+    pub mode_name: String,
+    pub operators: Vec<String>,
+    pub statuses: Vec<common::LineStatus>,
+}
+
+fn row_to_report(row: sqlx::postgres::PgRow) -> Result<LineStatusRow> {
+    use sqlx::Row;
+    let statuses_json: serde_json::Value = row.try_get("statuses")?;
+    Ok(LineStatusRow {
+        id: row.try_get("line_id")?,
+        name: row.try_get("name")?,
+        mode_name: row.try_get("mode_name")?,
+        operators: row.try_get("operators")?,
+        statuses: serde_json::from_value(statuses_json)?,
+    })
+}
+
+pub async fn line_status_for_mode(pool: &PgPool, mode: &str) -> Result<Vec<LineStatusRow>> {
+    let rows = sqlx::query("SELECT line_id, name, mode_name, operators, statuses FROM line_status WHERE mode_name = $1")
+        .bind(mode)
+        .fetch_all(pool)
+        .await?;
+    rows.into_iter().map(row_to_report).collect()
+}
+
+pub async fn line_status_for_ids(pool: &PgPool, ids: &[String]) -> Result<Vec<LineStatusRow>> {
+    let rows = sqlx::query("SELECT line_id, name, mode_name, operators, statuses FROM line_status WHERE line_id = ANY($1)")
+        .bind(ids)
+        .fetch_all(pool)
+        .await?;
+    rows.into_iter().map(row_to_report).collect()
+}
+
+pub async fn line_status_history_for_range(
+    pool: &PgPool,
+    line_id: &str,
+    from: chrono::DateTime<chrono::Utc>,
+    to: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<(chrono::DateTime<chrono::Utc>, Vec<common::LineStatus>)>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT statuses, computed_at FROM line_status_history \
+         WHERE line_id = $1 AND computed_at BETWEEN $2 AND $3 ORDER BY computed_at",
+    )
+    .bind(line_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let statuses_json: serde_json::Value = row.try_get("statuses")?;
+            let computed_at: chrono::DateTime<chrono::Utc> = row.try_get("computed_at")?;
+            Ok((computed_at, serde_json::from_value(statuses_json)?))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

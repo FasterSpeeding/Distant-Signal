@@ -5,6 +5,7 @@ use crate::auth::require_internal_token;
 
 pub mod health;
 pub mod ingest;
+pub mod line_status;
 pub mod samples;
 
 pub fn public_router() -> Router {
@@ -14,6 +15,21 @@ pub fn public_router() -> Router {
     // produced `/public/health/health` instead of the intended
     // `/public/health`, discovered while wiring up the docker-compose
     // healthcheck in Task 6's end-to-end verification.
+    //
+    // `line_status::router()` is deliberately NOT merged in here. This
+    // function's output is always nested under `/public` in `main.rs`
+    // (load-bearing: `docker-compose.yml`'s healthcheck hits
+    // `/public/health` and `crates/api/Dockerfile`'s HEALTHCHECK comment
+    // says the same), but the four line-status endpoints must be
+    // reachable at the unprefixed paths DESIGN.md specifies
+    // (`GET /Line/Mode/national-rail/Status`, `GET /StopPoint/{crs}/Disruption`,
+    // etc.) so that clients already built against TfL's own API work
+    // unchanged — that's the entire point of mimicking TfL's response
+    // shape. Nesting them under `/public` like `health` would silently
+    // break that compatibility. `main.rs` merges `line_status::router()`
+    // directly onto the top-level router instead; it's still
+    // unauthenticated (no `require_internal_token` layer applied), just
+    // not routed through this particular function.
     Router::new().merge(health::router())
 }
 
