@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation';
 import { Stack, Title, Text, Divider } from '@mantine/core';
-import { getLineStatus } from '@/lib/api';
+import { ApiNotFoundError, getLineStatus } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { DisruptionDetail } from '@/components/DisruptionDetail';
 
@@ -10,10 +10,15 @@ export default async function LineDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const reports = await getLineStatus([id], true);
 
-  if (reports.length === 0) {
-    notFound();
+  let reports;
+  try {
+    reports = await getLineStatus([id], true);
+  } catch (err) {
+    if (err instanceof ApiNotFoundError) {
+      notFound();
+    }
+    throw err;
   }
 
   const report = reports[0];

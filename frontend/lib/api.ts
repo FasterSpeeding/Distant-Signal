@@ -1,5 +1,9 @@
 import type { LineStatusReport, LineStatusHistoryEntry } from './types';
 
+/** Thrown when the API responds 404 — lets callers distinguish "genuinely
+ * not found" from other failures (network errors, 500s, etc.). */
+export class ApiNotFoundError extends Error {}
+
 function baseUrl(): string {
   const url = process.env.API_BASE_URL;
   if (!url) {
@@ -11,7 +15,11 @@ function baseUrl(): string {
 async function fetchJson<T>(url: string, init: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   if (!response.ok) {
-    throw new Error(`API request to ${url} failed: ${response.status} ${response.statusText}`);
+    const message = `API request to ${url} failed: ${response.status} ${response.statusText}`;
+    if (response.status === 404) {
+      throw new ApiNotFoundError(message);
+    }
+    throw new Error(message);
   }
   return response.json() as Promise<T>;
 }

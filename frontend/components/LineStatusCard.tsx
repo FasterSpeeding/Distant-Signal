@@ -1,3 +1,5 @@
+'use client';
+
 import { Card, Group, Text, Stack } from '@mantine/core';
 import Link from 'next/link';
 import { StatusBadge } from './StatusBadge';
