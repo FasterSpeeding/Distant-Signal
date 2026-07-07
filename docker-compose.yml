@@ -135,5 +135,21 @@ services:
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_LDBWS:-60}
       RUST_LOG: ${RUST_LOG:-info}
 
+  aggregator:
+    build:
+      context: .
+      dockerfile: docker/aggregator.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # crates/aggregator/src/config.rs: Config
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      LINES_DIR: /app/lines
+      POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_AGGREGATOR:-60}
+      HISTORY_RETENTION_DAYS: ${HISTORY_RETENTION_DAYS:-7}
+      RUST_LOG: ${RUST_LOG:-info}
+
 volumes:
   postgres_data:
