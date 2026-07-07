@@ -141,7 +141,7 @@ services:
       dockerfile: docker/aggregator.Dockerfile
     restart: unless-stopped
     depends_on:
-      postgres:
+      api:
         condition: service_healthy
     environment:
       # crates/aggregator/src/config.rs: Config
