@@ -15,11 +15,13 @@ async fn main() -> anyhow::Result<()> {
 
     let app = AppState::init().await?;
 
-    // Permissive by design: every route this layer covers is already an
-    // unauthenticated, read-only GET of public data (mirroring TfL's own
-    // publicly-CORS-enabled API) — there is no credential/cookie exposure
-    // to restrict, so a configurable origin allowlist would add config
-    // surface for no real benefit.
+    // Permissive by design: none of the routes behind this layer rely on
+    // browser-enforced CORS for protection. The four line-status endpoints
+    // and /public/health are intentionally public. /private/* requires a
+    // shared-secret X-Internal-Token header (crates/api/src/auth.rs) — a
+    // header check CORS doesn't bypass — not cookie/credential-based auth,
+    // so a permissive origin policy doesn't weaken it. A configurable
+    // origin allowlist would add config surface for no real benefit here.
     let cors = CorsLayer::new()
         .allow_methods([axum::http::Method::GET])
         .allow_origin(Any);
