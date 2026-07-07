@@ -1,3 +1,4 @@
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use crate::app::{AppState, Router};
@@ -14,16 +15,20 @@ async fn main() -> anyhow::Result<()> {
 
     let app = AppState::init().await?;
 
+    // Permissive by design: every route this layer covers is already an
+    // unauthenticated, read-only GET of public data (mirroring TfL's own
+    // publicly-CORS-enabled API) — there is no credential/cookie exposure
+    // to restrict, so a configurable origin allowlist would add config
+    // surface for no real benefit.
+    let cors = CorsLayer::new()
+        .allow_methods([axum::http::Method::GET])
+        .allow_origin(Any);
+
     let router = Router::new()
-        // Merged at the top level, unprefixed — see the comment on
-        // `routes::public_router()` for why these four TfL-shaped
-        // endpoints can't live under `/public` like the rest of that
-        // function's routes without breaking TfL-client URL compatibility.
-        // Still fully unauthenticated: no auth middleware layer applies
-        // to this merge.
         .merge(routes::line_status::router())
         .nest("/public", routes::public_router())
         .nest("/private", routes::private_router(app.clone()))
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(app.clone());
 
