@@ -45,4 +45,33 @@ describe('LineStatusCard', () => {
     renderWithProvider(<LineStatusCard report={{ ...report, lineStatuses: [] }} />);
     expect(screen.getByText('Good Service')).toBeInTheDocument();
   });
+
+  it('picks the more severe status when statusSeverity is not monotonic with severity', () => {
+    // statusSeverity 10 (GoodService) is numerically lower than 21
+    // (Diverted), but Diverted is the actually-worse status — a naive
+    // "lowest number wins" comparison would wrongly surface Good Service.
+    const mixed: LineStatusReport = {
+      ...report,
+      lineStatuses: [
+        {
+          statusSeverity: 10,
+          statusSeverityDescription: 'Good Service',
+          reason: '',
+          dataQuality: 'knowledgebase',
+          validityPeriods: [],
+        },
+        {
+          statusSeverity: 21,
+          statusSeverityDescription: 'Diverted',
+          reason: 'Line diverted due to engineering works',
+          dataQuality: 'knowledgebase',
+          validityPeriods: [{ fromDate: '2026-07-07T10:00:00Z', toDate: null, isNow: true }],
+        },
+      ],
+    };
+    renderWithProvider(<LineStatusCard report={mixed} />);
+    expect(screen.getByText('Diverted')).toBeInTheDocument();
+    expect(screen.getByText('Line diverted due to engineering works')).toBeInTheDocument();
+    expect(screen.queryByText('Good Service')).not.toBeInTheDocument();
+  });
 });

@@ -28,6 +28,20 @@ const GROUP_COLOR: Record<SeverityGroup, string> = {
   severe: 'red',
 };
 
+// TfL's `statusSeverity` codes are NOT monotonic with actual severity (e.g.
+// 10 GoodService sits in the middle of the numeric range, while 21 Diverted
+// and 11 PartClosed are severe but numerically high). This rank reflects
+// true severity ordering — severe > mild > planned > informational > good —
+// and should be used instead of the raw `statusSeverity` number whenever
+// statuses need to be compared/ranked (e.g. picking the "worst" status).
+const GROUP_RANK: Record<SeverityGroup, number> = {
+  good: 0,
+  informational: 1,
+  planned: 2,
+  mild: 3,
+  severe: 4,
+};
+
 export function severityColor(severity: number): string {
   const entry = SEVERITY_TABLE[severity];
   return entry ? GROUP_COLOR[entry.group] : 'gray';
@@ -35,4 +49,10 @@ export function severityColor(severity: number): string {
 
 export function severityLabel(severity: number): string {
   return SEVERITY_TABLE[severity]?.label ?? 'Unknown';
+}
+
+/** Higher rank = more severe. Unknown severities rank alongside `informational`. */
+export function severityRank(severity: number): number {
+  const entry = SEVERITY_TABLE[severity];
+  return GROUP_RANK[entry?.group ?? 'informational'];
 }

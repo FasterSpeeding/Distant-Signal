@@ -4,6 +4,7 @@ import {
   getLineStatus,
   getStopPointDisruption,
   getLineStatusHistory,
+  ApiNotFoundError,
 } from './api';
 
 const sampleReport = {
@@ -69,11 +70,25 @@ describe('api client', () => {
     );
   });
 
-  it('throws a descriptive error on a non-2xx response', async () => {
+  it('throws an ApiNotFoundError on a 404 response', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response('not found', { status: 404 })),
     );
+    // Load-bearing for app/lines/[id]/page.tsx, which relies on this
+    // specific subtype to distinguish "genuinely not found" (-> notFound())
+    // from other failures (-> rethrown, surfaced via error.tsx) — so it's
+    // not enough to just match the message, the type must be pinned too.
     await expect(getLineStatus(['not-a-line'], false)).rejects.toThrow(/404/);
+    await expect(getLineStatus(['not-a-line'], false)).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('throws a plain Error (not an ApiNotFoundError) on a non-404 non-2xx response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('server error', { status: 500 })),
+    );
+    await expect(getLineStatus(['wcml'], false)).rejects.toThrow(/500/);
+    await expect(getLineStatus(['wcml'], false)).rejects.not.toBeInstanceOf(ApiNotFoundError);
   });
 });
