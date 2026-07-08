@@ -6,10 +6,14 @@ import { LineStatusCard } from '@/components/LineStatusCard';
 // `next: { revalidate: 30 }` fetch in getLineStatusForMode as eligible for
 // static generation and tries to prerender it during `next build` — which
 // fails in the Docker build, since the `api` service only exists on the
-// compose network at runtime, not inside the image build. Forcing dynamic
-// rendering makes this page (like every other page here) resolve
-// API_BASE_URL at request time only, matching the Dockerfile's assumption.
-export const dynamic = 'force-dynamic';
+// compose network at runtime, not inside the image build. `revalidate = 0`
+// (rather than `dynamic = 'force-dynamic'`) is used deliberately: it also
+// forces per-request dynamic rendering, but unlike `force-dynamic` it does
+// NOT override a fetch's own `next: { revalidate: N }` option when that
+// fetch sets a positive value, so getLineStatusForMode's `revalidate: 30`
+// still governs the Data Cache — preserving the ~30s cache window the
+// design spec calls for instead of fetching fresh on every request.
+export const revalidate = 0;
 
 export default async function DashboardPage() {
   const reports = await getLineStatusForMode('national-rail');
