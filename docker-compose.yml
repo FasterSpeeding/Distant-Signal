@@ -151,5 +151,20 @@ services:
       HISTORY_RETENTION_DAYS: ${HISTORY_RETENTION_DAYS:-7}
       RUST_LOG: ${RUST_LOG:-info}
 
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # frontend/lib/api.ts: baseUrl(). Server-side only — resolved
+      # inside the docker-compose network, not exposed to the browser.
+      API_BASE_URL: http://api:8080
+    ports:
+      - "${FRONTEND_HOST_PORT:-3000}:3000"
+
 volumes:
   postgres_data:
