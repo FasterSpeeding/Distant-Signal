@@ -17,13 +17,30 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use common::{
-    AffectedRoute, DataQuality, Defaults, Disruption, IncidentMessage, LineDefinition, LineStatus,
-    LineStatusReport, SampleStats, Severity, StationDeparture, StationSample, ValidityPeriod,
-    thresholds_for,
+    AffectedRoute, CustomLine, DataQuality, Defaults, Disruption, IncidentMessage, LineDefinition,
+    LineStatus, LineStatusReport, SampleStats, Severity, StationDeparture, StationSample,
+    ValidityPeriod, thresholds_for,
 };
 
 use crate::matcher::{Match, MatchScope, lines_affected_by};
 use crate::segments::SegmentRegistry;
+
+/// Merges DB-stored custom lines into the static catalogue, converting
+/// each into a `LineDefinition` (see `common::CustomLine`'s `From` impl) so
+/// the rest of the pipeline — matcher, segment registry, LDBWS inference —
+/// treats them identically to catalogue lines. Re-run every poll cycle
+/// (`main.rs`) since custom lines can be created or deleted at any time,
+/// unlike the static catalogue which is fixed at process startup.
+pub fn merge_custom_lines(
+    static_lines: &HashMap<String, LineDefinition>,
+    custom_lines: Vec<CustomLine>,
+) -> HashMap<String, LineDefinition> {
+    let mut merged = static_lines.clone();
+    for custom in custom_lines {
+        merged.insert(custom.id.clone(), custom.into());
+    }
+    merged
+}
 
 pub fn aggregate(
     lines: &HashMap<String, LineDefinition>,
@@ -686,5 +703,24 @@ mod tests {
         assert_eq!(stats.total, 4);
         assert_eq!(stats.delayed, 3);
         assert_eq!(stats.cancelled, 0);
+    }
+
+    #[test]
+    fn merge_custom_lines_adds_custom_without_touching_static() {
+        let lines = load_all_lines();
+        let static_count = lines.len();
+        let custom = vec![CustomLine {
+            id: "custom-my-commute".to_string(),
+            name: "My Commute".to_string(),
+            operators: vec!["SW".to_string()],
+            stations: vec!["WOK".to_string(), "AON".to_string()],
+            headcode_prefixes: vec![],
+            destination_crs_filter: vec![],
+        }];
+        let merged = merge_custom_lines(&lines, custom);
+        assert_eq!(merged.len(), static_count + 1);
+        assert!(merged.contains_key("swr-alton"));
+        assert_eq!(merged["custom-my-commute"].name, "My Commute");
+        assert_eq!(merged["custom-my-commute"].category, "custom");
     }
 }

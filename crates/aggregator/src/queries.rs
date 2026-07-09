@@ -55,6 +55,42 @@ pub async fn load_station_samples(pool: &PgPool) -> Result<HashMap<String, Stati
         .collect()
 }
 
+pub async fn load_custom_lines(pool: &PgPool) -> Result<Vec<common::CustomLine>> {
+    let rows = sqlx::query(
+        "SELECT id, name, operators, stations, headcode_prefixes, destination_crs_filter \
+         FROM custom_lines",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(common::CustomLine {
+                id: row.try_get("id")?,
+                name: row.try_get("name")?,
+                operators: row.try_get("operators")?,
+                stations: row.try_get("stations")?,
+                headcode_prefixes: row.try_get("headcode_prefixes")?,
+                destination_crs_filter: row.try_get("destination_crs_filter")?,
+            })
+        })
+        .collect()
+}
+
+/// Deletes `line_status` rows for any `line_id` not in `current_line_ids`.
+/// Called every cycle with the freshly-merged static+custom line set, so a
+/// deleted custom line's last-known status is removed on the next cycle
+/// rather than lingering forever (custom lines are the only way a line can
+/// disappear between cycles — the static catalogue is fixed for the
+/// process's lifetime).
+pub async fn prune_removed_lines(pool: &PgPool, current_line_ids: &[String]) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM line_status WHERE NOT (line_id = ANY($1))")
+        .bind(current_line_ids)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
 /// Fetches the currently-stored `statuses` JSON for one line, if any row
 /// exists yet.
 async fn existing_statuses(pool: &PgPool, line_id: &str) -> Result<Option<serde_json::Value>> {
