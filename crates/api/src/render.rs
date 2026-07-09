@@ -76,6 +76,7 @@ mod tests {
                 validity: ValidityPeriod { from_date: Utc::now(), to_date: None, is_now: true },
                 disruption,
                 data_quality: DataQuality::Knowledgebase,
+                sample_stats: None,
             }],
         }
     }
