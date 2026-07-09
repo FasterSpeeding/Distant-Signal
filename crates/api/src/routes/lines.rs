@@ -73,6 +73,12 @@ async fn create_line(
     if req.stations.len() < 2 {
         return Err((StatusCode::BAD_REQUEST, "a line needs at least 2 stations".to_string()));
     }
+    if custom_lines::slugify(&req.name) == "custom-" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "name must contain at least one letter or digit".to_string(),
+        ));
+    }
 
     let created = custom_lines::insert_custom_line(
         &app.database,
