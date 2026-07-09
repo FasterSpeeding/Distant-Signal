@@ -26,7 +26,9 @@ struct LineSummary {
     source: &'static str,
 }
 
-async fn list_lines(State(app): State<App>) -> Result<Json<Vec<LineSummary>>, (StatusCode, String)> {
+async fn list_lines(
+    State(app): State<App>,
+) -> Result<Json<Vec<LineSummary>>, (StatusCode, String)> {
     let mut out: Vec<LineSummary> = app
         .config
         .lines
@@ -40,7 +42,9 @@ async fn list_lines(State(app): State<App>) -> Result<Json<Vec<LineSummary>>, (S
         })
         .collect();
 
-    let custom = custom_lines::list_custom_lines(&app.database).await.map_err(internal_error)?;
+    let custom = custom_lines::list_custom_lines(&app.database)
+        .await
+        .map_err(internal_error)?;
     out.extend(custom.into_iter().map(|c| LineSummary {
         id: c.id,
         name: c.name,
@@ -68,10 +72,16 @@ async fn create_line(
     Json(req): Json<CreateLineRequest>,
 ) -> Result<Json<LineSummary>, (StatusCode, String)> {
     if req.name.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "name must not be empty".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "name must not be empty".to_string(),
+        ));
     }
     if req.stations.len() < 2 {
-        return Err((StatusCode::BAD_REQUEST, "a line needs at least 2 stations".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "a line needs at least 2 stations".to_string(),
+        ));
     }
     if custom_lines::slugify(&req.name) == "custom-" {
         return Err((
@@ -107,10 +117,15 @@ async fn delete_line(
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     if app.config.lines.iter().any(|l| l.id == id) {
-        return Err((StatusCode::BAD_REQUEST, "cannot delete a catalogue line".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "cannot delete a catalogue line".to_string(),
+        ));
     }
 
-    let deleted = custom_lines::delete_custom_line(&app.database, &id).await.map_err(internal_error)?;
+    let deleted = custom_lines::delete_custom_line(&app.database, &id)
+        .await
+        .map_err(internal_error)?;
     if !deleted {
         return Err((StatusCode::NOT_FOUND, "custom line not found".to_string()));
     }
@@ -120,5 +135,8 @@ async fn delete_line(
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "custom line operation failed");
-    (StatusCode::INTERNAL_SERVER_ERROR, "operation failed".to_string())
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "operation failed".to_string(),
+    )
 }
