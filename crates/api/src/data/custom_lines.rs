@@ -60,37 +60,38 @@ pub async fn list_custom_lines(pool: &PgPool) -> Result<Vec<CustomLine>> {
 /// Inserts a new custom line, deriving its id from `new.name` via
 /// [`slugify`]. On a slug collision (another custom line already has that
 /// id — e.g. two lines both named "My Commute"), retries with `-2`, `-3`,
-/// ... appended until an unused id is found.
+/// ... appended until an unused id is found. The existence check is atomic
+/// with the insert (`ON CONFLICT ... DO NOTHING RETURNING id`) so two
+/// concurrent requests racing on the same id can't both pass a check and
+/// then have one fail on the `PRIMARY KEY` constraint.
 pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine) -> Result<CustomLine> {
     let base_id = slugify(&new.name);
     let mut id = base_id.clone();
     let mut suffix = 2;
     loop {
-        let existing: Option<String> = sqlx::query_scalar("SELECT id FROM custom_lines WHERE id = $1")
-            .bind(&id)
-            .fetch_optional(pool)
-            .await?;
-        if existing.is_none() {
+        let inserted: Option<String> = sqlx::query_scalar(
+            r#"
+            INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            ON CONFLICT (id) DO NOTHING
+            RETURNING id
+            "#,
+        )
+        .bind(&id)
+        .bind(&new.name)
+        .bind(&new.operators)
+        .bind(&new.stations)
+        .bind(&new.headcode_prefixes)
+        .bind(&new.destination_crs_filter)
+        .fetch_optional(pool)
+        .await?;
+
+        if inserted.is_some() {
             break;
         }
         id = format!("{base_id}-{suffix}");
         suffix += 1;
     }
-
-    sqlx::query(
-        r#"
-        INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW())
-        "#,
-    )
-    .bind(&id)
-    .bind(&new.name)
-    .bind(&new.operators)
-    .bind(&new.stations)
-    .bind(&new.headcode_prefixes)
-    .bind(&new.destination_crs_filter)
-    .execute(pool)
-    .await?;
 
     Ok(CustomLine {
         id,
