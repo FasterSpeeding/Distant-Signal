@@ -6,6 +6,7 @@ use crate::auth::require_internal_token;
 pub mod health;
 pub mod ingest;
 pub mod line_status;
+pub mod lines;
 pub mod samples;
 
 pub fn public_router() -> Router {
@@ -30,7 +31,7 @@ pub fn public_router() -> Router {
     // directly onto the top-level router instead; it's still
     // unauthenticated (no `require_internal_token` layer applied), just
     // not routed through this particular function.
-    Router::new().merge(health::router())
+    Router::new().merge(health::router()).merge(lines::router())
 }
 
 /// Takes the app state directly (rather than picking it up later via
