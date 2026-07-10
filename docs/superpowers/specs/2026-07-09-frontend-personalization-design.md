@@ -71,21 +71,47 @@ just identification + pin + navigate, per "lists all the lines briefly."
 
 A "New custom line" button opens a form:
 - Name (text)
-- Operators (multi-select from known ATOC codes)
+- Operators — free-text `TagsInput`, not a multi-select against known ATOC
+  codes: there's no backend endpoint enumerating operator codes, and adding
+  one is out of scope here. Consistent with how the headcode-prefix/
+  destination-CRS filters below are already treated as "narrow power-user
+  knobs, not worth bespoke UI."
 - Stations (ordered picker — add one at a time via the same search-by-CRS
   pattern as the existing `StationSearchForm`)
 - Collapsed "Advanced" section: optional headcode-prefix / destination-CRS
-  filters (plain text-array inputs — these are narrow power-user knobs,
-  not worth bespoke UI)
+  filters (`TagsInput`, same free-text treatment as operators)
 
 Submits to `POST /public/lines` (sub-project 1). On success, navigate to
 the new line's `/lines/{id}` page.
 
+`POST /public/lines`'s request struct (`CreateLineRequest` in
+`crates/api/src/routes/lines.rs`) was originally built without
+`#[serde(rename_all = "camelCase")]`, so it silently expected snake_case
+`headcode_prefixes`/`destination_crs_filter` — inconsistent with every
+other JSON key this API uses. Fixed as part of this sub-project (before
+this form became the endpoint's first real consumer) rather than baking a
+snake_case workaround into the frontend.
+
+## Browser-initiated writes: same-origin proxy
+
+Client Components (the pin toggle, the custom-line form) run in the
+browser and cannot read `API_BASE_URL` — Next.js only inlines
+`NEXT_PUBLIC_`-prefixed env vars into the client bundle. A single
+catch-all Route Handler, `frontend/app/api/[...path]/route.ts`, proxies
+same-origin `/api/*` requests to `${API_BASE_URL}/public/*` server-side.
+Client Components call this proxy directly (plain `fetch('/api/...')`),
+not `lib/api.ts` (whose functions assume the server-only env var and are
+used by Server Components for initial-render reads only). This also means
+the `api` service's CORS policy never needs to allow POST/PUT/DELETE from
+a browser origin — the browser only ever talks to the Next.js origin.
+
 ## Pinning stations
 
-Add the same pin/star toggle to:
-- `/stations` search results (`StationSearchForm`'s result list)
-- `/stations/{crs}` detail page header
+Add the pin/star toggle to the `/stations/{crs}` detail page header only.
+The design originally also called for one on `/stations` search results,
+but `StationSearchForm` has no results list — it's a direct CRS-code
+lookup that navigates straight to `/stations/{crs}` on submit — so there
+is nothing there to attach a toggle to.
 
 ## Testing
 

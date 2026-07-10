@@ -52,6 +52,14 @@ here is independent of both other sub-projects and can ship on its own.
    down, matching the existing split (`LineDetailPage`/
    `StationDisruptionPage` server components → `DisruptionDetail` etc.).
 
+   `/stations/{crs}` returns an *array* of `LineStatusReport` (a station
+   can sit on several lines), unlike `/lines/{id}` which always resolves
+   to one. Rather than flattening every line's statuses into one
+   undifferentiated issue list (losing which line each issue belongs to),
+   the station page keeps its existing per-line grouping (line name +
+   divider) and repeats the status-header/representative-info/issue-list
+   structure once per line.
+
 ## HTML rendering fix
 
 Confirmed root cause: `disruption.description` contains real embedded
