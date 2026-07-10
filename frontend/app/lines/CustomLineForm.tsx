@@ -52,7 +52,6 @@ export function CustomLineForm() {
         setSubmitting(false);
         return;
       }
-      const created: { id: string } = await response.json();
       router.push('/lines');
     } catch {
       setError('Request failed.');
