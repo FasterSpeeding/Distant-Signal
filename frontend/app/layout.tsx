@@ -31,9 +31,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/" style={{ textDecoration: 'none', color: 'inherit' }}>
               <Text fw={700}>National Rail Line Status</Text>
             </Link>
-            <Link href="/stations" style={{ textDecoration: 'none' }}>
-              <Text c="blue">Station Lookup</Text>
-            </Link>
+            <Group gap="lg">
+              <Link href="/lines" style={{ textDecoration: 'none' }}>
+                <Text c="blue">All Lines</Text>
+              </Link>
+              <Link href="/stations" style={{ textDecoration: 'none' }}>
+                <Text c="blue">Station Lookup</Text>
+              </Link>
+            </Group>
           </Group>
           {children}
         </MantineProvider>
