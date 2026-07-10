@@ -1,4 +1,4 @@
-import type { LineStatusReport, LineStatusHistoryEntry } from './types';
+import type { LineStatusReport, LineStatusHistoryEntry, Preferences, LineSummary } from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
  * not found" from other failures (network errors, 500s, etc.). */
@@ -53,4 +53,12 @@ export async function getLineStatusHistory(
     `${baseUrl()}/Line/${id}/Status/${from}/to/${to}`,
     { cache: 'no-store' },
   );
+}
+
+export async function getPreferences(): Promise<Preferences> {
+  return fetchJson<Preferences>(`${baseUrl()}/public/preferences`, { cache: 'no-store' });
+}
+
+export async function getAllLines(): Promise<LineSummary[]> {
+  return fetchJson<LineSummary[]>(`${baseUrl()}/public/lines`, { cache: 'no-store' });
 }

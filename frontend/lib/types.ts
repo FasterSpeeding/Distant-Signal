@@ -46,3 +46,16 @@ export interface LineStatusReport {
 export interface LineStatusHistoryEntry extends LineStatusReport {
   computedAt: string;
 }
+
+export interface Preferences {
+  pinnedLines: string[];
+  pinnedStations: string[];
+}
+
+export interface LineSummary {
+  id: string;
+  name: string;
+  category: string;
+  operators: string[];
+  source: 'catalogue' | 'custom';
+}

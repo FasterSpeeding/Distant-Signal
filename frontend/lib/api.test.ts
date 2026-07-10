@@ -4,6 +4,8 @@ import {
   getLineStatus,
   getStopPointDisruption,
   getLineStatusHistory,
+  getPreferences,
+  getAllLines,
   ApiNotFoundError,
 } from './api';
 
@@ -66,6 +68,30 @@ describe('api client', () => {
     await getLineStatusHistory('wcml', '2026-07-01T00:00:00Z', '2026-07-07T00:00:00Z');
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Line/wcml/Status/2026-07-01T00:00:00Z/to/2026-07-07T00:00:00Z',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getPreferences fetches the correct URL with no caching', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ pinnedLines: ['wcml'], pinnedStations: ['WOK'] }), { status: 200 })),
+    );
+    await getPreferences();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/preferences',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getAllLines fetches the correct URL with no caching', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+    await getAllLines();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/lines',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });
