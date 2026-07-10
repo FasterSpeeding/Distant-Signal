@@ -8,18 +8,23 @@ import { NextRequest, NextResponse } from 'next/server';
 // since the browser only ever talks to this Next.js origin, no CORS
 // relaxation on the `api` service is needed for these write endpoints.
 async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
-  // Reject `.`/`..`/empty segments — Next.js decodes catch-all segments before
-  // populating `path`, so a raw join could otherwise let `..` escape the
+  // Build the target as a `URL` and check the *resolved* pathname still lives
+  // under `/public/` rather than trying to reject specific traversal
+  // patterns in the raw segments. Next.js decodes catch-all segments before
+  // populating `path`, so a raw join could otherwise let `..` (however it
+  // got there — literal, `%2e%2e`, an embedded `%2F`, etc.) escape the
   // intended `/public/*` scope and reach other routes on the backend host.
-  if (path.some((segment) => segment === '.' || segment === '..' || segment === '')) {
+  // Checking the URL parser's actual normalized output is strictly stronger
+  // than enumerating every encoding trick that could produce a traversal.
+  const target = new URL(`${process.env.API_BASE_URL}/public/${path.join('/')}${req.nextUrl.search}`);
+  if (!target.pathname.startsWith('/public/')) {
     return new NextResponse('invalid path', { status: 400 });
   }
-  const url = `${process.env.API_BASE_URL}/public/${path.join('/')}${req.nextUrl.search}`;
   const init: RequestInit = { method: req.method, headers: { 'Content-Type': 'application/json' } };
   if (req.method !== 'GET' && req.method !== 'DELETE') {
     init.body = await req.text();
   }
-  const response = await fetch(url, init);
+  const response = await fetch(target, init);
   const body = await response.text();
   // Null-body statuses (204/205/304) may not carry a body on the outgoing
   // Response, not even an empty string — the backend's PUT/DELETE endpoints
