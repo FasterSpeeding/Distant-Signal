@@ -72,6 +72,13 @@ async fn put_pinned_stations(
     State(app): State<App>,
     Json(crs_codes): Json<Vec<String>>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    if crs_codes.iter().any(|crs| crs.len() != 3) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "station codes must be exactly 3 characters".to_string(),
+        ));
+    }
+
     preferences::replace_pinned_stations(&app.database, &crs_codes)
         .await
         .map_err(internal_error)?;
