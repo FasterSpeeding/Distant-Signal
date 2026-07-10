@@ -103,14 +103,29 @@ pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine) -> Result<Cus
     })
 }
 
-/// Deletes a custom line by id. Returns `true` if a row was deleted,
-/// `false` if no custom line had that id.
+/// Deletes a custom line by id, and any `pinned_lines` row referencing it,
+/// in one transaction — without this, unpinning would be impossible for a
+/// line that no longer exists, and the stale pin would sit forever (no FK
+/// exists to catch it, since `pinned_lines` intentionally has none — see
+/// the preferences migration). Returns `true` if a custom line was
+/// deleted, `false` if no custom line had that id (a no-op either way for
+/// `pinned_lines`, since a non-custom-line id was never insertable there
+/// through normal use, but the DELETE is harmless if it somehow was).
 pub async fn delete_custom_line(pool: &PgPool, id: &str) -> Result<bool> {
+    let mut tx = pool.begin().await?;
     let result = sqlx::query("DELETE FROM custom_lines WHERE id = $1")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
-    Ok(result.rows_affected() > 0)
+    let deleted = result.rows_affected() > 0;
+    if deleted {
+        sqlx::query("DELETE FROM pinned_lines WHERE line_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(deleted)
 }
 
 #[cfg(test)]
