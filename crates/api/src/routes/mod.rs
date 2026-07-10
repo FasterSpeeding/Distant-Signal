@@ -1,3 +1,4 @@
+use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 
 use crate::app::{App, Router};
@@ -43,4 +44,16 @@ pub fn private_router(app: App) -> Router {
         .merge(ingest::router())
         .merge(samples::router())
         .layer(middleware::from_fn_with_state(app, require_internal_token))
+        // Axum's `Json` extractor enforces an implicit 2MB body-read limit
+        // unless overridden. `StationReference::accessibility` (see
+        // crates/common) is a `#[serde(flatten)]` passthrough that carries
+        // *every* unmodeled per-station field from the RDM feed verbatim
+        // (carParks, ticketBuying, lifts, transportLinks, address, ...),
+        // not just accessibility data — so the full ~2,600-station feed
+        // measures ~55MB raw, which is what actually surfaced as a 413 on
+        // poller-stations' ingest POST (a prior fix here that assumed
+        // ~20MB was itself too low; verified directly against the live RDM
+        // feed rather than guessed). 100MB leaves ~2x headroom over
+        // today's measured size for feed growth.
+        .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
 }
