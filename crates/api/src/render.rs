@@ -36,6 +36,15 @@ fn status_to_json(status: &LineStatus, detail: bool) -> Value {
         ],
     });
 
+    if let Some(stats) = &status.sample_stats {
+        out["sampleStats"] = json!({
+            "total": stats.total,
+            "delayed": stats.delayed,
+            "cancelled": stats.cancelled,
+            "avgDelayMinutes": stats.avg_delay_minutes,
+        });
+    }
+
     if detail
         && let Some(disruption) = &status.disruption
     {
@@ -62,7 +71,7 @@ fn severity_description(severity: Severity) -> &'static str {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use common::{DataQuality, Disruption, ValidityPeriod};
+    use common::{DataQuality, Disruption, SampleStats, ValidityPeriod};
 
     fn sample_report(disruption: Option<Disruption>) -> LineStatusReport {
         LineStatusReport {
@@ -76,6 +85,7 @@ mod tests {
                 validity: ValidityPeriod { from_date: Utc::now(), to_date: None, is_now: true },
                 disruption,
                 data_quality: DataQuality::Knowledgebase,
+                sample_stats: None,
             }],
         }
     }
@@ -143,5 +153,29 @@ mod tests {
         let report = sample_report(None);
         let json = to_tfl_shape(&report, true);
         assert!(json["lineStatuses"][0].get("disruption").is_none());
+    }
+
+    #[test]
+    fn sample_stats_included_when_present() {
+        let mut report = sample_report(None);
+        report.statuses[0].sample_stats = Some(SampleStats {
+            total: 10,
+            delayed: 4,
+            cancelled: 1,
+            avg_delay_minutes: 6.5,
+        });
+        let json = to_tfl_shape(&report, false);
+        let stats = &json["lineStatuses"][0]["sampleStats"];
+        assert_eq!(stats["total"], 10);
+        assert_eq!(stats["delayed"], 4);
+        assert_eq!(stats["cancelled"], 1);
+        assert_eq!(stats["avgDelayMinutes"], 6.5);
+    }
+
+    #[test]
+    fn sample_stats_omitted_when_absent() {
+        let report = sample_report(None);
+        let json = to_tfl_shape(&report, false);
+        assert!(json["lineStatuses"][0].get("sampleStats").is_none());
     }
 }

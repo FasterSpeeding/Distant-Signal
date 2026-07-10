@@ -17,6 +17,13 @@ export interface Disruption {
   source: string | null;
 }
 
+export interface SampleStats {
+  total: number;
+  delayed: number;
+  cancelled: number;
+  avgDelayMinutes: number;
+}
+
 export interface LineStatus {
   statusSeverity: number;
   statusSeverityDescription: string;
@@ -24,6 +31,7 @@ export interface LineStatus {
   dataQuality: 'knowledgebase' | 'ldbws-inferred' | 'trust-inferred' | 'planned';
   validityPeriods: ValidityPeriod[];
   disruption?: Disruption;
+  sampleStats?: SampleStats;
 }
 
 export interface LineStatusReport {
