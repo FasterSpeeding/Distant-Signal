@@ -57,6 +57,7 @@ async fn list_lines(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateLineRequest {
     name: String,
     operators: Vec<String>,
