@@ -15,6 +15,7 @@
 - HTML sanitization allowlist: `p`, `br`, `strong`, `b`, `em`, `i`, `ul`, `ol`, `li`, `a` (href only) — every surviving `<a>` gets `target="_blank" rel="noopener"` forced on regardless of what the source HTML specified.
 - `/stations/{crs}` can return multiple `LineStatusReport`s (a station can sit on several lines). This plan keeps the existing per-line grouping (line name + divider) and applies the new status-header/representative-info/issue-list structure *within* each line's section, rather than flattening all lines' issues into one undifferentiated list — preserving line attribution, which the design doc doesn't explicitly address for the multi-report case.
 - This plan runs after `2026-07-10-frontend-personalization.md` — `app/stations/[crs]/page.tsx`'s full-replacement steps in this plan include that earlier plan's `PinToggle`/`getPreferences` additions, since this plan replaces the whole file again.
+- The installed `@mantine/core` is `9.4.1`, newer than the version this plan's sample code assumed. Confirmed (against `node_modules/@mantine/core`'s actual `.d.ts` files) and already corrected in Task 4's code below: `Accordion.Item`/`Accordion.Control`/`Accordion.Panel` and `Chip.Group` are not accessible via dot-notation in this version — use the flat named exports `AccordionItem`/`AccordionControl`/`AccordionPanel`/`ChipGroup` instead (same class of issue the frontend-personalization plan hit with `Collapse`'s `expanded` prop and `Table`'s sub-components).
 
 ---
 
@@ -549,7 +550,19 @@ Create `frontend/components/IssueList.tsx`:
 'use client';
 
 import { useState } from 'react';
-import { Accordion, Badge, Chip, Group, SegmentedControl, Stack, Text } from '@mantine/core';
+import {
+  Accordion,
+  AccordionControl,
+  AccordionItem,
+  AccordionPanel,
+  Badge,
+  Chip,
+  ChipGroup,
+  Group,
+  SegmentedControl,
+  Stack,
+  Text,
+} from '@mantine/core';
 import { StatusBadge } from './StatusBadge';
 import { DisruptionDetail } from './DisruptionDetail';
 import type { LineStatus } from '@/lib/types';
@@ -590,7 +603,7 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
   return (
     <Stack gap="md">
       <Stack gap="xs">
-        <Chip.Group multiple value={severityFilter} onChange={setSeverityFilter}>
+        <ChipGroup multiple value={severityFilter} onChange={setSeverityFilter}>
           <Group gap="xs">
             {severityOptions.map((option) => (
               <Chip key={option} value={option} size="xs">
@@ -598,8 +611,8 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
               </Chip>
             ))}
           </Group>
-        </Chip.Group>
-        <Chip.Group multiple value={sourceFilter} onChange={setSourceFilter}>
+        </ChipGroup>
+        <ChipGroup multiple value={sourceFilter} onChange={setSourceFilter}>
           <Group gap="xs">
             {Object.entries(DATA_QUALITY_LABELS).map(([value, label]) => (
               <Chip key={value} value={value} size="xs">
@@ -607,7 +620,7 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
               </Chip>
             ))}
           </Group>
-        </Chip.Group>
+        </ChipGroup>
         <SegmentedControl
           value={activeFilter}
           onChange={(value) => setActiveFilter(value as ActiveFilter)}
@@ -623,8 +636,8 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
 
       <Accordion multiple>
         {filtered.map((status, i) => (
-          <Accordion.Item key={i} value={String(i)}>
-            <Accordion.Control>
+          <AccordionItem key={i} value={String(i)}>
+            <AccordionControl>
               <Group justify="space-between" wrap="nowrap">
                 <Group gap="xs" wrap="nowrap">
                   <StatusBadge severity={status.statusSeverity} />
@@ -634,8 +647,8 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
                   {DATA_QUALITY_LABELS[status.dataQuality]}
                 </Badge>
               </Group>
-            </Accordion.Control>
-            <Accordion.Panel>
+            </AccordionControl>
+            <AccordionPanel>
               {status.disruption ? (
                 <DisruptionDetail disruption={status.disruption} />
               ) : (
@@ -643,8 +656,8 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
                   No further detail available.
                 </Text>
               )}
-            </Accordion.Panel>
-          </Accordion.Item>
+            </AccordionPanel>
+          </AccordionItem>
         ))}
       </Accordion>
     </Stack>
