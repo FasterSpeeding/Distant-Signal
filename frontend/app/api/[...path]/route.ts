@@ -8,6 +8,12 @@ import { NextRequest, NextResponse } from 'next/server';
 // since the browser only ever talks to this Next.js origin, no CORS
 // relaxation on the `api` service is needed for these write endpoints.
 async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
+  // Reject `.`/`..`/empty segments — Next.js decodes catch-all segments before
+  // populating `path`, so a raw join could otherwise let `..` escape the
+  // intended `/public/*` scope and reach other routes on the backend host.
+  if (path.some((segment) => segment === '.' || segment === '..' || segment === '')) {
+    return new NextResponse('invalid path', { status: 400 });
+  }
   const url = `${process.env.API_BASE_URL}/public/${path.join('/')}${req.nextUrl.search}`;
   const init: RequestInit = { method: req.method, headers: { 'Content-Type': 'application/json' } };
   if (req.method !== 'GET' && req.method !== 'DELETE') {
