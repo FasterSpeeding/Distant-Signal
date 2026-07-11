@@ -1,9 +1,11 @@
 import { notFound } from 'next/navigation';
-import { Stack, Title, Text, Divider } from '@mantine/core';
+import { Stack, Title, Text, Group } from '@mantine/core';
 import Link from 'next/link';
 import { ApiNotFoundError, getLineStatus } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
-import { DisruptionDetail } from '@/components/DisruptionDetail';
+import { RepresentativeInfo } from '@/components/RepresentativeInfo';
+import { IssueList } from '@/components/IssueList';
+import { worstStatus } from '@/lib/severity';
 
 export default async function LineDetailPage({
   params,
@@ -23,10 +25,14 @@ export default async function LineDetailPage({
   }
 
   const report = reports[0];
+  const worst = worstStatus(report);
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>{report.name}</Title>
+      <Group justify="space-between">
+        <Title order={1}>{report.name}</Title>
+        <StatusBadge severity={worst.statusSeverity} />
+      </Group>
       <Text c="dimmed">Operators: {report.operators.join(', ')}</Text>
       {/* Plain `<Link>` wrapping `Text` rather than `component={Link}` on a
           Mantine polymorphic prop: this page is a Server Component, and
@@ -35,19 +41,8 @@ export default async function LineDetailPage({
       <Link href={`/lines/${id}/history`} style={{ textDecoration: 'none' }}>
         <Text c="blue">View history</Text>
       </Link>
-      {report.lineStatuses.map((status, i) => (
-        <div key={i}>
-          <Divider my="sm" />
-          <Stack gap="xs">
-            <StatusBadge severity={status.statusSeverity} />
-            <Text>{status.reason}</Text>
-            <Text size="sm" c="dimmed">
-              Data quality: {status.dataQuality}
-            </Text>
-            {status.disruption && <DisruptionDetail disruption={status.disruption} />}
-          </Stack>
-        </div>
-      ))}
+      <RepresentativeInfo statuses={report.lineStatuses} />
+      <IssueList statuses={report.lineStatuses} />
     </Stack>
   );
 }
