@@ -37,6 +37,21 @@ function isActive(status: LineStatus): boolean {
   return status.validityPeriods.some((period) => period.isNow);
 }
 
+function formatValiditySummary(status: LineStatus): string {
+  const period = status.validityPeriods[0];
+  if (!period) return '';
+  if (period.isNow) return 'Now';
+  const from = new Date(period.fromDate).toLocaleDateString();
+  return period.toDate ? `${from} – ${new Date(period.toDate).toLocaleDateString()}` : `From ${from}`;
+}
+
+function formatFullValidity(status: LineStatus): string {
+  const period = status.validityPeriods[0];
+  if (!period) return '';
+  const from = new Date(period.fromDate).toLocaleString();
+  return period.toDate ? `${from} – ${new Date(period.toDate).toLocaleString()}` : `${from} – ongoing`;
+}
+
 export function IssueList({ statuses }: { statuses: LineStatus[] }) {
   const severityOptions = Array.from(new Set(statuses.map((status) => status.statusSeverityDescription)));
   const [severityFilter, setSeverityFilter] = useState<string[]>([]);
@@ -101,19 +116,29 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
                   <StatusBadge severity={status.statusSeverity} />
                   <Text size="sm">{status.reason}</Text>
                 </Group>
-                <Badge variant="outline" size="sm">
-                  {DATA_QUALITY_LABELS[status.dataQuality]}
-                </Badge>
+                <Group gap="xs" wrap="nowrap">
+                  <Text size="xs" c="dimmed">
+                    {formatValiditySummary(status)}
+                  </Text>
+                  <Badge variant="outline" size="sm">
+                    {DATA_QUALITY_LABELS[status.dataQuality]}
+                  </Badge>
+                </Group>
               </Group>
             </AccordionControl>
             <AccordionPanel>
-              {status.disruption ? (
-                <DisruptionDetail disruption={status.disruption} />
-              ) : (
-                <Text c="dimmed" size="sm">
-                  No further detail available.
+              <Stack gap="xs">
+                <Text size="sm" c="dimmed">
+                  Valid: {formatFullValidity(status)}
                 </Text>
-              )}
+                {status.disruption ? (
+                  <DisruptionDetail disruption={status.disruption} />
+                ) : (
+                  <Text c="dimmed" size="sm">
+                    No further detail available.
+                  </Text>
+                )}
+              </Stack>
             </AccordionPanel>
           </AccordionItem>
         ))}

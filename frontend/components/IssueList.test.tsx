@@ -45,6 +45,17 @@ describe('IssueList', () => {
     expect(screen.getByText('10 of 12 sampled services delayed.')).toBeInTheDocument();
   });
 
+  it('shows a "Now" validity summary on the collapsed row for active statuses', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    expect(screen.getAllByText('Now')).toHaveLength(2);
+  });
+
+  it('shows the full validity period in the expanded panel', async () => {
+    renderWithProvider(<IssueList statuses={[minorNow]} />);
+    fireEvent.click(screen.getByText('Signal failure'));
+    expect(await screen.findByText(/Valid:/)).toBeInTheDocument();
+  });
+
   it('filters by severity', () => {
     renderWithProvider(<IssueList statuses={all} />);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
