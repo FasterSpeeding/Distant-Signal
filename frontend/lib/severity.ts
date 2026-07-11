@@ -1,3 +1,5 @@
+import type { LineStatusReport } from './types';
+
 type SeverityGroup = 'good' | 'informational' | 'planned' | 'mild' | 'severe';
 
 const SEVERITY_TABLE: Record<number, { label: string; group: SeverityGroup }> = {
@@ -55,4 +57,17 @@ export function severityLabel(severity: number): string {
 export function severityRank(severity: number): number {
   const entry = SEVERITY_TABLE[severity];
   return GROUP_RANK[entry?.group ?? 'informational'];
+}
+
+/** Picks the most severe status on a report by true severity rank (see
+ * `severityRank`), not by the raw `statusSeverity` number. Returns a
+ * synthetic Good-Service-shaped object when the report has no statuses at
+ * all. */
+export function worstStatus(report: LineStatusReport) {
+  if (report.lineStatuses.length === 0) {
+    return { statusSeverity: 10, reason: '' };
+  }
+  return report.lineStatuses.reduce((worst, current) =>
+    severityRank(current.statusSeverity) > severityRank(worst.statusSeverity) ? current : worst,
+  );
 }

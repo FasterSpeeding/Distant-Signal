@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { severityColor, severityLabel } from './severity';
+import { severityColor, severityLabel, worstStatus } from './severity';
+import type { LineStatusReport } from './types';
 
 describe('severityColor', () => {
   it('maps GoodService (10) to green', () => {
@@ -47,5 +48,34 @@ describe('severityLabel', () => {
 
   it('returns a fallback label for an unrecognized value', () => {
     expect(severityLabel(999)).toBe('Unknown');
+  });
+});
+
+describe('worstStatus', () => {
+  const baseReport: LineStatusReport = {
+    $type: 'NRStatus.LineStatusReport',
+    id: 'wcml',
+    name: 'West Coast Main Line',
+    modeName: 'national-rail',
+    operators: ['AW'],
+    lineStatuses: [],
+  };
+
+  it('returns Good Service when there are no statuses', () => {
+    const worst = worstStatus(baseReport);
+    expect(worst.statusSeverity).toBe(10);
+  });
+
+  it('picks the most severe status by rank, not the lowest statusSeverity number', () => {
+    const report: LineStatusReport = {
+      ...baseReport,
+      lineStatuses: [
+        { statusSeverity: 10, statusSeverityDescription: 'Good Service', reason: '', dataQuality: 'knowledgebase', validityPeriods: [] },
+        { statusSeverity: 21, statusSeverityDescription: 'Diverted', reason: 'Diverted', dataQuality: 'knowledgebase', validityPeriods: [] },
+      ],
+    };
+    const worst = worstStatus(report);
+    expect(worst.statusSeverity).toBe(21);
+    expect(worst.reason).toBe('Diverted');
   });
 });
