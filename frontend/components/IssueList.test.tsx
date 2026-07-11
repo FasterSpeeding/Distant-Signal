@@ -35,6 +35,14 @@ const inferredNow: LineStatus = {
   validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
 };
 
+const plannedRange: LineStatus = {
+  statusSeverity: 4,
+  statusSeverityDescription: 'Planned Closure',
+  reason: 'Scheduled maintenance',
+  dataQuality: 'planned',
+  validityPeriods: [{ fromDate: now, toDate: future, isNow: false }],
+};
+
 const all = [minorNow, severePlanned, inferredNow];
 
 describe('IssueList', () => {
@@ -54,6 +62,18 @@ describe('IssueList', () => {
     renderWithProvider(<IssueList statuses={[minorNow]} />);
     fireEvent.click(screen.getByText('Signal failure'));
     expect(await screen.findByText(/Valid:/)).toBeInTheDocument();
+  });
+
+  it('shows a date-range validity summary when a period has both a start and end date', () => {
+    renderWithProvider(<IssueList statuses={[plannedRange]} />);
+    expect(screen.getByText(/–/)).toBeInTheDocument();
+  });
+
+  it('shows the same date range in the expanded panel', async () => {
+    renderWithProvider(<IssueList statuses={[plannedRange]} />);
+    fireEvent.click(screen.getByText('Scheduled maintenance'));
+    const validityLine = await screen.findByText(/Valid:/);
+    expect(validityLine.textContent).toContain('–');
   });
 
   it('filters by severity', () => {
