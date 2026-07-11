@@ -18,3 +18,15 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
     })),
   });
 }
+
+// jsdom doesn't implement ResizeObserver, but Mantine's SegmentedControl uses
+// it (via FloatingIndicator) to size/position the selected-segment highlight.
+// Polyfill it so components can render in tests.
+if (typeof window !== 'undefined' && !window.ResizeObserver) {
+  class ResizeObserverStub {
+    observe = vi.fn();
+    unobserve = vi.fn();
+    disconnect = vi.fn();
+  }
+  window.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+}
