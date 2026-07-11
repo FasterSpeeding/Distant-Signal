@@ -47,7 +47,7 @@ describe('IssueList', () => {
 
   it('filters by severity', () => {
     renderWithProvider(<IssueList statuses={all} />);
-    fireEvent.click(screen.getByText('Minor Delays'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
     expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
     expect(screen.queryByText('10 of 12 sampled services delayed.')).not.toBeInTheDocument();
@@ -55,7 +55,7 @@ describe('IssueList', () => {
 
   it('filters by source type', () => {
     renderWithProvider(<IssueList statuses={all} />);
-    fireEvent.click(screen.getByText('Planned'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
     expect(screen.getByText('Engineering works')).toBeInTheDocument();
     expect(screen.queryByText('Signal failure')).not.toBeInTheDocument();
     expect(screen.queryByText('10 of 12 sampled services delayed.')).not.toBeInTheDocument();
@@ -78,12 +78,12 @@ describe('IssueList', () => {
 
   it('shows a message when no issues match the filters', () => {
     renderWithProvider(<IssueList statuses={all} />);
-    fireEvent.click(screen.getByText('Minor Delays'));
-    fireEvent.click(screen.getByText('Planned'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
     expect(screen.getByText('No issues match the current filters.')).toBeInTheDocument();
   });
 
-  it('expands an entry to reveal its detail on click', () => {
+  it('expands an entry to reveal its detail on click', async () => {
     const withDisruption: LineStatus = {
       ...minorNow,
       disruption: {
@@ -97,6 +97,6 @@ describe('IssueList', () => {
     renderWithProvider(<IssueList statuses={[withDisruption]} />);
     expect(screen.queryByText('Full details here')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('Signal failure'));
-    expect(screen.getByText('Full details here')).toBeInTheDocument();
+    expect(await screen.findByText('Full details here')).toBeInTheDocument();
   });
 });
