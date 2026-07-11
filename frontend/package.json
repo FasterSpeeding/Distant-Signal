@@ -16,7 +16,8 @@
     "@mantine/core": "^9.4.1",
     "@mantine/hooks": "^9.4.1",
     "@mantine/dates": "^9.4.1",
-    "dayjs": "^1.11.13"
+    "dayjs": "^1.11.13",
+    "isomorphic-dompurify": "^2.19.0"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
