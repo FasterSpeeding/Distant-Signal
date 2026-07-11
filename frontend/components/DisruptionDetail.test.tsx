@@ -40,6 +40,16 @@ describe('DisruptionDetail', () => {
     expect(screen.queryByText(/→/)).not.toBeInTheDocument();
   });
 
+  it('renders the source when present', () => {
+    renderWithProvider(<DisruptionDetail disruption={sample} />);
+    expect(screen.getByText('Source: knowledgebase-incident-123')).toBeInTheDocument();
+  });
+
+  it('renders nothing extra when source is null', () => {
+    renderWithProvider(<DisruptionDetail disruption={{ ...sample, source: null }} />);
+    expect(screen.queryByText(/^Source:/)).not.toBeInTheDocument();
+  });
+
   it('renders safe HTML tags as actual elements, not escaped text', () => {
     const withHtml = { ...sample, description: '<p>Signal failure</p><br/><strong>at Woking</strong>' };
     renderWithProvider(<DisruptionDetail disruption={withHtml} />);

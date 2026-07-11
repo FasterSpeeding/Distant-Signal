@@ -43,6 +43,11 @@ export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
           {route.from} → {route.to}
         </Text>
       ))}
+      {disruption.source && (
+        <Text size="xs" c="dimmed">
+          Source: {disruption.source}
+        </Text>
+      )}
     </Stack>
   );
 }
