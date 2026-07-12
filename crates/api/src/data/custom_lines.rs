@@ -57,6 +57,31 @@ pub async fn list_custom_lines(pool: &PgPool) -> Result<Vec<CustomLine>> {
         .collect()
 }
 
+/// Fetches one custom line by id, or `None` if no custom line has that id
+/// (including catalogue-line ids, which are never rows in this table).
+pub async fn get_custom_line(pool: &PgPool, id: &str) -> Result<Option<CustomLine>> {
+    let row = sqlx::query(
+        "SELECT id, name, operators, stations, headcode_prefixes, destination_crs_filter \
+         FROM custom_lines WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    Ok(Some(CustomLine {
+        id: row.try_get("id")?,
+        name: row.try_get("name")?,
+        operators: row.try_get("operators")?,
+        stations: row.try_get("stations")?,
+        headcode_prefixes: row.try_get("headcode_prefixes")?,
+        destination_crs_filter: row.try_get("destination_crs_filter")?,
+    }))
+}
+
 /// Inserts a new custom line, deriving its id from `new.name` via
 /// [`slugify`]. On a slug collision (another custom line already has that
 /// id — e.g. two lines both named "My Commute"), retries with `-2`, `-3`,
@@ -101,6 +126,43 @@ pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine) -> Result<Cus
         headcode_prefixes: new.headcode_prefixes,
         destination_crs_filter: new.destination_crs_filter,
     })
+}
+
+/// Updates an existing custom line's editable fields in place. The `id`
+/// itself is never changed — it was derived once at creation time and
+/// pinned-line references / bookmarked URLs depend on it staying stable,
+/// even if the line is later renamed. Returns `None` if no custom line
+/// has that id (mirrors [`delete_custom_line`]'s `bool` — `Option` here
+/// instead since the caller needs the updated row back on success).
+pub async fn update_custom_line(pool: &PgPool, id: &str, new: NewCustomLine) -> Result<Option<CustomLine>> {
+    let result = sqlx::query(
+        r#"
+        UPDATE custom_lines
+        SET name = $2, operators = $3, stations = $4, headcode_prefixes = $5, destination_crs_filter = $6
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .bind(&new.name)
+    .bind(&new.operators)
+    .bind(&new.stations)
+    .bind(&new.headcode_prefixes)
+    .bind(&new.destination_crs_filter)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(CustomLine {
+        id: id.to_string(),
+        name: new.name,
+        operators: new.operators,
+        stations: new.stations,
+        headcode_prefixes: new.headcode_prefixes,
+        destination_crs_filter: new.destination_crs_filter,
+    }))
 }
 
 /// Deletes a custom line by id, and any `pinned_lines` row referencing it,

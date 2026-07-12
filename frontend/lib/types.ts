@@ -59,3 +59,12 @@ export interface LineSummary {
   operators: string[];
   source: 'catalogue' | 'custom';
 }
+
+export interface CustomLineDetail {
+  id: string;
+  name: string;
+  operators: string[];
+  stations: string[];
+  headcodePrefixes: string[];
+  destinationCrsFilter: string[];
+}
