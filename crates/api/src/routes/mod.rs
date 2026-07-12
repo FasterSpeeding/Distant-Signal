@@ -9,6 +9,7 @@ pub mod ingest;
 pub mod line_status;
 pub mod lines;
 pub mod preferences;
+pub mod reference;
 pub mod samples;
 
 pub fn public_router() -> Router {
@@ -37,6 +38,7 @@ pub fn public_router() -> Router {
         .merge(health::router())
         .merge(lines::router())
         .merge(preferences::router())
+        .merge(reference::router())
 }
 
 /// Takes the app state directly (rather than picking it up later via
