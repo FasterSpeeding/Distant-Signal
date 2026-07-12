@@ -86,7 +86,6 @@ export function CustomLineForm() {
           placeholder="e.g. WOK"
           value={stationInput}
           onChange={setStationInput}
-          maxLength={3}
           data={stationSuggestions.map((s) => ({ value: s.code, label: `${s.code} — ${s.name}` }))}
         />
         <Button variant="outline" onClick={addStation} disabled={stationInput.trim().length !== 3}>

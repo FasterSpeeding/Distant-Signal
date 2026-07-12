@@ -24,7 +24,6 @@ export function StationSearchForm() {
         placeholder="e.g. WOK"
         value={crs}
         onChange={setCrs}
-        maxLength={3}
         data={suggestions.map((s) => ({ value: s.code, label: `${s.code} — ${s.name}` }))}
       />
       <Button onClick={handleSearch} disabled={crs.trim().length === 0}>
