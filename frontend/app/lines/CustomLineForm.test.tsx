@@ -69,4 +69,21 @@ describe('CustomLineForm', () => {
     expect(screen.getByText('SW')).toBeInTheDocument();
     expect(screen.queryByText('SW — South Western Railway')).not.toBeInTheDocument();
   });
+
+  it('the committed operator pill carries the full name as a title tooltip', async () => {
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Operators' });
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'sw' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    const option = await screen.findByRole('option', { name: 'SW — South Western Railway', hidden: true });
+    fireEvent.click(option);
+
+    const pill = screen.getByText('SW').closest('[title]');
+    expect(pill).toHaveAttribute('title', 'South Western Railway');
+  });
 });

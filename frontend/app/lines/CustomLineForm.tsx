@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse } from '@mantine/core';
+import { Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse, Pill } from '@mantine/core';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import type { CustomLineDetail } from '@/lib/types';
@@ -30,6 +30,24 @@ export function CustomLineForm({ existingLine }: { existingLine?: CustomLineDeta
 
   const [destinationQuery, setDestinationQuery] = useState('');
   const { suggestions: destinationSuggestions } = useSuggestions(destinationQuery, searchStations);
+
+  // Committed tags only carry a code (`operators`/`destinationCrsFilter`
+  // are `string[]`), so once a suggestion "scrolls out" of the current
+  // search results there's nowhere left to look up its name from — this
+  // cache remembers every code/name pair ever seen across all three
+  // suggestion sources (CRS and ATOC codes don't collide) so a pill's
+  // title tooltip keeps working long after the dropdown that produced it
+  // is gone.
+  const [nameByCode, setNameByCode] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setNameByCode((prev) => {
+      const next = { ...prev };
+      for (const s of [...operatorSuggestions, ...stationSuggestions, ...destinationSuggestions]) {
+        next[s.code] = s.name;
+      }
+      return next;
+    });
+  }, [operatorSuggestions, stationSuggestions, destinationSuggestions]);
 
   function addStation() {
     const crs = stationInput.trim().toUpperCase();
@@ -84,6 +102,11 @@ export function CustomLineForm({ existingLine }: { existingLine?: CustomLineDeta
         onChange={setOperators}
         onSearchChange={setOperatorsQuery}
         data={operatorSuggestions.map((s) => ({ value: s.code, label: `${s.code} — ${s.name}` }))}
+        renderPill={({ option, onRemove }) => (
+          <Pill withRemoveButton onRemove={onRemove} title={nameByCode[String(option.value)]}>
+            {option.value}
+          </Pill>
+        )}
       />
       <Group align="end">
         <Autocomplete
@@ -128,6 +151,11 @@ export function CustomLineForm({ existingLine }: { existingLine?: CustomLineDeta
             onChange={setDestinationCrsFilter}
             onSearchChange={setDestinationQuery}
             data={destinationSuggestions.map((s) => ({ value: s.code, label: `${s.code} — ${s.name}` }))}
+            renderPill={({ option, onRemove }) => (
+              <Pill withRemoveButton onRemove={onRemove} title={nameByCode[String(option.value)]}>
+                {option.value}
+              </Pill>
+            )}
           />
         </Stack>
       </Collapse>
