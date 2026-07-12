@@ -6,6 +6,7 @@ import {
   getLineStatusHistory,
   getPreferences,
   getAllLines,
+  getCustomLine,
   ApiNotFoundError,
 } from './api';
 
@@ -92,6 +93,26 @@ describe('api client', () => {
     await getAllLines();
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/lines',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getCustomLine fetches the correct URL with no caching', async () => {
+    const sampleLine = {
+      id: 'custom-my-commute',
+      name: 'My Commute',
+      operators: ['SW'],
+      stations: ['WOK', 'WAT'],
+      headcodePrefixes: [],
+      destinationCrsFilter: [],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(sampleLine), { status: 200 })),
+    );
+    await getCustomLine('custom-my-commute');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/lines/custom-my-commute',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });
