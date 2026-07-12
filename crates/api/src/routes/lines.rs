@@ -184,6 +184,11 @@ async fn update_line(
             "a line needs at least 2 stations".to_string(),
         ));
     }
+    // Deliberately no `slugify(&req.name) == "custom-"` check here, unlike
+    // `create_line`: that check exists solely to guard id derivation from
+    // an all-punctuation name, and `update_line` never derives an id (see
+    // [`custom_lines::update_custom_line`]) — an edit that renames a line
+    // to something like "!!!" is harmless here.
 
     let updated = custom_lines::update_custom_line(
         &app.database,
