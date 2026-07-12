@@ -2,7 +2,9 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse } from '@mantine/core';
+import { Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse } from '@mantine/core';
+import { searchStations, searchTocs } from '@/lib/suggestions';
+import { useSuggestions } from '@/lib/useSuggestions';
 
 /** Posts to the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * — this is a Client Component and cannot reach the `api` service directly. */
@@ -17,6 +19,14 @@ export function CustomLineForm() {
   const [destinationCrsFilter, setDestinationCrsFilter] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  const [operatorsQuery, setOperatorsQuery] = useState('');
+  const { suggestions: operatorSuggestions } = useSuggestions(operatorsQuery, searchTocs);
+
+  const { suggestions: stationSuggestions } = useSuggestions(stationInput, searchStations);
+
+  const [destinationQuery, setDestinationQuery] = useState('');
+  const { suggestions: destinationSuggestions } = useSuggestions(destinationQuery, searchStations);
 
   function addStation() {
     const crs = stationInput.trim().toUpperCase();
@@ -62,14 +72,22 @@ export function CustomLineForm() {
   return (
     <Stack gap="sm" maw={480}>
       <TextInput label="Name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
-      <TagsInput label="Operators" placeholder="e.g. SW" value={operators} onChange={setOperators} />
+      <TagsInput
+        label="Operators"
+        placeholder="e.g. SW"
+        value={operators}
+        onChange={setOperators}
+        onSearchChange={setOperatorsQuery}
+        data={operatorSuggestions.map((s) => ({ value: s.code, label: `${s.code} — ${s.name}` }))}
+      />
       <Group align="end">
-        <TextInput
+        <Autocomplete
           label="Add station (CRS code)"
           placeholder="e.g. WOK"
           value={stationInput}
-          onChange={(event) => setStationInput(event.currentTarget.value)}
+          onChange={setStationInput}
           maxLength={3}
+          data={stationSuggestions.map((s) => ({ value: s.code, label: `${s.code} — ${s.name}` }))}
         />
         <Button variant="outline" onClick={addStation} disabled={stationInput.trim().length !== 3}>
           Add
@@ -88,7 +106,14 @@ export function CustomLineForm() {
       <Collapse expanded={advancedOpen}>
         <Stack gap="sm">
           <TagsInput label="Headcode prefixes" placeholder="e.g. 1P" value={headcodePrefixes} onChange={setHeadcodePrefixes} />
-          <TagsInput label="Destination CRS filter" placeholder="e.g. AON" value={destinationCrsFilter} onChange={setDestinationCrsFilter} />
+          <TagsInput
+            label="Destination CRS filter"
+            placeholder="e.g. AON"
+            value={destinationCrsFilter}
+            onChange={setDestinationCrsFilter}
+            onSearchChange={setDestinationQuery}
+            data={destinationSuggestions.map((s) => ({ value: s.code, label: `${s.code} — ${s.name}` }))}
+          />
         </Stack>
       </Collapse>
       {error && <Text c="red">{error}</Text>}
