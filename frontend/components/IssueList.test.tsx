@@ -94,7 +94,7 @@ describe('IssueList', () => {
 
   it('filters to active only', () => {
     renderWithProvider(<IssueList statuses={all} />);
-    fireEvent.click(screen.getByText('Active'));
+    fireEvent.click(screen.getByText('Active (2)'));
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
     expect(screen.getByText('10 of 12 sampled services delayed.')).toBeInTheDocument();
     expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
@@ -102,9 +102,63 @@ describe('IssueList', () => {
 
   it('filters to upcoming only', () => {
     renderWithProvider(<IssueList statuses={all} />);
-    fireEvent.click(screen.getByText('Upcoming'));
+    fireEvent.click(screen.getByText('Upcoming (1)'));
     expect(screen.getByText('Engineering works')).toBeInTheDocument();
     expect(screen.queryByText('Signal failure')).not.toBeInTheDocument();
+  });
+
+  it('shows all/active/upcoming counts on the filter control', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    expect(screen.getByText('All (3)')).toBeInTheDocument();
+    expect(screen.getByText('Active (2)')).toBeInTheDocument();
+    expect(screen.getByText('Upcoming (1)')).toBeInTheDocument();
+  });
+
+  it('counts reflect the severity/source chip filters but not the active/upcoming filter itself', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    fireEvent.click(screen.getByText('Active (2)'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
+    // Narrowed to "Minor Delays" (minorNow only, which is active): All/Active
+    // both become 1, Upcoming becomes 0 — none of this depends on "Active"
+    // still being the selected tab.
+    expect(screen.getByText('All (1)')).toBeInTheDocument();
+    expect(screen.getByText('Active (1)')).toBeInTheDocument();
+    expect(screen.getByText('Upcoming (0)')).toBeInTheDocument();
+  });
+
+  it('sorts active issues before upcoming issues, each ordered by start date ascending', () => {
+    const activeSooner: LineStatus = {
+      ...minorNow,
+      reason: 'Active started sooner',
+      validityPeriods: [{ fromDate: new Date(Date.now() + 3600_000).toISOString(), toDate: null, isNow: true }],
+    };
+    const activeLater: LineStatus = {
+      ...minorNow,
+      reason: 'Active started later',
+      validityPeriods: [{ fromDate: new Date(Date.now() + 7200_000).toISOString(), toDate: null, isNow: true }],
+    };
+    const upcomingSooner: LineStatus = {
+      ...severePlanned,
+      reason: 'Upcoming starts sooner',
+      validityPeriods: [{ fromDate: new Date(Date.now() + 86_400_000).toISOString(), toDate: null, isNow: false }],
+    };
+    const upcomingLater: LineStatus = {
+      ...severePlanned,
+      reason: 'Upcoming starts later',
+      validityPeriods: [{ fromDate: new Date(Date.now() + 172_800_000).toISOString(), toDate: null, isNow: false }],
+    };
+    // Deliberately scrambled input order — the component must sort it.
+    renderWithProvider(
+      <IssueList statuses={[upcomingLater, activeLater, upcomingSooner, activeSooner]} />,
+    );
+
+    const rows = screen.getAllByText(/^(Active|Upcoming) (started|starts)/);
+    expect(rows.map((el) => el.textContent)).toEqual([
+      'Active started sooner',
+      'Active started later',
+      'Upcoming starts sooner',
+      'Upcoming starts later',
+    ]);
   });
 
   it('shows a message when no issues match the filters', () => {

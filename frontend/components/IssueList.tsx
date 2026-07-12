@@ -37,6 +37,29 @@ function isActive(status: LineStatus): boolean {
   return status.validityPeriods.some((period) => period.isNow);
 }
 
+/** Active first, then upcoming, then anything else (no validity info at
+ * all) — matches the three-way split the filter chips already offer.
+ * Within a group, earliest `fromDate` first ("what's happening/starting
+ * soonest"). Statuses with no validity period sort last within their
+ * group via the `Infinity` fallback, rather than erroring or floating to
+ * the front. */
+function sortRank(status: LineStatus): number {
+  if (isActive(status)) return 0;
+  if (isUpcoming(status)) return 1;
+  return 2;
+}
+
+function earliestFromDate(status: LineStatus): number {
+  const period = status.validityPeriods[0];
+  return period ? new Date(period.fromDate).getTime() : Infinity;
+}
+
+function compareByUrgency(a: LineStatus, b: LineStatus): number {
+  const rankDiff = sortRank(a) - sortRank(b);
+  if (rankDiff !== 0) return rankDiff;
+  return earliestFromDate(a) - earliestFromDate(b);
+}
+
 function formatValiditySummary(status: LineStatus): string {
   const period = status.validityPeriods[0];
   if (!period) return '';
@@ -58,13 +81,24 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
   const [sourceFilter, setSourceFilter] = useState<string[]>([]);
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>('all');
 
-  const filtered = statuses.filter((status) => {
+  // Severity/source chips narrow the pool every tab counts from, but not
+  // the active/upcoming tab itself — so switching tabs doesn't change the
+  // other tabs' counts, matching a standard faceted-filter count pattern.
+  const chipFiltered = statuses.filter((status) => {
     if (severityFilter.length > 0 && !severityFilter.includes(status.statusSeverityDescription)) return false;
     if (sourceFilter.length > 0 && !sourceFilter.includes(status.dataQuality)) return false;
-    if (activeFilter === 'active' && !isActive(status)) return false;
-    if (activeFilter === 'upcoming' && !isUpcoming(status)) return false;
     return true;
   });
+  const activeCount = chipFiltered.filter(isActive).length;
+  const upcomingCount = chipFiltered.filter(isUpcoming).length;
+
+  const filtered = chipFiltered
+    .filter((status) => {
+      if (activeFilter === 'active') return isActive(status);
+      if (activeFilter === 'upcoming') return isUpcoming(status);
+      return true;
+    })
+    .sort(compareByUrgency);
 
   return (
     <Stack gap="md">
@@ -91,9 +125,9 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
           value={activeFilter}
           onChange={(value) => setActiveFilter(value as ActiveFilter)}
           data={[
-            { label: 'All', value: 'all' },
-            { label: 'Active', value: 'active' },
-            { label: 'Upcoming', value: 'upcoming' },
+            { label: `All (${chipFiltered.length})`, value: 'all' },
+            { label: `Active (${activeCount})`, value: 'active' },
+            { label: `Upcoming (${upcomingCount})`, value: 'upcoming' },
           ]}
         />
       </Stack>
