@@ -95,7 +95,14 @@ pub async fn get_custom_line(pool: &PgPool, id: &str) -> Result<Option<CustomLin
 /// pinned_lines row together" pattern. A custom line only exists because
 /// this instance's user made it, so the alternative (created but not
 /// pinned, invisible on the home page until the user remembers to pin it
-/// themselves) serves no one.
+/// themselves) serves no one. The pin insert tolerates a conflict
+/// (`ON CONFLICT DO NOTHING`): `pinned_lines` has no FK to `custom_lines`
+/// by design (ids are unauthenticated, client-supplied strings via
+/// `PUT /preferences/pinned-lines` — see the preferences migration), so a
+/// stale row for this exact id can already exist from an earlier pin of
+/// an id that didn't correspond to any line yet. Without this, creating a
+/// line whose slug collides with such a stale pin would roll back an
+/// otherwise-valid `custom_lines` insert and surface as a 500.
 pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine) -> Result<CustomLine> {
     let base_id = slugify(&new.name);
     let mut id = base_id.clone();
@@ -120,10 +127,13 @@ pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine) -> Result<Cus
         .await?;
 
         if inserted.is_some() {
-            sqlx::query("INSERT INTO pinned_lines (line_id, pinned_at) VALUES ($1, NOW())")
-                .bind(&id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "INSERT INTO pinned_lines (line_id, pinned_at) VALUES ($1, NOW()) \
+                 ON CONFLICT (line_id) DO NOTHING",
+            )
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
             tx.commit().await?;
             break;
         }

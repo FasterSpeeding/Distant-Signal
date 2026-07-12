@@ -92,6 +92,7 @@ describe('IssueList', () => {
 
   it('filters by severity', () => {
     renderWithProvider(<IssueList statuses={all} />);
+    fireEvent.click(screen.getByText(/^All/));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
     expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
