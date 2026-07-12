@@ -31,24 +31,23 @@ if (typeof window !== 'undefined' && !window.ResizeObserver) {
   window.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 }
 
-// jsdom's localStorage doesn't have a clear method. Mantine's color-scheme manager
-// needs to store and clear color scheme preferences. Polyfill clear() so tests work.
+// jsdom's `window.localStorage` isn't a working Storage implementation in
+// this project's setup (e.g. `localStorage.setItem` isn't even a
+// function), but Mantine's color-scheme manager reads/writes it to
+// persist the light/dark/auto preference. Polyfill just the methods it
+// (and tests calling `localStorage.clear()` between cases) actually use —
+// `key`/`length` are part of the Storage interface but nothing here
+// exercises them, so they're deliberately omitted.
 if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
   const store: Record<string, string> = {};
 
-  // Replace localStorage with a full implementation
   Object.defineProperty(window, 'localStorage', {
     value: {
-      length: 0 as number,
       getItem(key: string) {
         return store[key] ?? null;
       },
       setItem(key: string, value: string) {
-        if (!store[key]) {
-          store[key] = value;
-        } else {
-          store[key] = value;
-        }
+        store[key] = value;
       },
       removeItem(key: string) {
         delete store[key];
@@ -58,20 +57,9 @@ if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined')
           delete store[key];
         }
       },
-      key(index: number) {
-        const keys = Object.keys(store);
-        return keys[index] ?? null;
-      },
     },
     writable: true,
     configurable: true,
-  });
-
-  // Make length a computed property
-  Object.defineProperty(window.localStorage, 'length', {
-    get() {
-      return Object.keys(store).length;
-    },
   });
 }
 
