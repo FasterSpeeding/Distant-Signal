@@ -89,11 +89,19 @@ pub async fn get_custom_line(pool: &PgPool, id: &str) -> Result<Option<CustomLin
 /// with the insert (`ON CONFLICT ... DO NOTHING RETURNING id`) so two
 /// concurrent requests racing on the same id can't both pass a check and
 /// then have one fail on the `PRIMARY KEY` constraint.
+///
+/// Also pins the newly created line, in the same transaction as the
+/// insert — mirrors [`delete_custom_line`]'s existing "custom_lines row +
+/// pinned_lines row together" pattern. A custom line only exists because
+/// this instance's user made it, so the alternative (created but not
+/// pinned, invisible on the home page until the user remembers to pin it
+/// themselves) serves no one.
 pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine) -> Result<CustomLine> {
     let base_id = slugify(&new.name);
     let mut id = base_id.clone();
     let mut suffix = 2;
     loop {
+        let mut tx = pool.begin().await?;
         let inserted: Option<String> = sqlx::query_scalar(
             r#"
             INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, created_at)
@@ -108,10 +116,15 @@ pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine) -> Result<Cus
         .bind(&new.stations)
         .bind(&new.headcode_prefixes)
         .bind(&new.destination_crs_filter)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await?;
 
         if inserted.is_some() {
+            sqlx::query("INSERT INTO pinned_lines (line_id, pinned_at) VALUES ($1, NOW())")
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
             break;
         }
         id = format!("{base_id}-{suffix}");
