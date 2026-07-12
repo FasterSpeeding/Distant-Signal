@@ -8,6 +8,9 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./vitest.setup.ts'],
     globals: true,
+    fakeTimers: {
+      shouldAdvanceTime: true,
+    },
   },
   resolve: {
     alias: { '@': path.resolve(__dirname, '.') },
