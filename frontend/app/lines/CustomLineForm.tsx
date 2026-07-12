@@ -91,7 +91,18 @@ export function CustomLineForm({ existingLine }: { existingLine?: CustomLineDeta
           placeholder="e.g. WOK"
           value={stationInput}
           onChange={setStationInput}
-          data={stationSuggestions.map((s) => ({ value: s.code, label: `${s.code} — ${s.name}` }))}
+          // `data`'s `label` — not `value` — is what Mantine's Autocomplete
+          // writes into the field on selection (confirmed by reading its
+          // source: `handleValueChange(optionsLockup[val].label)`), the
+          // opposite of TagsInput below. So `label` is set to the code
+          // itself here, and the friendlier "code — name" text is rendered
+          // dropdown-only via `renderOption`, which doesn't affect what
+          // gets written into the field.
+          data={stationSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+          renderOption={({ option }) => {
+            const match = stationSuggestions.find((s) => s.code === option.value);
+            return match ? `${match.code} — ${match.name}` : option.value;
+          }}
         />
         <Button variant="outline" onClick={addStation} disabled={stationInput.trim().length !== 3}>
           Add
