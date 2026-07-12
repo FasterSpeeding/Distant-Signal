@@ -57,7 +57,11 @@ function earliestFromDate(status: LineStatus): number {
 function compareByUrgency(a: LineStatus, b: LineStatus): number {
   const rankDiff = sortRank(a) - sortRank(b);
   if (rankDiff !== 0) return rankDiff;
-  return earliestFromDate(a) - earliestFromDate(b);
+  // `Infinity - Infinity` is `NaN`, an invalid Array.sort comparator
+  // result — reached when two statuses in the same group both lack a
+  // validity period (only possible in the rank-2 "other" group, which has
+  // no date to order by anyway, so treating them as equal is correct).
+  return earliestFromDate(a) - earliestFromDate(b) || 0;
 }
 
 function formatValiditySummary(status: LineStatus): string {

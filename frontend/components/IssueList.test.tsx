@@ -116,14 +116,18 @@ describe('IssueList', () => {
 
   it('counts reflect the severity/source chip filters but not the active/upcoming filter itself', () => {
     renderWithProvider(<IssueList statuses={all} />);
+    // Select the Active tab, then narrow to "Planned Closure" severity —
+    // which matches only severePlanned, an *upcoming* status with zero
+    // overlap with "Active". A tab-dependent (buggy) count implementation
+    // would compute counts from the already-active-only `filtered` array,
+    // landing on All(0)/Active(0)/Upcoming(0); the correct, tab-independent
+    // implementation computes them from the chip-filtered-only pool, so
+    // Active should read 0 while Upcoming still reads 1.
     fireEvent.click(screen.getByText('Active (2)'));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
-    // Narrowed to "Minor Delays" (minorNow only, which is active): All/Active
-    // both become 1, Upcoming becomes 0 — none of this depends on "Active"
-    // still being the selected tab.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Planned Closure' }));
     expect(screen.getByText('All (1)')).toBeInTheDocument();
-    expect(screen.getByText('Active (1)')).toBeInTheDocument();
-    expect(screen.getByText('Upcoming (0)')).toBeInTheDocument();
+    expect(screen.getByText('Active (0)')).toBeInTheDocument();
+    expect(screen.getByText('Upcoming (1)')).toBeInTheDocument();
   });
 
   it('sorts active issues before upcoming issues, each ordered by start date ascending', () => {
