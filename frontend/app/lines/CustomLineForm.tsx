@@ -5,18 +5,21 @@ import { useRouter } from 'next/navigation';
 import { Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse } from '@mantine/core';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
+import type { CustomLineDetail } from '@/lib/types';
 
 /** Posts to the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
- * — this is a Client Component and cannot reach the `api` service directly. */
-export function CustomLineForm() {
+ * — this is a Client Component and cannot reach the `api` service directly.
+ * With `existingLine` set, edits that line via PUT instead of creating a
+ * new one via POST. */
+export function CustomLineForm({ existingLine }: { existingLine?: CustomLineDetail }) {
   const router = useRouter();
-  const [name, setName] = useState('');
-  const [operators, setOperators] = useState<string[]>([]);
+  const [name, setName] = useState(existingLine?.name ?? '');
+  const [operators, setOperators] = useState<string[]>(existingLine?.operators ?? []);
   const [stationInput, setStationInput] = useState('');
-  const [stations, setStations] = useState<string[]>([]);
+  const [stations, setStations] = useState<string[]>(existingLine?.stations ?? []);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [headcodePrefixes, setHeadcodePrefixes] = useState<string[]>([]);
-  const [destinationCrsFilter, setDestinationCrsFilter] = useState<string[]>([]);
+  const [headcodePrefixes, setHeadcodePrefixes] = useState<string[]>(existingLine?.headcodePrefixes ?? []);
+  const [destinationCrsFilter, setDestinationCrsFilter] = useState<string[]>(existingLine?.destinationCrsFilter ?? []);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -51,8 +54,10 @@ export function CustomLineForm() {
     }
     setSubmitting(true);
     try {
-      const response = await fetch('/api/lines', {
-        method: 'POST',
+      const url = existingLine ? `/api/lines/${existingLine.id}` : '/api/lines';
+      const method = existingLine ? 'PUT' : 'POST';
+      const response = await fetch(url, {
+        method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, operators, stations, headcodePrefixes, destinationCrsFilter }),
       });
@@ -62,7 +67,7 @@ export function CustomLineForm() {
         setSubmitting(false);
         return;
       }
-      router.push('/lines');
+      router.push(existingLine ? `/lines/${existingLine.id}` : '/lines');
     } catch {
       setError('Request failed.');
       setSubmitting(false);
@@ -117,7 +122,7 @@ export function CustomLineForm() {
       </Collapse>
       {error && <Text c="red">{error}</Text>}
       <Button onClick={handleSubmit} loading={submitting}>
-        Create line
+        {existingLine ? 'Save changes' : 'Create line'}
       </Button>
     </Stack>
   );
