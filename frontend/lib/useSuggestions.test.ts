@@ -7,7 +7,7 @@ const sample: Suggestion[] = [{ code: 'WOK', name: 'Woking' }];
 
 describe('useSuggestions', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
   afterEach(() => {
