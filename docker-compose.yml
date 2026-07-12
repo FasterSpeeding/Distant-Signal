@@ -7,9 +7,26 @@
 # `.env.example` for why the RDM_*_BASE_URL placeholders are deliberately
 # non-functional (`*.example.invalid`).
 #
+# Every service (except postgres, which doesn't change between them) comes
+# in two variants selected by Compose profile:
+#   prod (services named e.g. `api`)      - optimized release builds.
+#   dev  (services named e.g. `api-dev`)  - fast unoptimized debug builds
+#                                            (cargo --bin without --release,
+#                                            frontend's `next dev` instead
+#                                            of `next build && next start`).
+# A Compose profile must be selected explicitly - there is no unprofiled
+# default - so `docker compose up` alone will start nothing.
+#
 # Usage:
 #   cp .env.example .env   # then fill in real values where you have them
-#   docker compose up
+#   docker compose --profile prod up   # optimized builds (this was the
+#                                       # only mode before dev profiles
+#                                       # existed)
+#   docker compose --profile dev up    # fast debug builds for local iteration
+#
+# Don't combine `--profile prod --profile dev` (or set COMPOSE_PROFILES to
+# both) - the prod and dev variants of a service both publish the same host
+# port, so running both at once fails on a port conflict.
 
 services:
   postgres:
@@ -32,11 +49,14 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    profiles: ["prod"]
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
-    environment:
+    environment: &api-env
       # crates/api/src/data/config.rs: ServiceArguments
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       BIND_URL: 0.0.0.0:8080
@@ -44,106 +64,205 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "${API_HOST_PORT:-8080}:8080"
-    healthcheck:
+    healthcheck: &api-healthcheck
       test: ["CMD", "curl", "-f", "http://localhost:8080/public/health"]
       interval: 5s
       timeout: 3s
       retries: 10
       start_period: 5s
 
+  api-dev:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+      args:
+        CARGO_PROFILE: debug
+    profiles: ["dev"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *api-env
+    ports:
+      - "${API_HOST_PORT:-8080}:8080"
+    healthcheck: *api-healthcheck
+
   poller-incidents:
     build:
       context: .
       dockerfile: docker/poller-incidents.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    profiles: ["prod"]
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
     environment:
-      # crates/poller-incidents/src/config.rs: Config. GAP: no confirmed RDM
-      # endpoint path for this product — RDM_INCIDENTS_BASE_URL is a
-      # placeholder until real account data resolves it (see .env.example).
-      RDM_INCIDENTS_BASE_URL: ${RDM_INCIDENTS_BASE_URL}
-      RDM_API_KEY: ${RDM_INCIDENTS_API_KEY}
+      <<: &poller-incidents-env
+        # crates/poller-incidents/src/config.rs: Config. GAP: no confirmed
+        # RDM endpoint path for this product — RDM_INCIDENTS_BASE_URL is a
+        # placeholder until real account data resolves it (see
+        # .env.example).
+        RDM_INCIDENTS_BASE_URL: ${RDM_INCIDENTS_BASE_URL}
+        RDM_API_KEY: ${RDM_INCIDENTS_API_KEY}
+        INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+        POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_INCIDENTS:-300}
+        RUST_LOG: ${RUST_LOG:-info}
       API_INGEST_URL: http://api:8080/private/incidents
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
-      POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_INCIDENTS:-300}
-      RUST_LOG: ${RUST_LOG:-info}
+
+  poller-incidents-dev:
+    build:
+      context: .
+      dockerfile: docker/poller-incidents.Dockerfile
+      args:
+        CARGO_PROFILE: debug
+    profiles: ["dev"]
+    restart: unless-stopped
+    depends_on:
+      api-dev:
+        condition: service_healthy
+    environment:
+      <<: *poller-incidents-env
+      API_INGEST_URL: http://api-dev:8080/private/incidents
 
   poller-stations:
     build:
       context: .
       dockerfile: docker/poller-stations.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    profiles: ["prod"]
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
     environment:
-      # crates/poller-stations/src/config.rs: Config. GAP: exact JSON field
-      # casing for this feed is unconfirmed (see schema.rs module docs).
-      RDM_STATIONS_BASE_URL: ${RDM_STATIONS_BASE_URL}
-      RDM_API_KEY: ${RDM_STATIONS_API_KEY}
+      <<: &poller-stations-env
+        # crates/poller-stations/src/config.rs: Config. GAP: exact JSON
+        # field casing for this feed is unconfirmed (see schema.rs module
+        # docs).
+        RDM_STATIONS_BASE_URL: ${RDM_STATIONS_BASE_URL}
+        RDM_API_KEY: ${RDM_STATIONS_API_KEY}
+        INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+        # Real-world cadence per RSPS5050 P-03-00 Rev A §6 is 86400s (24h);
+        # shortened here via .env for local verification of the poll loop.
+        POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_STATIONS:-86400}
+        RUST_LOG: ${RUST_LOG:-info}
       API_INGEST_URL: http://api:8080/private/stations
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
-      # Real-world cadence per RSPS5050 P-03-00 Rev A §6 is 86400s (24h);
-      # shortened here via .env for local verification of the poll loop.
-      POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_STATIONS:-86400}
-      RUST_LOG: ${RUST_LOG:-info}
+
+  poller-stations-dev:
+    build:
+      context: .
+      dockerfile: docker/poller-stations.Dockerfile
+      args:
+        CARGO_PROFILE: debug
+    profiles: ["dev"]
+    restart: unless-stopped
+    depends_on:
+      api-dev:
+        condition: service_healthy
+    environment:
+      <<: *poller-stations-env
+      API_INGEST_URL: http://api-dev:8080/private/stations
 
   poller-tocs:
     build:
       context: .
       dockerfile: docker/poller-tocs.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    profiles: ["prod"]
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
     environment:
-      # crates/poller-tocs/src/config.rs: Config. GAP: no confirmed RDM
-      # endpoint path for this product — RDM_TOCS_BASE_URL is a placeholder
-      # until real account data resolves it (see .env.example).
-      RDM_TOCS_BASE_URL: ${RDM_TOCS_BASE_URL}
-      RDM_API_KEY: ${RDM_TOCS_API_KEY}
+      <<: &poller-tocs-env
+        # crates/poller-tocs/src/config.rs: Config. GAP: no confirmed RDM
+        # endpoint path for this product — RDM_TOCS_BASE_URL is a
+        # placeholder until real account data resolves it (see
+        # .env.example).
+        RDM_TOCS_BASE_URL: ${RDM_TOCS_BASE_URL}
+        RDM_API_KEY: ${RDM_TOCS_API_KEY}
+        INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+        # Real-world cadence per RSPS5050 P-03-00 Rev A §3 is 86400s (24h);
+        # shortened here via .env for local verification of the poll loop.
+        POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_TOCS:-86400}
+        RUST_LOG: ${RUST_LOG:-info}
       API_INGEST_URL: http://api:8080/private/tocs
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
-      # Real-world cadence per RSPS5050 P-03-00 Rev A §3 is 86400s (24h);
-      # shortened here via .env for local verification of the poll loop.
-      POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_TOCS:-86400}
-      RUST_LOG: ${RUST_LOG:-info}
+
+  poller-tocs-dev:
+    build:
+      context: .
+      dockerfile: docker/poller-tocs.Dockerfile
+      args:
+        CARGO_PROFILE: debug
+    profiles: ["dev"]
+    restart: unless-stopped
+    depends_on:
+      api-dev:
+        condition: service_healthy
+    environment:
+      <<: *poller-tocs-env
+      API_INGEST_URL: http://api-dev:8080/private/tocs
 
   poller-ldbws:
     build:
       context: .
       dockerfile: docker/poller-ldbws.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    profiles: ["prod"]
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
     environment:
-      # crates/poller-ldbws/src/config.rs: Config. GAP: RDM product-slug
-      # segment is unconfirmed (two variants seen in research); GAP: this
-      # feed's real rate limit is unconfirmed (see the implementation
-      # plan's Global Constraints).
-      LDBWS_BASE_URL: ${LDBWS_BASE_URL}
-      RDM_API_KEY: ${LDBWS_API_KEY}
-      NUM_ROWS: ${LDBWS_NUM_ROWS:-10}
+      <<: &poller-ldbws-env
+        # crates/poller-ldbws/src/config.rs: Config. GAP: RDM product-slug
+        # segment is unconfirmed (two variants seen in research); GAP: this
+        # feed's real rate limit is unconfirmed (see the implementation
+        # plan's Global Constraints).
+        LDBWS_BASE_URL: ${LDBWS_BASE_URL}
+        RDM_API_KEY: ${LDBWS_API_KEY}
+        NUM_ROWS: ${LDBWS_NUM_ROWS:-10}
+        INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+        # DESIGN.md §4 target cadence is 30-60s; 60 is the conservative end
+        # given this feed's rate limit is unconfirmed.
+        POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_LDBWS:-60}
+        RUST_LOG: ${RUST_LOG:-info}
       API_SAMPLE_STATIONS_URL: http://api:8080/private/sample-stations
       API_INGEST_URL: http://api:8080/private/station-samples
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
-      # DESIGN.md §4 target cadence is 30-60s; 60 is the conservative end
-      # given this feed's rate limit is unconfirmed.
-      POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_LDBWS:-60}
-      RUST_LOG: ${RUST_LOG:-info}
+
+  poller-ldbws-dev:
+    build:
+      context: .
+      dockerfile: docker/poller-ldbws.Dockerfile
+      args:
+        CARGO_PROFILE: debug
+    profiles: ["dev"]
+    restart: unless-stopped
+    depends_on:
+      api-dev:
+        condition: service_healthy
+    environment:
+      <<: *poller-ldbws-env
+      API_SAMPLE_STATIONS_URL: http://api-dev:8080/private/sample-stations
+      API_INGEST_URL: http://api-dev:8080/private/station-samples
 
   aggregator:
     build:
       context: .
       dockerfile: docker/aggregator.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    profiles: ["prod"]
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
-    environment:
+    environment: &aggregator-env
       # crates/aggregator/src/config.rs: Config
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       LINES_DIR: /app/lines
@@ -151,10 +270,25 @@ services:
       HISTORY_RETENTION_DAYS: ${HISTORY_RETENTION_DAYS:-7}
       RUST_LOG: ${RUST_LOG:-info}
 
+  aggregator-dev:
+    build:
+      context: .
+      dockerfile: docker/aggregator.Dockerfile
+      args:
+        CARGO_PROFILE: debug
+    profiles: ["dev"]
+    restart: unless-stopped
+    depends_on:
+      api-dev:
+        condition: service_healthy
+    environment: *aggregator-env
+
   frontend:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      target: runtime-prod
+    profiles: ["prod"]
     restart: unless-stopped
     depends_on:
       api:
@@ -163,6 +297,21 @@ services:
       # frontend/lib/api.ts: baseUrl(). Server-side only — resolved
       # inside the docker-compose network, not exposed to the browser.
       API_BASE_URL: http://api:8080
+    ports:
+      - "${FRONTEND_HOST_PORT:-3000}:3000"
+
+  frontend-dev:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      target: runtime-dev
+    profiles: ["dev"]
+    restart: unless-stopped
+    depends_on:
+      api-dev:
+        condition: service_healthy
+    environment:
+      API_BASE_URL: http://api-dev:8080
     ports:
       - "${FRONTEND_HOST_PORT:-3000}:3000"
 
