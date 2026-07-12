@@ -83,7 +83,7 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
   const severityOptions = Array.from(new Set(statuses.map((status) => status.statusSeverityDescription)));
   const [severityFilter, setSeverityFilter] = useState<string[]>([]);
   const [sourceFilter, setSourceFilter] = useState<string[]>([]);
-  const [activeFilter, setActiveFilter] = useState<ActiveFilter>('all');
+  const [activeFilter, setActiveFilter] = useState<ActiveFilter>('active');
 
   // Severity/source chips narrow the pool every tab counts from, but not
   // the active/upcoming tab itself — so switching tabs doesn't change the

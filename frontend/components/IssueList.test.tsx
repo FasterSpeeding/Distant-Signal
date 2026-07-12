@@ -48,9 +48,17 @@ const all = [minorNow, severePlanned, inferredNow];
 describe('IssueList', () => {
   it('renders one row per status, collapsed by default', () => {
     renderWithProvider(<IssueList statuses={all} />);
+    fireEvent.click(screen.getByText('All (3)'));
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
     expect(screen.getByText('Engineering works')).toBeInTheDocument();
     expect(screen.getByText('10 of 12 sampled services delayed.')).toBeInTheDocument();
+  });
+
+  it('defaults to the Active tab, hiding non-active issues until All/Upcoming is picked', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    expect(screen.getByText('Signal failure')).toBeInTheDocument();
+    expect(screen.getByText('10 of 12 sampled services delayed.')).toBeInTheDocument();
+    expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
   });
 
   it('shows a "Now" validity summary on the collapsed row for active statuses', () => {
@@ -66,11 +74,17 @@ describe('IssueList', () => {
 
   it('shows a date-range validity summary when a period has both a start and end date', () => {
     renderWithProvider(<IssueList statuses={[plannedRange]} />);
+    // plannedRange is neither active (isNow: false) nor upcoming (its
+    // fromDate is now, not in the future) — switch off the default
+    // Active-only tab to see it; this test is about date-range
+    // formatting, not the active/upcoming filter.
+    fireEvent.click(screen.getByText(/^All/));
     expect(screen.getByText(/–/)).toBeInTheDocument();
   });
 
   it('shows the same date range in the expanded panel', async () => {
     renderWithProvider(<IssueList statuses={[plannedRange]} />);
+    fireEvent.click(screen.getByText(/^All/));
     fireEvent.click(screen.getByText('Scheduled maintenance'));
     const validityLine = await screen.findByText(/Valid:/);
     expect(validityLine.textContent).toContain('–');
@@ -86,6 +100,7 @@ describe('IssueList', () => {
 
   it('filters by source type', () => {
     renderWithProvider(<IssueList statuses={all} />);
+    fireEvent.click(screen.getByText(/^All/));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
     expect(screen.getByText('Engineering works')).toBeInTheDocument();
     expect(screen.queryByText('Signal failure')).not.toBeInTheDocument();
@@ -155,6 +170,9 @@ describe('IssueList', () => {
     renderWithProvider(
       <IssueList statuses={[upcomingLater, activeLater, upcomingSooner, activeSooner]} />,
     );
+    // The upcoming items are hidden under the default Active-only tab —
+    // this test is about sort order across both groups, so switch to All.
+    fireEvent.click(screen.getByText(/^All/));
 
     const rows = screen.getAllByText(/^(Active|Upcoming) (started|starts)/);
     expect(rows.map((el) => el.textContent)).toEqual([
