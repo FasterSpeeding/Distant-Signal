@@ -28,11 +28,12 @@ describe('RepresentativeInfo', () => {
 
   it('renders the sample stats summary when present', () => {
     const withStats = baseStatus({
-      sampleStats: { total: 160, delayed: 142, cancelled: 3, avgDelayMinutes: 12.4 },
+      sampleStats: { total: 160, delayed: 142, cancelled: 3, skipped: 5, avgDelayMinutes: 12.4 },
     });
     renderWithProvider(<RepresentativeInfo statuses={[withStats]} />);
     expect(screen.getByText(/142 of 160 sampled services delayed/)).toBeInTheDocument();
     expect(screen.getByText(/3 cancelled/)).toBeInTheDocument();
+    expect(screen.getByText(/5 skipping stops/)).toBeInTheDocument();
     expect(screen.getByText(/avg 12\.4 min late/)).toBeInTheDocument();
   });
 
@@ -40,7 +41,7 @@ describe('RepresentativeInfo', () => {
     const withoutStats = baseStatus();
     const withStats = baseStatus({
       reason: 'Different issue',
-      sampleStats: { total: 20, delayed: 5, cancelled: 0, avgDelayMinutes: 4 },
+      sampleStats: { total: 20, delayed: 5, cancelled: 0, skipped: 0, avgDelayMinutes: 4 },
     });
     renderWithProvider(<RepresentativeInfo statuses={[withoutStats, withStats]} />);
     expect(screen.getByText(/5 of 20 sampled services delayed/)).toBeInTheDocument();

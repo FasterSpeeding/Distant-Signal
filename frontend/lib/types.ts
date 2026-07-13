@@ -21,6 +21,7 @@ export interface SampleStats {
   total: number;
   delayed: number;
   cancelled: number;
+  skipped: number;
   avgDelayMinutes: number;
 }
 
