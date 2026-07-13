@@ -32,6 +32,7 @@ describe('RepresentativeInfo', () => {
     });
     renderWithProvider(<RepresentativeInfo statuses={[withStats]} />);
     expect(screen.getByText(/142 of 160 sampled services delayed/)).toBeInTheDocument();
+    expect(screen.getByText(/3 cancelled/)).toBeInTheDocument();
     expect(screen.getByText(/avg 12\.4 min late/)).toBeInTheDocument();
   });
 
