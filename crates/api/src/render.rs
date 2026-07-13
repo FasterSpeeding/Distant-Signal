@@ -41,6 +41,7 @@ fn status_to_json(status: &LineStatus, detail: bool) -> Value {
             "total": stats.total,
             "delayed": stats.delayed,
             "cancelled": stats.cancelled,
+            "skipped": stats.skipped,
             "avgDelayMinutes": stats.avg_delay_minutes,
         });
     }
@@ -162,6 +163,7 @@ mod tests {
             total: 10,
             delayed: 4,
             cancelled: 1,
+            skipped: 2,
             avg_delay_minutes: 6.5,
         });
         let json = to_tfl_shape(&report, false);
@@ -169,6 +171,7 @@ mod tests {
         assert_eq!(stats["total"], 10);
         assert_eq!(stats["delayed"], 4);
         assert_eq!(stats["cancelled"], 1);
+        assert_eq!(stats["skipped"], 2);
         assert_eq!(stats["avgDelayMinutes"], 6.5);
     }
 
