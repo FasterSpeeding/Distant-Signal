@@ -39,35 +39,54 @@ Only the latter is a real disruption signal.
 - No new `dataQuality` tier — skip-driven inference stays `ldbws-inferred`,
   same as delay/cancellation-driven inference.
 
-## Known gap: exact Darwin calling-point field names are unconfirmed
+## Calling-point field names
 
 The existing `crates/poller-ldbws/src/schema.rs` field list (`destination`,
 `std`, `etd`, `isCancelled`, `cancelReason`, `delayReason`) was transcribed
-verbatim from a Swagger 2.0 spec fetched during that poller's original
-planning (see `docs/superpowers/plans/2026-07-06-ldbws-sampler-poller.md`).
-That pass recorded only the fields actually used at the time — the calling
-points structure (`subsequentCallingPoints` in real Darwin/OpenLDBWS
-terminology) was never transcribed, and no swagger/OpenAPI spec file for
-this feed is checked into the repo.
+from a Swagger 2.0 spec fetched during that poller's original planning (see
+`docs/superpowers/plans/2026-07-06-ldbws-sampler-poller.md`). That pass
+recorded only the fields actually used at the time — it never transcribed
+the calling-points structure, and no swagger/OpenAPI spec file for this
+feed is checked into the repo.
 
-This is a **genuinely unconfirmed fact**, the same category the original
-plan already used for this poller's base-URL product-slug segment and rate
-limit (both handled as env-configurable rather than guessed). The
-implementation plan for this feature must include a documentation-discovery
-task — fetching and reading the actual RDM `GetDepBoardWithDetails` swagger
-spec's `definitions` block for the calling-points field — before schema
-changes can be written with confidence. High-confidence assumption for
-planning purposes: the real Darwin schema nests calling points per
-service-association (to support service splits/joins); this app doesn't
-care about split-service semantics and should flatten across all
-associations into one skipped-CRS list per service.
+This gap is now resolved by cross-referencing the official Darwin OpenLDBWS
+XSD (`rtti_2021-11-01_ldb_types.xsd`, the SOAP/XML schema RDM's REST/JSON
+product wraps). Its `CallingPoint` complexType declares (in order):
+`locationName`, `crs`, `st`, `et`, `at`, `isCancelled`, `length`,
+`detachFront`, `formation`, `adhocAlerts`, `cancelReason`, `delayReason`,
+`affectedByDiversion`, `rerouteDelay`, `uncertainty`, `affectedBy`. Every
+field this codebase's existing `RdmServiceItem` already uses
+(`isCancelled`, `cancelReason`, `delayReason`) matches this XSD's element
+names verbatim, which is strong corroboration that RDM's JSON is a direct
+camelCase rendering of the same underlying schema, unwrapped from the SOAP
+envelope — the same confidence tier the existing code's own doc comment
+already claims for its other fields.
+
+`subsequentCallingPoints`/`previousCallingPoints` are of XSD type
+`ArrayOfArrayOfCallingPoints`: an array of `callingPointList` elements
+(type `ArrayOfCallingPoints`), each containing `callingPoint` elements
+(type `CallingPoint`). The nesting exists to support service splits/joins
+(multiple associations); this app doesn't care about split-service
+semantics and flattens across every `callingPointList` into one flat
+skipped-CRS list per service. Expected RDM JSON shape:
+
+```json
+"subsequentCallingPoints": [
+  {
+    "callingPoint": [
+      { "locationName": "Woking", "crs": "WOK", "st": "10:15", "isCancelled": true },
+      { "locationName": "Basingstoke", "crs": "BSK", "st": "10:32", "isCancelled": false }
+    ]
+  }
+]
+```
 
 ## Design
 
 ### 1. Ingestion (`crates/poller-ldbws/src/schema.rs`)
 
-- Extend `RdmServiceItem` to deserialize the calling-points list (exact
-  field names pending the discovery task above).
+- Extend `RdmServiceItem` to deserialize the `subsequentCallingPoints` list
+  (field names confirmed above).
 - Extract every calling point marked cancelled into a flat `Vec<String>`
   of CRS codes.
 - Add `skipped_stations: Vec<String>` to `common::StationDeparture`
@@ -91,7 +110,7 @@ associations into one skipped-CRS list per service.
   `#[serde_inline_default]` fields, overridable per-line via the existing
   `severity_overrides` TOML mechanism exactly like `minor_delays_pct` etc.
   already are:
-  - `minor_delays_skip_pct` (default `0.20`, matching `minor_delays_pct`)
+  - `minor_delays_skip_pct` (default `0.25`, matching `minor_delays_pct`)
   - `severe_delays_skip_pct` (default `0.50`, matching `severe_delays_pct`)
 - `classify()` changes: after the existing cancel-rate checks
   (`PartSuspended`/`ReducedService` — unchanged, still highest priority),
@@ -140,10 +159,8 @@ associations into one skipped-CRS list per service.
 
 ## Open items carried into the implementation plan
 
-- Exact Darwin/RDM calling-points field names (documentation-discovery
-  task, first task in the plan).
 - Whether `minor_delays_skip_pct`/`severe_delays_skip_pct` defaults
-  (0.20/0.50) need per-line overrides in any existing `lines/*.toml` file,
+  (0.25/0.50) need per-line overrides in any existing `lines/*.toml` file,
   or whether the global defaults are fine for the initial rollout — no
   existing line currently overrides `minor_delays_pct`/`severe_delays_pct`,
   so defaulting to the same values keeps behavior conservative out of the
