@@ -232,6 +232,47 @@ pub async fn upsert_tocs(pool: &PgPool, tocs: &[TocReference]) -> Result<u64> {
     Ok(count)
 }
 
+/// Timestamp of the most recent successful ingest for each poller-fed
+/// table, or `None` if the table has never been populated. Backs the
+/// `GET /private/*` freshness-check endpoints
+/// (`crates/api/src/routes/ingest.rs`) each poller calls once at startup
+/// to decide whether to skip an immediately-redundant first fetch (see
+/// `common::ingest::time_until_next_poll`). `MAX(...)` over zero rows
+/// returns one row with a `NULL` column, not zero rows — `fetch_one`
+/// (not `fetch_optional`) is deliberate here, matching that: it's the
+/// *column* that's optional, not the row.
+pub async fn last_stations_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let (fetched_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT MAX(fetched_at) FROM stations")
+            .fetch_one(pool)
+            .await?;
+    Ok(fetched_at)
+}
+
+pub async fn last_tocs_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let (fetched_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT MAX(fetched_at) FROM tocs")
+            .fetch_one(pool)
+            .await?;
+    Ok(fetched_at)
+}
+
+pub async fn last_incidents_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let (fetched_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT MAX(fetched_at) FROM incidents")
+            .fetch_one(pool)
+            .await?;
+    Ok(fetched_at)
+}
+
+pub async fn last_station_samples_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let (polled_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT MAX(polled_at) FROM station_samples")
+            .fetch_one(pool)
+            .await?;
+    Ok(polled_at)
+}
+
 /// One row from `line_status`, deserialized into the shape `render.rs`
 /// consumes.
 pub struct LineStatusRow {
