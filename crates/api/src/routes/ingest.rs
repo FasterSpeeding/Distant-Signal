@@ -12,7 +12,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use chrono::{DateTime, Utc};
+use common::ingest::LastFetchedResponse;
 use common::{IncidentMessage, StationReference, StationSample, TocReference};
 use serde::Serialize;
 
@@ -39,12 +39,6 @@ pub fn router() -> Router {
 #[derive(Debug, Serialize)]
 struct UpsertResponse {
     upserted: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct LastFetchedResponse {
-    #[serde(rename = "fetchedAt")]
-    fetched_at: Option<DateTime<Utc>>,
 }
 
 async fn get_incidents_last_fetched(
