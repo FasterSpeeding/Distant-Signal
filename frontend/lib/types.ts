@@ -68,3 +68,8 @@ export interface CustomLineDetail {
   headcodePrefixes: string[];
   destinationCrsFilter: string[];
 }
+
+export interface LineDefinitionSummary {
+  stations: string[];
+  operators: string[];
+}

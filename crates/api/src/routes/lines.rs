@@ -18,6 +18,7 @@ pub fn router() -> Router {
             "/lines/{id}",
             axum::routing::get(get_line).put(update_line).delete(delete_line),
         )
+        .route("/lines/{id}/definition", axum::routing::get(get_line_definition))
 }
 
 #[derive(Debug, Serialize)]
@@ -44,6 +45,45 @@ struct CustomLineDetail {
     stations: Vec<String>,
     headcode_prefixes: Vec<String>,
     destination_crs_filter: Vec<String>,
+}
+
+/// Minimal cross-source projection — just enough to answer "what stations
+/// and operators does this line cover", for both catalogue and custom
+/// lines alike. Deliberately separate from `CustomLineDetail`/`get_line`:
+/// that endpoint is custom-only by design (its 404-for-a-catalogue-id
+/// behavior is how the frontend detail page tells custom and catalogue
+/// lines apart — see `frontend/app/lines/[id]/page.tsx`'s `isCustom`
+/// check), so extending it to also serve catalogue lines would silently
+/// break that detection instead of adding a tooltip.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LineDefinitionSummary {
+    stations: Vec<String>,
+    operators: Vec<String>,
+}
+
+async fn get_line_definition(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<LineDefinitionSummary>, (StatusCode, String)> {
+    if let Some(catalogue_line) = app.config.lines.iter().find(|l| l.id == id) {
+        return Ok(Json(LineDefinitionSummary {
+            stations: catalogue_line.stations.iter().map(|s| s.crs.clone()).collect(),
+            operators: catalogue_line.operators.clone(),
+        }));
+    }
+
+    let custom = custom_lines::get_custom_line(&app.database, &id)
+        .await
+        .map_err(internal_error)?;
+    let Some(custom) = custom else {
+        return Err((StatusCode::NOT_FOUND, "line not found".to_string()));
+    };
+
+    Ok(Json(LineDefinitionSummary {
+        stations: custom.stations,
+        operators: custom.operators,
+    }))
 }
 
 async fn list_lines(

@@ -7,6 +7,7 @@ import {
   getPreferences,
   getAllLines,
   getCustomLine,
+  getLineDefinition,
   ApiNotFoundError,
 } from './api';
 
@@ -113,6 +114,18 @@ describe('api client', () => {
     await getCustomLine('custom-my-commute');
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/lines/custom-my-commute',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getLineDefinition fetches the correct URL with no caching', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ stations: ['WOK', 'WAT'], operators: ['SW'] }), { status: 200 })),
+    );
+    await getLineDefinition('swr-alton');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/lines/swr-alton/definition',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });

@@ -1,4 +1,11 @@
-import type { LineStatusReport, LineStatusHistoryEntry, Preferences, LineSummary, CustomLineDetail } from './types';
+import type {
+  LineStatusReport,
+  LineStatusHistoryEntry,
+  Preferences,
+  LineSummary,
+  CustomLineDetail,
+  LineDefinitionSummary,
+} from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
  * not found" from other failures (network errors, 500s, etc.). */
@@ -65,4 +72,8 @@ export async function getAllLines(): Promise<LineSummary[]> {
 
 export async function getCustomLine(id: string): Promise<CustomLineDetail> {
   return fetchJson<CustomLineDetail>(`${baseUrl()}/public/lines/${id}`, { cache: 'no-store' });
+}
+
+export async function getLineDefinition(id: string): Promise<LineDefinitionSummary> {
+  return fetchJson<LineDefinitionSummary>(`${baseUrl()}/public/lines/${id}/definition`, { cache: 'no-store' });
 }

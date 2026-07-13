@@ -1,11 +1,12 @@
 import { notFound } from 'next/navigation';
 import { Stack, Title, Text, Group, Button } from '@mantine/core';
 import Link from 'next/link';
-import { ApiNotFoundError, getLineStatus, getCustomLine } from '@/lib/api';
+import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { RepresentativeInfo } from '@/components/RepresentativeInfo';
 import { IssueList } from '@/components/IssueList';
 import { DeleteLineButton } from '@/components/DeleteLineButton';
+import { LineDefinitionTooltip } from '@/components/LineDefinitionTooltip';
 import { worstStatus } from '@/lib/severity';
 
 export default async function LineDetailPage({
@@ -43,10 +44,26 @@ export default async function LineDetailPage({
     }
   }
 
+  // A tooltip showing stations/operators is a nice-to-have, not core page
+  // functionality — if this fails for any reason, just don't show it
+  // rather than breaking the whole page over it. Works for both catalogue
+  // and custom lines (unlike `getCustomLine` above, `getLineDefinition`
+  // doesn't 404 for a catalogue id — see its backend doc comment for why
+  // that endpoint stays separate from this one).
+  let definition = null;
+  try {
+    definition = await getLineDefinition(id);
+  } catch {
+    // swallowed — see comment above
+  }
+
   return (
     <Stack p="lg" gap="md">
       <Group justify="space-between">
-        <Title order={1}>{report.name}</Title>
+        <Group gap="xs">
+          <Title order={1}>{report.name}</Title>
+          {definition && <LineDefinitionTooltip stations={definition.stations} operators={definition.operators} />}
+        </Group>
         <Group gap="sm">
           {isCustom && (
             <>
