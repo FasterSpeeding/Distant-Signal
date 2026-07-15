@@ -1,5 +1,6 @@
 import '@/app/globals.css';
-import { MantineProvider, ColorSchemeScript, mantineHtmlProps, Group, Text } from '@mantine/core';
+import { Suspense } from 'react';
+import { ActionIcon, MantineProvider, ColorSchemeScript, mantineHtmlProps, Group, Text } from '@mantine/core';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -11,7 +12,11 @@ export const metadata: Metadata = {
   description: 'Line status for UK National Rail, TfL-style.',
 };
 
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
+// A separate async Server Component (rather than awaiting inline in
+// RootLayout) so `<Suspense>` below can stream it in without blocking the
+// rest of the shell — this is decorative nav-bar data, not core page
+// content, and shouldn't add to every route's time-to-first-byte.
+async function DataFreshnessNavItem() {
   // A root layout has no route-level `error.tsx` boundary (that only
   // catches errors in child segments), so an uncaught fetch failure here
   // would take down every page rather than just one — fall back to an
@@ -21,7 +26,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     tocs: null,
     incidents: null,
   }));
+  return <DataFreshnessInfo freshness={freshness} />;
+}
 
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" {...mantineHtmlProps}>
       <head>
@@ -55,7 +63,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <Link href="/stations" style={{ textDecoration: 'none' }}>
                 <Text c="blue">Station Lookup</Text>
               </Link>
-              <DataFreshnessInfo freshness={freshness} />
+              <Suspense fallback={<ActionIcon variant="subtle" aria-label="Data freshness" disabled loading />}>
+                <DataFreshnessNavItem />
+              </Suspense>
               <ThemeToggle />
             </Group>
           </Group>
