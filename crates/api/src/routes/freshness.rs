@@ -29,9 +29,12 @@ pub struct DataFreshness {
 }
 
 async fn get_freshness(State(app): State<App>) -> Result<Json<DataFreshness>, (StatusCode, String)> {
-    let stations = queries::last_stations_fetch(&app.database).await.map_err(internal_error)?;
-    let tocs = queries::last_tocs_fetch(&app.database).await.map_err(internal_error)?;
-    let incidents = queries::last_incidents_fetch(&app.database).await.map_err(internal_error)?;
+    let (stations, tocs, incidents) = tokio::try_join!(
+        queries::last_stations_fetch(&app.database),
+        queries::last_tocs_fetch(&app.database),
+        queries::last_incidents_fetch(&app.database),
+    )
+    .map_err(internal_error)?;
     Ok(Json(DataFreshness { stations, tocs, incidents }))
 }
 
