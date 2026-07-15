@@ -26,13 +26,13 @@ describe('DataFreshnessInfo', () => {
     // at all until actually triggered — hover it first (same pattern as
     // LineDefinitionTooltip.test.tsx).
     fireEvent.mouseEnter(screen.getByRole('button', { name: 'Data freshness' }));
-    expect(await screen.findByText(/^Stations:/, { hidden: true })).toBeInTheDocument();
-    expect(screen.getByText(/^TOCs:/, { hidden: true })).toBeInTheDocument();
+    expect(await screen.findByText(/^Stations:/)).toBeInTheDocument();
+    expect(screen.getByText(/^TOCs:/)).toBeInTheDocument();
   });
 
   it('shows "never fetched" for a null timestamp', async () => {
     renderWithProvider(<DataFreshnessInfo freshness={freshness} />);
     fireEvent.mouseEnter(screen.getByRole('button', { name: 'Data freshness' }));
-    expect(await screen.findByText(/^Incidents: never fetched/, { hidden: true })).toBeInTheDocument();
+    expect(await screen.findByText(/^Incidents: never fetched/)).toBeInTheDocument();
   });
 });
