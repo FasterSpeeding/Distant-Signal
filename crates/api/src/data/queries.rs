@@ -281,6 +281,7 @@ pub struct LineStatusRow {
     pub mode_name: String,
     pub operators: Vec<String>,
     pub statuses: Vec<common::LineStatus>,
+    pub computed_at: chrono::DateTime<chrono::Utc>,
 }
 
 fn row_to_report(row: sqlx::postgres::PgRow) -> Result<LineStatusRow> {
@@ -292,22 +293,27 @@ fn row_to_report(row: sqlx::postgres::PgRow) -> Result<LineStatusRow> {
         mode_name: row.try_get("mode_name")?,
         operators: row.try_get("operators")?,
         statuses: serde_json::from_value(statuses_json)?,
+        computed_at: row.try_get("computed_at")?,
     })
 }
 
 pub async fn line_status_for_mode(pool: &PgPool, mode: &str) -> Result<Vec<LineStatusRow>> {
-    let rows = sqlx::query("SELECT line_id, name, mode_name, operators, statuses FROM line_status WHERE mode_name = $1")
-        .bind(mode)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(
+        "SELECT line_id, name, mode_name, operators, statuses, computed_at FROM line_status WHERE mode_name = $1",
+    )
+    .bind(mode)
+    .fetch_all(pool)
+    .await?;
     rows.into_iter().map(row_to_report).collect()
 }
 
 pub async fn line_status_for_ids(pool: &PgPool, ids: &[String]) -> Result<Vec<LineStatusRow>> {
-    let rows = sqlx::query("SELECT line_id, name, mode_name, operators, statuses FROM line_status WHERE line_id = ANY($1)")
-        .bind(ids)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(
+        "SELECT line_id, name, mode_name, operators, statuses, computed_at FROM line_status WHERE line_id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
     rows.into_iter().map(row_to_report).collect()
 }
 

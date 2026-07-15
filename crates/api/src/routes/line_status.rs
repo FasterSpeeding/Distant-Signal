@@ -69,7 +69,13 @@ async fn get_mode_status(
         .map_err(internal_error)?;
 
     Ok(Json(
-        rows.into_iter().map(to_report).map(|r| to_tfl_shape(&r, query.detail)).collect(),
+        rows.into_iter()
+            .map(|row| {
+                let computed_at = row.computed_at;
+                let report = to_report(row);
+                to_tfl_shape(&report, computed_at, query.detail)
+            })
+            .collect(),
     ))
 }
 
@@ -89,7 +95,13 @@ async fn get_line_status(
     }
 
     Ok(Json(
-        rows.into_iter().map(to_report).map(|r| to_tfl_shape(&r, query.detail)).collect(),
+        rows.into_iter()
+            .map(|row| {
+                let computed_at = row.computed_at;
+                let report = to_report(row);
+                to_tfl_shape(&report, computed_at, query.detail)
+            })
+            .collect(),
     ))
 }
 
@@ -116,6 +128,7 @@ async fn get_stop_point_disruption(
     let disruptions: Vec<Value> = rows
         .into_iter()
         .flat_map(|row| {
+            let computed_at = row.computed_at;
             let statuses: Vec<LineStatus> = row
                 .statuses
                 .into_iter()
@@ -131,7 +144,7 @@ async fn get_stop_point_disruption(
             if report.statuses.is_empty() {
                 None
             } else {
-                Some(to_tfl_shape(&report, true))
+                Some(to_tfl_shape(&report, computed_at, true))
             }
         })
         .collect();
@@ -158,9 +171,7 @@ async fn get_line_status_history(
                     operators: vec![],
                     statuses,
                 };
-                let mut json = to_tfl_shape(&report, true);
-                json["computedAt"] = Value::String(computed_at.to_rfc3339());
-                json
+                to_tfl_shape(&report, computed_at, true)
             })
             .collect(),
     ))

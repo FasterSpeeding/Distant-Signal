@@ -7,16 +7,18 @@
 //! Python original builds its response dict by hand rather than relying
 //! on dataclass field names.
 
+use chrono::{DateTime, Utc};
 use common::{LineStatus, LineStatusReport, Severity};
 use serde_json::{Value, json};
 
-pub fn to_tfl_shape(report: &LineStatusReport, detail: bool) -> Value {
+pub fn to_tfl_shape(report: &LineStatusReport, computed_at: DateTime<Utc>, detail: bool) -> Value {
     json!({
         "$type": "NRStatus.LineStatusReport",
         "id": report.id,
         "name": report.name,
         "modeName": report.mode_name,
         "operators": report.operators,
+        "computedAt": computed_at.to_rfc3339(),
         "lineStatuses": report.statuses.iter().map(|s| status_to_json(s, detail)).collect::<Vec<_>>(),
     })
 }
@@ -71,7 +73,7 @@ fn severity_description(severity: Severity) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use chrono::{DateTime, TimeZone, Utc};
     use common::{DataQuality, Disruption, SampleStats, ValidityPeriod};
 
     fn sample_report(disruption: Option<Disruption>) -> LineStatusReport {
@@ -91,10 +93,21 @@ mod tests {
         }
     }
 
+    fn sample_computed_at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 7, 15, 9, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn renders_computed_at() {
+        let report = sample_report(None);
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
+        assert_eq!(json["computedAt"], "2026-07-15T09:00:00+00:00");
+    }
+
     #[test]
     fn renders_top_level_fields() {
         let report = sample_report(None);
-        let json = to_tfl_shape(&report, false);
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
         assert_eq!(json["$type"], "NRStatus.LineStatusReport");
         assert_eq!(json["id"], "wcml");
         assert_eq!(json["name"], "West Coast Main Line");
@@ -105,7 +118,7 @@ mod tests {
     #[test]
     fn renders_status_fields() {
         let report = sample_report(None);
-        let json = to_tfl_shape(&report, false);
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
         let status = &json["lineStatuses"][0];
         assert_eq!(status["statusSeverity"], 9);
         assert_eq!(status["statusSeverityDescription"], "Minor Delays");
@@ -125,7 +138,7 @@ mod tests {
             source: Some("knowledgebase-incident-1".to_string()),
         };
         let report = sample_report(Some(disruption));
-        let json = to_tfl_shape(&report, false);
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
         assert!(json["lineStatuses"][0].get("disruption").is_none());
     }
 
@@ -139,7 +152,7 @@ mod tests {
             source: Some("knowledgebase-incident-1".to_string()),
         };
         let report = sample_report(Some(disruption));
-        let json = to_tfl_shape(&report, true);
+        let json = to_tfl_shape(&report, sample_computed_at(), true);
         let d = &json["lineStatuses"][0]["disruption"];
         assert_eq!(d["category"], "RealTime");
         assert_eq!(d["description"], "Signal failure at Woking");
@@ -152,7 +165,7 @@ mod tests {
     #[test]
     fn no_disruption_present_even_with_detail_flag() {
         let report = sample_report(None);
-        let json = to_tfl_shape(&report, true);
+        let json = to_tfl_shape(&report, sample_computed_at(), true);
         assert!(json["lineStatuses"][0].get("disruption").is_none());
     }
 
@@ -166,7 +179,7 @@ mod tests {
             skipped: 2,
             avg_delay_minutes: 6.5,
         });
-        let json = to_tfl_shape(&report, false);
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
         let stats = &json["lineStatuses"][0]["sampleStats"];
         assert_eq!(stats["total"], 10);
         assert_eq!(stats["delayed"], 4);
@@ -178,7 +191,7 @@ mod tests {
     #[test]
     fn sample_stats_omitted_when_absent() {
         let report = sample_report(None);
-        let json = to_tfl_shape(&report, false);
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
         assert!(json["lineStatuses"][0].get("sampleStats").is_none());
     }
 }
