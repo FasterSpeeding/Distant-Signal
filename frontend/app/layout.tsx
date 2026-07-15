@@ -3,13 +3,25 @@ import { MantineProvider, ColorSchemeScript, mantineHtmlProps, Group, Text } fro
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { DataFreshnessInfo } from '@/components/DataFreshnessInfo';
+import { getDataFreshness } from '@/lib/api';
 
 export const metadata: Metadata = {
   title: 'National Rail Status',
   description: 'Line status for UK National Rail, TfL-style.',
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // A root layout has no route-level `error.tsx` boundary (that only
+  // catches errors in child segments), so an uncaught fetch failure here
+  // would take down every page rather than just one — fall back to an
+  // all-"never fetched" state instead.
+  const freshness = await getDataFreshness().catch(() => ({
+    stations: null,
+    tocs: null,
+    incidents: null,
+  }));
+
   return (
     <html lang="en" {...mantineHtmlProps}>
       <head>
@@ -43,6 +55,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/stations" style={{ textDecoration: 'none' }}>
                 <Text c="blue">Station Lookup</Text>
               </Link>
+              <DataFreshnessInfo freshness={freshness} />
               <ThemeToggle />
             </Group>
           </Group>
