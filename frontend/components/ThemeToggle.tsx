@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { ActionIcon, useComputedColorScheme, useMantineColorScheme } from '@mantine/core';
 import type { MantineColorScheme } from '@mantine/core';
+import { useMounted } from '@mantine/hooks';
 
 const NEXT_SCHEME: Record<MantineColorScheme, MantineColorScheme> = {
   light: 'dark',
@@ -26,9 +26,7 @@ const NEXT_SCHEME: Record<MantineColorScheme, MantineColorScheme> = {
 export function ThemeToggle() {
   const { colorScheme, setColorScheme } = useMantineColorScheme();
   const computedColorScheme = useComputedColorScheme('light');
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => setMounted(true), []);
+  const mounted = useMounted();
 
   const displayedScheme = mounted ? colorScheme : 'auto';
   const displayedComputedScheme = mounted ? computedColorScheme : 'light';

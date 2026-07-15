@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Text, Tooltip } from '@mantine/core';
+import { useInterval, useMounted } from '@mantine/hooks';
 import { relativeTime } from '@/lib/relativeTime';
 
 const EXACT_TIME_FORMAT = new Intl.DateTimeFormat('en-GB', {
@@ -22,8 +23,10 @@ const RELATIVE_TIME_TICK_MS = 30_000;
  * pre-hydration render — the same class of bug fixed in `ThemeToggle` (see
  * that component's comment). Before mount, this always shows a fixed
  * absolute time (deterministic regardless of server/client locale or
- * timezone); only after the `useEffect` below fires does it switch to the
- * live relative string, re-computed every 30s. */
+ * timezone); only once `useMounted()` flips true does it switch to the live
+ * relative string. `useInterval` just forces a re-render every 30s so that
+ * relative string stays fresh — the actual "now" is recomputed at render
+ * time, not cached in state. */
 export function LastUpdated({
   timestamp,
   label = 'Updated',
@@ -35,15 +38,11 @@ export function LastUpdated({
 }) {
   const date = new Date(timestamp);
   const exact = EXACT_TIME_FORMAT.format(date);
-  const [now, setNow] = useState<Date | null>(null);
+  const mounted = useMounted();
+  const [, forceTick] = useState(0);
+  useInterval(() => forceTick((tick) => tick + 1), RELATIVE_TIME_TICK_MS, { autoInvoke: true });
 
-  useEffect(() => {
-    setNow(new Date());
-    const id = setInterval(() => setNow(new Date()), RELATIVE_TIME_TICK_MS);
-    return () => clearInterval(id);
-  }, []);
-
-  const displayed = now === null ? exact : relativeTime(date, now);
+  const displayed = mounted ? relativeTime(date, new Date()) : exact;
   const text = (
     <Text size="xs" c="dimmed">
       {label} {displayed}
