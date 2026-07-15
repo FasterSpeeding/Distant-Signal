@@ -73,3 +73,9 @@ export interface LineDefinitionSummary {
   stations: string[];
   operators: string[];
 }
+
+export interface DataFreshness {
+  stations: string | null;
+  tocs: string | null;
+  incidents: string | null;
+}

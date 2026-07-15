@@ -5,6 +5,7 @@ import type {
   LineSummary,
   CustomLineDetail,
   LineDefinitionSummary,
+  DataFreshness,
 } from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
@@ -76,4 +77,10 @@ export async function getCustomLine(id: string): Promise<CustomLineDetail> {
 
 export async function getLineDefinition(id: string): Promise<LineDefinitionSummary> {
   return fetchJson<LineDefinitionSummary>(`${baseUrl()}/public/lines/${id}/definition`, { cache: 'no-store' });
+}
+
+export async function getDataFreshness(): Promise<DataFreshness> {
+  return fetchJson<DataFreshness>(`${baseUrl()}/public/freshness`, {
+    next: { revalidate: 30 },
+  });
 }

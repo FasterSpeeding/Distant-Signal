@@ -8,6 +8,7 @@ import {
   getAllLines,
   getCustomLine,
   getLineDefinition,
+  getDataFreshness,
   ApiNotFoundError,
 } from './api';
 
@@ -127,6 +128,14 @@ describe('api client', () => {
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/lines/swr-alton/definition',
       expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getDataFreshness fetches the correct URL', async () => {
+    await getDataFreshness();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/freshness',
+      expect.objectContaining({ next: { revalidate: 30 } }),
     );
   });
 
