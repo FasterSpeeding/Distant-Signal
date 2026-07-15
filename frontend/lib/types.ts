@@ -42,11 +42,10 @@ export interface LineStatusReport {
   modeName: string;
   operators: string[];
   lineStatuses: LineStatus[];
-}
-
-export interface LineStatusHistoryEntry extends LineStatusReport {
   computedAt: string;
 }
+
+export type LineStatusHistoryEntry = LineStatusReport;
 
 export interface Preferences {
   pinnedLines: string[];

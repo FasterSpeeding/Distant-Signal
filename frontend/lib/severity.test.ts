@@ -59,6 +59,7 @@ describe('worstStatus', () => {
     modeName: 'national-rail',
     operators: ['AW'],
     lineStatuses: [],
+    computedAt: '2026-07-15T09:00:00Z',
   };
 
   it('returns Good Service when there are no statuses', () => {

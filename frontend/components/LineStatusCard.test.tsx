@@ -14,6 +14,7 @@ const report: LineStatusReport = {
   name: 'West Coast Main Line',
   modeName: 'national-rail',
   operators: ['AW'],
+  computedAt: '2026-07-15T09:00:00Z',
   lineStatuses: [
     {
       statusSeverity: 9,
@@ -73,5 +74,10 @@ describe('LineStatusCard', () => {
     expect(screen.getByText('Diverted')).toBeInTheDocument();
     expect(screen.getByText('Line diverted due to engineering works')).toBeInTheDocument();
     expect(screen.queryByText('Good Service')).not.toBeInTheDocument();
+  });
+
+  it('renders a last-updated indicator', () => {
+    renderWithProvider(<LineStatusCard report={report} />);
+    expect(screen.getByText(/Updated (just now|\d+[mhd] ago)/)).toBeInTheDocument();
   });
 });

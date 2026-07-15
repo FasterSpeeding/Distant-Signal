@@ -3,6 +3,7 @@
 import { Card, Group, Text, Stack } from '@mantine/core';
 import Link from 'next/link';
 import { StatusBadge } from './StatusBadge';
+import { LastUpdated } from './LastUpdated';
 import { worstStatus } from '@/lib/severity';
 import type { LineStatusReport } from '@/lib/types';
 
@@ -18,6 +19,7 @@ export function LineStatusCard({ report }: { report: LineStatusReport }) {
         <Text size="sm" c="dimmed">
           {worst.reason}
         </Text>
+        <LastUpdated timestamp={report.computedAt} />
       </Stack>
     </Card>
   );
