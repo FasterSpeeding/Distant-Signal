@@ -4,6 +4,7 @@ use axum::middleware;
 use crate::app::{App, Router};
 use crate::auth::require_internal_token;
 
+pub mod freshness;
 pub mod health;
 pub mod ingest;
 pub mod line_status;
@@ -36,6 +37,7 @@ pub fn public_router() -> Router {
     // not routed through this particular function.
     Router::new()
         .merge(health::router())
+        .merge(freshness::router())
         .merge(lines::router())
         .merge(preferences::router())
         .merge(reference::router())
