@@ -55,6 +55,16 @@ fn to_report(row: queries::LineStatusRow) -> LineStatusReport {
     }
 }
 
+fn rows_to_json(rows: Vec<queries::LineStatusRow>, detail: bool) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            let computed_at = row.computed_at;
+            let report = to_report(row);
+            to_tfl_shape(&report, computed_at, detail)
+        })
+        .collect()
+}
+
 async fn get_mode_status(
     State(app): State<App>,
     Path(mode): Path<String>,
@@ -68,15 +78,7 @@ async fn get_mode_status(
         .await
         .map_err(internal_error)?;
 
-    Ok(Json(
-        rows.into_iter()
-            .map(|row| {
-                let computed_at = row.computed_at;
-                let report = to_report(row);
-                to_tfl_shape(&report, computed_at, query.detail)
-            })
-            .collect(),
-    ))
+    Ok(Json(rows_to_json(rows, query.detail)))
 }
 
 async fn get_line_status(
@@ -94,15 +96,7 @@ async fn get_line_status(
         return Err((StatusCode::NOT_FOUND, format!("no matching line(s): {}", ids.join(","))));
     }
 
-    Ok(Json(
-        rows.into_iter()
-            .map(|row| {
-                let computed_at = row.computed_at;
-                let report = to_report(row);
-                to_tfl_shape(&report, computed_at, query.detail)
-            })
-            .collect(),
-    ))
+    Ok(Json(rows_to_json(rows, query.detail)))
 }
 
 async fn get_stop_point_disruption(
