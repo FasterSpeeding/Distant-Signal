@@ -1091,6 +1091,36 @@ mod tests {
     }
 
     #[test]
+    fn is_active_true_when_one_of_several_validity_periods_covers_now() {
+        // Real Knowledgebase incidents can carry more than one validity
+        // window; the first is already over, the second is current.
+        let mut inc = incident("T6", "Delay", "Delay description", &[], &[]);
+        let now = Utc::now();
+        inc.validity = vec![
+            ValidityPeriod { from_date: now - Duration::days(2), to_date: Some(now - Duration::days(1)), is_now: false },
+            ValidityPeriod { from_date: now - Duration::hours(1), to_date: None, is_now: true },
+        ];
+        assert!(is_active(&inc, now, now));
+    }
+
+    #[test]
+    fn is_active_false_for_planned_incident_whose_validity_has_expired() {
+        // is_planned only exempts the rail-day age cutoff, not the
+        // validity-window check -- a planned closure whose own stated
+        // window has already ended should still be excluded, the same as
+        // any other incident with expired validity.
+        let mut inc = incident("T7", "Engineering work", "Planned engineering work", &[], &[]);
+        inc.is_planned = true;
+        let now = Utc::now();
+        inc.validity = vec![ValidityPeriod {
+            from_date: now - Duration::days(2),
+            to_date: Some(now - Duration::days(1)),
+            is_now: false,
+        }];
+        assert!(!is_active(&inc, now - Duration::days(2), now));
+    }
+
+    #[test]
     fn stale_non_planned_incident_falls_back_to_good_service() {
         let lines = load_all_lines();
         let inc = incident(
