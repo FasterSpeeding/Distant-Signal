@@ -140,7 +140,7 @@ fn validity_for_output(periods: &[ValidityPeriod]) -> ValidityPeriod {
     let now = Utc::now();
     periods
         .iter()
-        .find(|p| p.from_date <= now && p.to_date.map(|to| to > now).unwrap_or(true))
+        .find(|p| period_covers_now(p, now))
         .cloned()
         .unwrap_or_else(|| periods[0].clone())
 }
@@ -176,6 +176,25 @@ fn next_rail_day_boundary(first_seen_at: DateTime<Utc>) -> DateTime<Utc> {
              02:00 local should never be ambiguous or missing"
         ),
     }
+}
+
+/// Whether `period` covers the instant `now`. Shared by `validity_for_output`
+/// (picks which period to *display*) and `is_active` (decides whether an
+/// incident is included at all) so the "is this period active" condition
+/// has one definition, not two.
+fn period_covers_now(period: &ValidityPeriod, now: DateTime<Utc>) -> bool {
+    period.from_date <= now && period.to_date.map(|to| to > now).unwrap_or(true)
+}
+
+/// Whether an incident should still contribute a `LineStatus` to any line
+/// it matches. `is_cleared` isn't rechecked here -- `queries::load_incidents`
+/// already excludes cleared rows at the SQL layer, so by the time an
+/// incident reaches this function it's already known not to be cleared.
+fn is_active(incident: &IncidentMessage, first_seen_at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+    let validity_ok = incident.validity.is_empty()
+        || incident.validity.iter().any(|p| period_covers_now(p, now));
+    let age_ok = incident.is_planned || now < next_rail_day_boundary(first_seen_at);
+    validity_ok && age_ok
 }
 
 fn severity_from_incident(incident: &IncidentMessage) -> Severity {
@@ -1000,5 +1019,63 @@ mod tests {
         let first_seen_at: DateTime<Utc> = "2026-10-25T00:30:00Z".parse().unwrap();
         let boundary = next_rail_day_boundary(first_seen_at);
         assert_eq!(boundary, "2026-10-25T02:00:00Z".parse::<DateTime<Utc>>().unwrap());
+    }
+
+    #[test]
+    fn period_covers_now_true_when_now_falls_inside_the_period() {
+        let now = Utc::now();
+        let period = ValidityPeriod { from_date: now - Duration::hours(1), to_date: Some(now + Duration::hours(1)), is_now: true };
+        assert!(period_covers_now(&period, now));
+    }
+
+    #[test]
+    fn period_covers_now_false_once_to_date_has_passed() {
+        let now = Utc::now();
+        let period = ValidityPeriod { from_date: now - Duration::days(2), to_date: Some(now - Duration::days(1)), is_now: false };
+        assert!(!period_covers_now(&period, now));
+    }
+
+    #[test]
+    fn is_active_true_for_fresh_incident_with_no_validity_periods() {
+        let inc = incident("T1", "Delay", "Delay description", &[], &[]);
+        let now = Utc::now();
+        assert!(is_active(&inc, now, now));
+    }
+
+    #[test]
+    fn is_active_false_when_the_only_validity_period_has_elapsed() {
+        let mut inc = incident("T2", "Delay", "Delay description", &[], &[]);
+        let now = Utc::now();
+        inc.validity = vec![ValidityPeriod {
+            from_date: now - Duration::days(2),
+            to_date: Some(now - Duration::days(1)),
+            is_now: false,
+        }];
+        assert!(!is_active(&inc, now - Duration::days(2), now));
+    }
+
+    #[test]
+    fn is_active_true_when_a_validity_period_covers_now() {
+        let mut inc = incident("T3", "Delay", "Delay description", &[], &[]);
+        let now = Utc::now();
+        inc.validity = vec![ValidityPeriod { from_date: now - Duration::hours(1), to_date: None, is_now: true }];
+        assert!(is_active(&inc, now - Duration::hours(1), now));
+    }
+
+    #[test]
+    fn is_active_false_for_non_planned_incident_aged_past_the_rail_day_boundary() {
+        let inc = incident("T4", "Delay", "Delay description", &[], &[]);
+        let now = Utc::now();
+        let first_seen_at = now - Duration::days(2);
+        assert!(!is_active(&inc, first_seen_at, now));
+    }
+
+    #[test]
+    fn is_active_true_for_planned_incident_aged_past_the_rail_day_boundary() {
+        let mut inc = incident("T5", "Engineering work", "Planned engineering work", &[], &[]);
+        inc.is_planned = true;
+        let now = Utc::now();
+        let first_seen_at = now - Duration::days(2);
+        assert!(is_active(&inc, first_seen_at, now));
     }
 }
