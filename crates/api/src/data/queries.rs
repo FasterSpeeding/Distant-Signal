@@ -72,9 +72,10 @@ pub async fn upsert_incidents(pool: &PgPool, incidents: &[IncidentMessage]) -> R
             r#"
             INSERT INTO incidents (
                 incident_id, summary, description, operators, affected_stations,
-                priority, validity_periods, is_planned, is_cleared, fetched_at
+                priority, validity_periods, is_planned, is_cleared, fetched_at,
+                first_seen_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
             ON CONFLICT (incident_id) DO UPDATE SET
                 summary           = EXCLUDED.summary,
                 description       = EXCLUDED.description,
