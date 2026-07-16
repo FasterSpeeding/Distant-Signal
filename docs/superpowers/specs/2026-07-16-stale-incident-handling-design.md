@@ -160,6 +160,10 @@ cleared rows at the SQL layer, so by the time an incident reaches
   sample-derived/Good-Service status rather than showing the stale
   incident, and a planned-work incident aged the same amount, asserting it
   still shows.
+- `load_incidents`'s new `WHERE NOT is_cleared`: needs its own coverage
+  separate from `is_active`, since a cleared incident never reaches that
+  predicate at all under this design — a cleared row plus a non-cleared row
+  in the same fixture, asserting only the latter comes back.
 - Migration: confirm `first_seen_at` defaults sensibly (`NOW()`) for any
   pre-existing rows at migration time — a deliberate, safe under-count of
   true age, rather than guessing a false-earlier timestamp that would
