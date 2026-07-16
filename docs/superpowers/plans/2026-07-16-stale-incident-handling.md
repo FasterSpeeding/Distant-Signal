@@ -256,13 +256,27 @@ git commit -m "Add rail-day boundary calculation for incident staleness"
 
 **Interfaces:**
 - Consumes: `next_rail_day_boundary` (Task 2).
-- Produces: `fn is_active(incident: &IncidentMessage, first_seen_at: DateTime<Utc>, now: DateTime<Utc>) -> bool`. Consumed by Task 5's `aggregate()`.
+- Produces: `fn period_covers_now(period: &ValidityPeriod, now: DateTime<Utc>) -> bool` (extracted from the existing `validity_for_output`'s inline condition, so the "does this period cover now" check has one definition instead of two); `fn is_active(incident: &IncidentMessage, first_seen_at: DateTime<Utc>, now: DateTime<Utc>) -> bool`. Both consumed by Task 5's `aggregate()`.
 
 - [ ] **Step 1: Write the failing tests**
 
 Add to `crates/aggregator/src/aggregation.rs`'s `mod tests` block (reuses the existing `incident(...)` test helper already defined there):
 
 ```rust
+    #[test]
+    fn period_covers_now_true_when_now_falls_inside_the_period() {
+        let now = Utc::now();
+        let period = ValidityPeriod { from_date: now - Duration::hours(1), to_date: Some(now + Duration::hours(1)), is_now: true };
+        assert!(period_covers_now(&period, now));
+    }
+
+    #[test]
+    fn period_covers_now_false_once_to_date_has_passed() {
+        let now = Utc::now();
+        let period = ValidityPeriod { from_date: now - Duration::days(2), to_date: Some(now - Duration::days(1)), is_now: false };
+        assert!(!period_covers_now(&period, now));
+    }
+
     #[test]
     fn is_active_true_for_fresh_incident_with_no_validity_periods() {
         let inc = incident("T1", "Delay", "Delay description", &[], &[]);
@@ -310,33 +324,56 @@ Add to `crates/aggregator/src/aggregation.rs`'s `mod tests` block (reuses the ex
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test -p aggregator is_active`
-Expected: FAIL — compile error, `is_active` is not defined yet.
+Run: `cargo test -p aggregator period_covers_now is_active`
+Expected: FAIL — compile error, `period_covers_now` and `is_active` are not defined yet.
 
-- [ ] **Step 3: Implement `is_active`**
+- [ ] **Step 3: Extract `period_covers_now` and implement `is_active`**
 
-In `crates/aggregator/src/aggregation.rs`, add (right after `next_rail_day_boundary`):
+In `crates/aggregator/src/aggregation.rs`, add (right after `next_rail_day_boundary`) a helper extracted from `validity_for_output`'s existing inline condition, and the new predicate that uses it:
 
 ```rust
+/// Whether `period` covers the instant `now`. Shared by `validity_for_output`
+/// (picks which period to *display*) and `is_active` (decides whether an
+/// incident is included at all) so the "is this period active" condition
+/// has one definition, not two.
+fn period_covers_now(period: &ValidityPeriod, now: DateTime<Utc>) -> bool {
+    period.from_date <= now && period.to_date.map(|to| to > now).unwrap_or(true)
+}
+
 /// Whether an incident should still contribute a `LineStatus` to any line
 /// it matches. `is_cleared` isn't rechecked here -- `queries::load_incidents`
 /// already excludes cleared rows at the SQL layer, so by the time an
 /// incident reaches this function it's already known not to be cleared.
 fn is_active(incident: &IncidentMessage, first_seen_at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
     let validity_ok = incident.validity.is_empty()
-        || incident
-            .validity
-            .iter()
-            .any(|p| p.from_date <= now && p.to_date.map(|to| to > now).unwrap_or(true));
+        || incident.validity.iter().any(|p| period_covers_now(p, now));
     let age_ok = incident.is_planned || now < next_rail_day_boundary(first_seen_at);
     validity_ok && age_ok
 }
 ```
 
+Then update `validity_for_output` (existing function, currently a few lines above where you just added `period_covers_now`) to use the new helper instead of its own inline copy of the same condition:
+
+```rust
+fn validity_for_output(periods: &[ValidityPeriod]) -> ValidityPeriod {
+    if periods.is_empty() {
+        return ValidityPeriod { from_date: Utc::now(), to_date: None, is_now: true };
+    }
+    let now = Utc::now();
+    periods
+        .iter()
+        .find(|p| period_covers_now(p, now))
+        .cloned()
+        .unwrap_or_else(|| periods[0].clone())
+}
+```
+
+(Only the `.find(...)` closure's body changes — everything else in `validity_for_output` is unchanged, and its behavior is identical, so the existing `validity_for_output_uses_now_when_no_periods_given`/`validity_for_output_picks_the_currently_active_period`/`validity_for_output_falls_back_to_first_when_none_are_active` tests should keep passing without modification.)
+
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cargo test -p aggregator is_active`
-Expected: PASS — all 5 new tests pass.
+Run: `cargo test -p aggregator period_covers_now is_active validity_for_output`
+Expected: PASS — all 7 new tests pass, and the 3 pre-existing `validity_for_output_*` tests still pass unchanged.
 
 - [ ] **Step 5: Run the full aggregator crate test suite**
 
