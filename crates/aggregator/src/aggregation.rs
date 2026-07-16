@@ -23,6 +23,7 @@ use common::{
 };
 
 use crate::matcher::{Match, MatchScope, lines_affected_by};
+use crate::queries::LoadedIncident;
 use crate::segments::SegmentRegistry;
 
 /// Merges DB-stored custom lines into the static catalogue, converting
@@ -44,7 +45,7 @@ pub fn merge_custom_lines(
 
 pub fn aggregate(
     lines: &HashMap<String, LineDefinition>,
-    incidents: &[IncidentMessage],
+    incidents: &[LoadedIncident],
     samples: &HashMap<String, StationSample>,
     registry: &SegmentRegistry,
     defaults: &Defaults,
@@ -65,10 +66,14 @@ pub fn aggregate(
         })
         .collect();
 
-    // Layer 1: incidents.
-    for incident in incidents {
-        for m in lines_affected_by(incident, lines, registry) {
-            let status = status_from_incident(&m, incident);
+    // Layer 1: incidents. Filtered through `is_active` first -- a cleared,
+    // temporally-expired, or stale-past-the-rail-day-cutoff incident never
+    // reaches the matcher, so its line falls through to Layer 2 exactly as
+    // if the incident didn't exist.
+    let now = Utc::now();
+    for loaded in incidents.iter().filter(|loaded| is_active(&loaded.message, loaded.first_seen_at, now)) {
+        for m in lines_affected_by(&loaded.message, lines, registry) {
+            let status = status_from_incident(&m, &loaded.message);
             reports.get_mut(&m.line.id).unwrap().statuses.push(status);
         }
     }
@@ -486,7 +491,12 @@ mod tests {
     ) -> HashMap<String, LineStatusReport> {
         let registry = SegmentRegistry::new(lines);
         let defaults = Defaults::default();
-        aggregate(lines, incidents, &HashMap::new(), &registry, &defaults)
+        let loaded: Vec<LoadedIncident> = incidents
+            .iter()
+            .cloned()
+            .map(|message| LoadedIncident { message, first_seen_at: Utc::now() })
+            .collect();
+        aggregate(lines, &loaded, &HashMap::new(), &registry, &defaults)
     }
 
     #[test]
@@ -931,7 +941,8 @@ mod tests {
                 ],
             },
         );
-        let reports = aggregate(&lines, &[inc], &samples, &registry, &defaults);
+        let loaded = LoadedIncident { message: inc, first_seen_at: Utc::now() };
+        let reports = aggregate(&lines, &[loaded], &samples, &registry, &defaults);
         let alton = &reports["swr-alton"];
         assert_eq!(
             alton.worst_severity(),
@@ -1077,5 +1088,46 @@ mod tests {
         let now = Utc::now();
         let first_seen_at = now - Duration::days(2);
         assert!(is_active(&inc, first_seen_at, now));
+    }
+
+    #[test]
+    fn stale_non_planned_incident_falls_back_to_good_service() {
+        let lines = load_all_lines();
+        let inc = incident(
+            "SWR-STALE",
+            "Signal failure at Woking",
+            "Residual delays continue.",
+            &["SW"],
+            &["WOK"],
+        );
+        let registry = SegmentRegistry::new(&lines);
+        let defaults = Defaults::default();
+        let loaded = LoadedIncident { message: inc, first_seen_at: Utc::now() - Duration::days(5) };
+        let reports = aggregate(&lines, &[loaded], &HashMap::new(), &registry, &defaults);
+        for line_id in ["swr-south-west-main", "swr-portsmouth-direct", "swr-alton"] {
+            assert_eq!(
+                reports[line_id].worst_severity(),
+                Severity::GoodService,
+                "{line_id} should fall back to Good Service once the incident is stale"
+            );
+        }
+    }
+
+    #[test]
+    fn planned_work_is_exempt_from_the_rail_day_cutoff() {
+        let lines = load_all_lines();
+        let mut inc = incident(
+            "SWR-PLANNED",
+            "Engineering work at Woking",
+            "Planned engineering work.",
+            &["SW"],
+            &["WOK"],
+        );
+        inc.is_planned = true;
+        let registry = SegmentRegistry::new(&lines);
+        let defaults = Defaults::default();
+        let loaded = LoadedIncident { message: inc, first_seen_at: Utc::now() - Duration::days(5) };
+        let reports = aggregate(&lines, &[loaded], &HashMap::new(), &registry, &defaults);
+        assert_eq!(reports["swr-alton"].worst_severity(), Severity::PlannedClosure);
     }
 }
