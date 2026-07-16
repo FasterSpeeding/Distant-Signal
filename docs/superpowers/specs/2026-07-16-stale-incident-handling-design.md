@@ -99,16 +99,18 @@ data never changes for these incidents — only the human-authored text does.
   rail day, so the boundary is 02:00 on that same local calendar day;
   otherwise the boundary is 02:00 on the next local calendar day. The
   resulting local 02:00 is converted back to UTC.
-- DST edge cases, handled explicitly via `chrono-tz`'s `LocalResult` rather
-  than left to an unwrap:
-  - **Autumn (clocks back, local 02:00 occurs twice)** →
-    `LocalResult::Ambiguous(earliest, latest)`: pick `earliest`, so the
-    incident goes stale at the first occurrence of 02:00 rather than
-    waiting for the second.
-  - **Spring (clocks forward, 01:00 → 02:00 never happens)** →
-    `LocalResult::None`: treat the boundary as the instant of the jump
-    itself (what would have been 02:00 GMT arrives simultaneously with
-    01:00 BST that night).
+- DST correctness: UK clocks change exactly at the 01:00/02:00 boundary in
+  both directions — spring-forward jumps 01:00 GMT straight to 02:00 BST
+  (naive local 01:00–01:59 skipped that day); autumn's fall-back happens at
+  02:00 BST, resetting to 01:00 GMT (naive local 01:00–01:59 repeated that
+  day). Local **02:00 itself is therefore never ambiguous or missing** on
+  either transition day — only times strictly inside 01:00–01:59 are. So
+  `chrono-tz`'s `Europe::London.from_local_datetime(...)` at a 02:00
+  boundary always returns `LocalResult::Single` for real UK dates; the
+  implementation should still match on `LocalResult` explicitly rather than
+  a bare `.unwrap()`, treating `Ambiguous`/`None` as a defensive
+  `.expect()`-style failure (should never occur for a 02:00 boundary, but
+  cheap to guard rather than silently panic with a confusing message).
 
 ### 4. The filtering predicate (`crates/aggregator/src/aggregation.rs`)
 
@@ -145,10 +147,11 @@ cleared rows at the SQL layer, so by the time an incident reaches
 ## Testing plan
 
 - `next_rail_day_boundary`: a plain midweek case; a BST→GMT transition
-  night (ambiguous local 02:00, asserts the earliest occurrence wins); a
-  GMT→BST transition night (nonexistent local 02:00, asserts the jump
-  instant is used); a `first_seen_at` just before vs. just after local
-  02:00, to confirm which rail day it's assigned to.
+  night and a GMT→BST transition night, both asserting the boundary still
+  resolves cleanly to a single unambiguous instant (confirming the 02:00
+  boundary sidesteps the 01:00–01:59 gap/repeat rather than landing in it);
+  a `first_seen_at` just before vs. just after local 02:00, to confirm
+  which rail day it's assigned to.
 - `is_active`: empty validity (active); a validity period currently
   covering `now` (active); a validity period that's already elapsed
   (inactive); a non-planned incident first seen earlier in the current
