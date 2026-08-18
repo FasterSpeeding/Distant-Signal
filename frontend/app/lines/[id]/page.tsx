@@ -83,7 +83,7 @@ export default async function LineDetailPage({
       </Group>
       <Text c="dimmed">Operators: {report.operators.join(', ')}</Text>
       <Link href={`/lines/${id}/history`} style={{ textDecoration: 'none' }}>
-        <Text c="blue">View history</Text>
+        <Text c="var(--mantine-color-anchor)">View history</Text>
       </Link>
       <RepresentativeInfo statuses={report.lineStatuses} />
       <IssueList statuses={report.lineStatuses} />

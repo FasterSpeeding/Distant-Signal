@@ -2,11 +2,12 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
 import { ThemeToggle } from './ThemeToggle';
 
 function renderWithProvider() {
   return render(
-    <MantineProvider defaultColorScheme="auto">
+    <MantineProvider theme={theme} defaultColorScheme="auto">
       <ThemeToggle />
     </MantineProvider>,
   );
@@ -77,7 +78,7 @@ describe('ThemeToggle', () => {
     localStorage.setItem('mantine-color-scheme-value', 'dark');
 
     const html = renderToString(
-      <MantineProvider defaultColorScheme="auto">
+      <MantineProvider theme={theme} defaultColorScheme="auto">
         <ThemeToggle />
       </MantineProvider>,
     );

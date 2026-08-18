@@ -44,7 +44,7 @@ export default async function DashboardPage() {
         <Group justify="space-between">
           <Title order={1}>Your Lines</Title>
           <Link href="/lines" style={{ textDecoration: 'none' }}>
-            <Text c="blue">Browse all lines</Text>
+            <Text c="var(--mantine-color-anchor)">Browse all lines</Text>
           </Link>
         </Group>
         {pinnedLineReports.length === 0 ? (
@@ -64,7 +64,7 @@ export default async function DashboardPage() {
         <Group justify="space-between">
           <Title order={2}>Your Stations</Title>
           <Link href="/stations" style={{ textDecoration: 'none' }}>
-            <Text c="blue">Look up a station</Text>
+            <Text c="var(--mantine-color-anchor)">Look up a station</Text>
           </Link>
         </Group>
         {pinnedStationEntries.length === 0 ? (

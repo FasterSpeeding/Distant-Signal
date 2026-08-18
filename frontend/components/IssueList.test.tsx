@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
 import { IssueList } from './IssueList';
 import type { LineStatus } from '@/lib/types';
 
 function renderWithProvider(ui: React.ReactElement) {
-  return render(<MantineProvider>{ui}</MantineProvider>);
+  return render(<MantineProvider theme={theme}>{ui}</MantineProvider>);
 }
 
 const now = new Date().toISOString();

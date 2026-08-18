@@ -29,7 +29,7 @@ export default async function LineHistoryPage({
   return (
     <Stack p="lg" gap="md">
       <Link href={`/lines/${id}`} style={{ textDecoration: 'none' }}>
-        <Text c="blue">Back to line</Text>
+        <Text c="var(--mantine-color-anchor)">Back to line</Text>
       </Link>
       <Title order={1}>History: {name}</Title>
       <HistoryRangePicker lineId={id} />

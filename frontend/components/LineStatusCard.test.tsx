@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
 import { LineStatusCard } from './LineStatusCard';
 import type { LineStatusReport } from '@/lib/types';
 
 function renderWithProvider(ui: React.ReactElement) {
-  return render(<MantineProvider>{ui}</MantineProvider>);
+  return render(<MantineProvider theme={theme}>{ui}</MantineProvider>);
 }
 
 const report: LineStatusReport = {

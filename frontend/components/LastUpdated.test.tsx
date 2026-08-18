@@ -2,10 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
 import { LastUpdated } from './LastUpdated';
 
 function renderWithProvider(ui: React.ReactElement) {
-  return render(<MantineProvider>{ui}</MantineProvider>);
+  return render(<MantineProvider theme={theme}>{ui}</MantineProvider>);
 }
 
 describe('LastUpdated', () => {
@@ -15,7 +16,7 @@ describe('LastUpdated', () => {
     // depend on "now" (real wall-clock time at test-run time), or it can
     // never match the client's own pre-mount render.
     const html = renderToString(
-      <MantineProvider>
+      <MantineProvider theme={theme}>
         <LastUpdated timestamp="2026-07-15T09:00:00Z" />
       </MantineProvider>,
     );

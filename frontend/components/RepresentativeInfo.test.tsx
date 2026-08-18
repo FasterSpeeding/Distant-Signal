@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
 import { RepresentativeInfo } from './RepresentativeInfo';
 import type { LineStatus } from '@/lib/types';
 
 function renderWithProvider(ui: React.ReactElement) {
-  return render(<MantineProvider>{ui}</MantineProvider>);
+  return render(<MantineProvider theme={theme}>{ui}</MantineProvider>);
 }
 
 function baseStatus(overrides: Partial<LineStatus> = {}): LineStatus {
