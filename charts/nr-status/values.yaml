@@ -358,3 +358,42 @@ frontend:
   # -- Merged over the chart-wide pod securityContext defaults
   # (runAsNonRoot: true, seccompProfile: RuntimeDefault).
   podSecurityContext: {}
+
+# ---------------------------------------------------------------------------
+# Ingress
+# ---------------------------------------------------------------------------
+# SEPARATE HOSTNAMES, NOT PATH-SPLITTING ONE HOST. The api serves its
+# TfL-compatible routes at UNPREFIXED top-level paths -- GET /Line/... and
+# GET /StopPoint/{crs}/Disruption -- alongside /public/... and /private/...
+# (crates/api/src/routes/mod.rs explains why: clients built against TfL's own
+# API must work unchanged). Splitting a single host by path prefix would
+# either collide with Next.js's own routes or break that compatibility.
+ingress:
+  enabled: false
+  # -- IngressClass name, e.g. "nginx" or "traefik". Empty uses the cluster
+  # default IngressClass.
+  className: ""
+  # -- Annotations applied to the single Ingress object, e.g.
+  # cert-manager.io/cluster-issuer: letsencrypt-prod
+  annotations: {}
+  frontend:
+    enabled: true
+    # -- Hostname for the web UI, e.g. status.example.com. Required when
+    # ingress.enabled and ingress.frontend.enabled are both true.
+    host: ""
+  api:
+    # SECURITY: enabling this exposes /private/* to the internet as well.
+    # Those endpoints are protected ONLY by the X-Internal-Token shared
+    # secret (crates/api/src/auth.rs) -- there is no other authentication in
+    # front of them. If you do not need external API access, leave this off;
+    # the frontend reaches the api over the in-cluster Service either way.
+    enabled: false
+    # -- Hostname for the api, e.g. api.example.com.
+    host: ""
+  # -- TLS blocks passed through verbatim. Shaped for cert-manager (pair it
+  # with a cluster-issuer annotation above) but issuer-agnostic.
+  tls: []
+  # - secretName: nr-status-tls
+  #   hosts:
+  #     - status.example.com
+  #     - api.example.com
