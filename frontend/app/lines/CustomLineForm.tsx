@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse, Pill } from '@mantine/core';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
@@ -10,8 +11,10 @@ import type { CustomLineDetail } from '@/lib/types';
 /** Posts to the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * — this is a Client Component and cannot reach the `api` service directly.
  * With `existingLine` set, edits that line via PUT instead of creating a
- * new one via POST. */
-export function CustomLineForm({ existingLine }: { existingLine?: CustomLineDetail }) {
+ * new one via POST. `cancelHref` opts into a Cancel action rendered beside
+ * the submit button; without it the submit button keeps the Stack's full
+ * width, which is what the create-line page wants. */
+export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: CustomLineDetail; cancelHref?: string }) {
   const router = useRouter();
   const [name, setName] = useState(existingLine?.name ?? '');
   const [operators, setOperators] = useState<string[]>(existingLine?.operators ?? []);
@@ -160,9 +163,30 @@ export function CustomLineForm({ existingLine }: { existingLine?: CustomLineDeta
         </Stack>
       </Collapse>
       {error && <Text c="red">{error}</Text>}
-      <Button onClick={handleSubmit} loading={submitting}>
-        {existingLine ? 'Save changes' : 'Create line'}
-      </Button>
+      {cancelHref ? (
+        // Paired actions sit on one right-aligned row so the secondary
+        // reads as a peer of the primary rather than an afterthought
+        // beneath a 480px-wide button. Plain `<Link>` wrapping `Button`,
+        // not `component={Link}` on a Mantine polymorphic prop — that
+        // pattern previously broke `next build`'s Server/Client boundary
+        // check (see the comment in `app/layout.tsx`). `type="button"`
+        // keeps Cancel inert should this ever be wrapped in a real
+        // `<form>`.
+        <Group justify="flex-end">
+          <Link href={cancelHref} style={{ textDecoration: 'none' }}>
+            <Button type="button" variant="default">
+              Cancel
+            </Button>
+          </Link>
+          <Button onClick={handleSubmit} loading={submitting}>
+            {existingLine ? 'Save changes' : 'Create line'}
+          </Button>
+        </Group>
+      ) : (
+        <Button onClick={handleSubmit} loading={submitting}>
+          {existingLine ? 'Save changes' : 'Create line'}
+        </Button>
+      )}
     </Stack>
   );
 }
