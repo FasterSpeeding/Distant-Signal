@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { RepresentativeInfo } from './RepresentativeInfo';
 import type { LineStatus } from '@/lib/types';
@@ -45,5 +45,26 @@ describe('RepresentativeInfo', () => {
     });
     renderWithProvider(<RepresentativeInfo statuses={[withoutStats, withStats]} />);
     expect(screen.getByText(/5 of 20 sampled services delayed/)).toBeInTheDocument();
+  });
+
+  it('renders an info trigger explaining what these sample stats represent, distinct from the other info triggers', () => {
+    const withStats = baseStatus({
+      sampleStats: { total: 160, delayed: 142, cancelled: 3, skipped: 5, avgDelayMinutes: 12.4 },
+    });
+    renderWithProvider(<RepresentativeInfo statuses={[withStats]} />);
+    const trigger = screen.getByLabelText('About these sample statistics');
+    expect(trigger).toBeInTheDocument();
+    // Real drawn icon, not the literal "ⓘ" glyph that hits an emoji/font fallback.
+    expect(trigger.textContent).not.toContain('ⓘ');
+    expect(trigger.querySelector('svg')).toBeInTheDocument();
+  });
+
+  it('shows the sampling explanation in the tooltip content on hover', async () => {
+    const withStats = baseStatus({
+      sampleStats: { total: 160, delayed: 142, cancelled: 3, skipped: 5, avgDelayMinutes: 12.4 },
+    });
+    renderWithProvider(<RepresentativeInfo statuses={[withStats]} />);
+    fireEvent.mouseEnter(screen.getByLabelText('About these sample statistics'));
+    expect(await screen.findByText(/representative/)).toBeInTheDocument();
   });
 });

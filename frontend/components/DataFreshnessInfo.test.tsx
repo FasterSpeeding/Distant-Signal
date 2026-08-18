@@ -20,6 +20,15 @@ describe('DataFreshnessInfo', () => {
     expect(screen.getByRole('button', { name: 'Data freshness' })).toBeInTheDocument();
   });
 
+  it('renders a real SVG icon rather than the literal "ⓘ" glyph', () => {
+    // The glyph hits an emoji/font fallback and renders as a broken-looking
+    // box in most environments. It must be a drawn icon, not a character.
+    renderWithProvider(<DataFreshnessInfo freshness={freshness} />);
+    const button = screen.getByRole('button', { name: 'Data freshness' });
+    expect(button.textContent).not.toContain('ⓘ');
+    expect(button.querySelector('svg')).toBeInTheDocument();
+  });
+
   it('shows a last-updated row for each present timestamp', async () => {
     renderWithProvider(<DataFreshnessInfo freshness={freshness} />);
     // Mantine's Tooltip doesn't mount its floating content into the DOM

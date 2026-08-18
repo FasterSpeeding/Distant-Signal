@@ -13,6 +13,13 @@ describe('LineDefinitionTooltip', () => {
     expect(screen.getByLabelText('How this line is defined')).toBeInTheDocument();
   });
 
+  it('renders a real SVG icon rather than the literal "ⓘ" glyph', () => {
+    renderWithProvider(<LineDefinitionTooltip stations={['WOK', 'WAT']} operators={['SW']} />);
+    const trigger = screen.getByLabelText('How this line is defined');
+    expect(trigger.textContent).not.toContain('ⓘ');
+    expect(trigger.querySelector('svg')).toBeInTheDocument();
+  });
+
   it('shows the stations and operators in the tooltip content on hover', async () => {
     renderWithProvider(<LineDefinitionTooltip stations={['WOK', 'WAT']} operators={['SW']} />);
     // Unlike the Combobox-based dropdowns elsewhere in this codebase
