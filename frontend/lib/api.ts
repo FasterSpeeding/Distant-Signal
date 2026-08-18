@@ -7,6 +7,7 @@ import type {
   LineDefinitionSummary,
   DataFreshness,
 } from './types';
+import type { Suggestion } from './suggestions';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
  * not found" from other failures (network errors, 500s, etc.). */
@@ -50,6 +51,20 @@ export async function getStopPointDisruption(crs: string): Promise<LineStatusRep
   return fetchJson<LineStatusReport[]>(`${baseUrl()}/StopPoint/${crs}/Disruption`, {
     cache: 'no-store',
   });
+}
+
+/** Resolves a CRS code to its station name, for display (e.g. station
+ * disruption page headings). `/public/stations` is the same substring
+ * type-ahead search backing the autocomplete fields — not an exact-match
+ * lookup — so this filters its results for the row whose `code` equals
+ * `crs` exactly. Returns `null` (rather than throwing) when no such row
+ * comes back, so callers can fall back to displaying the bare code. */
+export async function getStationName(crs: string): Promise<string | null> {
+  const results = await fetchJson<Suggestion[]>(`${baseUrl()}/public/stations?q=${encodeURIComponent(crs)}`, {
+    cache: 'no-store',
+  });
+  const match = results.find((s) => s.code.toUpperCase() === crs.toUpperCase());
+  return match ? match.name : null;
 }
 
 export async function getLineStatusHistory(
