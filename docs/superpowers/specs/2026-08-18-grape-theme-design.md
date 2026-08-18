@@ -80,6 +80,46 @@ colour, so the next palette change is a one-line edit.
 After that conversion, blue belongs exclusively to `planned` and the
 semantic split is cleaner than it is today.
 
+### Correction (2026-08-19, after implementation)
+
+**The paragraph above was wrong about which badge was blue**, and the
+implementation proved it. Recorded here rather than deleted, because the
+mistake is instructive.
+
+The blue `PLANNED` pill visible in the review screenshots beside the blue
+links was **not** a severity badge coloured by `GROUP_COLOR.planned`. It is
+the *data-quality* badge in `components/IssueList.tsx` (~line 285):
+
+```tsx
+<Badge variant="outline" size="sm">   {/* no `color` prop */}
+```
+
+With no `color`, Mantine falls back to `theme.primaryColor`. It rendered
+blue only because primary *was* blue. The two things share the word
+"Planned" — `DATA_QUALITY_LABELS.planned` (provenance: how we learned about
+the issue) and `GROUP_COLOR.planned` (severity: a planned closure) — which
+is what made the misreading easy.
+
+Consequences:
+
+- `StatusBadge` was never at risk, exactly as the spec assumed, because it
+  passes `color={severityColor(...)}` explicitly. That part held.
+- The link/badge colour collision was **not** fixed by this change. Both
+  were blue before; both are grape now. The conversion of the seven
+  `c="blue"` sites was still necessary and correct — without it the links
+  would have been stranded on blue while everything else moved — but it did
+  not achieve the separation this section claimed it would.
+- Source-provenance badges are therefore brand-coloured, and read as
+  interactive/branded rather than as neutral metadata. They were already
+  wrong in this way; grape makes it more noticeable, not less.
+
+**Open follow-up:** give the data-quality badge an explicit non-primary
+colour (`gray` is the obvious candidate, matching how `informational`
+severity is already treated) so provenance stops borrowing the brand
+colour. That is a deliberate design decision about how prominent
+provenance should be, not a mechanical fix, so it is left out of the
+theme change rather than smuggled into it.
+
 ## Design
 
 ### Theme object
