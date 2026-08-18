@@ -1,5 +1,6 @@
+import Link from 'next/link';
 import { Stack, Title, Text, Divider } from '@mantine/core';
-import { getLineStatusHistory } from '@/lib/api';
+import { getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { HistoryRangePicker } from './HistoryRangePicker';
 
@@ -13,9 +14,24 @@ export default async function LineHistoryPage({
   const { id } = await params;
   const { from, to } = await searchParams;
 
+  // Same lookup the detail page uses for its heading. This page's job is
+  // the date range, not the name, so a failed lookup (line deleted,
+  // catalogue hiccup, etc.) falls back to the raw id instead of taking the
+  // whole page down the way `notFound()` would on the detail page.
+  let name = id;
+  try {
+    const [report] = await getLineStatus([id], false);
+    name = report.name;
+  } catch {
+    // swallowed — see comment above
+  }
+
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>History: {id}</Title>
+      <Link href={`/lines/${id}`} style={{ textDecoration: 'none' }}>
+        <Text c="blue">Back to line</Text>
+      </Link>
+      <Title order={1}>History: {name}</Title>
       <HistoryRangePicker lineId={id} />
       {from && to && <HistoryResults id={id} from={from} to={to} />}
     </Stack>
