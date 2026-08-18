@@ -309,4 +309,18 @@ describe('IssueList', () => {
     // The description is the element that gives way instead.
     expect(description).toHaveStyle('flex-shrink: 1; min-width: 0');
   });
+
+  it('renders the data-quality badge as neutral gray, not the brand colour', () => {
+    renderWithProvider(<IssueList statuses={[minorNow]} />);
+    const description = screen.getByText('Signal failure');
+    const control = description.closest('button') as HTMLElement;
+    // Provenance is metadata, not brand — it must not ride the theme's
+    // primaryColor (grape) fallback, which would make it read as branded
+    // or interactive. Checked via the CSS var Mantine's outline variant
+    // resolves the colour into, since asserting an exact rendered shade
+    // would be brittle.
+    const badge = within(control).getByText('Knowledgebase').closest('.mantine-Badge-root') as HTMLElement;
+    expect(badge.getAttribute('style')).toContain('--mantine-color-gray-outline');
+    expect(badge.getAttribute('style')).not.toContain('--mantine-color-grape-outline');
+  });
 });

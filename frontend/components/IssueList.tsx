@@ -282,7 +282,14 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
                   <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
                     {formatValiditySummary(status)}
                   </Text>
-                  <Badge variant="outline" size="sm" style={{ flexShrink: 0 }}>
+                  {/*
+                    Explicit gray: without a `color`, Mantine falls back to
+                    theme.primaryColor (grape), making this read as branded
+                    or interactive. It's provenance, not brand — gray is
+                    already how `informational` severity is treated in
+                    lib/severity.ts's GROUP_COLOR.
+                  */}
+                  <Badge variant="outline" size="sm" color="gray" style={{ flexShrink: 0 }}>
                     {DATA_QUALITY_LABELS[status.dataQuality]}
                   </Badge>
                 </Group>
