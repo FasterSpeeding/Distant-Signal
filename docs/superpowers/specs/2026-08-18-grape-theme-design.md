@@ -38,8 +38,8 @@ either a Mantine default (primary = `blue`) or hardcoded at the call site.
 Two consequences matter here:
 
 1. There is no theme object to extend — this spec creates the first one.
-2. Six call sites hardcode `c="blue"` rather than referencing the primary
-   colour:
+2. Seven call sites hardcode `c="blue"` rather than referencing the
+   primary colour:
 
    | File | Line | Element |
    |---|---|---|
@@ -49,6 +49,12 @@ Two consequences matter here:
    | `app/page.tsx` | 67 | "Look up a station" |
    | `app/lines/page.tsx` | 43 | line name in the All Lines table |
    | `app/lines/[id]/page.tsx` | 86 | "View history" |
+   | `app/lines/[id]/history/page.tsx` | 32 | "Back to line" |
+
+   Re-grep before starting (`grep -rn 'c="blue"' app components --include=*.tsx`)
+   — this list has already grown once, on the same day it was written, when
+   the history-page fix added a link. Every new link in this codebase is
+   currently born hardcoded, which is the underlying problem this spec fixes.
 
 ## The collision this must avoid
 
