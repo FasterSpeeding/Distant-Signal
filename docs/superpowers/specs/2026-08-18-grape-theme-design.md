@@ -56,69 +56,58 @@ Two consequences matter here:
    the history-page fix added a link. Every new link in this codebase is
    currently born hardcoded, which is the underlying problem this spec fixes.
 
+   **Status: done.** All seven sites were converted in the change that
+   introduced `lib/theme.ts`, to `c="var(--mantine-color-anchor)"` (Mantine's
+   anchor colour, which follows `theme.primaryColor`). `grep -rn 'c="blue"'
+   app components --include=*.tsx` now returns nothing.
+
 ## The collision this must avoid
 
-`GROUP_COLOR.planned` is **`blue`** (`lib/severity.ts`). Today that is
-invisible as a problem, because primary is also blue — everything blue,
-links and planned-status alike.
+`GROUP_COLOR.planned` is **`blue`** (`lib/severity.ts`) and unchanged by
+this spec (see Non-goals). Before this change, that was invisible as a
+problem only because primary was *also* blue — links and planned-status
+badges were both blue, and nothing distinguished "this is a link" from
+"this is a planned closure".
 
-Setting `primaryColor: 'grape'` **without** fixing the six hardcoded
-`c="blue"` call sites produces the worst of both worlds:
+Setting `primaryColor: 'grape'` **without** fixing the seven hardcoded
+`c="blue"` call sites would have produced the worst of both worlds:
+buttons/chips/focus rings turn grape (theme-driven) while every link stays
+blue (hardcoded), so blue would mean "planned closure" *and* "this is a
+link" in the same viewport at the same time.
 
-- Buttons, active chips, and focus rings turn grape (theme-driven).
-- Every link stays blue (hardcoded).
-- Blue now means *only* "planned closure" in the status system — except
-  it also still means "this is a link", in the same viewport, at the same
-  time. On `/lines`, a blue line name sits in a table beside blue
-  `PLANNED` badges.
+**That did not happen.** All seven call sites (see Current state) were
+converted in the same change that set the primary colour, so links now
+follow `primaryColor` (grape) while `GROUP_COLOR.planned` stays blue,
+untouched, as the Non-goals require. `StatusBadge` was never at risk in
+the first place — it passes `color={severityColor(...)}` explicitly
+(`components/StatusBadge.tsx`) and so was always immune to the primary-colour
+swap. The separation this spec set out to achieve — link colour and
+planned-severity colour no longer sharing a hue — is in place. Verify on
+any page where a link sits beside a `StatusBadge`: `/lines/[id]` ("View
+history") or `/lines/[id]/history` ("Back to line"); see Verification
+below.
 
-**Requirement: the six call sites above must be converted in the same
-change that sets the primary colour.** They should follow the theme
-(`c="primary"` or the equivalent Mantine token) rather than naming a
-colour, so the next palette change is a one-line edit.
+One thing this change didn't touch, and needed a separate fix: the
+data-quality/provenance badge in `components/IssueList.tsx` (~line 292,
+`{DATA_QUALITY_LABELS[status.dataQuality]}`) had no `color` prop, so it
+fell back to `theme.primaryColor` — meaning it went from blue to grape
+along with everything else, reading as branded/interactive rather than as
+neutral metadata. Commit `79d2176` ("Give the data-quality badge an
+explicit gray colour") fixed this with `color="gray"`, matching how
+`informational` severity is already treated in `GROUP_COLOR`. That is
+done, not open.
 
-After that conversion, blue belongs exclusively to `planned` and the
-semantic split is cleaner than it is today.
-
-### Correction (2026-08-19, after implementation)
-
-**The paragraph above was wrong about which badge was blue**, and the
-implementation proved it. Recorded here rather than deleted, because the
-mistake is instructive.
-
-The blue `PLANNED` pill visible in the review screenshots beside the blue
-links was **not** a severity badge coloured by `GROUP_COLOR.planned`. It is
-the *data-quality* badge in `components/IssueList.tsx` (~line 285):
-
-```tsx
-<Badge variant="outline" size="sm">   {/* no `color` prop */}
-```
-
-With no `color`, Mantine falls back to `theme.primaryColor`. It rendered
-blue only because primary *was* blue. The two things share the word
-"Planned" — `DATA_QUALITY_LABELS.planned` (provenance: how we learned about
-the issue) and `GROUP_COLOR.planned` (severity: a planned closure) — which
-is what made the misreading easy.
-
-Consequences:
-
-- `StatusBadge` was never at risk, exactly as the spec assumed, because it
-  passes `color={severityColor(...)}` explicitly. That part held.
-- The link/badge colour collision was **not** fixed by this change. Both
-  were blue before; both are grape now. The conversion of the seven
-  `c="blue"` sites was still necessary and correct — without it the links
-  would have been stranded on blue while everything else moved — but it did
-  not achieve the separation this section claimed it would.
-- Source-provenance badges are therefore brand-coloured, and read as
-  interactive/branded rather than as neutral metadata. They were already
-  wrong in this way; grape makes it more noticeable, not less.
-
-**Open follow-up:** give the data-quality badge an explicit non-primary
-colour (`gray` is the obvious candidate, matching how `informational`
-severity is already treated) so provenance stops borrowing the brand
-colour. That is a deliberate design decision about how prominent
-provenance should be, not a mechanical fix, so it is left out of the
-theme change rather than smuggled into it.
+> **Footnote — what the first draft of this section got wrong:** it
+> misidentified the badge. The blue "PLANNED" pill visible in the
+> 2026-08-18 review screenshots, sitting beside blue links, was assumed to
+> be a `GROUP_COLOR.planned` severity badge. It wasn't — it was the
+> data-quality badge described above. The mix-up was easy to make:
+> provenance (`DATA_QUALITY_LABELS.planned`, "how we learned about the
+> issue") renders as "PLANNED", while severity (`GROUP_COLOR.planned`, "a
+> planned closure") renders as "PLANNED CLOSURE" / "PART CLOSURE" — two
+> different concepts that both surface the word "Planned" as an uppercase
+> badge. Check the `color` prop a badge actually receives, not its label
+> text, before concluding which map its colour comes from.
 
 ## Design
 
@@ -188,11 +177,19 @@ the bundled Chromium at `~/.cache/ms-playwright/chromium-1228/`, since the
 Playwright MCP server is pinned to a system Chrome that isn't installed
 here). Compare before/after on:
 
-- `/lines` — the blue-link vs blue-`PLANNED`-badge collision described
-  above is most visible here.
-- `/lines/[id]` — status badge, source chips, and "View history" link
-  together.
-- Home in both light and dark.
+- `/lines/[id]` — the worst-status `StatusBadge` beside the "View
+  history" link, and (inside `IssueList`) each issue's severity badge
+  beside its gray data-quality badge, all in one view. When the worst
+  status is a planned closure this is where a blue `StatusBadge` sits
+  next to a now-grape link.
+- `/lines/[id]/history` — per-entry status badges beside the "Back to
+  line" link.
+- Home (`/`) in both light and dark — "Browse all lines"/"Look up a
+  station" links alongside pinned-station status badges.
+
+(`/lines` renders no `StatusBadge` at all — its table is
+Name/Category/Operators/Pin only — so it never showed this collision and
+isn't useful for this comparison.)
 
 Run an automated contrast check (axe or similar) rather than judging by
 eye, and record the numbers.
