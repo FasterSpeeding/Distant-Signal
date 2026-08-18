@@ -46,6 +46,10 @@ secrets:
 # ---------------------------------------------------------------------------
 # postgres
 # ---------------------------------------------------------------------------
+# There is intentionally no `replicaCount` here: this is a single-replica
+# StatefulSet with no replication, backup or restore story (an explicit
+# non-goal of the design). If you need HA, set `postgresql.enabled: false`
+# and point `externalDatabase` at a managed database.
 postgresql:
   # -- Deploy the bundled single-replica PostgreSQL StatefulSet. Set to false
   # to use a managed database, and fill in `externalDatabase` below.
@@ -69,6 +73,40 @@ postgresql:
     existingSecret: ""
     # -- Key within `existingSecret` holding the password.
     existingSecretPasswordKey: postgres-password
+  image:
+    repository: postgres
+    # -- Pinned to the same major the docker-compose stack uses.
+    tag: "16"
+    pullPolicy: IfNotPresent
+  service:
+    # -- Port the headless Service and the container listen on.
+    port: 5432
+  persistence:
+    # -- Attach a PersistentVolumeClaim. When false, an emptyDir is used and
+    # ALL DATA IS LOST when the pod is rescheduled -- ephemeral testing only.
+    enabled: true
+    size: 8Gi
+    # -- StorageClass name. Empty means the cluster default.
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    # -- Use a pre-existing PVC instead of a volumeClaimTemplates entry.
+    existingClaim: ""
+  # -- Extra PostgreSQL container env vars (e.g. shared_buffers tuning).
+  extraEnv: []
+  # -- Merged over the pod securityContext. The uid/gid/fsGroup 999 pins are
+  # required by the postgres image -- override them only if you know why.
+  podSecurityContext: {}
+  resources: {}
+    # requests:
+    #   cpu: 100m
+    #   memory: 256Mi
+    # limits:
+    #   memory: 1Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
 
 # ---------------------------------------------------------------------------
 # External database (used only when postgresql.enabled is false)
