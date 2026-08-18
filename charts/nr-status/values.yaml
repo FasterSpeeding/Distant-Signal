@@ -20,3 +20,188 @@ serviceAccount:
   name: ""
   # -- Annotations for the ServiceAccount (e.g. cloud workload identity).
   annotations: {}
+
+# ---------------------------------------------------------------------------
+# Shared secrets
+# ---------------------------------------------------------------------------
+# Every secret value in this chart follows the same three-way rule:
+#   1. `existingSecret` set  -> the chart renders NO key for it; the workloads
+#                               read the named Secret directly. Use this with
+#                               External Secrets Operator, Vault or SOPS.
+#   2. an explicit value set -> the chart renders that value.
+#   3. neither               -> for `internalToken` and the postgres password
+#                               ONLY, a 32-character alphanumeric value is
+#                               generated, and PRESERVED across `helm upgrade`
+#                               by reading the live Secret back (see README).
+secrets:
+  # -- Shared secret the pollers present as `X-Internal-Token` to reach the
+  # api's /private/* endpoints (crates/api/src/auth.rs). Generated when empty.
+  # The api refuses to start if this ends up empty (crates/api/src/app.rs).
+  internalToken: ""
+  # -- Read `internal-token` from this pre-existing Secret instead.
+  existingSecret: ""
+  # -- Key within `existingSecret` holding the internal token.
+  existingSecretInternalTokenKey: internal-token
+
+# ---------------------------------------------------------------------------
+# postgres
+# ---------------------------------------------------------------------------
+postgresql:
+  # -- Deploy the bundled single-replica PostgreSQL StatefulSet. Set to false
+  # to use a managed database, and fill in `externalDatabase` below.
+  enabled: true
+  auth:
+    # -- Database role the api and aggregator connect as.
+    username: nr_status
+    # -- Database name.
+    database: nr_status
+    # -- Password. Generated (32 alphanumeric chars) when empty.
+    #
+    # IMPORTANT: DATABASE_URL is assembled as a URL, and the chart never sees
+    # this value at render time when `existingSecret` is used, so it cannot
+    # percent-encode it for you. A password containing any of
+    #   @ : / ? # [ ] %
+    # must be percent-encoded by YOU before being put here. Generated
+    # passwords use randAlphaNum (letters and digits only), so the default
+    # path is never affected.
+    password: ""
+    # -- Read `postgres-password` from this pre-existing Secret instead.
+    existingSecret: ""
+    # -- Key within `existingSecret` holding the password.
+    existingSecretPasswordKey: postgres-password
+
+# ---------------------------------------------------------------------------
+# External database (used only when postgresql.enabled is false)
+# ---------------------------------------------------------------------------
+# Exactly one of `url` or `existingSecret` must be set when
+# postgresql.enabled is false; otherwise rendering fails with an explicit
+# message. `existingSecret` is the preferred form -- it keeps the password
+# out of `helm get values` as well as out of the Deployment spec.
+externalDatabase:
+  # -- Full libpq/sqlx connection URL, e.g.
+  # postgres://user:pass@host.example.com:5432/nr_status
+  url: ""
+  # -- Pre-existing Secret holding the whole connection URL.
+  existingSecret: ""
+  # -- Key within `existingSecret` holding the URL.
+  existingSecretUrlKey: database-url
+
+# ---------------------------------------------------------------------------
+# Rail Data Marketplace pollers
+# ---------------------------------------------------------------------------
+# ALL FOUR ARE DISABLED BY DEFAULT. As documented in .env.example, no
+# confirmed RDM endpoint exists for any of these feeds -- every base URL in
+# the repository today is a deliberately non-functional `*.example.invalid`
+# placeholder. A default install therefore brings up postgres + api +
+# aggregator + frontend and works immediately, instead of four pods logging
+# connection failures.
+#
+# Enabling a poller without setting its `baseUrl` aborts rendering with an
+# explicit message rather than deploying a pod that cannot work.
+#
+# `baseUrlEnvVar` and `ingestPath` are part of each poller's contract with
+# its binary (see crates/poller-*/src/config.rs) -- change them only if that
+# code changes.
+pollers:
+  incidents:
+    enabled: false
+    image:
+      repository: nr-status/poller-incidents
+      tag: ""
+      pullPolicy: IfNotPresent
+    # -- RDM Knowledgebase Incidents feed base URL. Required when enabled.
+    baseUrl: ""
+    # -- Env var this binary reads the base URL from. Do not change.
+    baseUrlEnvVar: RDM_INCIDENTS_BASE_URL
+    # -- Path on the api Service this poller POSTs its results to.
+    ingestPath: /private/incidents
+    # -- RSPS5050 P-03-00 Rev A section 10: "Recommend every 5 minutes."
+    pollIntervalSecs: 300
+    # -- RDM API key, sent as the `x-apikey` header. Rendered into the chart
+    # Secret as `rdm-incidents-api-key` when `existingSecret` is empty.
+    apiKey: ""
+    existingSecret: ""
+    existingSecretApiKeyKey: rdm-incidents-api-key
+    logLevel: info
+    extraEnv: []
+    resources: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    podAnnotations: {}
+    podSecurityContext: {}
+  stations:
+    enabled: false
+    image:
+      repository: nr-status/poller-stations
+      tag: ""
+      pullPolicy: IfNotPresent
+    baseUrl: ""
+    baseUrlEnvVar: RDM_STATIONS_BASE_URL
+    ingestPath: /private/stations
+    # -- RSPS5050 P-03-00 Rev A section 6: once every 24 hours, overnight.
+    pollIntervalSecs: 86400
+    apiKey: ""
+    existingSecret: ""
+    existingSecretApiKeyKey: rdm-stations-api-key
+    logLevel: info
+    extraEnv: []
+    resources: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    podAnnotations: {}
+    podSecurityContext: {}
+  tocs:
+    enabled: false
+    image:
+      repository: nr-status/poller-tocs
+      tag: ""
+      pullPolicy: IfNotPresent
+    baseUrl: ""
+    baseUrlEnvVar: RDM_TOCS_BASE_URL
+    ingestPath: /private/tocs
+    # -- RSPS5050 P-03-00 Rev A section 3: at least once every 24 hours.
+    pollIntervalSecs: 86400
+    apiKey: ""
+    existingSecret: ""
+    existingSecretApiKeyKey: rdm-tocs-api-key
+    logLevel: info
+    extraEnv: []
+    resources: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    podAnnotations: {}
+    podSecurityContext: {}
+  ldbws:
+    enabled: false
+    image:
+      repository: nr-status/poller-ldbws
+      tag: ""
+      pullPolicy: IfNotPresent
+    # -- LDBWS base URL up to and including the /LDBWS/api/20220120 segment;
+    # the binary appends /GetDepBoardWithDetails/{crs} itself.
+    baseUrl: ""
+    baseUrlEnvVar: LDBWS_BASE_URL
+    ingestPath: /private/station-samples
+    # -- ldbws only: the api endpoint listing which stations to sample. This
+    # is a SECOND api URL, separate from ingestPath -- see
+    # crates/poller-ldbws/src/config.rs.
+    sampleStationsPath: /private/sample-stations
+    # -- ldbws only: LDBWS `numRows` query parameter (upstream default 10).
+    numRows: 10
+    # -- DESIGN.md section 4 targets 30-60s; 60 is the conservative end
+    # because this feed's real rate limit is unconfirmed.
+    pollIntervalSecs: 60
+    apiKey: ""
+    existingSecret: ""
+    existingSecretApiKeyKey: rdm-ldbws-api-key
+    logLevel: info
+    extraEnv: []
+    resources: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    podAnnotations: {}
+    podSecurityContext: {}

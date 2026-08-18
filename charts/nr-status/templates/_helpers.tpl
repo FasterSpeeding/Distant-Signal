@@ -125,3 +125,61 @@ capabilities:
   drop:
     - ALL
 {{- end }}
+
+{{/*
+Name of the Secret this chart renders. Takes root.
+*/}}
+{{- define "nr-status.secretName" -}}
+{{- include "nr-status.fullname" . }}
+{{- end }}
+
+{{/*
+Resolved Secret name/key for the postgres password. Takes root.
+Used by postgres-statefulset.yaml (POSTGRES_PASSWORD) AND by
+api-deployment.yaml / aggregator-deployment.yaml (PGPASSWORD). Because both
+sides call these, an `existingSecret` override can never desynchronise them.
+*/}}
+{{- define "nr-status.postgresSecretName" -}}
+{{- default (include "nr-status.secretName" .) .Values.postgresql.auth.existingSecret }}
+{{- end }}
+
+{{- define "nr-status.postgresSecretPasswordKey" -}}
+{{- if .Values.postgresql.auth.existingSecret }}
+{{- .Values.postgresql.auth.existingSecretPasswordKey }}
+{{- else }}
+{{- print "postgres-password" }}
+{{- end }}
+{{- end }}
+
+{{/*
+Resolved Secret name/key for the shared internal token. Takes root.
+Used by api-deployment.yaml and by all four poller deployments.
+*/}}
+{{- define "nr-status.internalTokenSecretName" -}}
+{{- default (include "nr-status.secretName" .) .Values.secrets.existingSecret }}
+{{- end }}
+
+{{- define "nr-status.internalTokenSecretKey" -}}
+{{- if .Values.secrets.existingSecret }}
+{{- .Values.secrets.existingSecretInternalTokenKey }}
+{{- else }}
+{{- print "internal-token" }}
+{{- end }}
+{{- end }}
+
+{{/*
+Resolved Secret name/key for one poller's RDM API key. Call as:
+  {{ include "nr-status.pollerSecretName" (dict "root" $ "poller" $p) }}
+  {{ include "nr-status.pollerSecretKey" (dict "root" $ "name" $name "poller" $p) }}
+*/}}
+{{- define "nr-status.pollerSecretName" -}}
+{{- default (include "nr-status.secretName" .root) .poller.existingSecret }}
+{{- end }}
+
+{{- define "nr-status.pollerSecretKey" -}}
+{{- if .poller.existingSecret }}
+{{- .poller.existingSecretApiKeyKey }}
+{{- else }}
+{{- printf "rdm-%s-api-key" .name }}
+{{- end }}
+{{- end }}
