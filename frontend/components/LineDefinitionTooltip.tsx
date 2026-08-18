@@ -23,7 +23,7 @@ export function LineDefinitionTooltip({ stations, operators }: { stations: strin
          * package.json) — inline SVG instead of the literal "ⓘ" character,
          * which renders as a broken-looking glyph on an emoji/font
          * fallback rather than a recognisable info symbol. Same icon as
-         * `DataFreshnessInfo` and `RepresentativeInfo`. */}
+         * `DataFreshnessInfo`. */}
         <svg
           xmlns="http://www.w3.org/2000/svg"
           width="16"
