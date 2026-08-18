@@ -207,4 +207,28 @@ describe('IssueList', () => {
     fireEvent.click(screen.getByText('Signal failure'));
     expect(await screen.findByText('Full details here')).toBeInTheDocument();
   });
+  it('lands on the All tab when no issue is active', () => {
+    // severePlanned is upcoming and plannedRange is neither active nor
+    // upcoming, so Active reads (0) while All reads (2): landing on Active
+    // would show "nothing" next to tabs that say there is something.
+    renderWithProvider(<IssueList statuses={[severePlanned, plannedRange]} />);
+    expect(screen.getByText('Engineering works')).toBeInTheDocument();
+    expect(screen.getByText('Scheduled maintenance')).toBeInTheDocument();
+  });
+
+  it('still lands on the Active tab when at least one issue is active', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    expect(screen.getByText('Signal failure')).toBeInTheDocument();
+    expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
+  });
+
+  it('does not move the user off the Active tab when a chip filter empties it', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
+    // Active is now (0), but the landing tab is chosen once on mount, not
+    // re-derived: re-deriving would yank the user to All mid-interaction
+    // and reveal severePlanned, which they just filtered towards.
+    expect(screen.getByText('Active (0)')).toBeInTheDocument();
+    expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
+  });
 });

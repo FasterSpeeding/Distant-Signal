@@ -83,7 +83,24 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
   const severityOptions = Array.from(new Set(statuses.map((status) => status.statusSeverityDescription)));
   const [severityFilter, setSeverityFilter] = useState<string[]>([]);
   const [sourceFilter, setSourceFilter] = useState<string[]>([]);
-  const [activeFilter, setActiveFilter] = useState<ActiveFilter>('active');
+  // Landing tab, decided once on mount (lazy initialiser) rather than
+  // derived on every render. "Active" is the right place to open on a line
+  // with live disruption, but a line whose issues are all planned/future
+  // would open on an empty Active tab while the badge, summary sentence and
+  // tab counts all say something is happening — which reads as a bug.
+  // "All" is the fallback rather than "Upcoming" because it is the only tab
+  // guaranteed to hold everything `statuses` has (an issue can be neither
+  // active nor upcoming — a period that started in the past with isNow
+  // false — and Upcoming would hide exactly those).
+  //
+  // Deliberately keyed off `statuses`, not `chipFiltered`, and never
+  // recomputed: re-deriving would move the tab under the user the moment a
+  // chip toggle happened to empty the current tab. `isActive` reads only the
+  // server-supplied `isNow` flag (no `Date.now()`), so server and client
+  // initial renders agree.
+  const [activeFilter, setActiveFilter] = useState<ActiveFilter>(() =>
+    statuses.some(isActive) ? 'active' : 'all',
+  );
 
   // Severity/source chips narrow the pool every tab counts from, but not
   // the active/upcoming tab itself — so switching tabs doesn't change the
