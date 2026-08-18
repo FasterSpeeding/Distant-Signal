@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
 import { HistoryRangePicker } from './HistoryRangePicker';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -11,7 +12,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 function renderWithProvider(ui: React.ReactElement) {
-  return render(<MantineProvider>{ui}</MantineProvider>);
+  return render(<MantineProvider theme={theme}>{ui}</MantineProvider>);
 }
 
 // Finds a day cell in the open calendar by its day-of-month label, excluding

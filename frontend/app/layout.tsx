@@ -6,6 +6,7 @@ import type { Metadata } from 'next';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { DataFreshnessInfo } from '@/components/DataFreshnessInfo';
 import { getDataFreshness } from '@/lib/api';
+import { theme } from '@/lib/theme';
 
 export const metadata: Metadata = {
   title: 'National Rail Status',
@@ -36,7 +37,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ColorSchemeScript defaultColorScheme="auto" />
       </head>
       <body>
-        <MantineProvider defaultColorScheme="auto">
+        <MantineProvider theme={theme} defaultColorScheme="auto">
           <Group
             component="nav"
             justify="space-between"
@@ -58,10 +59,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </Link>
             <Group gap="lg">
               <Link href="/lines" style={{ textDecoration: 'none' }}>
-                <Text c="blue">All Lines</Text>
+                <Text c="var(--mantine-color-anchor)">All Lines</Text>
               </Link>
               <Link href="/stations" style={{ textDecoration: 'none' }}>
-                <Text c="blue">Station Lookup</Text>
+                <Text c="var(--mantine-color-anchor)">Station Lookup</Text>
               </Link>
               <Suspense fallback={<ActionIcon variant="subtle" aria-label="Data freshness" disabled loading />}>
                 <DataFreshnessNavItem />

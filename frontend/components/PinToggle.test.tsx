@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
 import { PinToggle } from './PinToggle';
 
 // PinToggle calls useRouter() from next/navigation, which throws
@@ -12,7 +13,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 function renderWithProvider(ui: React.ReactElement) {
-  return render(<MantineProvider>{ui}</MantineProvider>);
+  return render(<MantineProvider theme={theme}>{ui}</MantineProvider>);
 }
 
 describe('PinToggle', () => {

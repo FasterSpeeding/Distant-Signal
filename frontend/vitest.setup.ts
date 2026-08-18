@@ -1,6 +1,13 @@
 import '@testing-library/jest-dom/vitest';
 import { vi } from 'vitest';
 
+// Note on theme parity: this file runs once before test *modules* load, so
+// it can't inject props into a component tree — there's no JSX here to
+// wrap. Each test file wraps its subject in its own local `MantineProvider`
+// (usually via a `renderWithProvider` helper); that's where
+// `theme={theme}` (from `lib/theme.ts`, the same object `app/layout.tsx`
+// passes in production) actually needs to be threaded through, and is.
+
 // jsdom doesn't implement matchMedia, but Mantine's MantineProvider calls it
 // during color-scheme setup. Polyfill it so components can render in tests.
 if (typeof window !== 'undefined' && !window.matchMedia) {

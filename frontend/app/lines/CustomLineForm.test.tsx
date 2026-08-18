@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
 import { CustomLineForm } from './CustomLineForm';
 
 vi.mock('next/navigation', () => ({
@@ -9,7 +10,7 @@ vi.mock('next/navigation', () => ({
 
 function renderWithProvider() {
   return render(
-    <MantineProvider>
+    <MantineProvider theme={theme}>
       <CustomLineForm />
     </MantineProvider>,
   );

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { startTransition as reactStartTransition } from 'react';
 import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
 import { StationSearchForm } from './StationSearchForm';
 
 // Resolves (or is replaced) per-test to control how long a simulated
@@ -29,7 +30,7 @@ vi.mock('next/navigation', () => ({
 
 function renderWithProvider() {
   return render(
-    <MantineProvider>
+    <MantineProvider theme={theme}>
       <StationSearchForm />
     </MantineProvider>,
   );

@@ -40,7 +40,7 @@ export default async function AllLinesPage() {
                       `next build`'s Server/Client boundary check (see
                       LineStatusCard's fix). */}
                   <Link href={`/lines/${line.id}`} style={{ textDecoration: 'none' }}>
-                    <Text c="blue">{line.name}</Text>
+                    <Text c="var(--mantine-color-anchor)">{line.name}</Text>
                   </Link>
                 </TableTd>
                 <TableTd>{line.category}</TableTd>
