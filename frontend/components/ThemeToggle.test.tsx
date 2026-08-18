@@ -34,6 +34,24 @@ describe('ThemeToggle', () => {
 
     fireEvent.click(button);
     expect(screen.getByLabelText('Theme: auto. Click to switch.')).toBeInTheDocument();
+    // Full circle: the auto marker (see the test below) must reappear once
+    // the cycle returns to "auto", not just disappear once and stay gone.
+    expect(screen.getByText('A')).toBeInTheDocument();
+  });
+
+  it('marks the auto state with a visible indicator, distinct from the sun/moon icon', () => {
+    renderWithProvider();
+    // "auto" resolves to light here (system preference is polyfilled to
+    // light), so the icon alone is ☀️ - identical to what explicit "light"
+    // will render next. Without a separate marker, clicking away from
+    // "auto" to "light" would change nothing the user can see.
+    expect(screen.getByText('A')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button')); // -> light
+    // Same resolved icon as before, but the auto marker must be gone now
+    // that a scheme is explicitly selected - this is the visible change
+    // click 1 must produce.
+    expect(screen.queryByText('A')).not.toBeInTheDocument();
   });
 
   it('shows the sun icon when resolved to light, moon when resolved to dark', () => {
