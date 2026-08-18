@@ -292,3 +292,31 @@ api:
   # -- Merged over the chart-wide pod securityContext defaults
   # (runAsNonRoot: true, seccompProfile: RuntimeDefault).
   podSecurityContext: {}
+
+# ---------------------------------------------------------------------------
+# aggregator (crates/aggregator/src/config.rs: Config)
+# ---------------------------------------------------------------------------
+# There is intentionally no `replicaCount` here. The aggregator is a
+# singleton write loop against Postgres: two copies would double-write
+# line_status and race the history prune. The Deployment is pinned to
+# replicas: 1 with strategy Recreate for the same reason -- a RollingUpdate
+# would briefly run two.
+aggregator:
+  image:
+    repository: nr-status/aggregator
+    tag: ""
+    pullPolicy: IfNotPresent
+  # -- DESIGN.md section 4 targets every 30-60s; 60 is the conservative end.
+  pollIntervalSecs: 60
+  # -- How long line_status_history rows are kept before being pruned.
+  historyRetentionDays: 7
+  logLevel: info
+  extraEnv: []
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  # -- Merged over the chart-wide pod securityContext defaults
+  # (runAsNonRoot: true, seccompProfile: RuntimeDefault).
+  podSecurityContext: {}
