@@ -1,0 +1,22 @@
+# Values for the nr-status chart.
+#
+# The layout mirrors .env.example so the docker-compose path and the Helm
+# path do not drift. Every service section names the crate whose
+# `config.rs` defines its environment contract.
+
+# -- Override the chart name used in resource names and labels.
+nameOverride: ""
+# -- Override the fully-qualified release name entirely.
+fullnameOverride: ""
+
+# -- Image pull secrets applied to every pod in the chart.
+imagePullSecrets: []
+# - name: my-registry-creds
+
+serviceAccount:
+  # -- Create a ServiceAccount for the chart's workloads.
+  create: true
+  # -- Name to use. When empty and `create` is true, the fullname is used.
+  name: ""
+  # -- Annotations for the ServiceAccount (e.g. cloud workload identity).
+  annotations: {}

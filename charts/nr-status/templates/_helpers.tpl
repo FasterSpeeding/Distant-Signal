@@ -1,0 +1,127 @@
+{{/*
+Chart name, overridable.
+*/}}
+{{- define "nr-status.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Fully-qualified release name. Every object in this chart derives its name
+from this, so overriding it renames the whole install consistently.
+*/}}
+{{- define "nr-status.fullname" -}}
+{{- if .Values.fullnameOverride }}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- $name := default .Chart.Name .Values.nameOverride }}
+{{- if contains $name .Release.Name }}
+{{- .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Chart name-and-version for the helm.sh/chart label.
+*/}}
+{{- define "nr-status.chart" -}}
+{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Selector labels. Call as:
+  {{- include "nr-status.selectorLabels" (dict "root" . "component" "api") }}
+These land in an immutable `selector.matchLabels`, so nothing that changes
+between releases (version, chart version) may appear here.
+*/}}
+{{- define "nr-status.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "nr-status.name" .root }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+app.kubernetes.io/component: {{ .component }}
+{{- end }}
+
+{{/*
+Full common label set. Call as:
+  {{- include "nr-status.labels" (dict "root" . "component" "api") }}
+*/}}
+{{- define "nr-status.labels" -}}
+helm.sh/chart: {{ include "nr-status.chart" .root }}
+{{ include "nr-status.selectorLabels" . }}
+{{- if .root.Chart.AppVersion }}
+app.kubernetes.io/version: {{ .root.Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .root.Release.Service }}
+app.kubernetes.io/part-of: nr-status
+{{- end }}
+
+{{/*
+ServiceAccount name. Takes root.
+*/}}
+{{- define "nr-status.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "nr-status.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
+Image reference. Call as:
+  {{ include "nr-status.image" (dict "root" . "image" .Values.api.image) }}
+An empty `tag` falls back to the chart's appVersion.
+*/}}
+{{- define "nr-status.image" -}}
+{{- printf "%s:%s" .image.repository (default .root.Chart.AppVersion .image.tag) }}
+{{- end }}
+
+{{/*
+Per-component object names. Each takes root.
+*/}}
+{{- define "nr-status.postgresFullname" -}}
+{{- printf "%s-postgres" (include "nr-status.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "nr-status.apiFullname" -}}
+{{- printf "%s-api" (include "nr-status.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "nr-status.frontendFullname" -}}
+{{- printf "%s-frontend" (include "nr-status.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+In-cluster base URL of the api Service. Consumed by the frontend
+(API_BASE_URL), by every poller (API_INGEST_URL / API_SAMPLE_STATIONS_URL)
+and by the helm test pod. Takes root.
+*/}}
+{{- define "nr-status.apiBaseUrl" -}}
+{{- printf "http://%s:%d" (include "nr-status.apiFullname" .) (int .Values.api.service.port) }}
+{{- end }}
+
+{{/*
+Pod-level security context. Call as:
+  {{- include "nr-status.podSecurityContext" (dict "override" .Values.api.podSecurityContext) | nindent 8 }}
+The chart-wide defaults below are merged with the workload's own
+`podSecurityContext` value, which wins on conflict. Postgres deliberately
+does NOT use this helper -- it must pin uid/gid 999, see
+postgres-statefulset.yaml.
+*/}}
+{{- define "nr-status.podSecurityContext" -}}
+{{- $defaults := dict "runAsNonRoot" true "seccompProfile" (dict "type" "RuntimeDefault") -}}
+{{- toYaml (mergeOverwrite $defaults (default (dict) .override | deepCopy)) }}
+{{- end }}
+
+{{/*
+Container-level security context. Call as:
+  {{- include "nr-status.containerSecurityContext" (dict "readOnlyRootFilesystem" true) | nindent 12 }}
+The frontend passes false: `next start` writes its incremental cache under
+.next/cache.
+*/}}
+{{- define "nr-status.containerSecurityContext" -}}
+allowPrivilegeEscalation: false
+readOnlyRootFilesystem: {{ .readOnlyRootFilesystem }}
+capabilities:
+  drop:
+    - ALL
+{{- end }}
