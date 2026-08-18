@@ -29,7 +29,10 @@ describe('LineDefinitionTooltip', () => {
     // DOM at all until actually triggered — hover it first.
     fireEvent.mouseEnter(screen.getByLabelText('How this line is defined'));
 
-    expect(await screen.findByText('Stations: WOK, WAT', { hidden: true })).toBeInTheDocument();
-    expect(screen.getByText('Operators: SW', { hidden: true })).toBeInTheDocument();
+    // No `hidden` option here: it's `getByRole`-only (`@testing-library
+    // /dom`'s `SelectorMatcherOptions` has no such field), so passing it
+    // was both a type error and inert at runtime.
+    expect(await screen.findByText('Stations: WOK, WAT')).toBeInTheDocument();
+    expect(screen.getByText('Operators: SW')).toBeInTheDocument();
   });
 });
