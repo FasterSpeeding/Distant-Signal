@@ -188,7 +188,42 @@ describe('IssueList', () => {
     renderWithProvider(<IssueList statuses={all} />);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
-    expect(screen.getByText('No issues match the current filters.')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'No issues match the selected severity and source filters. Clear a filter to see the other 3 issues.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('says the line is clear when it has no issues at all, without blaming filters', () => {
+    renderWithProvider(<IssueList statuses={[]} />);
+    expect(screen.getByText('No issues reported on this line.')).toBeInTheDocument();
+  });
+
+  it('points at the tab that holds the issues when the selected tab is empty', () => {
+    renderWithProvider(<IssueList statuses={[severePlanned]} />);
+    fireEvent.click(screen.getByText('Active (0)'));
+    expect(
+      screen.getByText('Nothing is affecting this line right now. 1 issue is listed under Upcoming.'),
+    ).toBeInTheDocument();
+  });
+
+  it('points back at Active when the Upcoming tab is the empty one', () => {
+    renderWithProvider(<IssueList statuses={[minorNow]} />);
+    fireEvent.click(screen.getByText('Upcoming (0)'));
+    expect(
+      screen.getByText('No issues are scheduled for later on this line. 1 issue is listed under Active.'),
+    ).toBeInTheDocument();
+  });
+
+  it('mentions the filters only when a chip is genuinely narrowing the result', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    // Stays on the Active tab (see 2a) with only severePlanned in the pool,
+    // so the tab is empty *because of* the chip — filters are fair to blame.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
+    expect(
+      screen.getByText('No active issues match the selected filters. 1 issue is listed under Upcoming.'),
+    ).toBeInTheDocument();
   });
 
   it('expands an entry to reveal its detail on click', async () => {
