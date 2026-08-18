@@ -397,3 +397,20 @@ ingress:
   #   hosts:
   #     - status.example.com
   #     - api.example.com
+
+# ---------------------------------------------------------------------------
+# NetworkPolicy (optional)
+# ---------------------------------------------------------------------------
+# Off by default: many clusters run a CNI that does not enforce
+# NetworkPolicy at all, and a silently-unenforced policy is worse than an
+# absent one because it looks like protection.
+#
+# EGRESS IS DELIBERATELY UNRESTRICTED. The pollers must reach arbitrary
+# external Rail Data Marketplace hosts, and constraining that would mean
+# making every operator enumerate them.
+networkPolicy:
+  enabled: false
+  # -- Namespace your ingress controller runs in. Matched via the automatic
+  # `kubernetes.io/metadata.name` namespace label. Only used when
+  # ingress.enabled is true.
+  ingressControllerNamespace: ingress-nginx
