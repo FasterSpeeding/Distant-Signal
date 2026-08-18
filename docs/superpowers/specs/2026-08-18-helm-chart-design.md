@@ -123,8 +123,15 @@ Two Kubernetes-specific requirements that compose does not have:
   `lost+found` entry in a fresh volume. The chart sets
   `PGDATA=/var/lib/postgresql/data/pgdata` and mounts the claim at
   `/var/lib/postgresql/data`.
-- **`fsGroup: 999`** on the pod security context, so the `postgres` user in
-  the image can write the mounted volume.
+- **An explicit uid/gid, not `runAsNonRoot`.** `postgres:16` ships with an
+  empty `Config.User`: it starts as root and drops to `postgres` via `gosu`
+  in its entrypoint. The chart therefore pins
+  `runAsUser: 999`, `runAsGroup: 999` and `fsGroup: 999` on this pod
+  specifically — `fsGroup` so the `postgres` user can write the mounted
+  volume, and the explicit uid so the pod is non-root *without* the bare
+  `runAsNonRoot: true` that would fail admission against this image. Its
+  root filesystem also stays writable (it writes `/var/run/postgresql`),
+  unlike every Rust workload.
 
 Values: `postgresql.image.*`, `postgresql.auth.{username,database,password,
 existingSecret,existingSecretPasswordKey}`, `postgresql.persistence.
@@ -203,13 +210,27 @@ when left empty and no `existingSecret` is given. Generation uses the
 
 ```
 {{- $existing := lookup "v1" "Secret" .Release.Namespace $name -}}
-{{- $pw := (get ($existing).data "postgres-password" | b64dec) | default (randAlphaNum 32) -}}
+{{- $existingData := default (dict) $existing.data -}}
+{{- $pw := (get $existingData "postgres-password" | b64dec) | default (randAlphaNum 32) -}}
 ```
 
 so `helm upgrade` reuses the live value rather than rotating a password out
 from under a running Postgres volume. This is the single most important
 correctness detail in the Secret template: without it, every upgrade breaks
 the database connection.
+
+**The `$existingData` line is load-bearing, not stylistic.** The obvious
+one-line form — `(get ($existing).data "..." | b64dec)` — fails outright on
+Helm 4 (verified against the installed v4.1.4):
+
+```
+wrong type for value; expected map[string]interface {}; got interface {}
+```
+
+On a first install `lookup` returns an empty map, so `.data` is a nil
+`interface{}` rather than a map, and `get` rejects it. Piping through
+`default (dict)` normalises that to an empty map before `get` sees it. The
+corrected three-line form above was confirmed to render.
 
 Known limitation, stated in the README: `lookup` returns empty during
 `helm template` and `--dry-run`, so rendering offline shows a *different*
@@ -227,8 +248,16 @@ Kubernetes API server), and per-workload `replicaCount`, `resources`,
 `nodeSelector`, `tolerations`, `affinity`, `podAnnotations` and
 `podSecurityContext` values.
 
-Every runtime image already declares a non-root `USER`, so `runAsNonRoot`
-is satisfied without the chart pinning a `runAsUser` UID.
+All seven application images (`api`, `aggregator`, the four pollers, and
+`frontend`) declare a non-root `USER` in their Dockerfiles, so for those
+workloads `runAsNonRoot` is satisfied without the chart pinning a
+`runAsUser` UID.
+
+**`postgres:16` is the exception** and does not share this security context.
+Its `Config.User` is empty — it starts as root and drops to `postgres` via
+`gosu` inside its own entrypoint — so a bare `runAsNonRoot: true` would fail
+admission before the entrypoint ever runs. See the PostgreSQL section for
+the security context that pod actually gets.
 
 ### api
 
