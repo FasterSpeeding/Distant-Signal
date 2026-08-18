@@ -414,3 +414,19 @@ networkPolicy:
   # `kubernetes.io/metadata.name` namespace label. Only used when
   # ingress.enabled is true.
   ingressControllerNamespace: ingress-nginx
+
+# ---------------------------------------------------------------------------
+# helm test
+# ---------------------------------------------------------------------------
+tests:
+  # -- Render the `helm test` pod. Running it requires a live cluster with
+  # the images available.
+  enabled: true
+  image:
+    # -- Empty means "reuse the api image", which already ships curl
+    # (docker/api.Dockerfile installs it for the compose HEALTHCHECK). That
+    # keeps `helm test` working in an air-gapped cluster with no extra pull.
+    # Set a repository here only if you want a different probe image.
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
