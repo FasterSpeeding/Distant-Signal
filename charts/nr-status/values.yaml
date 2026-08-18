@@ -320,3 +320,41 @@ aggregator:
   # -- Merged over the chart-wide pod securityContext defaults
   # (runAsNonRoot: true, seccompProfile: RuntimeDefault).
   podSecurityContext: {}
+
+# ---------------------------------------------------------------------------
+# frontend (frontend/lib/api.ts)
+# ---------------------------------------------------------------------------
+frontend:
+  image:
+    repository: nr-status/frontend
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 3000
+  probes:
+    # -- Next.js ships no dedicated health route, so both probes hit "/".
+    # Change this if one is ever added.
+    path: /
+    readiness:
+      periodSeconds: 10
+      failureThreshold: 3
+      timeoutSeconds: 3
+    liveness:
+      periodSeconds: 10
+      failureThreshold: 3
+      timeoutSeconds: 3
+  # -- Override the api base URL the server-side render calls. Leave empty to
+  # use the in-cluster api Service. API_BASE_URL is read at REQUEST time in
+  # Server Components, not baked at build time, so this is a runtime value.
+  apiBaseUrl: ""
+  extraEnv: []
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  # -- Merged over the chart-wide pod securityContext defaults
+  # (runAsNonRoot: true, seccompProfile: RuntimeDefault).
+  podSecurityContext: {}
