@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { IssueList } from './IssueList';
 import type { LineStatus } from '@/lib/types';
@@ -188,7 +188,42 @@ describe('IssueList', () => {
     renderWithProvider(<IssueList statuses={all} />);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
-    expect(screen.getByText('No issues match the current filters.')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'No issues match the selected severity and source filters. Clear a filter to see the other 3 issues.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('says the line is clear when it has no issues at all, without blaming filters', () => {
+    renderWithProvider(<IssueList statuses={[]} />);
+    expect(screen.getByText('No issues reported on this line.')).toBeInTheDocument();
+  });
+
+  it('points at the tab that holds the issues when the selected tab is empty', () => {
+    renderWithProvider(<IssueList statuses={[severePlanned]} />);
+    fireEvent.click(screen.getByText('Active (0)'));
+    expect(
+      screen.getByText('Nothing is affecting this line right now. 1 issue is listed under Upcoming.'),
+    ).toBeInTheDocument();
+  });
+
+  it('points back at Active when the Upcoming tab is the empty one', () => {
+    renderWithProvider(<IssueList statuses={[minorNow]} />);
+    fireEvent.click(screen.getByText('Upcoming (0)'));
+    expect(
+      screen.getByText('No issues are scheduled for later on this line. 1 issue is listed under Active.'),
+    ).toBeInTheDocument();
+  });
+
+  it('mentions the filters only when a chip is genuinely narrowing the result', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    // Stays on the Active tab (see 2a) with only severePlanned in the pool,
+    // so the tab is empty *because of* the chip — filters are fair to blame.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
+    expect(
+      screen.getByText('No active issues match the selected filters. 1 issue is listed under Upcoming.'),
+    ).toBeInTheDocument();
   });
 
   it('expands an entry to reveal its detail on click', async () => {
@@ -206,5 +241,71 @@ describe('IssueList', () => {
     expect(screen.queryByText('Full details here')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('Signal failure'));
     expect(await screen.findByText('Full details here')).toBeInTheDocument();
+  });
+  it('lands on the All tab when no issue is active', () => {
+    // severePlanned is upcoming and plannedRange is neither active nor
+    // upcoming, so Active reads (0) while All reads (2): landing on Active
+    // would show "nothing" next to tabs that say there is something.
+    renderWithProvider(<IssueList statuses={[severePlanned, plannedRange]} />);
+    expect(screen.getByText('Engineering works')).toBeInTheDocument();
+    expect(screen.getByText('Scheduled maintenance')).toBeInTheDocument();
+  });
+
+  it('still lands on the Active tab when at least one issue is active', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    expect(screen.getByText('Signal failure')).toBeInTheDocument();
+    expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
+  });
+
+  it('does not move the user off the Active tab when a chip filter empties it', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
+    // Active is now (0), but the landing tab is chosen once on mount, not
+    // re-derived: re-deriving would yank the user to All mid-interaction
+    // and reveal severePlanned, which they just filtered towards.
+    expect(screen.getByText('Active (0)')).toBeInTheDocument();
+    expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
+  });
+  it('labels what each chip row filters, and says so when nothing is narrowed', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    expect(screen.getByText('Severity — showing all')).toBeInTheDocument();
+    expect(screen.getByText('Source — showing all')).toBeInTheDocument();
+  });
+
+  it('reports how many chips are selected in each row label', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Severe Delays' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
+    expect(screen.getByText('Severity — 2 selected')).toBeInTheDocument();
+    expect(screen.getByText('Source — 1 selected')).toBeInTheDocument();
+  });
+
+  it('renders selected chips in a visually distinct variant from unselected ones', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    const minor = screen.getByRole('checkbox', { name: 'Minor Delays' });
+    const planned = screen.getByRole('checkbox', { name: 'Planned' });
+    expect(minor.closest('[data-variant]')).toHaveAttribute('data-variant', 'outline');
+    fireEvent.click(minor);
+    expect(minor.closest('[data-variant]')).toHaveAttribute('data-variant', 'filled');
+    // The other row is untouched, so it must still read as "off".
+    expect(planned.closest('[data-variant]')).toHaveAttribute('data-variant', 'outline');
+  });
+
+  it('associates each chip row with its label for screen readers', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    expect(screen.getByRole('group', { name: 'Severity — showing all' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Source — showing all' })).toBeInTheDocument();
+  });
+  it('keeps the row badges at full size and lets the description text absorb the squeeze', () => {
+    renderWithProvider(<IssueList statuses={[minorNow]} />);
+    const description = screen.getByText('Signal failure');
+    const control = description.closest('button') as HTMLElement;
+    // The two badges classify the row — they must sit in boxes that refuse
+    // to shrink, rather than truncating to "MINOR DEL…" / a circled letter.
+    expect(within(control).getByText('Minor Delays').closest('[style*="flex-shrink: 0"]')).not.toBeNull();
+    expect(within(control).getByText('Knowledgebase').closest('[style*="flex-shrink: 0"]')).not.toBeNull();
+    // The description is the element that gives way instead.
+    expect(description).toHaveStyle('flex-shrink: 1; min-width: 0');
   });
 });
