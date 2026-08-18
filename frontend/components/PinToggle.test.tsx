@@ -43,7 +43,10 @@ describe('PinToggle', () => {
   it('renders a tooltip for sighted users with the same text as the accessible name', async () => {
     renderWithProvider(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
     fireEvent.mouseEnter(screen.getByLabelText('Pin (currently not pinned)'));
-    expect(await screen.findByText('Pin (currently not pinned)', { hidden: true, selector: '[role="tooltip"]' })).toBeInTheDocument();
+    // `hidden` isn't a valid option for `findByText` (it's `getByRole`-only,
+    // per `@testing-library/dom`'s `SelectorMatcherOptions` — no `hidden`
+    // field); `selector` alone is what actually scopes this to the tooltip.
+    expect(await screen.findByText('Pin (currently not pinned)', { selector: '[role="tooltip"]' })).toBeInTheDocument();
   });
 
   it('distinguishes pinned from unpinned by more than icon fill alone (color also differs)', () => {
