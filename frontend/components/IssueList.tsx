@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import {
   Accordion,
   AccordionControl,
@@ -130,7 +130,17 @@ function emptyStateMessage({
   return `${lead} ${pluraliseIssues(target.count)} ${target.count === 1 ? 'is' : 'are'} listed under ${target.label}.`;
 }
 
+/** Two rows of identical grey pills gave no clue that they were controls,
+ * which row meant what, or whether grey was "off" or "everything on". The
+ * row label carries both the facet name and its state: an empty selection
+ * filters nothing, which is not the same as filtering to nothing. */
+function chipRowLabel(facet: string, selected: number): string {
+  return selected === 0 ? `${facet} — showing all` : `${facet} — ${selected} selected`;
+}
+
 export function IssueList({ statuses }: { statuses: LineStatus[] }) {
+  const severityLabelId = useId();
+  const sourceLabelId = useId();
   const severityOptions = Array.from(new Set(statuses.map((status) => status.statusSeverityDescription)));
   const [severityFilter, setSeverityFilter] = useState<string[]>([]);
   const [sourceFilter, setSourceFilter] = useState<string[]>([]);
@@ -175,24 +185,47 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
   return (
     <Stack gap="md">
       <Stack gap="xs">
-        <ChipGroup multiple value={severityFilter} onChange={setSeverityFilter}>
-          <Group gap="xs">
-            {severityOptions.map((option) => (
-              <Chip key={option} value={option} size="xs">
-                {option}
-              </Chip>
-            ))}
-          </Group>
-        </ChipGroup>
-        <ChipGroup multiple value={sourceFilter} onChange={setSourceFilter}>
-          <Group gap="xs">
-            {Object.entries(DATA_QUALITY_LABELS).map(([value, label]) => (
-              <Chip key={value} value={value} size="xs">
-                {label}
-              </Chip>
-            ))}
-          </Group>
-        </ChipGroup>
+        <Stack gap={4}>
+          <Text id={severityLabelId} size="xs" fw={600} c="dimmed">
+            {chipRowLabel('Severity', severityFilter.length)}
+          </Text>
+          <ChipGroup multiple value={severityFilter} onChange={setSeverityFilter}>
+            <Group gap="xs" role="group" aria-labelledby={severityLabelId}>
+              {severityOptions.map((option) => (
+                // `filled` vs `outline` is the whole point: an unselected chip
+                // reads as an empty control you can press, a selected one as a
+                // solid, obviously-on state — indistinguishable before.
+                <Chip
+                  key={option}
+                  value={option}
+                  size="xs"
+                  variant={severityFilter.includes(option) ? 'filled' : 'outline'}
+                >
+                  {option}
+                </Chip>
+              ))}
+            </Group>
+          </ChipGroup>
+        </Stack>
+        <Stack gap={4}>
+          <Text id={sourceLabelId} size="xs" fw={600} c="dimmed">
+            {chipRowLabel('Source', sourceFilter.length)}
+          </Text>
+          <ChipGroup multiple value={sourceFilter} onChange={setSourceFilter}>
+            <Group gap="xs" role="group" aria-labelledby={sourceLabelId}>
+              {Object.entries(DATA_QUALITY_LABELS).map(([value, label]) => (
+                <Chip
+                  key={value}
+                  value={value}
+                  size="xs"
+                  variant={sourceFilter.includes(value) ? 'filled' : 'outline'}
+                >
+                  {label}
+                </Chip>
+              ))}
+            </Group>
+          </ChipGroup>
+        </Stack>
         <SegmentedControl
           value={activeFilter}
           onChange={(value) => setActiveFilter(value as ActiveFilter)}

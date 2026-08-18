@@ -266,4 +266,35 @@ describe('IssueList', () => {
     expect(screen.getByText('Active (0)')).toBeInTheDocument();
     expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
   });
+  it('labels what each chip row filters, and says so when nothing is narrowed', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    expect(screen.getByText('Severity — showing all')).toBeInTheDocument();
+    expect(screen.getByText('Source — showing all')).toBeInTheDocument();
+  });
+
+  it('reports how many chips are selected in each row label', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Severe Delays' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
+    expect(screen.getByText('Severity — 2 selected')).toBeInTheDocument();
+    expect(screen.getByText('Source — 1 selected')).toBeInTheDocument();
+  });
+
+  it('renders selected chips in a visually distinct variant from unselected ones', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    const minor = screen.getByRole('checkbox', { name: 'Minor Delays' });
+    const planned = screen.getByRole('checkbox', { name: 'Planned' });
+    expect(minor.closest('[data-variant]')).toHaveAttribute('data-variant', 'outline');
+    fireEvent.click(minor);
+    expect(minor.closest('[data-variant]')).toHaveAttribute('data-variant', 'filled');
+    // The other row is untouched, so it must still read as "off".
+    expect(planned.closest('[data-variant]')).toHaveAttribute('data-variant', 'outline');
+  });
+
+  it('associates each chip row with its label for screen readers', () => {
+    renderWithProvider(<IssueList statuses={all} />);
+    expect(screen.getByRole('group', { name: 'Severity — showing all' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Source — showing all' })).toBeInTheDocument();
+  });
 });
