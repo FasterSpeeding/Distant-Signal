@@ -7,6 +7,7 @@ import {
   AccordionItem,
   AccordionPanel,
   Badge,
+  Box,
   Chip,
   ChipGroup,
   Group,
@@ -261,16 +262,27 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
         {filtered.map((status, i) => (
           <AccordionItem key={i} value={String(i)}>
             <AccordionControl>
-              <Group justify="space-between" wrap="nowrap">
-                <Group gap="xs" wrap="nowrap">
-                  <StatusBadge severity={status.statusSeverity} />
-                  <Text size="sm">{status.reason}</Text>
+              {/*
+                The badges are the row's classification, so they are pinned
+                (flexShrink 0) and the description text is the only element
+                allowed to give way — without `minWidth: 0` a flex item
+                refuses to shrink below its content, which is what squeezed
+                the badges into "MINOR DEL…" and a circled letter at 390px.
+              */}
+              <Group justify="space-between" wrap="nowrap" gap="xs">
+                <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
+                  <Box style={{ flexShrink: 0 }}>
+                    <StatusBadge severity={status.statusSeverity} />
+                  </Box>
+                  <Text size="sm" truncate style={{ flexShrink: 1, minWidth: 0 }}>
+                    {status.reason}
+                  </Text>
                 </Group>
-                <Group gap="xs" wrap="nowrap">
-                  <Text size="xs" c="dimmed">
+                <Group gap="xs" wrap="nowrap" style={{ flexShrink: 0 }}>
+                  <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
                     {formatValiditySummary(status)}
                   </Text>
-                  <Badge variant="outline" size="sm">
+                  <Badge variant="outline" size="sm" style={{ flexShrink: 0 }}>
                     {DATA_QUALITY_LABELS[status.dataQuality]}
                   </Badge>
                 </Group>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { IssueList } from './IssueList';
 import type { LineStatus } from '@/lib/types';
@@ -296,5 +296,16 @@ describe('IssueList', () => {
     renderWithProvider(<IssueList statuses={all} />);
     expect(screen.getByRole('group', { name: 'Severity — showing all' })).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Source — showing all' })).toBeInTheDocument();
+  });
+  it('keeps the row badges at full size and lets the description text absorb the squeeze', () => {
+    renderWithProvider(<IssueList statuses={[minorNow]} />);
+    const description = screen.getByText('Signal failure');
+    const control = description.closest('button') as HTMLElement;
+    // The two badges classify the row — they must sit in boxes that refuse
+    // to shrink, rather than truncating to "MINOR DEL…" / a circled letter.
+    expect(within(control).getByText('Minor Delays').closest('[style*="flex-shrink: 0"]')).not.toBeNull();
+    expect(within(control).getByText('Knowledgebase').closest('[style*="flex-shrink: 0"]')).not.toBeNull();
+    // The description is the element that gives way instead.
+    expect(description).toHaveStyle('flex-shrink: 1; min-width: 0');
   });
 });
