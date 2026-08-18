@@ -243,3 +243,52 @@ pollers:
     affinity: {}
     podAnnotations: {}
     podSecurityContext: {}
+
+# ---------------------------------------------------------------------------
+# api (crates/api/src/data/config.rs: ServiceArguments)
+# ---------------------------------------------------------------------------
+api:
+  image:
+    repository: nr-status/api
+    # -- Empty means "use the chart's appVersion".
+    tag: ""
+    pullPolicy: IfNotPresent
+  # -- Replicas. >1 is safe: crates/api/src/main.rs runs sqlx::migrate!() in
+  # process at startup, and sqlx's Migrator takes a Postgres advisory lock,
+  # so concurrent startups serialise their migrations rather than racing.
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  # -- tracing-subscriber EnvFilter syntax: "info", "api=debug", "warn", ...
+  logLevel: info
+  probes:
+    # -- Path served by crates/api/src/routes/health.rs, nested under /public
+    # by main.rs. Changing this must be matched in tests/test-api-health.yaml.
+    path: /public/health
+    startup:
+      # 30 x 2s = 60s of headroom. The api runs sqlx::migrate!() BEFORE it
+      # binds its listener (crates/api/src/main.rs), so a cold start against
+      # an empty database can take a while and must not be killed by the
+      # liveness probe.
+      periodSeconds: 2
+      failureThreshold: 30
+      timeoutSeconds: 3
+    readiness:
+      periodSeconds: 10
+      failureThreshold: 3
+      timeoutSeconds: 3
+    liveness:
+      periodSeconds: 10
+      failureThreshold: 3
+      timeoutSeconds: 3
+  # -- Extra env vars appended to the container.
+  extraEnv: []
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  # -- Merged over the chart-wide pod securityContext defaults
+  # (runAsNonRoot: true, seccompProfile: RuntimeDefault).
+  podSecurityContext: {}

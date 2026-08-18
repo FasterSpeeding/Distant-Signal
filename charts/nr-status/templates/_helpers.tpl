@@ -183,3 +183,46 @@ Resolved Secret name/key for one poller's RDM API key. Call as:
 {{- printf "rdm-%s-api-key" .name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Environment entries giving a workload a working DATABASE_URL. Takes root.
+Used identically by api-deployment.yaml and aggregator-deployment.yaml.
+
+WHY THE $(PGPASSWORD) INDIRECTION: crates/api/src/data/config.rs and
+crates/aggregator/src/config.rs both want ONE `DATABASE_URL` string that
+contains the password -- there is no host/user/password-parts form. Writing
+that string into env[].value would expose the password to anyone with
+`get deployments`, a strictly wider audience than `get secrets`. Instead the
+password is injected as its own secretKeyRef entry and referenced with
+Kubernetes' `$(VAR)` syntax, which the kubelet expands at container start
+from EARLIER entries in the SAME container's env list. Order therefore
+matters: PGPASSWORD must come before DATABASE_URL. The password never
+appears in the rendered Deployment.
+
+CAVEAT (also in values.yaml and README.md): the chart cannot percent-encode
+a password it never sees, so a password containing @ : / ? # [ ] % must be
+percent-encoded by the operator. Generated passwords use randAlphaNum, so
+the default path is never affected.
+*/}}
+{{- define "nr-status.databaseEnv" -}}
+{{- if .Values.postgresql.enabled -}}
+- name: PGPASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "nr-status.postgresSecretName" . }}
+      key: {{ include "nr-status.postgresSecretPasswordKey" . }}
+- name: DATABASE_URL
+  value: {{ printf "postgres://%s:$(PGPASSWORD)@%s:%d/%s" .Values.postgresql.auth.username (include "nr-status.postgresFullname" .) (int .Values.postgresql.service.port) .Values.postgresql.auth.database | quote }}
+{{- else if .Values.externalDatabase.existingSecret -}}
+- name: DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.externalDatabase.existingSecret }}
+      key: {{ .Values.externalDatabase.existingSecretUrlKey }}
+{{- else if .Values.externalDatabase.url -}}
+- name: DATABASE_URL
+  value: {{ .Values.externalDatabase.url | quote }}
+{{- else -}}
+{{- fail "postgresql.enabled is false but no external database is configured. Set externalDatabase.existingSecret (preferred) together with externalDatabase.existingSecretUrlKey, or set externalDatabase.url, or re-enable the bundled database with postgresql.enabled=true." -}}
+{{- end -}}
+{{- end }}
