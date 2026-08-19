@@ -54,3 +54,28 @@ describe('link colour', () => {
     expect(contrast(GRAPE_4, DARK_7)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
   });
 });
+
+describe('TextLink underline affordance', () => {
+  // `textDecoration: 'none'` left these links distinguished from the text
+  // around them by colour alone (WCAG 1.4.1). The rules live here rather
+  // than inline because `:hover`/`:focus-visible` can't be expressed as a
+  // style object; `TextLink` opts in via `data-text-link`.
+  it('underlines every TextLink on hover and on keyboard focus', () => {
+    const rule = css.match(/a\[data-text-link\]:hover,\s*a\[data-text-link\]:focus-visible\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('text-decoration: underline');
+  });
+
+  it('underlines always-on TextLinks unconditionally', () => {
+    const rule = css.match(/a\[data-text-link=['"]always['"]\]\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('text-decoration: underline');
+  });
+
+  it('draws the underline in the link colour rather than the inherited text colour', () => {
+    // The `<a>` itself has no `color`; the colour lives on the `Text`
+    // inside it, and a decoration is painted in the *decorating* element's
+    // colour, so without this the underline would come out body-black.
+    expect(css).toContain('text-decoration-color: var(--mantine-color-anchor)');
+  });
+});

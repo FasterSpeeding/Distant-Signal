@@ -7,6 +7,7 @@ import { RepresentativeInfo } from '@/components/RepresentativeInfo';
 import { IssueList } from '@/components/IssueList';
 import { DeleteLineButton } from '@/components/DeleteLineButton';
 import { LineDefinitionTooltip } from '@/components/LineDefinitionTooltip';
+import { TextLink } from '@/components/TextLink';
 import { worstStatus } from '@/lib/severity';
 
 export default async function LineDetailPage({
@@ -82,9 +83,9 @@ export default async function LineDetailPage({
         </Group>
       </Group>
       <Text c="dimmed">Operators: {report.operators.join(', ')}</Text>
-      <Link href={`/lines/${id}/history`} style={{ textDecoration: 'none' }}>
-        <Text c="var(--mantine-color-anchor)">View history</Text>
-      </Link>
+      <TextLink href={`/lines/${id}/history`} underline="always">
+        View history
+      </TextLink>
       <RepresentativeInfo statuses={report.lineStatuses} />
       <IssueList statuses={report.lineStatuses} />
     </Stack>

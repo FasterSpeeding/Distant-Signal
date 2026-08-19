@@ -1,7 +1,7 @@
-import Link from 'next/link';
 import { Stack, Title, Text, Divider } from '@mantine/core';
 import { getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
+import { TextLink } from '@/components/TextLink';
 import { HistoryRangePicker } from './HistoryRangePicker';
 
 // Same lookup the detail page uses for its heading. This page's job is the
@@ -35,9 +35,9 @@ export default async function LineHistoryPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Link href={`/lines/${id}`} style={{ textDecoration: 'none' }}>
-        <Text c="var(--mantine-color-anchor)">Back to line</Text>
-      </Link>
+      <TextLink href={`/lines/${id}`} underline="always">
+        Back to line
+      </TextLink>
       <Title order={1}>History: {name}</Title>
       <HistoryRangePicker lineId={id} />
       {from && to && <HistoryResults id={id} from={from} to={to} />}
