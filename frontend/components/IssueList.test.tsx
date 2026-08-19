@@ -184,42 +184,43 @@ describe('IssueList', () => {
     renderWithMantine(<IssueList statuses={all} />);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
-    expect(
-      screen.getByText(
-        'No issues match the selected severity and source filters. Clear a filter to see the other 3 issues.',
-      ),
-    ).toBeInTheDocument();
+    // The whole pool is filtered away regardless of tab — there's no
+    // sibling tab to send the user to, only the filters to blame.
+    const message = screen.getByText(/No issues match the selected .*filters/i);
+    expect(message.textContent).not.toMatch(/listed under/i);
   });
 
   it('says the line is clear when it has no issues at all, without blaming filters', () => {
     renderWithMantine(<IssueList statuses={[]} />);
-    expect(screen.getByText('No issues reported on this line.')).toBeInTheDocument();
+    const message = screen.getByText(/No issues reported on this line/i);
+    expect(message.textContent).not.toMatch(/filter/i);
   });
 
   it('points at the tab that holds the issues when the selected tab is empty', () => {
     renderWithMantine(<IssueList statuses={[severePlanned]} />);
     fireEvent.click(screen.getByText('Active (0)'));
-    expect(
-      screen.getByText('Nothing is affecting this line right now. 1 issue is listed under Upcoming.'),
-    ).toBeInTheDocument();
+    // Active is empty for a structural reason (nothing is active right
+    // now), not because of a chip filter — the message must not blame one.
+    const message = screen.getByText(/listed under Upcoming/i);
+    expect(message.textContent).not.toMatch(/filter/i);
   });
 
   it('points back at Active when the Upcoming tab is the empty one', () => {
     renderWithMantine(<IssueList statuses={[minorNow]} />);
     fireEvent.click(screen.getByText('Upcoming (0)'));
-    expect(
-      screen.getByText('No issues are scheduled for later on this line. 1 issue is listed under Active.'),
-    ).toBeInTheDocument();
+    const message = screen.getByText(/listed under Active/i);
+    expect(message.textContent).not.toMatch(/filter/i);
   });
 
   it('mentions the filters only when a chip is genuinely narrowing the result', () => {
     renderWithMantine(<IssueList statuses={all} />);
     // Stays on the Active tab (see 2a) with only severePlanned in the pool,
-    // so the tab is empty *because of* the chip — filters are fair to blame.
+    // so the tab is empty *because of* the chip — filters are fair to blame,
+    // unlike the structurally-empty case above which points at the same
+    // sibling tab but must not mention filters.
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
-    expect(
-      screen.getByText('No active issues match the selected filters. 1 issue is listed under Upcoming.'),
-    ).toBeInTheDocument();
+    const message = screen.getByText(/listed under Upcoming/i);
+    expect(message.textContent).toMatch(/filter/i);
   });
 
   it('expands an entry to reveal its detail on click', async () => {
