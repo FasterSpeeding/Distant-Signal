@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
-import { theme } from '@/lib/theme';
+import { screen, fireEvent, act } from '@testing-library/react';
+import { renderWithMantine } from '@/test/render';
 import { CustomLineForm } from './CustomLineForm';
 import type { CustomLineDetail } from '@/lib/types';
 
@@ -10,11 +9,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 function renderWithProvider(props: { cancelHref?: string; existingLine?: CustomLineDetail } = {}) {
-  return render(
-    <MantineProvider theme={theme}>
-      <CustomLineForm {...props} />
-    </MantineProvider>,
-  );
+  return renderWithMantine(<CustomLineForm {...props} />);
 }
 
 const existingLine: CustomLineDetail = {

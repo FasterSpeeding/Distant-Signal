@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
-import { theme } from '@/lib/theme';
+import { screen, fireEvent } from '@testing-library/react';
+import { renderWithMantine } from '@/test/render';
 import { HistoryRangePicker } from './HistoryRangePicker';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -10,10 +9,6 @@ const pushMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock }),
 }));
-
-function renderWithProvider(ui: React.ReactElement) {
-  return render(<MantineProvider theme={theme}>{ui}</MantineProvider>);
-}
 
 // Finds a day cell in the open calendar by its day-of-month label, excluding
 // the greyed-out days that spill over from the adjacent month (Mantine marks
@@ -38,13 +33,13 @@ describe('HistoryRangePicker', () => {
   });
 
   it('renders Last 7 days and Last 30 days presets', () => {
-    renderWithProvider(<HistoryRangePicker lineId="wcml" />);
+    renderWithMantine(<HistoryRangePicker lineId="wcml" />);
     expect(screen.getByRole('button', { name: 'Last 7 days' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Last 30 days' })).toBeInTheDocument();
   });
 
   it('navigates straight to a 7-day range ending now when "Last 7 days" is clicked', () => {
-    renderWithProvider(<HistoryRangePicker lineId="wcml" />);
+    renderWithMantine(<HistoryRangePicker lineId="wcml" />);
     fireEvent.click(screen.getByRole('button', { name: 'Last 7 days' }));
 
     const url = pushedUrl();
@@ -56,7 +51,7 @@ describe('HistoryRangePicker', () => {
   });
 
   it('navigates straight to a 30-day range ending now when "Last 30 days" is clicked', () => {
-    renderWithProvider(<HistoryRangePicker lineId="wcml" />);
+    renderWithMantine(<HistoryRangePicker lineId="wcml" />);
     fireEvent.click(screen.getByRole('button', { name: 'Last 30 days' }));
 
     const url = pushedUrl();
@@ -67,13 +62,13 @@ describe('HistoryRangePicker', () => {
   });
 
   it('disables "Show history" and explains that both ends are required before any date is picked', () => {
-    renderWithProvider(<HistoryRangePicker lineId="wcml" />);
+    renderWithMantine(<HistoryRangePicker lineId="wcml" />);
     expect(screen.getByRole('button', { name: 'Show history' })).toBeDisabled();
     expect(screen.getByText('Pick both a start and end date to continue.')).toBeInTheDocument();
   });
 
   it('keeps "Show history" disabled with only one end of the range picked', async () => {
-    renderWithProvider(<HistoryRangePicker lineId="wcml" />);
+    renderWithMantine(<HistoryRangePicker lineId="wcml" />);
     fireEvent.click(screen.getByRole('button', { name: 'Pick a date range' }));
     await clickDay('10');
 
@@ -82,7 +77,7 @@ describe('HistoryRangePicker', () => {
   });
 
   it('enables "Show history" once both ends are picked and clears the reminder', async () => {
-    renderWithProvider(<HistoryRangePicker lineId="wcml" />);
+    renderWithMantine(<HistoryRangePicker lineId="wcml" />);
     fireEvent.click(screen.getByRole('button', { name: 'Pick a date range' }));
     await clickDay('10');
     await clickDay('15');
@@ -92,7 +87,7 @@ describe('HistoryRangePicker', () => {
   });
 
   it('navigates using the from/to search-param contract when a custom range is confirmed', async () => {
-    renderWithProvider(<HistoryRangePicker lineId="wcml" />);
+    renderWithMantine(<HistoryRangePicker lineId="wcml" />);
     fireEvent.click(screen.getByRole('button', { name: 'Pick a date range' }));
     await clickDay('10');
     await clickDay('15');
@@ -113,7 +108,7 @@ describe('HistoryRangePicker', () => {
   });
 
   it('fills the picker and drops the reminder when a preset is used', () => {
-    renderWithProvider(<HistoryRangePicker lineId="wcml" />);
+    renderWithMantine(<HistoryRangePicker lineId="wcml" />);
     fireEvent.click(screen.getByRole('button', { name: 'Last 7 days' }));
 
     // The bug: presets navigated without touching `value`, so the picker
@@ -125,7 +120,7 @@ describe('HistoryRangePicker', () => {
   });
 
   it('shows the preset range as calendar days in the picker', () => {
-    renderWithProvider(<HistoryRangePicker lineId="wcml" />);
+    renderWithMantine(<HistoryRangePicker lineId="wcml" />);
     fireEvent.click(screen.getByRole('button', { name: 'Last 30 days' }));
 
     const url = pushedUrl();
