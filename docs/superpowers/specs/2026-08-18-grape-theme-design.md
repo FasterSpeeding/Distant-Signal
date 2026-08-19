@@ -126,9 +126,40 @@ It goes in its own module rather than inline in the layout because
 Mantine's default `primaryShade` is `{ light: 6, dark: 8 }`. Grape shade 6
 is `#be4bdb`; shade 8 is `#9c36b5`.
 
-Keep the default unless contrast testing (below) says otherwise. If white
-text on grape 6 fails for small text, prefer raising the light shade to 7
-over introducing a custom tuple.
+**Status: resolved, but not the way this section originally advised.** The
+first draft said "if white text on grape 6 fails for small text, prefer
+raising the light shade to 7". Grape 6 on white measures **4.02:1** — it
+does fail AA's 4.5:1 for body text — but raising `primaryShade` turned out
+to be the wrong instrument, and was rejected on evidence:
+
+`primaryShade` is **not scoped to `primaryColor`**. Mantine's
+`get-css-color-variables.mjs` feeds `getPrimaryShade()` into the
+`-filled`/`-outline`/`-text` variables of *every* colour in `theme.colors`,
+not just the primary. Raising it to 7 would therefore have shifted
+`--mantine-color-red-filled`, `-yellow-filled` and the rest — which is
+exactly what `StatusBadge` (`variant="filled"`) consumes. That would have
+broken this spec's own Non-goal that the severity palette must not change.
+See the reasoning comment in `frontend/lib/theme.ts`.
+
+What shipped instead is a scoped override in `app/globals.css`:
+`--mantine-color-anchor: var(--mantine-color-grape-7)` for the light scheme
+only (grape 7 = `#ae3ec9` = **4.85:1**, clears AA). Nothing but Mantine's
+`Anchor` and the `c="var(--mantine-color-anchor)"` call sites read that
+variable, so links are fixed without touching `primaryShade`, `StatusBadge`,
+or filled buttons. The dark scheme is left alone — Mantine resolves anchor
+to shade 4 there, and grape 4 on the dark body is 5.84:1.
+
+`app/globals.test.ts` encodes the WCAG contrast formula and asserts these
+ratios directly, so the thresholds are checked rather than asserted by
+eye.
+
+**Still open:** white-on-grape-6 *filled buttons* remain at 4.02:1.
+`autoContrast` would address them, but it is global and would also flip
+`StatusBadge`'s text colour (yellow badges would gain black text — an
+improvement the original review actually asked for, but still a change to
+how the severity palette renders). That needs a deliberate decision against
+the Non-goals above, so it is tracked separately rather than folded in
+here.
 
 ### What must NOT become grape
 
