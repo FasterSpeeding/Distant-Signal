@@ -1,17 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
-import { theme } from '@/lib/theme';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { renderWithMantine } from '@/test/render';
 import { DeleteLineButton } from './DeleteLineButton';
 
 const pushMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock }),
 }));
-
-function renderWithProvider(ui: React.ReactElement) {
-  return render(<MantineProvider theme={theme}>{ui}</MantineProvider>);
-}
 
 describe('DeleteLineButton', () => {
   beforeEach(() => {
@@ -25,7 +20,7 @@ describe('DeleteLineButton', () => {
 
   it('does not call DELETE until the confirmation modal is confirmed', () => {
     const fetchMock = vi.mocked(fetch);
-    renderWithProvider(<DeleteLineButton id="custom-my-commute" />);
+    renderWithMantine(<DeleteLineButton id="custom-my-commute" />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -34,7 +29,7 @@ describe('DeleteLineButton', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
-    renderWithProvider(<DeleteLineButton id="custom-my-commute" />);
+    renderWithMantine(<DeleteLineButton id="custom-my-commute" />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
@@ -49,7 +44,7 @@ describe('DeleteLineButton', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('custom line not found', { status: 404 }));
 
-    renderWithProvider(<DeleteLineButton id="custom-my-commute" />);
+    renderWithMantine(<DeleteLineButton id="custom-my-commute" />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
