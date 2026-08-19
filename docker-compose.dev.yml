@@ -1,0 +1,94 @@
+# Dev override for docker-compose.yml — debug builds + frontend hot reload.
+#
+# Not selected by hand: `dev.env` sets
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml
+# so `docker compose --env-file dev.env up --build` picks up both files.
+# There are no Compose profiles any more; the env file is the only switch.
+#
+# Why a second file rather than `${CARGO_PROFILE:-release}` interpolation in
+# one file: interpolation would handle the build args fine, but Compose has
+# no way to attach a volume *conditionally*, and the `/app` bind mount that
+# makes hot reload work would break the prod image by shadowing its built
+# `.next` and `node_modules`. A separate override is the only way to keep
+# the mount out of the prod path.
+#
+# Out of scope (see the plan): the Rust services get debug builds, not live
+# reload — changing Rust source still means `up --build`.
+
+services:
+  api:
+    build:
+      args:
+        CARGO_PROFILE: debug
+
+  poller-incidents:
+    build:
+      args:
+        CARGO_PROFILE: debug
+
+  poller-stations:
+    build:
+      args:
+        CARGO_PROFILE: debug
+
+  poller-tocs:
+    build:
+      args:
+        CARGO_PROFILE: debug
+
+  poller-ldbws:
+    build:
+      args:
+        CARGO_PROFILE: debug
+
+  aggregator:
+    build:
+      args:
+        CARGO_PROFILE: debug
+
+  frontend:
+    build:
+      # frontend/Dockerfile: skips `next build`, runs `next dev` as the
+      # image's built-in `node` user (uid/gid 1000).
+      target: runtime-dev
+    volumes:
+      # The working tree, live. `next dev`'s watcher sees host edits
+      # immediately, so saving a file recompiles in place — no rebuild, no
+      # restart. `:z` asks the runtime to relabel the directory with a
+      # shared SELinux context. This host runs SELinux in Enforcing mode,
+      # but the docker daemon here is built without label support
+      # (`docker info` lists seccomp only, no `selinux`), so today `:z` is
+      # a no-op — it is kept because it costs nothing and is what stops
+      # EACCES on every file under /app under a label-enabled daemon or
+      # under podman, where the same compose file is expected to work.
+      - ./frontend:/app:z
+      # Anonymous volumes masking two paths inside that bind mount:
+      #   node_modules — Docker seeds an anonymous volume from the image, so
+      #     this keeps the image's `npm ci` output (node 22 / Debian) in
+      #     place instead of exposing the host's (node 25 / Fedora, and
+      #     absent entirely on a fresh clone). Native modules are not
+      #     portable between the two.
+      #   .next — `next dev`'s cache/HMR state stays container-only rather
+      #     than fighting with a host-side `next build` output.
+      # Compose carries anonymous volumes across recreates, so after a
+      # `frontend/package.json` change use
+      #   docker compose --env-file dev.env up --build --force-recreate -V frontend
+      # `-V` (--renew-anon-volumes) discards them and re-seeds from the
+      # freshly built image; without it the container keeps stale deps.
+      - /app/node_modules
+      - /app/.next
+    environment:
+      # frontend/next.config.mjs: comma-separated list of origins `next dev`
+      # accepts cross-origin dev requests from. Empty by default — fill it
+      # in from the warning Next prints if it complains (see
+      # dev.env.example). Compose merges `environment:` maps across files,
+      # so API_BASE_URL from docker-compose.yml survives.
+      NEXT_ALLOWED_DEV_ORIGINS: ${NEXT_ALLOWED_DEV_ORIGINS:-}
+    # Escape hatch for a host whose uid/gid is not 1000: the `node` user
+    # baked into node:22-bookworm-slim is uid/gid 1000, which matches this
+    # host, so files the container writes into the bind mount land
+    # host-owned and host files stay container-writable. On a host with a
+    # different uid, uncomment the line below (with DEV_UID/DEV_GID set in
+    # dev.env) and run `docker compose --env-file dev.env down -v` once to
+    # discard the stale, wrongly-owned `.next` volume.
+    #   user: "${DEV_UID}:${DEV_GID}"
