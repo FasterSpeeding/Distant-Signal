@@ -1,7 +1,7 @@
-import { Stack, Title, Table, TableThead, TableTbody, TableTr, TableTh, TableTd, Text } from '@mantine/core';
-import Link from 'next/link';
+import { Stack, Title, Table, TableThead, TableTbody, TableTr, TableTh, TableTd } from '@mantine/core';
 import { getAllLines, getPreferences } from '@/lib/api';
 import { PinToggle } from '@/components/PinToggle';
+import { TextLink } from '@/components/TextLink';
 import { CustomLineForm } from './CustomLineForm';
 
 export const revalidate = 0;
@@ -34,14 +34,7 @@ export default async function AllLinesPage() {
             {lines.map((line) => (
               <TableTr key={line.id}>
                 <TableTd>
-                  {/* Plain `<Link>` wrapping `Text`, not `component={Link}`
-                      on a Mantine polymorphic prop — this page is a Server
-                      Component, and that pattern previously broke
-                      `next build`'s Server/Client boundary check (see
-                      LineStatusCard's fix). */}
-                  <Link href={`/lines/${line.id}`} style={{ textDecoration: 'none' }}>
-                    <Text c="var(--mantine-color-anchor)">{line.name}</Text>
-                  </Link>
+                  <TextLink href={`/lines/${line.id}`}>{line.name}</TextLink>
                 </TableTd>
                 <TableTd>{line.category}</TableTd>
                 <TableTd>{line.operators.join(', ')}</TableTd>

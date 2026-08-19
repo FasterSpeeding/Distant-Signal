@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useSuggestions } from './useSuggestions';
-import type { Suggestion } from './suggestions';
+import type { Suggestion } from './types';
 
 const sample: Suggestion[] = [{ code: 'WOK', name: 'Woking' }];
 

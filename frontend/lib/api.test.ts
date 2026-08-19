@@ -9,6 +9,7 @@ import {
   getCustomLine,
   getLineDefinition,
   getDataFreshness,
+  getStationName,
   ApiNotFoundError,
 } from './api';
 
@@ -159,5 +160,27 @@ describe('api client', () => {
     );
     await expect(getLineStatus(['wcml'], false)).rejects.toThrow(/500/);
     await expect(getLineStatus(['wcml'], false)).rejects.not.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('getStationName caches the CRS lookup rather than refetching per render', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([{ code: 'WOK', name: 'Woking' }]), { status: 200 })),
+    );
+    // CRS -> name is reference data that changes on the order of years, so
+    // unlike the live disruption feeds this must not be `no-store`.
+    await expect(getStationName('WOK')).resolves.toBe('Woking');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/stations?q=WOK',
+      expect.objectContaining({ next: { revalidate: 3600 } }),
+    );
+  });
+
+  it('getStationName returns null when the search has no exact match', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([{ code: 'WOF', name: 'Wolverton' }]), { status: 200 })),
+    );
+    await expect(getStationName('WOK')).resolves.toBeNull();
   });
 });

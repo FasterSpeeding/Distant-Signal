@@ -111,4 +111,29 @@ describe('HistoryRangePicker', () => {
     expect(url.searchParams.get('from')).toBe(expectedFrom);
     expect(url.searchParams.get('to')).toBe(expectedTo);
   });
+
+  it('fills the picker and drops the reminder when a preset is used', () => {
+    renderWithProvider(<HistoryRangePicker lineId="wcml" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Last 7 days' }));
+
+    // The bug: presets navigated without touching `value`, so the picker
+    // sat empty on its placeholder and the "pick both ends" reminder stayed
+    // on screen directly above a populated history list.
+    expect(screen.queryByText('Pick dates range')).not.toBeInTheDocument();
+    expect(screen.queryByText('Pick both a start and end date to continue.')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show history' })).toBeEnabled();
+  });
+
+  it('shows the preset range as calendar days in the picker', () => {
+    renderWithProvider(<HistoryRangePicker lineId="wcml" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Last 30 days' }));
+
+    const url = pushedUrl();
+    const expected = [url.searchParams.get('from')!, url.searchParams.get('to')!]
+      .map((iso) => new Date(iso).getUTCDate().toString());
+    const picker = screen.getByRole('button', { name: /Pick a date range/ });
+    for (const day of expected) {
+      expect(picker.textContent).toContain(day);
+    }
+  });
 });

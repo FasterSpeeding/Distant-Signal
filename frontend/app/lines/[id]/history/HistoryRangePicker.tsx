@@ -7,6 +7,10 @@ import { Button, Group, Stack, Text } from '@mantine/core';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+function toCalendarDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
 export function HistoryRangePicker({ lineId }: { lineId: string }) {
   const router = useRouter();
   const [value, setValue] = useState<[string | null, string | null]>([null, null]);
@@ -23,11 +27,17 @@ export function HistoryRangePicker({ lineId }: { lineId: string }) {
 
   // "Did my line misbehave recently" is the page's main use case, so these
   // presets skip the calendar entirely and jump straight to results rather
-  // than just populating the picker.
+  // than just populating the picker. They still write the range back into
+  // `value` afterwards: the picker is the page's only display of *which*
+  // range the results below cover, and leaving it empty also left the
+  // "pick both ends" reminder stranded above a populated history list.
+  // Mantine's range picker holds calendar days as `YYYY-MM-DD`, so the
+  // navigated instants are truncated to their UTC day for display.
   function handlePreset(days: number) {
     const now = new Date();
     const from = new Date(now.getTime() - days * DAY_MS);
     goToRange(from.toISOString(), now.toISOString());
+    setValue([toCalendarDay(from), toCalendarDay(now)]);
   }
 
   const bothEndsPicked = Boolean(value[0] && value[1]);

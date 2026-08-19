@@ -3,18 +3,28 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { theme } from '@/lib/theme';
 import { CustomLineForm } from './CustomLineForm';
+import type { CustomLineDetail } from '@/lib/types';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
-function renderWithProvider() {
+function renderWithProvider(props: { cancelHref?: string; existingLine?: CustomLineDetail } = {}) {
   return render(
     <MantineProvider theme={theme}>
-      <CustomLineForm />
+      <CustomLineForm {...props} />
     </MantineProvider>,
   );
 }
+
+const existingLine: CustomLineDetail = {
+  id: 'my-line',
+  name: 'My line',
+  operators: [],
+  stations: ['WOK', 'CLJ'],
+  headcodePrefixes: [],
+  destinationCrsFilter: [],
+};
 
 describe('CustomLineForm', () => {
   beforeEach(() => {
@@ -86,5 +96,34 @@ describe('CustomLineForm', () => {
 
     const pill = screen.getByText('SW').closest('[title]');
     expect(pill).toHaveAttribute('title', 'South Western Railway');
+  });
+
+  it('renders no Cancel action when no cancelHref is given', () => {
+    renderWithProvider();
+
+    expect(screen.queryByRole('link', { name: 'Cancel' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create line' })).toBeInTheDocument();
+  });
+
+  it('places Cancel before the submit action in a single row when cancelHref is given', () => {
+    renderWithProvider({ existingLine, cancelHref: '/lines/my-line' });
+
+    const cancel = screen.getByRole('link', { name: 'Cancel' });
+    const submit = screen.getByRole('button', { name: 'Save changes' });
+    expect(cancel).toHaveAttribute('href', '/lines/my-line');
+    // Both actions must share one parent row, and Cancel must come first —
+    // the bug was Cancel rendering in a separate block *below* a
+    // full-width submit button.
+    expect(cancel.parentElement).toBe(submit.parentElement);
+    expect(cancel.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('Cancel does not submit the form', () => {
+    renderWithProvider({ existingLine, cancelHref: '/lines/my-line' });
+
+    fireEvent.click(screen.getByRole('link', { name: 'Cancel' }));
+
+    const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.some(([url]) => String(url).startsWith('/api/lines'))).toBe(false);
   });
 });
