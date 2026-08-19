@@ -1,2 +1,25 @@
 @import '@mantine/core/styles.css';
 @import '@mantine/dates/styles.css';
+
+/* Mantine resolves `--mantine-color-anchor` to `primaryColor`-6 in the
+   light scheme, and grape 6 (#be4bdb) on white is 4.02:1 — under WCAG AA's
+   4.5:1 for body text, so every link in the app failed. Grape 7 (#ae3ec9)
+   is 4.85:1 and clears it.
+
+   Nothing but Mantine's `Anchor` and the `c="var(--mantine-color-anchor)"`
+   call sites read this variable, so the change is contained to links: it
+   does not touch `primaryShade`, `StatusBadge`, or filled buttons (see the
+   comment in `lib/theme.ts` for why a global `primaryShade` bump was
+   rejected).
+
+   The dark scheme is deliberately untouched — Mantine hardcodes anchor to
+   `primaryColor`-4 there, and grape 4 (#da77f2) is 5.84:1 on the dark body.
+
+   `html:root[...]` rather than plain `:root[...]`: MantineProvider injects
+   its own `:root[data-mantine-color-scheme='light']` block from inside
+   <body>, i.e. later in document order than this stylesheet, so an
+   equal-specificity rule would lose. The extra element selector wins on
+   specificity instead, which holds regardless of injection order. */
+html:root[data-mantine-color-scheme='light'] {
+  --mantine-color-anchor: var(--mantine-color-grape-7);
+}
