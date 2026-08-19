@@ -4,6 +4,23 @@ import { getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { HistoryRangePicker } from './HistoryRangePicker';
 
+// Same lookup the detail page uses for its heading. This page's job is the
+// date range, not the name, so a failed lookup (line deleted, catalogue
+// hiccup, etc.) falls back to the raw id instead of taking the whole page
+// down the way `notFound()` would on the detail page. An empty result is
+// the same fallback rather than a thrown TypeError, and the failure is
+// logged so a genuine bug in here doesn't vanish silently. Mirrors
+// `resolveStationName` on the station page.
+async function resolveLineName(id: string): Promise<string> {
+  try {
+    const [report] = await getLineStatus([id], false);
+    return report?.name ?? id;
+  } catch (err) {
+    console.warn(`Could not resolve a name for line "${id}"; falling back to the id.`, err);
+    return id;
+  }
+}
+
 export default async function LineHistoryPage({
   params,
   searchParams,
@@ -14,17 +31,7 @@ export default async function LineHistoryPage({
   const { id } = await params;
   const { from, to } = await searchParams;
 
-  // Same lookup the detail page uses for its heading. This page's job is
-  // the date range, not the name, so a failed lookup (line deleted,
-  // catalogue hiccup, etc.) falls back to the raw id instead of taking the
-  // whole page down the way `notFound()` would on the detail page.
-  let name = id;
-  try {
-    const [report] = await getLineStatus([id], false);
-    name = report.name;
-  } catch {
-    // swallowed — see comment above
-  }
+  const name = await resolveLineName(id);
 
   return (
     <Stack p="lg" gap="md">
