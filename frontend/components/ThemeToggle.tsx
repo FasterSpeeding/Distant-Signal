@@ -40,7 +40,16 @@ export function ThemeToggle() {
   const displayedComputedScheme = mounted ? computedColorScheme : 'light';
 
   return (
-    <Indicator label="A" size={14} offset={2} disabled={displayedScheme !== 'auto'}>
+    // The "A" is purely a visual disambiguator; the `ActionIcon`'s
+    // `aria-label` below already announces the auto state, so exposing the
+    // badge would just put a bare "A" next to it in the accessibility tree.
+    <Indicator
+      label="A"
+      size={14}
+      offset={2}
+      disabled={displayedScheme !== 'auto'}
+      attributes={{ indicator: { 'aria-hidden': 'true' } }}
+    >
       <ActionIcon
         variant="outline"
         onClick={() => setColorScheme(NEXT_SCHEME[colorScheme])}

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { Suggestion } from './suggestions';
+import type { Suggestion } from './types';
 
 const DEBOUNCE_MS = 250;
 

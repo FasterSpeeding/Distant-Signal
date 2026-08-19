@@ -1,7 +1,4 @@
-export interface Suggestion {
-  code: string;
-  name: string;
-}
+import type { Suggestion } from './types';
 
 /** Client-side fetch through the same-origin `/api/*` proxy
  * (`app/api/[...path]/route.ts`) — Client Components can't read the

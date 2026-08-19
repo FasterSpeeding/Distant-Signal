@@ -88,4 +88,13 @@ describe('ThemeToggle', () => {
     expect(html).toContain('☀️');
     expect(html).not.toContain('🌙');
   });
+
+  it('keeps the auto marker out of the accessibility tree', () => {
+    renderWithProvider();
+    // The button's own `aria-label` already says "Theme: auto", so an
+    // exposed "A" next to it is just a bare, meaningless letter to a
+    // screen reader. It stays visible; it's only hidden from AT.
+    const marker = screen.getByText('A');
+    expect(marker).toHaveAttribute('aria-hidden', 'true');
+  });
 });

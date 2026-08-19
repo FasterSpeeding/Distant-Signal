@@ -79,3 +79,11 @@ export interface DataFreshness {
   tocs: string | null;
   incidents: string | null;
 }
+
+/** A code/name pair from the `/public/stations` and `/public/tocs`
+ * type-ahead endpoints — CRS codes for stations, ATOC codes for
+ * operators. */
+export interface Suggestion {
+  code: string;
+  name: string;
+}
