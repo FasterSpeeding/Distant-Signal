@@ -14,7 +14,7 @@ type RenderWithMantineOptions = RenderOptions & {
 // caller gets the real production theme (`lib/theme.ts`, the same object
 // `app/layout.tsx` passes) for free — a test file can no longer render
 // under a different, hand-rolled provider and still pass. See
-// `lib/theme.test.ts` for the regression check that exercises this.
+// `lib/theme.test.tsx` for the regression check that exercises this.
 export function renderWithMantine(ui: ReactElement, options: RenderWithMantineOptions = {}) {
   const { defaultColorScheme, ...renderOptions } = options;
   return render(
