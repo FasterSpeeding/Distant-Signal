@@ -1,12 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { screen } from '@testing-library/react';
+import { renderWithMantine } from '@/test/render';
 import { LineStatusCard } from './LineStatusCard';
 import type { LineStatusReport } from '@/lib/types';
-
-function renderWithProvider(ui: React.ReactElement) {
-  return render(<MantineProvider>{ui}</MantineProvider>);
-}
 
 const report: LineStatusReport = {
   $type: 'NRStatus.LineStatusReport',
@@ -28,22 +24,22 @@ const report: LineStatusReport = {
 
 describe('LineStatusCard', () => {
   it('renders the line name', () => {
-    renderWithProvider(<LineStatusCard report={report} />);
+    renderWithMantine(<LineStatusCard report={report} />);
     expect(screen.getByText('West Coast Main Line')).toBeInTheDocument();
   });
 
   it('renders the worst status badge', () => {
-    renderWithProvider(<LineStatusCard report={report} />);
+    renderWithMantine(<LineStatusCard report={report} />);
     expect(screen.getByText('Minor Delays')).toBeInTheDocument();
   });
 
   it('renders the status reason', () => {
-    renderWithProvider(<LineStatusCard report={report} />);
+    renderWithMantine(<LineStatusCard report={report} />);
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
   });
 
   it('renders a Good Service badge when there are no statuses', () => {
-    renderWithProvider(<LineStatusCard report={{ ...report, lineStatuses: [] }} />);
+    renderWithMantine(<LineStatusCard report={{ ...report, lineStatuses: [] }} />);
     expect(screen.getByText('Good Service')).toBeInTheDocument();
   });
 
@@ -70,14 +66,14 @@ describe('LineStatusCard', () => {
         },
       ],
     };
-    renderWithProvider(<LineStatusCard report={mixed} />);
+    renderWithMantine(<LineStatusCard report={mixed} />);
     expect(screen.getByText('Diverted')).toBeInTheDocument();
     expect(screen.getByText('Line diverted due to engineering works')).toBeInTheDocument();
     expect(screen.queryByText('Good Service')).not.toBeInTheDocument();
   });
 
   it('renders a last-updated indicator', () => {
-    renderWithProvider(<LineStatusCard report={report} />);
+    renderWithMantine(<LineStatusCard report={report} />);
     expect(screen.getByText(/Updated (just now|\d+[mhd] ago)/)).toBeInTheDocument();
   });
 });

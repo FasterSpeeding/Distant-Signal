@@ -1,15 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { screen, fireEvent } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
+import { renderWithMantine } from '@/test/render';
 import { ThemeToggle } from './ThemeToggle';
 
 function renderWithProvider() {
-  return render(
-    <MantineProvider defaultColorScheme="auto">
-      <ThemeToggle />
-    </MantineProvider>,
-  );
+  return renderWithMantine(<ThemeToggle />, { defaultColorScheme: 'auto' });
 }
 
 describe('ThemeToggle', () => {
@@ -34,6 +32,24 @@ describe('ThemeToggle', () => {
 
     fireEvent.click(button);
     expect(screen.getByLabelText('Theme: auto. Click to switch.')).toBeInTheDocument();
+    // Full circle: the auto marker (see the test below) must reappear once
+    // the cycle returns to "auto", not just disappear once and stay gone.
+    expect(screen.getByText('A')).toBeInTheDocument();
+  });
+
+  it('marks the auto state with a visible indicator, distinct from the sun/moon icon', () => {
+    renderWithProvider();
+    // "auto" resolves to light here (system preference is polyfilled to
+    // light), so the icon alone is ☀️ - identical to what explicit "light"
+    // will render next. Without a separate marker, clicking away from
+    // "auto" to "light" would change nothing the user can see.
+    expect(screen.getByText('A')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button')); // -> light
+    // Same resolved icon as before, but the auto marker must be gone now
+    // that a scheme is explicitly selected - this is the visible change
+    // click 1 must produce.
+    expect(screen.queryByText('A')).not.toBeInTheDocument();
   });
 
   it('shows the sun icon when resolved to light, moon when resolved to dark', () => {
@@ -59,7 +75,7 @@ describe('ThemeToggle', () => {
     localStorage.setItem('mantine-color-scheme-value', 'dark');
 
     const html = renderToString(
-      <MantineProvider defaultColorScheme="auto">
+      <MantineProvider theme={theme} defaultColorScheme="auto">
         <ThemeToggle />
       </MantineProvider>,
     );
@@ -68,5 +84,14 @@ describe('ThemeToggle', () => {
     expect(html).not.toContain('Theme: dark. Click to switch.');
     expect(html).toContain('☀️');
     expect(html).not.toContain('🌙');
+  });
+
+  it('keeps the auto marker out of the accessibility tree', () => {
+    renderWithProvider();
+    // The button's own `aria-label` already says "Theme: auto", so an
+    // exposed "A" next to it is just a bare, meaningless letter to a
+    // screen reader. It stays visible; it's only hidden from AT.
+    const marker = screen.getByText('A');
+    expect(marker).toHaveAttribute('aria-hidden', 'true');
   });
 });

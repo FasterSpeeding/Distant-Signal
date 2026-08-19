@@ -4,8 +4,10 @@ import { ActionIcon, MantineProvider, ColorSchemeScript, mantineHtmlProps, Group
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { TextLink } from '@/components/TextLink';
 import { DataFreshnessInfo } from '@/components/DataFreshnessInfo';
 import { getDataFreshness } from '@/lib/api';
+import { theme } from '@/lib/theme';
 
 export const metadata: Metadata = {
   title: 'National Rail Status',
@@ -36,7 +38,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ColorSchemeScript defaultColorScheme="auto" />
       </head>
       <body>
-        <MantineProvider defaultColorScheme="auto">
+        <MantineProvider theme={theme} defaultColorScheme="auto">
           <Group
             component="nav"
             justify="space-between"
@@ -57,12 +59,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Text fw={700}>National Rail Line Status</Text>
             </Link>
             <Group gap="lg">
-              <Link href="/lines" style={{ textDecoration: 'none' }}>
-                <Text c="blue">All Lines</Text>
-              </Link>
-              <Link href="/stations" style={{ textDecoration: 'none' }}>
-                <Text c="blue">Station Lookup</Text>
-              </Link>
+              <TextLink href="/lines">All Lines</TextLink>
+              <TextLink href="/stations">Station Lookup</TextLink>
               <Suspense fallback={<ActionIcon variant="subtle" aria-label="Data freshness" disabled loading />}>
                 <DataFreshnessNavItem />
               </Suspense>

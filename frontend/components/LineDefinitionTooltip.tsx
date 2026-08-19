@@ -1,6 +1,7 @@
 'use client';
 
 import { ActionIcon, Stack, Text, Tooltip } from '@mantine/core';
+import { InfoIcon } from './InfoIcon';
 
 /** Purely presentational — the detail page (a Server Component) fetches
  * the definition and passes it in as props, rather than this component
@@ -19,7 +20,7 @@ export function LineDefinitionTooltip({ stations, operators }: { stations: strin
       maw={320}
     >
       <ActionIcon variant="subtle" aria-label="How this line is defined">
-        ⓘ
+        <InfoIcon />
       </ActionIcon>
     </Tooltip>
   );

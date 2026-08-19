@@ -1,2 +1,55 @@
 @import '@mantine/core/styles.css';
 @import '@mantine/dates/styles.css';
+
+/* Mantine resolves `--mantine-color-anchor` to `primaryColor`-6 in the
+   light scheme, and grape 6 (#be4bdb) on white is 4.02:1 — under WCAG AA's
+   4.5:1 for body text, so every link in the app failed. Grape 7 (#ae3ec9)
+   is 4.85:1 and clears it.
+
+   Nothing but Mantine's `Anchor` and the `c="var(--mantine-color-anchor)"`
+   call sites read this variable, so the change is contained to links: it
+   does not touch `primaryShade`, `StatusBadge`, or filled buttons (see the
+   comment in `lib/theme.ts` for why a global `primaryShade` bump was
+   rejected).
+
+   The dark scheme is deliberately untouched — Mantine hardcodes anchor to
+   `primaryColor`-4 there, and grape 4 (#da77f2) is 5.84:1 on the dark body.
+
+   `html:root[...]` rather than plain `:root[...]`: MantineProvider injects
+   its own `:root[data-mantine-color-scheme='light']` block from inside
+   <body>, i.e. later in document order than this stylesheet, so an
+   equal-specificity rule would lose. The extra element selector wins on
+   specificity instead, which holds regardless of injection order. */
+html:root[data-mantine-color-scheme='light'] {
+  --mantine-color-anchor: var(--mantine-color-grape-7);
+}
+
+/* `components/TextLink.tsx` opts in via `data-text-link`. The colour above
+   is the only thing that used to distinguish these links from the text
+   around them, which is a WCAG 1.4.1 (Use of Color) failure — hence an
+   underline as a second, non-colour cue.
+
+   `text-decoration-color` is set explicitly because a decoration is
+   painted in the *decorating* element's colour: the `<a>` here has no
+   colour of its own (the `Text` inside it carries it), so the underline
+   would otherwise come out in the inherited body colour. */
+a[data-text-link] {
+  text-decoration: none;
+  text-decoration-color: var(--mantine-color-anchor);
+  text-underline-offset: 0.2em;
+}
+
+/* Hover *and* `:focus-visible`, so keyboard users get the same cue a
+   mouse user does. */
+a[data-text-link]:hover,
+a[data-text-link]:focus-visible {
+  text-decoration: underline;
+}
+
+/* Links sitting in the ordinary flow of body text, where position gives
+   the reader no hint that they're links. Nav items, header actions and a
+   table column of names are identified by where they are, so they stay on
+   hover-only rather than turning whole regions of the UI into rules. */
+a[data-text-link='always'] {
+  text-decoration: underline;
+}

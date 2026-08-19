@@ -1,22 +1,39 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { screen, fireEvent, act } from '@testing-library/react';
+import { startTransition as reactStartTransition } from 'react';
+import { renderWithMantine } from '@/test/render';
 import { StationSearchForm } from './StationSearchForm';
 
+// Resolves (or is replaced) per-test to control how long a simulated
+// navigation stays in flight.
+let resolveNavigation: () => void = () => {};
+
+const pushMock = vi.fn(() => {
+  // Mirrors what Next's real `useRouter().push` does internally
+  // (node_modules/next/dist/client/components/app-router.js dispatches
+  // the navigation inside its own nested `startTransition`): the pending
+  // window doesn't close until the target route's RSC payload resolves.
+  // Composing that as a controllable deferred promise here lets the
+  // pending-state tests drive the window open and shut deterministically,
+  // without standing up a real Next server.
+  reactStartTransition(async () => {
+    await new Promise<void>((resolve) => {
+      resolveNavigation = resolve;
+    });
+  });
+});
+
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: pushMock }),
 }));
 
 function renderWithProvider() {
-  return render(
-    <MantineProvider>
-      <StationSearchForm />
-    </MantineProvider>,
-  );
+  return renderWithMantine(<StationSearchForm />);
 }
 
 describe('StationSearchForm', () => {
   beforeEach(() => {
+    pushMock.mockClear();
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.stubGlobal(
       'fetch',
@@ -49,5 +66,51 @@ describe('StationSearchForm', () => {
     fireEvent.click(option);
 
     expect(input).toHaveValue('WOK');
+  });
+
+  it('shows a user-facing pending state and disables the button while navigation is in flight', async () => {
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Station CRS code' });
+    fireEvent.change(input, { target: { value: 'WOK' } });
+
+    expect(screen.getByRole('button', { name: 'Look up' })).toBeEnabled();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
+    });
+
+    // Developer vocabulary ("Rendering...") is out; user-facing wording is
+    // in, and the button stays disabled so a second click can't fire a
+    // second navigation.
+    const pendingButton = screen.getByRole('button', { name: 'Looking up…' });
+    expect(pendingButton).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Look up' })).not.toBeInTheDocument();
+
+    // The results area itself carries a real pending indicator too, not
+    // just the button — several seconds of a static button is not enough
+    // feedback for where the user is actually looking.
+    expect(screen.getByRole('status')).toBeInTheDocument();
+
+    await act(async () => {
+      resolveNavigation();
+    });
+
+    expect(screen.getByRole('button', { name: 'Look up' })).toBeEnabled();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('does not enter the pending state for a blank CRS code', async () => {
+    renderWithProvider();
+    const button = screen.getByRole('button', { name: 'Look up' });
+    expect(button).toBeDisabled();
+
+    await act(async () => {
+      fireEvent.click(button);
+    });
+
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Look up' })).toBeDisabled();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 });

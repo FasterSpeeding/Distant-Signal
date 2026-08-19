@@ -2,6 +2,7 @@ import { Stack, Title, SimpleGrid, Text, Group, Card } from '@mantine/core';
 import Link from 'next/link';
 import { getLineStatusForMode, getPreferences, getStopPointDisruption } from '@/lib/api';
 import { LineStatusCard } from '@/components/LineStatusCard';
+import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank } from '@/lib/severity';
 import type { LineStatusReport } from '@/lib/types';
@@ -43,9 +44,7 @@ export default async function DashboardPage() {
       <Stack gap="md">
         <Group justify="space-between">
           <Title order={1}>Your Lines</Title>
-          <Link href="/lines" style={{ textDecoration: 'none' }}>
-            <Text c="blue">Browse all lines</Text>
-          </Link>
+          <TextLink href="/lines">Browse all lines</TextLink>
         </Group>
         {pinnedLineReports.length === 0 ? (
           <Text c="dimmed">
@@ -63,9 +62,7 @@ export default async function DashboardPage() {
       <Stack gap="md">
         <Group justify="space-between">
           <Title order={2}>Your Stations</Title>
-          <Link href="/stations" style={{ textDecoration: 'none' }}>
-            <Text c="blue">Look up a station</Text>
-          </Link>
+          <TextLink href="/stations">Look up a station</TextLink>
         </Group>
         {pinnedStationEntries.length === 0 ? (
           <Text c="dimmed">

@@ -1,6 +1,7 @@
 'use client';
 
 import { ActionIcon, Stack, Text, Tooltip } from '@mantine/core';
+import { InfoIcon } from './InfoIcon';
 import { LastUpdated } from './LastUpdated';
 import type { DataFreshness } from '@/lib/types';
 
@@ -37,7 +38,7 @@ export function DataFreshnessInfo({ freshness }: { freshness: DataFreshness }) {
       maw={280}
     >
       <ActionIcon variant="subtle" aria-label="Data freshness">
-        ⓘ
+        <InfoIcon />
       </ActionIcon>
     </Tooltip>
   );

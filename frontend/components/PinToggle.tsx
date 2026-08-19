@@ -2,10 +2,35 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ActionIcon } from '@mantine/core';
+import { ActionIcon, Tooltip } from '@mantine/core';
 import type { Preferences } from '@/lib/types';
 
 type PinKind = 'line' | 'station';
+
+/** Same star glyph in both states so the shape reads as "star" either way;
+ * the pinned/unpinned distinction itself comes from `fill` (none vs
+ * `currentColor`) combined with the `ActionIcon`'s `variant`/`color`, which
+ * is set differently per state below — fill is deliberately not the only
+ * signal, since a squashed icon at small sizes can make a fill-only
+ * distinction hard to see. */
+function StarIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill={filled ? 'currentColor' : 'none'}
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+    </svg>
+  );
+}
 
 /** Calls the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * rather than `lib/api.ts` — this is a Client Component, which cannot read
@@ -48,15 +73,24 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
     }
   }
 
+  // States both the action and the current state, per accessibility
+  // review, so a screen reader user can tell pinned from unpinned without
+  // relying on the icon fill (which they can't see).
+  const label = pinned ? 'Unpin (currently pinned)' : 'Pin (currently not pinned)';
+
   return (
-    <ActionIcon
-      variant={pinned ? 'filled' : 'outline'}
-      color="yellow"
-      onClick={toggle}
-      disabled={busy}
-      aria-label={pinned ? 'Unpin' : 'Pin'}
-    >
-      {pinned ? '★' : '☆'}
-    </ActionIcon>
+    <Tooltip label={label}>
+      <ActionIcon
+        variant={pinned ? 'filled' : 'outline'}
+        // Distinct hues (not just filled vs. outline of the same yellow)
+        // so pinned/unpinned don't rely on icon fill alone.
+        color={pinned ? 'yellow' : 'gray'}
+        onClick={toggle}
+        disabled={busy}
+        aria-label={label}
+      >
+        <StarIcon filled={pinned} />
+      </ActionIcon>
+    </Tooltip>
   );
 }

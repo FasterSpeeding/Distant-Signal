@@ -1,12 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { screen, fireEvent } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
+import { renderWithMantine } from '@/test/render';
 import { LastUpdated } from './LastUpdated';
-
-function renderWithProvider(ui: React.ReactElement) {
-  return render(<MantineProvider>{ui}</MantineProvider>);
-}
 
 describe('LastUpdated', () => {
   it('server-rendered output shows a fixed absolute time, never a relative one (avoids hydration mismatch)', () => {
@@ -15,7 +13,7 @@ describe('LastUpdated', () => {
     // depend on "now" (real wall-clock time at test-run time), or it can
     // never match the client's own pre-mount render.
     const html = renderToString(
-      <MantineProvider>
+      <MantineProvider theme={theme}>
         <LastUpdated timestamp="2026-07-15T09:00:00Z" />
       </MantineProvider>,
     );
@@ -24,17 +22,17 @@ describe('LastUpdated', () => {
   });
 
   it('shows a relative time once mounted', () => {
-    renderWithProvider(<LastUpdated timestamp="2026-07-15T09:00:00Z" />);
+    renderWithMantine(<LastUpdated timestamp="2026-07-15T09:00:00Z" />);
     expect(screen.getByText(/Updated (just now|\d+[mhd] ago)/)).toBeInTheDocument();
   });
 
   it('supports a custom label', () => {
-    renderWithProvider(<LastUpdated timestamp="2026-07-15T09:00:00Z" label="Stations:" />);
+    renderWithMantine(<LastUpdated timestamp="2026-07-15T09:00:00Z" label="Stations:" />);
     expect(screen.getByText(/^Stations:/)).toBeInTheDocument();
   });
 
   it('shows the exact time in a tooltip on hover by default', async () => {
-    renderWithProvider(<LastUpdated timestamp="2026-07-15T09:00:00Z" />);
+    renderWithMantine(<LastUpdated timestamp="2026-07-15T09:00:00Z" />);
     // Mantine's Tooltip doesn't mount its floating content into the DOM
     // at all until actually triggered — hover it first (same pattern as
     // LineDefinitionTooltip.test.tsx).
@@ -43,7 +41,7 @@ describe('LastUpdated', () => {
   });
 
   it('does not show a tooltip on hover when withTooltip is false', () => {
-    renderWithProvider(<LastUpdated timestamp="2026-07-15T09:00:00Z" withTooltip={false} />);
+    renderWithMantine(<LastUpdated timestamp="2026-07-15T09:00:00Z" withTooltip={false} />);
     fireEvent.mouseEnter(screen.getByText(/^Updated/));
     expect(screen.queryByRole('tooltip', { hidden: true })).not.toBeInTheDocument();
   });
