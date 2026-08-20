@@ -257,6 +257,19 @@ Rule table:
 | `extracted_schedule_window` present and "now" falls outside it | Demote to `Severity::MinorDelays` (9) at most — same cap as the `resolved` case, never suppressed — and annotate reason text with the stated window (e.g. "reported active 22:00-06:00 only"). |
 | `extracted_eta` present, already passed, no fresher extraction since | Same treatment as `resolved` — demote + annotate ("expected to end by HH:MM"), not suppressed, since a missed ETA is informative but not proof of resolution. |
 
+Rows apply independently, not as an if/else chain — confirmed explicitly
+during implementation planning, since it's easy to misread as "resolution
+status is authoritative when present." An `ongoing` incident whose stated
+schedule window excludes right now still gets the schedule-window
+demotion: `resolution_status = ongoing` is truthful (the underlying issue
+hasn't been resolved) and the schedule window is *also* truthful (the
+disruption isn't live at this moment) — both are real signal, and this is
+the exact case motivating extraction of the schedule window at all
+(Problem, point 1: a nightly rail-replacement incident shouldn't show full
+severity at 2pm). Where multiple rows fire at once, take the most severe
+(lowest-numbered) resulting severity, then apply the corresponding
+annotation(s).
+
 This composes without touching the rest of the pipeline:
 
 - **Match-scope demotion** (`demote_for_scope`) stays strictly last —
