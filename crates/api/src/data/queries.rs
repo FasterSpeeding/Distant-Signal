@@ -41,15 +41,31 @@ fn incident_changed(
     }
 }
 
+/// Narrower than `incident_changed`: true only if summary or description
+/// differ from what's stored. Validity-only changes don't need
+/// re-extraction -- the prose an LLM would read hasn't moved. Drives
+/// whether `upsert_incidents` publishes a `text-changed` event.
+fn text_changed(existing: Option<&ExistingIncident>, summary: &str, description: &str) -> bool {
+    match existing {
+        None => true,
+        Some(row) => row.summary != summary || row.description != description,
+    }
+}
+
 /// Upserts a batch of Knowledgebase incidents. Each incident is inserted or
 /// updated in `incidents`; if the stored summary/description/validity_periods
 /// differ from what's incoming (or the incident is new), a snapshot is also
 /// appended to `incident_history`. Runs as a single transaction so a
 /// mid-batch failure doesn't leave `incidents` and `incident_history`
 /// inconsistent with each other.
-pub async fn upsert_incidents(pool: &PgPool, incidents: &[IncidentMessage]) -> Result<u64> {
+pub async fn upsert_incidents(
+    pool: &PgPool,
+    redis: &redis::aio::ConnectionManager,
+    incidents: &[IncidentMessage],
+) -> Result<u64> {
     let mut tx = pool.begin().await?;
     let mut count = 0u64;
+    let mut text_changed_ids = Vec::new();
 
     for incident in incidents {
         let validity_json = serde_json::to_value(&incident.validity)?;
@@ -67,6 +83,9 @@ pub async fn upsert_incidents(pool: &PgPool, incidents: &[IncidentMessage]) -> R
             &incident.description,
             &validity_json,
         );
+        if text_changed(existing.as_ref(), &incident.summary, &incident.description) {
+            text_changed_ids.push(incident.incident_id.clone());
+        }
 
         sqlx::query(
             r#"
@@ -127,6 +146,26 @@ pub async fn upsert_incidents(pool: &PgPool, incidents: &[IncidentMessage]) -> R
     }
 
     tx.commit().await?;
+
+    // Publish only after commit: a publish before commit could announce an
+    // incident that a later failure in this same batch rolls back. Publish
+    // failure is logged, not propagated -- the hourly sweep (Task 5) is the
+    // backstop for a missed publish, so ingestion must not fail because
+    // Redis is briefly unavailable.
+    let mut redis = redis.clone();
+    for incident_id in text_changed_ids {
+        let result: redis::RedisResult<String> = redis::cmd("XADD")
+            .arg("incident-text-changed")
+            .arg("*")
+            .arg("incident_id")
+            .arg(&incident_id)
+            .query_async(&mut redis)
+            .await;
+        if let Err(err) = result {
+            tracing::warn!(error = ?err, incident_id, "failed to publish text-changed event; hourly sweep will catch it");
+        }
+    }
+
     Ok(count)
 }
 
@@ -424,5 +463,33 @@ mod tests {
             "description",
             &serde_json::json!([])
         ));
+    }
+
+    #[test]
+    fn text_changed_true_for_a_new_incident() {
+        assert!(text_changed(None, "Signal failure", "Delays expected"));
+    }
+
+    #[test]
+    fn text_changed_true_when_summary_differs() {
+        let row = existing("Signal failure", "Delays expected", serde_json::json!([]));
+        assert!(text_changed(Some(&row), "Points failure", "Delays expected"));
+    }
+
+    #[test]
+    fn text_changed_true_when_description_differs() {
+        let row = existing("Signal failure", "Delays expected", serde_json::json!([]));
+        assert!(text_changed(Some(&row), "Signal failure", "Disruption has now ended"));
+    }
+
+    #[test]
+    fn text_changed_false_when_only_validity_periods_would_differ() {
+        // text_changed only compares summary/description -- validity is
+        // deliberately excluded, since it doesn't require re-extraction of
+        // prose that hasn't moved. This test simulates that by reusing the
+        // same summary/description text_changed actually looks at; there's
+        // no validity parameter to vary because text_changed never takes one.
+        let row = existing("Signal failure", "Delays expected", serde_json::json!([]));
+        assert!(!text_changed(Some(&row), "Signal failure", "Delays expected"));
     }
 }

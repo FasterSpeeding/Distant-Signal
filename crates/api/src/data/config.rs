@@ -49,6 +49,8 @@ pub struct ServiceArguments {
     pub bind_url: String,
     #[arg(short, long, env)]
     pub database_url: String,
+    #[arg(long, env)]
+    pub redis_url: String,
     /// Shared secret pollers must present via `X-Internal-Token` to reach
     /// `private_router()` endpoints.
     #[arg(long, env)]

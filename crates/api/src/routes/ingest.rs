@@ -77,7 +77,7 @@ async fn post_incidents(
     State(app): State<App>,
     Json(incidents): Json<Vec<IncidentMessage>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = queries::upsert_incidents(&app.database, &incidents)
+    let upserted = queries::upsert_incidents(&app.database, &app.redis, &incidents)
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))

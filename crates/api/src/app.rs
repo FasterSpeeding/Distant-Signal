@@ -2,15 +2,28 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
+use redis::aio::ConnectionManager;
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
 use crate::data::config::ServiceArguments;
 
 
-#[derive(Debug)]
 pub struct AppState {
     pub config: ServiceArguments,
     pub database: PgPool,
+    pub redis: ConnectionManager,
+}
+
+// Manual `Debug` rather than `#[derive(Debug)]`: `redis::aio::ConnectionManager`
+// doesn't implement `Debug`, so the derive doesn't compile once it's a field.
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("config", &self.config)
+            .field("database", &self.database)
+            .field("redis", &"ConnectionManager { .. }")
+            .finish()
+    }
 }
 
 pub type App = Arc<AppState>;
@@ -35,9 +48,17 @@ impl AppState {
             .await
             .context("Could not connect to database")?;
 
+        let redis_client = redis::Client::open(config.redis_url.clone())
+            .context("Could not parse REDIS_URL")?;
+        let redis = redis_client
+            .get_connection_manager()
+            .await
+            .context("Could not connect to redis")?;
+
         Ok(Arc::new(Self {
             config,
             database: db,
+            redis,
         }))
     }
 }
