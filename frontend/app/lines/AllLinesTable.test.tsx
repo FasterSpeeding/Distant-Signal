@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { AllLinesTable } from './AllLinesTable';
-import type { LineStatusReport, LineSummary } from '@/lib/types';
+import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
@@ -57,8 +57,14 @@ const reports: LineStatusReport[] = [
   // swr has no report -> worst/stats/cancelledPct all undefined/null.
 ];
 
+const tocs: Suggestion[] = [
+  { code: 'AW', name: 'Avanti West Coast' },
+  { code: 'GW', name: 'Great Western Railway' },
+  { code: 'SW', name: 'South Western Railway' },
+];
+
 function renderTable() {
-  return renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} />);
+  return renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={tocs} />);
 }
 
 function rowNames() {
@@ -89,13 +95,31 @@ describe('AllLinesTable', () => {
     expect(screen.getByText('South Western')).toBeInTheDocument();
   });
 
+  it('shows operator options as "CODE - Full Name"', async () => {
+    renderTable();
+    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const { fireEvent } = await import('@testing-library/react');
+    fireEvent.click(input);
+    // Query synchronously, right after opening the dropdown, and read every
+    // option in one pass -- Mantine's floating-ui positioning collapses the
+    // dropdown to `display: none` in jsdom shortly after open (no real
+    // layout/IntersectionObserver here), so a second query issued after an
+    // earlier `await` sees nothing. One synchronous snapshot avoids that.
+    const optionText = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(optionText).toEqual([
+      'AW - Avanti West Coast',
+      'GW - Great Western Railway',
+      'SW - South Western Railway',
+    ]);
+  });
+
   it('narrows rows to lines matching the selected operator', async () => {
     renderTable();
     const input = screen.getByRole('combobox', { name: 'Filter by operator' });
     input.focus();
     const { fireEvent } = await import('@testing-library/react');
     fireEvent.click(input);
-    const option = await screen.findByRole('option', { name: 'SW' });
+    const option = await screen.findByRole('option', { name: 'SW - South Western Railway' });
     fireEvent.click(option);
 
     expect(screen.getByText('South Western')).toBeInTheDocument();
@@ -103,12 +127,36 @@ describe('AllLinesTable', () => {
     expect(screen.queryByText('Great Western Railway')).not.toBeInTheDocument();
   });
 
+  it('supports searching the operator filter by typing a name instead of a code', async () => {
+    renderTable();
+    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const { fireEvent } = await import('@testing-library/react');
+    fireEvent.click(input);
+    fireEvent.change(input, { target: { value: 'Avanti' } });
+
+    // Synchronous, single-pass query -- see the comment on the option-label
+    // test above for why this can't be split across an `await`.
+    const optionText = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(optionText).toEqual(['AW - Avanti West Coast']);
+  });
+
+  it('supports searching the operator filter by typing a code instead of a name', async () => {
+    renderTable();
+    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const { fireEvent } = await import('@testing-library/react');
+    fireEvent.click(input);
+    fireEvent.change(input, { target: { value: 'SW' } });
+
+    const optionText = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(optionText).toEqual(['SW - South Western Railway']);
+  });
+
   it('clearing the filter shows all lines again', async () => {
     renderTable();
     const input = screen.getByRole('combobox', { name: 'Filter by operator' });
     const { fireEvent } = await import('@testing-library/react');
     fireEvent.click(input);
-    const option = await screen.findByRole('option', { name: 'SW' });
+    const option = await screen.findByRole('option', { name: 'SW - South Western Railway' });
     fireEvent.click(option);
     expect(screen.queryByText('West Coast Main Line')).not.toBeInTheDocument();
 

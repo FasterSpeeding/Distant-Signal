@@ -19,6 +19,7 @@ pub fn router() -> Router {
     Router::new()
         .route("/stations", axum::routing::get(search_stations))
         .route("/tocs", axum::routing::get(search_tocs))
+        .route("/tocs/all", axum::routing::get(list_all_tocs))
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +49,15 @@ async fn search_tocs(
         return Ok(Json(Vec::new()));
     };
     let results = reference::search_tocs(&app.database, q, SUGGESTION_LIMIT)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(results))
+}
+
+async fn list_all_tocs(
+    State(app): State<App>,
+) -> Result<Json<Vec<Suggestion>>, (StatusCode, String)> {
+    let results = reference::get_all_tocs(&app.database)
         .await
         .map_err(internal_error)?;
     Ok(Json(results))

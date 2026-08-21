@@ -6,6 +6,7 @@ import {
   getLineStatusHistory,
   getPreferences,
   getAllLines,
+  getAllTocs,
   getCustomLine,
   getLineDefinition,
   getDataFreshness,
@@ -97,6 +98,18 @@ describe('api client', () => {
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/lines',
       expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getAllTocs fetches the correct URL, cached for an hour', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+    await getAllTocs();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/tocs/all',
+      expect.objectContaining({ next: { revalidate: 3600 } }),
     );
   });
 

@@ -90,6 +90,16 @@ export async function getAllLines(): Promise<LineSummary[]> {
   return fetchJson<LineSummary[]>(`${baseUrl()}/public/lines`, { cache: 'no-store' });
 }
 
+/** Every TOC (code + name), for resolving a fixed known set of operator
+ * codes up front (e.g. the All Lines operator filter) rather than
+ * type-ahead searching one at a time. Cached for an hour like
+ * `getStationName` — this is reference data that barely changes. */
+export async function getAllTocs(): Promise<Suggestion[]> {
+  return fetchJson<Suggestion[]>(`${baseUrl()}/public/tocs/all`, {
+    next: { revalidate: 3600 },
+  });
+}
+
 export async function getCustomLine(id: string): Promise<CustomLineDetail> {
   return fetchJson<CustomLineDetail>(`${baseUrl()}/public/lines/${id}`, { cache: 'no-store' });
 }

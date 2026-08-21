@@ -16,7 +16,7 @@ import { PinToggle } from '@/components/PinToggle';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
 import { worstStatus, severityRank } from '@/lib/severity';
-import type { LineStatusReport, LineSummary } from '@/lib/types';
+import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
 function sampleStatsFor(report: LineStatusReport | undefined) {
   return report?.lineStatuses.find((status) => status.sampleStats)?.sampleStats;
@@ -34,20 +34,34 @@ export function AllLinesTable({
   lines,
   reports,
   pinnedLineIds,
+  tocs,
 }: {
   lines: LineSummary[];
   reports: LineStatusReport[];
   pinnedLineIds: string[];
+  tocs: Suggestion[];
 }) {
   const [selectedOperators, setSelectedOperators] = useState<string[]>([]);
   const [sort, setSort] = useState<SortState | null>(null);
 
   const reportsById = useMemo(() => new Map(reports.map((report) => [report.id, report])), [reports]);
   const pinnedSet = useMemo(() => new Set(pinnedLineIds), [pinnedLineIds]);
+  const nameByCode = useMemo(() => new Map(tocs.map((toc) => [toc.code, toc.name])), [tocs]);
 
+  // `label` carries both the code and the name (not just the code, with
+  // the name relegated to a separate renderOption) so Mantine's default
+  // label-based dropdown filter can match a search on either -- the
+  // station-search autocomplete elsewhere in this app had a bug from
+  // getting this backwards.
   const operatorOptions = useMemo(
-    () => Array.from(new Set(lines.flatMap((line) => line.operators))).sort(),
-    [lines],
+    () =>
+      Array.from(new Set(lines.flatMap((line) => line.operators)))
+        .sort()
+        .map((code) => {
+          const name = nameByCode.get(code);
+          return { value: code, label: name ? `${code} - ${name}` : code };
+        }),
+    [lines, nameByCode],
   );
 
   const rows = useMemo(

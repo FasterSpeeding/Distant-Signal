@@ -50,3 +50,14 @@ pub async fn search_tocs(pool: &PgPool, q: &str, limit: i64) -> Result<Vec<Sugge
     .await?;
     Ok(rows)
 }
+
+/// Returns every TOC, ordered by name -- used where the full reference
+/// set is needed up front (e.g. resolving every operator code present
+/// in a table) rather than type-ahead search.
+pub async fn get_all_tocs(pool: &PgPool) -> Result<Vec<Suggestion>> {
+    let rows: Vec<Suggestion> =
+        sqlx::query_as("SELECT atoc_code AS code, name FROM tocs ORDER BY name")
+            .fetch_all(pool)
+            .await?;
+    Ok(rows)
+}
