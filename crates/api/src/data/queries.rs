@@ -8,15 +8,23 @@
 //! to that is more machinery than a handful of straightforward upserts
 //! warrant.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use common::{IncidentMessage, StationReference, StationSample, TocReference};
 use sqlx::PgPool;
+
+/// Incidents are upserted in chunks of this size, each as its own
+/// transaction, rather than one transaction for the whole poll batch --
+/// see the `upsert_incidents` doc comment for why.
+const UPSERT_CHUNK_SIZE: usize = 50;
 
 /// The subset of an existing `incidents` row needed to decide whether an
 /// incoming `IncidentMessage` represents a real change worth recording in
 /// `incident_history`.
 #[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 struct ExistingIncident {
+    incident_id: String,
     summary: String,
     description: String,
     validity_periods: serde_json::Value,
@@ -55,78 +63,74 @@ fn text_changed(existing: Option<&ExistingIncident>, summary: &str, description:
 /// Upserts a batch of Knowledgebase incidents. Each incident is inserted or
 /// updated in `incidents`; if the stored summary/description/validity_periods
 /// differ from what's incoming (or the incident is new), a snapshot is also
-/// appended to `incident_history`. Runs as a single transaction so a
-/// mid-batch failure doesn't leave `incidents` and `incident_history`
-/// inconsistent with each other.
+/// appended to `incident_history`.
+///
+/// Runs as a series of `UPSERT_CHUNK_SIZE`-sized transactions rather than one
+/// transaction for the whole batch -- a full poll cycle can carry hundreds of
+/// incidents, and holding row locks on all of them for the duration of one
+/// giant transaction blocks unrelated single-row writers (e.g. the enricher
+/// persisting extraction results) for as long as the whole batch takes.
+/// Chunking bounds that lock-hold window to one chunk's worth of work. Each
+/// chunk is still atomic with respect to its own `incidents`/`incident_history`
+/// writes, but a failure partway through the batch no longer rolls back
+/// chunks that already committed -- acceptable here because the poller
+/// resends the full current feed state every cycle (see `poller-incidents`),
+/// so anything not persisted this round is retried wholesale next round.
 pub async fn upsert_incidents(
     pool: &PgPool,
     redis: &redis::Client,
     incidents: &[IncidentMessage],
 ) -> Result<u64> {
-    let mut tx = pool.begin().await?;
     let mut count = 0u64;
     let mut text_changed_ids = Vec::new();
 
-    for incident in incidents {
-        let validity_json = serde_json::to_value(&incident.validity)?;
+    for chunk in incidents.chunks(UPSERT_CHUNK_SIZE) {
+        let mut tx = pool.begin().await?;
 
-        let existing: Option<ExistingIncident> = sqlx::query_as(
-            "SELECT summary, description, validity_periods FROM incidents WHERE incident_id = $1",
+        let chunk_ids: Vec<&str> = chunk.iter().map(|i| i.incident_id.as_str()).collect();
+        let existing_rows: Vec<ExistingIncident> = sqlx::query_as(
+            "SELECT incident_id, summary, description, validity_periods FROM incidents WHERE incident_id = ANY($1)",
         )
-        .bind(&incident.incident_id)
-        .fetch_optional(&mut *tx)
+        .bind(&chunk_ids)
+        .fetch_all(&mut *tx)
         .await?;
+        let existing_by_id: HashMap<&str, &ExistingIncident> = existing_rows
+            .iter()
+            .map(|row| (row.incident_id.as_str(), row))
+            .collect();
 
-        let changed = incident_changed(
-            existing.as_ref(),
-            &incident.summary,
-            &incident.description,
-            &validity_json,
-        );
-        if text_changed(existing.as_ref(), &incident.summary, &incident.description) {
-            text_changed_ids.push(incident.incident_id.clone());
-        }
+        for incident in chunk {
+            let validity_json = serde_json::to_value(&incident.validity)?;
+            let existing = existing_by_id.get(incident.incident_id.as_str()).copied();
 
-        sqlx::query(
-            r#"
-            INSERT INTO incidents (
-                incident_id, summary, description, operators, affected_stations,
-                priority, validity_periods, is_planned, is_cleared, fetched_at,
-                first_seen_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
-            ON CONFLICT (incident_id) DO UPDATE SET
-                summary           = EXCLUDED.summary,
-                description       = EXCLUDED.description,
-                operators         = EXCLUDED.operators,
-                affected_stations = EXCLUDED.affected_stations,
-                priority          = EXCLUDED.priority,
-                validity_periods  = EXCLUDED.validity_periods,
-                is_planned        = EXCLUDED.is_planned,
-                is_cleared        = EXCLUDED.is_cleared,
-                fetched_at        = NOW()
-            "#,
-        )
-        .bind(&incident.incident_id)
-        .bind(&incident.summary)
-        .bind(&incident.description)
-        .bind(&incident.operators)
-        .bind(&incident.affected_stations)
-        .bind(incident.priority)
-        .bind(&validity_json)
-        .bind(incident.is_planned)
-        .bind(incident.is_cleared)
-        .execute(&mut *tx)
-        .await?;
+            let changed = incident_changed(
+                existing,
+                &incident.summary,
+                &incident.description,
+                &validity_json,
+            );
+            if text_changed(existing, &incident.summary, &incident.description) {
+                text_changed_ids.push(incident.incident_id.clone());
+            }
 
-        if changed {
             sqlx::query(
                 r#"
-                INSERT INTO incident_history (
+                INSERT INTO incidents (
                     incident_id, summary, description, operators, affected_stations,
-                    priority, validity_periods, is_planned, is_cleared
+                    priority, validity_periods, is_planned, is_cleared, fetched_at,
+                    first_seen_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+                ON CONFLICT (incident_id) DO UPDATE SET
+                    summary           = EXCLUDED.summary,
+                    description       = EXCLUDED.description,
+                    operators         = EXCLUDED.operators,
+                    affected_stations = EXCLUDED.affected_stations,
+                    priority          = EXCLUDED.priority,
+                    validity_periods  = EXCLUDED.validity_periods,
+                    is_planned        = EXCLUDED.is_planned,
+                    is_cleared        = EXCLUDED.is_cleared,
+                    fetched_at        = NOW()
                 "#,
             )
             .bind(&incident.incident_id)
@@ -140,12 +144,35 @@ pub async fn upsert_incidents(
             .bind(incident.is_cleared)
             .execute(&mut *tx)
             .await?;
+
+            if changed {
+                sqlx::query(
+                    r#"
+                    INSERT INTO incident_history (
+                        incident_id, summary, description, operators, affected_stations,
+                        priority, validity_periods, is_planned, is_cleared
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    "#,
+                )
+                .bind(&incident.incident_id)
+                .bind(&incident.summary)
+                .bind(&incident.description)
+                .bind(&incident.operators)
+                .bind(&incident.affected_stations)
+                .bind(incident.priority)
+                .bind(&validity_json)
+                .bind(incident.is_planned)
+                .bind(incident.is_cleared)
+                .execute(&mut *tx)
+                .await?;
+            }
+
+            count += 1;
         }
 
-        count += 1;
+        tx.commit().await?;
     }
-
-    tx.commit().await?;
 
     // Publish only after commit: a publish before commit could announce an
     // incident that a later failure in this same batch rolls back. Publish
@@ -408,6 +435,7 @@ mod tests {
 
     fn existing(summary: &str, description: &str, validity: serde_json::Value) -> ExistingIncident {
         ExistingIncident {
+            incident_id: "TEST123".to_string(),
             summary: summary.to_string(),
             description: description.to_string(),
             validity_periods: validity,
