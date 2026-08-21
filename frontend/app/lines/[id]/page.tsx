@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 import { Stack, Title, Text, Group, Button } from '@mantine/core';
 import Link from 'next/link';
-import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition } from '@/lib/api';
+import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition, getAllLines } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { RepresentativeInfo } from '@/components/RepresentativeInfo';
 import { IssueList } from '@/components/IssueList';
@@ -29,6 +29,12 @@ export default async function LineDetailPage({
 
   const report = reports[0];
   const worst = worstStatus(report);
+
+  // Category only exists on `LineSummary` (from `getAllLines`), not on the
+  // `LineStatusReport` this page otherwise relies on -- fetched here, after
+  // the notFound() check above, so an unknown line id still 404s cleanly.
+  const lines = await getAllLines();
+  const category = lines.find((line) => line.id === id)?.category;
 
   // `getCustomLine` 404s for a catalogue-line id (the endpoint only ever
   // reads the `custom_lines` table) — that expected 404 is how this page
@@ -82,6 +88,7 @@ export default async function LineDetailPage({
           <StatusBadge severity={worst.statusSeverity} />
         </Group>
       </Group>
+      {category && <Text c="dimmed">Category: {category}</Text>}
       <Text c="dimmed">Operators: {report.operators.join(', ')}</Text>
       <TextLink href={`/lines/${id}/history`} underline="always">
         View history
