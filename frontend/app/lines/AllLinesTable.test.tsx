@@ -95,6 +95,17 @@ describe('AllLinesTable', () => {
     expect(screen.getByText('South Western')).toBeInTheDocument();
   });
 
+  it('allows typing into the operator filter input', () => {
+    // `fireEvent.change` below bypasses the `readOnly` attribute the way a
+    // real keystroke would not -- Mantine's MultiSelect renders its input
+    // `readOnly` unless `searchable` is passed, which blocks actual typing
+    // in a browser even though jsdom's synthetic change events still fire.
+    // Assert on the attribute directly so this test fails without `searchable`.
+    renderTable();
+    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    expect(input).not.toHaveAttribute('readonly');
+  });
+
   it('shows operator options as "CODE - Full Name"', async () => {
     renderTable();
     const input = screen.getByRole('combobox', { name: 'Filter by operator' });

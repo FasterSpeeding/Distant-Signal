@@ -137,6 +137,7 @@ export function AllLinesTable({
         data={operatorOptions}
         value={selectedOperators}
         onChange={setSelectedOperators}
+        searchable
         clearable
         clearButtonProps={{ 'aria-label': 'Clear operator filter' }}
       />
