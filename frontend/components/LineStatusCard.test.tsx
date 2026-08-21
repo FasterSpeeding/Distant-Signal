@@ -76,4 +76,24 @@ describe('LineStatusCard', () => {
     renderWithMantine(<LineStatusCard report={report} />);
     expect(screen.getByText(/Updated (just now|\d+[mhd] ago)/)).toBeInTheDocument();
   });
+
+  it('renders average delay and cancelled percentage when sample stats are present', () => {
+    const withStats: LineStatusReport = {
+      ...report,
+      lineStatuses: [
+        {
+          ...report.lineStatuses[0],
+          sampleStats: { total: 20, delayed: 8, cancelled: 2, skipped: 0, avgDelayMinutes: 7.25 },
+        },
+      ],
+    };
+    renderWithMantine(<LineStatusCard report={withStats} />);
+    expect(screen.getByText(/Avg delay 7\.3 min/)).toBeInTheDocument();
+    expect(screen.getByText(/10% cancelled/)).toBeInTheDocument();
+  });
+
+  it('omits the sample stats line entirely when no status carries sample stats', () => {
+    renderWithMantine(<LineStatusCard report={report} />);
+    expect(screen.queryByText(/Avg delay/)).not.toBeInTheDocument();
+  });
 });

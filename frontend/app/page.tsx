@@ -26,6 +26,17 @@ function worstSeverityAcrossReports(reports: LineStatusReport[]): number {
   return worst;
 }
 
+/** First `sampleStats` found across every status on every report — mirrors
+ * `RepresentativeInfo`'s "first one found is representative" rationale,
+ * extended across a station's several affected lines. */
+function sampleStatsAcrossReports(reports: LineStatusReport[]) {
+  for (const report of reports) {
+    const stats = report.lineStatuses.find((status) => status.sampleStats)?.sampleStats;
+    if (stats) return stats;
+  }
+  return undefined;
+}
+
 export default async function DashboardPage() {
   const preferences = await getPreferences();
 
@@ -70,16 +81,27 @@ export default async function DashboardPage() {
           </Text>
         ) : (
           <Stack gap="xs">
-            {pinnedStationEntries.map(({ crs, reports }) => (
-              <Link key={crs} href={`/stations/${crs}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-                <Card withBorder>
-                  <Group justify="space-between">
-                    <Text fw={600}>{crs}</Text>
-                    <StatusBadge severity={worstSeverityAcrossReports(reports)} />
-                  </Group>
-                </Card>
-              </Link>
-            ))}
+            {pinnedStationEntries.map(({ crs, reports }) => {
+              const stats = sampleStatsAcrossReports(reports);
+              const cancelledPct = stats && stats.total > 0 ? Math.round((stats.cancelled / stats.total) * 100) : null;
+              return (
+                <Link key={crs} href={`/stations/${crs}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+                  <Card withBorder>
+                    <Stack gap={4}>
+                      <Group justify="space-between">
+                        <Text fw={600}>{crs}</Text>
+                        <StatusBadge severity={worstSeverityAcrossReports(reports)} />
+                      </Group>
+                      {stats && (
+                        <Text size="xs" c="dimmed">
+                          Avg delay {stats.avgDelayMinutes.toFixed(1)} min · {cancelledPct}% cancelled
+                        </Text>
+                      )}
+                    </Stack>
+                  </Card>
+                </Link>
+              );
+            })}
           </Stack>
         )}
       </Stack>

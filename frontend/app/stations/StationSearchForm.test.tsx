@@ -48,7 +48,7 @@ describe('StationSearchForm', () => {
 
   it('selecting a suggestion sets the field to just the CRS code, not "code — name"', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Station CRS code' });
+    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'wok' } });
@@ -68,9 +68,31 @@ describe('StationSearchForm', () => {
     expect(input).toHaveValue('WOK');
   });
 
+  it('clicking Look up after typing a station name (without picking the dropdown option) resolves to its CRS code', async () => {
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'Woking' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Look up|Looking up/ }));
+    });
+
+    expect(pushMock).toHaveBeenCalledWith('/stations/WOK');
+
+    // Close out the pending transition so it doesn't leak into later tests.
+    await act(async () => {
+      resolveNavigation();
+    });
+  });
+
   it('shows a user-facing pending state and disables the button while navigation is in flight', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Station CRS code' });
+    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
     fireEvent.change(input, { target: { value: 'WOK' } });
 
     expect(screen.getByRole('button', { name: 'Look up' })).toBeEnabled();

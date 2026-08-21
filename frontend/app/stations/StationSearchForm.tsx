@@ -13,8 +13,18 @@ export function StationSearchForm() {
   const [isPending, startTransition] = useTransition();
 
   function handleSearch() {
-    const trimmed = crs.trim().toUpperCase();
+    const trimmed = crs.trim();
     if (!trimmed) return;
+    // Clicking "Look up" (rather than picking a dropdown option) used to
+    // navigate using the raw typed text uppercased, as if it were always
+    // already a CRS code -- so a typed station name only ever worked by
+    // accident. Resolve against the live suggestions the same way
+    // selecting from the dropdown would: an exact code or name match
+    // first, then the best (first) substring match, and only fall back to
+    // the raw text if nothing matched at all (e.g. a network hiccup).
+    const exactCode = suggestions.find((s) => s.code.toLowerCase() === trimmed.toLowerCase());
+    const exactName = suggestions.find((s) => s.name.toLowerCase() === trimmed.toLowerCase());
+    const target = exactCode?.code ?? exactName?.code ?? suggestions[0]?.code ?? trimmed.toUpperCase();
     // The target `/stations/[crs]` route has no `loading.tsx` of its own,
     // so without this, `isPending` (and therefore all user feedback while
     // its `StopPoint/.../Disruption` fetch — several seconds on the real
@@ -23,7 +33,7 @@ export function StationSearchForm() {
     // its own nested `startTransition` internally, which keeps ours
     // pending for exactly as long as that dispatch takes to settle.
     startTransition(() => {
-      router.push(`/stations/${trimmed}`);
+      router.push(`/stations/${target}`);
     });
   }
 
@@ -31,8 +41,8 @@ export function StationSearchForm() {
     <Stack gap="md">
       <Group align="end">
         <Autocomplete
-          label="Station CRS code"
-          placeholder="e.g. WOK"
+          label="Station name or CRS code"
+          placeholder="e.g. Woking or WOK"
           value={crs}
           onChange={setCrs}
           // `data`'s `label` — not `value` — is what Mantine's Autocomplete
