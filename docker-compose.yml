@@ -1,4 +1,5 @@
-# Local stack: postgres + api + the four RDM pollers + aggregator + frontend.
+# Local stack: postgres + redis + api + the four RDM pollers + aggregator +
+# enricher + frontend.
 #
 # Real secrets/URLs go in git-ignored env files. There is no automatically
 # loaded `.env` any more: which mode you get is decided entirely by which
@@ -32,12 +33,12 @@
 #
 # Build caching: every Dockerfile here starts with
 # `# syntax=docker/dockerfile:1` and uses BuildKit cache mounts — the cargo
-# registry/git/target dirs for the six Rust services, npm's download cache
+# registry/git/target dirs for the seven Rust services, npm's download cache
 # and Next's `.next/cache` for the frontend. Rebuilds therefore recompile
 # only what changed rather than the whole dependency tree. Two consequences
 # worth knowing: the target-dir cache is keyed by rustc version
-# (`cargo-target-1.88` for api/aggregator, `cargo-target-1.86` for the four
-# pollers) so the two sets never invalidate each other, and the `# syntax=`
+# (`cargo-target-1.88` for api/aggregator/enricher, `cargo-target-1.86` for
+# the four pollers) so the two sets never invalidate each other, and the `# syntax=`
 # directive makes BuildKit pull the `docker/dockerfile:1` frontend image, so
 # the FIRST build on a machine needs network access even if every base image
 # is already local. Inspect the caches with `docker buildx du`.
