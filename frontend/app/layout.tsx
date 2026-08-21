@@ -6,6 +6,7 @@ import type { Metadata } from 'next';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { TextLink } from '@/components/TextLink';
 import { DataFreshnessInfo } from '@/components/DataFreshnessInfo';
+import { AutoRefresh } from '@/components/AutoRefresh';
 import { getDataFreshness } from '@/lib/api';
 import { theme } from '@/lib/theme';
 
@@ -39,6 +40,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <MantineProvider theme={theme} defaultColorScheme="auto">
+          <AutoRefresh />
           <Group
             component="nav"
             justify="space-between"

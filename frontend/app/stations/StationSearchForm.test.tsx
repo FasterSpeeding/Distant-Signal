@@ -68,6 +68,26 @@ describe('StationSearchForm', () => {
     expect(input).toHaveValue('WOK');
   });
 
+  it('shows the matching option in the dropdown when searching by station name, not just by code', async () => {
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
+
+    fireEvent.focus(input);
+    // Typing the full station name -- rather than the CRS code -- must
+    // still surface the option. The backend already filters `suggestions`
+    // against both code and name, but Mantine's Autocomplete additionally
+    // re-filters the dropdown client-side using each option's `label`
+    // (which is deliberately set to the code, not the name, for selection
+    // behavior). Without a passthrough `filter`, that re-filtering hides
+    // this option since "woking" never appears in the label "WOK".
+    fireEvent.change(input, { target: { value: 'Woking' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    expect(await screen.findByRole('option', { name: 'WOK — Woking', hidden: true })).toBeInTheDocument();
+  });
+
   it('clicking Look up after typing a station name (without picking the dropdown option) resolves to its CRS code', async () => {
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });

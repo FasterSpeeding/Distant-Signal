@@ -36,11 +36,11 @@ describe('api client', () => {
     vi.unstubAllGlobals();
   });
 
-  it('getLineStatusForMode fetches the correct URL', async () => {
+  it('getLineStatusForMode fetches the correct URL with no caching', async () => {
     await getLineStatusForMode('national-rail');
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Line/Mode/national-rail/Status',
-      expect.objectContaining({ next: { revalidate: 30 } }),
+      expect.objectContaining({ cache: 'no-store' }),
     );
   });
 
@@ -48,7 +48,7 @@ describe('api client', () => {
     await getLineStatus(['wcml', 'swr-alton'], true);
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Line/wcml,swr-alton/Status?detail=true',
-      expect.objectContaining({ next: { revalidate: 30 } }),
+      expect.objectContaining({ cache: 'no-store' }),
     );
   });
 
@@ -56,7 +56,7 @@ describe('api client', () => {
     await getLineStatus(['wcml'], false);
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Line/wcml/Status',
-      expect.objectContaining({ next: { revalidate: 30 } }),
+      expect.objectContaining({ cache: 'no-store' }),
     );
   });
 
@@ -132,11 +132,11 @@ describe('api client', () => {
     );
   });
 
-  it('getDataFreshness fetches the correct URL', async () => {
+  it('getDataFreshness fetches the correct URL with no caching', async () => {
     await getDataFreshness();
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/freshness',
-      expect.objectContaining({ next: { revalidate: 30 } }),
+      expect.objectContaining({ cache: 'no-store' }),
     );
   });
 

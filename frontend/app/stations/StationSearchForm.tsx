@@ -53,6 +53,13 @@ export function StationSearchForm() {
           // dropdown-only via `renderOption`, which doesn't affect what
           // gets written into the field.
           data={suggestions.map((s) => ({ value: s.code, label: s.code }))}
+          // `suggestions` is already server-side filtered (the API matches
+          // the search term against both CRS code and station name), so
+          // Mantine's default client-side re-filtering -- which only checks
+          // `label` (the code) -- would hide correct matches when the user
+          // searched by station name instead of code. Disable it: show
+          // whatever `suggestions` already contains, unfiltered further.
+          filter={({ options }) => options}
           renderOption={({ option }) => {
             const match = suggestions.find((s) => s.code === option.value);
             return match ? `${match.code} — ${match.name}` : option.value;

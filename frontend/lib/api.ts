@@ -35,7 +35,7 @@ async function fetchJson<T>(url: string, init: RequestInit): Promise<T> {
 
 export async function getLineStatusForMode(mode: string): Promise<LineStatusReport[]> {
   return fetchJson<LineStatusReport[]>(`${baseUrl()}/Line/Mode/${mode}/Status`, {
-    next: { revalidate: 30 },
+    cache: 'no-store',
   });
 }
 
@@ -43,7 +43,7 @@ export async function getLineStatus(ids: string[], detail: boolean): Promise<Lin
   const idsParam = ids.join(',');
   const query = detail ? '?detail=true' : '';
   return fetchJson<LineStatusReport[]>(`${baseUrl()}/Line/${idsParam}/Status${query}`, {
-    next: { revalidate: 30 },
+    cache: 'no-store',
   });
 }
 
@@ -100,6 +100,6 @@ export async function getLineDefinition(id: string): Promise<LineDefinitionSumma
 
 export async function getDataFreshness(): Promise<DataFreshness> {
   return fetchJson<DataFreshness>(`${baseUrl()}/public/freshness`, {
-    next: { revalidate: 30 },
+    cache: 'no-store',
   });
 }
