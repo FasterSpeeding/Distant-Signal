@@ -175,10 +175,12 @@ error/timeout, DB error) — only a successful write or a terminal case
 (the incident vanished before extraction ran) is acked. A separate
 reclaim loop periodically calls `XAUTOCLAIM` to drain the consumer
 group's pending-entries list, retrying anything that's sat unacked past a
-configurable idle threshold (`RECLAIM_MIN_IDLE_SECS`, default 300s — set
-comfortably above the worst-case time for both extraction passes plus the
-DB write, so a still-in-flight attempt is never reclaimed out from under
-itself). This is the debounced retry path for both a timed-out request
+configurable idle threshold (`RECLAIM_MIN_IDLE_SECS`, default 600s — set
+comfortably above the worst-case time for all three extraction calls
+(§5's addendum; `3 * LLM_REQUEST_TIMEOUT_SECS`, itself configurable —
+default 120s) plus the DB write, so a still-in-flight attempt is never
+reclaimed out from under itself; raising `LLM_REQUEST_TIMEOUT_SECS` means
+also raising this). This is the debounced retry path for both a timed-out request
 and a crash between processing and `XACK` — real local/self-hosted LLM
 endpoints (§5) can take long enough under load that relying on the hourly
 sweep alone left a timed-out incident under-corrected for up to an hour.
@@ -462,9 +464,12 @@ research kept surfacing as the missing piece.
   server exposed the gap: a reclaim loop (§3) now retries any transient
   failure, LLM timeout included, once it's sat unacked past
   `RECLAIM_MIN_IDLE_SECS`, rather than waiting on the hourly sweep. Still
-  no per-request backoff/retry *within* a single extraction attempt
-  (`REQUEST_TIMEOUT` fails it outright) — the reclaim loop's idle window is
-  the retry mechanism instead of a tighter in-request one.
+  no per-request backoff/retry *within* a single extraction attempt (the
+  configurable `LLM_REQUEST_TIMEOUT_SECS`, default 120s, fails it
+  outright) — the reclaim loop's idle window is the retry mechanism
+  instead of a tighter in-request one. The timeout itself was also raised
+  from an initial fixed 60s and made configurable, again after a real
+  remote self-hosted endpoint proved it too tight in practice.
 
 ## Appendix: candidate models for self-hosted testing (non-binding)
 
