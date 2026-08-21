@@ -152,10 +152,18 @@ not duplicated:
 On each entry: load the incident's current `summary`/`description` from
 Postgres by `incident_id` (not the payload — always re-read current state,
 since the entry may be processed well after publish), run the two-pass
-extraction (§5), write results, `XACK` the entry. Consumer-group semantics
-give at-least-once delivery — a crash between processing and `XACK`
-reprocesses the entry, which is safe since extraction is idempotent per
-text version (keyed by `source_text_hash`, see §6).
+extraction (§5), write results, `XACK` the entry.
+
+This implementation does not drain the consumer group's pending-entries
+list (no `XAUTOCLAIM`/`XPENDING` on startup) — a crash between processing
+and `XACK` leaves that entry stuck in the PEL, unredelivered, for the life
+of the process. This is a deliberate scope cut, not an oversight: the
+hourly reconciliation sweep (§4) is the actual recovery mechanism for a
+missed ack, exactly as it is for a missed publish, and adding PEL-draining
+on top would duplicate that guarantee for a failure mode (mid-processing
+crash) rare enough that the sweep's hourly latency is an acceptable cost.
+If ack-loss frequency in production ever makes that latency unacceptable,
+add PEL-draining then rather than speculatively.
 
 ### 4. Backstop: periodic reconciliation sweep
 
@@ -346,8 +354,11 @@ research kept surfacing as the missing piece.
   selected; one with a current hash is not; one with a mismatched
   `extraction_model_version` behaves the same as a hash mismatch (covers
   the "force re-extraction after a model change" path from §6).
-- **Redis consumer-group behavior**: at-least-once delivery and safe
-  reprocessing after a crash-before-ack. Exact test mechanism
+- **Redis consumer-group behavior**: fresh-entry delivery, group creation
+  idempotency (`BUSYGROUP` swallowed), and — since crash-before-ack relies
+  on the sweep rather than PEL redelivery (§3) — that the sweep correctly
+  picks up an incident whose hash was never updated because its ack never
+  happened. Exact test mechanism
   (testcontainers, a docker-compose-based integration harness, or
   something else) is left to implementation planning — this project
   doesn't yet have an established pattern for infra-backed integration
