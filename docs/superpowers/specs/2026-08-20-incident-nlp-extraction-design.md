@@ -154,16 +154,22 @@ Postgres by `incident_id` (not the payload — always re-read current state,
 since the entry may be processed well after publish), run the two-pass
 extraction (§5), write results, `XACK` the entry.
 
-This implementation does not drain the consumer group's pending-entries
-list (no `XAUTOCLAIM`/`XPENDING` on startup) — a crash between processing
-and `XACK` leaves that entry stuck in the PEL, unredelivered, for the life
-of the process. This is a deliberate scope cut, not an oversight: the
-hourly reconciliation sweep (§4) is the actual recovery mechanism for a
-missed ack, exactly as it is for a missed publish, and adding PEL-draining
-on top would duplicate that guarantee for a failure mode (mid-processing
-crash) rare enough that the sweep's hourly latency is an acceptable cost.
-If ack-loss frequency in production ever makes that latency unacceptable,
-add PEL-draining then rather than speculatively.
+`process_incident` skips `XACK` on any transient failure (LLM call
+error/timeout, DB error) — only a successful write or a terminal case
+(the incident vanished before extraction ran) is acked. A separate
+reclaim loop periodically calls `XAUTOCLAIM` to drain the consumer
+group's pending-entries list, retrying anything that's sat unacked past a
+configurable idle threshold (`RECLAIM_MIN_IDLE_SECS`, default 300s — set
+comfortably above the worst-case time for both extraction passes plus the
+DB write, so a still-in-flight attempt is never reclaimed out from under
+itself). This is the debounced retry path for both a timed-out request
+and a crash between processing and `XACK` — real local/self-hosted LLM
+endpoints (§5) can take long enough under load that relying on the hourly
+sweep alone left a timed-out incident under-corrected for up to an hour.
+The hourly reconciliation sweep (§4) remains the backstop for a missed
+*publish* (Redis down at commit time, `enricher` down long enough to fall
+behind) — a different failure mode from a missed *ack*, which the reclaim
+loop now covers on its own, faster timeline.
 
 ### 4. Backstop: periodic reconciliation sweep
 
@@ -355,10 +361,11 @@ research kept surfacing as the missing piece.
   `extraction_model_version` behaves the same as a hash mismatch (covers
   the "force re-extraction after a model change" path from §6).
 - **Redis consumer-group behavior**: fresh-entry delivery, group creation
-  idempotency (`BUSYGROUP` swallowed), and — since crash-before-ack relies
-  on the sweep rather than PEL redelivery (§3) — that the sweep correctly
-  picks up an incident whose hash was never updated because its ack never
-  happened. Exact test mechanism
+  idempotency (`BUSYGROUP` swallowed), that the reclaim loop's
+  `XAUTOCLAIM` picks up an entry only once it's exceeded the idle
+  threshold, and — as the still-remaining backstop for a missed *publish*
+  rather than a missed *ack* (§3, §4) — that the hourly sweep correctly
+  picks up an incident whose hash was never updated. Exact test mechanism
   (testcontainers, a docker-compose-based integration harness, or
   something else) is left to implementation planning — this project
   doesn't yet have an established pattern for infra-backed integration
@@ -389,12 +396,14 @@ research kept surfacing as the missing piece.
 - Sweep interval (this design assumes hourly) and stream consumer-group
   name/count — tunable operational parameters, not architectural
   decisions.
-- Whether `enricher` needs its own retry/backoff policy for a
-  slow-but-not-erroring local LLM server (e.g. a small self-hosted model
-  under load), distinct from simple failure — currently "discard and let
-  the sweep retry later" (§5) is the whole policy; whether that's
-  responsive enough in practice is worth revisiting once there's a real
-  local server to test against.
+- ~~Whether `enricher` needs its own retry/backoff policy for a
+  slow-but-not-erroring local LLM server~~ — resolved once a real local
+  server exposed the gap: a reclaim loop (§3) now retries any transient
+  failure, LLM timeout included, once it's sat unacked past
+  `RECLAIM_MIN_IDLE_SECS`, rather than waiting on the hourly sweep. Still
+  no per-request backoff/retry *within* a single extraction attempt
+  (`REQUEST_TIMEOUT` fails it outright) — the reclaim loop's idle window is
+  the retry mechanism instead of a tighter in-request one.
 
 ## Appendix: candidate models for self-hosted testing (non-binding)
 
