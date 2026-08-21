@@ -3,3 +3,5 @@ node_modules/
 .env
 next-env.d.ts
 *.tsbuildinfo
+/e2e-report/
+/test-results/
