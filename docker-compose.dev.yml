@@ -12,44 +12,125 @@
 # `.next` and `node_modules`. A separate override is the only way to keep
 # the mount out of the prod path.
 #
-# Out of scope (see the plan): the Rust services get debug builds, not live
-# reload — changing Rust source still means `up --build`.
+# The Rust services get debug builds, not live reload in the `next dev`
+# sense — there's no way to hot-swap a compiled binary. Run
+#   docker compose --env-file dev.env watch
+# instead of `up` and the `develop.watch` blocks below rebuild+recreate the
+# affected service automatically on a source change (including a new
+# migration file — sqlx::migrate! embeds migrations at compile time, so
+# picking one up has always required a rebuild; `watch` just makes that
+# rebuild automatic instead of a manually-remembered `up --build`). Plain
+# `up --build` still works for a one-off manual rebuild.
 
 services:
   api:
     build:
       args:
         CARGO_PROFILE: debug
+    develop:
+      watch:
+        - action: rebuild
+          path: ./crates/api
+        - action: rebuild
+          path: ./crates/common
+        - action: rebuild
+          path: ./lines
+        - action: rebuild
+          path: ./Cargo.toml
+        - action: rebuild
+          path: ./Cargo.lock
 
   poller-incidents:
     build:
       args:
         CARGO_PROFILE: debug
+    develop:
+      watch:
+        - action: rebuild
+          path: ./crates/poller-incidents
+        - action: rebuild
+          path: ./crates/common
+        - action: rebuild
+          path: ./Cargo.toml
+        - action: rebuild
+          path: ./Cargo.lock
 
   poller-stations:
     build:
       args:
         CARGO_PROFILE: debug
+    develop:
+      watch:
+        - action: rebuild
+          path: ./crates/poller-stations
+        - action: rebuild
+          path: ./crates/common
+        - action: rebuild
+          path: ./Cargo.toml
+        - action: rebuild
+          path: ./Cargo.lock
 
   poller-tocs:
     build:
       args:
         CARGO_PROFILE: debug
+    develop:
+      watch:
+        - action: rebuild
+          path: ./crates/poller-tocs
+        - action: rebuild
+          path: ./crates/common
+        - action: rebuild
+          path: ./Cargo.toml
+        - action: rebuild
+          path: ./Cargo.lock
 
   poller-ldbws:
     build:
       args:
         CARGO_PROFILE: debug
+    develop:
+      watch:
+        - action: rebuild
+          path: ./crates/poller-ldbws
+        - action: rebuild
+          path: ./crates/common
+        - action: rebuild
+          path: ./Cargo.toml
+        - action: rebuild
+          path: ./Cargo.lock
 
   aggregator:
     build:
       args:
         CARGO_PROFILE: debug
+    develop:
+      watch:
+        - action: rebuild
+          path: ./crates/aggregator
+        - action: rebuild
+          path: ./crates/common
+        - action: rebuild
+          path: ./lines
+        - action: rebuild
+          path: ./Cargo.toml
+        - action: rebuild
+          path: ./Cargo.lock
 
   enricher:
     build:
       args:
         CARGO_PROFILE: debug
+    develop:
+      watch:
+        - action: rebuild
+          path: ./crates/enricher
+        - action: rebuild
+          path: ./crates/common
+        - action: rebuild
+          path: ./Cargo.toml
+        - action: rebuild
+          path: ./Cargo.lock
 
   frontend:
     build:
