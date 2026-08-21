@@ -18,6 +18,7 @@ export function LineDefinitionTooltip({ stations, operators }: { stations: strin
       }
       multiline
       maw={320}
+      events={{ hover: true, focus: true, touch: true }}
     >
       <ActionIcon variant="subtle" aria-label="How this line is defined">
         <InfoIcon />

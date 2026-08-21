@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { screen, fireEvent } from '@testing-library/react';
+import { screen, fireEvent, createEvent } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { MantineProvider } from '@mantine/core';
 import { theme } from '@/lib/theme';
@@ -44,5 +44,25 @@ describe('LastUpdated', () => {
     renderWithMantine(<LastUpdated timestamp="2026-07-15T09:00:00Z" withTooltip={false} />);
     fireEvent.mouseEnter(screen.getByText(/^Updated/));
     expect(screen.queryByRole('tooltip', { hidden: true })).not.toBeInTheDocument();
+  });
+
+  it('shows the exact time in a tooltip on a touch tap, not just mouse hover', async () => {
+    // Mantine/floating-ui only track a pointer as "touch" once a pointerdown
+    // or pointerenter with that pointerType has fired -- a bare mouseenter
+    // in a touch-events-enabled tooltip still opens it (floating-ui treats
+    // an untracked pointer as mouse-like), so this wouldn't actually catch a
+    // regression to the default `touch: false` unless the touch pointer is
+    // established first, same as a real tap does. jsdom has no PointerEvent
+    // constructor, so `fireEvent.pointerDown(el, { pointerType: 'touch' })`
+    // silently drops `pointerType` (testing-library falls back to the base
+    // `Event` constructor, which ignores unrecognized init fields) --
+    // `pointerType` has to be attached to the event object directly instead.
+    renderWithMantine(<LastUpdated timestamp="2026-07-15T09:00:00Z" />);
+    const target = screen.getByText(/^Updated/);
+    const pointerDown = createEvent.pointerDown(target);
+    Object.defineProperty(pointerDown, 'pointerType', { value: 'touch' });
+    fireEvent(target, pointerDown);
+    fireEvent.mouseEnter(target);
+    expect(await screen.findByRole('tooltip', { hidden: true })).toBeInTheDocument();
   });
 });

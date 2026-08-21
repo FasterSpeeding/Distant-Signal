@@ -36,6 +36,7 @@ export function DataFreshnessInfo({ freshness }: { freshness: DataFreshness }) {
       }
       multiline
       maw={280}
+      events={{ hover: true, focus: true, touch: true }}
     >
       <ActionIcon variant="subtle" aria-label="Data freshness">
         <InfoIcon />

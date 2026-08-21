@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { screen, fireEvent } from '@testing-library/react';
+import { screen, fireEvent, createEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { LineDefinitionTooltip } from './LineDefinitionTooltip';
 
@@ -29,5 +29,20 @@ describe('LineDefinitionTooltip', () => {
     // was both a type error and inert at runtime.
     expect(await screen.findByText('Stations: WOK, WAT')).toBeInTheDocument();
     expect(screen.getByText('Operators: SW')).toBeInTheDocument();
+  });
+
+  it('shows the tooltip content on a touch tap, not just mouse hover', async () => {
+    // See LastUpdated.test.tsx's equivalent test for why a touch pointer
+    // must be established with pointerdown first (and why it's done via a
+    // manually tagged event rather than
+    // `fireEvent.pointerDown(el, { pointerType })` -- jsdom has no
+    // PointerEvent constructor).
+    renderWithMantine(<LineDefinitionTooltip stations={['WOK', 'WAT']} operators={['SW']} />);
+    const trigger = screen.getByLabelText('How this line is defined');
+    const pointerDown = createEvent.pointerDown(trigger);
+    Object.defineProperty(pointerDown, 'pointerType', { value: 'touch' });
+    fireEvent(trigger, pointerDown);
+    fireEvent.mouseEnter(trigger);
+    expect(await screen.findByText('Stations: WOK, WAT')).toBeInTheDocument();
   });
 });

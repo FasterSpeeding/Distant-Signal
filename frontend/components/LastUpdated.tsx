@@ -49,5 +49,11 @@ export function LastUpdated({
     </Text>
   );
 
-  return withTooltip ? <Tooltip label={exact}>{text}</Tooltip> : text;
+  return withTooltip ? (
+    <Tooltip label={exact} events={{ hover: true, focus: true, touch: true }}>
+      {text}
+    </Tooltip>
+  ) : (
+    text
+  );
 }

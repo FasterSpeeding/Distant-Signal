@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { screen, fireEvent } from '@testing-library/react';
+import { screen, fireEvent, createEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { DataFreshnessInfo } from './DataFreshnessInfo';
 import type { DataFreshness } from '@/lib/types';
@@ -39,5 +39,19 @@ describe('DataFreshnessInfo', () => {
     renderWithMantine(<DataFreshnessInfo freshness={freshness} />);
     fireEvent.mouseEnter(screen.getByRole('button', { name: 'Data freshness' }));
     expect(await screen.findByText(/^Incidents: never fetched/)).toBeInTheDocument();
+  });
+
+  it('shows the freshness rows on a touch tap, not just mouse hover', async () => {
+    // See the equivalent LastUpdated test for why a touch pointer must be
+    // established with pointerdown first (and why it's done via a manually
+    // tagged event rather than `fireEvent.pointerDown(el, { pointerType })`
+    // -- jsdom has no PointerEvent constructor).
+    renderWithMantine(<DataFreshnessInfo freshness={freshness} />);
+    const button = screen.getByRole('button', { name: 'Data freshness' });
+    const pointerDown = createEvent.pointerDown(button);
+    Object.defineProperty(pointerDown, 'pointerType', { value: 'touch' });
+    fireEvent(button, pointerDown);
+    fireEvent.mouseEnter(button);
+    expect(await screen.findByText(/^Stations:/)).toBeInTheDocument();
   });
 });
