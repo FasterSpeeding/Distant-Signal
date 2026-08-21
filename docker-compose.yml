@@ -64,6 +64,16 @@ services:
       retries: 10
       start_period: 5s
 
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
   api:
     build:
       context: .
@@ -74,11 +84,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       # crates/api/src/data/config.rs: ServiceArguments
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       BIND_URL: 0.0.0.0:8080
       INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "${API_HOST_PORT:-8080}:8080"
@@ -200,6 +213,28 @@ services:
       LINES_DIR: /app/lines
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_AGGREGATOR:-60}
       HISTORY_RETENTION_DAYS: ${HISTORY_RETENTION_DAYS:-7}
+      RUST_LOG: ${RUST_LOG:-info}
+
+  enricher:
+    build:
+      context: .
+      dockerfile: docker/enricher.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # crates/enricher/src/config.rs: Config
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379
+      LLM_BASE_URL: ${LLM_BASE_URL}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL}
+      SWEEP_INTERVAL_SECS: ${SWEEP_INTERVAL_SECS:-3600}
       RUST_LOG: ${RUST_LOG:-info}
 
   frontend:
