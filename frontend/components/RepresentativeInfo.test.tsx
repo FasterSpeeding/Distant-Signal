@@ -28,9 +28,17 @@ describe('RepresentativeInfo', () => {
     });
     renderWithMantine(<RepresentativeInfo statuses={[withStats]} />);
     expect(screen.getByText(/142 of 160 sampled services delayed/)).toBeInTheDocument();
-    expect(screen.getByText(/3 cancelled/)).toBeInTheDocument();
+    expect(screen.getByText(/3 cancelled \(2%\)/)).toBeInTheDocument();
     expect(screen.getByText(/5 skipping stops/)).toBeInTheDocument();
     expect(screen.getByText(/avg 12\.4 min late/)).toBeInTheDocument();
+  });
+
+  it('shows 0% cancelled without dividing by zero when the sample is empty', () => {
+    const withStats = baseStatus({
+      sampleStats: { total: 0, delayed: 0, cancelled: 0, skipped: 0, avgDelayMinutes: 0 },
+    });
+    renderWithMantine(<RepresentativeInfo statuses={[withStats]} />);
+    expect(screen.getByText(/0 cancelled \(0%\)/)).toBeInTheDocument();
   });
 
   it('uses the first status carrying sampleStats when multiple statuses exist', () => {

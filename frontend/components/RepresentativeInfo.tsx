@@ -10,12 +10,13 @@ export function RepresentativeInfo({ statuses }: { statuses: LineStatus[] }) {
   if (!withStats?.sampleStats) return null;
 
   const { total, delayed, cancelled, skipped, avgDelayMinutes } = withStats.sampleStats;
+  const cancelledPct = total > 0 ? Math.round((cancelled / total) * 100) : 0;
 
   return (
     <Card withBorder padding="sm">
       <Text size="sm">
-        {delayed} of {total} sampled services delayed, {cancelled} cancelled, {skipped} skipping stops, avg{' '}
-        {avgDelayMinutes.toFixed(1)} min late.
+        {delayed} of {total} sampled services delayed, {cancelled} cancelled ({cancelledPct}%), {skipped} skipping
+        stops, avg {avgDelayMinutes.toFixed(1)} min late.
       </Text>
     </Card>
   );
