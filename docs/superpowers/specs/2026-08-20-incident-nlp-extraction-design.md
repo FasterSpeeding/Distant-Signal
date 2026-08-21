@@ -497,3 +497,56 @@ the smallest one whose adversarial pass actually disagrees with the primary
 pass when it should. Run 2-3 candidates (e.g. Qwen3-4B, Qwen3-8B, Gemma3-4B)
 through the golden-corpus eval and pick from the results rather than from
 benchmarks.
+
+## Live-eval results (2026-08-21): `gemma3:12b` confirmed as the recommended default
+
+The shortlist above was speculative when written; this section replaces
+speculation with an actual live-eval run against a real self-hosted
+OpenAI-compatible endpoint (Ollama, reachable via a Tailscale tunnel),
+exercising the multi-period extraction design's own `PRIMARY_PROMPT` and
+schema
+(`docs/superpowers/specs/2026-08-21-multi-period-extraction-design.md`).
+Test battery, run via `crates/enricher/src/llm.rs`'s `#[ignore]`d
+`live_eval_battery` test: the Wandsworth Town two-period fixture (3
+repeats), a flat single-period ETA fixture (2 repeats), and an
+over-segmentation trap (three stations sharing one date range, which must
+NOT split into three periods; 2 repeats) — 7 calls per model.
+
+| Model | Result |
+|---|---|
+| `qwen3.5:4b` | Unreliable: unstable segmentation across identical repeats (1/1/2/1 periods for the same input across separate runs), wrong year inference (resolved to 2019 against a 2026 reference date), frequently null `date_range`. |
+| `qwen3.5:9b` | Failed outright — all 7 attempts timed out at the exact ceiling (180s, then retried at 300s with identical result on every attempt). Not a cold-start effect: a one-time model-load delay would only hit the first attempt, not all seven. Something about this specific model tag appears broken or stuck on this deployment. |
+| `mistral-small:24b` | Correct segmentation and `schedule_window`, but wrong year (2024) and a 2-day date error on one boundary. |
+| `phi4-mini:3.8b`, `gemma3:4b`, `mistral:7b` | Correct segmentation in all cases, but `schedule_window` came back null for all three (lost the nested weekly-restriction structure entirely, folding it into prose instead); `gemma3:4b`/`mistral:7b` got the year right, `phi4-mini:3.8b` didn't (2023). |
+| `gpt-oss:20b` | 7/7 completed, generally correct — and got one BST/UTC timezone detail more precisely right than `gemma3:12b` — but showed real non-determinism: one of three identical multi-period repeats dropped `schedule_window` entirely and flipped `apparent_severity` from `moderate_disruption` to `blocked_or_suspended`. Slower (7–61s/call) and more variable than `gemma3:12b`. |
+| **`gemma3:12b`** | **7/7 clean.** All 3 multi-period repeats: correct 2-period segmentation, identical `schedule_window`, identical `resolution_status`/`apparent_severity` across every repeat. Both flat-ETA repeats correct. Both over-segmentation-trap repeats correctly stayed at 1 period — didn't fall for the trap. Fastest (3–24s/call) and the only candidate with zero dropped fields or flipped values across repeated identical calls. One minor, *consistent* flaw: doesn't apply the BST hour offset on a stated local time (off by exactly one hour, both times it came up) — small, and at least predictable rather than intermittent. |
+
+**Recommendation: `gemma3:12b`** is the empirically validated default for
+this deployment — not the biggest model tested, but the most consistent,
+the fastest, and the only one that never regressed a field on a repeat of
+the exact same input. `local.env`'s `LLM_MODEL` has been updated
+accordingly. `gpt-oss:20b` (the model this design doc's own examples
+assumed, e.g. `"gpt-oss-20b@prompt-v2"`) is a reasonable fallback if
+`gemma3:12b` becomes unavailable, but expect more run-to-run variance and
+higher latency.
+
+This directly closes two of the multi-period design's open risk items:
+risk #1 (segmentation reliability) and risk #2 (whether `strict: true` JSON
+schema enforcement actually holds for an array-of-objects shape on a real
+backend) — both are now empirically resolved *for `gemma3:12b` on this
+specific deployment*. Re-run this battery if `LLM_BASE_URL`, the model, or
+`PRIMARY_PROMPT` changes materially — a different backend/model
+combination is not guaranteed to reproduce these results.
+
+**Caveat observed during this eval**: after this battery (10+ distinct
+large models loaded and evicted back-to-back against a single self-hosted
+server), the same endpoint that had just produced 7/7 clean `gemma3:12b`
+results began timing out consistently on subsequent calls, including to
+`gemma3:12b` itself, despite remaining reachable (fast HTTP 200 on a plain
+connectivity check). This looks like the sweep itself left the server in a
+resource-degraded state (repeated model swaps are expensive on a
+single-GPU host) rather than a regression in `gemma3:12b`'s own
+reliability — but it's worth being deliberate about how many distinct
+models get loaded back-to-back against a shared self-hosted endpoint,
+especially since production `enricher` traffic should mostly only ever
+request one configured model repeatedly, not swap between many.
