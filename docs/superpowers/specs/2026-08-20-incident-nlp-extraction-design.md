@@ -395,3 +395,30 @@ research kept surfacing as the missing piece.
   the sweep retry later" (§5) is the whole policy; whether that's
   responsive enough in practice is worth revisiting once there's a real
   local server to test against.
+
+## Appendix: candidate models for self-hosted testing (non-binding)
+
+This is a starting shortlist for whoever first runs the golden-corpus eval
+(§ Testing plan) against a self-hosted `LLM_BASE_URL` — not a design
+decision. Per §5/Non-goals, `enricher` targets the generic OpenAI-compatible
+Chat Completions REST API and commits to no specific vendor or model;
+`LLM_MODEL` stays operator-configured. Compiled with a January 2026
+knowledge cutoff — check for newer releases before relying on it.
+
+For this task (short-text classification/extraction under a forced
+`json_schema` response, not open-ended reasoning), instruction-following
+quality and reliable schema adherence matter more than raw model size:
+
+| Model | Size | Notes |
+|---|---|---|
+| Qwen3-4B / Qwen3-8B | 4B / 8B | Best default starting point — strong instruction-following for size, broad llama.cpp/vLLM/Ollama/LM Studio support. |
+| Gemma 3 (4B or 12B) | 4B / 12B | Competitive quality-for-size; reads nuanced short-form English well, which matters for the resolved-vs-residual-effects judgment call. |
+| Phi-4-mini | ~4B | Punches above its size specifically on structured/classification tasks; worth trying if latency or memory is tight. |
+| Mistral Small 3.1 | ~24B | Only if "small-to-medium" stretches this far; noticeably better on ambiguous phrasing than the 4B tier, at real resource cost. |
+
+Since `extraction_confidence` and the demote-only rule (§5, §7) already
+absorb model uncertainty, the goal isn't the biggest model that fits — it's
+the smallest one whose adversarial pass actually disagrees with the primary
+pass when it should. Run 2-3 candidates (e.g. Qwen3-4B, Qwen3-8B, Gemma3-4B)
+through the golden-corpus eval and pick from the results rather than from
+benchmarks.
