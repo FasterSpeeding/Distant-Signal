@@ -49,6 +49,12 @@ the result.
   that specifically argues the incident is still ongoing, and derive a
   confidence from agreement/disagreement between the two — a single
   self-reported confidence field is not trusted on its own for this field.
+- (Addendum 2026-08-21) Cross-check a third signal, `apparent_severity`,
+  the same way but pointed at the opposite risk: an adversarial pass
+  specifically argues the disruption is *milder* than it sounds. Lets a
+  high-confidence read escalate a base severity the regex classifier
+  under-called due to phrasing it didn't anticipate, independent of the
+  resolution-status confidence gate. See §5, §7.
 - Feed the result into severity classification as an additional signal,
   composed with what the pipeline already computes (match scope, LDBWS
   sample stats), without touching either of those.
@@ -74,10 +80,15 @@ the result.
   extraction. A false "resolved" — silently hiding a genuinely active
   disruption — is strictly worse than today's staleness problem, where a
   status merely lingers too long but is never wrong about *ongoing*
-  disruption. Extraction may only demote severity or annotate reason text
-  in this iteration. Full suppression is a decision to revisit only after
-  a season of production data shows the false-resolved rate is
-  acceptably low.
+  disruption. Resolution-status/schedule-window/ETA extraction may only
+  demote severity or annotate reason text in this iteration. Full
+  suppression is a decision to revisit only after a season of production
+  data shows the false-resolved rate is acceptably low. (Addendum
+  2026-08-21: a separate, independently-gated severity-hint signal can now
+  *escalate* severity — see §7 — but that is orthogonal to this non-goal,
+  which is specifically about never fully hiding a status. Escalation
+  still never suppresses; it only raises how severe an already-shown
+  status is reported as.)
 - No weaving of `extracted_schedule_window` into segment/route matching
   (`matcher.rs`). It's surfaced as display/annotation metadata and used
   as a time-relevance gate on severity, not integrated into the matcher's
@@ -92,10 +103,15 @@ the result.
   related but distinct, already-flagged gap (DESIGN.md §10). Conflating it
   with this work risks shipping neither.
 - No change to the regex category classifier's authority. The LLM's own
-  category guess is stored for cross-validation but is advisory only; the
-  keyword table remains the source of truth for `extracted_category`'s
-  practical use in severity classification (there isn't any — see Design
-  §5).
+  category guess (`extracted_category`) is stored for cross-validation but
+  remains advisory only; the keyword table (`severity_from_incident`)
+  stays the source of truth for the base severity, and `extracted_category`
+  itself has no use in severity classification. (Addendum 2026-08-21:
+  this remains true of `extracted_category` specifically. A *different*,
+  purpose-built field, `extracted_severity`, was added afterward to close
+  a real gap: the base classifier's exact-substring keyword matching missed
+  a genuinely severe incident phrased as "the lines...are blocked" rather
+  than the literal substring "lines blocked". See §5, §7.)
 
 ## Design
 
@@ -226,6 +242,35 @@ with the asymmetric failure cost (§ Non-goals; DESIGN.md's demonstrated
 project-wide preference for spending complexity only where the risk
 justifies it).
 
+**Addendum (2026-08-21): a third field, `apparent_severity`, and its own
+adversarial pass.** Motivated by a real observed case: an incident whose
+text read "the lines...are blocked" landed on the base classifier's
+weakest default (`MinorDelays`) because `severity_from_incident`'s keyword
+match requires the literal substring `"lines blocked"`. Regex-widening is
+not viable long-term — the phrasing National Rail's Knowledgebase authors
+use is not a fixed, enumerable vocabulary — so this field asks the model
+directly how severe the full text reads, rather than adding more brittle
+substrings.
+
+- Primary pass gains `apparent_severity`: one of `normal` /
+  `moderate_disruption` / `severe_disruption` / `blocked_or_suspended`.
+- A third LLM call (adversarial), instructed to argue for the LEAST severe
+  honest reading — the mirror image of the resolution-status adversarial
+  pass, guarding against the opposite risk (false escalation causing
+  needless alarm/rerouting, rather than false resolution hiding a real
+  problem).
+- Combined via `combine_severity` (`crates/enricher/src/combine.rs`),
+  structurally parallel to `combine`: primary `normal` is always high
+  confidence (no escalation possible either way); otherwise, the
+  adversarial pass finding a materially milder reading is low confidence
+  (genuine ambiguity, not averaged); agreement or an equally/more severe
+  adversarial read is high confidence.
+- Stored in `extracted_severity`/`extracted_severity_confidence` —
+  deliberately separate columns from `extracted_resolution_status`/
+  `extraction_confidence` (§6), since the two signals answer independent
+  questions and conflating their confidence would let a disagreement on
+  one wrongly suppress a good read on the other.
+
 ### 6. Data model
 
 New nullable columns on `incidents` (migration in `crates/api/migrations`,
@@ -242,6 +287,8 @@ migration — additive, no existing column touched):
 | `extraction_confidence` | `TEXT` (`high` \| `low`), nullable | Gates whether `extracted_resolution_status` is allowed to influence severity (§5, §7). Null (no extraction yet) behaves as low. |
 | `extraction_model_version` | `TEXT` | Identifies which `LLM_MODEL` (and, if versioned, prompt revision) produced this row — lets an operator force re-extraction of the whole table after a model/prompt change by bumping this and having the sweep treat a version mismatch as a hash mismatch, and correlates a regression with a specific rollout. |
 | `extracted_at` | `TIMESTAMPTZ`, nullable | When extraction last *succeeded*. Observability, and lets the sweep distinguish "never attempted" from "attempted and failed" if needed later. |
+| `extracted_severity` | `TEXT` (`normal` \| `moderate_disruption` \| `severe_disruption` \| `blocked_or_suspended`), nullable | *(Addendum 2026-08-21)* The model's own read of how severe the text sounds. Can *escalate* severity (§7) — the one signal in this design that raises rather than lowers it. |
+| `extracted_severity_confidence` | `TEXT` (`high` \| `low`), nullable | *(Addendum 2026-08-21)* Gates whether `extracted_severity` is allowed to escalate (§7). Deliberately independent of `extraction_confidence` — see §5's addendum for why. |
 
 All read-only outside `enricher`. `IncidentMessage`'s poller-facing wire
 shape (`crates/common/src/lib.rs`) is untouched — the same separation
@@ -255,21 +302,28 @@ the database/aggregator-facing layer adds.
 `severity_from_incident` and `demote_for_scope` — both unchanged:
 
 ```
-severity = severity_from_incident(incident)      // unchanged
-severity = apply_extraction(severity, incident)  // new
-severity = demote_for_scope(severity, scope)      // unchanged, still last
+severity = severity_from_incident(incident)             // unchanged
+severity = escalate_from_severity_hint(severity, incident)  // new (2026-08-21)
+severity = apply_extraction(severity, incident)          // demote-only rows, unchanged
+severity = demote_for_scope(severity, scope)             // unchanged, still last
 ```
+
+(`escalate_from_severity_hint` is folded into the `apply_extraction`
+function itself in code — it runs as the first step inside it, before the
+demote-only rows below — the pseudo-code above separates it only for
+clarity of ordering.)
 
 Rule table:
 
 | Condition | Effect |
 |---|---|
-| No extraction row, or `extraction_confidence != high` | No change — identity function. Covers null, low-confidence (including the primary/adversarial disagreement case), and any failed extraction. |
+| No extraction row, or `extraction_confidence != high` | Demote-only rows below are a no-op — identity function for them. Covers null, low-confidence (including the primary/adversarial disagreement case), and any failed extraction. The escalation row (below) is gated by its own, independent confidence field and still applies even here. |
 | `extracted_resolution_status == "resolved"`, confidence high | Demote to `Severity::MinorDelays` (9) at most — never dropped entirely. Annotate reason text: "reported resolved — showing residual impact." Rail-day cutoff (`is_active`) still applies as an independent backstop. |
 | `extracted_resolution_status == "residual"`, confidence high | Demote to `Severity::Recovering` (20) — the existing-but-currently-unused NR extension is exactly this state (DESIGN.md §5.4/§6.3). Annotated. |
 | `extracted_resolution_status == "ongoing"` | No change — corroborates existing severity, no demotion. |
 | `extracted_schedule_window` present and "now" falls outside it | Demote to `Severity::MinorDelays` (9) at most — same cap as the `resolved` case, never suppressed — and annotate reason text with the stated window (e.g. "reported active 22:00-06:00 only"). |
 | `extracted_eta` present, already passed, no fresher extraction since | Same treatment as `resolved` — demote + annotate ("expected to end by HH:MM"), not suppressed, since a missed ETA is informative but not proof of resolution. |
+| *(Addendum 2026-08-21)* `extracted_severity` maps to a `Severity` ceiling strictly more severe than the current value, confidence high | **Escalate** to that ceiling (`moderate_disruption`→`ReducedService`, `severe_disruption`→`SevereDelays`, `blocked_or_suspended`→`PartSuspended`) and annotate ("reported more severe than automatically classified: ..."). Gated by `extracted_severity_confidence`, independent of `extraction_confidence`. Runs first, so a demote-only row can still re-cap the result afterward in the same pass (e.g. resolved-but-severe-knock-on: escalate then demote back down to `MinorDelays`, keeping both annotations). At an equal or lower rank than the current severity, this row never fires — no swapping in a differently-named severity within the same tier. |
 
 Rows apply independently, not as an if/else chain — confirmed explicitly
 during implementation planning, since it's easy to misread as "resolution
@@ -356,6 +410,13 @@ research kept surfacing as the missing piece.
   any real LLM call — feed synthetic primary/adversarial verdict pairs
   through the combination table in §5 and assert the resulting
   `(resolution_status, confidence)`.
+- *(Addendum 2026-08-21)* **`escalate_from_severity_hint`/`combine_severity`**:
+  each `extracted_severity` value escalates to its mapped ceiling at high
+  confidence; low confidence or `normal` never escalates; an already
+  equally/more-severe base severity is never overwritten; and — the case
+  this signal exists for — that escalation and a demote-only row compose
+  correctly in one `apply_extraction` pass (escalate, then re-cap) with
+  both annotations surviving.
 - **Sweep query**: an incident with a stale `source_text_hash` is
   selected; one with a current hash is not; one with a mismatched
   `extraction_model_version` behaves the same as a hash mismatch (covers
