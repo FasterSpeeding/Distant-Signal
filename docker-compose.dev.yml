@@ -46,6 +46,11 @@ services:
       args:
         CARGO_PROFILE: debug
 
+  enricher:
+    build:
+      args:
+        CARGO_PROFILE: debug
+
   frontend:
     build:
       # frontend/Dockerfile: skips `next build`, runs `next dev` as the
