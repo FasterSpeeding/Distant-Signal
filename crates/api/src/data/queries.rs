@@ -60,7 +60,7 @@ fn text_changed(existing: Option<&ExistingIncident>, summary: &str, description:
 /// inconsistent with each other.
 pub async fn upsert_incidents(
     pool: &PgPool,
-    redis: &redis::aio::ConnectionManager,
+    redis: &redis::Client,
     incidents: &[IncidentMessage],
 ) -> Result<u64> {
     let mut tx = pool.begin().await?;
@@ -152,7 +152,26 @@ pub async fn upsert_incidents(
     // failure is logged, not propagated -- the hourly sweep (Task 5) is the
     // backstop for a missed publish, so ingestion must not fail because
     // Redis is briefly unavailable.
-    let mut redis = redis.clone();
+    if text_changed_ids.is_empty() {
+        return Ok(count);
+    }
+
+    // Connecting happens HERE, not at api startup: `AppState.redis` is a
+    // lazy `redis::Client` that has never opened a socket. A Redis that is
+    // down therefore surfaces as a failed publish -- which this function
+    // already logs and continues past -- instead of failing `AppState::init`
+    // and crash-looping the public status API.
+    let mut redis = match redis.get_connection_manager().await {
+        Ok(conn) => conn,
+        Err(err) => {
+            tracing::warn!(
+                error = ?err,
+                pending = text_changed_ids.len(),
+                "could not connect to redis to publish text-changed events; hourly sweep will catch them"
+            );
+            return Ok(count);
+        }
+    };
     for incident_id in text_changed_ids {
         let result: redis::RedisResult<String> = redis::cmd("XADD")
             .arg("incident-text-changed")
