@@ -47,8 +47,11 @@ that isn't a schema mismatch but matters for parsing:
    `direction` to resolve which routes to return. Passing
    `?direction=outbound` resolves it and returns an actual timetable (note:
    `direction=outbound` at Poplar still groups more than one route pair —
-   the captured response contains 2 routes under `timetable.routes[]`, both
-   with `direction: "outbound"`). This pilot fixed on `direction=outbound`
+   the captured response contains 2 routes under `timetable.routes[]`. The
+   requested direction is echoed once, as a top-level `"direction":
+   "outbound"` on the response; the route objects themselves carry only
+   `$type`, `schedules` and `stationIntervals`, with no per-route
+   `direction`). This pilot fixed on `direction=outbound`
    as a single, arbitrary-but-consistent choice, consistent with the plan's
    single-station scope — it is not an attempt to capture the full DLR
    network.

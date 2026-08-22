@@ -48,9 +48,15 @@ pub struct Config {
 
     /// Enables the DLR arrivals-diffing pilot (see
     /// `docs/superpowers/plans/2026-08-22-dlr-arrivals-diffing-pilot.md`).
-    /// Defaults on; set to `false` to fall back to `sample_stats: None`
-    /// for DLR, same as every other TfL line, without a redeploy.
-    #[arg(long, env, default_value_t = true)]
+    ///
+    /// Defaults **off**: the pilot was built without a real deployment to
+    /// run it against (no Docker or Postgres in the sandbox), so it has
+    /// never completed a clean cycle against the live API. It stays off
+    /// until the plan's Task 8 manual verification checklist has been run
+    /// clean once against a real deployment; after that it can be turned
+    /// on via this flag or `DLR_PILOT_ENABLED` with no redeploy. Off means
+    /// DLR reports `sample_stats: None`, same as every other TfL line.
+    #[arg(long, env, default_value_t = false)]
     pub dlr_pilot_enabled: bool,
 
     /// Poplar's Naptan id, used as the `stopPointId` for the DLR
