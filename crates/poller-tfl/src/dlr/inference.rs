@@ -76,6 +76,118 @@ pub fn match_trips(
         .collect()
 }
 
+/// A scheduled trip still waiting for a matching prediction, remembered
+/// across poll cycles so `resolve` can tell "genuinely never showed up"
+/// from "hasn't happened yet".
+#[derive(Debug, Clone)]
+struct PendingTrip {
+    scheduled_departure: DateTime<Utc>,
+}
+
+/// A trip that has been resolved one way or the other, kept for
+/// `RESOLVED_RETENTION_MINUTES` so `SampleStats` reflects a rolling recent
+/// window rather than every trip since the poller started.
+#[derive(Debug, Clone)]
+struct ResolvedTrip {
+    resolved_at: DateTime<Utc>,
+    delay_minutes: Option<i64>, // None means cancelled
+}
+
+/// A trip pending longer than this past its scheduled time, with no
+/// matching prediction ever found, is treated as cancelled. DLR's typical
+/// headway is 3-10 minutes; this is roughly two headways' grace so a
+/// train that's simply running very late doesn't get misread as
+/// cancelled — a pilot-tuned value, not derived from any published TfL
+/// number, and worth revisiting once real data is observed.
+const CANCELLATION_GRACE_MINUTES: i64 = 15;
+
+/// How long a resolved trip counts toward the reported `SampleStats`
+/// before aging out. An hour gives a stable-enough sample size at DLR's
+/// headway (roughly 6-20 trips) without the reported numbers describing
+/// disruption from hours ago as if it were still happening.
+const RESOLVED_RETENTION_MINUTES: i64 = 60;
+
+pub struct DlrMatchState {
+    pending: Vec<PendingTrip>,
+    resolved: Vec<ResolvedTrip>,
+}
+
+impl DlrMatchState {
+    pub fn new() -> Self {
+        DlrMatchState { pending: Vec::new(), resolved: Vec::new() }
+    }
+
+    /// Runs one poll cycle: adds newly-seen scheduled trips to the pending
+    /// set (skipping ones already tracked, by `scheduled_departure`),
+    /// matches everything pending against this cycle's predictions,
+    /// promotes newly-matched or grace-window-expired trips into
+    /// `resolved`, evicts resolved trips older than
+    /// `RESOLVED_RETENTION_MINUTES`, and returns the resulting
+    /// `SampleStats` — `None` if nothing has resolved yet (e.g. right
+    /// after startup).
+    pub fn resolve(
+        &mut self,
+        trips: Vec<ScheduledTrip>,
+        predictions: &[Prediction],
+        now: DateTime<Utc>,
+    ) -> Option<common::SampleStats> {
+        let known: std::collections::HashSet<DateTime<Utc>> =
+            self.pending.iter().map(|t| t.scheduled_departure).collect();
+        for trip in trips.iter().filter(|t| !known.contains(&t.scheduled_departure)) {
+            self.pending.push(PendingTrip { scheduled_departure: trip.scheduled_departure });
+        }
+
+        let pending_as_trips: Vec<ScheduledTrip> = self
+            .pending
+            .iter()
+            .map(|p| ScheduledTrip { scheduled_departure: p.scheduled_departure, interval_id: None })
+            .collect();
+        let matches = match_trips(pending_as_trips, predictions, now);
+
+        let mut still_pending = Vec::new();
+        for (pending_trip, matched) in self.pending.drain(..).zip(matches) {
+            match matched {
+                MatchedTrip::Matched { delay_minutes } => {
+                    self.resolved.push(ResolvedTrip { resolved_at: now, delay_minutes: Some(delay_minutes) });
+                }
+                MatchedTrip::Pending => {
+                    let overdue = (now - pending_trip.scheduled_departure).num_minutes();
+                    if overdue >= CANCELLATION_GRACE_MINUTES {
+                        self.resolved.push(ResolvedTrip { resolved_at: now, delay_minutes: None });
+                    } else {
+                        still_pending.push(pending_trip);
+                    }
+                }
+            }
+        }
+        self.pending = still_pending;
+
+        self.resolved.retain(|r| (now - r.resolved_at).num_minutes() < RESOLVED_RETENTION_MINUTES);
+
+        if self.resolved.is_empty() {
+            return None;
+        }
+
+        let total = self.resolved.len();
+        let cancelled = self.resolved.iter().filter(|r| r.delay_minutes.is_none()).count();
+        let running: Vec<i64> = self.resolved.iter().filter_map(|r| r.delay_minutes).collect();
+        let delayed = running.iter().filter(|&&d| d >= DLR_DELAY_THRESHOLD_MINUTES).count();
+        let avg_delay_minutes = if running.is_empty() {
+            0.0
+        } else {
+            running.iter().sum::<i64>() as f64 / running.len() as f64
+        };
+
+        Some(common::SampleStats { total, delayed, cancelled, skipped: 0, avg_delay_minutes })
+    }
+}
+
+impl Default for DlrMatchState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +252,59 @@ mod tests {
     fn an_early_prediction_is_clamped_to_zero_delay_not_negative() {
         let result = match_trips(vec![trip(2)], &[prediction(0)], "2026-08-22T10:00:00Z".parse().unwrap());
         assert_eq!(result, vec![MatchedTrip::Matched { delay_minutes: 0 }]);
+    }
+
+    #[test]
+    fn a_matched_trip_resolves_immediately() {
+        let mut state = DlrMatchState::new();
+        let stats = state
+            .resolve(vec![trip(0)], &[prediction(0)], "2026-08-22T10:00:00Z".parse().unwrap())
+            .expect("one resolved trip");
+        assert_eq!(stats.total, 1);
+        assert_eq!(stats.cancelled, 0);
+        assert_eq!(stats.delayed, 0);
+    }
+
+    #[test]
+    fn a_trip_still_pending_within_the_grace_window_produces_no_stats_yet() {
+        let mut state = DlrMatchState::new();
+        let stats = state.resolve(vec![trip(0)], &[], "2026-08-22T10:00:00Z".parse().unwrap());
+        assert_eq!(stats, None);
+    }
+
+    #[test]
+    fn a_trip_still_unmatched_past_the_grace_window_is_cancelled() {
+        let mut state = DlrMatchState::new();
+        // First cycle: trip scheduled for 10:00, no prediction yet.
+        state.resolve(vec![trip(0)], &[], "2026-08-22T10:00:00Z".parse().unwrap());
+        // Second cycle, 16 minutes later: still nothing, past the 15-minute
+        // grace window.
+        let stats = state
+            .resolve(vec![], &[], "2026-08-22T10:16:00Z".parse().unwrap())
+            .expect("the overdue trip should have resolved as cancelled");
+        assert_eq!(stats.total, 1);
+        assert_eq!(stats.cancelled, 1);
+    }
+
+    #[test]
+    fn resolved_trips_age_out_after_the_retention_window() {
+        let mut state = DlrMatchState::new();
+        state.resolve(vec![trip(0)], &[prediction(0)], "2026-08-22T10:00:00Z".parse().unwrap());
+        // 61 minutes later, with no new trips at all: the earlier resolved
+        // trip should have aged out, leaving nothing to report.
+        let stats = state.resolve(vec![], &[], "2026-08-22T11:01:00Z".parse().unwrap());
+        assert_eq!(stats, None);
+    }
+
+    #[test]
+    fn a_trip_already_pending_is_not_added_twice_on_the_next_cycle() {
+        let mut state = DlrMatchState::new();
+        state.resolve(vec![trip(0)], &[], "2026-08-22T10:00:00Z".parse().unwrap());
+        // Same trip handed in again next cycle (the timetable poll always
+        // returns the same day's full schedule) — must not be double-counted.
+        let stats = state
+            .resolve(vec![trip(0)], &[prediction(0)], "2026-08-22T10:01:00Z".parse().unwrap())
+            .expect("the trip should resolve exactly once");
+        assert_eq!(stats.total, 1);
     }
 }
