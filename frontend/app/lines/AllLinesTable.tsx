@@ -151,8 +151,12 @@ export function AllLinesTable({
           <TableTr>
             <TableTh {...headerProps('name')}>Name{sortIndicator('name', sort)}</TableTh>
             <TableTh {...headerProps('status')}>Status{sortIndicator('status', sort)}</TableTh>
-            <TableTh {...headerProps('avgDelay')}>Avg Delay{sortIndicator('avgDelay', sort)}</TableTh>
-            <TableTh {...headerProps('cancelled')}>Cancelled{sortIndicator('cancelled', sort)}</TableTh>
+            <TableTh {...headerProps('avgDelay')} visibleFrom="sm">
+              Avg Delay{sortIndicator('avgDelay', sort)}
+            </TableTh>
+            <TableTh {...headerProps('cancelled')} visibleFrom="sm">
+              Cancelled{sortIndicator('cancelled', sort)}
+            </TableTh>
             <TableTh>Pin</TableTh>
           </TableTr>
         </TableThead>
@@ -161,9 +165,21 @@ export function AllLinesTable({
             <TableTr key={line.id}>
               <TableTd>
                 <TextLink href={`/lines/${line.id}`}>{line.name}</TextLink>
+                {/* At 390px five columns cannot all fit, and the one that
+                    was losing was Status — the page's whole point — while
+                    two numeric columns kept their width. Below `sm` the
+                    numbers move here instead of disappearing; `visibleFrom`/
+                    `hiddenFrom` are Mantine's `display: none` classes,
+                    emitted by MantineProvider on server and client alike,
+                    so this is SSR-safe (unlike `useMediaQuery`). */}
+                <Text size="xs" c="dimmed" hiddenFrom="sm">
+                  {stats
+                    ? `Avg ${stats.avgDelayMinutes.toFixed(1)} min · ${cancelledPct}% cancelled`
+                    : 'No sample data'}
+                </Text>
               </TableTd>
               <TableTd>{worst ? <StatusBadge severity={worst.statusSeverity} /> : null}</TableTd>
-              <TableTd>
+              <TableTd visibleFrom="sm">
                 {stats ? (
                   <Text size="sm">{stats.avgDelayMinutes.toFixed(1)} min</Text>
                 ) : (
@@ -172,7 +188,7 @@ export function AllLinesTable({
                   </Text>
                 )}
               </TableTd>
-              <TableTd>
+              <TableTd visibleFrom="sm">
                 {cancelledPct !== null ? (
                   <Text size="sm">{cancelledPct}%</Text>
                 ) : (
