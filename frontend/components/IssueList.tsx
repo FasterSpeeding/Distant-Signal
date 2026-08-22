@@ -23,6 +23,14 @@ import { formatDate, formatDateTime } from '@/lib/dateFormat';
 
 type ActiveFilter = 'all' | IssueBucket;
 
+/** Selects the noun used in the empty-state copy below. The line detail
+ * page renders one `IssueList` per line, so 'line' is the sensible default
+ * that lets that call site pass nothing; the station page renders a single
+ * merged list deduped across every line through the station, so it must
+ * pass 'station' explicitly or the empty states would misleadingly talk
+ * about "this line" on a page that was never about just one. */
+export type IssueListSubject = 'line' | 'station';
+
 const BUCKET_SORT_RANK: Record<IssueBucket, number> = { active: 0, upcoming: 1, ended: 2 };
 
 const DATA_QUALITY_LABELS: Record<LineStatus['dataQuality'], string> = {
@@ -70,6 +78,7 @@ function emptyStateMessage({
   upcomingCount,
   endedCount,
   chipsNarrowing,
+  subject,
 }: {
   total: number;
   pool: number;
@@ -78,8 +87,9 @@ function emptyStateMessage({
   upcomingCount: number;
   endedCount: number;
   chipsNarrowing: boolean;
+  subject: IssueListSubject;
 }): string {
-  if (total === 0) return 'No issues reported on this line.';
+  if (total === 0) return `No issues reported on this ${subject}.`;
   if (pool === 0) {
     return `No issues match the selected severity and source filters. Clear a filter to see the other ${pluraliseIssues(total)}.`;
   }
@@ -88,14 +98,14 @@ function emptyStateMessage({
     tab === 'active'
       ? chipsNarrowing
         ? 'No active issues match the selected filters.'
-        : 'Nothing is affecting this line right now.'
+        : `Nothing is affecting this ${subject} right now.`
       : tab === 'upcoming'
         ? chipsNarrowing
           ? 'No upcoming issues match the selected filters.'
-          : 'No issues are scheduled for later on this line.'
+          : `No issues are scheduled for later on this ${subject}.`
         : chipsNarrowing
           ? 'No ended issues match the selected filters.'
-          : 'Nothing on this line has finished recently.';
+          : `Nothing on this ${subject} has finished recently.`;
 
   // Name the tab that actually holds something, so the user has somewhere to
   // go; "All" is the catch-all when every sibling tab is empty too.
@@ -117,7 +127,15 @@ function chipRowLabel(facet: string, selected: number): string {
   return selected === 0 ? `${facet} — showing all` : `${facet} — ${selected} selected`;
 }
 
-export function IssueList({ items, now }: { items: IssueItem[]; now: number }) {
+export function IssueList({
+  items,
+  now,
+  subject = 'line',
+}: {
+  items: IssueItem[];
+  now: number;
+  subject?: IssueListSubject;
+}) {
   const severityLabelId = useId();
   const sourceLabelId = useId();
   const statuses = useMemo(() => items.map((item) => item.status), [items]);
@@ -180,7 +198,7 @@ export function IssueList({ items, now }: { items: IssueItem[]; now: number }) {
   // hook unconditional while still skipping all of the chrome below.
   const allGood = statuses.length > 0 && statuses.every((status) => status.statusSeverity === 10);
   if (allGood) {
-    return <Text c="dimmed">Good service — no issues reported on this line.</Text>;
+    return <Text c="dimmed">Good service — no issues reported on this {subject}.</Text>;
   }
 
   // Severity/source chips narrow the pool every tab counts from, but not
@@ -293,6 +311,7 @@ export function IssueList({ items, now }: { items: IssueItem[]; now: number }) {
             upcomingCount,
             endedCount,
             chipsNarrowing: chipFiltered.length < statuses.length,
+            subject,
           })}
         </Text>
       )}

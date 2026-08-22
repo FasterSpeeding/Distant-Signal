@@ -101,7 +101,7 @@ export default async function StationDisruptionPage({
             })}
           </Stack>
           <Divider />
-          <IssueList items={items} now={now} />
+          <IssueList items={items} now={now} subject="station" />
         </>
       )}
     </Stack>

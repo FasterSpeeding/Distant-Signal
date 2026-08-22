@@ -470,6 +470,59 @@ describe('IssueList', () => {
     expect(screen.queryByText(/Severity —/)).not.toBeInTheDocument();
   });
 
+  it('says the station is clear (not "the line") when subject="station" and there are no issues at all', () => {
+    renderWithMantine(<IssueList items={toItems([])} now={NOW} subject="station" />);
+    const message = screen.getByText(/No issues reported on this station/i);
+    expect(message.textContent).not.toMatch(/this line/i);
+  });
+
+  it('says the station has good service (not "the line") when subject="station" and every status is Good Service', () => {
+    const goodService: LineStatus = {
+      statusSeverity: 10,
+      statusSeverityDescription: 'Good Service',
+      reason: 'Good Service',
+      dataQuality: 'ldbws-inferred',
+      validityPeriods: [{ fromDate: new Date(NOW).toISOString(), toDate: null, isNow: true }],
+    };
+    renderWithMantine(<IssueList items={[{ status: goodService }]} now={NOW} subject="station" />);
+    expect(screen.getByText('Good service — no issues reported on this station.')).toBeInTheDocument();
+  });
+
+  it('says "this station" (not "this line") in the empty Active tab when subject="station"', () => {
+    // severePlanned is upcoming only, so the component lands on the "All"
+    // tab by default (see the landing-tab comment in IssueList.tsx) — click
+    // "Active (0)" explicitly to reach the empty Active tab, same as the
+    // pre-existing "points at the tab that holds the issues" test above.
+    renderWithMantine(<IssueList items={toItems([severePlanned])} now={NOW} subject="station" />);
+    fireEvent.click(screen.getByText('Active (0)'));
+    const message = screen.getByText(/Nothing is affecting this station right now/i);
+    expect(message.textContent).not.toMatch(/this line/i);
+  });
+
+  it('says "this station" (not "this line") in the empty Upcoming tab when subject="station"', () => {
+    renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} subject="station" />);
+    fireEvent.click(screen.getByText('Upcoming (0)'));
+    const message = screen.getByText(/No issues are scheduled for later on this station/i);
+    expect(message.textContent).not.toMatch(/this line/i);
+  });
+
+  // No equivalent "empty Ended tab, not chip-narrowed" case: the Ended tab
+  // button in the SegmentedControl only renders at all when the current
+  // chip-filtered pool has `endedCount > 0` (see the `data` array above),
+  // and `chipsNarrowing` is only false when no chips are excluding
+  // anything from that same pool — so an un-narrowed, genuinely empty
+  // Ended tab is structurally unreachable through the UI (there is no
+  // sequence of clicks that produces it), the same way the sibling
+  // `earliestFromDate` NaN case documents itself as reachable only
+  // defensively. The Ended lead string still reads `this ${subject}` in
+  // the source identically to the Active/Upcoming leads covered above.
+
+  it('defaults to line-centric wording when subject is omitted', () => {
+    renderWithMantine(<IssueList items={toItems([severePlanned])} now={NOW} />);
+    fireEvent.click(screen.getByText('Active (0)'));
+    expect(screen.getByText(/Nothing is affecting this line right now/i)).toBeInTheDocument();
+  });
+
   it('still shows the full list when a Good Service status sits alongside a real issue', () => {
     const goodService: LineStatus = { ...minorNow, statusSeverity: 10, statusSeverityDescription: 'Good Service', reason: 'Good Service' };
     renderWithMantine(
