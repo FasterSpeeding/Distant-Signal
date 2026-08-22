@@ -5,6 +5,7 @@ import { LineStatusCard } from '@/components/LineStatusCard';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank } from '@/lib/severity';
+import { firstSampleStats, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport } from '@/lib/types';
 
 // See app/lines/[id]/page.tsx-adjacent history page and this repo's other
@@ -30,11 +31,7 @@ function worstSeverityAcrossReports(reports: LineStatusReport[]): number {
  * `RepresentativeInfo`'s "first one found is representative" rationale,
  * extended across a station's several affected lines. */
 function sampleStatsAcrossReports(reports: LineStatusReport[]) {
-  for (const report of reports) {
-    const stats = report.lineStatuses.find((status) => status.sampleStats)?.sampleStats;
-    if (stats) return stats;
-  }
-  return undefined;
+  return reports.map((r) => firstSampleStats(r.lineStatuses)).find(Boolean);
 }
 
 export default async function DashboardPage() {
@@ -83,7 +80,6 @@ export default async function DashboardPage() {
           <Stack gap="xs">
             {pinnedStationEntries.map(({ crs, reports }) => {
               const stats = sampleStatsAcrossReports(reports);
-              const cancelledPct = stats && stats.total > 0 ? Math.round((stats.cancelled / stats.total) * 100) : null;
               return (
                 <Link key={crs} href={`/stations/${crs}`} style={{ textDecoration: 'none', color: 'inherit' }}>
                   <Card withBorder>
@@ -94,7 +90,7 @@ export default async function DashboardPage() {
                       </Group>
                       {stats && (
                         <Text size="xs" c="dimmed">
-                          Avg delay {stats.avgDelayMinutes.toFixed(1)} min · {cancelledPct}% cancelled
+                          {formatSampleSummary(stats)}
                         </Text>
                       )}
                     </Stack>

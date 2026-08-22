@@ -16,11 +16,8 @@ import { PinToggle } from '@/components/PinToggle';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
 import { worstStatus, severityRank } from '@/lib/severity';
+import { firstSampleStats, cancelledPercent, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
-
-function sampleStatsFor(report: LineStatusReport | undefined) {
-  return report?.lineStatuses.find((status) => status.sampleStats)?.sampleStats;
-}
 
 type SortField = 'name' | 'status' | 'avgDelay' | 'cancelled';
 type SortState = { field: SortField; direction: 'asc' | 'desc' };
@@ -69,8 +66,8 @@ export function AllLinesTable({
       lines.map((line) => {
         const report = reportsById.get(line.id);
         const worst = report ? worstStatus(report) : undefined;
-        const stats = sampleStatsFor(report);
-        const cancelledPct = stats && stats.total > 0 ? Math.round((stats.cancelled / stats.total) * 100) : null;
+        const stats = firstSampleStats(report?.lineStatuses ?? []);
+        const cancelledPct = cancelledPercent(stats);
         return { line, worst, stats, cancelledPct };
       }),
     [lines, reportsById],
@@ -173,11 +170,7 @@ export function AllLinesTable({
                     emitted by MantineProvider on server and client alike,
                     so this is SSR-safe (unlike `useMediaQuery`). */}
                 <Text size="xs" c="dimmed" hiddenFrom="sm">
-                  {stats
-                    ? `Avg ${stats.avgDelayMinutes.toFixed(1)} min · ${
-                        cancelledPct !== null ? `${cancelledPct}%` : '—'
-                      } cancelled`
-                    : 'No sample data'}
+                  {formatSampleSummary(stats)}
                 </Text>
               </TableTd>
               <TableTd>{worst ? <StatusBadge severity={worst.statusSeverity} /> : null}</TableTd>

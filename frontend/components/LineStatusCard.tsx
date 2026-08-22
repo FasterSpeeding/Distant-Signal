@@ -5,12 +5,12 @@ import Link from 'next/link';
 import { StatusBadge } from './StatusBadge';
 import { LastUpdated } from './LastUpdated';
 import { worstStatus } from '@/lib/severity';
+import { firstSampleStats, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport } from '@/lib/types';
 
 export function LineStatusCard({ report }: { report: LineStatusReport }) {
   const worst = worstStatus(report);
-  const stats = report.lineStatuses.find((status) => status.sampleStats)?.sampleStats;
-  const cancelledPct = stats && stats.total > 0 ? Math.round((stats.cancelled / stats.total) * 100) : null;
+  const stats = firstSampleStats(report.lineStatuses);
   return (
     <Card withBorder shadow="sm" padding="lg" component={Link} href={`/lines/${report.id}`}>
       <Stack gap="xs">
@@ -23,7 +23,7 @@ export function LineStatusCard({ report }: { report: LineStatusReport }) {
         </Text>
         {stats && (
           <Text size="xs" c="dimmed">
-            Avg delay {stats.avgDelayMinutes.toFixed(1)} min · {cancelledPct}% cancelled
+            {formatSampleSummary(stats)}
           </Text>
         )}
         <LastUpdated timestamp={report.computedAt} />
