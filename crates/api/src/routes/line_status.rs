@@ -1,4 +1,4 @@
-//! The four TfL-shaped read endpoints: `/Line/Mode/{mode}/Status`,
+//! The four TfL-shaped read endpoints: `/Line/Mode/{modes}/Status`,
 //! `/Line/{ids}/Status`, `/StopPoint/{crs}/Disruption`,
 //! `/Line/{id}/Status/{from}/to/{to}`. Unauthenticated, matching TfL's own
 //! public API — including its URL scheme: `main.rs` merges this crate's
@@ -65,16 +65,52 @@ fn rows_to_json(rows: Vec<queries::LineStatusRow>, detail: bool) -> Vec<Value> {
         .collect()
 }
 
+/// Every mode this deployment has data for. `national-rail` is written by
+/// the aggregator from Knowledgebase incidents and LDBWS samples; the other
+/// five are written by `crates/poller-tfl` via `/private/tfl-line-status`.
+///
+/// The list is closed rather than "anything in the database" so that a
+/// typo, or a real TfL mode this app deliberately does not ingest (`bus`,
+/// `river-bus`, `cable-car`), gets a 400 that names the problem instead of
+/// an empty array that reads as "no disruption anywhere".
+const SUPPORTED_MODES: [&str; 6] = [
+    "national-rail",
+    "tube",
+    "dlr",
+    "overground",
+    "elizabeth-line",
+    "tram",
+];
+
+/// Splits and validates TfL's comma-separated `{modes}` path segment.
+/// Comma-separated modes are TfL's own contract for this URL — mimicking it
+/// is the whole point of these four endpoints — and it lets the frontend
+/// fetch every displayed line in one request rather than six.
+fn parse_modes(raw: &str) -> Result<Vec<String>, String> {
+    let modes: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    if modes.is_empty() {
+        return Err("no mode given".to_string());
+    }
+    if let Some(unsupported) = modes.iter().find(|mode| !SUPPORTED_MODES.contains(&mode.as_str())) {
+        return Err(format!("unsupported mode: {unsupported}"));
+    }
+    Ok(modes)
+}
+
 async fn get_mode_status(
     State(app): State<App>,
-    Path(mode): Path<String>,
+    Path(modes): Path<String>,
     Query(query): Query<DetailQuery>,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
-    if mode != "national-rail" {
-        return Err((StatusCode::BAD_REQUEST, format!("unsupported mode: {mode}")));
-    }
+    let modes = parse_modes(&modes).map_err(|message| (StatusCode::BAD_REQUEST, message))?;
 
-    let rows = queries::line_status_for_mode(&app.database, &mode)
+    let rows = queries::line_status_for_modes(&app.database, &modes)
         .await
         .map_err(internal_error)?;
 
@@ -174,4 +210,43 @@ async fn get_line_status_history(
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "line status query failed");
     (StatusCode::INTERNAL_SERVER_ERROR, "query failed".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_single_mode_still_works() {
+        assert_eq!(parse_modes("national-rail").unwrap(), vec!["national-rail".to_string()]);
+    }
+
+    #[test]
+    fn every_tfl_mode_this_app_ingests_is_accepted() {
+        // The gate used to be `if mode != "national-rail" { 400 }`, which
+        // made every ingested TfL line unreachable through this endpoint —
+        // and it is the endpoint both frontend list pages are built on.
+        let modes = parse_modes("tube,dlr,overground,elizabeth-line,tram").unwrap();
+        assert_eq!(modes.len(), 5);
+        assert!(modes.contains(&"elizabeth-line".to_string()));
+    }
+
+    #[test]
+    fn whitespace_and_empty_segments_are_tolerated() {
+        assert_eq!(parse_modes("tube, dlr,").unwrap(), vec!["tube".to_string(), "dlr".to_string()]);
+    }
+
+    #[test]
+    fn an_unsupported_mode_is_named_in_the_error() {
+        // `bus` and `river-bus` are real TfL modes this app deliberately
+        // does not ingest, so "no results" would be a misleading answer.
+        let err = parse_modes("tube,bus").unwrap_err();
+        assert!(err.contains("bus"), "error should name the offending mode: {err}");
+    }
+
+    #[test]
+    fn an_empty_mode_list_is_rejected_rather_than_matching_everything() {
+        assert!(parse_modes("").is_err());
+        assert!(parse_modes(",,").is_err());
+    }
 }

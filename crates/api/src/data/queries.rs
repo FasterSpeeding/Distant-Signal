@@ -499,11 +499,15 @@ fn row_to_report(row: sqlx::postgres::PgRow) -> Result<LineStatusRow> {
     })
 }
 
-pub async fn line_status_for_mode(pool: &PgPool, mode: &str) -> Result<Vec<LineStatusRow>> {
+/// Every line whose `mode_name` is in `modes`. Plural because TfL's
+/// `/Line/Mode/{modes}/Status` takes a comma-separated list and this API
+/// mimics its URL scheme — and because the frontend's list pages want
+/// National Rail and the five TfL modes in one round trip.
+pub async fn line_status_for_modes(pool: &PgPool, modes: &[String]) -> Result<Vec<LineStatusRow>> {
     let rows = sqlx::query(
-        "SELECT line_id, name, mode_name, operators, statuses, computed_at FROM line_status WHERE mode_name = $1",
+        "SELECT line_id, name, mode_name, operators, statuses, computed_at FROM line_status WHERE mode_name = ANY($1)",
     )
-    .bind(mode)
+    .bind(modes)
     .fetch_all(pool)
     .await?;
     rows.into_iter().map(row_to_report).collect()
