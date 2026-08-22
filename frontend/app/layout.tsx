@@ -1,6 +1,6 @@
 import '@/app/globals.css';
 import { Suspense } from 'react';
-import { ActionIcon, MantineProvider, ColorSchemeScript, mantineHtmlProps, Group, Text } from '@mantine/core';
+import { ActionIcon, MantineProvider, ColorSchemeScript, mantineHtmlProps, Group, Text, Box, Container } from '@mantine/core';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -41,35 +41,47 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <MantineProvider theme={theme} defaultColorScheme="auto">
           <AutoRefresh />
-          <Group
+          {/* No max-width anywhere meant a 1920px viewport put a line's
+              name at x≈30, its status badge at x≈870 and its pin at
+              x≈1780 — the row stopped being scannable as a row. `lg` is
+              1140px. The border stays on a full-bleed Box so the rule still
+              spans the window while the nav's contents line up with the
+              page content below it. `px={0}`: every page already applies
+              its own `p="lg"`, and Container's default `md` inline padding
+              on top of that is 40px of gutter on a 390px screen. */}
+          <Box
             component="nav"
-            justify="space-between"
-            p="md"
             style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}
           >
-            {/* Plain `<Link>` wrapping Mantine's `Text`, rather than
-                `component={Link}` on a Mantine polymorphic prop: this file
-                is a Server Component, and passing the `Link` component
-                reference into a Mantine `component` prop from a Server
-                Component previously broke `next build`'s Server/Client
-                boundary serialization check (see LineStatusCard fix).
-                `ThemeToggle` below doesn't hit this: it's imported and
-                rendered as a plain JSX element (a Client Component child
-                of this Server Component), not passed as a value into a
-                Mantine `component` prop — a different, safe pattern. */}
-            <Link href="/" style={{ textDecoration: 'none', color: 'inherit' }}>
-              <Text fw={700}>National Rail Line Status</Text>
-            </Link>
-            <Group gap="lg">
-              <TextLink href="/lines">All Lines</TextLink>
-              <TextLink href="/stations">Station Lookup</TextLink>
-              <Suspense fallback={<ActionIcon variant="subtle" aria-label="Data freshness" disabled loading />}>
-                <DataFreshnessNavItem />
-              </Suspense>
-              <ThemeToggle />
-            </Group>
-          </Group>
-          {children}
+            <Container size="lg" px={0}>
+              <Group justify="space-between" px="lg" py="md">
+                {/* Plain `<Link>` wrapping Mantine's `Text`, rather than
+                    `component={Link}` on a Mantine polymorphic prop: this file
+                    is a Server Component, and passing the `Link` component
+                    reference into a Mantine `component` prop from a Server
+                    Component previously broke `next build`'s Server/Client
+                    boundary serialization check (see LineStatusCard fix).
+                    `ThemeToggle` below doesn't hit this: it's imported and
+                    rendered as a plain JSX element (a Client Component child
+                    of this Server Component), not passed as a value into a
+                    Mantine `component` prop — a different, safe pattern. */}
+                <Link href="/" style={{ textDecoration: 'none', color: 'inherit' }}>
+                  <Text fw={700}>National Rail Line Status</Text>
+                </Link>
+                <Group gap="lg">
+                  <TextLink href="/lines">All Lines</TextLink>
+                  <TextLink href="/stations">Station Lookup</TextLink>
+                  <Suspense fallback={<ActionIcon variant="subtle" aria-label="Data freshness" disabled loading />}>
+                    <DataFreshnessNavItem />
+                  </Suspense>
+                  <ThemeToggle />
+                </Group>
+              </Group>
+            </Container>
+          </Box>
+          <Container size="lg" px={0}>
+            {children}
+          </Container>
         </MantineProvider>
       </body>
     </html>
