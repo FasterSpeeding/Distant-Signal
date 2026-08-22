@@ -98,11 +98,19 @@ describe('ThemeToggle', () => {
   it('tucks the auto-mode badge into the button corner instead of overhanging it', () => {
     // This Mantine version (9.4.1) renders no `data-position` attribute on
     // `Indicator` — position is expressed purely as CSS custom properties
-    // on the root. `bottom-end` sets `--indicator-bottom` (and leaves
-    // `--indicator-top` unset, which the default `top-end` sets instead).
+    // on the root, split into an independent vertical half and horizontal
+    // half of the `top|bottom|middle-start|center|end` string (see
+    // `getPositionVariables` in `@mantine/core`). `bottom-end` sets both
+    // `--indicator-bottom` (vertical: below, not above — `--indicator-top`
+    // stays unset) and `--indicator-right` (horizontal: right corner, not
+    // left — `--indicator-left` stays unset). Both halves must be checked:
+    // asserting only the vertical half would still pass for the wrong
+    // corner, e.g. an accidental `bottom-start`.
     const { container } = renderWithMantine(<ThemeToggle />, { defaultColorScheme: 'auto' });
     const root = container.querySelector('.mantine-Indicator-root') as HTMLElement;
     expect(root.style.getPropertyValue('--indicator-bottom')).not.toBe('');
     expect(root.style.getPropertyValue('--indicator-top')).toBe('');
+    expect(root.style.getPropertyValue('--indicator-right')).not.toBe('');
+    expect(root.style.getPropertyValue('--indicator-left')).toBe('');
   });
 });
