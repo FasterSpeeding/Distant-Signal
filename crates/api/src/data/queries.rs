@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use common::{IncidentMessage, StationReference, StationSample, TocReference};
+use common::{IncidentMessage, LineStatusReport, StationReference, StationSample, TocReference};
 use sqlx::PgPool;
 
 /// Incidents are upserted in chunks of this size, each as its own
@@ -284,6 +284,122 @@ pub async fn upsert_station_samples(pool: &PgPool, samples: &[StationSample]) ->
     Ok(count)
 }
 
+/// Pure diff check, factored out of `upsert_tfl_line_status` so it's
+/// testable without a database: a TfL line's statuses are "changed" if the
+/// line is new to us, or if the incoming `statuses` JSON differs from what
+/// is stored.
+///
+/// A plain comparison is enough here, unlike the aggregator's
+/// `normalize_for_diff` (crates/aggregator/src/queries.rs), which has to
+/// strip a freshly-stamped `from_date` and per-cycle `sample_stats` before
+/// two unchanged cycles compare equal. Nothing in a TfL status is
+/// recomputed by us: the severity, reason and validity period all come
+/// from the feed verbatim, and a status with no validity period at all
+/// falls back to the line's own `modified` timestamp rather than to
+/// `Utc::now()` (see `crates/poller-tfl/src/schema.rs`), precisely so this
+/// comparison stays stable across polls. If it ever stops being stable,
+/// `line_status_history` grows a row every 300s per line and that is the
+/// symptom to look for.
+fn tfl_statuses_changed(existing: Option<&serde_json::Value>, incoming: &serde_json::Value) -> bool {
+    match existing {
+        None => true,
+        Some(stored) => stored != incoming,
+    }
+}
+
+/// Upserts a batch of TfL line-status reports into `line_status` (marked
+/// `source = 'tfl'`), appending a `line_status_history` snapshot for each
+/// line whose statuses actually changed, and deleting any TfL row missing
+/// from this batch.
+///
+/// The whole batch is one transaction — unlike `upsert_incidents`, which
+/// chunks to bound its lock-hold window, this is ~20 rows once every 300s.
+///
+/// An empty batch is a no-op rather than a mass delete: "TfL returned
+/// nothing" is a fault, not an instruction to forget every line. The poller
+/// refuses to post one either (belt and braces, since this is the side that
+/// would do the damage).
+pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport]) -> Result<u64> {
+    if reports.is_empty() {
+        return Ok(0);
+    }
+
+    let mut tx = pool.begin().await?;
+    let mut count = 0u64;
+
+    for report in reports {
+        let statuses_json = serde_json::to_value(&report.statuses)?;
+
+        let existing: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT statuses FROM line_status WHERE line_id = $1 AND source = 'tfl'")
+                .bind(&report.id)
+                .fetch_optional(&mut *tx)
+                .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO line_status (line_id, name, mode_name, operators, statuses, computed_at, source)
+            VALUES ($1, $2, $3, $4, $5, NOW(), 'tfl')
+            ON CONFLICT (line_id) DO UPDATE SET
+                name        = EXCLUDED.name,
+                mode_name   = EXCLUDED.mode_name,
+                operators   = EXCLUDED.operators,
+                statuses    = EXCLUDED.statuses,
+                computed_at = NOW(),
+                source      = 'tfl'
+            "#,
+        )
+        .bind(&report.id)
+        .bind(&report.name)
+        .bind(&report.mode_name)
+        .bind(&report.operators)
+        .bind(&statuses_json)
+        .execute(&mut *tx)
+        .await?;
+
+        if tfl_statuses_changed(existing.as_ref(), &statuses_json) {
+            sqlx::query(
+                "INSERT INTO line_status_history (line_id, statuses, computed_at) VALUES ($1, $2, NOW())",
+            )
+            .bind(&report.id)
+            .bind(&statuses_json)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        count += 1;
+    }
+
+    // A TfL line that leaves the feed (a renamed id, a withdrawn service)
+    // has no other way of disappearing — `/public/lines` derives its TfL
+    // entries from exactly these rows. The aggregator's
+    // `prune_removed_lines` is the same idea from the other side of the
+    // fence; each writer prunes only what it owns.
+    let ids: Vec<&str> = reports.iter().map(|r| r.id.as_str()).collect();
+    let pruned = sqlx::query("DELETE FROM line_status WHERE source = 'tfl' AND NOT (line_id = ANY($1))")
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if pruned > 0 {
+        tracing::info!(pruned, "removed TfL lines no longer present in the feed");
+    }
+
+    tx.commit().await?;
+    Ok(count)
+}
+
+/// Timestamp of the most recent TfL line-status ingest, or `None` if none
+/// has ever landed. Backs both `GET /private/tfl-line-status` (the poller's
+/// startup freshness check) and the public `/public/freshness` endpoint.
+pub async fn last_tfl_line_status_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let (computed_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT MAX(computed_at) FROM line_status WHERE source = 'tfl'")
+            .fetch_one(pool)
+            .await?;
+    Ok(computed_at)
+}
+
 /// Upserts a batch of TOC reference records. No history, same rationale as
 /// `upsert_stations`.
 pub async fn upsert_tocs(pool: &PgPool, tocs: &[TocReference]) -> Result<u64> {
@@ -538,5 +654,37 @@ mod tests {
         // no validity parameter to vary because text_changed never takes one.
         let row = existing("Signal failure", "Delays expected", serde_json::json!([]));
         assert!(!text_changed(Some(&row), "Signal failure", "Delays expected"));
+    }
+
+    #[test]
+    fn a_line_with_no_stored_row_is_always_changed() {
+        assert!(tfl_statuses_changed(None, &serde_json::json!([])));
+    }
+
+    #[test]
+    fn identical_statuses_are_not_changed() {
+        let stored = serde_json::json!([{ "severity": 10, "reason": "Good Service" }]);
+        let incoming = serde_json::json!([{ "severity": 10, "reason": "Good Service" }]);
+        assert!(!tfl_statuses_changed(Some(&stored), &incoming));
+    }
+
+    #[test]
+    fn a_new_severity_is_changed() {
+        let stored = serde_json::json!([{ "severity": 10, "reason": "Good Service" }]);
+        let incoming = serde_json::json!([{ "severity": 6, "reason": "Signal failure at Oxford Circus" }]);
+        assert!(tfl_statuses_changed(Some(&stored), &incoming));
+    }
+
+    #[test]
+    fn a_second_simultaneous_status_is_changed() {
+        // TfL routinely reports several statuses on one line at once — a
+        // planned closure alongside a live disruption. Gaining or losing
+        // one is a change even if the first entry is untouched.
+        let stored = serde_json::json!([{ "severity": 4, "reason": "Planned engineering work" }]);
+        let incoming = serde_json::json!([
+            { "severity": 4, "reason": "Planned engineering work" },
+            { "severity": 6, "reason": "Signal failure at Oxford Circus" },
+        ]);
+        assert!(tfl_statuses_changed(Some(&stored), &incoming));
     }
 }

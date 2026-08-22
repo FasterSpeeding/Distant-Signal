@@ -1,12 +1,12 @@
-//! `/public/freshness`: how fresh the three data sources feeding the
-//! aggregator are (stations reference data, TOC reference data, the raw
-//! incidents feed). Unauthenticated, read-only — same `public_router()`
-//! pattern as `reference.rs`. Reuses the same `last_*_fetch` queries the
-//! private poller-startup endpoints already call
+//! `/public/freshness`: how fresh the four data sources feeding the status
+//! API are (stations reference data, TOC reference data, the raw incidents
+//! feed, and the TfL line-status feed). Unauthenticated, read-only — same
+//! `public_router()` pattern as `reference.rs`. Reuses the same
+//! `last_*_fetch` queries the private poller-startup endpoints already call
 //! (`crates/api/src/routes/ingest.rs`) — this is a public read of the same
 //! underlying data, just aimed at the frontend instead of poller backoff.
 //! Station-samples is deliberately omitted: it's per-station polling data,
-//! not one of the three sources this endpoint reports on.
+//! not one of the four sources this endpoint reports on.
 
 use axum::Json;
 use axum::extract::State;
@@ -26,16 +26,22 @@ pub struct DataFreshness {
     pub stations: Option<DateTime<Utc>>,
     pub tocs: Option<DateTime<Utc>>,
     pub incidents: Option<DateTime<Utc>>,
+    /// When TfL line status last landed. Unlike its three siblings this is
+    /// not a poller-fed raw table but the `computed_at` of the TfL-owned
+    /// `line_status` rows themselves — for this source, ingest and
+    /// computation are the same event.
+    pub tfl: Option<DateTime<Utc>>,
 }
 
 async fn get_freshness(State(app): State<App>) -> Result<Json<DataFreshness>, (StatusCode, String)> {
-    let (stations, tocs, incidents) = tokio::try_join!(
+    let (stations, tocs, incidents, tfl) = tokio::try_join!(
         queries::last_stations_fetch(&app.database),
         queries::last_tocs_fetch(&app.database),
         queries::last_incidents_fetch(&app.database),
+        queries::last_tfl_line_status_fetch(&app.database),
     )
     .map_err(internal_error)?;
-    Ok(Json(DataFreshness { stations, tocs, incidents }))
+    Ok(Json(DataFreshness { stations, tocs, incidents, tfl }))
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
@@ -50,17 +56,18 @@ mod tests {
 
     #[test]
     fn serializes_missing_data_as_null() {
-        let freshness = DataFreshness { stations: None, tocs: None, incidents: None };
+        let freshness = DataFreshness { stations: None, tocs: None, incidents: None, tfl: None };
         let json = serde_json::to_value(&freshness).unwrap();
         assert!(json["stations"].is_null());
         assert!(json["tocs"].is_null());
         assert!(json["incidents"].is_null());
+        assert!(json["tfl"].is_null());
     }
 
     #[test]
     fn round_trips_a_present_timestamp() {
         let ts = Utc.with_ymd_and_hms(2026, 7, 15, 9, 0, 0).unwrap();
-        let freshness = DataFreshness { stations: Some(ts), tocs: None, incidents: None };
+        let freshness = DataFreshness { stations: Some(ts), tocs: None, incidents: None, tfl: None };
         let json = serde_json::to_value(&freshness).unwrap();
         let roundtripped: DateTime<Utc> = json["stations"].as_str().unwrap().parse().unwrap();
         assert_eq!(roundtripped, ts);

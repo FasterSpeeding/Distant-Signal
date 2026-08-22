@@ -3,6 +3,11 @@
 //! (via axum's `Json<T>` extractor — no hand-rolled body validation) and
 //! hand it to the matching upsert query.
 //!
+//! `/tfl-line-status` is the odd one out: its batch is already-computed
+//! line status from TfL rather than raw upstream data, so its upsert
+//! targets `line_status`/`line_status_history` directly (see
+//! `queries::upsert_tfl_line_status`).
+//!
 //! Each POST route also has a same-path GET counterpart (see `router()`)
 //! returning when that table was last successfully populated. Pollers call
 //! it once at startup, before their poll loop begins, to skip an
@@ -13,7 +18,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use common::ingest::LastFetchedResponse;
-use common::{IncidentMessage, StationReference, StationSample, TocReference};
+use common::{IncidentMessage, LineStatusReport, StationReference, StationSample, TocReference};
 use serde::Serialize;
 
 use crate::app::{App, Router};
@@ -33,6 +38,10 @@ pub fn router() -> Router {
         .route(
             "/station-samples",
             axum::routing::get(get_station_samples_last_fetched).post(post_station_samples),
+        )
+        .route(
+            "/tfl-line-status",
+            axum::routing::get(get_tfl_line_status_last_fetched).post(post_tfl_line_status),
         )
 }
 
@@ -73,6 +82,15 @@ async fn get_station_samples_last_fetched(
     Ok(Json(LastFetchedResponse { fetched_at }))
 }
 
+async fn get_tfl_line_status_last_fetched(
+    State(app): State<App>,
+) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
+    let fetched_at = queries::last_tfl_line_status_fetch(&app.database)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(LastFetchedResponse { fetched_at }))
+}
+
 async fn post_incidents(
     State(app): State<App>,
     Json(incidents): Json<Vec<IncidentMessage>>,
@@ -108,6 +126,23 @@ async fn post_tocs(
     Json(tocs): Json<Vec<TocReference>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
     let upserted = queries::upsert_tocs(&app.database, &tocs)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+/// Unlike the other four ingest routes, this one writes the aggregator's
+/// output table directly. That is not a shortcut: TfL publishes finished
+/// line status, so there is nothing for the aggregator to infer from
+/// incidents or departure boards, and routing it through that crate would
+/// mean inventing a second input table for data that is already in its
+/// final shape. The two writers stay out of each other's way via
+/// `line_status.source` and the `tfl-` line-id prefix.
+async fn post_tfl_line_status(
+    State(app): State<App>,
+    Json(reports): Json<Vec<LineStatusReport>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = queries::upsert_tfl_line_status(&app.database, &reports)
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
