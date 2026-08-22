@@ -44,10 +44,16 @@ pub enum MatchedTrip {
 /// prediction can match at most one trip — the closest trip claims it,
 /// so two trips near the same time don't both consume one late train's
 /// prediction as evidence they individually ran on time.
+///
+/// `_now` is unused by matching itself — a prediction either falls inside
+/// `MATCH_WINDOW_MINUTES` of a scheduled time or it doesn't, regardless of
+/// when the question is asked. It stays in the signature because
+/// `DlrMatchState::resolve`, which owns the wall-clock-dependent half
+/// (cancellation grace, retention), threads its own `now` through here.
 pub fn match_trips(
     trips: Vec<ScheduledTrip>,
     predictions: &[Prediction],
-    now: DateTime<Utc>,
+    _now: DateTime<Utc>,
 ) -> Vec<MatchedTrip> {
     let mut claimed = vec![false; predictions.len()];
     trips
@@ -67,10 +73,7 @@ pub fn match_trips(
                     let delay_minutes = (p.expected_arrival - trip.scheduled_departure).num_minutes();
                     MatchedTrip::Matched { delay_minutes: delay_minutes.max(0) }
                 }
-                None => {
-                    let _ = now; // `now` is unused by matching itself; kept in the signature for Task 6's cancellation check, which needs it and calls this function.
-                    MatchedTrip::Pending
-                }
+                None => MatchedTrip::Pending,
             }
         })
         .collect()
@@ -89,6 +92,11 @@ struct PendingTrip {
 /// window rather than every trip since the poller started.
 #[derive(Debug, Clone)]
 struct ResolvedTrip {
+    /// Kept so a trip that has already resolved is recognised when the
+    /// next cycle hands the same day's full timetable in again — without
+    /// it, every resolved trip is re-admitted and re-counted every cycle
+    /// for the whole retention window.
+    scheduled_departure: DateTime<Utc>,
     resolved_at: DateTime<Utc>,
     delay_minutes: Option<i64>, // None means cancelled
 }
@@ -107,6 +115,38 @@ const CANCELLATION_GRACE_MINUTES: i64 = 15;
 /// disruption from hours ago as if it were still happening.
 const RESOLVED_RETENTION_MINUTES: i64 = 60;
 
+/// How far *ahead* of `now` a scheduled trip is picked up for tracking.
+/// The Timetable poll returns the whole service day every cycle, so this
+/// is what stops the state from holding hundreds of trips that cannot be
+/// matched yet. Six 300s poll cycles of lead time — comfortably more than
+/// the horizon on which live Arrivals predictions appear at all, so a trip
+/// is always being watched well before the first prediction that could
+/// match it. A pilot-tuned value, like the constants above.
+const ADMISSION_LOOKAHEAD_MINUTES: i64 = 30;
+
+/// How far *behind* `now` a scheduled trip may be and still be picked up
+/// for the first time. Zero: this poller can only infer anything about a
+/// trip by watching for its prediction, and a trip whose time has already
+/// passed can no longer be watched — admitting one produces no evidence
+/// either way and then reads that silence as a cancellation. That is what
+/// made a cold start ingest the whole day's earlier schedule as instant
+/// cancellations. Nothing is lost in steady state: with
+/// `ADMISSION_LOOKAHEAD_MINUTES` of lead time, every trip is already being
+/// tracked long before its scheduled time, and this bound only gates the
+/// *first* sighting — a trip admitted earlier stays pending and still
+/// cancels normally once `CANCELLATION_GRACE_MINUTES` is up.
+///
+/// Must stay below `RESOLVED_RETENTION_MINUTES` so that a trip aging out
+/// of `resolved` can never fall back inside the admission window and be
+/// counted a second time (see `admission_window_cannot_readmit_an_aged_out_trip`).
+const ADMISSION_LOOKBACK_MINUTES: i64 = 0;
+
+const _: () = assert!(
+    ADMISSION_LOOKBACK_MINUTES < RESOLVED_RETENTION_MINUTES,
+    "a trip aging out of `resolved` must already be outside the admission window, \
+     or it can be picked up and counted a second time"
+);
+
 pub struct DlrMatchState {
     pending: Vec<PendingTrip>,
     resolved: Vec<ResolvedTrip>,
@@ -118,7 +158,11 @@ impl DlrMatchState {
     }
 
     /// Runs one poll cycle: adds newly-seen scheduled trips to the pending
-    /// set (skipping ones already tracked, by `scheduled_departure`),
+    /// set (skipping ones already tracked *or already resolved*, by
+    /// `scheduled_departure`, and ignoring anything outside the
+    /// `ADMISSION_LOOKBACK_MINUTES`/`ADMISSION_LOOKAHEAD_MINUTES` window
+    /// around `now` — the Timetable poll hands in the whole service day
+    /// every cycle, so both filters are load-bearing),
     /// matches everything pending against this cycle's predictions,
     /// promotes newly-matched or grace-window-expired trips into
     /// `resolved`, evicts resolved trips older than
@@ -131,9 +175,19 @@ impl DlrMatchState {
         predictions: &[Prediction],
         now: DateTime<Utc>,
     ) -> Option<common::SampleStats> {
-        let known: std::collections::HashSet<DateTime<Utc>> =
-            self.pending.iter().map(|t| t.scheduled_departure).collect();
-        for trip in trips.iter().filter(|t| !known.contains(&t.scheduled_departure)) {
+        let known: std::collections::HashSet<DateTime<Utc>> = self
+            .pending
+            .iter()
+            .map(|t| t.scheduled_departure)
+            .chain(self.resolved.iter().map(|r| r.scheduled_departure))
+            .collect();
+        let earliest = now - chrono::Duration::minutes(ADMISSION_LOOKBACK_MINUTES);
+        let latest = now + chrono::Duration::minutes(ADMISSION_LOOKAHEAD_MINUTES);
+        for trip in trips.iter().filter(|t| {
+            !known.contains(&t.scheduled_departure)
+                && t.scheduled_departure >= earliest
+                && t.scheduled_departure <= latest
+        }) {
             self.pending.push(PendingTrip { scheduled_departure: trip.scheduled_departure });
         }
 
@@ -148,12 +202,20 @@ impl DlrMatchState {
         for (pending_trip, matched) in self.pending.drain(..).zip(matches) {
             match matched {
                 MatchedTrip::Matched { delay_minutes } => {
-                    self.resolved.push(ResolvedTrip { resolved_at: now, delay_minutes: Some(delay_minutes) });
+                    self.resolved.push(ResolvedTrip {
+                        scheduled_departure: pending_trip.scheduled_departure,
+                        resolved_at: now,
+                        delay_minutes: Some(delay_minutes),
+                    });
                 }
                 MatchedTrip::Pending => {
                     let overdue = (now - pending_trip.scheduled_departure).num_minutes();
                     if overdue >= CANCELLATION_GRACE_MINUTES {
-                        self.resolved.push(ResolvedTrip { resolved_at: now, delay_minutes: None });
+                        self.resolved.push(ResolvedTrip {
+                            scheduled_departure: pending_trip.scheduled_departure,
+                            resolved_at: now,
+                            delay_minutes: None,
+                        });
                     } else {
                         still_pending.push(pending_trip);
                     }
@@ -204,6 +266,7 @@ mod tests {
             vehicle_id: "301".to_string(),
             naptan_id: "940GZZDLPOP".to_string(),
             station_name: "Poplar".to_string(),
+            direction: "outbound".to_string(),
             destination_naptan_id: String::new(),
             destination_name: String::new(),
             expected_arrival: "2026-08-22T10:00:00Z".parse::<DateTime<Utc>>().unwrap()
@@ -294,6 +357,133 @@ mod tests {
         // trip should have aged out, leaving nothing to report.
         let stats = state.resolve(vec![], &[], "2026-08-22T11:01:00Z".parse().unwrap());
         assert_eq!(stats, None);
+    }
+
+    #[test]
+    fn a_resolved_trip_is_not_re_admitted_when_the_timetable_repeats_it() {
+        // The Timetable poll returns the same day's full schedule every
+        // cycle, so a trip that has already resolved keeps being handed
+        // back in. It must be recognised as already-resolved, not treated
+        // as new and re-counted once per cycle for the whole retention
+        // window. The trip is scheduled 20 minutes out and every cycle
+        // runs before it, so the admission window would happily let it
+        // back in on all three — only the resolved-set check stops that.
+        let mut state = DlrMatchState::new();
+        let cycles = ["2026-08-22T10:00:00Z", "2026-08-22T10:02:00Z", "2026-08-22T10:04:00Z"];
+        for cycle in cycles {
+            let stats = state
+                .resolve(vec![trip(20)], &[prediction(20)], cycle.parse().unwrap())
+                .expect("the trip resolved on the first cycle and is retained");
+            assert_eq!(stats.total, 1, "trip re-counted on cycle {cycle}");
+            assert_eq!(stats.cancelled, 0);
+        }
+    }
+
+    #[test]
+    fn a_cold_start_does_not_ingest_the_whole_days_past_schedule_as_cancellations() {
+        // First-ever cycle at 14:00, handed the full service day from
+        // 05:28 onwards (what the real Timetable poll returns). Every one
+        // of those trips is hours past its time with no prediction, so
+        // without an admission window they all resolve as cancelled on
+        // the spot.
+        let mut state = DlrMatchState::new();
+        let start: DateTime<Utc> = "2026-08-22T05:28:00Z".parse().unwrap();
+        let days_schedule: Vec<ScheduledTrip> = (0..50)
+            .map(|i| ScheduledTrip {
+                scheduled_departure: start + chrono::Duration::minutes(i * 10),
+                interval_id: None,
+            })
+            .collect();
+        let stats = state.resolve(days_schedule, &[], "2026-08-22T14:00:00Z".parse().unwrap());
+        assert_eq!(stats, None, "past trips must not be tracked, let alone cancelled");
+    }
+
+    #[test]
+    fn a_trip_inside_the_admission_window_still_cancels_after_the_grace_window() {
+        // The counterpart to the test above: skipping trips that are
+        // already past must not weaken cancellation for the ones that
+        // aren't. A cold start handed both an unobservable trip from
+        // hours ago and one due in 10 minutes reports exactly one
+        // outcome — the second trip's, and only once its grace window is
+        // up, not before.
+        let mut state = DlrMatchState::new();
+        let hours_ago = ScheduledTrip {
+            scheduled_departure: "2026-08-22T08:00:00Z".parse().unwrap(),
+            interval_id: None,
+        };
+        let schedule = vec![hours_ago, trip(10)];
+        assert_eq!(state.resolve(schedule.clone(), &[], "2026-08-22T10:00:00Z".parse().unwrap()), None);
+        // 10:10's trip never showed up, and it is now 15 minutes overdue.
+        let stats = state
+            .resolve(schedule, &[], "2026-08-22T10:25:00Z".parse().unwrap())
+            .expect("the overdue trip should have resolved as cancelled");
+        assert_eq!(stats.total, 1, "the 08:00 trip must not be counted: {stats:?}");
+        assert_eq!(stats.cancelled, 1);
+    }
+
+    #[test]
+    fn admission_window_cannot_readmit_an_aged_out_trip() {
+        // A resolved trip stops being remembered once it ages out of the
+        // retention window, so the admission window is what has to keep it
+        // from being picked up again. (The constant-level assertion next
+        // to `ADMISSION_LOOKBACK_MINUTES` guards the relation between the
+        // two bounds; this covers the behaviour it exists for.)
+        let mut state = DlrMatchState::new();
+        state.resolve(vec![trip(0)], &[prediction(0)], "2026-08-22T10:00:00Z".parse().unwrap());
+        // 61 minutes on, the 10:00 trip ages out of `resolved` — eviction
+        // runs after admission, so this cycle is still covered by the
+        // resolved-set check.
+        assert_eq!(state.resolve(vec![trip(0)], &[], "2026-08-22T11:01:00Z".parse().unwrap()), None);
+        // The cycle after that, `resolved` is empty and nothing remembers
+        // the trip any more — only the admission window keeps the same
+        // schedule entry, handed in yet again, from being picked up and
+        // cancelled all over again.
+        let stats = state.resolve(vec![trip(0)], &[], "2026-08-22T11:06:00Z".parse().unwrap());
+        assert_eq!(stats, None);
+    }
+
+    #[test]
+    fn a_perfectly_on_time_railway_reports_no_cancellations_over_many_cycles() {
+        // The whole failure mode end to end, driven the way `main.rs`
+        // drives it: the same full service day handed in on every cycle,
+        // a poller started mid-afternoon, and a railway running exactly to
+        // time. Every resolved trip should be an on-time one.
+        let day_start: DateTime<Utc> = "2026-08-22T05:28:00Z".parse().unwrap();
+        let days_schedule: Vec<ScheduledTrip> = (0..110)
+            .map(|i| ScheduledTrip {
+                scheduled_departure: day_start + chrono::Duration::minutes(i * 10),
+                interval_id: None,
+            })
+            .collect();
+
+        let mut state = DlrMatchState::new();
+        let start: DateTime<Utc> = "2026-08-22T14:00:00Z".parse().unwrap();
+        let mut latest = None;
+        for cycle in 0..12 {
+            let now = start + chrono::Duration::minutes(cycle * 5);
+            // Punctual railway: everything due before the next poll is
+            // already showing a prediction at exactly its scheduled time.
+            let predictions: Vec<Prediction> = days_schedule
+                .iter()
+                .filter(|t| {
+                    t.scheduled_departure >= now
+                        && t.scheduled_departure <= now + chrono::Duration::minutes(5)
+                })
+                .map(|t| Prediction {
+                    expected_arrival: t.scheduled_departure,
+                    ..prediction(0)
+                })
+                .collect();
+            latest = state.resolve(days_schedule.clone(), &predictions, now);
+        }
+
+        let stats = latest.expect("an hour of on-time trips should have resolved");
+        assert_eq!(stats.cancelled, 0, "an on-time railway must report no cancellations: {stats:?}");
+        assert_eq!(stats.delayed, 0);
+        // 55 minutes of poll cycles over a 10-minute headway, each trip
+        // counted exactly once — not once per cycle it stays in the
+        // timetable payload.
+        assert!((5..=7).contains(&stats.total), "unexpected sample size: {stats:?}");
     }
 
     #[test]
