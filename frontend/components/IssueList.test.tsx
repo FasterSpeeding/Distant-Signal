@@ -470,6 +470,25 @@ describe('IssueList', () => {
     expect(screen.queryByText(/Severity —/)).not.toBeInTheDocument();
   });
 
+  it('also collapses the chrome for TfL\'s No Issues (25), not just NR\'s Good Service (10)', () => {
+    // Both severities are classified 'good' in lib/severity.ts's
+    // SEVERITY_TABLE; the allGood check has to go through that
+    // classification rather than hardcoding statusSeverity === 10, or a
+    // TfL line whose only status is 25 would incorrectly show the full
+    // filter chrome as if something were wrong.
+    const noIssues: LineStatus = {
+      statusSeverity: 25,
+      statusSeverityDescription: 'No Issues',
+      reason: 'No Issues',
+      dataQuality: 'tfl',
+      validityPeriods: [{ fromDate: new Date(NOW).toISOString(), toDate: null, isNow: true }],
+    };
+    renderWithMantine(<IssueList items={[{ status: noIssues }]} now={NOW} />);
+    expect(screen.getByText('Good service — no issues reported on this line.')).toBeInTheDocument();
+    expect(screen.queryByText(/^All \(/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Severity —/)).not.toBeInTheDocument();
+  });
+
   it('says the station is clear (not "the line") when subject="station" and there are no issues at all', () => {
     renderWithMantine(<IssueList items={toItems([])} now={NOW} subject="station" />);
     const message = screen.getByText(/No issues reported on this station/i);

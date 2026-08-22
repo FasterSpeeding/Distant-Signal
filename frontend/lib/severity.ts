@@ -58,6 +58,15 @@ export function severityColor(severity: number): string {
   return entry ? GROUP_COLOR[entry.group] : 'gray';
 }
 
+/** True for both National Rail's Good Service (10) and TfL's No Issues
+ * (25) — the two severities `SEVERITY_TABLE` classifies as `'good'`. Use
+ * this instead of comparing `statusSeverity === 10` directly whenever the
+ * question is "is this line/status actually fine", so TfL statuses aren't
+ * silently excluded. */
+export function isGoodSeverity(severity: number): boolean {
+  return SEVERITY_TABLE[severity]?.group === 'good';
+}
+
 export function severityLabel(severity: number): string {
   return SEVERITY_TABLE[severity]?.label ?? 'Unknown';
 }

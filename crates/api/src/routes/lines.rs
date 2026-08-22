@@ -125,13 +125,24 @@ async fn list_lines(
         .map_err(internal_error)?;
     out.extend(tfl.into_iter().map(|line| LineSummary {
         id: line.id,
-        name: line.name,
+        name: tfl_display_name(&line.name),
         category: line.mode_name,
         operators: vec![common::TFL_OPERATOR.to_string()],
         source: "tfl",
     }));
 
     Ok(Json(out))
+}
+
+/// Suffixes a TfL line's raw name for the `/public/lines` list, so it's
+/// distinguishable from any same-named National Rail catalogue line (e.g.
+/// `lines/northern.toml`'s "Northern" vs TfL's own "Northern" line, or
+/// `lines/elizabeth-line.toml`'s "Elizabeth line" vs TfL's "Elizabeth
+/// line"). The All Lines table has no Category/Operators column, so two
+/// identical-looking rows would otherwise be indistinguishable without
+/// filtering by operator.
+fn tfl_display_name(name: &str) -> String {
+    format!("{name} (TfL)")
 }
 
 #[derive(Debug, Deserialize)]
@@ -302,4 +313,34 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
         StatusCode::INTERNAL_SERVER_ERROR,
         "operation failed".to_string(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tfl_names_are_suffixed_to_disambiguate_from_catalogue_lines() {
+        // `lines/northern.toml` and `lines/elizabeth-line.toml` share these
+        // exact names with their TfL counterparts; the suffix is what lets
+        // a user tell them apart on `/lines`, which has no Category or
+        // Operators column.
+        assert_eq!(tfl_display_name("Northern"), "Northern (TfL)");
+        assert_eq!(tfl_display_name("Elizabeth line"), "Elizabeth line (TfL)");
+    }
+
+    #[test]
+    fn catalogue_and_custom_line_summaries_are_not_suffixed() {
+        // Catalogue/custom `LineSummary`s are built directly from their
+        // source `name` with no transformation — only the TfL branch of
+        // `list_lines` routes through `tfl_display_name`.
+        let catalogue = LineSummary {
+            id: "northern".to_string(),
+            name: "Northern".to_string(),
+            category: "main-line".to_string(),
+            operators: vec!["NT".to_string()],
+            source: "catalogue",
+        };
+        assert_eq!(catalogue.name, "Northern");
+    }
 }

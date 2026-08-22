@@ -20,6 +20,7 @@ import type { LineStatus } from '@/lib/types';
 import type { IssueItem } from '@/lib/stationIssues';
 import { bucketFor, governingPeriod, periodIsActive, type IssueBucket } from '@/lib/validity';
 import { formatDate, formatDateTime } from '@/lib/dateFormat';
+import { isGoodSeverity } from '@/lib/severity';
 
 type ActiveFilter = 'all' | IssueBucket;
 
@@ -197,7 +198,7 @@ export function IssueList({
   // fewer/more hooks than expected." Placing the check after the last hook
   // call and before the first plain (non-hook) derived value keeps every
   // hook unconditional while still skipping all of the chrome below.
-  const allGood = statuses.length > 0 && statuses.every((status) => status.statusSeverity === 10);
+  const allGood = statuses.length > 0 && statuses.every((status) => isGoodSeverity(status.statusSeverity));
   if (allGood) {
     return <Text c="dimmed">Good service — no issues reported on this {subject}.</Text>;
   }

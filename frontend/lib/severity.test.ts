@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { severityColor, severityLabel, worstStatus } from './severity';
+import { isGoodSeverity, severityColor, severityLabel, worstStatus } from './severity';
 import type { LineStatusReport } from './types';
 
 describe('severityColor', () => {
@@ -110,5 +110,18 @@ describe('TfL severity codes', () => {
   it('does not confuse TfL Service Closed with the NR Recovering extension', () => {
     expect(severityLabel(20)).toBe('Recovering');
     expect(severityLabel(22)).toBe('Service Closed');
+  });
+});
+
+describe('isGoodSeverity', () => {
+  it('treats NR Good Service (10) and TfL No Issues (25) as good', () => {
+    expect(isGoodSeverity(10)).toBe(true);
+    expect(isGoodSeverity(25)).toBe(true);
+  });
+
+  it('treats every other severity, and unrecognized ones, as not good', () => {
+    expect(isGoodSeverity(6)).toBe(false);  // SevereDelays
+    expect(isGoodSeverity(22)).toBe(false); // Service Closed (informational, not good)
+    expect(isGoodSeverity(999)).toBe(false);
   });
 });
