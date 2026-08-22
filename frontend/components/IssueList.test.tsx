@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { screen, fireEvent, within } from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
+import { theme } from '@/lib/theme';
 import { renderWithMantine } from '@/test/render';
 import { IssueList } from './IssueList';
 import type { LineStatus } from '@/lib/types';
@@ -474,5 +476,71 @@ describe('IssueList', () => {
       <IssueList items={[goodService, minorNow].map((status) => ({ status }))} now={NOW} />,
     );
     expect(screen.getByText(/^All \(2\)/)).toBeInTheDocument();
+  });
+
+  /** The `allGood` early return in IssueList.tsx has to sit after every one
+   * of the component's hook calls (2x `useId`, `useMemo` for
+   * `statuses`/`linesByStatus`, `useState` for `severityFilter` and
+   * `sourceFilter`, `useMemo` for `buckets`, `useState` for
+   * `activeFilter`) — not "immediately after the statuses/linesByStatus
+   * memos", which is where it was first drafted. An early return placed
+   * there would make React call a different number of hooks depending on
+   * whether every status is Good Service, which is a Rules-of-Hooks
+   * violation: React requires the same mounted instance to call the same
+   * hooks, in the same order, on every render.
+   *
+   * A fresh `renderWithMantine` call per test — which is what every other
+   * test in this file does — cannot catch that class of bug: a brand-new
+   * mount is always free to call whatever hooks it likes. Only rerendering
+   * the *same* instance with different `items` exposes a hook-count
+   * mismatch between renders, so these two tests deliberately use RTL's
+   * `rerender` (re-wrapped in a fresh `MantineProvider`, since
+   * `renderWithMantine`'s wrapper isn't preserved across a bare
+   * `rerender` call) instead of two separate mounts.
+   *
+   * This repo has no `eslint-plugin-react-hooks` (no ESLint config at
+   * all), so there is no lint-level safety net for this — these tests are
+   * the only thing that would catch a regression if the early return ever
+   * moved back above one of the hooks it now follows. */
+  it('does not break React hook ordering when a mounted instance goes from all Good Service to a mixed set', () => {
+    const goodService: LineStatus = {
+      statusSeverity: 10,
+      statusSeverityDescription: 'Good Service',
+      reason: 'Good Service',
+      dataQuality: 'ldbws-inferred',
+      validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
+    };
+    const { rerender } = renderWithMantine(<IssueList items={toItems([goodService])} now={NOW} />);
+    expect(screen.getByText('Good service — no issues reported on this line.')).toBeInTheDocument();
+
+    rerender(
+      <MantineProvider theme={theme}>
+        <IssueList items={toItems([goodService, minorNow])} now={NOW} />
+      </MantineProvider>,
+    );
+    expect(screen.getByText(/^All \(2\)/)).toBeInTheDocument();
+    expect(screen.queryByText('Good service — no issues reported on this line.')).not.toBeInTheDocument();
+  });
+
+  it('does not break React hook ordering when a mounted instance goes from a mixed set to all Good Service', () => {
+    const goodService: LineStatus = {
+      statusSeverity: 10,
+      statusSeverityDescription: 'Good Service',
+      reason: 'Good Service',
+      dataQuality: 'ldbws-inferred',
+      validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
+    };
+    const { rerender } = renderWithMantine(
+      <IssueList items={toItems([goodService, minorNow])} now={NOW} />,
+    );
+    expect(screen.getByText(/^All \(2\)/)).toBeInTheDocument();
+
+    rerender(
+      <MantineProvider theme={theme}>
+        <IssueList items={toItems([goodService])} now={NOW} />
+      </MantineProvider>,
+    );
+    expect(screen.getByText('Good service — no issues reported on this line.')).toBeInTheDocument();
+    expect(screen.queryByText(/^All \(/)).not.toBeInTheDocument();
   });
 });
