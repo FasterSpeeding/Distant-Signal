@@ -53,3 +53,91 @@ a[data-text-link]:focus-visible {
 a[data-text-link='always'] {
   text-decoration: underline;
 }
+
+/* Mantine's Badge root sets `overflow: hidden` + `text-overflow: ellipsis`
+   (see `@mantine/core/styles/Badge.css`, `.m_347db0ec`). Two things went
+   wrong with that here. Visibly, the All Lines table at 390px rendered
+   "Good Service" as "G…" and "Severe Delays" as "SE…", leaving colour as
+   the only carrier of the status — a WCAG 1.4.1 failure on the page's main
+   content. Less visibly, `overflow: hidden` makes an element's min-content
+   contribution zero, so a flex row or a table column under width pressure
+   is free to squeeze the badge below its own width; on the line detail
+   page that let the severity badge (pinned with `flex-shrink: 0`) overflow
+   its group and paint straight over the validity dates.
+
+   Both roots are the same override. The descendant half targets Mantine's
+   `.m_5add502a` label span, which repeats the same three properties. */
+[data-status-badge],
+[data-status-badge] :where(*) {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* Collapsed issue row — `components/IssueList.tsx`, and reused by the
+   history timeline. Previously a single Mantine `Group` with
+   `wrap="nowrap"`: severity badge + reason + validity dates + source
+   badge, with only the reason allowed to shrink. That has no viable layout
+   at 390px — the intrinsic width of badge + dates + source badge already
+   exceeds the viewport, so the reason truncated to nothing and the badge
+   overflowed onto the dates. Below `sm` the row becomes two stacked lines
+   instead. Plain classes rather than Mantine `Group`/`Box` props because
+   the breakpoint behaviour has to be a media query, not a style object. */
+.issueRow {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+}
+
+.issueRow__main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+}
+
+/* Classification and provenance are fixed; the reason is the only thing
+   that gives way on a wide screen. */
+.issueRow__badge {
+  flex-shrink: 0;
+}
+
+.issueRow__meta {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  white-space: nowrap;
+}
+
+.issueRow__reason {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .issueRow {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .issueRow__main {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  /* Two wrapped lines of reason beats one line of "Go…". There is room for
+     them once the row is allowed to stack, and the clamp keeps a
+     paragraph-long planned-works description from turning every row into a
+     wall — the expanded panel carries the full text. */
+  .issueRow__reason {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    white-space: normal;
+  }
+}

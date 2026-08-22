@@ -79,3 +79,46 @@ describe('TextLink underline affordance', () => {
     expect(css).toContain('text-decoration-color: var(--mantine-color-anchor)');
   });
 });
+
+describe('status badge truncation opt-out', () => {
+  // Mantine's Badge root carries `overflow: hidden` + `text-overflow:
+  // ellipsis`, which clipped "Good Service" to "G…" in the All Lines table
+  // at 390px — colour alone then carried the status (WCAG 1.4.1). It also
+  // collapses the badge's min-content contribution to zero, which is what
+  // let a flex row squeeze the badge past its own width and paint it over
+  // the date range on the line detail page.
+  it('opts status badges out of overflow clipping, root and label', () => {
+    const rule = css.match(/\[data-status-badge\][\s\S]*?\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('overflow: visible');
+    expect(rule![0]).toContain('text-overflow: clip');
+  });
+});
+
+describe('collapsed issue row layout', () => {
+  it('lays the row out as a single flex line by default', () => {
+    const rule = css.match(/\.issueRow\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('display: flex');
+    expect(rule![0]).toContain('justify-content: space-between');
+  });
+
+  it('stacks the row into two lines below the sm breakpoint', () => {
+    const query = css.match(
+      /@media \(max-width: \$mantine-breakpoint-sm\)\s*\{[\s\S]*?\n\}/,
+    );
+    expect(query).not.toBeNull();
+    expect(query![0]).toContain('.issueRow {');
+    expect(query![0]).toContain('flex-direction: column');
+  });
+
+  it('lets the reason wrap to two clamped lines on mobile instead of truncating to nothing', () => {
+    expect(css).toContain('-webkit-line-clamp: 2');
+  });
+
+  it('never lets the severity badge shrink out of the row', () => {
+    const rule = css.match(/\.issueRow__badge\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('flex-shrink: 0');
+  });
+});
