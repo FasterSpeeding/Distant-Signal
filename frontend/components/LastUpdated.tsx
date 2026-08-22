@@ -4,12 +4,7 @@ import { useState } from 'react';
 import { Text, Tooltip } from '@mantine/core';
 import { useInterval, useMounted } from '@mantine/hooks';
 import { relativeTime } from '@/lib/relativeTime';
-
-const EXACT_TIME_FORMAT = new Intl.DateTimeFormat('en-GB', {
-  timeZone: 'Europe/London',
-  dateStyle: 'medium',
-  timeStyle: 'short',
-});
+import { formatDateTime } from '@/lib/dateFormat';
 
 const RELATIVE_TIME_TICK_MS = 30_000;
 
@@ -37,7 +32,7 @@ export function LastUpdated({
   withTooltip?: boolean;
 }) {
   const date = new Date(timestamp);
-  const exact = EXACT_TIME_FORMAT.format(date);
+  const exact = formatDateTime(date);
   const mounted = useMounted();
   const [, forceTick] = useState(0);
   useInterval(() => forceTick((tick) => tick + 1), RELATIVE_TIME_TICK_MS, { autoInvoke: true });

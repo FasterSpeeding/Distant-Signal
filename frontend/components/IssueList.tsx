@@ -17,7 +17,8 @@ import {
 import { StatusBadge } from './StatusBadge';
 import { DisruptionDetail } from './DisruptionDetail';
 import type { LineStatus } from '@/lib/types';
-import { bucketFor, governingPeriod, type IssueBucket } from '@/lib/validity';
+import { bucketFor, governingPeriod, periodIsActive, type IssueBucket } from '@/lib/validity';
+import { formatDate, formatDateTime } from '@/lib/dateFormat';
 
 type ActiveFilter = 'all' | IssueBucket;
 
@@ -33,16 +34,16 @@ const DATA_QUALITY_LABELS: Record<LineStatus['dataQuality'], string> = {
 function formatValiditySummary(status: LineStatus, now: number): string {
   const period = governingPeriod(status, now);
   if (!period) return '';
-  if (period.isNow) return 'Now';
-  const from = new Date(period.fromDate).toLocaleDateString();
-  return period.toDate ? `${from} – ${new Date(period.toDate).toLocaleDateString()}` : `From ${from}`;
+  if (periodIsActive(period, now)) return 'Now';
+  const from = formatDate(period.fromDate);
+  return period.toDate ? `${from} – ${formatDate(period.toDate)}` : `From ${from}`;
 }
 
 function formatFullValidity(status: LineStatus, now: number): string {
   const period = governingPeriod(status, now);
   if (!period) return '';
-  const from = new Date(period.fromDate).toLocaleString();
-  return period.toDate ? `${from} – ${new Date(period.toDate).toLocaleString()}` : `${from} – ongoing`;
+  const from = formatDateTime(period.fromDate);
+  return period.toDate ? `${from} – ${formatDateTime(period.toDate)}` : `${from} – ongoing`;
 }
 
 function pluraliseIssues(count: number): string {

@@ -3,6 +3,7 @@ import { getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TextLink } from '@/components/TextLink';
 import { HistoryRangePicker } from './HistoryRangePicker';
+import { formatDateTime } from '@/lib/dateFormat';
 
 // Same lookup the detail page uses for its heading. This page's job is the
 // date range, not the name, so a failed lookup (line deleted, catalogue
@@ -58,7 +59,7 @@ async function HistoryResults({ id, from, to }: { id: string; from: string; to: 
         <div key={i}>
           <Divider my="sm" />
           <Text size="sm" c="dimmed">
-            {new Date(entry.computedAt).toLocaleString()}
+            {formatDateTime(entry.computedAt)}
           </Text>
           {entry.lineStatuses.map((status, j) => (
             <Stack key={j} gap={4}>

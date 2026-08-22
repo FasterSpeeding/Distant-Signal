@@ -70,10 +70,16 @@ describe('IssueList', () => {
   });
 
   it('shows a date-range validity summary when a period has both a start and end date', () => {
-    renderWithMantine(<IssueList statuses={[plannedRange]} now={NOW} />);
-    // plannedRange spans `now` (fromDate: now, toDate: future), so it lands
-    // on the default Active tab already; clicking All is harmless and keeps
-    // this test about date-range formatting, not the active/upcoming filter.
+    // Deliberately upcoming rather than spanning `now`: a period that spans
+    // `now` is active per `periodIsActive`, and the collapsed-row summary
+    // now says "Now" for any active period (see the in-progress-window
+    // test below) rather than a date range, so this test needs a period
+    // that is unambiguously *not* active to exercise the range formatting.
+    const upcomingRange: LineStatus = {
+      ...severePlanned,
+      validityPeriods: [{ fromDate: future, toDate: new Date(NOW + 2 * 86400000).toISOString(), isNow: false }],
+    };
+    renderWithMantine(<IssueList statuses={[upcomingRange]} now={NOW} />);
     fireEvent.click(screen.getByText(/^All/));
     expect(screen.getByText(/–/)).toBeInTheDocument();
   });
@@ -392,5 +398,19 @@ describe('IssueList', () => {
   it('hides the Ended tab entirely when nothing has ended', () => {
     renderWithMantine(<IssueList statuses={all} now={NOW} />);
     expect(screen.queryByText(/^Ended/)).not.toBeInTheDocument();
+  });
+
+  it('formats validity dates as unambiguous UK dates', () => {
+    const dated: LineStatus = {
+      statusSeverity: 4,
+      statusSeverityDescription: 'Planned Closure',
+      reason: 'Station improvement work',
+      dataQuality: 'planned',
+      validityPeriods: [
+        { fromDate: '2026-05-10T00:00:00Z', toDate: '2026-10-11T00:00:00Z', isNow: false },
+      ],
+    };
+    renderWithMantine(<IssueList statuses={[dated]} now={Date.parse('2026-12-01T00:00:00Z')} />);
+    expect(screen.getByText('10 May 2026 – 11 Oct 2026')).toBeInTheDocument();
   });
 });
