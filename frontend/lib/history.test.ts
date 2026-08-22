@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { collapseHistory, groupSpansByDay, resolveRange } from './history';
+import { groupHistoryByDay, resolveRange } from './history';
 import type { LineStatusHistoryEntry } from './types';
 
 function entry(computedAt: string, statuses: Array<[number, string]>): LineStatusHistoryEntry {
@@ -20,9 +20,13 @@ function entry(computedAt: string, statuses: Array<[number, string]>): LineStatu
   };
 }
 
-describe('collapseHistory', () => {
+function spansFor(entries: LineStatusHistoryEntry[]) {
+  return groupHistoryByDay(entries).flatMap((day) => day.spans);
+}
+
+describe('groupHistoryByDay', () => {
   it('collapses consecutive recomputes carrying identical statuses into one span', () => {
-    const spans = collapseHistory([
+    const spans = spansFor([
       entry('2026-08-19T18:00:00Z', [[9, 'Minor delays']]),
       entry('2026-08-19T18:10:00Z', [[9, 'Minor delays']]),
       entry('2026-08-19T18:20:00Z', [[9, 'Minor delays']]),
@@ -31,66 +35,90 @@ describe('collapseHistory', () => {
     expect(spans[0].samples).toBe(3);
     expect(spans[0].from).toBe('2026-08-19T18:00:00Z');
     expect(spans[0].to).toBe('2026-08-19T18:20:00Z');
+    expect(spans[0].flips).toHaveLength(1);
   });
 
-  it('starts a new span when the status set changes', () => {
-    const spans = collapseHistory([
-      entry('2026-08-19T18:00:00Z', [[10, 'Good Service']]),
-      entry('2026-08-19T18:10:00Z', [[9, 'Minor delays']]),
-      entry('2026-08-19T18:20:00Z', [[10, 'Good Service']]),
-    ]);
-    expect(spans).toHaveLength(3);
-  });
-
-  it('ignores the order statuses happen to arrive in within one entry', () => {
-    const spans = collapseHistory([
-      entry('2026-08-19T18:00:00Z', [[9, 'A'], [4, 'B']]),
-      entry('2026-08-19T18:10:00Z', [[4, 'B'], [9, 'A']]),
+  it('groups a flapping incident into one span spanning its full first-to-last-seen window', () => {
+    // Same underlying incident, severity repeatedly crossing an escalation
+    // threshold and dropping back — this is the "same Wrexham incident
+    // scattered across a dozen alternating rows" case from production.
+    const spans = spansFor([
+      entry('2026-08-19T11:00:00Z', [[9, 'Works in the area']]),
+      entry('2026-08-19T12:00:00Z', [[6, 'Works in the area']]),
+      entry('2026-08-19T13:00:00Z', [[9, 'Works in the area']]),
+      entry('2026-08-19T14:00:00Z', [[6, 'Works in the area']]),
+      entry('2026-08-19T15:00:00Z', [[9, 'Works in the area']]),
     ]);
     expect(spans).toHaveLength(1);
+    expect(spans[0].from).toBe('2026-08-19T11:00:00Z');
+    expect(spans[0].to).toBe('2026-08-19T15:00:00Z');
+    expect(spans[0].samples).toBe(5);
+    // 6 (Severe Delays) outranks 9 (Minor Delays).
+    expect(spans[0].severity).toBe(6);
+    expect(spans[0].flips).toHaveLength(5);
   });
 
-  it('sorts oldest-first before collapsing, so a span is always a real contiguous run', () => {
-    const spans = collapseHistory([
-      entry('2026-08-19T18:20:00Z', [[9, 'Minor delays']]),
+  it('keeps two genuinely different, simultaneously ongoing incidents as separate spans', () => {
+    const spans = spansFor([
+      entry('2026-08-19T11:00:00Z', [
+        [9, 'Signal failure near Chester'],
+        [6, 'Points failure near Crewe'],
+      ]),
+      entry('2026-08-19T11:10:00Z', [
+        [9, 'Signal failure near Chester'],
+        [6, 'Points failure near Crewe'],
+      ]),
+    ]);
+    expect(spans).toHaveLength(2);
+    expect(spans.map((s) => s.reason).sort()).toEqual(['Points failure near Crewe', 'Signal failure near Chester']);
+  });
+
+  it('does not let a live-sample-count annotation churn defeat grouping', () => {
+    const spans = spansFor([
+      entry('2026-08-19T11:00:00Z', [[6, 'Works in the area (live samples show: 5 of 9 sampled services delayed.)']]),
+      entry('2026-08-19T11:10:00Z', [[6, 'Works in the area (live samples show: 7 of 14 sampled services delayed.)']]),
+    ]);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].reason).toBe('Works in the area');
+    expect(spans[0].samples).toBe(2);
+  });
+
+  it('starts a new span when the reason genuinely changes', () => {
+    const spans = spansFor([
       entry('2026-08-19T18:00:00Z', [[9, 'Minor delays']]),
+      entry('2026-08-19T18:10:00Z', [[9, 'A different incident']]),
+    ]);
+    expect(spans).toHaveLength(2);
+  });
+
+  it('groups "no active status" recomputes into their own span', () => {
+    const spans = spansFor([
+      entry('2026-08-19T18:00:00Z', []),
+      entry('2026-08-19T18:10:00Z', []),
     ]);
     expect(spans).toHaveLength(1);
-    expect(spans[0].from).toBe('2026-08-19T18:00:00Z');
+    expect(spans[0].samples).toBe(2);
   });
 
   it('reports the worst severity in the span, by true rank', () => {
     // 4 (Planned Closure) is numerically lower but less severe than 6.
-    const spans = collapseHistory([entry('2026-08-19T18:00:00Z', [[4, 'A'], [6, 'B']])]);
-    expect(spans[0].severity).toBe(6);
+    const spans = spansFor([entry('2026-08-19T18:00:00Z', [[4, 'A'], [6, 'B']])]);
+    const worst = spans.find((s) => s.reason === 'B');
+    expect(worst?.severity).toBe(6);
   });
 
   it('returns nothing for no entries', () => {
-    expect(collapseHistory([])).toEqual([]);
+    expect(groupHistoryByDay([])).toEqual([]);
   });
 
-  it('does not falsely merge multi-status entries that collide under a naive unseparated join', () => {
-    // `${severity} ${reason}` joined with no separator: "1 A2" + "2 B" and
-    // "1 A" + "22 B" both produce the string "1 A22 B" — two genuinely
-    // different status sets that must stay distinct.
-    const spans = collapseHistory([
-      entry('2026-08-19T18:00:00Z', [[1, 'A2'], [2, 'B']]),
-      entry('2026-08-19T18:10:00Z', [[1, 'A'], [22, 'B']]),
-    ]);
-    expect(spans).toHaveLength(2);
-  });
-});
-
-describe('groupSpansByDay', () => {
   it('groups by London day, newest day first and newest span first within a day', () => {
-    const spans = collapseHistory([
+    const days = groupHistoryByDay([
       entry('2026-08-19T10:00:00Z', [[10, 'Good Service']]),
       entry('2026-08-19T11:00:00Z', [[9, 'Minor delays']]),
       entry('2026-08-20T10:00:00Z', [[10, 'Good Service']]),
     ]);
-    const days = groupSpansByDay(spans);
     expect(days.map((d) => d.day)).toEqual(['2026-08-20', '2026-08-19']);
-    expect(days[1].spans[0].from).toBe('2026-08-19T11:00:00Z');
+    expect(days[1].spans[0].reason).toBe('Minor delays');
   });
 });
 

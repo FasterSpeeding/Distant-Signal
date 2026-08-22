@@ -3,7 +3,7 @@ import { Divider, Skeleton, Stack, Text, Title } from '@mantine/core';
 import { getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TextLink } from '@/components/TextLink';
-import { collapseHistory, groupSpansByDay, resolveRange } from '@/lib/history';
+import { groupHistoryByDay, resolveRange } from '@/lib/history';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { HistoryRangePicker } from './HistoryRangePicker';
 
@@ -75,8 +75,8 @@ export default async function LineHistoryPage({
 
 async function HistoryResults({ id, from, to }: { id: string; from: string; to: string }) {
   const entries = await getLineStatusHistory(id, from, to);
-  const spans = collapseHistory(entries);
-  const days = groupSpansByDay(spans);
+  const days = groupHistoryByDay(entries);
+  const spanCount = days.reduce((total, day) => total + day.spans.length, 0);
 
   if (days.length === 0) {
     return <Text c="dimmed">No history entries in that range.</Text>;
@@ -84,26 +84,32 @@ async function HistoryResults({ id, from, to }: { id: string; from: string; to: 
 
   return (
     <Stack gap="lg">
-      {/* Says out loud what the collapsing did, so a short page doesn't
-          read as missing data. */}
+      {/* Says out loud what the grouping did, so a short page doesn't read
+          as missing data. */}
       <Text size="sm" c="dimmed">
-        {entries.length} status {entries.length === 1 ? 'recompute' : 'recomputes'} across {spans.length}{' '}
-        {spans.length === 1 ? 'period' : 'periods'}, newest first.
+        {entries.length} status {entries.length === 1 ? 'recompute' : 'recomputes'} across {spanCount}{' '}
+        {spanCount === 1 ? 'incident' : 'incidents'}, newest first.
       </Text>
       {days.map((day) => (
         <Stack key={day.day} gap="xs">
           <Title order={3} size="h5">
-            {formatDate(day.spans[0].from)}
+            {formatDate(day.spans[0].to)}
           </Title>
           <Divider />
           {day.spans.map((span) => (
-            <div className="issueRow" key={span.from}>
+            <div className="issueRow" key={`${span.reason}-${span.from}`}>
               <div className="issueRow__main">
                 <div className="issueRow__badge">
                   <StatusBadge severity={span.severity} />
                 </div>
                 <Text size="sm" className="issueRow__reason">
-                  {span.statuses.map((status) => status.reason).filter(Boolean).join(' · ') || 'No reason given'}
+                  {span.reason || 'No reason given'}
+                  {span.flips.length > 1 && (
+                    <Text span size="xs" c="dimmed">
+                      {' '}
+                      (severity changed {span.flips.length - 1} {span.flips.length - 1 === 1 ? 'time' : 'times'})
+                    </Text>
+                  )}
                 </Text>
               </div>
               <div className="issueRow__meta">

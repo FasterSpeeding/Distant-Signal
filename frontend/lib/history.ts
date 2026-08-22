@@ -4,16 +4,61 @@ import type { LineStatus, LineStatusHistoryEntry } from './types';
 
 const DAY_MS = 86_400_000;
 
-export interface HistorySpan {
-  /** Worst severity across the span's statuses, by true rank. */
+const LIVE_SAMPLE_ANNOTATION = / \(live samples show: [^)]*\)$/;
+
+/** Strips the `" (live samples show: ...)"` annotation `escalate_from_sample_stats`
+ * (crates/aggregator/src/aggregation.rs) appends to `reason` on escalation.
+ * Its counts roll over almost every poll cycle even when the underlying
+ * incident hasn't changed, so it must not participate in incident identity
+ * — mirrors `strip_live_sample_annotation` in crates/aggregator/src/queries.rs,
+ * which strips the same suffix before the aggregator decides whether to
+ * write a new history row at all. */
+function coreReason(reason: string): string {
+  return reason.replace(LIVE_SAMPLE_ANNOTATION, '');
+}
+
+/** Stand-in for "this recompute had no active status" (i.e. good service),
+ * so quiet periods group into their own identity the same way a named
+ * incident does, instead of vanishing from the timeline entirely. */
+const NO_ACTIVE_STATUS: LineStatus = {
+  statusSeverity: 10,
+  statusSeverityDescription: 'Good Service',
+  reason: '',
+  dataQuality: 'knowledgebase',
+  validityPeriods: [],
+};
+
+export interface SeverityFlip {
+  /** True severity rank order, not raw `statusSeverity` — see `severityRank`. */
   severity: number;
-  statuses: LineStatus[];
-  /** `computedAt` of the first recompute in the run. */
+  /** A representative status at this severity, for rendering detail. */
+  status: LineStatus;
+  /** `computedAt` of the first recompute in this run. */
   from: string;
-  /** `computedAt` of the last recompute in the run. */
+  /** `computedAt` of the last recompute in this run. */
   to: string;
-  /** How many recomputes were collapsed into this span. */
+  /** How many recomputes were collapsed into this run. */
   samples: number;
+}
+
+export interface HistorySpan {
+  /** Incident identity: `reason` with the live-sample annotation stripped.
+   * Empty string means "no active status" (good service). */
+  reason: string;
+  /** Worst severity (by true rank) hit anywhere in this span. */
+  severity: number;
+  /** The status instance at that worst severity, for rendering full detail
+   * (disruption, validity periods, etc). */
+  status: LineStatus;
+  /** First time this incident was seen within its day. */
+  from: string;
+  /** Last time this incident was seen within its day. */
+  to: string;
+  /** How many recomputes this span rolls up. */
+  samples: number;
+  /** Consecutive same-severity runs within the span, chronological order.
+   * Length 1 means the incident never changed severity. */
+  flips: SeverityFlip[];
 }
 
 export interface HistoryDay {
@@ -22,90 +67,84 @@ export interface HistoryDay {
   spans: HistorySpan[];
 }
 
-/** Identity of an entry's *state*, order-insensitive: two recomputes that
- * found the same set of statuses are the same state even if the aggregator
- * happened to emit them in a different order. Severity plus reason is
- * enough — `statusSeverityDescription` is a pure function of severity, and
- * validity periods on a historical snapshot move as `now` moves, which
- * would defeat the collapsing for no benefit.
- *
- * `JSON.stringify` on the sorted `[severity, reason]` pairs, not a
- * delimiter-free string join: joining `${severity} ${reason}` entries with
- * no separator between them let two genuinely different status sets
- * collide at a digit boundary — `[[1,'A2'],[2,'B']]` and `[[1,'A'],[22,'B']]`
- * both produced `"1 A22 B"`, which would have silently merged a real status
- * transition into one span. `JSON.stringify` escapes and delimits its array
- * elements unambiguously, so no two distinct pair sets can produce the same
- * signature. */
-function stateSignature(entry: LineStatusHistoryEntry): string {
-  return JSON.stringify(
-    entry.lineStatuses
-      .map((status): [number, string] => [status.statusSeverity, status.reason])
-      .sort((a, b) => a[0] - b[0] || a[1].localeCompare(b[1])),
-  );
+function worstOf(a: LineStatus, b: LineStatus): LineStatus {
+  return severityRank(b.statusSeverity) > severityRank(a.statusSeverity) ? b : a;
 }
 
-function worstSeverity(statuses: LineStatus[]): number {
-  return statuses.reduce(
-    (worst, status) => (severityRank(status.statusSeverity) > severityRank(worst) ? status.statusSeverity : worst),
-    10,
-  );
-}
-
-/** The aggregator recomputes every 5–15 minutes, so a 30-day history is
- * thousands of entries describing a handful of actual state changes — the
- * page came out 34,659px tall at desktop and ~46,000px at mobile, almost
- * all of it the same sentence repeated. Runs of consecutive recomputes with
- * an identical status set collapse into one span with its own start, end
- * and sample count. Entries are sorted oldest-first first, so a "span" is
- * always a genuinely contiguous run regardless of what order the API
- * returned them in. */
-export function collapseHistory(entries: LineStatusHistoryEntry[]): HistorySpan[] {
+/** Groups one day's recomputes into one row per distinct ongoing incident
+ * (identified by `reason` with live-sample-count noise stripped, ignoring
+ * severity), regardless of whether its occurrences are contiguous in time.
+ * An incident whose severity flaps in and out — e.g. live-sample escalation
+ * repeatedly crossing a threshold — reads as one row spanning its full
+ * first-to-last-seen window in the day, instead of fragmenting into as many
+ * rows as it flapped, scattered in whatever order the flaps happened to
+ * interleave with other incidents. A synthetic "no active status" identity
+ * groups the line's good-service gaps the same way. */
+function collapseDay(entries: LineStatusHistoryEntry[]): HistorySpan[] {
   const ordered = [...entries].sort((a, b) => Date.parse(a.computedAt) - Date.parse(b.computedAt));
 
-  const spans: HistorySpan[] = [];
-  let signature: string | null = null;
-
+  const byIdentity = new Map<string, { at: string; status: LineStatus }[]>();
   for (const entry of ordered) {
-    const next = stateSignature(entry);
-    const current = spans[spans.length - 1];
-    if (current && next === signature) {
-      current.to = entry.computedAt;
-      current.samples += 1;
-      continue;
+    const statuses = entry.lineStatuses.length > 0 ? entry.lineStatuses : [NO_ACTIVE_STATUS];
+    for (const status of statuses) {
+      const key = coreReason(status.reason);
+      const points = byIdentity.get(key);
+      if (points) points.push({ at: entry.computedAt, status });
+      else byIdentity.set(key, [{ at: entry.computedAt, status }]);
     }
-    signature = next;
+  }
+
+  const spans: HistorySpan[] = [];
+  for (const [reason, points] of byIdentity) {
+    const flips: SeverityFlip[] = [];
+    for (const point of points) {
+      const current = flips[flips.length - 1];
+      if (current && current.severity === point.status.statusSeverity) {
+        current.to = point.at;
+        current.samples += 1;
+        continue;
+      }
+      flips.push({ severity: point.status.statusSeverity, status: point.status, from: point.at, to: point.at, samples: 1 });
+    }
+
+    const worst = points.reduce((worst, point) => worstOf(worst, point.status), points[0].status);
+
     spans.push({
-      severity: worstSeverity(entry.lineStatuses),
-      statuses: entry.lineStatuses,
-      from: entry.computedAt,
-      to: entry.computedAt,
-      samples: 1,
+      reason,
+      severity: worst.statusSeverity,
+      status: worst,
+      from: points[0].at,
+      to: points[points.length - 1].at,
+      samples: points.length,
+      flips,
     });
   }
 
   return spans;
 }
 
-/** Newest day first, newest span first within a day — the page's main
- * question is "what happened recently", and the previous oldest-first
- * ordering put the most recent state 34,000px below the fold. Keyed on the
- * London calendar day so a summer evening doesn't split across two
- * headings at 23:00 UTC. */
-export function groupSpansByDay(spans: HistorySpan[]): HistoryDay[] {
-  const byDay = new Map<string, HistorySpan[]>();
-  for (const span of spans) {
-    const day = londonDayKey(span.from);
+/** The aggregator recomputes every 5–15 minutes, so a 30-day history is
+ * thousands of entries describing a handful of actual incidents. Entries
+ * are bucketed into London calendar days first — so a summer evening
+ * doesn't split across two headings at 23:00 UTC, and a long-flapping
+ * incident's grouping stays bounded to one day's worth of recomputes —
+ * then each day's entries are collapsed by `collapseDay`. Days are
+ * newest-first; spans within a day are newest-first by their last
+ * occurrence. */
+export function groupHistoryByDay(entries: LineStatusHistoryEntry[]): HistoryDay[] {
+  const byDay = new Map<string, LineStatusHistoryEntry[]>();
+  for (const entry of entries) {
+    const day = londonDayKey(entry.computedAt);
     const existing = byDay.get(day);
-    if (existing) existing.push(span);
-    else byDay.set(day, [span]);
+    if (existing) existing.push(entry);
+    else byDay.set(day, [entry]);
   }
 
   return Array.from(byDay.entries())
     .sort(([a], [b]) => (a < b ? 1 : a > b ? -1 : 0))
-    .map(([day, daySpans]) => ({
+    .map(([day, dayEntries]) => ({
       day,
-      spans: [...daySpans].sort((a, b) => Date.parse(b.from) - Date.parse(a.from)),
+      spans: collapseDay(dayEntries).sort((a, b) => Date.parse(b.to) - Date.parse(a.to)),
     }));
 }
 
