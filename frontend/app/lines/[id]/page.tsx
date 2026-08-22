@@ -103,6 +103,18 @@ export default async function LineDetailPage({
           so no per-issue line attribution is needed — that's what the
           optional `lines` on IssueItem is for on the station page. */}
       <IssueList items={report.lineStatuses.map((status) => ({ status }))} now={now} />
+      {report.tflStatus && report.tflStatus.length > 0 && (
+        <Stack gap="xs">
+          {/* This line has an NR counterpart merged into it (Elizabeth line
+              today -- see docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md
+              Area 1) and this is TfL's own, separately-sourced view of the
+              same railway. Kept visually distinct from the primary IssueList
+              above rather than merged into one list, since only the primary
+              side has real sampleStats and merging would blur that. */}
+          <Text fw={500}>TfL also reports:</Text>
+          <IssueList items={report.tflStatus.map((status) => ({ status }))} now={now} />
+        </Stack>
+      )}
     </Stack>
   );
 }
