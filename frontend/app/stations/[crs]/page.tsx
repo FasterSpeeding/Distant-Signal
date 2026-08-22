@@ -2,10 +2,12 @@ import { Stack, Title, Text, Group, Divider } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import { getStopPointDisruption, getPreferences, getStationName } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
-import { RepresentativeInfo } from '@/components/RepresentativeInfo';
 import { IssueList } from '@/components/IssueList';
 import { PinToggle } from '@/components/PinToggle';
-import { worstStatus } from '@/lib/severity';
+import { TextLink } from '@/components/TextLink';
+import { worstStatus, severityRank } from '@/lib/severity';
+import { dedupeStationIssues } from '@/lib/stationIssues';
+import { firstSampleStats, formatSampleSummary } from '@/lib/sampleStats';
 
 /** Three outcomes, not two. The previous version collapsed "there is no
  * such station" and "the name lookup failed" into a single `null`, so the
@@ -58,27 +60,50 @@ export default async function StationDisruptionPage({
   // and re-stamped by AutoRefresh.
   const now = Date.now();
 
+  const items = dedupeStationIssues(reports);
+  // Worst first, then alphabetical — the previous order was whatever the
+  // API iterated, which visibly differed between viewports on the same data.
+  const orderedReports = [...reports].sort((a, b) => {
+    const rankDiff = severityRank(worstStatus(b).statusSeverity) - severityRank(worstStatus(a).statusSeverity);
+    return rankDiff !== 0 ? rankDiff : a.name.localeCompare(b.name);
+  });
+
   return (
     <Stack p="lg" gap="md">
       <Group justify="space-between">
         <Title order={1}>Disruptions at {heading}</Title>
         <PinToggle kind="station" id={crs} initiallyPinned={preferences.pinnedStations.includes(crs)} />
       </Group>
+
       {reports.length === 0 && <Text c="dimmed">No disruptions affecting this station.</Text>}
-      {reports.map((report) => {
-        const worst = worstStatus(report);
-        return (
-          <Stack key={report.id} gap="sm">
-            <Divider my="sm" />
-            <Group justify="space-between">
-              <Text fw={600}>{report.name}</Text>
-              <StatusBadge severity={worst.statusSeverity} />
-            </Group>
-            <RepresentativeInfo statuses={report.lineStatuses} />
-            <IssueList statuses={report.lineStatuses} now={now} />
+
+      {orderedReports.length > 0 && (
+        <>
+          <Divider />
+          {/* Per-line attribution, once — replacing three full copies of
+              the same filter block, tab bar and issue list. The headings
+              are links now, which the review asked for and the previous
+              plain `Text` headings weren't. */}
+          <Stack gap="xs">
+            {orderedReports.map((report) => {
+              const stats = firstSampleStats(report.lineStatuses);
+              return (
+                <Group key={report.id} justify="space-between" wrap="nowrap" gap="sm">
+                  <Stack gap={0} style={{ minWidth: 0 }}>
+                    <TextLink href={`/lines/${report.id}`}>{report.name}</TextLink>
+                    <Text size="xs" c="dimmed">
+                      {formatSampleSummary(stats)}
+                    </Text>
+                  </Stack>
+                  <StatusBadge severity={worstStatus(report).statusSeverity} />
+                </Group>
+              );
+            })}
           </Stack>
-        );
-      })}
+          <Divider />
+          <IssueList items={items} now={now} />
+        </>
+      )}
     </Stack>
   );
 }

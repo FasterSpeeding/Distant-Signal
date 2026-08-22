@@ -99,7 +99,10 @@ export default async function LineDetailPage({
         View history
       </TextLink>
       <RepresentativeInfo statuses={report.lineStatuses} />
-      <IssueList statuses={report.lineStatuses} now={now} />
+      {/* Every issue here belongs to the line already named in the heading,
+          so no per-issue line attribution is needed — that's what the
+          optional `lines` on IssueItem is for on the station page. */}
+      <IssueList items={report.lineStatuses.map((status) => ({ status }))} now={now} />
     </Stack>
   );
 }

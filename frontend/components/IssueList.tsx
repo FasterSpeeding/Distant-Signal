@@ -17,6 +17,7 @@ import {
 import { StatusBadge } from './StatusBadge';
 import { DisruptionDetail } from './DisruptionDetail';
 import type { LineStatus } from '@/lib/types';
+import type { IssueItem } from '@/lib/stationIssues';
 import { bucketFor, governingPeriod, periodIsActive, type IssueBucket } from '@/lib/validity';
 import { formatDate, formatDateTime } from '@/lib/dateFormat';
 
@@ -116,9 +117,14 @@ function chipRowLabel(facet: string, selected: number): string {
   return selected === 0 ? `${facet} — showing all` : `${facet} — ${selected} selected`;
 }
 
-export function IssueList({ statuses, now }: { statuses: LineStatus[]; now: number }) {
+export function IssueList({ items, now }: { items: IssueItem[]; now: number }) {
   const severityLabelId = useId();
   const sourceLabelId = useId();
+  const statuses = useMemo(() => items.map((item) => item.status), [items]);
+  const linesByStatus = useMemo(
+    () => new Map(items.map((item) => [item.status, item.lines ?? []])),
+    [items],
+  );
   const severityOptions = Array.from(new Set(statuses.map((status) => status.statusSeverityDescription)));
   const [severityFilter, setSeverityFilter] = useState<string[]>([]);
   const [sourceFilter, setSourceFilter] = useState<string[]>([]);
@@ -299,6 +305,11 @@ export function IssueList({ statuses, now }: { statuses: LineStatus[]; now: numb
                   <Text size="xs" c="dimmed">
                     {formatValiditySummary(status, now)}
                   </Text>
+                  {(linesByStatus.get(status) ?? []).length > 1 && (
+                    <Badge variant="outline" size="sm" color="gray">
+                      {linesByStatus.get(status)!.length} lines
+                    </Badge>
+                  )}
                   {/*
                     Explicit gray: without a `color`, Mantine falls back to
                     theme.primaryColor (grape), making this read as branded
@@ -314,6 +325,11 @@ export function IssueList({ statuses, now }: { statuses: LineStatus[]; now: numb
             </AccordionControl>
             <AccordionPanel>
               <Stack gap="xs">
+                {(linesByStatus.get(status) ?? []).length > 1 && (
+                  <Text size="sm" c="dimmed">
+                    Affects: {linesByStatus.get(status)!.map((line) => line.name).join(', ')}
+                  </Text>
+                )}
                 <Text size="sm" c="dimmed">
                   Valid: {formatFullValidity(status, now)}
                 </Text>

@@ -3,6 +3,15 @@ import { screen, fireEvent, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { IssueList } from './IssueList';
 import type { LineStatus } from '@/lib/types';
+import type { IssueItem } from '@/lib/stationIssues';
+
+/** Every pre-existing test here predates the `IssueItem` prop shape and
+ * only cares about statuses, not per-line attribution — wrap each in a
+ * bare `{ status }` item, same as the line detail page's real call site
+ * does for its own single-line issues. */
+function toItems(statuses: LineStatus[]): IssueItem[] {
+  return statuses.map((status) => ({ status }));
+}
 
 const NOW = Date.now();
 const now = new Date(NOW).toISOString();
@@ -44,7 +53,7 @@ const all = [minorNow, severePlanned, inferredNow];
 
 describe('IssueList', () => {
   it('renders one row per status, collapsed by default', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     fireEvent.click(screen.getByText('All (3)'));
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
     expect(screen.getByText('Engineering works')).toBeInTheDocument();
@@ -52,19 +61,19 @@ describe('IssueList', () => {
   });
 
   it('defaults to the Active tab, hiding non-active issues until All/Upcoming is picked', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
     expect(screen.getByText('10 of 12 sampled services delayed.')).toBeInTheDocument();
     expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
   });
 
   it('shows a "Now" validity summary on the collapsed row for active statuses', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     expect(screen.getAllByText('Now')).toHaveLength(2);
   });
 
   it('shows the full validity period in the expanded panel', async () => {
-    renderWithMantine(<IssueList statuses={[minorNow]} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
     fireEvent.click(screen.getByText('Signal failure'));
     expect(await screen.findByText(/Valid:/)).toBeInTheDocument();
   });
@@ -79,13 +88,13 @@ describe('IssueList', () => {
       ...severePlanned,
       validityPeriods: [{ fromDate: future, toDate: new Date(NOW + 2 * 86400000).toISOString(), isNow: false }],
     };
-    renderWithMantine(<IssueList statuses={[upcomingRange]} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems([upcomingRange])} now={NOW} />);
     fireEvent.click(screen.getByText(/^All/));
     expect(screen.getByText(/–/)).toBeInTheDocument();
   });
 
   it('shows the same date range in the expanded panel', async () => {
-    renderWithMantine(<IssueList statuses={[plannedRange]} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems([plannedRange])} now={NOW} />);
     fireEvent.click(screen.getByText(/^All/));
     fireEvent.click(screen.getByText('Scheduled maintenance'));
     const validityLine = await screen.findByText(/Valid:/);
@@ -93,7 +102,7 @@ describe('IssueList', () => {
   });
 
   it('filters by severity', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     fireEvent.click(screen.getByText(/^All/));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
@@ -102,7 +111,7 @@ describe('IssueList', () => {
   });
 
   it('filters by source type', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     fireEvent.click(screen.getByText(/^All/));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
     expect(screen.getByText('Engineering works')).toBeInTheDocument();
@@ -111,7 +120,7 @@ describe('IssueList', () => {
   });
 
   it('filters to active only', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     fireEvent.click(screen.getByText('Active (2)'));
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
     expect(screen.getByText('10 of 12 sampled services delayed.')).toBeInTheDocument();
@@ -119,21 +128,21 @@ describe('IssueList', () => {
   });
 
   it('filters to upcoming only', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     fireEvent.click(screen.getByText('Upcoming (1)'));
     expect(screen.getByText('Engineering works')).toBeInTheDocument();
     expect(screen.queryByText('Signal failure')).not.toBeInTheDocument();
   });
 
   it('shows all/active/upcoming counts on the filter control', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     expect(screen.getByText('All (3)')).toBeInTheDocument();
     expect(screen.getByText('Active (2)')).toBeInTheDocument();
     expect(screen.getByText('Upcoming (1)')).toBeInTheDocument();
   });
 
   it('counts reflect the severity/source chip filters but not the active/upcoming filter itself', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     // Select the Active tab, then narrow to "Planned Closure" severity —
     // which matches only severePlanned, an *upcoming* status with zero
     // overlap with "Active". A tab-dependent (buggy) count implementation
@@ -171,7 +180,7 @@ describe('IssueList', () => {
     };
     // Deliberately scrambled input order — the component must sort it.
     renderWithMantine(
-      <IssueList statuses={[upcomingLater, activeLater, upcomingSooner, activeSooner]} now={NOW} />,
+      <IssueList items={toItems([upcomingLater, activeLater, upcomingSooner, activeSooner])} now={NOW} />,
     );
     // The upcoming items are hidden under the default Active-only tab —
     // this test is about sort order across both groups, so switch to All.
@@ -187,7 +196,7 @@ describe('IssueList', () => {
   });
 
   it('shows a message when no issues match the filters', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
     // The whole pool is filtered away regardless of tab — there's no
@@ -197,13 +206,13 @@ describe('IssueList', () => {
   });
 
   it('says the line is clear when it has no issues at all, without blaming filters', () => {
-    renderWithMantine(<IssueList statuses={[]} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems([])} now={NOW} />);
     const message = screen.getByText(/No issues reported on this line/i);
     expect(message.textContent).not.toMatch(/filter/i);
   });
 
   it('points at the tab that holds the issues when the selected tab is empty', () => {
-    renderWithMantine(<IssueList statuses={[severePlanned]} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems([severePlanned])} now={NOW} />);
     fireEvent.click(screen.getByText('Active (0)'));
     // Active is empty for a structural reason (nothing is active right
     // now), not because of a chip filter — the message must not blame one.
@@ -212,14 +221,14 @@ describe('IssueList', () => {
   });
 
   it('points back at Active when the Upcoming tab is the empty one', () => {
-    renderWithMantine(<IssueList statuses={[minorNow]} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
     fireEvent.click(screen.getByText('Upcoming (0)'));
     const message = screen.getByText(/listed under Active/i);
     expect(message.textContent).not.toMatch(/filter/i);
   });
 
   it('mentions the filters only when a chip is genuinely narrowing the result', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     // Stays on the Active tab (see 2a) with only severePlanned in the pool,
     // so the tab is empty *because of* the chip — filters are fair to blame,
     // unlike the structurally-empty case above which points at the same
@@ -240,7 +249,7 @@ describe('IssueList', () => {
         source: null,
       },
     };
-    renderWithMantine(<IssueList statuses={[withDisruption]} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems([withDisruption])} now={NOW} />);
     expect(screen.queryByText('Full details here')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('Signal failure'));
     expect(await screen.findByText('Full details here')).toBeInTheDocument();
@@ -261,19 +270,19 @@ describe('IssueList', () => {
         },
       ],
     };
-    renderWithMantine(<IssueList statuses={[severePlanned, endedRange]} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems([severePlanned, endedRange])} now={NOW} />);
     expect(screen.getByText('Engineering works')).toBeInTheDocument();
     expect(screen.getByText('Scheduled maintenance')).toBeInTheDocument();
   });
 
   it('still lands on the Active tab when at least one issue is active', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
     expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
   });
 
   it('does not move the user off the Active tab when a chip filter empties it', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
     // Active is now (0), but the landing tab is chosen once on mount, not
     // re-derived: re-deriving would yank the user to All mid-interaction
@@ -282,13 +291,13 @@ describe('IssueList', () => {
     expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
   });
   it('labels what each chip row filters, and says so when nothing is narrowed', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     expect(screen.getByText('Severity — showing all')).toBeInTheDocument();
     expect(screen.getByText('Source — showing all')).toBeInTheDocument();
   });
 
   it('reports how many chips are selected in each row label', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Severe Delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
@@ -297,7 +306,7 @@ describe('IssueList', () => {
   });
 
   it('renders selected chips in a visually distinct variant from unselected ones', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     const minor = screen.getByRole('checkbox', { name: 'Minor Delays' });
     const planned = screen.getByRole('checkbox', { name: 'Planned' });
     expect(minor.closest('[data-variant]')).toHaveAttribute('data-variant', 'outline');
@@ -308,12 +317,12 @@ describe('IssueList', () => {
   });
 
   it('associates each chip row with its label for screen readers', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     expect(screen.getByRole('group', { name: 'Severity — showing all' })).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Source — showing all' })).toBeInTheDocument();
   });
   it('keeps the row badges at full size and lets the description text absorb the squeeze', () => {
-    renderWithMantine(<IssueList statuses={[minorNow]} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
     const description = screen.getByText('Signal failure');
     const control = description.closest('button') as HTMLElement;
     // The two badges classify the row — they must sit in boxes that refuse
@@ -326,7 +335,7 @@ describe('IssueList', () => {
   });
 
   it('renders the data-quality badge as neutral gray, not the brand colour', () => {
-    renderWithMantine(<IssueList statuses={[minorNow]} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
     const description = screen.getByText('Signal failure');
     const control = description.closest('button') as HTMLElement;
     // Provenance is metadata, not brand — it must not ride the theme's
@@ -340,7 +349,7 @@ describe('IssueList', () => {
   });
 
   it('marks up the collapsed row so it can stack on narrow viewports', () => {
-    const { container } = renderWithMantine(<IssueList statuses={[minorNow]} now={NOW} />);
+    const { container } = renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
     const row = container.querySelector('.issueRow');
     expect(row).not.toBeNull();
     expect(row!.querySelector('.issueRow__badge')).not.toBeNull();
@@ -349,7 +358,7 @@ describe('IssueList', () => {
   });
 
   it('does not pin the row with an inline nowrap that a media query cannot override', () => {
-    const { container } = renderWithMantine(<IssueList statuses={[minorNow]} now={NOW} />);
+    const { container } = renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
     const row = container.querySelector('.issueRow') as HTMLElement;
     expect(row.style.flexWrap).toBe('');
   });
@@ -369,7 +378,7 @@ describe('IssueList', () => {
         },
       ],
     };
-    renderWithMantine(<IssueList statuses={[inProgress]} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems([inProgress])} now={NOW} />);
     expect(screen.getByText('Active (1)')).toBeInTheDocument();
     expect(screen.getByText('Upcoming (0)')).toBeInTheDocument();
   });
@@ -388,7 +397,7 @@ describe('IssueList', () => {
         },
       ],
     };
-    renderWithMantine(<IssueList statuses={[...all, ended]} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems([...all, ended])} now={NOW} />);
     expect(screen.getByText('All (4)')).toBeInTheDocument();
     expect(screen.getByText('Active (2)')).toBeInTheDocument();
     expect(screen.getByText('Upcoming (1)')).toBeInTheDocument();
@@ -396,7 +405,7 @@ describe('IssueList', () => {
   });
 
   it('hides the Ended tab entirely when nothing has ended', () => {
-    renderWithMantine(<IssueList statuses={all} now={NOW} />);
+    renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     expect(screen.queryByText(/^Ended/)).not.toBeInTheDocument();
   });
 
@@ -410,7 +419,38 @@ describe('IssueList', () => {
         { fromDate: '2026-05-10T00:00:00Z', toDate: '2026-10-11T00:00:00Z', isNow: false },
       ],
     };
-    renderWithMantine(<IssueList statuses={[dated]} now={Date.parse('2026-12-01T00:00:00Z')} />);
+    renderWithMantine(<IssueList items={toItems([dated])} now={Date.parse('2026-12-01T00:00:00Z')} />);
     expect(screen.getByText('10 May 2026 – 11 Oct 2026')).toBeInTheDocument();
+  });
+
+  it('names the affected lines on a row reported on more than one', async () => {
+    renderWithMantine(
+      <IssueList
+        items={[
+          {
+            status: minorNow,
+            lines: [
+              { id: 'a', name: 'Portsmouth Direct Line' },
+              { id: 'b', name: 'South West Main Line' },
+            ],
+          },
+        ]}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByText('2 lines')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Signal failure'));
+    // Like every other panel-content assertion in this file (see "shows the
+    // full validity period in the expanded panel" above), the accordion
+    // panel mounts asynchronously, so this needs findByText rather than the
+    // brief's literal getByText.
+    expect(await screen.findByText(/Portsmouth Direct Line, South West Main Line/)).toBeInTheDocument();
+  });
+
+  it('says nothing about lines when an issue only affects one', () => {
+    renderWithMantine(
+      <IssueList items={[{ status: minorNow, lines: [{ id: 'a', name: 'Alton Line' }] }]} now={NOW} />,
+    );
+    expect(screen.queryByText(/lines$/)).not.toBeInTheDocument();
   });
 });
