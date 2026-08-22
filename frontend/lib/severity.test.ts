@@ -80,3 +80,35 @@ describe('worstStatus', () => {
     expect(worst.reason).toBe('Diverted');
   });
 });
+
+describe('TfL severity codes', () => {
+  // The Rust half of this table lives in crates/common/src/lib.rs
+  // (`severity_from_tfl_code` + `severity_rank`), and
+  // `rank_matches_the_frontends_group_table` there asserts the two agree.
+  it('labels the five TfL-only codes', () => {
+    expect(severityLabel(22)).toBe('Service Closed');
+    expect(severityLabel(23)).toBe('Not Running');
+    expect(severityLabel(24)).toBe('Issues Reported');
+    expect(severityLabel(25)).toBe('No Issues');
+    expect(severityLabel(26)).toBe('Information');
+  });
+
+  it('greys out an overnight closure rather than painting it red', () => {
+    // Service Closed is the ordinary state of the Underground at 02:00 —
+    // 13 of 20 lines were reporting it when this was written. A red
+    // network every night is a false alarm, not information.
+    expect(severityColor(22)).toBe('gray');
+    expect(severityColor(26)).toBe('gray');
+  });
+
+  it('keeps an unexpectedly absent service severe, and "no issues" good', () => {
+    expect(severityColor(23)).toBe('red');
+    expect(severityColor(24)).toBe('yellow');
+    expect(severityColor(25)).toBe('green');
+  });
+
+  it('does not confuse TfL Service Closed with the NR Recovering extension', () => {
+    expect(severityLabel(20)).toBe('Recovering');
+    expect(severityLabel(22)).toBe('Service Closed');
+  });
+});

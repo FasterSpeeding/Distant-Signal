@@ -38,6 +38,7 @@ const DATA_QUALITY_LABELS: Record<LineStatus['dataQuality'], string> = {
   'ldbws-inferred': 'LDBWS-inferred',
   'trust-inferred': 'Trust-inferred',
   planned: 'Planned',
+  tfl: 'TfL',
 };
 
 function formatValiditySummary(status: LineStatus, now: number): string {

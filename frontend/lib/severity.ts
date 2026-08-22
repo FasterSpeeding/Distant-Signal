@@ -20,6 +20,15 @@ const SEVERITY_TABLE: Record<number, { label: string; group: SeverityGroup }> = 
   14: { label: 'Change of Frequency', group: 'mild' },
   20: { label: 'Recovering', group: 'mild' },
   21: { label: 'Diverted', group: 'severe' },
+  // TfL-only codes. Their numbers are this app's own discriminants (see
+  // crates/common/src/lib.rs), not TfL's raw statusSeverity: TfL's 20 is
+  // "Service Closed" but 20 was already taken by the NR "Recovering"
+  // extension, so the poller remaps them on the way in.
+  22: { label: 'Service Closed', group: 'informational' },
+  23: { label: 'Not Running', group: 'severe' },
+  24: { label: 'Issues Reported', group: 'mild' },
+  25: { label: 'No Issues', group: 'good' },
+  26: { label: 'Information', group: 'informational' },
 };
 
 const GROUP_COLOR: Record<SeverityGroup, string> = {

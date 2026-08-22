@@ -29,7 +29,7 @@ export interface LineStatus {
   statusSeverity: number;
   statusSeverityDescription: string;
   reason: string;
-  dataQuality: 'knowledgebase' | 'ldbws-inferred' | 'trust-inferred' | 'planned';
+  dataQuality: 'knowledgebase' | 'ldbws-inferred' | 'trust-inferred' | 'planned' | 'tfl';
   validityPeriods: ValidityPeriod[];
   disruption?: Disruption;
   sampleStats?: SampleStats;
