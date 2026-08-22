@@ -389,6 +389,43 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
     Ok(count)
 }
 
+/// The identity of one TfL line, for the `/public/lines` catalogue.
+pub struct TflLineSummaryRow {
+    pub id: String,
+    pub name: String,
+    pub mode_name: String,
+}
+
+/// TfL lines, derived from the rows `crates/poller-tfl` wrote rather than
+/// from a hand-curated `lines/*.toml` entry.
+///
+/// A TOML entry would be wrong three ways: the aggregator loads that
+/// directory and would overwrite each ingested TfL status with a
+/// Good-Service fallback on its next cycle; a `LineDefinition` is mostly
+/// route topology (ordered CRS stations, segments, sample stations,
+/// keywords, thresholds) that a finished-status feed has no use for; and it
+/// would drift out of date — TfL split "London Overground" into six named
+/// lines in 2024. These rows are the feed's own answer, and
+/// `upsert_tfl_line_status` prunes the ones that leave it.
+pub async fn tfl_line_summaries(pool: &PgPool) -> Result<Vec<TflLineSummaryRow>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT line_id, name, mode_name FROM line_status WHERE source = 'tfl' ORDER BY name",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(TflLineSummaryRow {
+                id: row.try_get("line_id")?,
+                name: row.try_get("name")?,
+                mode_name: row.try_get("mode_name")?,
+            })
+        })
+        .collect()
+}
+
 /// Timestamp of the most recent TfL line-status ingest, or `None` if none
 /// has ever landed. Backs both `GET /private/tfl-line-status` (the poller's
 /// startup freshness check) and the public `/public/freshness` endpoint.
@@ -690,5 +727,42 @@ mod tests {
             { "severity": 6, "reason": "Signal failure at Oxford Circus" },
         ]);
         assert!(tfl_statuses_changed(Some(&stored), &incoming));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                tfl_line_summaries_lists_only_tfl_owned_rows -- --ignored`"]
+    async fn tfl_line_summaries_lists_only_tfl_owned_rows() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+
+        sqlx::query(
+            "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, source) \
+             VALUES \
+                ('TEST-AGG', 'test aggregator line', 'national-rail', '{NT}', '[]', 'aggregator'), \
+                ('TEST-TFL', 'test tfl line', 'tube', '{TfL}', '[]', 'tfl') \
+             ON CONFLICT (line_id) DO UPDATE SET source = EXCLUDED.source",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture rows");
+
+        let summaries = tfl_line_summaries(&pool).await.expect("tfl_line_summaries");
+
+        sqlx::query("DELETE FROM line_status WHERE line_id IN ('TEST-AGG', 'TEST-TFL')")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture rows");
+
+        let ids: Vec<&str> = summaries.iter().map(|row| row.id.as_str()).collect();
+        assert!(ids.contains(&"TEST-TFL"), "a TfL-owned row should be listed");
+        assert!(!ids.contains(&"TEST-AGG"), "the catalogue already lists aggregator lines");
+
+        let tfl = summaries.iter().find(|row| row.id == "TEST-TFL").unwrap();
+        assert_eq!(tfl.mode_name, "tube");
+        assert_eq!(tfl.name, "test tfl line");
     }
 }

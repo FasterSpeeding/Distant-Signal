@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
-use crate::data::custom_lines::{self, NewCustomLine};
+use crate::data::{custom_lines::{self, NewCustomLine}, queries};
 
 pub fn router() -> Router {
     Router::new()
@@ -111,6 +111,24 @@ async fn list_lines(
         category: "custom".to_string(),
         operators: c.operators,
         source: "custom",
+    }));
+
+    // TfL lines, from the rows crates/poller-tfl wrote — see
+    // `queries::tfl_line_summaries` for why they are not catalogue TOML
+    // files. `category` carries the TfL mode name (`tube`, `dlr`,
+    // `overground`, `elizabeth-line`, `tram`), which is the honest answer
+    // to "what kind of line is this" for a network with no `main-line` /
+    // `commuter` / `regional` distinction, and is what the line detail
+    // page renders as "Category:".
+    let tfl = queries::tfl_line_summaries(&app.database)
+        .await
+        .map_err(internal_error)?;
+    out.extend(tfl.into_iter().map(|line| LineSummary {
+        id: line.id,
+        name: line.name,
+        category: line.mode_name,
+        operators: vec![common::TFL_OPERATOR.to_string()],
+        source: "tfl",
     }));
 
     Ok(Json(out))
