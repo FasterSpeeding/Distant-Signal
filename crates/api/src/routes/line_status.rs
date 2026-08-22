@@ -55,6 +55,26 @@ fn to_report(row: queries::LineStatusRow) -> LineStatusReport {
     }
 }
 
+/// TfL line ids whose statuses should be fetched to overlay onto `rows` --
+/// one per row that has a TfL counterpart per `common::tfl_line_id_for_nr`.
+/// Pure so it's testable without a database.
+fn tfl_ids_to_overlay(rows: &[queries::LineStatusRow]) -> Vec<String> {
+    rows.iter()
+        .filter_map(|row| common::tfl_line_id_for_nr(&row.id))
+        .map(String::from)
+        .collect()
+}
+
+/// The TfL counterpart's statuses for one NR row, if it has one and that
+/// row was actually found in `tfl_rows` (it may not be, if the TfL feed
+/// dropped the line since the last poll -- see
+/// `queries::upsert_tfl_line_status`'s prune). Pure so it's testable
+/// without a database.
+fn overlay_for(row: &queries::LineStatusRow, tfl_rows: &[queries::LineStatusRow]) -> Option<Vec<LineStatus>> {
+    let tfl_id = common::tfl_line_id_for_nr(&row.id)?;
+    tfl_rows.iter().find(|r| r.id == tfl_id).map(|r| r.statuses.clone())
+}
+
 fn rows_to_json(rows: Vec<queries::LineStatusRow>, detail: bool) -> Vec<Value> {
     rows.into_iter()
         .map(|row| {
@@ -132,7 +152,31 @@ async fn get_line_status(
         return Err((StatusCode::NOT_FOUND, format!("no matching line(s): {}", ids.join(","))));
     }
 
-    Ok(Json(rows_to_json(rows, query.detail)))
+    // Any requested row with an NR/TfL counterpart (currently just Elizabeth
+    // line) gets that counterpart's status overlaid -- see
+    // docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md
+    // Area 1. A second, separate query rather than a join: this only ever
+    // runs for a handful of ids on a single-line detail fetch, and keeps
+    // `line_status_for_ids` itself unchanged for every other caller.
+    let overlay_ids = tfl_ids_to_overlay(&rows);
+    let tfl_rows = if overlay_ids.is_empty() {
+        vec![]
+    } else {
+        queries::line_status_for_ids(&app.database, &overlay_ids)
+            .await
+            .map_err(internal_error)?
+    };
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| {
+                let computed_at = row.computed_at;
+                let overlay = overlay_for(&row, &tfl_rows);
+                let report = to_report(row);
+                crate::render::to_tfl_shape_with_overlay(&report, computed_at, query.detail, overlay.as_deref())
+            })
+            .collect(),
+    ))
 }
 
 async fn get_stop_point_disruption(
@@ -248,5 +292,61 @@ mod tests {
     fn an_empty_mode_list_is_rejected_rather_than_matching_everything() {
         assert!(parse_modes("").is_err());
         assert!(parse_modes(",,").is_err());
+    }
+
+    use chrono::Utc;
+    use common::{DataQuality, Severity, ValidityPeriod};
+
+    fn row(id: &str, statuses: Vec<LineStatus>) -> queries::LineStatusRow {
+        queries::LineStatusRow {
+            id: id.to_string(),
+            name: id.to_string(),
+            mode_name: "test".to_string(),
+            operators: vec![],
+            statuses,
+            computed_at: Utc::now(),
+        }
+    }
+
+    fn a_status(reason: &str) -> LineStatus {
+        LineStatus {
+            severity: Severity::MinorDelays,
+            reason: reason.to_string(),
+            validity: ValidityPeriod { from_date: Utc::now(), to_date: None, is_now: true },
+            disruption: None,
+            data_quality: DataQuality::Tfl,
+            sample_stats: None,
+        }
+    }
+
+    #[test]
+    fn tfl_ids_to_overlay_includes_only_rows_with_a_tfl_counterpart() {
+        let rows = vec![row("elizabeth-line", vec![]), row("northern", vec![])];
+        assert_eq!(tfl_ids_to_overlay(&rows), vec!["tfl-elizabeth".to_string()]);
+    }
+
+    #[test]
+    fn overlay_for_finds_the_matching_tfl_row() {
+        let nr_row = row("elizabeth-line", vec![]);
+        let tfl_rows = vec![row("tfl-elizabeth", vec![a_status("Minor delays")])];
+        let overlay = overlay_for(&nr_row, &tfl_rows).unwrap();
+        assert_eq!(overlay.len(), 1);
+        assert_eq!(overlay[0].reason, "Minor delays");
+    }
+
+    #[test]
+    fn overlay_for_is_none_when_the_line_has_no_tfl_counterpart() {
+        let nr_row = row("northern", vec![]);
+        let tfl_rows = vec![row("tfl-elizabeth", vec![a_status("Minor delays")])];
+        assert!(overlay_for(&nr_row, &tfl_rows).is_none());
+    }
+
+    #[test]
+    fn overlay_for_is_none_when_the_tfl_counterpart_row_is_missing() {
+        // e.g. the TfL feed temporarily dropped the line and
+        // upsert_tfl_line_status's prune already removed its row -- graceful
+        // degradation, not an error.
+        let nr_row = row("elizabeth-line", vec![]);
+        assert!(overlay_for(&nr_row, &[]).is_none());
     }
 }
