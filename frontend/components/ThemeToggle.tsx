@@ -43,10 +43,16 @@ export function ThemeToggle() {
     // The "A" is purely a visual disambiguator; the `ActionIcon`'s
     // `aria-label` below already announces the auto state, so exposing the
     // badge would just put a bare "A" next to it in the accessibility tree.
+    //
+    // `bottom-end` at a smaller size and larger offset, rather than the
+    // default top-right overhang: as an overhanging 14px bubble it read as
+    // a rendering artifact rather than a status indicator, and it was the
+    // only element in the nav able to paint outside its own button.
     <Indicator
       label="A"
-      size={14}
-      offset={2}
+      size={12}
+      offset={4}
+      position="bottom-end"
       disabled={displayedScheme !== 'auto'}
       attributes={{ indicator: { 'aria-hidden': 'true' } }}
     >

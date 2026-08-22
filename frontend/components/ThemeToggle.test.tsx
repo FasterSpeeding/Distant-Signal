@@ -94,4 +94,15 @@ describe('ThemeToggle', () => {
     const marker = screen.getByText('A');
     expect(marker).toHaveAttribute('aria-hidden', 'true');
   });
+
+  it('tucks the auto-mode badge into the button corner instead of overhanging it', () => {
+    // This Mantine version (9.4.1) renders no `data-position` attribute on
+    // `Indicator` — position is expressed purely as CSS custom properties
+    // on the root. `bottom-end` sets `--indicator-bottom` (and leaves
+    // `--indicator-top` unset, which the default `top-end` sets instead).
+    const { container } = renderWithMantine(<ThemeToggle />, { defaultColorScheme: 'auto' });
+    const root = container.querySelector('.mantine-Indicator-root') as HTMLElement;
+    expect(root.style.getPropertyValue('--indicator-bottom')).not.toBe('');
+    expect(root.style.getPropertyValue('--indicator-top')).toBe('');
+  });
 });
