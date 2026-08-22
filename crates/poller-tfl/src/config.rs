@@ -45,4 +45,17 @@ pub struct Config {
     /// `poller-incidents`, whose feed has a comparable update rhythm.
     #[arg(long, env, default_value_t = 300)]
     pub poll_interval_secs: u64,
+
+    /// Enables the DLR arrivals-diffing pilot (see
+    /// `docs/superpowers/plans/2026-08-22-dlr-arrivals-diffing-pilot.md`).
+    /// Defaults on; set to `false` to fall back to `sample_stats: None`
+    /// for DLR, same as every other TfL line, without a redeploy.
+    #[arg(long, env, default_value_t = true)]
+    pub dlr_pilot_enabled: bool,
+
+    /// Poplar's Naptan id, used as the `stopPointId` for the DLR
+    /// Timetable poll. Not derived — this pilot covers one fixed station
+    /// only (see the plan's Global Constraints).
+    #[arg(long, env, default_value = "940GZZDLPOP")]
+    pub dlr_pilot_stop_point_id: String,
 }
