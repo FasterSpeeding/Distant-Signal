@@ -96,4 +96,21 @@ describe('LineStatusCard', () => {
     renderWithMantine(<LineStatusCard report={report} />);
     expect(screen.queryByText(/Avg delay/)).not.toBeInTheDocument();
   });
+
+  it('clamps a long reason rather than letting it fill the card', () => {
+    const wall = 'Station improvement work: '.repeat(40);
+    const { container } = renderWithMantine(
+      <LineStatusCard report={{ ...report, lineStatuses: [{ ...report.lineStatuses[0], reason: wall }] }} />,
+    );
+    const reason = container.querySelector('[data-card-reason]') as HTMLElement;
+    expect(reason.style.getPropertyValue('-webkit-line-clamp')).toBe('3');
+  });
+
+  it('keeps the status badge on the title row even when the name wraps', () => {
+    const { container } = renderWithMantine(
+      <LineStatusCard report={{ ...report, name: 'Elizabeth line Heathrow Branch' }} />,
+    );
+    const titleRow = container.querySelector('[data-card-title-row]') as HTMLElement;
+    expect(titleRow.getAttribute('data-wrap')).toBe('nowrap');
+  });
 });

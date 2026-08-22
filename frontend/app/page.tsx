@@ -1,10 +1,10 @@
 import { Stack, Title, SimpleGrid, Text, Group, Card } from '@mantine/core';
 import Link from 'next/link';
-import { getLineStatusForMode, getPreferences, getStopPointDisruption } from '@/lib/api';
+import { getLineStatusForMode, getPreferences, getStationName, getStopPointDisruption } from '@/lib/api';
 import { LineStatusCard } from '@/components/LineStatusCard';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
-import { severityRank } from '@/lib/severity';
+import { severityRank, worstStatus } from '@/lib/severity';
 import { firstSampleStats, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport } from '@/lib/types';
 
@@ -38,11 +38,25 @@ export default async function DashboardPage() {
   const preferences = await getPreferences();
 
   const allReports = await getLineStatusForMode('national-rail');
-  const pinnedLineReports = allReports.filter((report) => preferences.pinnedLines.includes(report.id));
+  // The pinned set came out in whatever order `/Line/Mode/…/Status`
+  // happened to return, which visibly differed between two captures minutes
+  // apart. Worst first, then alphabetical: a dashboard should lead with
+  // what needs attention, and must not reshuffle under the user.
+  const pinnedLineReports = allReports
+    .filter((report) => preferences.pinnedLines.includes(report.id))
+    .sort((a, b) => {
+      const rankDiff = severityRank(worstStatus(b).statusSeverity) - severityRank(worstStatus(a).statusSeverity);
+      return rankDiff !== 0 ? rankDiff : a.name.localeCompare(b.name);
+    });
 
   const pinnedStationEntries = await Promise.all(
     preferences.pinnedStations.map(async (crs) => ({
       crs,
+      // The station detail page already shows "London Kings Cross (KGX)";
+      // there is no reason for the dashboard to show a bare code. Hour-cached
+      // reference data (see `getStationName`), and a failure here falls back
+      // to the code rather than taking the dashboard down.
+      name: await getStationName(crs).catch(() => null),
       reports: await getStopPointDisruption(crs),
     })),
   );
@@ -78,14 +92,14 @@ export default async function DashboardPage() {
           </Text>
         ) : (
           <Stack gap="xs">
-            {pinnedStationEntries.map(({ crs, reports }) => {
+            {pinnedStationEntries.map(({ crs, name, reports }) => {
               const stats = sampleStatsAcrossReports(reports);
               return (
                 <Link key={crs} href={`/stations/${crs}`} style={{ textDecoration: 'none', color: 'inherit' }}>
                   <Card withBorder>
                     <Stack gap={4}>
                       <Group justify="space-between">
-                        <Text fw={600}>{crs}</Text>
+                        <Text fw={600}>{name ? `${name} (${crs})` : crs}</Text>
                         <StatusBadge severity={worstSeverityAcrossReports(reports)} />
                       </Group>
                       {stats && (
