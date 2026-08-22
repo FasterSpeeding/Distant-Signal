@@ -6,7 +6,7 @@ export default function StationSearchPage() {
     <Stack p="lg" gap="md">
       <Title order={1}>Station Disruption Lookup</Title>
       <Text c="dimmed">
-        Enter a 3-letter CRS station code to see disruptions affecting lines through it.
+        Search by station name or CRS code to see disruptions affecting lines through it.
       </Text>
       <StationSearchForm />
     </Stack>

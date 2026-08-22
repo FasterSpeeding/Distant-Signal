@@ -157,6 +157,32 @@ export function IssueList({ items, now }: { items: IssueItem[]; now: number }) {
     statuses.some((status) => bucketFor(status, now) === 'active') ? 'active' : 'all',
   );
 
+  // A line with nothing wrong doesn't need a filter UI. The old output was
+  // a "GOOD SERVICE" header badge, two rows of filter chips, a three-tab
+  // strip, and one expandable row whose entire content was a second
+  // "GOOD SERVICE" badge and the words "Good Service" — three statements of
+  // the same fact plus controls for narrowing a list of one non-issue.
+  // Only when *every* status is Good Service: a line carrying both a good
+  // service reading and a real disruption still needs the full list.
+  //
+  // This has to sit after every hook call in the component (useId/useMemo/
+  // useState above), not "immediately after the statuses/linesByStatus
+  // memos" as originally sketched — Task 10's `severityFilter`/
+  // `sourceFilter`/`activeFilter` state and the `buckets` memo all sit
+  // between those memos and here now, and an early return before them
+  // would call a different number of hooks depending on `allGood`, which
+  // breaks React's Rules of Hooks. Confirmed by reproduction: rerendering
+  // the same mounted instance across an all-good/mixed transition (which
+  // `router.refresh()` can do without remounting, since Client Components
+  // preserve state across a Server Component refresh) throws "Rendered
+  // fewer/more hooks than expected." Placing the check after the last hook
+  // call and before the first plain (non-hook) derived value keeps every
+  // hook unconditional while still skipping all of the chrome below.
+  const allGood = statuses.length > 0 && statuses.every((status) => status.statusSeverity === 10);
+  if (allGood) {
+    return <Text c="dimmed">Good service — no issues reported on this line.</Text>;
+  }
+
   // Severity/source chips narrow the pool every tab counts from, but not
   // the active/upcoming/ended tab itself — so switching tabs doesn't change
   // the other tabs' counts, matching a standard faceted-filter count

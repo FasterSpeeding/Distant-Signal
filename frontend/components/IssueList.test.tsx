@@ -453,4 +453,26 @@ describe('IssueList', () => {
     );
     expect(screen.queryByText(/lines$/)).not.toBeInTheDocument();
   });
+
+  it('replaces the filter chrome with one sentence when the line is simply fine', () => {
+    const goodService: LineStatus = {
+      statusSeverity: 10,
+      statusSeverityDescription: 'Good Service',
+      reason: 'Good Service',
+      dataQuality: 'ldbws-inferred',
+      validityPeriods: [{ fromDate: new Date(NOW).toISOString(), toDate: null, isNow: true }],
+    };
+    renderWithMantine(<IssueList items={[{ status: goodService }]} now={NOW} />);
+    expect(screen.getByText('Good service — no issues reported on this line.')).toBeInTheDocument();
+    expect(screen.queryByText(/^All \(/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Severity —/)).not.toBeInTheDocument();
+  });
+
+  it('still shows the full list when a Good Service status sits alongside a real issue', () => {
+    const goodService: LineStatus = { ...minorNow, statusSeverity: 10, statusSeverityDescription: 'Good Service', reason: 'Good Service' };
+    renderWithMantine(
+      <IssueList items={[goodService, minorNow].map((status) => ({ status }))} now={NOW} />,
+    );
+    expect(screen.getByText(/^All \(2\)/)).toBeInTheDocument();
+  });
 });
