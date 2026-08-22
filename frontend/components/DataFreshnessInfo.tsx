@@ -37,6 +37,12 @@ export function DataFreshnessInfo({ freshness }: { freshness: DataFreshness }) {
       multiline
       maw={280}
       events={{ hover: true, focus: true, touch: true }}
+      // Same fix as `LineDefinitionTooltip` (open downward, not over the
+      // nav), but `bottom-end` rather than `bottom`: this trigger sits in
+      // the nav's right-hand group, so a centred tooltip would hang off
+      // the right edge of the viewport.
+      position="bottom-end"
+      zIndex={400}
     >
       <ActionIcon variant="subtle" aria-label="Data freshness">
         <InfoIcon />

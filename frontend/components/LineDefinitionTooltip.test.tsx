@@ -45,4 +45,22 @@ describe('LineDefinitionTooltip', () => {
     fireEvent.mouseEnter(trigger);
     expect(await screen.findByText('Stations: WOK, WAT')).toBeInTheDocument();
   });
+
+  it('opens downward, into the page, rather than up over the nav', async () => {
+    // The trigger sits directly under the header; Mantine's default
+    // `position="top"` put the tooltip on top of the site title on tablet
+    // and over the whole nav on mobile.
+    //
+    // This Mantine version (9.4.1) renders no `data-position` attribute on
+    // `Tooltip` — placement is only expressed through the floating offset
+    // floating-ui applies. A `top` position pushes the tooltip *up* (a
+    // negative `top` relative to the reference); `bottom` pushes it *down*
+    // (positive). Asserting the sign of that offset is the closest
+    // available proxy for "opens downward" in this jsdom environment,
+    // which never computes real element sizes/positions.
+    renderWithMantine(<LineDefinitionTooltip stations={['WOK']} operators={['SW']} />);
+    fireEvent.mouseEnter(screen.getByLabelText('How this line is defined'));
+    const tooltip = await screen.findByRole('tooltip');
+    expect(parseFloat(tooltip.style.top)).toBeGreaterThan(0);
+  });
 });
