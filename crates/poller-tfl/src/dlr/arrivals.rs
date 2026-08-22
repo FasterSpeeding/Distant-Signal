@@ -9,8 +9,16 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+// Transcribed to mirror TfL's full published `Prediction` entity (Task 3's
+// design), for fidelity with the real API shape. Not all fields are read
+// by current callers — `poller-tfl`'s DLR pilot (Task 7) only reads
+// `expected_arrival` (matching) and `naptan_id` (scoping predictions to
+// the pilot station); `vehicle_id`, `station_name`,
+// `destination_naptan_id`, `destination_name`, and `time_to_station` are
+// unused today but kept for API fidelity/future consumers.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Prediction {
     pub vehicle_id: String,
     pub naptan_id: String,

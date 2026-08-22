@@ -13,16 +13,6 @@
 //! wrote into `line_status_history` at the time.
 
 mod config;
-// `dlr::arrivals::Prediction` is transcribed to mirror TfL's full published
-// `Prediction` entity (Task 3's design — see that module's docs), for
-// fidelity with the real API shape, but this pilot's matching logic
-// (`dlr::inference::match_trips`) only reads `expected_arrival`, and
-// `poll_dlr_sample_stats` below only additionally reads `naptan_id` to
-// scope predictions to the pilot station. The rest (`vehicle_id`,
-// `station_name`, `destination_naptan_id`, `destination_name`,
-// `time_to_station`) are genuinely unused by any current caller — not a
-// bug, just fields this pilot doesn't need yet.
-#[allow(dead_code)]
 mod dlr;
 mod schema;
 
