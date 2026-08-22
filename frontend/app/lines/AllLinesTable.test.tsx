@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, within } from '@testing-library/react';
+import { screen, within, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { AllLinesTable } from './AllLinesTable';
 import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
@@ -311,5 +311,28 @@ describe('AllLinesTable responsive columns', () => {
     const mobileOnly = container.querySelector('.mantine-hidden-from-sm');
     expect(mobileOnly).not.toBeNull();
     expect(mobileOnly!.textContent).not.toContain('null');
+  });
+});
+
+describe('AllLinesTable sorting affordance', () => {
+  it('shows a sort glyph on every sortable header before anything is clicked', () => {
+    renderTable();
+    expect(screen.getAllByText('↕').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('makes the headers real buttons, so they are keyboard-operable', () => {
+    renderTable();
+    const nameHeader = screen.getByRole('button', { name: /Name/ });
+    expect(nameHeader).toBeInTheDocument();
+  });
+
+  it('announces sort state via aria-sort', () => {
+    renderTable();
+    const header = screen.getByRole('columnheader', { name: /Name/ });
+    expect(header).toHaveAttribute('aria-sort', 'none');
+    fireEvent.click(screen.getByRole('button', { name: /Name/ }));
+    expect(header).toHaveAttribute('aria-sort', 'ascending');
+    fireEvent.click(screen.getByRole('button', { name: /Name/ }));
+    expect(header).toHaveAttribute('aria-sort', 'descending');
   });
 });

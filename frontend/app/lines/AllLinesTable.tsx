@@ -11,6 +11,7 @@ import {
   TableTd,
   Text,
   MultiSelect,
+  UnstyledButton,
 } from '@mantine/core';
 import { PinToggle } from '@/components/PinToggle';
 import { TextLink } from '@/components/TextLink';
@@ -22,9 +23,23 @@ import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 type SortField = 'name' | 'status' | 'avgDelay' | 'cancelled';
 type SortState = { field: SortField; direction: 'asc' | 'desc' };
 
-function sortIndicator(field: SortField, sort: SortState | null) {
-  if (!sort || sort.field !== field) return null;
-  return sort.direction === 'asc' ? ' ▲' : ' ▼';
+/** A neutral glyph on every sortable column, not just the active one:
+ * without it there was no affordance at all until after a click, so the
+ * headers looked like plain labels. `aria-hidden` because `aria-sort` on
+ * the `<th>` carries the same information properly. */
+function SortGlyph({ field, sort }: { field: SortField; sort: SortState | null }) {
+  const active = sort?.field === field;
+  return (
+    <Text span size="xs" c="dimmed" aria-hidden>
+      {' '}
+      {active ? (sort!.direction === 'asc' ? '▲' : '▼') : '↕'}
+    </Text>
+  );
+}
+
+function ariaSort(field: SortField, sort: SortState | null): 'ascending' | 'descending' | 'none' {
+  if (sort?.field !== field) return 'none';
+  return sort.direction === 'asc' ? 'ascending' : 'descending';
 }
 
 export function AllLinesTable({
@@ -119,13 +134,6 @@ export function AllLinesTable({
     });
   }
 
-  function headerProps(field: SortField) {
-    return {
-      onClick: () => toggleSort(field),
-      style: { cursor: 'pointer', userSelect: 'none' as const },
-    };
-  }
-
   return (
     <Stack gap="md">
       <MultiSelect
@@ -146,13 +154,33 @@ export function AllLinesTable({
             extracted from for why the flat exports matter there). */}
         <TableThead>
           <TableTr>
-            <TableTh {...headerProps('name')}>Name{sortIndicator('name', sort)}</TableTh>
-            <TableTh {...headerProps('status')}>Status{sortIndicator('status', sort)}</TableTh>
-            <TableTh {...headerProps('avgDelay')} visibleFrom="sm">
-              Avg Delay{sortIndicator('avgDelay', sort)}
+            {/* `UnstyledButton` inside the `<th>` rather than `onClick` on
+                the `<th>` itself: a bare cell with a click handler is not
+                focusable and cannot be triggered from the keyboard, which
+                made the whole sorting feature mouse-only. */}
+            <TableTh aria-sort={ariaSort('name', sort)}>
+              <UnstyledButton onClick={() => toggleSort('name')} style={{ fontWeight: 'inherit' }}>
+                Name
+                <SortGlyph field="name" sort={sort} />
+              </UnstyledButton>
             </TableTh>
-            <TableTh {...headerProps('cancelled')} visibleFrom="sm">
-              Cancelled{sortIndicator('cancelled', sort)}
+            <TableTh aria-sort={ariaSort('status', sort)}>
+              <UnstyledButton onClick={() => toggleSort('status')} style={{ fontWeight: 'inherit' }}>
+                Status
+                <SortGlyph field="status" sort={sort} />
+              </UnstyledButton>
+            </TableTh>
+            <TableTh aria-sort={ariaSort('avgDelay', sort)} visibleFrom="sm">
+              <UnstyledButton onClick={() => toggleSort('avgDelay')} style={{ fontWeight: 'inherit' }}>
+                Avg Delay
+                <SortGlyph field="avgDelay" sort={sort} />
+              </UnstyledButton>
+            </TableTh>
+            <TableTh aria-sort={ariaSort('cancelled', sort)} visibleFrom="sm">
+              <UnstyledButton onClick={() => toggleSort('cancelled')} style={{ fontWeight: 'inherit' }}>
+                Cancelled
+                <SortGlyph field="cancelled" sort={sort} />
+              </UnstyledButton>
             </TableTh>
             <TableTh>Pin</TableTh>
           </TableTr>
