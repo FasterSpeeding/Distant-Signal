@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_does_not_alter_the_primary_lineStatuses_field() {
+    fn overlay_does_not_alter_the_primary_line_statuses_field() {
         // The NR row's own statuses must render identically with or without an
         // overlay present -- the overlay is additive, never a merge into the
         // primary field.

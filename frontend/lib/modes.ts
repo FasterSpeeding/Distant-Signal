@@ -22,3 +22,13 @@ export const DISPLAYED_MODES = [
  * takes a comma-separated list here and this one mimics it, so all six
  * modes are one round trip. */
 export const DISPLAYED_MODES_PARAM = DISPLAYED_MODES.join(',');
+
+/** TfL line ids that have a National Rail counterpart and so are folded
+ * into that counterpart's row everywhere a line list is built directly
+ * from ids/reports rather than from `/public/lines` (which already omits
+ * them — see `crates/api/src/routes/lines.rs::is_merged_into_nr_line`).
+ * Mirrors `TFL_TO_NR_LINE_ID` in `crates/common/src/lib.rs`. Elizabeth
+ * line is the only entry today; see
+ * docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md
+ * Area 1. */
+export const MERGED_TFL_LINE_IDS: readonly string[] = ['tfl-elizabeth'];

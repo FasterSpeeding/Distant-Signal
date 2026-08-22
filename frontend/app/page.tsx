@@ -1,7 +1,7 @@
 import { Stack, Title, SimpleGrid, Text, Group, Card } from '@mantine/core';
 import Link from 'next/link';
 import { getLineStatusForMode, getPreferences, getStationName, getStopPointDisruption } from '@/lib/api';
-import { DISPLAYED_MODES_PARAM } from '@/lib/modes';
+import { DISPLAYED_MODES_PARAM, MERGED_TFL_LINE_IDS } from '@/lib/modes';
 import { LineStatusCard } from '@/components/LineStatusCard';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -46,7 +46,7 @@ export default async function DashboardPage() {
   // apart. Worst first, then alphabetical: a dashboard should lead with
   // what needs attention, and must not reshuffle under the user.
   const pinnedLineReports = allReports
-    .filter((report) => preferences.pinnedLines.includes(report.id))
+    .filter((report) => preferences.pinnedLines.includes(report.id) && !MERGED_TFL_LINE_IDS.includes(report.id))
     .sort((a, b) => {
       const rankDiff = severityRank(worstStatus(b).statusSeverity) - severityRank(worstStatus(a).statusSeverity);
       return rankDiff !== 0 ? rankDiff : a.name.localeCompare(b.name);
