@@ -23,6 +23,27 @@ pub fn to_tfl_shape(report: &LineStatusReport, computed_at: DateTime<Utc>, detai
     })
 }
 
+/// Like `to_tfl_shape`, but attaches a second line's current statuses under
+/// a `tflStatus` field when `tfl_overlay` is `Some`. Used only by the
+/// single-line detail endpoint (`routes/line_status.rs::get_line_status`)
+/// for lines with a TfL counterpart merged away from `/public/lines` --
+/// see `docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md`
+/// Area 1. `tfl_overlay`'s statuses are rendered through the same
+/// `status_to_json` as the primary line, unchanged, so this never
+/// constructs new `reason` text -- see that spec's hard constraint.
+pub fn to_tfl_shape_with_overlay(
+    report: &LineStatusReport,
+    computed_at: DateTime<Utc>,
+    detail: bool,
+    tfl_overlay: Option<&[LineStatus]>,
+) -> Value {
+    let mut out = to_tfl_shape(report, computed_at, detail);
+    if let Some(statuses) = tfl_overlay {
+        out["tflStatus"] = Value::Array(statuses.iter().map(|s| status_to_json(s, detail)).collect());
+    }
+    out
+}
+
 fn status_to_json(status: &LineStatus, detail: bool) -> Value {
     let mut out = json!({
         "statusSeverity": status.severity as i32,
@@ -193,5 +214,61 @@ mod tests {
         let report = sample_report(None);
         let json = to_tfl_shape(&report, sample_computed_at(), false);
         assert!(json["lineStatuses"][0].get("sampleStats").is_none());
+    }
+
+    fn overlay_status(reason: &str) -> LineStatus {
+        LineStatus {
+            severity: Severity::MinorDelays,
+            reason: reason.to_string(),
+            validity: ValidityPeriod { from_date: Utc::now(), to_date: None, is_now: true },
+            disruption: None,
+            data_quality: DataQuality::Tfl,
+            sample_stats: None,
+        }
+    }
+
+    #[test]
+    fn tfl_status_included_when_overlay_present() {
+        let report = sample_report(None);
+        let overlay = vec![overlay_status("Minor delays due to signalling")];
+        let json = to_tfl_shape_with_overlay(&report, sample_computed_at(), false, Some(&overlay));
+        assert_eq!(json["tflStatus"][0]["reason"], "Minor delays due to signalling");
+        assert_eq!(json["tflStatus"][0]["dataQuality"], "tfl");
+    }
+
+    #[test]
+    fn tfl_status_omitted_when_overlay_absent() {
+        let report = sample_report(None);
+        let json = to_tfl_shape_with_overlay(&report, sample_computed_at(), false, None);
+        assert!(json.get("tflStatus").is_none());
+    }
+
+    #[test]
+    fn overlay_does_not_alter_the_primary_lineStatuses_field() {
+        // The NR row's own statuses must render identically with or without an
+        // overlay present -- the overlay is additive, never a merge into the
+        // primary field.
+        let report = sample_report(None);
+        let without = to_tfl_shape(&report, sample_computed_at(), false);
+        let overlay = vec![overlay_status("Some TfL text")];
+        let with = to_tfl_shape_with_overlay(&report, sample_computed_at(), false, Some(&overlay));
+        assert_eq!(without["lineStatuses"], with["lineStatuses"]);
+    }
+
+    #[test]
+    fn overlay_reason_text_is_stable_across_identical_calls() {
+        // Regression guard for the hard constraint in
+        // docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md
+        // Area 1: this function must never synthesize or annotate `reason`
+        // text -- it passes the source LineStatus through verbatim. Two calls
+        // with byte-identical input must produce byte-identical output,
+        // unlike the aggregator's volatile sample-stats annotation pattern
+        // that caused a separate line-history duplication bug.
+        let report = sample_report(None);
+        let overlay = vec![overlay_status("Severe delays between Paddington and Heathrow")];
+        let first = to_tfl_shape_with_overlay(&report, sample_computed_at(), false, Some(&overlay));
+        let second = to_tfl_shape_with_overlay(&report, sample_computed_at(), false, Some(&overlay));
+        assert_eq!(first["tflStatus"], second["tflStatus"]);
+        assert_eq!(first["tflStatus"][0]["reason"], "Severe delays between Paddington and Heathrow");
     }
 }
