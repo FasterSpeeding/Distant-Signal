@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import {
   Accordion,
   AccordionControl,
@@ -17,8 +17,11 @@ import {
 import { StatusBadge } from './StatusBadge';
 import { DisruptionDetail } from './DisruptionDetail';
 import type { LineStatus } from '@/lib/types';
+import { bucketFor, governingPeriod, type IssueBucket } from '@/lib/validity';
 
-type ActiveFilter = 'all' | 'active' | 'upcoming';
+type ActiveFilter = 'all' | IssueBucket;
+
+const BUCKET_SORT_RANK: Record<IssueBucket, number> = { active: 0, upcoming: 1, ended: 2 };
 
 const DATA_QUALITY_LABELS: Record<LineStatus['dataQuality'], string> = {
   knowledgebase: 'Knowledgebase',
@@ -27,53 +30,16 @@ const DATA_QUALITY_LABELS: Record<LineStatus['dataQuality'], string> = {
   planned: 'Planned',
 };
 
-function isUpcoming(status: LineStatus): boolean {
-  const period = status.validityPeriods[0];
-  if (!period) return false;
-  return !period.isNow && new Date(period.fromDate).getTime() > Date.now();
-}
-
-function isActive(status: LineStatus): boolean {
-  return status.validityPeriods.some((period) => period.isNow);
-}
-
-/** Active first, then upcoming, then anything else (no validity info at
- * all) — matches the three-way split the filter chips already offer.
- * Within a group, earliest `fromDate` first ("what's happening/starting
- * soonest"). Statuses with no validity period sort last within their
- * group via the `Infinity` fallback, rather than erroring or floating to
- * the front. */
-function sortRank(status: LineStatus): number {
-  if (isActive(status)) return 0;
-  if (isUpcoming(status)) return 1;
-  return 2;
-}
-
-function earliestFromDate(status: LineStatus): number {
-  const period = status.validityPeriods[0];
-  return period ? new Date(period.fromDate).getTime() : Infinity;
-}
-
-function compareByUrgency(a: LineStatus, b: LineStatus): number {
-  const rankDiff = sortRank(a) - sortRank(b);
-  if (rankDiff !== 0) return rankDiff;
-  // `Infinity - Infinity` is `NaN`, an invalid Array.sort comparator
-  // result — reached when two statuses in the same group both lack a
-  // validity period (only possible in the rank-2 "other" group, which has
-  // no date to order by anyway, so treating them as equal is correct).
-  return earliestFromDate(a) - earliestFromDate(b) || 0;
-}
-
-function formatValiditySummary(status: LineStatus): string {
-  const period = status.validityPeriods[0];
+function formatValiditySummary(status: LineStatus, now: number): string {
+  const period = governingPeriod(status, now);
   if (!period) return '';
   if (period.isNow) return 'Now';
   const from = new Date(period.fromDate).toLocaleDateString();
   return period.toDate ? `${from} – ${new Date(period.toDate).toLocaleDateString()}` : `From ${from}`;
 }
 
-function formatFullValidity(status: LineStatus): string {
-  const period = status.validityPeriods[0];
+function formatFullValidity(status: LineStatus, now: number): string {
+  const period = governingPeriod(status, now);
   if (!period) return '';
   const from = new Date(period.fromDate).toLocaleString();
   return period.toDate ? `${from} – ${new Date(period.toDate).toLocaleString()}` : `${from} – ongoing`;
@@ -91,15 +57,16 @@ function pluraliseIssues(count: number): string {
  * genuinely narrowing (`chipsNarrowing`), which is the only case where
  * blaming filters is fair.
  *
- * `tab` is only ever 'active' or 'upcoming' in the final branch: the "All"
- * tab shows the whole chip-filtered pool, so it cannot be empty unless
- * `pool` is 0, which the branch above already caught. */
+ * `tab` is only ever 'active', 'upcoming' or 'ended' in the final branch:
+ * the "All" tab shows the whole chip-filtered pool, so it cannot be empty
+ * unless `pool` is 0, which the branch above already caught. */
 function emptyStateMessage({
   total,
   pool,
   tab,
   activeCount,
   upcomingCount,
+  endedCount,
   chipsNarrowing,
 }: {
   total: number;
@@ -107,6 +74,7 @@ function emptyStateMessage({
   tab: ActiveFilter;
   activeCount: number;
   upcomingCount: number;
+  endedCount: number;
   chipsNarrowing: boolean;
 }): string {
   if (total === 0) return 'No issues reported on this line.';
@@ -119,14 +87,23 @@ function emptyStateMessage({
       ? chipsNarrowing
         ? 'No active issues match the selected filters.'
         : 'Nothing is affecting this line right now.'
-      : chipsNarrowing
-        ? 'No upcoming issues match the selected filters.'
-        : 'No issues are scheduled for later on this line.';
+      : tab === 'upcoming'
+        ? chipsNarrowing
+          ? 'No upcoming issues match the selected filters.'
+          : 'No issues are scheduled for later on this line.'
+        : chipsNarrowing
+          ? 'No ended issues match the selected filters.'
+          : 'Nothing on this line has finished recently.';
 
   // Name the tab that actually holds something, so the user has somewhere to
-  // go; "All" is the catch-all when the sibling tab is empty too.
-  const sibling = tab === 'active' ? { label: 'Upcoming', count: upcomingCount } : { label: 'Active', count: activeCount };
-  const target = sibling.count > 0 ? sibling : { label: 'All', count: pool };
+  // go; "All" is the catch-all when every sibling tab is empty too.
+  const siblings = [
+    { label: 'Active', count: activeCount, value: 'active' as const },
+    { label: 'Upcoming', count: upcomingCount, value: 'upcoming' as const },
+    { label: 'Ended', count: endedCount, value: 'ended' as const },
+  ].filter((candidate) => candidate.value !== tab);
+  const sibling = siblings.find((candidate) => candidate.count > 0);
+  const target = sibling ?? { label: 'All', count: pool };
   return `${lead} ${pluraliseIssues(target.count)} ${target.count === 1 ? 'is' : 'are'} listed under ${target.label}.`;
 }
 
@@ -138,12 +115,24 @@ function chipRowLabel(facet: string, selected: number): string {
   return selected === 0 ? `${facet} — showing all` : `${facet} — ${selected} selected`;
 }
 
-export function IssueList({ statuses }: { statuses: LineStatus[] }) {
+export function IssueList({ statuses, now }: { statuses: LineStatus[]; now: number }) {
   const severityLabelId = useId();
   const sourceLabelId = useId();
   const severityOptions = Array.from(new Set(statuses.map((status) => status.statusSeverityDescription)));
   const [severityFilter, setSeverityFilter] = useState<string[]>([]);
   const [sourceFilter, setSourceFilter] = useState<string[]>([]);
+
+  // `now` is stamped once by the Server Component page and passed in,
+  // rather than read from `Date.now()` here. That keeps the server-rendered
+  // markup and the client's pre-hydration render byte-identical — the same
+  // constraint `LastUpdated` and `ThemeToggle` document — while still
+  // letting the buckets depend on real dates. `AutoRefresh`'s 30s
+  // `router.refresh()` re-stamps it, so it does not go stale.
+  const buckets = useMemo(
+    () => new Map(statuses.map((status) => [status, bucketFor(status, now)])),
+    [statuses, now],
+  );
+
   // Landing tab, decided once on mount (lazy initialiser) rather than
   // derived on every render. "Active" is the right place to open on a line
   // with live disruption, but a line whose issues are all planned/future
@@ -151,35 +140,54 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
   // tab counts all say something is happening — which reads as a bug.
   // "All" is the fallback rather than "Upcoming" because it is the only tab
   // guaranteed to hold everything `statuses` has (an issue can be neither
-  // active nor upcoming — a period that started in the past with isNow
-  // false — and Upcoming would hide exactly those).
+  // active nor upcoming — a period that started in the past and has already
+  // ended — and Upcoming would hide exactly those).
   //
   // Deliberately keyed off `statuses`, not `chipFiltered`, and never
   // recomputed: re-deriving would move the tab under the user the moment a
-  // chip toggle happened to empty the current tab. `isActive` reads only the
-  // server-supplied `isNow` flag (no `Date.now()`), so server and client
-  // initial renders agree.
+  // chip toggle happened to empty the current tab.
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>(() =>
-    statuses.some(isActive) ? 'active' : 'all',
+    statuses.some((status) => bucketFor(status, now) === 'active') ? 'active' : 'all',
   );
 
   // Severity/source chips narrow the pool every tab counts from, but not
-  // the active/upcoming tab itself — so switching tabs doesn't change the
-  // other tabs' counts, matching a standard faceted-filter count pattern.
+  // the active/upcoming/ended tab itself — so switching tabs doesn't change
+  // the other tabs' counts, matching a standard faceted-filter count
+  // pattern.
   const chipFiltered = statuses.filter((status) => {
     if (severityFilter.length > 0 && !severityFilter.includes(status.statusSeverityDescription)) return false;
     if (sourceFilter.length > 0 && !sourceFilter.includes(status.dataQuality)) return false;
     return true;
   });
-  const activeCount = chipFiltered.filter(isActive).length;
-  const upcomingCount = chipFiltered.filter(isUpcoming).length;
+  const activeCount = chipFiltered.filter((s) => buckets.get(s) === 'active').length;
+  const upcomingCount = chipFiltered.filter((s) => buckets.get(s) === 'upcoming').length;
+  const endedCount = chipFiltered.filter((s) => buckets.get(s) === 'ended').length;
+
+  function sortRank(status: LineStatus): number {
+    return BUCKET_SORT_RANK[buckets.get(status) ?? 'ended'];
+  }
+
+  function earliestFromDate(status: LineStatus): number {
+    const period = governingPeriod(status, now);
+    return period ? Date.parse(period.fromDate) : Infinity;
+  }
+
+  // Active first, then upcoming, then ended — matches the tab order.
+  // Within a group, earliest `fromDate` first ("what's happening/starting
+  // soonest").
+  function compareByUrgency(a: LineStatus, b: LineStatus): number {
+    const rankDiff = sortRank(a) - sortRank(b);
+    if (rankDiff !== 0) return rankDiff;
+    // `Infinity - Infinity` is `NaN`, an invalid Array.sort comparator
+    // result — reached when two statuses in the same group both lack a
+    // governing period (only possible when `validityPeriods` is empty,
+    // which `bucketFor` treats as active, so this is a defensive fallback
+    // rather than a reachable case today).
+    return earliestFromDate(a) - earliestFromDate(b) || 0;
+  }
 
   const filtered = chipFiltered
-    .filter((status) => {
-      if (activeFilter === 'active') return isActive(status);
-      if (activeFilter === 'upcoming') return isUpcoming(status);
-      return true;
-    })
+    .filter((status) => activeFilter === 'all' || buckets.get(status) === activeFilter)
     .sort(compareByUrgency);
 
   return (
@@ -233,6 +241,11 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
             { label: `All (${chipFiltered.length})`, value: 'all' },
             { label: `Active (${activeCount})`, value: 'active' },
             { label: `Upcoming (${upcomingCount})`, value: 'upcoming' },
+            // Only offered when something is actually in it. Three buckets
+            // could never make the counts add up — an issue whose window
+            // has closed is neither active nor upcoming — and "3 issues,
+            // 0 active, 0 upcoming" is exactly the nonsense this fixes.
+            ...(endedCount > 0 ? [{ label: `Ended (${endedCount})`, value: 'ended' }] : []),
           ]}
         />
       </Stack>
@@ -245,6 +258,7 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
             tab: activeFilter,
             activeCount,
             upcomingCount,
+            endedCount,
             chipsNarrowing: chipFiltered.length < statuses.length,
           })}
         </Text>
@@ -282,7 +296,7 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
                 </div>
                 <div className="issueRow__meta">
                   <Text size="xs" c="dimmed">
-                    {formatValiditySummary(status)}
+                    {formatValiditySummary(status, now)}
                   </Text>
                   {/*
                     Explicit gray: without a `color`, Mantine falls back to
@@ -300,7 +314,7 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
             <AccordionPanel>
               <Stack gap="xs">
                 <Text size="sm" c="dimmed">
-                  Valid: {formatFullValidity(status)}
+                  Valid: {formatFullValidity(status, now)}
                 </Text>
                 {status.disruption ? (
                   <DisruptionDetail disruption={status.disruption} />

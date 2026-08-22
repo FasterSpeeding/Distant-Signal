@@ -64,6 +64,11 @@ export default async function LineDetailPage({
     // swallowed — see comment above
   }
 
+  // Stamped server-side so IssueList's buckets don't depend on a
+  // `Date.now()` that differs between the SSR pass and hydration. Fresh on
+  // every request (this route is dynamic) and re-stamped by AutoRefresh.
+  const now = Date.now();
+
   return (
     <Stack p="lg" gap="md">
       <Group justify="space-between">
@@ -94,7 +99,7 @@ export default async function LineDetailPage({
         View history
       </TextLink>
       <RepresentativeInfo statuses={report.lineStatuses} />
-      <IssueList statuses={report.lineStatuses} />
+      <IssueList statuses={report.lineStatuses} now={now} />
     </Stack>
   );
 }
