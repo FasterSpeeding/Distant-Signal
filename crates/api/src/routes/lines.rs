@@ -123,15 +123,29 @@ async fn list_lines(
     let tfl = queries::tfl_line_summaries(&app.database)
         .await
         .map_err(internal_error)?;
-    out.extend(tfl.into_iter().map(|line| LineSummary {
-        id: line.id,
-        name: tfl_display_name(&line.name),
-        category: line.mode_name,
-        operators: vec![common::TFL_OPERATOR.to_string()],
-        source: "tfl",
-    }));
+    out.extend(
+        tfl.into_iter()
+            .filter(|line| !is_merged_into_nr_line(&line.id))
+            .map(|line| LineSummary {
+                id: line.id,
+                name: tfl_display_name(&line.name),
+                category: line.mode_name,
+                operators: vec![common::TFL_OPERATOR.to_string()],
+                source: "tfl",
+            }),
+    );
 
     Ok(Json(out))
+}
+
+/// Whether a TfL line's summary should be omitted from `/public/lines`
+/// because an NR/Darwin-sourced line already covers the same railway and is
+/// shown in its place, carrying this TfL line's status as a secondary field
+/// on its detail view instead (`crates/api/src/routes/line_status.rs::get_line_status`).
+/// See `docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md`
+/// Area 1.
+fn is_merged_into_nr_line(tfl_line_id: &str) -> bool {
+    common::nr_line_id_for_tfl(tfl_line_id).is_some()
 }
 
 /// Suffixes a TfL line's raw name for the `/public/lines` list, so it's
@@ -342,5 +356,15 @@ mod tests {
             source: "catalogue",
         };
         assert_eq!(catalogue.name, "Northern");
+    }
+
+    #[test]
+    fn a_tfl_line_with_an_nr_counterpart_is_suppressed() {
+        assert!(is_merged_into_nr_line("tfl-elizabeth"));
+    }
+
+    #[test]
+    fn a_tfl_line_with_no_nr_counterpart_is_not_suppressed() {
+        assert!(!is_merged_into_nr_line("tfl-northern"));
     }
 }
