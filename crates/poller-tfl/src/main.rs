@@ -13,6 +13,7 @@
 //! wrote into `line_status_history` at the time.
 
 mod config;
+mod dlr;
 mod schema;
 
 use std::time::Duration;
