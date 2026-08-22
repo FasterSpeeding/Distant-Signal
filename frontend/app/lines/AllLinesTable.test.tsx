@@ -280,4 +280,36 @@ describe('AllLinesTable responsive columns', () => {
     );
     expect(container.querySelector('.mantine-hidden-from-sm')!.textContent).toContain('No sample data');
   });
+
+  it('never renders the literal string "null" when a line has stats but zero samples', () => {
+    // stats.total === 0 is a real, permitted case per SampleStats -- it
+    // makes cancelledPct null even though `stats` itself is truthy, which
+    // the mobile summary text must guard against separately from `stats`.
+    const zeroSampleReports: LineStatusReport[] = [
+      {
+        $type: 'NRStatus.LineStatusReport',
+        id: 'northern',
+        name: 'Northern',
+        modeName: 'national-rail',
+        operators: ['NT'],
+        computedAt: '2026-08-21T12:00:00Z',
+        lineStatuses: [
+          {
+            statusSeverity: 10,
+            statusSeverityDescription: 'Good Service',
+            reason: '',
+            dataQuality: 'ldbws-inferred',
+            validityPeriods: [],
+            sampleStats: { total: 0, delayed: 0, cancelled: 0, skipped: 0, avgDelayMinutes: 0 },
+          },
+        ],
+      },
+    ];
+    const { container } = renderWithMantine(
+      <AllLinesTable lines={mobileLines} reports={zeroSampleReports} pinnedLineIds={[]} tocs={[]} />,
+    );
+    const mobileOnly = container.querySelector('.mantine-hidden-from-sm');
+    expect(mobileOnly).not.toBeNull();
+    expect(mobileOnly!.textContent).not.toContain('null');
+  });
 });

@@ -174,7 +174,9 @@ export function AllLinesTable({
                     so this is SSR-safe (unlike `useMediaQuery`). */}
                 <Text size="xs" c="dimmed" hiddenFrom="sm">
                   {stats
-                    ? `Avg ${stats.avgDelayMinutes.toFixed(1)} min · ${cancelledPct}% cancelled`
+                    ? `Avg ${stats.avgDelayMinutes.toFixed(1)} min · ${
+                        cancelledPct !== null ? `${cancelledPct}%` : '—'
+                      } cancelled`
                     : 'No sample data'}
                 </Text>
               </TableTd>
