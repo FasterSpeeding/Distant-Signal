@@ -11,9 +11,11 @@ use serde::Deserialize;
 
 // Transcribed to mirror TfL's full published `Prediction` entity (Task 3's
 // design), for fidelity with the real API shape. Not all fields are read
-// by current callers — `poller-tfl`'s DLR pilot (Task 7) only reads
-// `expected_arrival` (matching) and `naptan_id` (scoping predictions to
-// the pilot station); `vehicle_id`, `station_name`,
+// by current callers — `poller-tfl`'s DLR pilot (Task 7) reads
+// `expected_arrival` (matching), `naptan_id` (scoping predictions to the
+// pilot station) and `direction` (the Timetable half of the diff is
+// fetched `?direction=outbound`, so inbound predictions at the same
+// station must not be matched against it); `vehicle_id`, `station_name`,
 // `destination_naptan_id`, `destination_name`, and `time_to_station` are
 // unused today but kept for API fidelity/future consumers.
 #[derive(Debug, Clone, Deserialize)]
@@ -23,6 +25,12 @@ pub struct Prediction {
     pub vehicle_id: String,
     pub naptan_id: String,
     pub station_name: String,
+    /// `"inbound"`/`"outbound"` in the live capture, and occasionally the
+    /// empty string — defaulted so a missing or blank value degrades into
+    /// "not outbound" (and so is simply not matched) rather than failing
+    /// the whole Arrivals parse.
+    #[serde(default)]
+    pub direction: String,
     #[serde(default)]
     pub destination_naptan_id: String,
     #[serde(default)]
@@ -150,6 +158,7 @@ mod tests {
         assert_eq!(p.naptan_id, "940GZZDLBOW");
         assert_eq!(p.station_name, "Bow Church DLR Station");
         assert_eq!(p.destination_name, "Stratford DLR Station");
+        assert_eq!(p.direction, "inbound");
         assert_eq!(p.expected_arrival, "2026-08-22T13:30:09Z".parse::<DateTime<Utc>>().unwrap());
         assert_eq!(p.time_to_station, 277);
 
@@ -161,6 +170,38 @@ mod tests {
         assert_eq!(p3.destination_name, "Stratford DLR Station");
         assert_eq!(p3.expected_arrival, "2026-08-22T13:29:08Z".parse::<DateTime<Utc>>().unwrap());
         assert_eq!(p3.time_to_station, 216);
+    }
+
+    #[test]
+    fn direction_parses_and_defaults_to_empty_when_absent() {
+        // Real Poplar data carries both directions on the same station
+        // (6 inbound and 6 outbound predictions in the capture), which is
+        // why the caller has to filter on it — the Timetable half of the
+        // diff is outbound-only.
+        let json = r#"[
+          {
+            "vehicleId": "",
+            "naptanId": "940GZZDLPOP",
+            "stationName": "Poplar DLR Station",
+            "direction": "outbound",
+            "destinationNaptanId": "940GZZDLLEW",
+            "destinationName": "Lewisham DLR Station",
+            "expectedArrival": "2026-08-22T13:29:08Z",
+            "timeToStation": 216
+          },
+          {
+            "vehicleId": "",
+            "naptanId": "940GZZDLPOP",
+            "stationName": "Poplar DLR Station",
+            "destinationNaptanId": "",
+            "destinationName": "",
+            "expectedArrival": "2026-08-22T13:31:08Z",
+            "timeToStation": 336
+          }
+        ]"#;
+        let predictions = parse_arrivals(json).expect("should parse");
+        assert_eq!(predictions[0].direction, "outbound");
+        assert_eq!(predictions[1].direction, "");
     }
 
     #[test]

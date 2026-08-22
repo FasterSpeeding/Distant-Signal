@@ -34,6 +34,12 @@ const TFL_AUTH_HEADER_NAME: &str = "Ocp-Apim-Subscription-Key";
 /// connection and never answers would otherwise hang the poll loop forever.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The one direction the DLR pilot looks at, shared by the Timetable
+/// request's `direction` query param and the filter applied to live
+/// Arrivals predictions — the two halves of the diff have to agree, or
+/// inbound trains get matched against outbound schedules.
+const DLR_PILOT_DIRECTION: &str = "outbound";
+
 /// Attempts per poll cycle before giving up and waiting for the next tick.
 /// TfL's registered free tier is documented at roughly 500 requests per
 /// minute, but community reports say the enforcement is inconsistent — so
@@ -141,13 +147,21 @@ async fn poll_once(client: &Client, config: &Config, dlr_state: &mut dlr::infere
     .await
 }
 
+/// The DLR's line id as this poller publishes it. Built from the same
+/// `TFL_LINE_ID_PREFIX` `schema.rs` uses, so a change to the prefix can't
+/// leave the merge below quietly matching nothing.
+fn dlr_line_id() -> String {
+    format!("{}dlr", common::TFL_LINE_ID_PREFIX)
+}
+
 /// Attaches `stats` to every status entry on the `tfl-dlr` line only —
 /// mirrors the aggregator's own attach-to-every-status-on-the-line
 /// pattern (`crates/aggregator/src/aggregation.rs:96-106`), minus its
 /// severity escalation, which this pilot deliberately does not adopt (see
 /// the plan's Global Constraints).
 fn merge_dlr_sample_stats(reports: &mut [common::LineStatusReport], stats: common::SampleStats) {
-    for report in reports.iter_mut().filter(|r| r.id == "tfl-dlr") {
+    let line_id = dlr_line_id();
+    for report in reports.iter_mut().filter(|r| r.id == line_id) {
         for status in &mut report.statuses {
             status.sample_stats = Some(stats.clone());
         }
@@ -165,22 +179,23 @@ async fn poll_dlr_sample_stats(
     state: &mut dlr::inference::DlrMatchState,
 ) -> anyhow::Result<Option<common::SampleStats>> {
     let arrivals_url = format!("{}/Line/dlr/Arrivals", config.tfl_base_url.trim_end_matches('/'));
-    let arrivals_body = client
-        .get(&arrivals_url)
-        .header(TFL_AUTH_HEADER_NAME, &config.tfl_app_key)
-        .send()
-        .await?
-        .text()
-        .await?;
+    let arrivals_body = fetch_json(client, &arrivals_url, config, "DLR arrivals").await?;
     // `/Line/dlr/Arrivals` covers the whole DLR network in one call (see
     // `dlr::arrivals`'s module docs), but `match_trips` matches purely on
     // time and documents its own precondition as "the live prediction (at
     // the same station)" — it does not filter by station itself. This is
     // the pilot's one fixed station, so narrow to Poplar's own predictions
     // here, before anything is matched against Poplar's timetable.
+    //
+    // The direction filter matters just as much: the timetable half of the
+    // diff is fetched `?direction=outbound` (see below), while Arrivals
+    // returns both directions at Poplar (6 each in the captured response).
+    // Inbound trains land on the same clockface minutes as outbound
+    // scheduled departures, so without this an inbound arrival can be
+    // claimed as evidence an outbound trip ran.
     let predictions: Vec<_> = dlr::arrivals::parse_arrivals(&arrivals_body)?
         .into_iter()
-        .filter(|p| p.naptan_id == config.dlr_pilot_stop_point_id)
+        .filter(|p| p.naptan_id == config.dlr_pilot_stop_point_id && p.direction == DLR_PILOT_DIRECTION)
         .collect();
 
     // Poplar sits on a junction served by multiple DLR routes; without a
@@ -191,19 +206,19 @@ async fn poll_dlr_sample_stats(
     // The pilot fixes on `outbound`, consistent with its single-station
     // scope.
     let timetable_url = format!(
-        "{}/Line/dlr/Timetable/{}?direction=outbound",
+        "{}/Line/dlr/Timetable/{}?direction={DLR_PILOT_DIRECTION}",
         config.tfl_base_url.trim_end_matches('/'),
         config.dlr_pilot_stop_point_id
     );
-    let timetable_body = client
-        .get(&timetable_url)
-        .header(TFL_AUTH_HEADER_NAME, &config.tfl_app_key)
-        .send()
-        .await?
-        .text()
-        .await?;
+    let timetable_body = fetch_json(client, &timetable_url, config, "DLR timetable").await?;
     let now = Utc::now();
-    let trips = dlr::timetable::parse_timetable(&timetable_body, now.date_naive())?;
+    // TfL's timetable service day is a *London* day, not a UTC one — the
+    // published `hour`/`minute` pairs are local wall-clock times (see
+    // `dlr::timetable`). Between midnight and 01:00 BST the UTC date is
+    // still the previous day, so asking for `now.date_naive()` would fetch
+    // the wrong day's schedule for that hour every summer night.
+    let service_date = now.with_timezone(&chrono_tz::Europe::London).date_naive();
+    let trips = dlr::timetable::parse_timetable(&timetable_body, service_date)?;
 
     Ok(state.resolve(trips, &predictions, now))
 }
@@ -214,11 +229,20 @@ async fn fetch_status_json(client: &Client, config: &Config) -> anyhow::Result<S
         config.tfl_base_url.trim_end_matches('/'),
         config.tfl_modes
     );
+    fetch_json(client, &url, config, "line-status").await
+}
 
+/// One authenticated GET against TfL, with this poller's shared status
+/// checking and in-cycle backoff. Every TfL call goes through here: a 429
+/// or a 5xx has a body too, and handing that body to a parser produces a
+/// confusing serde error in place of the real cause.
+///
+/// `what` names the call in errors and logs only (e.g. `"line-status"`).
+async fn fetch_json(client: &Client, url: &str, config: &Config, what: &str) -> anyhow::Result<String> {
     let mut attempt = 0;
     loop {
         let response = client
-            .get(&url)
+            .get(url)
             .header(TFL_AUTH_HEADER_NAME, &config.tfl_app_key)
             .send()
             .await?;
@@ -231,11 +255,11 @@ async fn fetch_status_json(client: &Client, config: &Config) -> anyhow::Result<S
         attempt += 1;
         if attempt >= MAX_ATTEMPTS || !should_retry(status) {
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("TfL line-status fetch failed: {status} {body}");
+            anyhow::bail!("TfL {what} fetch failed: {status} {body}");
         }
 
         let delay = retry_delay(attempt);
-        tracing::warn!(%status, attempt, delay_secs = delay.as_secs(), "TfL line-status fetch failed; retrying");
+        tracing::warn!(%status, attempt, delay_secs = delay.as_secs(), "TfL {what} fetch failed; retrying");
         tokio::time::sleep(delay).await;
     }
 }
