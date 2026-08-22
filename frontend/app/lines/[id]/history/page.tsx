@@ -55,8 +55,18 @@ export default async function LineHistoryPage({
       {/* The results are always rendered now, so without a Suspense
           boundary the whole page — picker included — would block on the
           history fetch, which is the slowest call in the app for a 30-day
-          window. */}
-      <Suspense key={`${range.from}-${range.to}`} fallback={<Skeleton height={240} />}>
+          window.
+
+          Keyed on the preset name when one is active, not on `from`/`to`:
+          `resolveRange` stamps a preset's `from`/`to` from `Date.now()` at
+          millisecond precision, and `AutoRefresh` re-renders this page every
+          30s, so an `${from}-${to}` key would churn — and remount this whole
+          subtree — on every auto-refresh even though the user is still
+          looking at "the last 7 days". A preset's *identity* is its name,
+          not the instant it happened to be computed at. A genuine custom
+          range has no preset (`range.preset` is `null`), so it still falls
+          back to the from/to-based key and resets exactly as before. */}
+      <Suspense key={range.preset ?? `${range.from}-${range.to}`} fallback={<Skeleton height={240} />}>
         <HistoryResults id={id} from={range.from} to={range.to} />
       </Suspense>
     </Stack>
