@@ -7,7 +7,6 @@ import {
   AccordionItem,
   AccordionPanel,
   Badge,
-  Box,
   Chip,
   ChipGroup,
   Group,
@@ -263,23 +262,26 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
           <AccordionItem key={i} value={String(i)}>
             <AccordionControl>
               {/*
-                The badges are the row's classification, so they are pinned
-                (flexShrink 0) and the description text is the only element
-                allowed to give way — without `minWidth: 0` a flex item
-                refuses to shrink below its content, which is what squeezed
-                the badges into "MINOR DEL…" and a circled letter at 390px.
+                The badges are the row's classification and provenance, so
+                they hold their width; the reason is the only element that
+                gives way. All of that — and the two-line stack below `sm` —
+                lives in `app/globals.css`'s `.issueRow*` rules rather than
+                in Mantine `Group` props, because a breakpoint cannot be
+                expressed as a style object and the previous inline
+                `flexShrink`/`minWidth`/`wrap="nowrap"` values would have
+                outranked any media query that tried.
               */}
-              <Group justify="space-between" wrap="nowrap" gap="xs">
-                <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-                  <Box style={{ flexShrink: 0 }}>
+              <div className="issueRow">
+                <div className="issueRow__main">
+                  <div className="issueRow__badge">
                     <StatusBadge severity={status.statusSeverity} />
-                  </Box>
-                  <Text size="sm" truncate style={{ flexShrink: 1, minWidth: 0 }}>
+                  </div>
+                  <Text size="sm" className="issueRow__reason">
                     {status.reason}
                   </Text>
-                </Group>
-                <Group gap="xs" wrap="nowrap" style={{ flexShrink: 0 }}>
-                  <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                </div>
+                <div className="issueRow__meta">
+                  <Text size="xs" c="dimmed">
                     {formatValiditySummary(status)}
                   </Text>
                   {/*
@@ -289,11 +291,11 @@ export function IssueList({ statuses }: { statuses: LineStatus[] }) {
                     already how `informational` severity is treated in
                     lib/severity.ts's GROUP_COLOR.
                   */}
-                  <Badge variant="outline" size="sm" color="gray" style={{ flexShrink: 0 }}>
+                  <Badge variant="outline" size="sm" color="gray">
                     {DATA_QUALITY_LABELS[status.dataQuality]}
                   </Badge>
-                </Group>
-              </Group>
+                </div>
+              </div>
             </AccordionControl>
             <AccordionPanel>
               <Stack gap="xs">

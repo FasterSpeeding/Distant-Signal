@@ -300,10 +300,11 @@ describe('IssueList', () => {
     const control = description.closest('button') as HTMLElement;
     // The two badges classify the row — they must sit in boxes that refuse
     // to shrink, rather than truncating to "MINOR DEL…" / a circled letter.
-    expect(within(control).getByText('Minor Delays').closest('[style*="flex-shrink: 0"]')).not.toBeNull();
-    expect(within(control).getByText('Knowledgebase').closest('[style*="flex-shrink: 0"]')).not.toBeNull();
+    // They now use class-based layout from app/globals.css instead of inline styles.
+    expect(within(control).getByText('Minor Delays').closest('.issueRow__badge')).not.toBeNull();
+    expect(within(control).getByText('Knowledgebase').closest('.issueRow__meta')).not.toBeNull();
     // The description is the element that gives way instead.
-    expect(description).toHaveStyle('flex-shrink: 1; min-width: 0');
+    expect(description).toHaveClass('issueRow__reason');
   });
 
   it('renders the data-quality badge as neutral gray, not the brand colour', () => {
@@ -318,5 +319,20 @@ describe('IssueList', () => {
     const badge = within(control).getByText('Knowledgebase').closest('.mantine-Badge-root') as HTMLElement;
     expect(badge.getAttribute('style')).toContain('--mantine-color-gray-outline');
     expect(badge.getAttribute('style')).not.toContain('--mantine-color-grape-outline');
+  });
+
+  it('marks up the collapsed row so it can stack on narrow viewports', () => {
+    const { container } = renderWithMantine(<IssueList statuses={[minorNow]} />);
+    const row = container.querySelector('.issueRow');
+    expect(row).not.toBeNull();
+    expect(row!.querySelector('.issueRow__badge')).not.toBeNull();
+    expect(row!.querySelector('.issueRow__reason')).not.toBeNull();
+    expect(row!.querySelector('.issueRow__meta')).not.toBeNull();
+  });
+
+  it('does not pin the row with an inline nowrap that a media query cannot override', () => {
+    const { container } = renderWithMantine(<IssueList statuses={[minorNow]} />);
+    const row = container.querySelector('.issueRow') as HTMLElement;
+    expect(row.style.flexWrap).toBe('');
   });
 });
