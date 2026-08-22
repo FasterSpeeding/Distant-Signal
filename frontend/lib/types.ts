@@ -57,7 +57,7 @@ export interface LineSummary {
   name: string;
   category: string;
   operators: string[];
-  source: 'catalogue' | 'custom';
+  source: 'catalogue' | 'custom' | 'tfl';
 }
 
 export interface CustomLineDetail {
@@ -78,6 +78,7 @@ export interface DataFreshness {
   stations: string | null;
   tocs: string | null;
   incidents: string | null;
+  tfl: string | null;
 }
 
 /** A code/name pair from the `/public/stations` and `/public/tocs`

@@ -28,6 +28,7 @@ async function DataFreshnessNavItem() {
     stations: null,
     tocs: null,
     incidents: null,
+    tfl: null,
   }));
   return <DataFreshnessInfo freshness={freshness} />;
 }

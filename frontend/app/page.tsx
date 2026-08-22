@@ -1,6 +1,7 @@
 import { Stack, Title, SimpleGrid, Text, Group, Card } from '@mantine/core';
 import Link from 'next/link';
 import { getLineStatusForMode, getPreferences, getStationName, getStopPointDisruption } from '@/lib/api';
+import { DISPLAYED_MODES_PARAM } from '@/lib/modes';
 import { LineStatusCard } from '@/components/LineStatusCard';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -37,7 +38,9 @@ function sampleStatsAcrossReports(reports: LineStatusReport[]) {
 export default async function DashboardPage() {
   const preferences = await getPreferences();
 
-  const allReports = await getLineStatusForMode('national-rail');
+  // Every displayed mode, not just national-rail: a pinned TfL line would
+  // otherwise be silently missing from "Your Lines".
+  const allReports = await getLineStatusForMode(DISPLAYED_MODES_PARAM);
   // The pinned set came out in whatever order `/Line/Mode/…/Status`
   // happened to return, which visibly differed between two captures minutes
   // apart. Worst first, then alphabetical: a dashboard should lead with

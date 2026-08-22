@@ -45,6 +45,14 @@ describe('api client', () => {
     );
   });
 
+  it('getLineStatusForMode passes a comma-separated mode list through unescaped', async () => {
+    await getLineStatusForMode('national-rail,tube,tram');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Line/Mode/national-rail,tube,tram/Status',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
   it('getLineStatus joins multiple ids with commas and passes detail=true', async () => {
     await getLineStatus(['wcml', 'swr-alton'], true);
     expect(fetch).toHaveBeenCalledWith(

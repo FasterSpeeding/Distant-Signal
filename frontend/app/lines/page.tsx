@@ -1,5 +1,6 @@
 import { Stack, Title } from '@mantine/core';
 import { getAllLines, getAllTocs, getLineStatusForMode, getPreferences } from '@/lib/api';
+import { DISPLAYED_MODES_PARAM } from '@/lib/modes';
 import { CustomLineForm } from './CustomLineForm';
 import { AllLinesTable } from './AllLinesTable';
 
@@ -9,7 +10,7 @@ export default async function AllLinesPage() {
   const [lines, preferences, reports, tocs] = await Promise.all([
     getAllLines(),
     getPreferences(),
-    getLineStatusForMode('national-rail'),
+    getLineStatusForMode(DISPLAYED_MODES_PARAM),
     getAllTocs(),
   ]);
 
