@@ -7,6 +7,7 @@ import { ThemeToggle } from '@/components/ThemeToggle';
 import { TextLink } from '@/components/TextLink';
 import { DataFreshnessInfo } from '@/components/DataFreshnessInfo';
 import { AutoRefresh } from '@/components/AutoRefresh';
+import { OpenDataAttribution } from '@/components/OpenDataAttribution';
 import { getDataFreshness } from '@/lib/api';
 import { theme } from '@/lib/theme';
 
@@ -83,6 +84,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Container size="lg" px={0}>
             {children}
           </Container>
+          <OpenDataAttribution />
         </MantineProvider>
       </body>
     </html>
