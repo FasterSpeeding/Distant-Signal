@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { DatePickerInput } from '@mantine/dates';
 import { Button, Group, Stack, Text } from '@mantine/core';
@@ -31,6 +31,21 @@ export function HistoryRangePicker({
     toCalendarDay(from),
     toCalendarDay(to),
   ]);
+
+  // `useState`'s initializer only runs once, at mount — but the page
+  // re-renders this component with fresh `from`/`to` on every client-side
+  // navigation (e.g. clicking a preset button) without remounting it. Left
+  // alone, the calendar kept showing the range from whenever the component
+  // first mounted, silently disagreeing with both the preset buttons above
+  // it (which read `preset` fresh every render) and the results below —
+  // exactly the "picker and results can disagree" failure this rewrite
+  // exists to fix. Worse, `handleSearch` builds its navigation URL from
+  // this same stale `value`, so "Show history" after a preset click could
+  // submit the old range. Resyncing here keeps `value` a live mirror of the
+  // URL-resolved range rather than a one-time snapshot of it.
+  useEffect(() => {
+    setValue([toCalendarDay(from), toCalendarDay(to)]);
+  }, [from, to]);
 
   function handleSearch() {
     const [start, end] = value;

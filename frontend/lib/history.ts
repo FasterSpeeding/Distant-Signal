@@ -27,12 +27,22 @@ export interface HistoryDay {
  * happened to emit them in a different order. Severity plus reason is
  * enough — `statusSeverityDescription` is a pure function of severity, and
  * validity periods on a historical snapshot move as `now` moves, which
- * would defeat the collapsing for no benefit. */
+ * would defeat the collapsing for no benefit.
+ *
+ * `JSON.stringify` on the sorted `[severity, reason]` pairs, not a
+ * delimiter-free string join: joining `${severity} ${reason}` entries with
+ * no separator between them let two genuinely different status sets
+ * collide at a digit boundary — `[[1,'A2'],[2,'B']]` and `[[1,'A'],[22,'B']]`
+ * both produced `"1 A22 B"`, which would have silently merged a real status
+ * transition into one span. `JSON.stringify` escapes and delimits its array
+ * elements unambiguously, so no two distinct pair sets can produce the same
+ * signature. */
 function stateSignature(entry: LineStatusHistoryEntry): string {
-  return entry.lineStatuses
-    .map((status) => `${status.statusSeverity} ${status.reason}`)
-    .sort()
-    .join('');
+  return JSON.stringify(
+    entry.lineStatuses
+      .map((status): [number, string] => [status.statusSeverity, status.reason])
+      .sort((a, b) => a[0] - b[0] || a[1].localeCompare(b[1])),
+  );
 }
 
 function worstSeverity(statuses: LineStatus[]): number {

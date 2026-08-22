@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
 import { renderWithMantine } from '@/test/render';
+import { theme } from '@/lib/theme';
 import { HistoryRangePicker } from './HistoryRangePicker';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -31,5 +33,25 @@ describe('HistoryRangePicker', () => {
       <HistoryRangePicker lineId="northern" preset="7d" from="2026-08-14T12:00:00Z" to="2026-08-21T12:00:00Z" />,
     );
     expect(screen.queryByText(/Pick both a start and end date/)).not.toBeInTheDocument();
+  });
+
+  it('resyncs the displayed range when from/to/preset props change on an already-rendered instance', () => {
+    // A client-side navigation (e.g. clicking a preset) re-renders this
+    // component with fresh props rather than remounting it, so the fix has
+    // to be verified with `rerender`, not a second fresh `render` — a
+    // `useState` initializer alone would pass a test that only checked a
+    // fresh mount's initial value while still going stale in the app.
+    const { rerender } = renderWithMantine(
+      <HistoryRangePicker lineId="northern" preset="7d" from="2026-08-14T12:00:00Z" to="2026-08-21T12:00:00Z" />,
+    );
+    expect(screen.getByDisplayValue('2026-08-14 – 2026-08-21')).toBeInTheDocument();
+
+    rerender(
+      <MantineProvider theme={theme}>
+        <HistoryRangePicker lineId="northern" preset="30d" from="2026-07-22T12:00:00Z" to="2026-08-21T12:00:00Z" />
+      </MantineProvider>,
+    );
+
+    expect(screen.getByDisplayValue('2026-07-22 – 2026-08-21')).toBeInTheDocument();
   });
 });

@@ -68,6 +68,17 @@ describe('collapseHistory', () => {
   it('returns nothing for no entries', () => {
     expect(collapseHistory([])).toEqual([]);
   });
+
+  it('does not falsely merge multi-status entries that collide under a naive unseparated join', () => {
+    // `${severity} ${reason}` joined with no separator: "1 A2" + "2 B" and
+    // "1 A" + "22 B" both produce the string "1 A22 B" — two genuinely
+    // different status sets that must stay distinct.
+    const spans = collapseHistory([
+      entry('2026-08-19T18:00:00Z', [[1, 'A2'], [2, 'B']]),
+      entry('2026-08-19T18:10:00Z', [[1, 'A'], [22, 'B']]),
+    ]);
+    expect(spans).toHaveLength(2);
+  });
 });
 
 describe('groupSpansByDay', () => {
