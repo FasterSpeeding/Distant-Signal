@@ -1,4 +1,5 @@
 import { Stack, Title, Text, Group, Divider } from '@mantine/core';
+import { notFound } from 'next/navigation';
 import { getStopPointDisruption, getPreferences, getStationName } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { RepresentativeInfo } from '@/components/RepresentativeInfo';
@@ -6,15 +7,29 @@ import { IssueList } from '@/components/IssueList';
 import { PinToggle } from '@/components/PinToggle';
 import { worstStatus } from '@/lib/severity';
 
-// Falls back to `null` (rather than letting the page's error boundary take
-// over) on any failure resolving the name — the heading should still show
-// the bare CRS code the user actually asked for rather than an error page,
-// since the disruption data itself is what matters most on this page.
-async function resolveStationName(crs: string): Promise<string | null> {
+/** Three outcomes, not two. The previous version collapsed "there is no
+ * such station" and "the name lookup failed" into a single `null`, so the
+ * page could not tell them apart — and rendered a cheerful "No disruptions
+ * affecting this station." for `/stations/ZZZ`, complete with a working pin
+ * button. An unknown code must 404; a lookup that merely failed must still
+ * keep falling back to the bare CRS, since the disruption data is what
+ * this page is actually for. */
+type StationLookup =
+  | { outcome: 'found'; name: string }
+  | { outcome: 'unknown' }
+  | { outcome: 'unavailable' };
+
+/** Every CRS code is exactly three letters, so a malformed one is answered
+ * without troubling the API at all. */
+const CRS_PATTERN = /^[A-Za-z]{3}$/;
+
+async function lookupStation(crs: string): Promise<StationLookup> {
+  if (!CRS_PATTERN.test(crs)) return { outcome: 'unknown' };
   try {
-    return await getStationName(crs);
+    const name = await getStationName(crs);
+    return name === null ? { outcome: 'unknown' } : { outcome: 'found', name };
   } catch {
-    return null;
+    return { outcome: 'unavailable' };
   }
 }
 
@@ -24,12 +39,18 @@ export default async function StationDisruptionPage({
   params: Promise<{ crs: string }>;
 }) {
   const { crs } = await params;
-  const [reports, preferences, stationName] = await Promise.all([
-    getStopPointDisruption(crs),
-    getPreferences(),
-    resolveStationName(crs),
-  ]);
-  const heading = stationName ? `${stationName} (${crs})` : crs;
+
+  // Deliberately awaited before the disruption fetch rather than in
+  // parallel with it: `getStationName` is an hour-cached reference lookup,
+  // so the serialization costs nothing in the common case, and an unknown
+  // code should 404 without ever asking for its (empty) disruption list.
+  const lookup = await lookupStation(crs);
+  if (lookup.outcome === 'unknown') {
+    notFound();
+  }
+
+  const [reports, preferences] = await Promise.all([getStopPointDisruption(crs), getPreferences()]);
+  const heading = lookup.outcome === 'found' ? `${lookup.name} (${crs})` : crs;
 
   // Stamped once for the whole page (all per-line IssueLists share it) so
   // their buckets don't depend on a `Date.now()` that differs between the
