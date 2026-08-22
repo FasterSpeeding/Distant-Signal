@@ -198,6 +198,30 @@ services:
       API_SAMPLE_STATIONS_URL: http://api:8080/private/sample-stations
       API_INGEST_URL: http://api:8080/private/station-samples
 
+  poller-tfl:
+    build:
+      context: .
+      dockerfile: docker/poller-tfl.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # crates/poller-tfl/src/config.rs: Config. No endpoint GAP here,
+      # unlike the four RDM pollers — TfL's Unified API is public and
+      # documented, so the base URL has a real default.
+      TFL_BASE_URL: ${TFL_BASE_URL:-https://api.tfl.gov.uk}
+      TFL_APP_KEY: ${TFL_APP_KEY}
+      TFL_MODES: ${TFL_MODES:-tube,dlr,overground,elizabeth-line,tram}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      # TfL publishes no recommended cadence and offers no push or
+      # conditional requests; 300s mirrors poller-incidents.
+      POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_TFL:-300}
+      RUST_LOG: ${RUST_LOG:-info}
+      API_INGEST_URL: http://api:8080/private/tfl-line-status
+
   aggregator:
     build:
       context: .
