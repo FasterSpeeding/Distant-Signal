@@ -55,6 +55,61 @@ pub struct ServiceArguments {
     /// `private_router()` endpoints.
     #[arg(long, env)]
     pub internal_token: String,
+    /// OIDC issuer base URL (e.g. `https://sso.example.com/realms/rail`).
+    /// `crates/api` discovers every other endpoint (authorization, token,
+    /// JWKS) from this single URL's `.well-known/openid-configuration`
+    /// document -- see the design doc's OIDC-over-SAML research for why.
+    /// No default: every deployment must point this at its own
+    /// operator-run/subscribed SSO server. Discovery itself is lazy (see
+    /// this plan's Global Constraints) -- this field is only syntactically
+    /// validated at startup, not dereferenced over the network.
+    #[arg(long, env)]
+    pub sso_issuer_url: String,
+
+    /// OIDC client id this app is registered as with the issuer above.
+    #[arg(long, env)]
+    pub sso_client_id: String,
+
+    /// OIDC client secret paired with `sso_client_id`. A genuinely new
+    /// *kind* of secret for this crate -- every other credential here
+    /// (`internal_token`, the RDM API keys in sibling pollers) is a single
+    /// shared/bearer token, not a paired OAuth2 confidential-client secret
+    /// -- but handled with the same posture: env-only, required, never
+    /// logged. `ServiceArguments` derives `Debug`; avoid ever logging
+    /// `app.config` wholesale (nothing in this codebase does today) --
+    /// log individual non-secret fields instead if a future debug log
+    /// needs to reference config.
+    #[arg(long, env)]
+    pub sso_client_secret: String,
+
+    /// The exact redirect URI registered with the SSO server for the
+    /// authorization-code callback. Deliberately NOT this service's own
+    /// origin -- it must be the *frontend's* public origin plus
+    /// `/api/auth/callback` (e.g.
+    /// `https://rail.example.com/api/auth/callback`), proxied through to
+    /// this crate's `/public/auth/callback` by
+    /// `frontend/app/api/[...path]/route.ts` (Task 8). If this pointed at
+    /// `crates/api`'s own origin instead, the `Set-Cookie` the callback
+    /// handler issues would be scoped to `api`'s origin, not the origin
+    /// the browser subsequently talks to for every other request -- the
+    /// session cookie would never come back. See the design doc's Session
+    /// architecture section.
+    #[arg(long, env)]
+    pub sso_redirect_url: String,
+
+    /// Where `/auth/callback` and `/auth/logout` send the browser once
+    /// they're done -- the frontend's own root URL (e.g.
+    /// `https://rail.example.com/`). One fixed target, not a round-tripped
+    /// "return to this page" value -- a v1 scope simplification (see this
+    /// plan's Global Constraints).
+    #[arg(long, env)]
+    pub sso_post_login_redirect_url: String,
+
+    /// Sliding-window session lifetime in days. Design doc proposes 14 as
+    /// a starting figure, not researched further there; kept configurable
+    /// since it's a product/ops tuning knob, not a protocol constant.
+    #[arg(long, env, default_value_t = 14)]
+    pub session_ttl_days: i64,
     #[arg(long, value_parser = parse_toml_path::<Defaults>, value_hint = ValueHint::FilePath, value_name = "FILE")]
     pub defaults_file: Option<Defaults>,
     /// Directory of line-catalogue TOML files, loaded once at startup.
