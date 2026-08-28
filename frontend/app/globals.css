@@ -95,14 +95,12 @@ body[data-pride='true']::before {
 }
 
 /* A second bar bracketing the *bottom* of the nav (in addition to the one
-   above the whole page) -- `nav` is `position: relative` only under
-   `[data-pride]`, so this absolute bar never affects layout when pride mode
-   is off. Runs the shimmer in reverse so the two bars visibly move opposite
-   directions rather than reading as one bar duplicated. */
-body[data-pride='true'] nav {
-  position: relative;
-}
-
+   above the whole page). `nav`'s `position: relative` (needed so this
+   absolute bar has something to anchor to) lives with the always-on
+   background-theming rules further down this file, which also need it --
+   it's unconditional there, so nothing extra is needed here. Runs the
+   shimmer in reverse so the two bars visibly move opposite directions
+   rather than reading as one bar duplicated. */
 body[data-pride='true'] nav::after {
   content: '';
   position: absolute;
@@ -170,6 +168,177 @@ button[aria-pressed='true'][aria-label^='Pride mode']::before {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* `components/PrideToggle.tsx`'s decorative sparkle scatter -- only in the
+   DOM at all while pride mode is on, so no `[data-pride]`/`body` gate is
+   needed here the way the CSS-only effects above need one. */
+.prideSparkles {
+  position: absolute;
+  inset: -14px;
+  pointer-events: none;
+}
+
+.prideSparkle {
+  position: absolute;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.prideSparkle:nth-of-type(1) {
+  top: -4px;
+  left: -8px;
+}
+
+.prideSparkle:nth-of-type(2) {
+  top: -10px;
+  right: -4px;
+}
+
+.prideSparkle:nth-of-type(3) {
+  bottom: -6px;
+  left: 50%;
+}
+
+/* Reduced motion: sparkles stay put and fully visible rather than
+   flashing/floating -- present, not animated, matching the pride bars'
+   posture elsewhere in this file. */
+.prideSparkle {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .prideSparkle {
+    opacity: 0;
+    animation: pride-sparkle-float 2.4s ease-in-out infinite;
+  }
+
+  .prideSparkle:nth-of-type(2) {
+    animation-delay: 0.6s;
+  }
+
+  .prideSparkle:nth-of-type(3) {
+    animation-delay: 1.2s;
+  }
+}
+
+@keyframes pride-sparkle-float {
+  0%,
+  100% {
+    opacity: 0;
+    transform: translateY(4px) scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-6px) scale(1.1);
+  }
+}
+
+/* A rainbow scrollbar while pride mode is on. `scrollbar-color` (Firefox)
+   only accepts a solid thumb colour, not a gradient -- `#ff8c00` stands in
+   as the representative shade there; Chromium/WebKit get the full
+   gradient via the pseudo-elements below. */
+body[data-pride='true'] {
+  scrollbar-color: #ff8c00 transparent;
+  scrollbar-width: thin;
+}
+
+body[data-pride='true']::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+body[data-pride='true']::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+body[data-pride='true']::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #e40303, #ff8c00, #ffed00, #008026, #004dff, #750787);
+  border-radius: 999px;
+}
+
+/* Background theming: the page was a single flat Mantine body colour with
+   no texture at all. Three directions were prototyped (screenshotted in
+   both colour schemes before picking): (1) a full-page low-opacity
+   repeating horizontal-bar texture -- rejected, at any spacing/opacity it
+   reads as ruled notebook paper, not railway; (2) a full-page 45°
+   crosshatch grid -- rejected, reads as trellis/wallpaper, not railway
+   either; (3) a soft top-of-page colour wash plus a dashed "route line"
+   divider under the nav -- kept. Dashes are the visual language National
+   Rail/TfL diagrams already use for route lines, so this reads as
+   "railway" without drawing a literal track or train, and unlike (1)/(2)
+   it can't be mistaken for a generic stationery pattern.
+
+   `color-mix(in srgb, var(--mantine-color-text) N%, transparent)` rather
+   than a hardcoded grey: `--mantine-color-text` is already the correct
+   foreground for the active colour scheme (dark grey on light, off-white
+   on dark), so mixing it towards transparent at a low percentage gives an
+   automatically-adapting low-contrast line/wash in both schemes with one
+   rule -- no separate dark-mode override block needed, unlike the anchor
+   colour fix at the top of this file (which *did* need one because it was
+   changing hue, not just opacity). */
+body {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--mantine-color-grape-6) 6%, transparent) 0%,
+    transparent 70vh
+  );
+}
+
+/* `[data-pride='true']` picks up the same rainbow the flag-striped nav
+   bars already use (see above), but spread across a vertical wash at ~5%
+   opacity instead of a solid stripe -- the loud, unmistakably-on signal
+   stays the animated bars; this is the quiet reinforcement bleeding into
+   the atmosphere behind them, per this feature's design brief. Element
+   selector specificity (`body[data-pride='true']` beats plain `body`) is
+   enough to override the base wash without `!important`. Static rather
+   than shimmering: the bars already carry the motion cue, and stacking a
+   second animated gradient behind the whole page would fight the
+   `prefers-reduced-motion` intent of keeping ambient chrome calm. */
+body[data-pride='true'] {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, #e40303 5%, transparent) 0%,
+    color-mix(in srgb, #ff8c00 5%, transparent) 16%,
+    color-mix(in srgb, #ffed00 5%, transparent) 33%,
+    color-mix(in srgb, #008026 5%, transparent) 50%,
+    color-mix(in srgb, #004dff 5%, transparent) 66%,
+    color-mix(in srgb, #750787 5%, transparent) 83%,
+    transparent 100%
+  );
+}
+
+/* `nav` needs a positioning context for the dashed divider below, and the
+   pride bar's `nav::after` above needs one too -- previously scoped to
+   `body[data-pride='true'] nav` since it was the only consumer. Now that
+   the always-on divider below needs it too, it's unconditional; harmless
+   when pride is off, since nothing else here depends on nav's static
+   position. */
+nav {
+  position: relative;
+}
+
+/* The dashed "route line": sits just above nav's own `border-bottom`
+   (an inline style in `app/layout.tsx`, so this can't restyle that border
+   directly -- see the note above `body[data-pride='true']::before` earlier
+   in this file for why a separate layer beats fighting inline-style
+   specificity). Positioned at `bottom: 2px` (inside the nav box) rather
+   than nav::after's `bottom: -3px` (outside it, used by the pride bar) so
+   the two never overlap when pride is on -- each gets its own band. */
+nav::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2px;
+  height: 2px;
+  background: repeating-linear-gradient(
+    to right,
+    color-mix(in srgb, var(--mantine-color-text) 20%, transparent) 0,
+    color-mix(in srgb, var(--mantine-color-text) 20%, transparent) 20px,
+    transparent 20px,
+    transparent 36px
+  );
 }
 
 /* Links sitting in the ordinary flow of body text, where position gives

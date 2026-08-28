@@ -35,17 +35,34 @@ export function PrideToggle() {
   const displayedEnabled = mounted && enabled;
 
   return (
-    <ActionIcon
-      variant="outline"
-      onClick={() => setEnabled((prev) => {
-        const next = !prev;
-        localStorage.setItem(STORAGE_KEY, String(next));
-        return next;
-      })}
-      aria-pressed={displayedEnabled}
-      aria-label={`Pride mode: ${displayedEnabled ? 'on' : 'off'}. Click to toggle.`}
-    >
-      🏳️‍🌈
-    </ActionIcon>
+    <span style={{ position: 'relative', display: 'inline-flex' }}>
+      <ActionIcon
+        variant="outline"
+        onClick={() => setEnabled((prev) => {
+          const next = !prev;
+          localStorage.setItem(STORAGE_KEY, String(next));
+          return next;
+        })}
+        aria-pressed={displayedEnabled}
+        aria-label={`Pride mode: ${displayedEnabled ? 'on' : 'off'}. Click to toggle.`}
+      >
+        🏳️‍🌈
+      </ActionIcon>
+      {/* Decorative only (`aria-hidden`): a scatter of sparkles that float
+       * around the button once pride mode is on. `globals.css`'s
+       * `pride-sparkle-float` keyframes handle the animation (and its own
+       * `prefers-reduced-motion` fallback to a static, non-flashing
+       * sparkle) — this component only decides *whether* they're in the
+       * DOM at all, matching `displayedEnabled`'s existing hydration-safe
+       * state so the server never renders sparkles a stored "on"
+       * preference wouldn't yet justify. */}
+      {displayedEnabled && (
+        <span className="prideSparkles" aria-hidden="true">
+          <span className="prideSparkle">✨</span>
+          <span className="prideSparkle">💖</span>
+          <span className="prideSparkle">✨</span>
+        </span>
+      )}
+    </span>
   );
 }

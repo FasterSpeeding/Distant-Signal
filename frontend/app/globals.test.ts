@@ -95,6 +95,63 @@ describe('status badge truncation opt-out', () => {
   });
 });
 
+describe('background theming', () => {
+  // The base wash: a very low-opacity brand-tinted gradient from the top of
+  // the page. Asserts it's driven entirely by CSS custom properties
+  // (`--mantine-color-grape-6`, `--mantine-color-text`), never a hardcoded
+  // hex — which is what keeps it categorically unable to collide with
+  // `lib/severity.ts`'s `GROUP_COLOR` hexes (the non-goal this whole file's
+  // link-colour section above also has to respect).
+  it('washes the body in a low-opacity, variable-driven gradient rather than a fixed colour', () => {
+    // `body(?!\[)`: matches the base `body { ... }` rule but not
+    // `body[data-pride='true'] { ... }`, which follows immediately after
+    // in the file and has its own assertions below.
+    const rule = css.match(/body(?!\[)\s*\{\s*background-image:[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('color-mix(in srgb, var(--mantine-color-grape-6)');
+    expect(rule![0]).not.toMatch(/#[0-9a-f]{3,8}/i);
+    // Single-digit percentage: this is meant to be barely perceptible, not
+    // a colour statement in its own right.
+    expect(rule![0]).toMatch(/color-mix\(in srgb, var\(--mantine-color-grape-6\) \d%/);
+  });
+
+  it("overrides the wash under pride mode with the same seven hexes the flag bars use, still at low opacity", () => {
+    const barRule = css.match(/body\[data-pride='true'\]::before\s*\{[^}]*background:[^;]*;/);
+    const washRule = css.match(/body\[data-pride='true'\]\s*\{\s*background-image:[^}]*\}/);
+    expect(barRule).not.toBeNull();
+    expect(washRule).not.toBeNull();
+
+    const hexes = barRule![0].match(/#[0-9a-f]{6}/gi)!;
+    expect(hexes.length).toBeGreaterThan(0);
+    for (const hex of hexes) {
+      expect(washRule![0].toLowerCase()).toContain(`color-mix(in srgb, ${hex.toLowerCase()}`);
+    }
+    expect(washRule![0]).toMatch(/\d%, transparent\)/);
+  });
+
+  it('gives nav an unconditional positioning context, not one scoped to pride mode', () => {
+    // Regression guard: this used to be `body[data-pride='true'] nav { position: relative; }`,
+    // the only consumer at the time. The always-on nav divider below needs
+    // it too now, so it must not have stayed pride-only.
+    expect(css).not.toMatch(/body\[data-pride='true'\]\s*nav\s*\{\s*position:\s*relative;\s*\}/);
+    const rule = css.match(/\bnav\s*\{\s*position:\s*relative;\s*\}/);
+    expect(rule).not.toBeNull();
+  });
+
+  it('keeps the always-on dashed nav divider clear of the pride bar band so the two never overlap', () => {
+    const divider = css.match(/nav::before\s*\{[^}]*\}/);
+    const prideBar = css.match(/body\[data-pride='true'\]\s*nav::after\s*\{[^}]*\}/);
+    expect(divider).not.toBeNull();
+    expect(prideBar).not.toBeNull();
+
+    // The divider sits inside the nav box (positive offset from the
+    // bottom); the pride bar sits outside it (negative). Different bands,
+    // so pride mode layers a second effect rather than fighting this one.
+    expect(divider![0]).toMatch(/bottom:\s*2px/);
+    expect(prideBar![0]).toMatch(/bottom:\s*-3px/);
+  });
+});
+
 describe('collapsed issue row layout', () => {
   it('lays the row out as a single flex line by default', () => {
     const rule = css.match(/\.issueRow\s*\{[^}]*\}/);
