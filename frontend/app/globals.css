@@ -59,16 +59,117 @@ a[data-text-link]:focus-visible {
 body[data-pride='true']::before {
   content: '';
   display: block;
-  height: 4px;
+  height: 6px;
   background: linear-gradient(
     to right,
-    #e40303 0 16.66%,
-    #ff8c00 16.66% 33.33%,
-    #ffed00 33.33% 50%,
-    #008026 50% 66.66%,
-    #004dff 66.66% 83.33%,
-    #750787 83.33% 100%
+    #e40303,
+    #ff8c00,
+    #ffed00,
+    #008026,
+    #004dff,
+    #750787,
+    #e40303
   );
+  background-size: 200% 100%;
+}
+
+/* A static rainbow already reads as "on"; motion makes it unmistakable.
+   Gated behind `prefers-reduced-motion` -- vestibular-disorder guidance is
+   explicit that scrolling/shifting gradients are a real trigger, not just a
+   taste issue, so a reduced-motion viewer gets the same bar frozen on one
+   frame rather than the animation being silently skipped without a reason
+   noted here. */
+@media (prefers-reduced-motion: no-preference) {
+  body[data-pride='true']::before {
+    animation: pride-shimmer 6s linear infinite;
+  }
+}
+
+@keyframes pride-shimmer {
+  from {
+    background-position: 0% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+/* A second bar bracketing the *bottom* of the nav (in addition to the one
+   above the whole page) -- `nav` is `position: relative` only under
+   `[data-pride]`, so this absolute bar never affects layout when pride mode
+   is off. Runs the shimmer in reverse so the two bars visibly move opposite
+   directions rather than reading as one bar duplicated. */
+body[data-pride='true'] nav {
+  position: relative;
+}
+
+body[data-pride='true'] nav::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 6px;
+  background: linear-gradient(to right, #e40303, #ff8c00, #ffed00, #008026, #004dff, #750787, #e40303);
+  background-size: 200% 100%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  body[data-pride='true'] nav::after {
+    animation: pride-shimmer 6s linear infinite reverse;
+  }
+}
+
+/* `components/PrideToggle.tsx`'s `data-site-title` hook (see
+   `app/layout.tsx`) -- the site name itself goes rainbow-gradient text
+   while pride mode is on. `background-clip: text` needs `color: transparent`
+   to reveal the gradient rather than painting solid text over it. */
+body[data-pride='true'] [data-site-title] {
+  background: linear-gradient(90deg, #e40303, #ff8c00, #ffed00, #008026, #004dff, #750787, #e40303);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  body[data-pride='true'] [data-site-title] {
+    animation: pride-shimmer 4s linear infinite;
+  }
+}
+
+/* The toggle button itself, once on -- otherwise it's indistinguishable
+   from `ThemeToggle` at a glance beyond the emoji. Targets the rendered
+   `aria-pressed`/`aria-label` pair `PrideToggle.tsx` already sets, rather
+   than adding a bespoke class, so the visual state can never drift out of
+   sync with what's announced to assistive tech. A spinning conic-gradient
+   ring behind the button (`::before`, `z-index: -1`) rather than a border
+   override -- Mantine's `outline` variant paints its own border from a CSS
+   var, and fighting that with `!important` is worse than layering a ring
+   underneath it. */
+button[aria-pressed='true'][aria-label^='Pride mode'] {
+  position: relative;
+}
+
+button[aria-pressed='true'][aria-label^='Pride mode']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#e40303, #ff8c00, #ffed00, #008026, #004dff, #750787, #e40303);
+  z-index: -1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  button[aria-pressed='true'][aria-label^='Pride mode']::before {
+    animation: pride-spin 3s linear infinite;
+  }
+}
+
+@keyframes pride-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Links sitting in the ordinary flow of body text, where position gives

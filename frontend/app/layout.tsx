@@ -69,7 +69,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     of this Server Component), not passed as a value into a
                     Mantine `component` prop — a different, safe pattern. */}
                 <Link href="/" style={{ textDecoration: 'none', color: 'inherit' }}>
-                  <Text fw={700}>National Rail Line Status</Text>
+                  {/* `data-site-title` is a pure CSS hook for `globals.css`'s
+                      `body[data-pride='true']` rules -- Mantine's `Text`
+                      renders no stable class of its own to key off. */}
+                  <Text fw={700} data-site-title>
+                    National Rail Line Status
+                  </Text>
                 </Link>
                 <Group gap="lg">
                   <TextLink href="/lines">All Lines</TextLink>
