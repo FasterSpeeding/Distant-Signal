@@ -4,6 +4,7 @@ import { ActionIcon, MantineProvider, ColorSchemeScript, mantineHtmlProps, Group
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { PrideToggle } from '@/components/PrideToggle';
 import { TextLink } from '@/components/TextLink';
 import { DataFreshnessInfo } from '@/components/DataFreshnessInfo';
 import { AutoRefresh } from '@/components/AutoRefresh';
@@ -77,6 +78,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     <DataFreshnessNavItem />
                   </Suspense>
                   <ThemeToggle />
+                  <PrideToggle />
                 </Group>
               </Group>
             </Container>

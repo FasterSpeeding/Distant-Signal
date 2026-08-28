@@ -46,6 +46,31 @@ a[data-text-link]:focus-visible {
   text-decoration: underline;
 }
 
+/* `components/PrideToggle.tsx` sets `document.body.dataset.pride` from a
+   client-only localStorage preference (off by default, so SSR and the
+   pre-mount client render never need this rule to exist). A flag-striped
+   bar painted above the whole page, not a change to any element's own
+   colour -- keeps this fully separate from `lib/severity.ts`'s
+   `GROUP_COLOR` map, which stays semantic-only per
+   docs/superpowers/specs/2026-08-18-grape-theme-design.md. `::before` on
+   `body` rather than restyling `nav`'s existing border: that border is an
+   inline style in `app/layout.tsx` (higher specificity than any stylesheet
+   rule without `!important`), and a separate bar avoids fighting it. */
+body[data-pride='true']::before {
+  content: '';
+  display: block;
+  height: 4px;
+  background: linear-gradient(
+    to right,
+    #e40303 0 16.66%,
+    #ff8c00 16.66% 33.33%,
+    #ffed00 33.33% 50%,
+    #008026 50% 66.66%,
+    #004dff 66.66% 83.33%,
+    #750787 83.33% 100%
+  );
+}
+
 /* Links sitting in the ordinary flow of body text, where position gives
    the reader no hint that they're links. Nav items, header actions and a
    table column of names are identified by where they are, so they stay on
