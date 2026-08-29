@@ -101,6 +101,16 @@ services:
       #   this one actually changes behaviour, unlike the line above.
       AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
       AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+      # Read by authentik-worker (the container that applies blueprints) via
+      # authentik-blueprints/oauth2-client.yaml's `!Env [SSO_REDIRECT_URL,
+      # ...]` -- keeps the OAuth2Provider's registered redirect_uris in sync
+      # with the same value crates/api itself uses to build its own
+      # redirect_uri, rather than a second, independently hardcoded copy
+      # that can (and did) drift the moment SSO_REDIRECT_URL was changed
+      # for a real remote-access setup. authentik-server doesn't apply
+      # blueprints, but gets this too so both containers' env blocks stay
+      # identical (this is the shared &authentik-env anchor).
+      SSO_REDIRECT_URL: ${SSO_REDIRECT_URL}
     # Matches the official reference compose's shm_size for both server and
     # worker (Django/Postgres shared-memory headroom).
     shm_size: 512mb
