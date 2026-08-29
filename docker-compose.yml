@@ -94,12 +94,22 @@ services:
       INTERNAL_TOKEN: ${INTERNAL_TOKEN}
       REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
-      SSO_ISSUER_URL: ${SSO_ISSUER_URL}
-      SSO_CLIENT_ID: ${SSO_CLIENT_ID}
-      SSO_CLIENT_SECRET: ${SSO_CLIENT_SECRET}
-      SSO_REDIRECT_URL: ${SSO_REDIRECT_URL}
-      SSO_POST_LOGIN_REDIRECT_URL: ${SSO_POST_LOGIN_REDIRECT_URL}
-      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS}
+      # All five are required by the binary with no defaults, so they use
+      # `:?` (fail at `docker compose` config-resolution time with the
+      # message below) rather than passing an unset variable through as an
+      # empty string — which clap accepts as "explicitly set to empty" and
+      # only rejects later, inside the container, as a crash loop. Same
+      # convention as TFL_APP_KEY in poller-tfl below.
+      SSO_ISSUER_URL: ${SSO_ISSUER_URL:?SSO_ISSUER_URL must be set — see the OIDC section of local.env.example}
+      SSO_CLIENT_ID: ${SSO_CLIENT_ID:?SSO_CLIENT_ID must be set — see the OIDC section of local.env.example}
+      SSO_CLIENT_SECRET: ${SSO_CLIENT_SECRET:?SSO_CLIENT_SECRET must be set — see the OIDC section of local.env.example}
+      SSO_REDIRECT_URL: ${SSO_REDIRECT_URL:?SSO_REDIRECT_URL must be set — the frontend origin plus /api/auth/callback}
+      SSO_POST_LOGIN_REDIRECT_URL: ${SSO_POST_LOGIN_REDIRECT_URL:?SSO_POST_LOGIN_REDIRECT_URL must be set — the frontend root URL}
+      # Unlike the five above this one HAS a Rust-side default
+      # (default_value_t = 14), but that default only applies when the env
+      # var is absent — a bare ${SESSION_TTL_DAYS} would hand clap an empty
+      # string and fail to parse as i64. Repeat the default here.
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-14}
     ports:
       - "${API_HOST_PORT:-8080}:8080"
     healthcheck:
