@@ -8,6 +8,19 @@ destination_crs_filter = ["AYW", "PWL"]
 sample_stations = ["SHR", "MCN", "AYW", "PWL"]
 match_keywords = ["Cambrian Line", "Cambrian Coast Line"]
 
+# Sourcing note (per the catalogue's "cross-checked against a second
+# source" curation standard): every CRS code below was confirmed from that
+# station's own Wikipedia infobox. Of those, SHR, WLP, NWT, CWS, MCN, DVY,
+# AYW, AVY, ABH and BRM were additionally cross-checked against
+# railwaycodes.org.uk and match exactly. The remaining codes -- BOW, BRH,
+# TYW, FRB, MFA, HRL, PRH, MFF, PTM, CCC, PWL -- are Wikipedia-only so far;
+# railwaycodes.org.uk's per-letter pages for those initials repeatedly
+# rate-limited (HTTP 429) or truncated before reaching the relevant row
+# during research. None of these are invented -- they're all directly
+# read from a live source -- but a future editor should treat the
+# Wikipedia-only subset as pending a full second-source pass rather than
+# as fully cross-checked.
+
 # Long single-track sections with limited passing loops. Aberystwyth branch
 # runs near-hourly; the Pwllheli (Cambrian Coast) branch only every two
 # hours, so a single cancellation is a bigger proportional hit than on a
@@ -73,6 +86,16 @@ segment = "tfw-cambrian-trunk"
 # Physical junction where the line splits. No road access; some services
 # (notably certain Sunday workings) run Shrewsbury/Birmingham-Aberystwyth
 # only and don't touch the coast branch at all.
+#
+# Sourcing note: the "split happens at Dovey Junction, not Machynlleth"
+# fact -- the load-bearing decision behind where `tfw-cambrian-trunk` ends
+# and the two branch segments begin -- is sourced from Dovey Junction's own
+# Wikipedia article. railwaycodes.org.uk's CRS listing for DVY confirms the
+# code/TIPLOC but carries no descriptive text about the junction's role,
+# and Network Rail's route page for this line 404s, so this specific claim
+# hasn't yet had an independent second-source confirmation, only a
+# Wikipedia mirror (abcrailwayguide.uk) that itself cites Wikipedia as its
+# source. Treat as high-confidence but not fully cross-checked.
 
 # --- Aberystwyth branch (the "Cambrian Line" proper) ---
 
