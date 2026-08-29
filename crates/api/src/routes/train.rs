@@ -17,7 +17,7 @@ use serde::Serialize;
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
-use crate::data::{eta_blend, train_tracking};
+use crate::data::{eta_blend, train_tracking, delay_repay_rules};
 
 pub fn router() -> Router {
     Router::new()
@@ -25,6 +25,7 @@ pub fn router() -> Router {
         .route("/Train/{tracking_id}", axum::routing::get(get_by_tracking_id))
         .route("/Train/by-uid/{train_uid}/{date}", axum::routing::get(get_by_uid_and_date))
         .route("/Train/{tracking_id}/tickets", axum::routing::post(post_ticket).get(get_tickets))
+        .route("/Train/{tracking_id}/tickets/{ticket_id}/delay-repay", axum::routing::get(get_delay_repay_estimate))
 }
 
 #[derive(Debug, Serialize)]
@@ -39,6 +40,23 @@ struct TrackPinResponse {
 struct TicketCreatedResponse {
     ticket_id: i64,
 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DelayRepayEstimateResponse {
+    delay_minutes: Option<i32>,
+    estimate: Option<delay_repay_rules::DelayRepayEstimate>,
+    // Always populated, independent of whether `estimate` is `Some` --
+    // this route must never leave a caller with a bare percentage and no
+    // caveat, or with nowhere real to go. See this plan's Global
+    // Constraints.
+    claim_url: String,
+    disclaimer: &'static str,
+}
+
+const DELAY_REPAY_ROUTE_DISCLAIMER: &str = "This is a rough, community-sourced estimate, not a \
+    guarantee of compensation and not proof you travelled. This app never submits a claim on your \
+    behalf -- verify eligibility and claim directly from the operator using the link above.";
 
 async fn post_ticket(
     State(app): State<App>,
@@ -74,6 +92,36 @@ async fn get_tickets(
         .await
         .map_err(internal_error("list tickets"))?;
     Ok(Json(tickets))
+}
+
+async fn get_delay_repay_estimate(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path((tracking_id, ticket_id)): Path<(i64, i64)>,
+) -> Result<Json<DelayRepayEstimateResponse>, (StatusCode, String)> {
+    let ticket = train_tracking::get_ticket_owned(&app.database, ticket_id, &user.id)
+        .await
+        .map_err(internal_error("read ticket"))?
+        .filter(|t| t.tracked_train_id == tracking_id)
+        .ok_or((StatusCode::NOT_FOUND, "no ticket with that id for that tracked train".to_string()))?;
+
+    let state = train_tracking::get_by_tracking_id(&app.database, tracking_id)
+        .await
+        .map_err(internal_error("read tracked train state"))?
+        .ok_or((StatusCode::NOT_FOUND, "no tracked train with that id".to_string()))?;
+
+    let estimate = match (ticket.operator.as_deref(), state.delay_minutes) {
+        (Some(operator), Some(delay_minutes)) => delay_repay_rules::estimate_delay_repay(operator, delay_minutes),
+        _ => None,
+    };
+    let claim_url = ticket.operator.as_deref().map(delay_repay_rules::claim_url_for).unwrap_or(delay_repay_rules::GENERIC_CLAIM_URL);
+
+    Ok(Json(DelayRepayEstimateResponse {
+        delay_minutes: state.delay_minutes,
+        estimate,
+        claim_url: claim_url.to_string(),
+        disclaimer: DELAY_REPAY_ROUTE_DISCLAIMER,
+    }))
 }
 
 async fn post_track(
