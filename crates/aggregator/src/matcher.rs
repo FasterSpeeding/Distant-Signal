@@ -249,4 +249,66 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["swr-alton".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    #[test]
+    fn chiltern_stratford_branch_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "CH-1",
+            "Trespass incident at Wilmcote",
+            "Trespass incident causing delays to Chiltern Railways services.",
+            &["CH"],
+            &["WMC"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["chiltern-main-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn chiltern_birmingham_approach_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "CH-2",
+            "Signal failure at Solihull",
+            "Signal failure causing delays to Chiltern Railways services.",
+            &["CH"],
+            &["SOL"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["chiltern-main-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+
+        // Station-level overlap with Birmingham only, not a shared segment:
+        // an incident at Birmingham New Street (XC's hub) must not match
+        // this line, and this line's Birmingham approach (Snow Hill/Moor
+        // Street) is a different station entirely.
+        let bhm_inc = incident("XC-BHM", "Points failure at Birmingham New Street", "Points failure causing delays.", &["XC"], &["BHM"]);
+        let bhm_matches = lines_affected_by(&bhm_inc, &lines, &registry);
+        let bhm_matched_ids: HashSet<String> = bhm_matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(!bhm_matched_ids.contains("chiltern-main-line"));
+    }
+
+    #[test]
+    fn chiltern_banbury_incident_matches_by_station_not_shared_segment() {
+        // Banbury sits on both chiltern-main-line and xc-south-coast's
+        // physical trunk, but the two files deliberately don't share a
+        // segment name there (see chiltern-main-line.toml's own comment).
+        // An incident should therefore match both lines individually by
+        // station, each classified against its own (exclusive) segment.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("CH-3", "Overhead line damage at Banbury", "Overhead line damage causing delays.", &[], &["BAN"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("chiltern-main-line"));
+        assert!(matched_ids.contains("xc-south-coast"));
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment (station overlap, not segment-sharing)", m.line.id);
+        }
+    }
 }
