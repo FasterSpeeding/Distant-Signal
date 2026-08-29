@@ -297,6 +297,12 @@ mod tests {
         // `west-coast-main-line.toml`'s own `wcml-midlands` segment tag there
         // (see that file's comment), so an incident at Rugby should be a
         // SharedSegment match for both lines, not exclusive to either.
+        //
+        // `wcml-manchester.toml` (added after this test was first written)
+        // also reuses the same `wcml-midlands` tag at Rugby -- both of its
+        // branches (via Stoke-on-Trent and via Crewe/Wilmslow) travel over
+        // this same shared spine before diverging further north, so it's a
+        // real third line affected by this incident, all three SharedSegment.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -308,9 +314,31 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["wcml".to_string(), "wcml-birmingham".to_string()]));
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["wcml".to_string(), "wcml-birmingham".to_string(), "wcml-manchester".to_string()])
+        );
         for m in &matches {
             assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
         }
+    }
+
+    #[test]
+    fn wcml_manchester_exclusive_segment_incident_does_not_propagate() {
+        // Stoke-on-Trent is on the exclusive `wcml-manchester-stoke` branch
+        // segment, not shared with any other line's segment tag.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "VT-5",
+            "Points failure at Stoke-on-Trent",
+            "Points failure causing delays to services at Stoke-on-Trent.",
+            &["VT"],
+            &["STO"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["wcml-manchester".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 }
