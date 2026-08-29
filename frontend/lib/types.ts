@@ -107,3 +107,55 @@ export interface SessionInfo {
   email: string | null;
   name: string | null;
 }
+
+export type ResolutionStatus = 'pending' | 'resolved' | 'unresolved';
+export type JourneyStatus = 'awaiting_activation' | 'en_route' | 'cancelled' | 'completed';
+export type EtaSource = 'trust-propagated' | 'darwin-estimated';
+
+/** `GET /Train/{trackingId}` and `GET /Train/by-uid/{uid}/{date}`'s shared
+ * response shape (`crates/api/src/data/train_tracking.rs`'s
+ * `TrackedTrainState`, camelCase on the wire). `status` and every
+ * movement field are `null` until `resolutionStatus` is `'resolved'` and
+ * `trust-consumer` has written a `train_current_state` row. Note there is
+ * no `scheduledDeparture` field -- the backend's read query does not
+ * select `pin_scheduled_departure`, only `serviceDate` (a date). See
+ * `components/TrainJourney.tsx` for the full per-state rendering rules. */
+export interface TrackedTrainState {
+  id: number;
+  serviceDate: string; // "YYYY-MM-DD"
+  pinOriginCrs: string;
+  pinDestinationCrs: string | null;
+  resolutionStatus: ResolutionStatus;
+  trainUid: string | null;
+  trainId: string | null;
+  status: JourneyStatus | null;
+  lastReportedLocation: string | null;
+  lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"
+  delayMinutes: number | null;
+  nextCallingPoint: string | null;
+  etaNext: string | null; // RFC3339
+  etaSource: EtaSource | null;
+}
+
+/** `POST /Train/track`'s request body (`common::TrackPinRequest`). Plain
+ * snake_case on the wire -- unlike every other type in this file, which
+ * mirrors `crates/api`'s camelCase public JSON, this one matches
+ * `crates/common`'s internal-wire-type convention instead. Sent only from
+ * `components/TrackTrainForm.tsx`, via the same-origin `/api/Train/track`
+ * proxy (`app/api/[...path]/route.ts`). */
+export interface TrackPinRequest {
+  service_date: string; // "YYYY-MM-DD"
+  origin_crs: string;
+  scheduled_departure: string; // RFC3339
+  destination_crs?: string;
+  operator?: string;
+}
+
+/** `POST /Train/track`'s response body -- camelCase, like every other
+ * `crates/api` public JSON response (only the request body above is
+ * snake_case). `resolutionStatus` is always the literal `'pending'` --
+ * a newly-created pin has no `train_uid` bound yet. */
+export interface TrackPinResponse {
+  trackingId: number;
+  resolutionStatus: 'pending';
+}

@@ -9,6 +9,7 @@ import type {
   DataFreshness,
   Suggestion,
   SessionInfo,
+  TrackedTrainState,
 } from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
@@ -171,4 +172,12 @@ export async function getDataFreshness(): Promise<DataFreshness> {
   return fetchJson<DataFreshness>(`${baseUrl()}/public/freshness`, {
     cache: 'no-store',
   });
+}
+
+export async function getTrackedTrainById(id: number): Promise<TrackedTrainState> {
+  return fetchJson<TrackedTrainState>(`${baseUrl()}/Train/${id}`, { cache: 'no-store' });
+}
+
+export async function getTrackedTrainByUidAndDate(uid: string, date: string): Promise<TrackedTrainState> {
+  return fetchJson<TrackedTrainState>(`${baseUrl()}/Train/by-uid/${uid}/${date}`, { cache: 'no-store' });
 }
