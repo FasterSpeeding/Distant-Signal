@@ -22,7 +22,7 @@
 # hatch, not evidence the blueprint is wrong.
 version: 1
 metadata:
-  name: NR Status (dev) - OAuth2 client and application
+  name: Distant Signal (dev) - OAuth2 client and application
 entries:
   - model: authentik_providers_oauth2.oauth2provider
     identifiers:
@@ -44,5 +44,5 @@ entries:
     identifiers:
       slug: distant-signal
     attrs:
-      name: NR Status (dev)
+      name: Distant Signal (dev)
       provider: !Find [authentik_providers_oauth2.oauth2provider, [name, distant-signal-dev]]

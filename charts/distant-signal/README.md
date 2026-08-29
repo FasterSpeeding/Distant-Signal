@@ -41,6 +41,8 @@ and push them yourself before installing.
 | `docker/poller-stations.Dockerfile` | `distant-signal/poller-stations` |
 | `docker/poller-tocs.Dockerfile` | `distant-signal/poller-tocs` |
 | `docker/poller-ldbws.Dockerfile` | `distant-signal/poller-ldbws` |
+| `docker/trust-consumer.Dockerfile` | `distant-signal/trust-consumer` |
+| `docker/poller-tfl.Dockerfile` | `distant-signal/poller-tfl` |
 | `frontend/Dockerfile` (target `runtime-prod`) | `distant-signal/frontend` |
 
 ```bash
@@ -149,21 +151,54 @@ helm get values <old-release> -n <ns> -o yaml > values.yaml
 # 2. Note the existing Postgres PVC's actual name.
 kubectl get pvc -n <ns>
 
+# 2b. Capture the generated Postgres password BEFORE uninstalling — `helm
+#     uninstall` deletes the Secret that holds it, and `helm get values`
+#     (step 1) does not capture a render-time-generated value (see
+#     "Generated secrets and the `lookup` limitation" below for why it's
+#     generated at all).
+kubectl get secret -n <ns> <old-release> \
+  -o jsonpath='{.data.postgres-password}' | base64 -d; echo
+
 # 3. Remove the old release. StatefulSet-owned PVCs are NOT deleted by
 #    `helm uninstall`, so the data survives this step.
 helm uninstall <old-release> -n <ns>
 
 # 4. Install under the new chart/release name, binding the new StatefulSet
-#    to the pre-existing PVC instead of provisioning an empty one.
+#    to the pre-existing PVC instead of provisioning an empty one, and
+#    pinning the Postgres password to the value captured in step 2b — a
+#    fresh `helm install` has no live Secret to `lookup` and would otherwise
+#    generate a brand-new random password that can never authenticate
+#    against the reused volume's already-`initdb`'d data directory.
 helm install <new-release-name> ./charts/distant-signal -n <ns> \
   -f values.yaml \
-  --set postgresql.persistence.existingClaim=<the PVC name from step 2>
+  --set postgresql.persistence.existingClaim=<the PVC name from step 2> \
+  --set postgresql.auth.password=<the value captured in step 2b>
 ```
+
+**If the old release predates this chart's rename**, one more mismatch
+applies: this rename changed `postgresql.auth.username` and
+`postgresql.auth.database`'s defaults from `nr_status` to `distant_signal`.
+An old release that never set these explicitly gets the *new* defaults on
+the fresh install above, but the reused PVC's data directory still has the
+*old* role and database (`nr_status`) created inside it — so the rendered
+`DATABASE_URL` would point at a role/database that doesn't exist in the
+reused volume. Either pin the install to the reused volume's actual,
+pre-existing names:
+
+```bash
+  --set postgresql.auth.username=nr_status \
+  --set postgresql.auth.database=nr_status
+```
+
+or, before reinstalling under the new defaults, rename them in place inside
+the reused database (e.g. `ALTER ROLE nr_status RENAME TO distant_signal;`
+and `ALTER DATABASE nr_status RENAME TO distant_signal;`).
 
 **This path is untested against a real cluster** — no live install of this
 chart exists to verify it against as of this writing. Take a backup or
 snapshot of the database before attempting it regardless of how confident the
-steps above look.
+steps above look — this is doubly true given the password- and
+default-name-migration steps above.
 
 ## Generated secrets and the `lookup` limitation
 

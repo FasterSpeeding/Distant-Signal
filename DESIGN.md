@@ -484,23 +484,27 @@ the inference fallback to Good Service.
 pipeline with synthetic inputs, verifying the rendered JSON matches
 expectations.
 
-The existing `tests/test_matcher.py` covers the matcher and aggregator
-layers for two scenarios (WCML and three SWR lines). Each new line
-should add at least one shared-trunk and one exclusive-segment test
-case.
+`crates/aggregator`'s own `mod tests` (in `src/matcher.rs` and
+`src/aggregation.rs`) cover the matcher and aggregator layers, loading the
+real `lines/` catalogue via `LineDefinition::from_dir` rather than
+synthetic fixtures. Each new line should add at least one shared-trunk and
+one exclusive-segment test case.
 
 ---
 
 ## 12. Conventions
 
-- Python 3.10+ (uses `X | None`, `dict[str, ...]` annotations, `match`).
-- Type hints everywhere in `src/`. Tests can be looser.
-- Dataclasses for domain types, no Pydantic in v1 (the I/O boundary is
-  small and Pydantic adds dependency weight).
-- One concept per module. `matcher.py` matches. `aggregator.py`
-  aggregates. Don't merge them.
-- Line TOML is the source of truth for the line catalogue. Don't
-  hardcode line data in Python.
+- Rust workspace, one crate per concern (`common`, `aggregator`, `api`,
+  `enricher`, `trust-consumer`, one `poller-*` crate per feed — see §7).
+- Domain types are plain structs deriving `serde::{Serialize, Deserialize}`
+  in `crates/common` (e.g. `LineDefinition`), not separate wire-format
+  wrapper types.
+- One concept per module within `aggregator`. `matcher.rs` matches.
+  `aggregation.rs` aggregates. Don't merge them.
+- `lines/*.toml` is the source of truth for the line catalogue, loaded via
+  `LineDefinition::from_dir`. Don't hardcode line data in Rust.
+- Tests live inline as `mod tests` next to the code they cover (see §11),
+  not in a separate top-level test tree.
 - Comments explain *why*, not *what*. The "junction belongs to the
   shared trunk" rule and the "drop operator-only when precise match
   exists" rule are both commented in the code because they're

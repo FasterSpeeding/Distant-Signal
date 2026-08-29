@@ -16,15 +16,15 @@
 # clearly namespaced.
 version: 1
 metadata:
-  name: NR Status (dev) - Open signup enrollment flow
+  name: Distant Signal (dev) - Open signup enrollment flow
 entries:
   - identifiers:
       slug: distant-signal-dev-enrollment
     model: authentik_flows.flow
     id: flow
     attrs:
-      name: NR Status (dev) enrollment
-      title: Create your NR Status dev account
+      name: Distant Signal (dev) enrollment
+      title: Create your Distant Signal dev account
       designation: enrollment
       authentication: require_unauthenticated
   - id: prompt-field-username
