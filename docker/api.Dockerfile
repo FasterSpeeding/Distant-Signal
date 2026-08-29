@@ -2,15 +2,21 @@
 # Multi-stage build for the `api` service.
 #
 # Builder pin: edition 2024 (used by every crate in this workspace) needs
-# rustc 1.85+, and the three poller Dockerfiles pin 1.86 because their
-# resolved Cargo.lock pulls in transitive icu_* deps (via reqwest) needing
-# 1.86+. `api` doesn't depend on reqwest, but it pulls in `sqlx-postgres`,
-# whose transitive `home` crate (pinned to 0.5.12 in the workspace
-# Cargo.lock) requires rustc 1.88+ — confirmed by actually building this
-# image against rust:1.86-bookworm first and hitting:
+# rustc 1.85+, and the five poller Dockerfiles also pin 1.88 because their
+# resolved Cargo.lock pulls in transitive icu_* deps (via reqwest -> url ->
+# idna -> idna_adapter -> icu_normalizer/icu_provider) needing 1.88+. `api`
+# hits that same icu_* chain too (`cargo tree -p api -i icu_provider` shows
+# it arriving via oauth2/redis/reqwest/sqlx-core, all of which share the
+# workspace's single resolved `url` version) — but even without that, it
+# independently needs 1.88+ because it pulls in `sqlx-postgres`, whose
+# transitive `home` crate (pinned to 0.5.12 in the workspace Cargo.lock)
+# requires rustc 1.88+ — confirmed by actually building this image against
+# rust:1.86-bookworm first and hitting:
 #   "error: rustc 1.86.0 is not supported ... home@0.5.12 requires rustc 1.88"
-# 1.88 is the real floor for *this* crate's dependency tree, one minor
-# version above the other three services.
+# 1.88 is the real floor for *this* crate's dependency tree, and it turns
+# out to be the workspace-wide floor too — every service's Cargo.lock
+# resolves to the same rustc 1.88 requirement by way of the icu_* chain
+# above (api additionally hits it via `home`).
 #
 # Migrations note: `crates/api/src/main.rs` runs `sqlx::migrate!().run(...)`
 # with no path argument, which defaults to the `migrations/` directory next
@@ -42,13 +48,11 @@ COPY . .
 # recompiles only what actually changed instead of the whole dependency
 # tree. Requires the `# syntax=` directive at the top of this file.
 #
-# The target cache id is keyed by rustc version (`cargo-target-1.88`) rather
-# than shared across all seven Rust services. Cargo's fingerprints include the
-# compiler version, so the 1.88 services (api, aggregator, enricher) and the
-# 1.86 ones (the four pollers) would otherwise invalidate and fully recompile
-# each other's artifacts on every alternating build. The registry and git
-# caches hold only downloaded sources, so sharing those across all seven is
-# safe.
+# The target cache id is keyed by rustc version (`cargo-target-1.88`). Every
+# Rust service in this workspace now builds with the same rustc version, so
+# this id is shared across all of them -- see docker-compose.yml's top-of-file
+# comment for the full list. The registry and git caches hold only downloaded
+# sources, so sharing those across all of them is safe too.
 #
 # `sharing=locked` because docker-compose builds services in parallel, and
 # concurrent cargo invocations must not share one target dir unserialised.

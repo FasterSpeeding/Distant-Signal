@@ -33,12 +33,14 @@
 #
 # Build caching: every Dockerfile here starts with
 # `# syntax=docker/dockerfile:1` and uses BuildKit cache mounts — the cargo
-# registry/git/target dirs for the eight Rust services, npm's download cache
-# and Next's `.next/cache` for the frontend. Rebuilds therefore recompile
-# only what changed rather than the whole dependency tree. Two consequences
-# worth knowing: the target-dir cache is keyed by rustc version
-# (`cargo-target-1.88` for api/aggregator/enricher, `cargo-target-1.86` for
-# the five pollers) so the two sets never invalidate each other, and the `# syntax=`
+# registry/git/target dirs for the nine Rust services (api, aggregator,
+# enricher, trust-consumer and the five pollers), npm's download cache and
+# Next's `.next/cache` for the frontend. Rebuilds therefore recompile only
+# what changed rather than the whole dependency tree. One consequence worth
+# knowing: the target-dir cache is keyed by rustc version (all nine Rust
+# services build with rust:1.88-bookworm, so they all share one
+# `cargo-target-1.88` id — this only forks into separate ids again if a
+# future Dockerfile pins a different rustc version), and the `# syntax=`
 # directive makes BuildKit pull the `docker/dockerfile:1` frontend image, so
 # the FIRST build on a machine needs network access even if every base image
 # is already local. Inspect the caches with `docker buildx du`.
