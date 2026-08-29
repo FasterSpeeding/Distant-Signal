@@ -6,6 +6,7 @@
 
 mod config;
 mod health;
+mod schema;
 
 use clap::Parser;
 use config::Config;
