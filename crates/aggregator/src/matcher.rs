@@ -291,4 +291,26 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["northern-calder-valley".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 8.4 (Wharfedale Line) owns the shared-trunk regression test for
+    // `northern-shipley-trunk` (Leeds/Bradford Forster Square/Shipley),
+    // added once `lines/northern-wharfedale.toml` also exists and shares
+    // that segment name - see the shared-trunk naming comment at the top of
+    // `lines/northern-airedale.toml`.
+    #[test]
+    fn airedale_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-4",
+            "Signal failure at Keighley",
+            "Signal failure causing delays on the Airedale Line at Keighley.",
+            &["NT"],
+            &["KEI"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-airedale".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
