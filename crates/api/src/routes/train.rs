@@ -9,9 +9,9 @@
 //! eventual frontend page.
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use common::TrackPinRequest;
 use serde::Serialize;
 
@@ -20,7 +20,10 @@ use crate::auth::AuthenticatedUser;
 use crate::data::train_tracking;
 
 pub fn router() -> Router {
-    Router::new().route("/Train/track", axum::routing::post(post_track))
+    Router::new()
+        .route("/Train/track", axum::routing::post(post_track))
+        .route("/Train/{tracking_id}", axum::routing::get(get_by_tracking_id))
+        .route("/Train/by-uid/{train_uid}/{date}", axum::routing::get(get_by_uid_and_date))
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +45,30 @@ async fn post_track(
         .map_err(internal_error)?;
 
     Ok(Json(TrackPinResponse { tracking_id, resolution_status: "pending" }))
+}
+
+async fn get_by_tracking_id(
+    State(app): State<App>,
+    Path(tracking_id): Path<i64>,
+) -> Result<Json<train_tracking::TrackedTrainState>, (StatusCode, String)> {
+    let state = train_tracking::get_by_tracking_id(&app.database, tracking_id)
+        .await
+        .map_err(internal_error)?;
+    state
+        .map(Json)
+        .ok_or((StatusCode::NOT_FOUND, "no tracked train with that id".to_string()))
+}
+
+async fn get_by_uid_and_date(
+    State(app): State<App>,
+    Path((train_uid, date)): Path<(String, NaiveDate)>,
+) -> Result<Json<train_tracking::TrackedTrainState>, (StatusCode, String)> {
+    let state = train_tracking::get_by_uid_and_date(&app.database, &train_uid, date)
+        .await
+        .map_err(internal_error)?;
+    state
+        .map(Json)
+        .ok_or((StatusCode::NOT_FOUND, "no resolved tracked train for that uid/date".to_string()))
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {

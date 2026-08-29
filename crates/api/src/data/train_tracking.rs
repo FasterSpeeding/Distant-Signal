@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use common::{TrackPinRequest, TrackedTrainRef, TrainMovementEventMessage};
+use serde::Serialize;
 use sqlx::PgPool;
 
 /// A pin more than this far in the past is almost certainly a stale
@@ -179,6 +180,62 @@ pub async fn upsert_train_event(pool: &PgPool, event: &TrainMovementEventMessage
 
     tx.commit().await?;
     Ok(())
+}
+
+/// The public read-model for a tracked train, returned directly as JSON by
+/// `crates/api/src/routes/train.rs`'s `GET /Train/{trackingId}` and
+/// `GET /Train/by-uid/{train_uid}/{date}`. Unlike `TrackedTrainRow`/
+/// `TrackedTrainRef` above (poller-facing, private), this never leaks
+/// `user_id` -- see Task 5's brief for why these two reads deliberately
+/// stay public/unscoped despite `tracked_trains` having a real owner.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedTrainState {
+    pub id: i64,
+    pub service_date: chrono::NaiveDate,
+    pub pin_origin_crs: String,
+    pub pin_destination_crs: Option<String>,
+    pub resolution_status: String,
+    pub train_uid: Option<String>,
+    pub train_id: Option<String>,
+    pub status: Option<String>,
+    pub last_reported_location: Option<String>,
+    pub last_event_type: Option<String>,
+    pub delay_minutes: Option<i32>,
+    pub next_calling_point: Option<String>,
+    pub eta_next: Option<DateTime<Utc>>,
+    pub eta_source: Option<String>,
+}
+
+const TRACKED_TRAIN_STATE_SELECT: &str = "\
+    SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
+           tt.resolution_status, tt.train_uid, tt.train_id, \
+           cs.status, cs.last_reported_location, cs.last_event_type, \
+           cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source \
+    FROM tracked_trains tt \
+    LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id";
+
+pub async fn get_by_tracking_id(pool: &PgPool, id: i64) -> anyhow::Result<Option<TrackedTrainState>> {
+    let row = sqlx::query_as::<_, TrackedTrainState>(&format!("{TRACKED_TRAIN_STATE_SELECT} WHERE tt.id = $1"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row)
+}
+
+pub async fn get_by_uid_and_date(
+    pool: &PgPool,
+    train_uid: &str,
+    service_date: chrono::NaiveDate,
+) -> anyhow::Result<Option<TrackedTrainState>> {
+    let row = sqlx::query_as::<_, TrackedTrainState>(&format!(
+        "{TRACKED_TRAIN_STATE_SELECT} WHERE tt.train_uid = $1 AND tt.service_date = $2"
+    ))
+    .bind(train_uid)
+    .bind(service_date)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
 }
 
 #[cfg(test)]
