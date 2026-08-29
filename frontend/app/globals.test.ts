@@ -144,6 +144,27 @@ describe('background theming', () => {
     expect(washRule![0]).toMatch(/\d%, transparent\)/);
   });
 
+  // The same wash/bar-hex-parity contract as rainbow/trans above, extended
+  // to the five modes PrideToggle grew afterwards (bisexual, pansexual,
+  // asexual, sapphic, lesbian) -- table-driven since it's the exact same
+  // assertion shape repeated per mode rather than five hand-written copies.
+  it.each(['bisexual', 'pansexual', 'asexual', 'sapphic', 'lesbian'])(
+    "overrides the wash under %s pride mode with the same hexes the flag bar uses, still at low opacity",
+    (mode) => {
+      const barRule = css.match(new RegExp(`body\\[data-pride='${mode}'\\]::before\\s*\\{[^}]*background:[^;]*;`));
+      const washRule = css.match(new RegExp(`body\\[data-pride='${mode}'\\]\\s*\\{\\s*background-image:[^}]*\\}`));
+      expect(barRule).not.toBeNull();
+      expect(washRule).not.toBeNull();
+
+      const hexes = [...new Set(barRule![0].match(/#[0-9a-f]{6}/gi)!.map((h) => h.toLowerCase()))];
+      expect(hexes.length).toBeGreaterThan(0);
+      for (const hex of hexes) {
+        expect(washRule![0].toLowerCase()).toContain(`color-mix(in srgb, ${hex}`);
+      }
+      expect(washRule![0]).toMatch(/\d%, transparent\)/);
+    },
+  );
+
   it('gives nav an unconditional positioning context, not one scoped to pride mode', () => {
     // Regression guard: this used to be `body[data-pride='true'] nav { position: relative; }`,
     // the only consumer at the time (back when this toggle was a plain
