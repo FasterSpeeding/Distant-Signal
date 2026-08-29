@@ -128,7 +128,16 @@ pub async fn delete_session(pool: &PgPool, hashed_token: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+/// Deliberately derives NEITHER `Debug` nor `Clone`, unlike the other row
+/// types in this module. All three fields are plaintext single-use
+/// secrets, and a derived `Debug` is exactly how they end up in a log line
+/// or a panic message -- the same reasoning that made `AppState`'s and
+/// `OidcConfig`'s `Debug` impls hand-rolled and secret-redacting (see
+/// `crate::app` and `crate::auth::oidc`); there is nothing worth printing
+/// here at all, so this one simply goes without. Nothing debug-formats or
+/// clones one today, and leaving the derives in place is just an open
+/// invitation for a future `tracing::debug!(?stored)` to change that.
+#[derive(sqlx::FromRow)]
 pub struct LoginState {
     pub pkce_verifier: String,
     pub nonce: String,
