@@ -274,4 +274,29 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["scotrail-central-belt".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 10.2 (ScotRail Glasgow Suburban): no other `lines/*.toml` file
+    // touches North Clyde/Argyle Line territory yet, and this file
+    // deliberately stops short of sharing a segment with
+    // `scotrail-central-belt.toml` (see this file's own comments on the
+    // Airdrie/Bathgate boundary decision) -- so there is no shared-segment
+    // propagation to assert today, mirroring
+    // `scotrail_central_belt_exclusive_segment_incident_does_not_propagate`.
+    // Only the exclusive-segment non-propagation assertion applies for now.
+    #[test]
+    fn scotrail_glasgow_suburban_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-2",
+            "Signal failure at Milngavie",
+            "Signal failure causing delays to ScotRail services at Milngavie.",
+            &["SR"],
+            &["MLN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-glasgow-suburban".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }

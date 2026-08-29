@@ -183,3 +183,12 @@ segment = "scotrail-central-belt-edinburgh-throat"
 # of the Bathgate routing rejoins Falkirk High metals east of Newbridge
 # Junction (see the Haymarket comment above) as a fact 10.2 may want when
 # deciding its own segment names.
+#
+# Resolution (added when Task 10.2 ran): `scotrail-glasgow-suburban.toml`
+# deliberately stops its North Clyde eastern branch at Airdrie (a real,
+# sourced North Clyde terminus service pattern) and does not model the
+# Drumgelloch-Bathgate-Edinburgh continuation, so it has no `[[stations]]`
+# entry that coincides with this file's actual stations -- the
+# `scotrail-central-belt-edinburgh-throat` segment name above remains
+# unshared for now. See `scotrail-glasgow-suburban.toml`'s own comments
+# for the sourcing behind that boundary decision.
