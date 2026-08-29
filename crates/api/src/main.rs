@@ -1,3 +1,4 @@
+use axum_prometheus::PrometheusMetricLayerBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -48,10 +49,40 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods([axum::http::Method::GET])
         .allow_origin(Any);
 
-    let router = Router::new()
+    let (metrics_layer, metrics_handle) = PrometheusMetricLayerBuilder::new()
+        .with_prefix("nr_status")
+        .with_default_metrics()
+        .build_pair();
+
+    let mut router = Router::new()
         .merge(routes::line_status::router())
         .nest("/public", routes::public_router())
-        .nest("/private", routes::private_router(app.clone()))
+        .nest("/private", routes::private_router(app.clone()));
+
+    // Unlike the other seven binaries, api's own listener stays up either
+    // way -- metrics_enabled only decides whether /metrics is registered
+    // and whether requests are counted at all. See `metrics_enabled` in
+    // crates/api/src/data/config.rs.
+    if app.config.metrics_enabled {
+        router = router
+            // Deliberately NOT gated by require_internal_token. Read-only,
+            // and NetworkPolicy-gated (from the monitoring namespace
+            // specifically) when NetworkPolicy is enabled (see
+            // docs/superpowers/specs/2026-08-29-metrics-design.md's Open
+            // Question 3, and the metrics plan's Task 10). NOTE: unlike the
+            // other seven binaries' dedicated metrics ports, this route
+            // shares api's own HTTP port -- so if `ingress.api.enabled=true`
+            // (default false), it IS reachable through that public Ingress
+            // alongside the rest of the public API, exactly like api's own
+            // /private/* caveat already documented in the chart README. The
+            // exposure is read-only request-count/latency telemetry, not
+            // secrets, and metrics.enabled=false removes this route
+            // entirely.
+            .route("/metrics", axum::routing::get(move || async move { metrics_handle.render() }))
+            .layer(metrics_layer);
+    }
+
+    let router = router
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(app.clone());

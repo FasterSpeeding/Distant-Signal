@@ -120,6 +120,13 @@ pub struct ServiceArguments {
     /// constant.
     #[arg(long, env, default_value_t = 14)]
     pub session_ttl_days: i64,
+
+    /// Whether to expose the `/metrics` route and its request-metrics
+    /// middleware. Unlike the other 7 binaries, `api`'s own HTTP listener
+    /// stays up regardless (it's the main service) -- this only controls
+    /// whether `/metrics` is registered and whether requests are counted.
+    #[arg(long, env, default_value_t = true)]
+    pub metrics_enabled: bool,
     #[arg(long, value_parser = parse_toml_path::<Defaults>, value_hint = ValueHint::FilePath, value_name = "FILE")]
     pub defaults_file: Option<Defaults>,
     /// Directory of line-catalogue TOML files, loaded once at startup.
