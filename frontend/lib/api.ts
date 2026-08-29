@@ -1,3 +1,4 @@
+import { cookies } from 'next/headers';
 import type {
   LineStatusReport,
   LineStatusHistoryEntry,
@@ -21,14 +22,19 @@ function baseUrl(): string {
   return url;
 }
 
+/** The single place a non-ok response becomes an exception. Shared by
+ * `fetchJson` and `getPreferences` (which needs its own fetch, but must
+ * fail identically for every status it does *not* special-case) so the two
+ * paths can't drift on which statuses map to `ApiNotFoundError`. */
+function errorForResponse(url: string, response: Response): Error {
+  const message = `API request to ${url} failed: ${response.status} ${response.statusText}`;
+  return response.status === 404 ? new ApiNotFoundError(message) : new Error(message);
+}
+
 async function fetchJson<T>(url: string, init: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   if (!response.ok) {
-    const message = `API request to ${url} failed: ${response.status} ${response.statusText}`;
-    if (response.status === 404) {
-      throw new ApiNotFoundError(message);
-    }
-    throw new Error(message);
+    throw errorForResponse(url, response);
   }
   return response.json() as Promise<T>;
 }
@@ -82,8 +88,45 @@ export async function getLineStatusHistory(
   );
 }
 
+/** The only endpoint in this file that is *per-user* rather than shared,
+ * so the only one that needs both of the following. Deliberately not routed
+ * through `fetchJson`:
+ *
+ * 1. **Cookie forwarding.** This runs in a Server Component, and a Server
+ *    Component's own `fetch` carries none of the browser's cookies — it is
+ *    a fresh server-to-server request, not a continuation of the incoming
+ *    one. Without explicitly re-attaching the incoming request's `Cookie`
+ *    header, `/public/preferences` (which requires an authenticated user)
+ *    would never see a logged-in visitor's session and would 401 even for
+ *    them. `cookies()` from `next/headers` is what reads that incoming
+ *    header. (The browser-initiated path — `components/PinToggle.tsx` —
+ *    doesn't need this: it goes through the same-origin `/api/*` proxy,
+ *    which the browser attaches cookies to itself and which forwards them
+ *    on.)
+ * 2. **401 tolerance.** An anonymous visitor has no preferences, and that
+ *    is a perfectly normal state: the home dashboard, All Lines and every
+ *    station page must still render for them, just with nothing pinned.
+ *    A 401 here therefore means "no preferences", not "this page is
+ *    broken". This tolerance is scoped to this endpoint alone — `fetchJson`
+ *    still throws on 401 for everything else, where an unexpected 401 is a
+ *    genuine failure worth surfacing.
+ *
+ * Every other non-ok status still throws, via the same `errorForResponse`
+ * `fetchJson` uses. */
 export async function getPreferences(): Promise<Preferences> {
-  return fetchJson<Preferences>(`${baseUrl()}/public/preferences`, { cache: 'no-store' });
+  const url = `${baseUrl()}/public/preferences`;
+  const cookieHeader = (await cookies()).toString();
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+  });
+  if (response.status === 401) {
+    return { pinnedLines: [], pinnedStations: [] };
+  }
+  if (!response.ok) {
+    throw errorForResponse(url, response);
+  }
+  return response.json() as Promise<Preferences>;
 }
 
 export async function getAllLines(): Promise<LineSummary[]> {

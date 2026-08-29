@@ -14,6 +14,16 @@ import {
   ApiNotFoundError,
 } from './api';
 
+// `getPreferences` reads the incoming request's cookies through
+// `next/headers` so it can forward them to the backend (a Server
+// Component's own fetch carries none of the browser's cookies by itself).
+// There is no Next.js request context in a unit test, so `cookies()` is
+// stubbed here; `incomingCookies` is what each test dials in.
+const incomingCookies = { header: '' };
+vi.mock('next/headers', () => ({
+  cookies: async () => ({ toString: () => incomingCookies.header }),
+}));
+
 const sampleReport = {
   $type: 'NRStatus.LineStatusReport',
   id: 'wcml',
@@ -25,6 +35,7 @@ const sampleReport = {
 
 describe('api client', () => {
   beforeEach(() => {
+    incomingCookies.header = '';
     vi.stubEnv('API_BASE_URL', 'http://test-api:8080');
     vi.stubGlobal(
       'fetch',
@@ -95,6 +106,68 @@ describe('api client', () => {
       'http://test-api:8080/public/preferences',
       expect.objectContaining({ cache: 'no-store' }),
     );
+  });
+
+  // `/public/preferences` requires an authenticated user. A Server
+  // Component's own fetch does NOT inherit the browser's cookies, so
+  // without this forwarding a genuinely logged-in visitor's session would
+  // be invisible to the backend and every one of these pages would render
+  // unpersonalized (or, before the 401 tolerance below, not at all).
+  it('getPreferences forwards the incoming request cookies to the backend', async () => {
+    incomingCookies.header = 'nr_session=abc123; theme=dark';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ pinnedLines: ['wcml'], pinnedStations: [] }), { status: 200 })),
+    );
+    await expect(getPreferences()).resolves.toEqual({ pinnedLines: ['wcml'], pinnedStations: [] });
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/preferences',
+      expect.objectContaining({ headers: { Cookie: 'nr_session=abc123; theme=dark' } }),
+    );
+  });
+
+  it('getPreferences sends no Cookie header when the visitor has no cookies at all', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [] }), { status: 200 })),
+    );
+    await getPreferences();
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(init.headers).toBeUndefined();
+  });
+
+  // Load-bearing for app/page.tsx, app/lines/page.tsx and
+  // app/stations/[crs]/page.tsx: all three await getPreferences()
+  // unguarded, so a thrown 401 would take the whole page down for every
+  // anonymous visitor. "Not signed in" must degrade to "nothing pinned".
+  it('getPreferences treats a 401 as no preferences rather than throwing', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('no session', { status: 401 })),
+    );
+    await expect(getPreferences()).resolves.toEqual({ pinnedLines: [], pinnedStations: [] });
+  });
+
+  // The 401 tolerance above is deliberately narrow: a backend that is down
+  // or broken must still surface as an error, not masquerade as an
+  // anonymous visitor with an empty dashboard.
+  it('getPreferences still throws on a non-401 failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('server error', { status: 500 })),
+    );
+    await expect(getPreferences()).rejects.toThrow(/500/);
+  });
+
+  // The 401 tolerance is scoped to /public/preferences alone — every other
+  // endpoint routed through `fetchJson` must keep throwing on a 401.
+  it('a 401 from any other endpoint still throws', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('unauthorized', { status: 401 })),
+    );
+    await expect(getAllLines()).rejects.toThrow(/401/);
+    await expect(getAllLines()).rejects.not.toBeInstanceOf(ApiNotFoundError);
   });
 
   it('getAllLines fetches the correct URL with no caching', async () => {

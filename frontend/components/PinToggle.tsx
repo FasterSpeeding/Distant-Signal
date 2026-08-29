@@ -56,16 +56,30 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
     setBusy(true);
     try {
       const prefsResponse = await fetch('/api/preferences');
+      // Both endpoints below require an authenticated user, so an
+      // anonymous visitor gets a 401 from each of them. Neither response
+      // may be assumed parseable or applied: a 401 body is not JSON, so
+      // parsing it unguarded threw inside this `try` (which has no
+      // `catch`) and left the click silently dead. Bailing out without
+      // touching `pinned` is the honest outcome — the pin was not saved,
+      // so the star must not claim it was. Same reasoning for the PUT:
+      // only flip the star and re-render once the write actually landed.
+      if (!prefsResponse.ok) {
+        return;
+      }
       const prefs: Preferences = await prefsResponse.json();
       const key = kind === 'line' ? 'pinnedLines' : 'pinnedStations';
       const endpoint = kind === 'line' ? '/api/preferences/pinned-lines' : '/api/preferences/pinned-stations';
       const current = prefs[key];
       const next = pinned ? current.filter((existing) => existing !== id) : [...current, id];
-      await fetch(endpoint, {
+      const putResponse = await fetch(endpoint, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(next),
       });
+      if (!putResponse.ok) {
+        return;
+      }
       setPinned(!pinned);
       router.refresh();
     } finally {

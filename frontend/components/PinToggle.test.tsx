@@ -105,4 +105,46 @@ describe('PinToggle', () => {
       );
     });
   });
+
+  // `/public/preferences` requires an authenticated user, so an anonymous
+  // visitor gets a 401 whose body is not JSON. Parsing it unguarded threw
+  // inside a `try` with no `catch`, which left the button permanently
+  // disabled (the `finally` did re-enable it, but the rejection escaped as
+  // an unhandled promise rejection and nothing else happened).
+  it('a 401 from the preferences read leaves the button usable and issues no PUT', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async () => new Response('no session', { status: 401 }));
+
+    renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
+    fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Pin (currently not pinned)')).not.toBeDisabled();
+    });
+    // Still unpinned, and no write was attempted.
+    expect(screen.getByLabelText('Pin (currently not pinned)')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith('/api/preferences');
+  });
+
+  // Same reasoning one step later in the flow: the read succeeded but the
+  // write was rejected, so the star must not claim a pin that was never
+  // saved.
+  it('a failed PUT does not flip the star', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/api/preferences') {
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [] }), { status: 200 });
+      }
+      return new Response('no session', { status: 401 });
+    });
+
+    renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
+    fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.getByLabelText('Pin (currently not pinned)')).toBeInTheDocument();
+  });
 });
