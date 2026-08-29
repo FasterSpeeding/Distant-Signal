@@ -105,9 +105,19 @@ pub struct ServiceArguments {
     #[arg(long, env)]
     pub sso_post_login_redirect_url: String,
 
-    /// Sliding-window session lifetime in days. Design doc proposes 14 as
-    /// a starting figure, not researched further there; kept configurable
-    /// since it's a product/ops tuning knob, not a protocol constant.
+    /// Session lifetime in days: a FIXED expiry stamped once at sign-in,
+    /// not a sliding window. `sessions.expires_at` is set to
+    /// `NOW() + this` by `data::users::insert_session` and never touched
+    /// again -- no code path anywhere extends it on activity, so a session
+    /// dies exactly this many days after login however heavily it was
+    /// used. (The design doc's "Expiry and refresh" section describes a
+    /// sliding window instead; that is unimplemented, and this doc comment
+    /// used to claim it. If you implement it, the write goes in
+    /// `auth::AuthenticatedUser::from_request_parts`, the one place every
+    /// authenticated request resolves its session.) Design doc proposes 14
+    /// as a starting figure, not researched further there; kept
+    /// configurable since it's a product/ops tuning knob, not a protocol
+    /// constant.
     #[arg(long, env, default_value_t = 14)]
     pub session_ttl_days: i64,
     #[arg(long, value_parser = parse_toml_path::<Defaults>, value_hint = ValueHint::FilePath, value_name = "FILE")]
