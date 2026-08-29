@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ActionIcon, Tooltip } from '@mantine/core';
+import { ActionIcon, Group, Tooltip } from '@mantine/core';
+import { TextLink } from './TextLink';
 import type { Preferences } from '@/lib/types';
 
 type PinKind = 'line' | 'station';
@@ -39,6 +40,10 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
   const router = useRouter();
   const [pinned, setPinned] = useState(initiallyPinned);
   const [busy, setBusy] = useState(false);
+  // Set on a 401 from either request below, cleared at the start of every
+  // fresh attempt. Surfaces *why* the click did nothing, instead of the
+  // dead-click silence this replaced (see the comment further down).
+  const [needsLogin, setNeedsLogin] = useState(false);
 
   /** Known tradeoff: this is a full read-modify-write against the whole
    * pinned list, not a per-item mutation. Each toggle re-fetches
@@ -54,6 +59,7 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
    * both out of scope for this plan. */
   async function toggle() {
     setBusy(true);
+    setNeedsLogin(false);
     try {
       const prefsResponse = await fetch('/api/preferences');
       // Both endpoints below require an authenticated user, so an
@@ -64,7 +70,13 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
       // touching `pinned` is the honest outcome — the pin was not saved,
       // so the star must not claim it was. Same reasoning for the PUT:
       // only flip the star and re-render once the write actually landed.
+      // A 401 specifically also flips `needsLogin`, so the click leaves
+      // some visible trace instead of doing nothing — every other
+      // non-ok status still just bails silently, unchanged from before.
       if (!prefsResponse.ok) {
+        if (prefsResponse.status === 401) {
+          setNeedsLogin(true);
+        }
         return;
       }
       const prefs: Preferences = await prefsResponse.json();
@@ -78,6 +90,9 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
         body: JSON.stringify(next),
       });
       if (!putResponse.ok) {
+        if (putResponse.status === 401) {
+          setNeedsLogin(true);
+        }
         return;
       }
       setPinned(!pinned);
@@ -93,18 +108,21 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
   const label = pinned ? 'Unpin (currently pinned)' : 'Pin (currently not pinned)';
 
   return (
-    <Tooltip label={label}>
-      <ActionIcon
-        variant={pinned ? 'filled' : 'outline'}
-        // Distinct hues (not just filled vs. outline of the same yellow)
-        // so pinned/unpinned don't rely on icon fill alone.
-        color={pinned ? 'yellow' : 'gray'}
-        onClick={toggle}
-        disabled={busy}
-        aria-label={label}
-      >
-        <StarIcon filled={pinned} />
-      </ActionIcon>
-    </Tooltip>
+    <Group gap={4} wrap="nowrap">
+      <Tooltip label={label}>
+        <ActionIcon
+          variant={pinned ? 'filled' : 'outline'}
+          // Distinct hues (not just filled vs. outline of the same yellow)
+          // so pinned/unpinned don't rely on icon fill alone.
+          color={pinned ? 'yellow' : 'gray'}
+          onClick={toggle}
+          disabled={busy}
+          aria-label={label}
+        >
+          <StarIcon filled={pinned} />
+        </ActionIcon>
+      </Tooltip>
+      {needsLogin && <TextLink href="/api/auth/login" underline="always">Log in to pin</TextLink>}
+    </Group>
   );
 }

@@ -95,3 +95,15 @@ export interface Suggestion {
   code: string;
   name: string;
 }
+
+/** `GET /public/auth/session`'s response — always 200, never 401 (an
+ * anonymous visitor gets `authenticated: false` with everything else
+ * `null`, not an error). `id`/`email`/`name` can all be `null` even when
+ * `authenticated` is `true`, depending on what the OIDC provider actually
+ * sent back. */
+export interface SessionInfo {
+  authenticated: boolean;
+  id: string | null;
+  email: string | null;
+  name: string | null;
+}
