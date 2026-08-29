@@ -42,7 +42,7 @@ async fn post_track(
 
     let tracking_id = train_tracking::create_pin(&app.database, &pin, &user.id)
         .await
-        .map_err(internal_error)?;
+        .map_err(internal_error("create tracking pin"))?;
 
     Ok(Json(TrackPinResponse { tracking_id, resolution_status: "pending" }))
 }
@@ -53,7 +53,7 @@ async fn get_by_tracking_id(
 ) -> Result<Json<train_tracking::TrackedTrainState>, (StatusCode, String)> {
     let state = train_tracking::get_by_tracking_id(&app.database, tracking_id)
         .await
-        .map_err(internal_error)?;
+        .map_err(internal_error("read tracked train state"))?;
     match state {
         Some(state) => Ok(Json(blend_darwin_eta(&app, state).await)),
         None => Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string())),
@@ -66,7 +66,7 @@ async fn get_by_uid_and_date(
 ) -> Result<Json<train_tracking::TrackedTrainState>, (StatusCode, String)> {
     let state = train_tracking::get_by_uid_and_date(&app.database, &train_uid, date)
         .await
-        .map_err(internal_error)?;
+        .map_err(internal_error("read tracked train state"))?;
     match state {
         Some(state) => Ok(Json(blend_darwin_eta(&app, state).await)),
         None => Err((StatusCode::NOT_FOUND, "no resolved tracked train for that uid/date".to_string())),
@@ -90,16 +90,23 @@ async fn blend_darwin_eta(app: &App, mut state: train_tracking::TrackedTrainStat
     let Ok(samples) = crate::data::queries::latest_station_sample(&app.database, &state.pin_origin_crs).await else {
         return state;
     };
-    if let Some(sample) = samples {
-        if let Some(eta) = eta_blend::find_darwin_eta(&sample.departures, Some(destination), None, state.service_date) {
-            state.eta_next = Some(eta);
-            state.eta_source = Some("darwin-estimated".to_string());
-        }
+    if let Some(sample) = samples
+        && let Some(eta) = eta_blend::find_darwin_eta(&sample.departures, Some(destination), None, state.service_date)
+    {
+        state.eta_next = Some(eta);
+        state.eta_source = Some("darwin-estimated".to_string());
     }
     state
 }
 
-fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
-    tracing::error!(error = ?err, "failed to create train tracking pin");
-    (StatusCode::INTERNAL_SERVER_ERROR, "failed to create tracking pin".to_string())
+/// Shared 500 mapper for every route in this file. Takes the operation that
+/// failed rather than hardcoding one: this helper serves the write route and
+/// both read routes, and it previously logged and answered "failed to create
+/// train tracking pin" for all three -- so a database error on a GET pointed
+/// whoever read the log at a pin-creation bug that hadn't happened.
+fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusCode, String) {
+    move |err| {
+        tracing::error!(error = ?err, operation, "train tracking request failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to {operation}"))
+    }
 }

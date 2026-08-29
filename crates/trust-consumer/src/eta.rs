@@ -13,6 +13,13 @@ use chrono::{DateTime, Utc};
 /// module docs on the missing CIF-backed calling-point list); wired in
 /// now so a future pass only needs to start passing `Some(...)`, not
 /// rewrite this function.
+// `pub` doesn't exempt anything from `dead_code` in a binary crate, and the
+// only caller this function is waiting on is the CIF-backed calling-point
+// pass described above -- until that exists there is no `remaining_scheduled`
+// to hand it, so `process.rs` documents it as deliberately uncalled rather
+// than calling it for a guaranteed `None`. Allowed rather than deleted: the
+// rule it encodes is tested, and re-deriving it later is pure waste.
+#[allow(dead_code)]
 pub fn propagate_eta(
     last_reported_planned: DateTime<Utc>,
     last_reported_actual: DateTime<Utc>,
