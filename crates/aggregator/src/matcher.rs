@@ -330,4 +330,22 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["overground-suffragette".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // London Overground's Weaver line (former Lea Valley lines) has no
+    // genuine shared segment with any sibling Overground line — its
+    // Enfield Town/Cheshunt sub-trunk sharing is internal to this one
+    // line, and Seven Sisters (this line) is a genuinely different
+    // station from Suffragette's South Tottenham despite proximity.
+    // Standalone for the shared-segment testing convention:
+    // exclusive-segment test only, same exception class as c2c/Merseyrail.
+    #[test]
+    fn overground_weaver_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("LO-5", "Signal failure at Chingford", "Signal failure causing delays at Chingford.", &["LO"], &["CHI"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["overground-weaver".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
