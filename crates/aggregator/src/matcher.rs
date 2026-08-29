@@ -249,4 +249,29 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["swr-alton".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 10.1 (ScotRail Central Belt): no sibling ScotRail line exists yet
+    // in `lines/` to share `scotrail-central-belt`/
+    // `scotrail-central-belt-edinburgh-throat` with, so there is no
+    // shared-segment propagation to assert today -- see
+    // `lines/scotrail-central-belt.toml`'s own comments for the segment-
+    // naming groundwork left for Task 10.2. Only the exclusive-segment
+    // non-propagation assertion applies for now, mirroring
+    // `swr_exclusive_segment_incident_does_not_propagate`.
+    #[test]
+    fn scotrail_central_belt_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-1",
+            "Signal failure at Falkirk High",
+            "Signal failure causing delays to ScotRail services at Falkirk High.",
+            &["SR"],
+            &["FKK"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-central-belt".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
