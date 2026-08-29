@@ -14,7 +14,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use anyhow::{Context, Result};
-use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 
 /// Every metric this app emits by hand is prefixed `nr_status_`, so it can
 /// never collide with `metrics-exporter-prometheus`'s own process-level
@@ -50,11 +50,33 @@ pub fn metric_name(suffix: &str) -> String {
 /// compile-check against the crate directly -- confirm against `cargo doc
 /// -p metrics-exporter-prometheus --open` while implementing this step.
 pub fn install(port: u16) -> Result<()> {
+    install_with_buckets(port, &[])
+}
+
+/// Like [`install`], but additionally applies custom Prometheus histogram
+/// bucket boundaries to specific metrics by exact name -- e.g. so a
+/// histogram tracking calls to an endpoint with a known request timeout can
+/// have buckets extending past that timeout, making a call that's *about*
+/// to time out show up as "slow" rather than invisible until it becomes a
+/// binary failure.
+///
+/// `bucket_overrides` is `(full_metric_name, bucket_boundaries)` pairs. Only
+/// `enricher` currently needs this (its LLM-call duration histogram,
+/// against `config.llm_request_timeout_secs`); every other caller of
+/// `install` has no such tuned-timeout metric and keeps using the plain,
+/// no-argument `install` -- see
+/// docs/superpowers/plans/2026-08-29-metrics.md's Task 9 for why this is a
+/// second function rather than a breaking signature change to `install`
+/// itself.
+pub fn install_with_buckets(port: u16, bucket_overrides: &[(&str, &[f64])]) -> Result<()> {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
-    PrometheusBuilder::new()
-        .with_http_listener(addr)
-        .install()
-        .context("failed to install the Prometheus metrics exporter")?;
+    let mut builder = PrometheusBuilder::new().with_http_listener(addr);
+    for (name, buckets) in bucket_overrides {
+        builder = builder
+            .set_buckets_for_metric(Matcher::Full((*name).to_string()), buckets)
+            .context("failed to set histogram bucket overrides")?;
+    }
+    builder.install().context("failed to install the Prometheus metrics exporter")?;
     Ok(())
 }
 
