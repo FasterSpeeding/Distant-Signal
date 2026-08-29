@@ -249,4 +249,21 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["swr-alton".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // `lines/thameslink-bedford.toml` (Batch 5, Task 5.12) does not exist in
+    // this worktree's `lines/` directory as of authoring, so
+    // `emr-mml-south` cannot be tested as a shared trunk here - only the
+    // Nottingham spur's exclusive-segment behaviour is guaranteed testable
+    // right now (see the ruling comment in
+    // `lines/emr-midland-main-line.toml`).
+    #[test]
+    fn emr_nottingham_spur_incident_stays_on_its_branch() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("EMR-1", "Points failure at Beeston", "Points failure causing delays to services at Beeston.", &["EM"], &["BEE"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["emr-midland-main-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
