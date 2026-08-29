@@ -39,3 +39,4 @@ tower = "0.5.3"
 tower-http = { version = "0.6.10", features = ["cors", "limit", "normalize-path", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }

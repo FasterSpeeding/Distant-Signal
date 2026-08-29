@@ -6,6 +6,7 @@ pub mod preferences;
 pub mod queries;
 pub mod reference;
 pub mod samples;
+pub mod ticket_extraction;
 pub mod train_tracking;
 pub mod users;
 
