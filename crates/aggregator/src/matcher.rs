@@ -265,4 +265,85 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["lner-ecml".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    #[test]
+    fn lner_leeds_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Harrogate sits on `lner-leeds-harrogate`, exclusive to this file
+        // (LNER's Skipton working diverges at Leeds onto a different physical
+        // line and isn't modeled as stations — see the file's comments).
+        let inc = incident(
+            "LNER-2",
+            "Signal failure at Harrogate",
+            "Signal failure causing delays to services at Harrogate.",
+            &["GR"],
+            &["HGT"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["lner-leeds".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn lner_leeds_doncaster_shared_trunk_propagates_to_ecml() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Doncaster is `ecml-doncaster`, shared between `lner-ecml` and
+        // `lner-leeds` (both run over the same ECML trunk to Doncaster
+        // before the Leeds branch peels off onto the Wakefield Line).
+        // `cross-country.toml` also has a station at Doncaster, but on its
+        // own exclusive `xc-yorkshire` segment, so it's not asserted here.
+        let inc = incident(
+            "LNER-3",
+            "Points failure at Doncaster",
+            "Points failure causing disruption to services through Doncaster.",
+            &["GR"],
+            &["DON"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("lner-ecml"));
+        assert!(matched_ids.contains("lner-leeds"));
+        for m in &matches {
+            if m.line.id.starts_with("lner-") {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
+        }
+    }
+
+    #[test]
+    fn lner_leeds_station_overlap_at_leeds_does_not_share_northern_segment() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Leeds (LDS) is a station on all three of `lner-leeds`, `northern`
+        // and `northern-yorkshire-coast` — but research found no LNER
+        // service running the physical Leeds<->York trunk that Northern's
+        // `northern-yorkshire` segment represents (see the file comment on
+        // `lner-leeds.toml`'s LDS entry), so `lner-leeds` deliberately does
+        // NOT reuse that segment name. This mirrors `xc-south-coast.toml`'s
+        // "station overlap is fine, segment-sharing is a deliberate choice"
+        // precedent: all three lines match this incident by station, but
+        // `lner-leeds` stays ExclusiveSegment (its own `lner-leeds` segment
+        // isn't shared with anyone) while Northern's two lines are
+        // SharedSegment between themselves via `northern-yorkshire`.
+        let inc = incident(
+            "LNER-4",
+            "Overhead line damage at Leeds",
+            "Overhead line damage causing disruption to services at Leeds.",
+            &["GR"],
+            &["LDS"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["lner-leeds".to_string(), "northern".to_string(), "northern-yorkshire-coast".to_string()])
+        );
+        for m in &matches {
+            let expected = if m.line.id == "lner-leeds" { MatchScope::ExclusiveSegment } else { MatchScope::SharedSegment };
+            assert_eq!(m.scope, expected, "{} scope mismatch", m.line.id);
+        }
+    }
 }
