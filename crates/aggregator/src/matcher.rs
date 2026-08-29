@@ -249,4 +249,21 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["swr-alton".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // London Overground's Liberty line (Romford - Emerson Park - Upminster)
+    // is a standalone line with no interchange with any sibling Overground
+    // line (confirmed by its own sourcing in the line-catalogue research
+    // pass). Per the Global Constraints, standalone lines get an
+    // exclusive-segment test only — no shared-segment propagation test is
+    // possible or required, the same exception class as c2c/Merseyrail.
+    #[test]
+    fn overground_liberty_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("LO-1", "Signal failure at Upminster", "Signal failure causing delays at Upminster.", &["LO"], &["UMN"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["overground-liberty".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
