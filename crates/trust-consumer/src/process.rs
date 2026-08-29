@@ -292,6 +292,23 @@ fn process_message(
             let (tracked_train_id, freshly_resolved) = match state.resolved.get(&movement.train_id).copied() {
                 Some(tracked_train_id) => (tracked_train_id, false),
                 None => {
+                    // Only a DEPARTURE may claim a pin. `resolve_origin_departure`
+                    // knows nothing about event types -- it compares a
+                    // location and a ±20-minute window, and TRUST's
+                    // `event_type` is one of ARRIVAL / DEPARTURE / PASS
+                    // (see `schema::Movement`). At a busy terminus an
+                    // ARRIVAL or PASS near a pin's scheduled departure
+                    // would otherwise satisfy both tests and claim it, and
+                    // a claim is one-way: `state.resolved` has no unwind
+                    // path, so the train that should have matched is
+                    // locked out for the life of the process. Filtered
+                    // here rather than inside `matching`, for the same
+                    // reason as the `claimed` filter just below: that
+                    // module stays a pure function of its arguments.
+                    if movement.event_type != "DEPARTURE" {
+                        return None;
+                    }
+
                     let actual_ts = actual?;
                     let loc_stanox = movement.loc_stanox.as_deref()?;
 
@@ -771,6 +788,58 @@ mod tests {
             "the only pin is already claimed by 221832406; 221832407 must not take it too",
         );
         assert_eq!(state.resolved.len(), 1, "and it is not recorded as resolved either");
+    }
+
+    // --- Only a DEPARTURE may claim a pin ---
+
+    /// An ARRIVAL at the pinned origin, inside the pin's tolerance window --
+    /// everything `resolve_origin_departure` looks at says "match". A
+    /// terminus sees plenty of these, and claiming on one would bind the pin
+    /// to the wrong train irreversibly.
+    #[tokio::test]
+    async fn an_arrival_at_the_pinned_origin_does_not_claim_the_pin() {
+        let arrival_at_origin = r#"[{"header":{"msg_type":"0003"},"body":{
+            "train_id":"221832499","event_type":"ARRIVAL",
+            "planned_timestamp":"1787941920000","actual_timestamp":"1787941920000",
+            "loc_stanox":"WAT","variation_status":"ON TIME"
+        }}]"#;
+        let mut feed = FakeMovementFeed::new(vec![
+            vec![arrival_at_origin.to_string()],
+            vec![ORIGIN_DEPARTURE.to_string()],
+        ]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert!(events.is_empty(), "an arrival is not an origin departure");
+        assert!(
+            !state.resolved.contains_key("221832499"),
+            "and it leaves no resolution behind either",
+        );
+
+        // The pin must still be there for the train that really departs.
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tracked_train_id, 1);
+        assert_eq!(events[0].resolved_train_id, Some("221832406".to_string()));
+    }
+
+    /// Same for a PASS -- a train running through the pinned origin without
+    /// stopping is emphatically not the pinned service departing it.
+    #[tokio::test]
+    async fn a_pass_at_the_pinned_origin_does_not_claim_the_pin() {
+        let pass_at_origin = r#"[{"header":{"msg_type":"0003"},"body":{
+            "train_id":"221832499","event_type":"PASS",
+            "planned_timestamp":"1787941920000","actual_timestamp":"1787941920000",
+            "loc_stanox":"WAT","variation_status":"ON TIME"
+        }}]"#;
+        let mut feed = FakeMovementFeed::new(vec![vec![pass_at_origin.to_string()]]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert!(events.is_empty());
+        assert!(state.resolved.is_empty(), "the pin stays unclaimed");
     }
 
     // --- Activation map growth (fix 4) ---
