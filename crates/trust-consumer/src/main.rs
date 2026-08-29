@@ -57,15 +57,17 @@ async fn main() -> anyhow::Result<()> {
             .await
             {
                 Ok(refs) => {
-                    reference.pending = refs
-                        .into_iter()
-                        .filter(|r| r.resolution_status == "pending")
-                        .map(|r| crate::matching::PendingPin {
-                            tracked_train_id: r.id,
-                            pin_origin_crs: r.pin_origin_crs,
-                            pin_scheduled_departure: r.pin_scheduled_departure,
-                        })
-                        .collect();
+                    // Rebuilds the matchable pins AND rehydrates already-resolved
+                    // train_ids, so a restart doesn't permanently lose trains
+                    // whose origin departure has already been and gone.
+                    process::apply_reference_reload(refs, &mut reference, &mut state);
+                    // Same cadence, unrelated job: age out parked Activations
+                    // for schedules that have already ended, so the national
+                    // Activation stream can't grow this map without bound.
+                    process::prune_expired_activations(
+                        &mut state.pending_activations,
+                        chrono::Utc::now().date_naive(),
+                    );
                     last_reference_reload = tokio::time::Instant::now();
                 }
                 Err(err) => {

@@ -8,6 +8,7 @@
 
 use chrono::{DateTime, Utc};
 
+#[derive(Debug, Clone)]
 pub struct PendingPin {
     pub tracked_train_id: i64,
     pub pin_origin_crs: String,

@@ -21,6 +21,50 @@
 //! display-friendly, and a pin only resolves when its `pin_origin_crs`
 //! happens to compare equal to the feed's STANOX string.
 //!
+//! **A tracked train can stay `resolution_status = 'pending'` in the
+//! database forever even while this process tracks it correctly.**
+//! `crates/api`'s `upsert_train_event` (Task 4) only flips
+//! `tracked_trains.resolution_status` to `'resolved'` when an incoming event
+//! carries BOTH `resolved_train_uid` and `resolved_train_id`. This module
+//! can only supply `resolved_train_uid` when it observed a `0001` Activation
+//! for that `train_id` *in this process* before the Movement that resolved
+//! the pin -- see `ProcessorState::pending_activations`. If the Activation
+//! arrived before this process started, was pruned as expired, or was simply
+//! never emitted on the slice of the feed this consumer sees, the resolving
+//! Movement goes out with `resolved_train_uid: None`, `api` leaves the row
+//! `'pending'`, and it stays that way indefinitely: nothing re-attempts the
+//! binding, because `state.resolved` now short-circuits matching for that
+//! `train_id` on every later message.
+//!
+//! The consequence is confined to database-level status staleness and
+//! whatever display depends on it. Tracking itself stays correct -- events
+//! keep flowing against the right `tracked_train_id`, because that comes
+//! from `state.resolved`, not from the DB's status column. Closing the gap
+//! properly means either relaxing `crates/api`'s two-field guard (which
+//! reopens already-reviewed Task 4 work) or restructuring when this module
+//! mutates its maps relative to the batch's HTTP post; both were judged out
+//! of scope for the task that introduced this file, and are deliberately
+//! left for a follow-up rather than half-done here.
+//!
+//! **A failed post plus Kafka redelivery loses the resolution binding.**
+//! `process_message` mutates `state.resolved`, `state.pending_activations`
+//! and `state.last_derived` as it builds each event -- *before* `main.rs`
+//! has attempted, let alone confirmed, the `post_train_events` call for that
+//! batch. When the post fails, `main.rs` deliberately does not commit
+//! offsets, so Kafka redelivers the same messages; but by then the
+//! Activation has already been `remove`d from `pending_activations` and the
+//! `train_id` already inserted into `resolved`. The redelivered Movement is
+//! therefore no longer "freshly resolving", and goes out a second time with
+//! `resolved_train_uid: None` and `resolved_train_id: None`. The event row
+//! itself is still written correctly and idempotently (`dedup_key` is
+//! computed from the message's own fields, not from this state), and it
+//! still carries the right `tracked_train_id` -- but the one message that
+//! would have flipped the DB row to `'resolved'` has lost its binding, which
+//! is the most likely way to land in the previous paragraph's stuck-pending
+//! state. Fixing this means making the map mutations transactional with
+//! respect to a successful post, which is the same restructuring named
+//! above.
+//!
 //! Two smaller, deliberate consequences of shapes fixed in earlier tasks,
 //! noted here so they aren't mistaken for oversights:
 //!
@@ -34,7 +78,9 @@
 //!   so `eta_next`/`eta_source` are always `None` here rather than being
 //!   filled by a call that could only ever be a no-op.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+use chrono::NaiveDate;
 
 use crate::feed::MovementFeed;
 use crate::journey::DerivedState;
@@ -70,12 +116,18 @@ pub struct ProcessorState {
     /// event would at best fail and at worst mis-attribute).
     pub resolved: HashMap<String, i64>,
 
-    /// `train_id -> train_uid`, populated by Activation messages. An
+    /// `train_id -> parked Activation`, populated by `0001` messages. An
     /// Activation alone can't resolve a pin (per Task 10: this app has no
     /// CIF lookup to bridge `train_uid` to a scheduled departure time), so
     /// it only parks its `train_uid` here to be claimed by whichever
     /// Movement does the resolving. Removed on claim -- one-shot.
-    pub pending_activations: HashMap<String, String>,
+    ///
+    /// The overwhelming majority of entries are never claimed: this consumer
+    /// sees the whole national Activation stream but only ever resolves the
+    /// handful of trains its users have pinned. Since the process is
+    /// designed to run indefinitely, entries must also age out --
+    /// `prune_expired_activations` does that on the reference-reload tick.
+    pub pending_activations: HashMap<String, PendingActivation>,
 
     /// `train_id -> most recently derived state`. Supplies the real
     /// `previous` argument to `journey::apply_movement`/`apply_cancellation`
@@ -83,6 +135,77 @@ pub struct ProcessorState {
     /// `awaiting_activation()` and silently lose the last-known location
     /// that `journey::apply_cancellation` exists to preserve.
     pub last_derived: HashMap<String, DerivedState>,
+}
+
+/// What an Activation parks for a later Movement to claim: the `train_uid`
+/// the event actually needs, plus enough to know when the entry is safe to
+/// forget.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingActivation {
+    pub train_uid: String,
+    /// `Activation::schedule_end_date` parsed as a date, or `None` when it
+    /// didn't parse. `None` means "expiry unknown", and
+    /// `prune_expired_activations` deliberately fails *open* on it: an entry
+    /// whose end date can't be read is kept rather than dropped, so a
+    /// malformed field costs a little memory instead of silently losing a
+    /// binding the feed did send us.
+    pub schedule_end_date: Option<NaiveDate>,
+}
+
+/// Applies one reference-reload tick's worth of `api` state to the
+/// processing loop's own view. Lives here rather than inline in `main.rs`
+/// so the rehydration rules below are unit-testable without an HTTP layer.
+///
+/// Two distinct jobs, both driven off the same fetch:
+///
+/// 1. `reference.pending` is rebuilt from scratch from the still-`pending`
+///    refs -- pins that resolved elsewhere must stop being matchable.
+/// 2. `state.resolved` is *seeded* from refs that are already `resolved` and
+///    carry a `train_id`. Without this, a restart is permanently lossy: the
+///    only other way into `state.resolved` is matching a fresh origin
+///    departure, and a train whose origin departure already happened will
+///    never emit another one -- so every remaining movement and any
+///    cancellation for it would be dropped forever. `TrackedTrainRef`'s own
+///    doc comment names this consumer as the reason those already-resolved
+///    refs are returned at all.
+///
+/// Seeding uses `entry().or_insert()`, never a blind insert: a resolution
+/// this process made in memory is strictly fresher than a row that may have
+/// been read before it was written, so the live value always wins.
+pub fn apply_reference_reload(
+    refs: Vec<common::TrackedTrainRef>,
+    reference: &mut Reference,
+    state: &mut ProcessorState,
+) {
+    let mut pending = Vec::new();
+
+    for tracked in refs {
+        match tracked.resolution_status.as_str() {
+            "pending" => pending.push(crate::matching::PendingPin {
+                tracked_train_id: tracked.id,
+                pin_origin_crs: tracked.pin_origin_crs,
+                pin_scheduled_departure: tracked.pin_scheduled_departure,
+            }),
+            "resolved" => {
+                if let Some(train_id) = tracked.train_id {
+                    state.resolved.entry(train_id).or_insert(tracked.id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    reference.pending = pending;
+}
+
+/// Drops parked Activations whose schedule has already ended. Pure, so the
+/// caller supplies `today` rather than this reading the clock. Entries whose
+/// `schedule_end_date` didn't parse are kept -- see `PendingActivation`.
+pub fn prune_expired_activations(activations: &mut HashMap<String, PendingActivation>, today: NaiveDate) {
+    activations.retain(|_, activation| match activation.schedule_end_date {
+        Some(end) => end >= today,
+        None => true,
+    });
 }
 
 /// One full cycle: pull whatever the feed has, parse it, resolve/derive
@@ -121,9 +244,16 @@ fn process_message(
         // parks its train_uid for the Movement that eventually resolves a
         // pin for this train_id to claim.
         TrustMessage::Activation(activation) => {
-            state
-                .pending_activations
-                .insert(activation.train_id.clone(), activation.train_uid.clone());
+            state.pending_activations.insert(
+                activation.train_id.clone(),
+                PendingActivation {
+                    train_uid: activation.train_uid.clone(),
+                    // TRUST's schedule dates are `YYYY-MM-DD`, which is
+                    // exactly `NaiveDate`'s own `FromStr` format. Anything
+                    // else parks with an unknown expiry rather than failing.
+                    schedule_end_date: activation.schedule_end_date.parse::<NaiveDate>().ok(),
+                },
+            );
             None
         }
 
@@ -137,13 +267,27 @@ fn process_message(
             let (tracked_train_id, freshly_resolved) = match state.resolved.get(&movement.train_id).copied() {
                 Some(tracked_train_id) => (tracked_train_id, false),
                 None => {
-                    let tracked_train_id = actual.and_then(|actual_ts| {
-                        crate::matching::resolve_origin_departure(
-                            movement.loc_stanox.as_deref()?,
-                            actual_ts,
-                            &reference.pending,
-                        )
-                    })?;
+                    let actual_ts = actual?;
+                    let loc_stanox = movement.loc_stanox.as_deref()?;
+
+                    // A pin already claimed by some other train_id must not
+                    // be offered again. `resolve_origin_departure` is a
+                    // first-match scan with no notion of "taken", so two
+                    // different trains departing the same origin inside the
+                    // same tolerance window would otherwise both resolve to
+                    // the same tracked_train_id and flip-flop what the user
+                    // sees. Filtering here rather than inside `matching`
+                    // keeps that module a pure function of its arguments.
+                    let claimed: HashSet<i64> = state.resolved.values().copied().collect();
+                    let unclaimed: Vec<crate::matching::PendingPin> = reference
+                        .pending
+                        .iter()
+                        .filter(|pin| !claimed.contains(&pin.tracked_train_id))
+                        .cloned()
+                        .collect();
+
+                    let tracked_train_id =
+                        crate::matching::resolve_origin_departure(loc_stanox, actual_ts, &unclaimed)?;
                     state.resolved.insert(movement.train_id.clone(), tracked_train_id);
                     (tracked_train_id, true)
                 }
@@ -163,7 +307,10 @@ fn process_message(
             // process never saw one.
             let (resolved_train_uid, resolved_train_id) = if freshly_resolved {
                 (
-                    state.pending_activations.remove(&movement.train_id),
+                    state
+                        .pending_activations
+                        .remove(&movement.train_id)
+                        .map(|activation| activation.train_uid),
                     Some(movement.train_id.clone()),
                 )
             } else {
@@ -496,5 +643,188 @@ mod tests {
 
         let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
         assert!(events.is_empty());
+    }
+
+    // --- Reference-reload rehydration (fix 1) ---
+
+    fn tracked_ref(id: i64, status: &str, train_id: Option<&str>) -> common::TrackedTrainRef {
+        common::TrackedTrainRef {
+            id,
+            service_date: "2026-08-28".parse().unwrap(),
+            pin_origin_crs: "WAT".to_string(),
+            pin_scheduled_departure: "2026-08-28T18:32:00Z".parse().unwrap(),
+            resolution_status: status.to_string(),
+            train_uid: None,
+            train_id: train_id.map(str::to_string),
+        }
+    }
+
+    /// A train whose origin departure happened before this process started
+    /// will never emit another one, so without reload rehydration its
+    /// remaining movements would be dropped forever.
+    #[tokio::test]
+    async fn an_already_resolved_ref_is_rehydrated_from_the_reference_reload() {
+        // Mid-journey arrival at WOK -- matches no pin, so the only possible
+        // route to an event is the rehydrated `resolved` map.
+        let later_arrival = r#"[{"header":{"msg_type":"0003"},"body":{
+            "train_id":"221832406","event_type":"ARRIVAL",
+            "planned_timestamp":"1787943000000","actual_timestamp":"1787943000000",
+            "loc_stanox":"WOK","variation_status":"ON TIME"
+        }}]"#;
+        let mut feed = FakeMovementFeed::new(vec![vec![later_arrival.to_string()]]);
+        let mut reference = Reference { pending: Vec::new() };
+        let mut state = ProcessorState::default();
+
+        apply_reference_reload(
+            vec![tracked_ref(7, "resolved", Some("221832406"))],
+            &mut reference,
+            &mut state,
+        );
+        assert!(reference.pending.is_empty(), "a resolved ref is not a matchable pin");
+
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(events.len(), 1, "the restart-surviving train is still tracked");
+        assert_eq!(events[0].tracked_train_id, 7);
+        assert_eq!(events[0].resolved_train_id, None, "rehydration is not a fresh resolution");
+    }
+
+    /// The reload row may have been read before an in-flight resolution was
+    /// written, so it must never overwrite a live one.
+    #[tokio::test]
+    async fn a_live_resolution_is_not_clobbered_by_a_stale_reload_row() {
+        let later_arrival = r#"[{"header":{"msg_type":"0003"},"body":{
+            "train_id":"221832406","event_type":"ARRIVAL",
+            "planned_timestamp":"1787943000000","actual_timestamp":"1787943000000",
+            "loc_stanox":"WOK","variation_status":"ON TIME"
+        }}]"#;
+        let mut feed = FakeMovementFeed::new(vec![
+            vec![ORIGIN_DEPARTURE.to_string()],
+            vec![later_arrival.to_string()],
+        ]);
+        let mut reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        let first = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(first[0].tracked_train_id, 1);
+
+        apply_reference_reload(
+            vec![tracked_ref(99, "resolved", Some("221832406"))],
+            &mut reference,
+            &mut state,
+        );
+
+        let second = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(second[0].tracked_train_id, 1, "the in-process resolution wins over the reload row");
+    }
+
+    // --- Double-claimed pins (fix 2) ---
+
+    /// Two services can leave the same origin inside one pin's ±20min
+    /// tolerance window; only the first may claim it.
+    #[tokio::test]
+    async fn an_already_claimed_pin_cannot_be_stolen_by_a_second_train() {
+        // Same station, same window, different train_id.
+        let other_train_departure = r#"[{"header":{"msg_type":"0003"},"body":{
+            "train_id":"221832407","event_type":"DEPARTURE",
+            "planned_timestamp":"1787942400000","actual_timestamp":"1787942400000",
+            "loc_stanox":"WAT","variation_status":"ON TIME"
+        }}]"#;
+        let mut feed = FakeMovementFeed::new(vec![
+            vec![ORIGIN_DEPARTURE.to_string()],
+            vec![other_train_departure.to_string()],
+        ]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        let first = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(first[0].tracked_train_id, 1);
+        assert_eq!(first[0].resolved_train_id, Some("221832406".to_string()));
+
+        let second = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert!(
+            second.is_empty(),
+            "the only pin is already claimed by 221832406; 221832407 must not take it too",
+        );
+        assert_eq!(state.resolved.len(), 1, "and it is not recorded as resolved either");
+    }
+
+    // --- Activation map growth (fix 4) ---
+
+    fn parked(train_uid: &str, end: Option<&str>) -> PendingActivation {
+        PendingActivation {
+            train_uid: train_uid.to_string(),
+            schedule_end_date: end.map(|e| e.parse().unwrap()),
+        }
+    }
+
+    #[test]
+    fn pruning_drops_ended_schedules_and_keeps_current_ones() {
+        let today: NaiveDate = "2026-08-28".parse().unwrap();
+        let mut activations = HashMap::from([
+            ("ended".to_string(), parked("C00001", Some("2026-08-27"))),
+            ("ends_today".to_string(), parked("C00002", Some("2026-08-28"))),
+            ("ends_later".to_string(), parked("C00003", Some("2026-09-30"))),
+            ("unknown_expiry".to_string(), parked("C00004", None)),
+        ]);
+
+        prune_expired_activations(&mut activations, today);
+
+        assert!(!activations.contains_key("ended"), "yesterday's schedule is forgettable");
+        assert!(activations.contains_key("ends_today"), "a schedule ending today is still live");
+        assert!(activations.contains_key("ends_later"));
+        assert!(
+            activations.contains_key("unknown_expiry"),
+            "an unreadable end date fails open -- kept, not silently dropped",
+        );
+    }
+
+    /// A malformed `schedule_end_date` must cost memory, not data: the
+    /// binding still has to reach the resolving Movement.
+    #[tokio::test]
+    async fn an_activation_with_an_unparseable_end_date_survives_pruning_and_still_binds() {
+        let activation = r#"[{"header":{"msg_type":"0001"},"body":{
+            "train_id":"221832406","train_uid":"C21373","toc_id":"SW",
+            "train_service_code":"22345000","schedule_wtt_id":"WTT1",
+            "schedule_start_date":"2026-08-28","schedule_end_date":"not-a-date"
+        }}]"#;
+        let mut feed = FakeMovementFeed::new(vec![
+            vec![activation.to_string()],
+            vec![ORIGIN_DEPARTURE.to_string()],
+        ]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(
+            state.pending_activations.get("221832406").map(|a| a.schedule_end_date),
+            Some(None),
+            "an unreadable date parks with an unknown expiry rather than failing",
+        );
+
+        prune_expired_activations(&mut state.pending_activations, "2099-01-01".parse().unwrap());
+
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(events[0].resolved_train_uid, Some("C21373".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_parked_activation_is_pruned_once_its_schedule_has_ended() {
+        let activation = r#"[{"header":{"msg_type":"0001"},"body":{
+            "train_id":"221832406","train_uid":"C21373","toc_id":"SW",
+            "train_service_code":"22345000","schedule_wtt_id":"WTT1",
+            "schedule_start_date":"2026-08-28","schedule_end_date":"2026-08-28"
+        }}]"#;
+        let mut feed = FakeMovementFeed::new(vec![vec![activation.to_string()]]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(state.pending_activations.len(), 1);
+
+        prune_expired_activations(&mut state.pending_activations, "2026-08-29".parse().unwrap());
+        assert!(
+            state.pending_activations.is_empty(),
+            "unclaimed national-stream activations must not accumulate forever",
+        );
     }
 }
