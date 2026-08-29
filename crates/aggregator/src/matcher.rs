@@ -230,12 +230,64 @@ mod tests {
 
     #[test]
     fn elizabeth_branch_incident_stays_on_its_branch() {
+        // Shenfield is a real Greater Anglia main-line station too (see
+        // greater-anglia-main-line.toml's Shenfield-corridor decision), so
+        // now that that line is catalogued, an incident here legitimately
+        // matches both lines by station overlap. What this test still
+        // guards: neither match escalates to MatchScope::SharedSegment (the
+        // two files deliberately use distinct segment names at Shenfield —
+        // station overlap, not a shared trunk), and the incident does not
+        // leak to elizabeth-line or elizabeth-heathrow, the other two XR
+        // branches.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident("XR-1", "Trespass at Shenfield", "Trespass incident causing delays.", &["XR"], &["SNF"]);
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["elizabeth-shenfield".to_string()]));
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["elizabeth-shenfield".to_string(), "greater-anglia-main-line".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    #[test]
+    fn greater_anglia_shenfield_corridor_is_station_overlap_only() {
+        // Romford is on both greater-anglia-main-line.toml (a genuine GA
+        // main-line stop) and elizabeth-shenfield.toml (a metro stop on
+        // dedicated Elizabeth line tracks). The two files deliberately do
+        // NOT share a segment name for this corridor (see
+        // greater-anglia-main-line.toml's decision comment), so an incident
+        // here should match both lines independently, each still classified
+        // as ExclusiveSegment rather than escalating to SharedSegment.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("LE-1", "Points failure at Romford", "Points failure causing delays.", &["LE"], &["RMF"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["greater-anglia-main-line".to_string(), "elizabeth-shenfield".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    #[test]
+    fn greater_anglia_exclusive_far_end_does_not_propagate() {
+        // Colchester is well beyond Shenfield, on Greater Anglia's
+        // exclusive territory — the Elizabeth line goes no further than
+        // Shenfield. An incident here should stay scoped to
+        // greater-anglia-main-line only.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("LE-2", "Signal failure at Colchester", "Signal failure causing delays.", &["LE"], &["COL"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["greater-anglia-main-line".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
