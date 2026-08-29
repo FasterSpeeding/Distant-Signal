@@ -1,4 +1,4 @@
-# nr-status: Design Document
+# Distant Signal: Design Document
 
 A TfL-style line status aggregator for UK National Rail.
 
@@ -38,14 +38,14 @@ This project fills that gap.
 - Classifying each incident's scope (exclusive segment, shared trunk,
   operator-wide, etc.) and producing per-line statuses accordingly.
 - Emitting TfL-shaped JSON.
+- Train-level live tracking, implemented via TRUST movement events consumed
+  from Kafka (`crates/trust-consumer`), not deferred TD/TRUST territory.
+- Authentication — OIDC SSO is implemented (`crates/api/src/auth/oidc.rs`).
 
 **Out of scope for v1.**
-- Train-level live tracking (that's TD/TRUST territory; we stay at line
-  granularity).
 - Predicting future disruption (we report current state).
 - Engineering-works calendars beyond what Knowledgebase already exposes.
-- Authentication, rate limiting, multi-tenant isolation (deployment-time
-  concerns).
+- Rate limiting, multi-tenant isolation (deployment-time concerns).
 
 ---
 
@@ -56,7 +56,7 @@ This project fills that gap.
 | **Darwin Knowledgebase Incidents** | Human-curated disruption messages with operator and station tags | Primary signal for `reason` text and severity. Highest data quality. |
 | **OpenLDBWS** (or the new REST equivalent) | Live departure boards per station, including delay minutes, cancellations, and reason text | Sampling-based inference when no incident covers a line. Secondary signal. |
 | **CIF SCHEDULE feed** (optional, post-v1) | Static + short-term timetable | Resolving service groups for line attribution. Not required for v1. |
-| **TRUST movement events** (optional, post-v1) | Per-train movement and cancellation events | Higher-fidelity replacement for LDBWS sampling. Not required for v1. |
+| **TRUST movement events** | Per-train movement and cancellation events, consumed live from Kafka | Implemented and load-bearing: the primary source for individual train tracking (`crates/trust-consumer` + `enricher`). |
 
 The wider Network Rail/Darwin ecosystem (TD signal positions, RTPPM
 performance, VSTP short-term schedule changes) is not used. They're
@@ -70,58 +70,65 @@ and small production loads.
 
 ## 4. Architecture
 
+The system is a Rust workspace of small services around a shared Postgres
+database, plus a Kafka-based streaming pipeline for train-level tracking.
+
+- A set of `poller-*` crates (`poller-incidents`, `poller-ldbws`,
+  `poller-stations`, `poller-tfl`, `poller-tocs`) each pull one upstream
+  source on a schedule and write into Postgres.
+- The `aggregator` crate periodically loads incidents, samples, and line
+  definitions, runs the matcher, applies scope/threshold rules, and writes
+  `line_status`. It signals the `enricher` via a Redis queue when there's
+  new work for it to pick up.
+- `trust-consumer` is a long-running Kafka consumer for Network Rail's
+  TRUST movement-event feed. It's the first persistent stream-consumer
+  service in the stack (alongside `enricher`), and is what makes
+  individual train tracking possible.
+- `enricher` derives higher-level state (train positions, per-line status
+  detail) from what the pollers and `trust-consumer` produce, triggered via
+  the Redis queue the aggregator writes to.
+- `api` is a Rust/axum HTTP service — the read (and auth) layer, serving
+  both the TfL-shaped line-status endpoints and the newer accounts/
+  train-tracking endpoints, backed by Postgres.
+- `frontend/` is a Next.js web client against the `api` service.
+- The whole stack is deployable via the Helm chart at
+  `charts/distant-signal/`.
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Pollers (one per source)                                   │
-│  ┌──────────────────────┐    ┌──────────────────────────┐   │
-│  │ Knowledgebase poller │    │ LDBWS sampler            │   │
-│  │  (every 60s)         │    │  (every 30-60s)          │   │
-│  │  XML -> Incident     │    │  SOAP/REST -> Sample     │   │
-│  └──────────┬───────────┘    └────────────┬─────────────┘   │
-│             │                              │                 │
-└─────────────┼──────────────────────────────┼─────────────────┘
-              │                              │
-              ▼                              ▼
-       ┌──────────────────────────────────────────┐
-       │  Event store (Postgres)                  │
-       │  - active_incidents                      │
-       │  - station_samples (most recent per CRS) │
-       └────────────────────┬─────────────────────┘
-                            │
-                            ▼
-              ┌─────────────────────────────┐
-              │  Aggregator (every 30-60s)  │
-              │  - load incidents + samples │
-              │  - load line definitions    │
-              │  - run matcher              │
-              │  - apply scope/threshold    │
-              │    rules                    │
-              │  - write line_status        │
-              └─────────────┬───────────────┘
-                            │
-                            ▼
-              ┌─────────────────────────────┐
-              │  Read API (FastAPI)         │
-              │  - /Line/...                │
-              │  - /StopPoint/...           │
-              │  - serves from line_status  │
-              └─────────────────────────────┘
+ poller-incidents  poller-ldbws  poller-stations  poller-tfl  poller-tocs
+        │               │              │              │           │
+        └───────────────┴──────────────┴──────────────┴───────────┘
+                                    │
+                                    ▼
+                              Postgres  ◀──────────────┐
+                                    │                  │
+                                    ▼                  │
+                              aggregator ──(Redis queue)──▶ enricher
+                                                               ▲
+  TRUST/Kafka feed ──▶ trust-consumer ─────────────────────────┘
+                                    │
+                                    ▼
+                            api (axum) ──▶ frontend (Next.js)
 ```
 
-**Why separate pollers from aggregator.** Pollers are I/O-bound and need
-retries/backoff; the aggregator is pure CPU over a snapshot. Decoupling
-lets you restart either without losing data, and makes testing the
-aggregator trivial (it's a function from inputs to outputs).
+**Why separate pollers from the aggregator.** Pollers are I/O-bound and
+need retries/backoff; the aggregator is pure CPU over a snapshot.
+Decoupling lets you restart either without losing data, and makes testing
+the aggregator trivial (it's a function from inputs to outputs).
 
 **Why Postgres.** No special needs — boring relational storage with JSON
 columns for the variable bits (incident metadata, sample departures).
-Add Redis if you ever need pub/sub between aggregator and API for
-push-style updates; not required for v1.
 
-**Why no streaming for v1.** Knowledgebase incidents update on the order
-of minutes; LDBWS data is fresh enough at 30-60s polling. The Network
-Rail STOMP feeds are powerful but operationally heavy (24/7 consumers,
-backpressure handling). Defer until there's a concrete need.
+**Why Redis.** Used as a lightweight trigger queue between the aggregator
+and `enricher`, not as a database — pub/sub-style signalling for
+push-driven enrichment rather than the enricher polling Postgres.
+
+**Why Kafka for TRUST.** Unlike Knowledgebase incidents and LDBWS
+departure boards, TRUST movement events are a genuine high-volume stream
+that benefits from an always-on consumer rather than periodic polling.
+`trust-consumer` is a long-running service by design — the operational
+cost of a 24/7 stream consumer was worth it once individual train
+tracking became a real feature, not just a hypothetical.
 
 ---
 
@@ -320,33 +327,31 @@ one.
 ## 7. Project layout
 
 ```
-nr-status/
+distant-signal/
 ├── README.md
 ├── DESIGN.md                  (this document)
 ├── lines/                     curatorial asset; well-reviewed, hand-edited
 │   ├── SCHEMA.md
-│   ├── west-coast-main-line.toml
-│   ├── thameslink-core.toml
-│   ├── swr-south-west-main.toml
-│   ├── swr-portsmouth-direct.toml
-│   └── swr-alton.toml
-├── src/
-│   ├── __init__.py
-│   ├── types.py               domain types
-│   ├── config.py              default thresholds
-│   ├── loader.py              TOML → LineDefinition
-│   ├── segments.py            cross-line segment registry
-│   ├── matcher.py             incident → {line, scope, evidence}
-│   ├── aggregator.py          the core decision logic
-│   └── render.py              → TfL-shaped JSON
-├── tests/
-│   └── test_matcher.py
-└── demo.py                    end-to-end run with synthetic inputs
+│   └── *.toml                 one file per line
+├── crates/                    Rust workspace
+│   ├── common/                 shared types, config, metrics helpers
+│   ├── api/                    axum HTTP service (read API, auth, ingest)
+│   ├── aggregator/             the core status decision logic
+│   ├── enricher/               derives train/line detail from raw events
+│   ├── trust-consumer/         long-running Kafka consumer for TRUST
+│   ├── poller-incidents/       Knowledgebase incidents poller
+│   ├── poller-ldbws/           LDBWS departure-board sampler
+│   ├── poller-stations/        station reference-data poller
+│   ├── poller-tfl/             TfL reference/status poller
+│   └── poller-tocs/            TOC (operator) reference-data poller
+├── frontend/                  Next.js web client
+├── charts/distant-signal/     Helm chart for deploying the full stack
+└── docker-compose.yml         local dev environment
 ```
 
-The current implementation is a single Python package with no external
-dependencies beyond the standard library. Pollers and the HTTP layer are not yet
-implemented; they're the next pieces of work.
+The old single-package Python implementation this document originally
+described has been superseded by the Rust workspace above; the domain
+model and aggregation logic in §5 and §6 carried over largely unchanged.
 
 ---
 

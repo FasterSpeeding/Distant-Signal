@@ -1,55 +1,29 @@
-# nr-status
+# Distant Signal
 
-A TfL-style line status aggregator for UK National Rail, with first-class
-support for operators with multiple parallel routes that share trunk track
-(SWR, Southeastern, Northern, etc.).
-
-## What it does
-
-Takes Knowledgebase incidents and LDBWS departure-board samples as input,
-and emits a TfL-Unified-API-compatible status report per line. Crucially,
-it knows the difference between an incident on a *shared trunk* (which
-should propagate to every line using that trunk) and an incident on an
-*exclusive segment* (which should not).
+A personal UK rail companion: line-status aggregation in the TfL-Unified-API
+style, individual train tracking, accounts, and (soon) ticket/Delay-Repay
+support. It has first-class support for operators with multiple parallel
+routes that share trunk track (SWR, Southeastern, Northern, etc.) — knowing
+the difference between an incident on a *shared trunk* (which should
+propagate to every line using that trunk) and an incident on an *exclusive
+segment* (which should not) is this project's original core and still its
+real differentiator.
 
 ## Layout
 
-```
-lines/                    TOML line definitions (the curatorial asset)
-  SCHEMA.md               Field reference, including segments
-  west-coast-main-line.toml
-  thameslink-core.toml
-  swr-south-west-main.toml
-  swr-portsmouth-direct.toml
-  swr-alton.toml
-src/
-  types.py                Domain types (Severity, LineDefinition, etc.)
-  config.py               Default thresholds for status derivation
-  loader.py               TOML -> LineDefinition
-  segments.py             Cross-line segment registry
-  matcher.py              Incident -> {line, scope, evidence}
-  aggregator.py           The core decision logic
-  render.py               -> TfL-shaped JSON
-tests/
-  test_matcher.py
-demo.py                   End-to-end run with three scenarios
-```
+- `crates/` — a nine-crate Rust workspace: `common`, `api`, `aggregator`,
+  `enricher`, `trust-consumer`, and five `poller-*` crates.
+- `frontend/` — the Next.js web frontend.
+- `charts/distant-signal/` — the Helm chart for deploying the whole stack.
+- `lines/` — the curated TOML line-definition catalogue (unchanged from
+  this project's original design).
 
-## Run the demo
+See `DESIGN.md` for the full architecture.
 
-```bash
-PYTHONPATH=. python demo.py
-PYTHONPATH=. python tests/test_matcher.py
-```
+## Running it
 
-The demo runs three scenarios:
-
-1. **WCML trespass** between Watford Junction and Milton Keynes — exclusive
-   to WCML, no propagation.
-2. **SWR signal failure at Woking** — shared trunk, propagates to all three
-   SWR lines (South West Main, Portsmouth Direct, Alton).
-3. **Power supply problem at Alton** — exclusive segment, stays local to
-   the Alton line. Sibling SWR lines stay Good Service.
+For local development, see `docker-compose.yml`. For a real deployment, see
+`charts/distant-signal/README.md` for the Helm chart.
 
 ## How segments work
 
@@ -90,18 +64,6 @@ For a TOC like SWR with multiple routes:
 5. Run the test suite. Add a scenario that exercises the new line's shared
    trunks and exclusive segments — both shapes of incident must produce
    the right behaviour.
-
-## What's not included
-
-This is the aggregation layer only. To run against live data you need:
-
-1. A **Knowledgebase incidents poller** that fetches the NRE incidents XML,
-   parses each incident into an `IncidentMessage`, and feeds them in.
-2. An **LDBWS sampler** that calls `GetDepBoardWithDetails` for each
-   `sample_stations` CRS in your line set and shapes the results into
-   `StationSample` objects.
-3. A **scheduler** to run the above every 30-60 seconds and persist results.
-4. An **HTTP layer** to serve the rendered JSON. FastAPI works nicely.
 
 ## Severity scale
 
