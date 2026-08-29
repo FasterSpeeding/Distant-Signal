@@ -10,6 +10,7 @@ mod health;
 mod schema;
 mod matching;
 mod journey;
+mod eta;
 
 use clap::Parser;
 use config::Config;
