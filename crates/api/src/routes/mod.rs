@@ -13,6 +13,7 @@ pub mod lines;
 pub mod preferences;
 pub mod reference;
 pub mod samples;
+pub mod train;
 
 pub fn public_router() -> Router {
     // `health::router()` already declares its own `/health` route, so this
