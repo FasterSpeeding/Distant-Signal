@@ -134,15 +134,17 @@ entries:
       stage: !KeyOf nr-status-dev-enrollment-user-login
       order: 100
     model: authentik_flows.flowstagebinding
----
-# Wire the enrollment flow above into the shipped default login form's
-# "Need an account? Sign up." link. Per the design doc's research: the
-# IdentificationStage's enrollment_flow field is what renders that link,
-# it is unset by default on Authentik's own shipped
-# default-authentication-identification stage, and it is NOT settable via
-# the Brand model -- only here, at the stage level.
-model: authentik_stages_identification.identificationstage
-identifiers:
-  name: default-authentication-identification
-attrs:
-  enrollment_flow: !Find [authentik_flows.flow, [slug, nr-status-dev-enrollment]]
+  # Wire the enrollment flow above into the shipped default login form's
+  # "Need an account? Sign up." link. Per the design doc's research: the
+  # IdentificationStage's enrollment_flow field is what renders that link,
+  # it is unset by default on Authentik's own shipped
+  # default-authentication-identification stage, and it is NOT settable via
+  # the Brand model -- only here, at the stage level.
+  #
+  # MUST stay the LAST entry: entries apply in list order, so the flow it
+  # looks up via !Find must already have been created by the entries above.
+  - model: authentik_stages_identification.identificationstage
+    identifiers:
+      name: default-authentication-identification
+    attrs:
+      enrollment_flow: !Find [authentik_flows.flow, [slug, nr-status-dev-enrollment]]

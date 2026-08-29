@@ -378,7 +378,7 @@ api:
 
 # ---------------------------------------------------------------------------
 # devAuthentik -- OPT-IN local dev-only OIDC identity provider
-# (docs/superpowers/specs/2026-08-28-dev-oidc-server-design.md)
+# (docs/superpowers/specs/2026-08-29-dev-oidc-server-design.md)
 # ---------------------------------------------------------------------------
 # A hand-rolled (NOT the goauthentik/helm subchart -- see the design doc's
 # Non-goals) Authentik deployment for exercising this app's own login flow

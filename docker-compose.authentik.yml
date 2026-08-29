@@ -35,8 +35,10 @@
 # both authentik-server and authentik-worker refuse to start without it.
 # Generate one with, e.g., `openssl rand -base64 60`.
 #
-# HOST-HEADER / DISCOVERY REACHABILITY -- PROPOSED, NOT INDEPENDENTLY
-# VERIFIED beyond this plan's own Task 4 smoke test: authentik-server
+# HOST-HEADER / DISCOVERY REACHABILITY -- PROPOSED, NOT VERIFIED. The live
+# browser smoke test this calls for (bringing up this overlay and confirming
+# a real browser can reach Authentik with no Host-header rejection) has NOT
+# been run against a real Docker stack as of this writing. authentik-server
 # publishes port 9000 under the Compose network alias `authentik.localhost`
 # (RFC 6761 -- modern browsers resolve any *.localhost name to loopback with
 # no /etc/hosts entry needed). This makes the api container (reaching
@@ -99,9 +101,9 @@ services:
     healthcheck:
       # /-/health/live/ is Authentik's documented liveness path; NOT
       # independently re-confirmed by this plan's own research pass beyond
-      # citing it -- verify against real container behaviour in Task 4's
-      # live check and adjust if it 404s (a bare TCP probe on 9000 is the
-      # safe fallback).
+      # citing it -- verify against real container behaviour before relying
+      # on this in a real deployment, and adjust if it 404s (a bare TCP probe
+      # on 9000 is the safe fallback).
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:9000/-/health/live/"]
       interval: 10s
       timeout: 5s

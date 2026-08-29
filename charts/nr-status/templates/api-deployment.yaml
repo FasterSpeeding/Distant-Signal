@@ -7,6 +7,16 @@ from devAuthentik.* and the fixed blueprint-provisioned client id/secret
 -- see docs/superpowers/specs/2026-08-29-dev-oidc-server-design.md's Helm
 chart support section. An operator's explicit api.sso.* value ALWAYS wins
 over the computed default; devAuthentik never overrides one.
+
+When no value is available from either source, refusing to render is still
+strictly better than rendering an empty one. crates/api/src/data/config.rs
+declares all five SSO_* fields with `#[arg(long, env)]` and NO default, so
+an api container missing any of them never gets as far as `main` -- clap
+exits with "the following required arguments were not provided" and the pod
+CrashLoopBackOffs. An empty-string value is worse still: it satisfies clap,
+then fails either the `ensure!(!config.sso_client_secret.is_empty())` in
+AppState::init or `IssuerUrl::new("")` immediately after, with the same
+outcome and a less obvious cause.
 */}}
 {{- $issuerUrl := .Values.api.sso.issuerUrl | default (and .Values.devAuthentik.enabled (include "nr-status.devAuthentikIssuerUrl" .)) -}}
 {{- $clientId := .Values.api.sso.clientId | default (and .Values.devAuthentik.enabled (include "nr-status.devAuthentikClientId" .)) -}}

@@ -29,7 +29,13 @@ spec:
           imagePullPolicy: {{ .Values.devAuthentik.image.pullPolicy }}
           args: ["worker"]
           securityContext:
-            {{- include "nr-status.containerSecurityContext" (dict "readOnlyRootFilesystem" true) | nindent 12 }}
+            # readOnlyRootFilesystem is FALSE here, same rationale as
+            # devauthentik-server-deployment.yaml's identical block:
+            # Authentik (Django/gunicorn) is a third-party image not designed
+            # for a read-only root filesystem, and this container additionally
+            # applies blueprints on a schedule. Matches the posture used for
+            # every other third-party image in this chart.
+            {{- include "nr-status.containerSecurityContext" (dict "readOnlyRootFilesystem" false) | nindent 12 }}
           env:
             - name: AUTHENTIK_SECRET_KEY
               valueFrom:

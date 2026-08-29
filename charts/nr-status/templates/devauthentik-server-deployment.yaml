@@ -29,7 +29,14 @@ spec:
           imagePullPolicy: {{ .Values.devAuthentik.image.pullPolicy }}
           args: ["server"]
           securityContext:
-            {{- include "nr-status.containerSecurityContext" (dict "readOnlyRootFilesystem" true) | nindent 12 }}
+            # readOnlyRootFilesystem is FALSE here. Authentik (Django/
+            # gunicorn) is a third-party image whose maintainers never
+            # designed it for a read-only root filesystem, and it plausibly
+            # writes temp files beyond the /dev/shm mount below -- same
+            # posture as frontend-deployment.yaml, redis-deployment.yaml and
+            # both postgres StatefulSets. This chart's OWN Rust binaries stay
+            # read-only.
+            {{- include "nr-status.containerSecurityContext" (dict "readOnlyRootFilesystem" false) | nindent 12 }}
           ports:
             - name: http
               containerPort: 9000
@@ -67,8 +74,9 @@ spec:
             # shm_size only in its docker-compose research pass, not
             # separately for Helm -- this is a straightforward compose ->
             # Kubernetes translation of the same documented requirement,
-            # not an independently researched decision; verify it's
-            # sufficient during this task's live-cluster check (Task 13).
+            # not an independently researched decision, and it has not been
+            # verified against real container behaviour; confirm 512Mi is
+            # sufficient before relying on this in a real deployment.
             - name: dshm
               mountPath: /dev/shm
           # Authentik's /-/health/live/ and /-/health/ready/ paths are NOT
