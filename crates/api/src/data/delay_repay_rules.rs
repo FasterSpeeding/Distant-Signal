@@ -42,12 +42,12 @@ const DISCLAIMER: &str = "This is a rough, community-sourced estimate, not a gua
 ///   - LNER: 30+ minutes (delayrepay.lner.co.uk)
 ///   - CrossCountry: 30+ minutes (delayrepay.crosscountrytrains.co.uk)
 ///   - ScotRail: 30+ minutes (scotrail.co.uk/plan-your-journey/our-delay-repay-guarantee)
-/// Matched case-insensitively as a substring of the ticket's free-text
-/// `operator` field (not a hard ATOC-code catalogue -- see this plan's
-/// Global Constraints and the design doc's Open Question 6, which this
-/// plan does not resolve). An operator NOT in this list is assumed DR15,
-/// per the design doc's own cited "most operators use DR15" finding --
-/// see `estimate_delay_repay` below.
+///     Matched case-insensitively as a substring of the ticket's free-text
+///     `operator` field (not a hard ATOC-code catalogue -- see this plan's
+///     Global Constraints and the design doc's Open Question 6, which this
+///     plan does not resolve). An operator NOT in this list is assumed DR15,
+///     per the design doc's own cited "most operators use DR15" finding --
+///     see `estimate_delay_repay` below.
 const DR30_OPERATORS: &[&str] = &["lner", "crosscountry", "scotrail"];
 
 /// Verified, operator-specific claim pages for the same three DR30
