@@ -8,6 +8,7 @@ import type {
   LineDefinitionSummary,
   DataFreshness,
   Suggestion,
+  SessionInfo,
 } from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
@@ -127,6 +128,21 @@ export async function getPreferences(): Promise<Preferences> {
     throw errorForResponse(url, response);
   }
   return response.json() as Promise<Preferences>;
+}
+
+/** Per-user like `getPreferences`, so it needs the same cookie forwarding
+ * (see that function's comment for the full explanation of why a Server
+ * Component's own `fetch` doesn't automatically carry the incoming
+ * request's cookies). Unlike `/public/preferences`, though,
+ * `/public/auth/session` never 401s — an anonymous visitor gets a normal
+ * 200 with `authenticated: false` — so this can go through the shared
+ * `fetchJson` instead of needing its own 401-tolerant branch. */
+export async function getSession(): Promise<SessionInfo> {
+  const cookieHeader = (await cookies()).toString();
+  return fetchJson<SessionInfo>(`${baseUrl()}/public/auth/session`, {
+    cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+  });
 }
 
 export async function getAllLines(): Promise<LineSummary[]> {

@@ -127,6 +127,55 @@ describe('PinToggle', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/preferences');
   });
 
+  // Same scenario as above, but asserting the fix itself: a 401 must leave
+  // some visible trace instead of the dead-click silence the comment on
+  // `toggle()` describes, so an anonymous visitor can discover *why*
+  // nothing happened and how to fix it.
+  it('a 401 from the preferences read shows a login prompt linking to /api/auth/login', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async () => new Response('no session', { status: 401 }));
+
+    renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
+    expect(screen.queryByRole('link', { name: 'Log in to pin' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
+
+    const loginLink = await screen.findByRole('link', { name: 'Log in to pin' });
+    expect(loginLink).toHaveAttribute('href', '/api/auth/login');
+  });
+
+  // A 401 on the PUT (read succeeded, write didn't) must surface the same
+  // prompt — the anonymous-visitor case can fail at either step.
+  it('a 401 from the PUT also shows the login prompt', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/api/preferences') {
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [] }), { status: 200 });
+      }
+      return new Response('no session', { status: 401 });
+    });
+
+    renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
+    fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
+
+    expect(await screen.findByRole('link', { name: 'Log in to pin' })).toBeInTheDocument();
+  });
+
+  // A non-401 failure (e.g. a 500) keeps the old silent-bail behaviour —
+  // only 401 is documented as "you need to log in".
+  it('a non-401 failure does not show the login prompt', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async () => new Response('server error', { status: 500 }));
+
+    renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
+    fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Pin (currently not pinned)')).not.toBeDisabled();
+    });
+    expect(screen.queryByRole('link', { name: 'Log in to pin' })).not.toBeInTheDocument();
+  });
+
   // Same reasoning one step later in the flow: the read succeeded but the
   // write was rejected, so the star must not claim a pin that was never
   // saved.

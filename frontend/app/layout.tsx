@@ -7,9 +7,10 @@ import { ThemeToggle } from '@/components/ThemeToggle';
 import { PrideToggle } from '@/components/PrideToggle';
 import { TextLink } from '@/components/TextLink';
 import { DataFreshnessInfo } from '@/components/DataFreshnessInfo';
+import { AuthStatus } from '@/components/AuthStatus';
 import { AutoRefresh } from '@/components/AutoRefresh';
 import { OpenDataAttribution } from '@/components/OpenDataAttribution';
-import { getDataFreshness } from '@/lib/api';
+import { getDataFreshness, getSession } from '@/lib/api';
 import { theme } from '@/lib/theme';
 
 export const metadata: Metadata = {
@@ -33,6 +34,23 @@ async function DataFreshnessNavItem() {
     tfl: null,
   }));
   return <DataFreshnessInfo freshness={freshness} />;
+}
+
+// Same rationale as `DataFreshnessNavItem` immediately above: a separate
+// async Server Component so `<Suspense>` can stream the session check in
+// without blocking the rest of the shell, and so an uncaught fetch
+// failure here (this root layout has no route-level `error.tsx`) can't
+// take down every page. Falls back to a logged-out session shape rather
+// than rethrowing — an auth-status glitch should degrade to "show the log
+// in link", not break navigation for every visitor, logged in or not.
+async function AuthNavItem() {
+  const session = await getSession().catch(() => ({
+    authenticated: false,
+    id: null,
+    email: null,
+    name: null,
+  }));
+  return <AuthStatus session={session} />;
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -84,6 +102,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   </Suspense>
                   <ThemeToggle />
                   <PrideToggle />
+                  <Suspense fallback={<Text size="sm" c="dimmed">Log in</Text>}>
+                    <AuthNavItem />
+                  </Suspense>
                 </Group>
               </Group>
             </Container>
