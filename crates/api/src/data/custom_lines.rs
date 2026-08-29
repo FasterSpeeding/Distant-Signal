@@ -103,7 +103,7 @@ pub async fn get_custom_line(pool: &PgPool, id: &str) -> Result<Option<CustomLin
 /// an id that didn't correspond to any line yet. Without this, creating a
 /// line whose slug collides with such a stale pin would roll back an
 /// otherwise-valid `custom_lines` insert and surface as a 500.
-pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine) -> Result<CustomLine> {
+pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine, user_id: &str) -> Result<CustomLine> {
     let base_id = slugify(&new.name);
     let mut id = base_id.clone();
     let mut suffix = 2;
@@ -111,8 +111,8 @@ pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine) -> Result<Cus
         let mut tx = pool.begin().await?;
         let inserted: Option<String> = sqlx::query_scalar(
             r#"
-            INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
             ON CONFLICT (id) DO NOTHING
             RETURNING id
             "#,
@@ -123,14 +123,16 @@ pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine) -> Result<Cus
         .bind(&new.stations)
         .bind(&new.headcode_prefixes)
         .bind(&new.destination_crs_filter)
+        .bind(user_id)
         .fetch_optional(&mut *tx)
         .await?;
 
         if inserted.is_some() {
             sqlx::query(
-                "INSERT INTO pinned_lines (line_id, pinned_at) VALUES ($1, NOW()) \
-                 ON CONFLICT (line_id) DO NOTHING",
+                "INSERT INTO pinned_lines (user_id, line_id, pinned_at) VALUES ($1, $2, NOW()) \
+                 ON CONFLICT (user_id, line_id) DO NOTHING",
             )
+            .bind(user_id)
             .bind(&id)
             .execute(&mut *tx)
             .await?;
@@ -157,12 +159,17 @@ pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine) -> Result<Cus
 /// even if the line is later renamed. Returns `None` if no custom line
 /// has that id (mirrors [`delete_custom_line`]'s `bool` — `Option` here
 /// instead since the caller needs the updated row back on success).
-pub async fn update_custom_line(pool: &PgPool, id: &str, new: NewCustomLine) -> Result<Option<CustomLine>> {
+pub async fn update_custom_line(
+    pool: &PgPool,
+    id: &str,
+    new: NewCustomLine,
+    user_id: &str,
+) -> Result<Option<CustomLine>> {
     let result = sqlx::query(
         r#"
         UPDATE custom_lines
         SET name = $2, operators = $3, stations = $4, headcode_prefixes = $5, destination_crs_filter = $6
-        WHERE id = $1
+        WHERE id = $1 AND user_id = $7
         "#,
     )
     .bind(id)
@@ -171,6 +178,7 @@ pub async fn update_custom_line(pool: &PgPool, id: &str, new: NewCustomLine) -> 
     .bind(&new.stations)
     .bind(&new.headcode_prefixes)
     .bind(&new.destination_crs_filter)
+    .bind(user_id)
     .execute(pool)
     .await?;
 
@@ -196,10 +204,11 @@ pub async fn update_custom_line(pool: &PgPool, id: &str, new: NewCustomLine) -> 
 /// deleted, `false` if no custom line had that id (a no-op either way for
 /// `pinned_lines`, since a non-custom-line id was never insertable there
 /// through normal use, but the DELETE is harmless if it somehow was).
-pub async fn delete_custom_line(pool: &PgPool, id: &str) -> Result<bool> {
+pub async fn delete_custom_line(pool: &PgPool, id: &str, user_id: &str) -> Result<bool> {
     let mut tx = pool.begin().await?;
-    let result = sqlx::query("DELETE FROM custom_lines WHERE id = $1")
+    let result = sqlx::query("DELETE FROM custom_lines WHERE id = $1 AND user_id = $2")
         .bind(id)
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
     let deleted = result.rows_affected() > 0;

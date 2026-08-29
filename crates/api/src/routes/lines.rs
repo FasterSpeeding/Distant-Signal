@@ -9,6 +9,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
+use crate::auth::AuthenticatedUser;
 use crate::data::{custom_lines::{self, NewCustomLine}, queries};
 
 pub fn router() -> Router {
@@ -173,6 +174,7 @@ struct CreateLineRequest {
 
 async fn create_line(
     State(app): State<App>,
+    user: AuthenticatedUser,
     Json(req): Json<CreateLineRequest>,
 ) -> Result<Json<LineSummary>, (StatusCode, String)> {
     if req.name.trim().is_empty() {
@@ -203,6 +205,7 @@ async fn create_line(
             headcode_prefixes: req.headcode_prefixes,
             destination_crs_filter: req.destination_crs_filter,
         },
+        &user.id,
     )
     .await
     .map_err(internal_error)?;
@@ -247,6 +250,7 @@ async fn get_line(
 async fn update_line(
     State(app): State<App>,
     Path(id): Path<String>,
+    user: AuthenticatedUser,
     Json(req): Json<CreateLineRequest>,
 ) -> Result<Json<LineSummary>, (StatusCode, String)> {
     if app.config.lines.iter().any(|l| l.id == id) {
@@ -283,6 +287,7 @@ async fn update_line(
             headcode_prefixes: req.headcode_prefixes,
             destination_crs_filter: req.destination_crs_filter,
         },
+        &user.id,
     )
     .await
     .map_err(internal_error)?;
@@ -303,6 +308,7 @@ async fn update_line(
 async fn delete_line(
     State(app): State<App>,
     Path(id): Path<String>,
+    user: AuthenticatedUser,
 ) -> Result<StatusCode, (StatusCode, String)> {
     if app.config.lines.iter().any(|l| l.id == id) {
         return Err((
@@ -311,7 +317,7 @@ async fn delete_line(
         ));
     }
 
-    let deleted = custom_lines::delete_custom_line(&app.database, &id)
+    let deleted = custom_lines::delete_custom_line(&app.database, &id, &user.id)
         .await
         .map_err(internal_error)?;
     if !deleted {
