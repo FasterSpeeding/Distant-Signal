@@ -27,6 +27,7 @@ pub fn router() -> Router {
         .route("/Train/{tracking_id}/tickets", axum::routing::post(post_ticket).get(get_tickets))
         .route("/Train/{tracking_id}/tickets/{ticket_id}/delay-repay", axum::routing::get(get_delay_repay_estimate))
         .route("/Train/{tracking_id}/tickets/pkpass", axum::routing::post(post_pkpass_upload))
+        .route("/Train/{tracking_id}/tickets/pdf", axum::routing::post(post_pdf_upload))
         // 8 MiB: generous for a real boarding pass or e-ticket PDF (both
         // are typically tens of KB to low single-digit MB), bounded
         // against abuse. Applies to every route on this router, including
@@ -221,6 +222,21 @@ async fn post_pkpass_upload(
     ticket_extraction::parse_pkpass(&bytes)
         .map(Json)
         .map_err(|err| (StatusCode::UNPROCESSABLE_ENTITY, format!("could not read this as a train .pkpass: {err}")))
+}
+
+/// Same contract as `post_pkpass_upload` (Task 7) -- see that handler's
+/// doc comment for why `_user`/`_tracking_id` are otherwise unused, and
+/// the same REVIEW-BEFORE-SAVE note: no `sqlx::query` call, no database
+/// handle, anywhere in this function.
+async fn post_pdf_upload(
+    _user: AuthenticatedUser,
+    Path(_tracking_id): Path<i64>,
+    mut multipart: Multipart,
+) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
+    let bytes = read_single_file_field(&mut multipart, "file").await?;
+    ticket_extraction::parse_pdf(&bytes)
+        .map(Json)
+        .map_err(|err| (StatusCode::UNPROCESSABLE_ENTITY, format!("could not read this as a PDF e-ticket: {err}")))
 }
 
 /// Shared by this route and Task 9's PDF upload route: reads the single
