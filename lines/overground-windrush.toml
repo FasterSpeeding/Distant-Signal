@@ -25,6 +25,13 @@ operators = ["LO"]
 # catalogue's cross-file citation convention used elsewhere (e.g.
 # `lines/wcml-north-wales.toml`/`lines/tfw-north-wales-coast.toml`).
 #
+# Battersea Park, on the Clapham Junction branch, receives a reduced/
+# limited service compared to the line's other four termini (New Cross,
+# Clapham Junction, Crystal Palace, West Croydon) — confirmed by the
+# Task 3.0 research pass (two independent live sources described it as
+# getting a reduced service relative to the rest of the branch, one as
+# "(limited service)", another as "(selected services)").
+#
 # Other touchpoints are station-level overlaps only, not shared segments:
 # Whitechapel (ZLW, this file) already appears on
 # `elizabeth-line.toml`/`elizabeth-heathrow.toml`/`elizabeth-shenfield.toml`

@@ -297,10 +297,9 @@ mod tests {
     // below, since it needs both lines' files to exist.
     //
     // Uses Richmond (RMD) rather than Stratford (SRA): SRA also appears on
-    // `elizabeth-line.toml`/`elizabeth-shenfield.toml` (a real station-level
-    // overlap the brief didn't call out), which would make an incident
-    // there match both lines and defeat the point of this exclusive-segment
-    // test.
+    // `elizabeth-shenfield.toml` (a real station-level overlap the brief
+    // didn't call out), which would make an incident there match both
+    // lines and defeat the point of this exclusive-segment test.
     #[test]
     fn overground_mildmay_exclusive_segment_incident_stays_on_its_line() {
         let lines = load_all_lines();

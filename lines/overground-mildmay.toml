@@ -32,7 +32,7 @@ operators = ["LO"]
 # file's own separate branch) with the existing `swr-alton`/
 # `swr-portsmouth-direct`/`swr-south-west-main` catalogue and with
 # `overground-windrush`'s own separate Clapham Junction branch; and
-# Stratford (SRA, this file) with `elizabeth-line`/`elizabeth-shenfield`.
+# Stratford (SRA, this file) with `elizabeth-shenfield`.
 # All are different routes converging on shared stations, not shared
 # track, matching the `xc-south-coast.toml`/Reading precedent.
 
