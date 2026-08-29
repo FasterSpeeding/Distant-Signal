@@ -14,7 +14,7 @@ import { getDataFreshness, getSession } from '@/lib/api';
 import { theme } from '@/lib/theme';
 
 export const metadata: Metadata = {
-  title: 'National Rail Status',
+  title: 'Distant Signal',
   description: 'Line status for UK National Rail, TfL-style.',
 };
 
@@ -91,7 +91,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                       `body[data-pride='true']` rules -- Mantine's `Text`
                       renders no stable class of its own to key off. */}
                   <Text fw={700} data-site-title>
-                    National Rail Line Status
+                    Distant Signal
                   </Text>
                 </Link>
                 <Group gap="lg">
