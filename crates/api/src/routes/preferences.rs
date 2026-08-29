@@ -1,7 +1,9 @@
 //! `/public/preferences`: which lines/stations are pinned to the home
-//! page. Unauthenticated, same rationale as `/public/lines` — see
+//! page. Fully session-gated, both read and write -- unlike `/public/lines`,
+//! whose *reads* stay unauthenticated (see
 //! `docs/superpowers/specs/2026-07-09-custom-lines-and-blended-stats-design.md`'s
-//! Non-goals.
+//! Non-goals), pinned lines/stations are per-user state with no useful
+//! anonymous reading, so every handler here requires a resolved session.
 
 use std::collections::HashSet;
 
@@ -11,6 +13,7 @@ use axum::http::StatusCode;
 use serde::Serialize;
 
 use crate::app::{App, Router};
+use crate::auth::AuthenticatedUser;
 use crate::data::{custom_lines, preferences};
 
 pub fn router() -> Router {
@@ -29,8 +32,9 @@ struct PreferencesResponse {
 
 async fn get_preferences(
     State(app): State<App>,
+    user: AuthenticatedUser,
 ) -> Result<Json<PreferencesResponse>, (StatusCode, String)> {
-    let pinned_line_ids = preferences::list_pinned_line_ids(&app.database)
+    let pinned_line_ids = preferences::list_pinned_line_ids(&app.database, &user.id)
         .await
         .map_err(internal_error)?;
     let custom = custom_lines::list_custom_lines(&app.database)
@@ -48,7 +52,7 @@ async fn get_preferences(
         .filter(|id| known_line_ids.contains(id))
         .collect();
 
-    let pinned_station_candidates = preferences::list_pinned_station_crs(&app.database)
+    let pinned_station_candidates = preferences::list_pinned_station_crs(&app.database, &user.id)
         .await
         .map_err(internal_error)?;
     let pinned_stations = preferences::filter_existing_station_crs(&app.database, &pinned_station_candidates)
@@ -60,9 +64,10 @@ async fn get_preferences(
 
 async fn put_pinned_lines(
     State(app): State<App>,
+    user: AuthenticatedUser,
     Json(ids): Json<Vec<String>>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    preferences::replace_pinned_lines(&app.database, &ids)
+    preferences::replace_pinned_lines(&app.database, &user.id, &ids)
         .await
         .map_err(internal_error)?;
     Ok(StatusCode::NO_CONTENT)
@@ -70,6 +75,7 @@ async fn put_pinned_lines(
 
 async fn put_pinned_stations(
     State(app): State<App>,
+    user: AuthenticatedUser,
     Json(crs_codes): Json<Vec<String>>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     if crs_codes.iter().any(|crs| crs.len() != 3) {
@@ -79,7 +85,7 @@ async fn put_pinned_stations(
         ));
     }
 
-    preferences::replace_pinned_stations(&app.database, &crs_codes)
+    preferences::replace_pinned_stations(&app.database, &user.id, &crs_codes)
         .await
         .map_err(internal_error)?;
     Ok(StatusCode::NO_CONTENT)
