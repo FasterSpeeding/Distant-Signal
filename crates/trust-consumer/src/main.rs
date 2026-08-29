@@ -5,6 +5,7 @@
 //! Constraints for why this crate isn't named `poller-trust`.
 
 mod config;
+mod feed;
 mod health;
 mod schema;
 
