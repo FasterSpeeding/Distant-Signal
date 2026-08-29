@@ -11,6 +11,8 @@ import {
   getLineDefinition,
   getDataFreshness,
   getStationName,
+  getTrackedTrainById,
+  getTrackedTrainByUidAndDate,
   ApiNotFoundError,
 } from './api';
 
@@ -276,5 +278,26 @@ describe('api client', () => {
       vi.fn(async () => new Response(JSON.stringify([{ code: 'WOF', name: 'Wolverton' }]), { status: 200 })),
     );
     await expect(getStationName('WOK')).resolves.toBeNull();
+  });
+
+  it('getTrackedTrainById fetches the correct URL with no caching', async () => {
+    await getTrackedTrainById(42);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Train/42',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getTrackedTrainByUidAndDate fetches the correct URL with no caching', async () => {
+    await getTrackedTrainByUidAndDate('C21373', '2026-08-28');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Train/by-uid/C21373/2026-08-28',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getTrackedTrainById throws ApiNotFoundError on a 404', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    await expect(getTrackedTrainById(999)).rejects.toBeInstanceOf(ApiNotFoundError);
   });
 });
