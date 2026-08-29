@@ -17,7 +17,7 @@ use serde::Serialize;
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
-use crate::data::train_tracking;
+use crate::data::{eta_blend, train_tracking};
 
 pub fn router() -> Router {
     Router::new()
@@ -54,9 +54,10 @@ async fn get_by_tracking_id(
     let state = train_tracking::get_by_tracking_id(&app.database, tracking_id)
         .await
         .map_err(internal_error)?;
-    state
-        .map(Json)
-        .ok_or((StatusCode::NOT_FOUND, "no tracked train with that id".to_string()))
+    match state {
+        Some(state) => Ok(Json(blend_darwin_eta(&app, state).await)),
+        None => Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string())),
+    }
 }
 
 async fn get_by_uid_and_date(
@@ -66,9 +67,36 @@ async fn get_by_uid_and_date(
     let state = train_tracking::get_by_uid_and_date(&app.database, &train_uid, date)
         .await
         .map_err(internal_error)?;
+    match state {
+        Some(state) => Ok(Json(blend_darwin_eta(&app, state).await)),
+        None => Err((StatusCode::NOT_FOUND, "no resolved tracked train for that uid/date".to_string())),
+    }
+}
+
+/// Best-effort overlay: if a live Darwin/LDBWS departure board sample for
+/// this train's origin station has a concrete estimated time for a
+/// departure heading to the train's pinned destination (or, failing that,
+/// its currently-known next calling point), that overlays `eta_next`/
+/// `eta_source` in the response -- never written back to
+/// `train_current_state` (see `crates/api/src/data/eta_blend.rs`'s module
+/// doc for why this stays read-time-only). Any failure to fetch a sample
+/// (no row yet, a transient DB error) just leaves `state` as TRUST's own
+/// propagation already had it -- this is a nice-to-have enhancement, not
+/// something either read route should fail over.
+async fn blend_darwin_eta(app: &App, mut state: train_tracking::TrackedTrainState) -> train_tracking::TrackedTrainState {
+    let Some(destination) = state.pin_destination_crs.as_deref().or(state.next_calling_point.as_deref()) else {
+        return state;
+    };
+    let Ok(samples) = crate::data::queries::latest_station_sample(&app.database, &state.pin_origin_crs).await else {
+        return state;
+    };
+    if let Some(sample) = samples {
+        if let Some(eta) = eta_blend::find_darwin_eta(&sample.departures, Some(destination), None, state.service_date) {
+            state.eta_next = Some(eta);
+            state.eta_source = Some("darwin-estimated".to_string());
+        }
+    }
     state
-        .map(Json)
-        .ok_or((StatusCode::NOT_FOUND, "no resolved tracked train for that uid/date".to_string()))
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {

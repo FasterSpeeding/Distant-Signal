@@ -522,6 +522,32 @@ pub async fn last_station_samples_fetch(pool: &PgPool) -> Result<Option<chrono::
     Ok(polled_at)
 }
 
+/// The latest `StationSample` polled for a single station, or `None` if
+/// `station_samples` has no row for that CRS yet. `station_samples` is
+/// wholesale-replaced per poll (one row per station, no history -- see
+/// `upsert_station_samples`), so "latest" here just means "the current
+/// row", not a query over a time range. Backs `crates/api/src/data/eta_blend.rs`'s
+/// read-time Darwin/TRUST correlation (`routes/train.rs`'s
+/// `blend_darwin_eta`), which needs one station's current departure board
+/// to look up against a tracked train's pin/next-calling-point.
+pub async fn latest_station_sample(pool: &PgPool, crs: &str) -> Result<Option<StationSample>> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT crs, polled_at, departures FROM station_samples WHERE crs = $1")
+        .bind(crs)
+        .fetch_optional(pool)
+        .await?;
+
+    row.map(|row| {
+        let departures_json: serde_json::Value = row.try_get("departures")?;
+        Ok(StationSample {
+            crs: row.try_get("crs")?,
+            polled_at: row.try_get("polled_at")?,
+            departures: serde_json::from_value(departures_json)?,
+        })
+    })
+    .transpose()
+}
+
 /// One row from `line_status`, deserialized into the shape `render.rs`
 /// consumes.
 pub struct LineStatusRow {
