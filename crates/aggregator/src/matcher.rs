@@ -348,4 +348,41 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["overground-weaver".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // London Overground's Windrush line (former East London line,
+    // extended) — exclusive segment test for its West Croydon branch,
+    // well clear of the shared Canonbury curve.
+    #[test]
+    fn overground_windrush_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("LO-6", "Signal failure at West Croydon", "Signal failure causing delays at West Croydon.", &["LO"], &["WCY"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["overground-windrush".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // The `overground-canonbury-curve` shared segment (Highbury &
+    // Islington, Canonbury) is the only genuine cross-line shared trunk
+    // among the six London Overground lines — a real curve of track
+    // connecting the North London (Mildmay) and East London (Windrush)
+    // route alignments. Mirrors `swr_shared_trunk_incident_propagates`;
+    // needs both `overground-mildmay` and `overground-windrush` loaded,
+    // hence `load_all_lines()` and placement here (after both files exist).
+    #[test]
+    fn overground_canonbury_curve_incident_propagates_to_mildmay_and_windrush() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("LO-7", "Signal failure at Canonbury", "Signal failure causing delays at Canonbury.", &["LO"], &["CNN"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("overground-mildmay"));
+        assert!(matched_ids.contains("overground-windrush"));
+        for m in &matches {
+            if m.line.id.starts_with("overground-") {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
+        }
+    }
 }
