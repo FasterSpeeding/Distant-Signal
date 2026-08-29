@@ -74,6 +74,13 @@ delay_threshold_minutes = 4
 #     of the Springburn branch, a spur from Bellgrove station, on the
 #     North Clyde Line" -- NOT a through station on the way to Airdrie, a
 #     misreading this task's research initially had to correct.
+#   - Wikipedia "Dalreoch railway station" (added in fix round 1, post-
+#     review): confirms Dalreoch, not Dumbarton Central, is the real
+#     Balloch/Helensburgh split point -- see the DBC/DLR comments below.
+#   - Wikipedia "Hyndland railway station" (added in fix round 1): confirms
+#     the Milngavie/Yoker/Singer split is at "Hyndland East Junction",
+#     immediately west of the station -- see the HYN comment below for the
+#     single-source caveat on this one.
 #
 # CRS codes: every code in `stations` below was verified live against
 # National Rail Enquiries (nationalrail.co.uk/stations/<crs>/details.html)
@@ -139,7 +146,7 @@ delay_threshold_minutes = 4
 # - Minor intermediate stations not individually verified to the
 #   two-source CRS standard (e.g. Jordanhill, Anniesland, Westerton,
 #   Bearsden, Hillfoot, Scotstounhill, Garscadden, Yoker, Clydebank,
-#   Singer, Drumry, Kilpatrick, Bowling, Dalreoch, Renton, Cardross,
+#   Singer, Drumry, Kilpatrick, Bowling, Renton, Cardross,
 #   Alexandria, High Street, Uddingston, Bellshill): omitted from
 #   `stations` below. Only the confirmed termini/junctions/major stations
 #   needed to establish this line's exclusive/shared segment structure are
@@ -157,8 +164,18 @@ segment = "scotrail-glasgow-suburban-milngavie-branch"
 crs = "HYN"
 role = "junction"
 segment = "scotrail-glasgow-suburban-west-trunk"
-# Hyndland: Milngavie branch diverges here (exclusive segment starts at
-# the next station, MLN, per the shared-trunk rule of thumb).
+# Hyndland: per Wikipedia's own Hyndland article, "immediately to the west
+# of the station is Hyndland East Junction where the Yoker and Singer
+# (including the Milngavie branch) lines diverge" -- so the physical split
+# is a few hundred metres west of the station, not at the platforms
+# themselves. This is Wikipedia-sourced only: a second, non-Wikipedia
+# source for the "Hyndland East Junction" name/location specifically was
+# not reachable within this task's research budget (railwaycodes.org.uk
+# returned 404s for the pages guessed, ScotRail's own site returned 403).
+# Hyndland is used here as the nearest *confirmed* station to the actual
+# divergence point, not asserted as the divergence point itself; exclusive
+# segment starts at the next station, MLN, per the shared-trunk rule of
+# thumb.
 
 [[stations]]
 crs = "DMR"
@@ -171,7 +188,32 @@ segment = "scotrail-glasgow-suburban-west-trunk"
 crs = "DBC"
 role = "junction"
 segment = "scotrail-glasgow-suburban-west-trunk"
-# Dumbarton Central: Balloch and Helensburgh branches split here.
+# Dumbarton Central: on the shared west trunk, one station short of the
+# actual Balloch/Helensburgh split (see Dalreoch, next). Per Wikipedia's
+# Dumbarton Central article it is "the last station on the North Clyde
+# line where trains on the West Highland line between Glasgow and Oban
+# and Mallaig call before diverging from the line just before
+# Craigendoran" -- a separate fact about West Highland services, not the
+# Balloch/Helensburgh split (see Craigendoran below for that junction).
+#
+# CORRECTION (post-review, fix round 1): an earlier version of this file
+# stated "Balloch and Helensburgh branches split here" at Dumbarton
+# Central. That was wrong and uncited -- re-verified against Wikipedia's
+# Dalreoch article (cross-checked against National Rail Enquiries for the
+# CRS code), which shows the actual split is one station further out, at
+# Dalreoch. Corrected below.
+
+[[stations]]
+crs = "DLR"
+role = "junction"
+segment = "scotrail-glasgow-suburban-west-trunk"
+# Dalreoch: the real Balloch/Helensburgh split point. Wikipedia's Dalreoch
+# article, describing the station's own track layout: "the line diverging
+# to the right becomes single track and heads to Balloch. The line to the
+# left runs to Helensburgh Central." The same article confirms Dalreoch
+# immediately follows Dumbarton Central (moving away from Glasgow) and
+# precedes Renton (Balloch direction) / Cardross (Helensburgh direction).
+# CRS code DLR cross-checked against National Rail Enquiries.
 
 [[stations]]
 crs = "BHC"
