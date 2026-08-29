@@ -274,4 +274,21 @@ mod tests {
             assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
         }
     }
+
+    #[test]
+    fn calder_valley_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-3",
+            "Signal failure at Todmorden",
+            "Signal failure causing delays on the Calder Valley Line at Todmorden.",
+            &["NT"],
+            &["TOD"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-calder-valley".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
