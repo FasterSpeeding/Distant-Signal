@@ -7,8 +7,9 @@ same rigor as the existing specs in this directory (e.g.
 reviewed and iterated on the same way, but it has not gone through
 implementation planning and nothing here is committed. It does **not**
 contain a task-by-task implementation plan or any `docker-compose`/YAML
-changes — that is a separate, later step in this repo's process, done only
-after a design like this has been reviewed.
+changes, and it does not touch `charts/nr-status`'s actual
+`values.yaml`/templates — those are separate, later steps in this repo's
+process, done only after a design like this has been reviewed.
 
 ## Problem
 
@@ -63,15 +64,41 @@ friction — to keep pointing at a real external IdP instead.
 - A developer who already has a real IdP to test against is completely
   unaffected: no local Authentik container starts, no extra image pull,
   no extra `SSO_*` values required, unless they explicitly opt in.
+- The same local Authentik IdP is available as a second, equally opt-in
+  path for a developer running this app's Helm chart
+  (`charts/nr-status/`, design in
+  `docs/superpowers/specs/2026-08-18-helm-chart-design.md`) against a
+  local/dev Kubernetes cluster (kind, minikube, k3d — see Design → Helm
+  chart support below), via a `values.yaml` flag defaulting to `false`.
+  An operator who installs the chart against a real external IdP — the
+  chart's existing, documented behaviour today — is completely
+  unaffected: `api.sso.*` stays required with no default, exactly as it
+  is now, unless the flag is explicitly set.
 
 ## Non-goals
 
-- Production Authentik deployment, hardening, TLS, SMTP/email, or the Helm
-  chart (`docs/superpowers/specs/2026-08-18-helm-chart-design.md`). That
-  chart's non-goals already exclude anything beyond this app's own
-  workloads plus (optionally) bundled Postgres — an IdP is a further step
-  out from that boundary and stays there. This design is dev-`docker
-  compose`-only.
+- **Production Authentik deployment, hardening, TLS/cert-manager
+  automation, SMTP/email, HA, backup/restore, or autoscaling for
+  Authentik itself, on either deployment path.** Both the
+  `docker-compose` path and the Helm path added by this design are
+  strictly a *dev convenience* — a disposable local IdP for exercising
+  this app's login flow — not a production identity provider deployment.
+  The Helm chart's own non-goals (no HPA, no backup/restore for its
+  bundled Postgres,
+  `docs/superpowers/specs/2026-08-18-helm-chart-design.md`) apply with
+  equal force to the Authentik-specific infrastructure this design adds
+  to that chart.
+- **Using Authentik's own official Helm chart (`goauthentik/helm`) as a
+  subchart dependency of `charts/nr-status`.** Considered and explicitly
+  rejected — see Research → Helm chart deployment below. It depends on
+  Bitnami's PostgreSQL chart (an OCI subchart) plus an
+  `authentik-remote-cluster` chart dependency, which would require
+  `helm dependency update`/`helm dependency build` and reachability to
+  external chart registries at install time — directly contradicting
+  `charts/nr-status`'s stated "one chart, one namespace, one command. No
+  subchart dependencies... installable in an air-gapped cluster given
+  the images" goal
+  (`docs/superpowers/specs/2026-08-18-helm-chart-design.md:19-21`).
 - LDAP/SAML sources, MFA, outposts (reverse-proxy/forward-auth), or any
   Authentik feature this app doesn't need as a plain OIDC relying party.
 - Fixing the pre-existing RDM-feed placeholder gaps (`dev.env.example`'s
@@ -349,6 +376,141 @@ is consistent for both. `SSO_ISSUER_URL` becomes
 proposed, not verified end-to-end (no container was actually started for
 this research pass) — flagged again under Open Questions.
 
+### Helm chart deployment: official chart, blueprint delivery, and local-cluster reachability
+
+Researched 2026-08-29, specifically to check none of the above is
+assumed rather than confirmed for Kubernetes.
+
+**Authentik does publish an official Helm chart** — `goauthentik/helm`
+(chart `authentik`, at `charts.goauthentik.io` / Artifact Hub), org-owned,
+actively released (chart/appVersion `2026.8.0`, matching the current
+Docker tag; 470+ commits, CI lint-test workflow, 182 GitHub stars as of
+this research). It is *not* unmaintained or abandoned. But fetched
+directly from `github.com/goauthentik/helm/blob/main/charts/authentik/Chart.yaml`,
+its `dependencies:` block is:
+
+```yaml
+dependencies:
+  - name: postgresql
+    version: 18.8.13
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: postgresql.enabled
+  - name: authentik-remote-cluster
+    version: 2.1.0
+    repository: https://charts.goauthentik.io
+    condition: serviceAccount.create
+    alias: serviceAccount
+```
+
+That is a real subchart dependency on an external OCI registry (Bitnami's
+`postgresql` chart) plus a second chart dependency, both requiring `helm
+dependency build`/`update` and network access to registries this repo does
+not control. **Decision: do not use it as a chart dependency.** This isn't
+a default-to-hand-rolling-because-it's-simpler call — the official chart
+is good and well-maintained — it's that `charts/nr-status` states as a
+Goal, not a preference, "One chart, one namespace, one command. No
+subchart dependencies, no `helm dependency update`... installable in an
+air-gapped cluster given the images"
+(`docs/superpowers/specs/2026-08-18-helm-chart-design.md:19-21`), and the
+official Authentik chart cannot be pulled in without breaking exactly that
+property. `charts/nr-status` already makes this same call for its *own*
+Postgres and Redis — hand-rolled `StatefulSet`/`Deployment` + `Service` (+
+`PVC` for Postgres) manifests, not subcharts, not assumed to pre-exist in
+the cluster — so hand-rolling Authentik's manifests too, mirroring that
+established posture, is the consistent choice, not a new one. Confirmed
+useful from the official chart even though it isn't depended on: it
+configures Authentik's own blueprint loading via a `blueprints.configMaps`
+/ `blueprints.secrets` list ("Only keys in the configMap ending with
+`.yaml` will be discovered and applied") — i.e. even Authentik's own
+maintainers mount blueprints from a `ConfigMap` under Kubernetes, which
+corroborates (rather than assumes) that the compose bind-mount approach's
+Kubernetes analogue really is "a `ConfigMap`, mounted as a volume, into
+the same `/blueprints/<dir>` path Authentik already scans" — no different
+mechanism needed, just a different delivery vehicle for the same files.
+
+**The browser-vs-container discovery problem is worse under Kubernetes,
+confirmed by a real report of the same bug class.**
+`goauthentik/authentik#3405` (fetched 2026-08-29) is exactly this: an
+operator running Authentik under Kubernetes found its
+`/.well-known/openid-configuration` echoing the Kubernetes-internal Host
+header (`authentik.default.svc.cluster.local`) into `authorization_endpoint`
+et al., breaking every external client redirected there — the reporter's
+proposed fix (a config-level external-vs-internal URL split) was not what
+shipped; the practical mitigation is entirely on the deployer's side:
+make sure the Host header Authentik receives is *always* the
+externally-routable one, from every vantage point that talks to it. Under
+`docker compose`, one Docker network with one alias made that trivial (see
+above). Under Kubernetes there is no single network both the developer's
+browser and the `api` Pod are on — the in-cluster Service DNS name
+(`nr-status-devauthentik.nr-status.svc.cluster.local`) and whatever
+hostname reaches the developer's browser are structurally different
+strings, so naively pointing `SSO_ISSUER_URL` at the in-cluster DNS name
+reproduces #3405 exactly; pointing it at the external hostname makes the
+in-cluster `api` Pod's own discovery fetch fail to resolve or route.
+
+The resolution mechanism that actually closes this gap without touching
+cluster-wide config (CoreDNS, an `ExternalName` Service, or app code in
+`crates/api`) is a Pod-level `hostAliases` entry — confirmed as
+Kubernetes' documented, purpose-built mechanism for exactly "make this one
+Pod resolve hostname `X` to a specific IP without changing DNS for anyone
+else" (`kubernetes.io/docs/concepts/services-networking/dns-pod-service/`,
+and a Kubernetes discussion-forum thread, fetched 2026-08-29, describing
+this identical need — services behind a shared ingress hostname that also
+need to reach each other using that same external hostname internally,
+solved by adding a `hostAliases` entry per Pod). Design below applies this
+directly: the `api` Deployment gets a `hostAliases` entry mapping the
+shared dev hostname straight to the Authentik Service's `ClusterIP`, so
+`api`'s own discovery request presents the identical Host header string
+the browser uses, without ever going through an Ingress itself.
+
+**The developer's browser reaching the cluster at all, on a fixed,
+predictable hostname:port, is a local-cluster-provisioning concern, not
+something the chart can fully own.** Research confirms the standard,
+widely-documented pattern for kind is an `extraPortMappings` cluster
+config binding container ports (conventionally 80/443, but the mechanism
+is not port-specific) on the kind node to the same port on the host's
+loopback interface — the well-known "kind + ingress-nginx on localhost"
+recipe. minikube's `tunnel` command and k3d's built-in load-balancer
+`--port` flag are the direct equivalents for those two tools. All three
+converge on the same shape: *some* host port gets forwarded to loopback,
+at a port number the cluster-creation step chooses. That step happens
+before `helm install` and is entirely outside a Helm chart's reach — a
+chart can render a `Service`/`Ingress` that *expects* to be reached this
+way, and document the port it needs forwarded, but it cannot itself bind
+a port on the developer's physical host. This is the concrete way the
+Kubernetes path is harder than compose's `ports: ["9000:9000"]`, which
+*is* fully inside one `docker-compose.yml`.
+
+**The `.localhost` loopback trick the compose design uses for the browser
+side still works unmodified for Kubernetes' browser side, confirmed
+separately from Chrome's own `Secure`-cookie behaviour, which matters
+because `crates/api/src/auth.rs:81` sets `Secure` unconditionally on the
+session cookie.** Chromium's own design discussion (`blink-dev`, fetched
+2026-08-29) confirms Chrome treats `localhost` and everything under the
+`.localhost` TLD as a secure context / "potentially trustworthy origin" —
+the same exception the compose design already leans on implicitly for
+`http://localhost:3000` — **conditioned on the name actually resolving to
+a loopback address**. That condition holds for the kind/minikube/k3d
+recipes above (they forward straight to `127.0.0.1`), so a developer
+reaching the frontend and Authentik both under `*.localhost` hostnames
+gets a working `Secure` cookie over plain HTTP with no TLS termination
+needed anywhere in the dev cluster. It does **not** hold for a remote or
+shared dev cluster reached over a real network (a non-loopback ingress
+IP, a genuinely separate hostname) — that case needs real TLS and is out
+of scope here, consistent with the Non-goals above.
+
+Sources: [goauthentik/helm](https://github.com/goauthentik/helm) and
+[`charts/authentik/Chart.yaml`](https://github.com/goauthentik/helm/blob/main/charts/authentik/Chart.yaml),
+[`charts/authentik/values.yaml`](https://raw.githubusercontent.com/goauthentik/helm/main/charts/authentik/values.yaml)
+(fetched 2026-08-29); [goauthentik/authentik#3405](https://github.com/goauthentik/authentik/issues/3405)
+(fetched 2026-08-29); [Kubernetes: DNS for Services and Pods](https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/)
+and a Kubernetes discuss-forum thread on cross-service hostname resolution
+behind a shared ingress hostname (fetched 2026-08-29); the kind project's
+documented `extraPortMappings` + ingress-nginx-on-localhost pattern
+(multiple corroborating tutorials, fetched 2026-08-29); Chromium
+`blink-dev` "Intent to Implement and Ship: Treat `http://localhost` as a
+secure context" design discussion (fetched 2026-08-29).
+
 ## Design
 
 ### Deployment shape: a third, purely opt-in compose file
@@ -548,7 +710,215 @@ UI step, and (per Research) can be edited and picked up by the file-watch
 without a container restart during iteration on this design's eventual
 implementation.
 
+### Helm chart support (opt-in, alongside docker compose)
+
+A second, independent path into the same local Authentik IdP, for a
+developer running `charts/nr-status` against a local/dev Kubernetes
+cluster instead of `docker compose`. Same posture as the compose path:
+strictly opt-in, off by default, zero effect on an install that points at
+a real external IdP.
+
+#### `values.yaml` shape
+
+One new top-level block, `devAuthentik`, following the same
+enabled-flag-plus-block convention `postgresql` and `redis` already use in
+this chart:
+
+```yaml
+devAuthentik:
+  enabled: false            # opt-in; default false, matches the brief
+  hostname: authentik.localhost   # the ONE string both the browser and
+                                   # the api Pod must resolve identically
+  image:
+    repository: ghcr.io/goauthentik/server
+    tag: "2026.8.0"          # pinned, same rationale as the compose path
+  secretKey: ""              # AUTHENTIK_SECRET_KEY; randAlphaNum-generated
+                             # via the chart's existing lookup-preserve
+                             # pattern (templates/secret.yaml) when empty
+  service:
+    port: 30900              # ClusterIP-facing port AND NodePort — see
+    nodePort: 30900          # "Discovery reachability" below for why
+                             # these two are deliberately the same number
+  hostAliasIP: ""            # optional explicit override for the
+                             # hostAliases IP (see below); empty = use
+                             # `lookup` against the live Service
+  postgresql:
+    image: postgres:16-alpine
+    persistence:
+      enabled: true
+      size: 1Gi
+      storageClass: ""
+    resources: {}
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+```
+
+When `devAuthentik.enabled` is `true` **and** `api.sso.issuerUrl` (and the
+other four `api.sso.*` values) are left at their empty default, the chart
+computes them from `devAuthentik.hostname`/`service.port` and the fixed
+blueprint-provisioned `client_id`/`client_secret` (identical values to the
+compose blueprint in Design → Blueprint files above, so both paths are
+interchangeable in a developer's head). This is exactly what closes the
+gap flagged in the Helm chart's own README today: `api.sso.*` are
+currently "required and the render aborts if any is missing" with **no
+dev-friendly default at all** — unlike compose, which has the
+`sso.example.invalid` placeholder to fall back on. `devAuthentik` becomes
+that placeholder's Kubernetes equivalent, except it's a *working* default
+rather than an inert one. An operator who explicitly sets any `api.sso.*`
+value keeps it — `devAuthentik`, even if enabled, never overrides an
+explicit value, so the two mechanisms compose sensibly rather than
+conflicting (a developer could in principle run the bundled IdP against a
+manually-set issuer URL, though that's an unlikely combination and not
+one this design needs to guard against beyond "explicit wins").
+
+#### Manifests (sketch — not final YAML, no template files written for this design)
+
+All gated behind `devAuthentik.enabled`, in a new `devauthentik-*.yaml`
+template group, following the existing chart's per-component file
+naming:
+
+- **`devauthentik-secret.yaml`** — one `Secret` holding
+  `AUTHENTIK_SECRET_KEY` (chart-generated via the same
+  `lookup`-then-`randAlphaNum` pattern `templates/secret.yaml` already
+  uses for `postgres-password`/`internal-token`, so it survives `helm
+  upgrade`) and the Authentik-Postgres password.
+- **`devauthentik-blueprints-configmap.yaml`** — one `ConfigMap` whose
+  data keys are the two blueprint files from Design → Blueprint files
+  above (`oauth2-client.yaml`, `open-signup.yaml`), sourced via `.Files.Get`
+  from a `files/devauthentik-blueprints/` directory shipped in the chart.
+  Mounted as a volume at `/blueprints/local` on both the server and worker
+  Deployments below — the direct Kubernetes analogue of the compose
+  path's bind mount at the same container path, per Research above
+  (Authentik's own official chart uses the identical
+  ConfigMap-of-`*.yaml`-keys mechanism, corroborating this is the right
+  shape rather than an invented one).
+- **`devauthentik-postgres-statefulset.yaml`** + **`-service.yaml`** — a
+  dedicated `StatefulSet` + headless `Service` + `volumeClaimTemplates`
+  entry, mirroring this chart's *own* bundled Postgres exactly (same
+  `PGDATA` subdirectory fix, same explicit `runAsUser`/`runAsGroup`/
+  `fsGroup: 999`, same `pg_isready` probes —
+  `docs/superpowers/specs/2026-08-18-helm-chart-design.md`'s PostgreSQL
+  section applies verbatim, just instantiated a second time under a
+  `devauthentik-` prefix). Kept dedicated rather than a second database
+  on the app's own bundled Postgres, for the identical reasons Research →
+  Data services already gives for the compose path (independent migration
+  lifecycles, reset-friendliness) — nothing about Kubernetes changes that
+  reasoning, so it isn't repeated with new justification, just re-applied.
+- **`devauthentik-server-deployment.yaml`** + **`-worker-deployment.yaml`**
+  — `Deployment`s (not `StatefulSet`s — Authentik's own state lives in its
+  Postgres, not on the server/worker Pods themselves, so these are
+  ordinary stateless workloads), `command: server` / `command: worker`
+  respectively on the same image, `AUTHENTIK_BOOTSTRAP_*` left unset for
+  the same "no default admin, blueprint-driven provisioning instead"
+  reasoning as compose. No `/var/run/docker.sock` mount on the worker —
+  same reasoning as compose (no outposts used), and doubly appropriate
+  under Kubernetes, where mounting the host's container socket into a Pod
+  is a materially worse privilege-escalation surface than under a
+  developer's own local Docker daemon.
+- **`devauthentik-service.yaml`** — a single `Service` in front of
+  `devauthentik-server` (the worker exposes no HTTP surface, so it gets
+  none), `type: NodePort`, with `port` and `nodePort` **both** set to
+  `devAuthentik.service.port`/`nodePort` (default `30900`, i.e. the same
+  literal number for both fields) and `targetPort: 9000` (Authentik's own
+  listen port). See "Discovery reachability" below for why the port and
+  nodePort must be identical.
+- Reuses the existing `secret.yaml` machinery's pattern rather than a new
+  one, and reuses the chart's existing security-context and
+  `readOnlyRootFilesystem` conventions for the server/worker Deployments
+  (Authentik's image runs as non-root already, matching this chart's
+  Rust-workload posture — no `postgres`-style uid pinning needed there,
+  only on `devauthentik-postgres`).
+
+No PVC beyond the one on `devauthentik-postgres` — the server/worker Pods
+themselves are stateless, matching compose's own "one named volume is
+sufficient" conclusion (Design → Persistence above).
+
+#### Blueprint delivery under Kubernetes
+
+Confirmed in Research above rather than assumed: Authentik discovers
+blueprints by scanning a mountable directory for `*.yaml` files, on a
+periodic-plus-file-watch schedule, and its own official Helm chart already
+delivers them the same way this design proposes — a `ConfigMap` whose keys
+are the blueprint filenames, mounted as a volume onto the pod at (in this
+design) `/blueprints/local`, exactly mirroring the compose path's
+bind-mounted directory of the same name and content. The two blueprint
+files themselves (`oauth2-client.yaml`, `open-signup.yaml`) are **byte-for-byte
+the same content on both deployment paths** — the chart's `ConfigMap` is
+built from the same source files the compose bind-mount uses, so there is
+exactly one blueprint definition to maintain, not two. A `ConfigMap` (not
+a `Secret`) is the right choice here specifically because nothing in
+these two blueprints is sensitive: the fixed `client_id`/`client_secret`
+are already-documented, known-in-advance dev-only values (the same ones
+in the compose design's blueprint sketch above), not real secrets — the
+`AUTHENTIK_SECRET_KEY` and the Authentik-Postgres password, which *are*
+sensitive, live in `devauthentik-secret.yaml` instead, per the chart's
+existing convention of routing anything sensitive through a `Secret`.
+
+#### Discovery reachability under Kubernetes
+
+This is the harder version of the same problem the compose design already
+flags as an open risk (Research → the browser-vs-container discovery
+reachability problem, and Research → Helm chart deployment above), and it
+needs a genuinely different mechanism because Kubernetes gives the
+browser and the `api` Pod no shared network the way one Docker Compose
+network does. The design resolves it with three pieces that must all use
+the *same* port number:
+
+1. **A `NodePort` Service with `port == nodePort`.** As above,
+   `devauthentik-service.yaml` sets both fields to
+   `devAuthentik.service.port`/`nodePort` (default `30900` — inside
+   Kubernetes' default `30000-32767` NodePort range, since `nodePort`
+   cannot be an arbitrary value like the compose path's `9000` without a
+   nonstandard `--service-node-port-range` on the apiserver). Because the
+   Service's ClusterIP-facing `port` and its `nodePort` are the same
+   number, both an in-cluster caller and a caller on the node's own
+   published port reach Authentik on an identical port — there is no
+   analogue of "the internal port differs from the externally-published
+   one" to trip over.
+2. **The developer's local cluster forwards that NodePort to their
+   machine's loopback interface**, using whichever mechanism their
+   cluster tool provides — kind's `extraPortMappings`, `minikube tunnel`,
+   or k3d's `--port` — at the *same* port number
+   (`devAuthentik.service.nodePort`, `30900` by default). This step lives
+   in the developer's cluster-creation config, not in the chart (see
+   Research above for why); the chart's `NOTES.txt` output, when
+   `devAuthentik.enabled` is true, documents the exact port to forward and
+   a worked kind config snippet, so it's a copy-pasteable one-time step
+   rather than a mystery. The developer's browser then reaches
+   `http://authentik.localhost:30900/...`, which resolves to `127.0.0.1`
+   per the RFC 6761 `.localhost` handling confirmed in Research above, and
+   lands on the forwarded port.
+3. **The `api` Deployment gets a `hostAliases` entry** mapping
+   `devAuthentik.hostname` (`authentik.localhost`) to the
+   `devauthentik-service` Service's `ClusterIP` — *not* its NodePort, its
+   ordinary in-cluster ClusterIP, reached at the same `port` number from
+   inside the cluster. This makes `api`'s own outbound discovery request
+   (`crates/api/src/auth/oidc.rs:129-137`) present the Host header
+   `authentik.localhost:30900` — identical to what the browser sends —
+   without the request ever leaving the cluster or passing through an
+   Ingress. The ClusterIP is obtained the same way `templates/secret.yaml`
+   already obtains a live cluster value: Helm's `lookup` function,
+   reading `devauthentik-service`'s `spec.clusterIP` at render time (with
+   `devAuthentik.hostAliasIP` as an explicit escape hatch for an operator
+   who'd rather pin a literal IP than rely on `lookup` — useful on kind's
+   commonly-default `10.96.0.0/12` service CIDR, where a fixed address is
+   entirely predictable).
+
+`SSO_ISSUER_URL` under this design is therefore
+`http://authentik.localhost:30900/application/o/nr-status/` — same shape
+as the compose path's `http://authentik.localhost:9000/...`, differing
+only in port because of the NodePort range constraint above.
+
+This is *proposed*, not verified end-to-end (mirroring the compose
+design's own honesty about its unverified `.localhost`-alias trick) — see
+Open questions / risks below for exactly what's still open here versus
+what the compose path already flagged.
+
 ## Open questions / risks
+
+### docker-compose path
 
 - **First-boot ordering between this app's blueprint and Authentik's own
   defaults.** The OAuth2 Provider blueprint's `!Find` lookups (the
@@ -609,3 +979,76 @@ implementation.
   to it directly — noted here so a future implementer doesn't rediscover
   it by trying to "simplify" toward bootstrap vars later without knowing
   why this design steered away from them.
+
+### Helm path
+
+Deliberately not a copy of the list above — several compose-path risks
+don't apply under Helm (there's no single-writer `COMPOSE_FILE` opt-in
+mechanism to get wrong, and blueprint delivery via a chart-shipped
+`ConfigMap` has no bind-mount-path-typo failure mode a developer could hit
+locally), and a few are meaningfully worse. What's genuinely open for the
+Helm path specifically:
+
+- **`hostAliases` + `lookup` has a first-install ordering gap, same shape
+  as the chart's existing Secret-generation caveat but with no fallback.**
+  `templates/secret.yaml`'s `lookup`-preserve pattern degrades gracefully
+  on a first install (an empty `lookup` just means "generate a fresh
+  value," which is correct there). `devauthentik-server`'s `hostAliases`
+  entry has no equally graceful degradation: on a from-scratch
+  `helm install` with `devAuthentik.enabled: true`, `devauthentik-service`
+  doesn't exist yet when the `api` Deployment is rendered in the *same*
+  release, so `lookup` returns nothing and no `hostAliases` entry can be
+  written at all — not a wrong one, an absent one, which breaks discovery
+  until the very first `helm upgrade` re-renders `api` after the Service
+  exists. This needs either `devAuthentik.hostAliasIP` set explicitly on
+  first install (already provided as an escape hatch above, but that's an
+  extra manual step the compose path doesn't have) or a documented
+  "`helm upgrade` once, immediately after first install" instruction in
+  `NOTES.txt`. Not resolved by this design — flagged as the single
+  biggest gap between "designed" and "known to work."
+- **The local-cluster port-forwarding step is a real external
+  prerequisite this design cannot enforce or verify from inside the
+  chart.** Unlike compose's `ports: ["9000:9000"]`, which is guaranteed
+  to exist the moment `docker-compose.authentik.yml` is in `COMPOSE_FILE`,
+  nothing stops a developer enabling `devAuthentik` on a kind/minikube/k3d
+  cluster that was never configured to forward `30900` to loopback — the
+  chart would install cleanly and every symptom (browser can't reach
+  Authentik, or reaches a different service on a port collision) would
+  show up as a runtime failure with no render-time signal. `NOTES.txt`
+  can document the required forwarding step; it cannot check whether it
+  was actually done. This is the harder-under-Kubernetes point flagged in
+  Research above, made concrete.
+- **None of this was smoke-tested against a real kind/minikube/k3d
+  cluster.** Same honesty as the compose design's own unverified
+  `.localhost`-alias claim: the `hostAliases`-plus-matching-NodePort
+  mechanism follows directly from documented Kubernetes behaviour and a
+  real precedent (`goauthentik/authentik#3405` and the Kubernetes
+  discuss-forum thread cited in Research above), but no cluster was
+  actually stood up for this research pass. Before this is trusted as
+  final: confirm `hostAliases`' `/etc/hosts` entry is genuinely honoured
+  by whatever HTTP client `crates/api`'s `openidconnect`/`oauth2` stack
+  uses for its discovery fetch (Rust's usual HTTP stacks respect
+  `/etc/hosts` via the OS resolver, but this hasn't been checked against
+  this specific dependency chain), and confirm the chosen NodePort doesn't
+  collide with anything else a kind/minikube/k3d default setup already
+  publishes.
+- **Resource footprint is worse, not just repeated.** The compose path
+  already flags three extra containers as a real cost; the Helm path adds
+  a `StatefulSet`+`Service` (Postgres), two `Deployment`s (server,
+  worker), a `ConfigMap`, and a `Secret` on top of an already-larger set
+  of Kubernetes objects than compose has services, on a developer's local
+  cluster that may have tighter resource limits than their host machine
+  running compose directly (kind and minikube both run inside a
+  container/VM with a bounded CPU/memory allocation, unlike compose,
+  which runs directly on the host's own resources). Not a blocker, but a
+  sharper version of the same trade-off the compose design already
+  declines to resolve.
+- **Version-pinning risk is identical, not worse.** `devAuthentik.image.tag`
+  pins to the same `2026.8.0` on the same evidence and carries the same
+  finite shelf life as the compose path's pin — no Helm-specific wrinkle
+  here, noted only to confirm it was considered rather than overlooked.
+- **No SMTP / no email verification or recovery: identical to compose,
+  not worse.** The blueprint-driven open-signup flow and its "just
+  re-register" limitation apply unchanged under Kubernetes; nothing about
+  running Authentik as Kubernetes Deployments instead of Compose services
+  changes Authentik's own SMTP requirements.
