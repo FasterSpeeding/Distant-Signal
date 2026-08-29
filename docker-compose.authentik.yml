@@ -1,0 +1,129 @@
+# Local dev-only Authentik IdP overlay -- OPT-IN, never loaded unless a
+# developer appends ":docker-compose.authentik.yml" to COMPOSE_FILE in
+# their own dev.env (see the comment beside COMPOSE_FILE in dev.env.example,
+# and docs/superpowers/specs/2026-08-29-dev-oidc-server-design.md).
+#
+# Provides a local OIDC identity provider so SSO_ISSUER_URL/SSO_CLIENT_ID/
+# SSO_CLIENT_SECRET/SSO_REDIRECT_URL/SSO_POST_LOGIN_REDIRECT_URL (the api's
+# own SSO_* config, docker-compose.yml:103-107) can point at a real,
+# locally-running server instead of the sso.example.invalid placeholder.
+#
+# Three services -- matches the official goauthentik.io/docker-compose.yml
+# shape as of 2026-08-29. No Redis: current Authentik (2026.8.0) doesn't
+# use one, confirmed directly against that reference compose.
+#   authentik-postgres  postgres:16-alpine, DEDICATED to Authentik -- NOT
+#                       this app's own `postgres` service. See the design
+#                       doc's Data services section: independent migration
+#                       lifecycles, reset-friendliness.
+#   authentik-server    the web UI / OIDC endpoints (discovery, authorize,
+#                       token, JWKS).
+#   authentik-worker    background task processing, including blueprint
+#                       apply.
+#
+# Deliberately NOT set anywhere below: AUTHENTIK_BOOTSTRAP_PASSWORD/_HASH/
+# _EMAIL/_TOKEN. There is genuinely no default admin account -- see the
+# design doc's Bootstrap section. This app's own login flow never needs
+# one: authentik-blueprints/oauth2-client.yaml and open-signup.yaml
+# provision everything a developer needs declaratively. To get into
+# Authentik's OWN admin UI:
+#   - interactive first-run flow: http://authentik.localhost:9000/if/flow/initial-setup/
+#   - or, if that's ever unreachable, the documented recovery-key fallback:
+#       docker compose --env-file dev.env run --rm authentik-server \
+#         create_recovery_key 10 akadmin
+#
+# AUTHENTIK_SECRET_KEY has NO default and MUST be set in your env file --
+# both authentik-server and authentik-worker refuse to start without it.
+# Generate one with, e.g., `openssl rand -base64 60`.
+#
+# HOST-HEADER / DISCOVERY REACHABILITY -- PROPOSED, NOT INDEPENDENTLY
+# VERIFIED beyond this plan's own Task 4 smoke test: authentik-server
+# publishes port 9000 under the Compose network alias `authentik.localhost`
+# (RFC 6761 -- modern browsers resolve any *.localhost name to loopback with
+# no /etc/hosts entry needed). This makes the api container (reaching
+# Authentik over the Docker-internal network) and the developer's actual
+# browser resolve the EXACT SAME hostname:port to the exact same container,
+# which Authentik's Host-header-derived .well-known/openid-configuration
+# document needs to work at all -- see the design doc's "browser-vs-
+# container discovery reachability problem" research. If
+# authentik.localhost doesn't resolve to loopback in whatever browser/OS
+# you're using, add a manual /etc/hosts entry (127.0.0.1 authentik.localhost)
+# as the documented fallback.
+#
+# SSO_ISSUER_URL for this local IdP:
+#   http://authentik.localhost:9000/application/o/nr-status/
+
+services:
+  authentik-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: ${AUTHENTIK_PG_PASSWORD:-changeme-authentik-local-dev-only}
+      POSTGRES_DB: authentik
+    volumes:
+      - authentik_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # Same probe shape as docker-compose.yml's own `postgres` service.
+      test: ["CMD-SHELL", "pg_isready -U authentik -d authentik"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2026.8.0
+    command: server
+    restart: unless-stopped
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+    environment: &authentik-env
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?AUTHENTIK_SECRET_KEY must be set -- generate one with e.g. `openssl rand -base64 60`}
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_PG_PASSWORD:-changeme-authentik-local-dev-only}
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      # Deliberately NOT set: AUTHENTIK_BOOTSTRAP_PASSWORD/_HASH/_EMAIL/
+      # _TOKEN -- see the file header comment above.
+    # Matches the official reference compose's shm_size for both server and
+    # worker (Django/Postgres shared-memory headroom).
+    shm_size: 512mb
+    volumes:
+      - ./authentik-blueprints:/blueprints/local:ro
+    ports:
+      - "9000:9000"
+    networks:
+      default:
+        aliases:
+          - authentik.localhost
+    healthcheck:
+      # /-/health/live/ is Authentik's documented liveness path; NOT
+      # independently re-confirmed by this plan's own research pass beyond
+      # citing it -- verify against real container behaviour in Task 4's
+      # live check and adjust if it 404s (a bare TCP probe on 9000 is the
+      # safe fallback).
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9000/-/health/live/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2026.8.0
+    command: worker
+    restart: unless-stopped
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+    environment: *authentik-env
+    shm_size: 512mb
+    volumes:
+      - ./authentik-blueprints:/blueprints/local:ro
+      # No /var/run/docker.sock mount -- the official reference compose
+      # mounts it for outpost/container management, which this app never
+      # uses (plain OIDC only, no proxy/forward-auth outposts). Omitting it
+      # is a deliberate reduction of both footprint and this container's
+      # access to the host Docker socket.
+
+volumes:
+  authentik_postgres_data:
