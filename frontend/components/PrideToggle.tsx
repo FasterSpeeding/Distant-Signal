@@ -6,24 +6,74 @@ import { useEffect, useState } from 'react';
 
 const STORAGE_KEY = 'pride-mode';
 
-type PrideMode = 'off' | 'rainbow' | 'trans';
+type PrideMode =
+  | 'off'
+  | 'rainbow'
+  | 'trans'
+  | 'bisexual'
+  | 'pansexual'
+  | 'asexual'
+  | 'sapphic'
+  | 'lesbian';
 
+/** Cycle order: rainbow (the umbrella flag) and trans first, since those
+ * two already existed; then bisexual/pansexual (grouped -- both describe
+ * attraction spanning more than one gender), then asexual, then
+ * sapphic/lesbian last (grouped -- both describe women-loving-women, see
+ * the sapphic-vs-lesbian distinction noted on the `sapphic` CSS rule in
+ * `globals.css`). Ends back at `'off'`, same one-control-one-flag shape as
+ * the original three-state cycle. */
 const NEXT_MODE: Record<PrideMode, PrideMode> = {
   off: 'rainbow',
   rainbow: 'trans',
-  trans: 'off',
+  trans: 'bisexual',
+  bisexual: 'pansexual',
+  pansexual: 'asexual',
+  asexual: 'sapphic',
+  sapphic: 'lesbian',
+  lesbian: 'off',
 };
 
+/** None of the five newer flags has a dedicated Unicode ZWJ flag emoji
+ * sequence the way rainbow (🏳️‍🌈) and trans (🏳️‍⚧️) do, so the plain white
+ * flag stands in for all five on the button glyph itself -- the CSS bar's
+ * colours (`globals.css`) and the `aria-label` below are what actually
+ * distinguish them, same as how the button never tried to render 7
+ * rainbow-coloured glyphs for that mode either. */
 const EMOJI: Record<PrideMode, string> = {
   off: '🏳️‍🌈',
   rainbow: '🏳️‍🌈',
   trans: '🏳️‍⚧️',
+  bisexual: '🏳️',
+  pansexual: '🏳️',
+  asexual: '🏳️',
+  sapphic: '🏳️',
+  lesbian: '🏳️',
 };
 
 const SPARKLES: Record<Exclude<PrideMode, 'off'>, [string, string, string]> = {
   rainbow: ['✨', '💖', '✨'],
   trans: ['🩵', '🩷', '✨'],
+  bisexual: ['💗', '💜', '💙'],
+  pansexual: ['💗', '💛', '💙'],
+  asexual: ['🖤', '🤍', '💜'],
+  // The violet flower is this flag's whole signature (see the `sapphic`
+  // note in `globals.css`), so it gets a literal blossom rather than a
+  // generic heart.
+  sapphic: ['💜', '🤍', '🌸'],
+  lesbian: ['🧡', '🤍', '💗'],
 };
+
+const STORED_MODES = new Set<PrideMode>([
+  'rainbow',
+  'trans',
+  'bisexual',
+  'pansexual',
+  'asexual',
+  'sapphic',
+  'lesbian',
+  'off',
+]);
 
 /** Reads a stored value from before this toggle grew a third state, when
  * `localStorage[STORAGE_KEY]` only ever held `'true'`/`'false'`. Anyone
@@ -31,7 +81,7 @@ const SPARKLES: Record<Exclude<PrideMode, 'off'>, [string, string, string]> = {
  * `'rainbow'`, the only flag that used to exist) rather than silently
  * resetting to `'off'`. */
 function parseStoredMode(raw: string | null): PrideMode {
-  if (raw === 'rainbow' || raw === 'trans' || raw === 'off') return raw;
+  if (raw !== null && STORED_MODES.has(raw as PrideMode)) return raw as PrideMode;
   if (raw === 'true') return 'rainbow';
   return 'off';
 }
@@ -44,10 +94,12 @@ function parseStoredMode(raw: string | null): PrideMode {
  * flag-striped bar above the page; it never touches a `StatusBadge` or any
  * other status-carrying colour.
  *
- * Cycles off -> rainbow -> trans -> off, the same three-state shape
- * `ThemeToggle` already uses for light/dark/auto, rather than a second
- * toggle button next to this one — one control, one flag on screen at a
- * time, no ambiguity about which wins if both were somehow on together.
+ * Cycles off -> rainbow -> trans -> bisexual -> pansexual -> asexual ->
+ * sapphic -> lesbian -> off (see `NEXT_MODE` below for why that order),
+ * the same single-control shape `ThemeToggle` uses for its light/dark/auto
+ * cycle, rather than a second toggle button next to this one — one
+ * control, one flag on screen at a time, no ambiguity about which wins if
+ * both were somehow on together.
  *
  * Same hydration-safety shape as `ThemeToggle`: the real preference lives
  * in `localStorage`, which isn't available during SSR, so the server (and

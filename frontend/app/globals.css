@@ -49,15 +49,16 @@ a[data-text-link]:focus-visible {
 /* `components/PrideToggle.tsx` sets `document.body.dataset.pride` from a
    client-only localStorage preference -- one of `'off'` (the default, so
    SSR and the pre-mount client render never need any of these rules to
-   exist), `'rainbow'`, or `'trans'`, cycled through the same way
-   `ThemeToggle` cycles light/dark/auto. A flag-striped bar painted above
-   the whole page, not a change to any element's own colour -- keeps this
-   fully separate from `lib/severity.ts`'s `GROUP_COLOR` map, which stays
-   semantic-only per docs/superpowers/specs/2026-08-18-grape-theme-design.md.
+   exist), `'rainbow'`, `'trans'`, `'bisexual'`, `'pansexual'`, `'asexual'`,
+   `'sapphic'`, or `'lesbian'`, cycled through the same way `ThemeToggle`
+   cycles light/dark/auto. A flag-striped bar painted above the whole page,
+   not a change to any element's own colour -- keeps this fully separate
+   from `lib/severity.ts`'s `GROUP_COLOR` map, which stays semantic-only per
+   docs/superpowers/specs/2026-08-18-grape-theme-design.md.
    `::before` on `body` rather than restyling `nav`'s existing border: that
    border is an inline style in `app/layout.tsx` (higher specificity than
    any stylesheet rule without `!important`), and a separate bar avoids
-   fighting it. The two modes' rules are kept side by side throughout this
+   fighting it. Each mode's rules are kept side by side throughout this
    file rather than factored into one shared selector, so each flag's exact
    stripe colours/count stay easy to read and edit independently. */
 body[data-pride='rainbow']::before {
@@ -96,6 +97,124 @@ body[data-pride='trans']::before {
   background-size: 200% 100%;
 }
 
+/* Bisexual flag: solid pink/purple/blue bands at the real 2:1:2 proportions
+   (Michael Page's 1998 design), not an even three-way split -- hard colour
+   stops rather than a smooth blend, since the source flag itself has no
+   gradient between bands. Hex values verified against flagcolorcodes.com's
+   Bisexual page. No seamless-loop repeat at the end (unlike the other
+   modes here): the flag's own hard edges already read as intentional, so
+   an extra same-position stop would only add a pointless zero-width
+   segment. */
+body[data-pride='bisexual']::before {
+  content: '';
+  display: block;
+  height: 6px;
+  background: linear-gradient(
+    to right,
+    #d60270 0%,
+    #d60270 40%,
+    #9b4f96 40%,
+    #9b4f96 60%,
+    #0038a8 60%,
+    #0038a8 100%
+  );
+  background-size: 200% 100%;
+}
+
+/* Pansexual flag: three equal stripes, magenta/yellow/cyan. Hex values
+   verified against flagcolorcodes.com's Pansexual page. */
+body[data-pride='pansexual']::before {
+  content: '';
+  display: block;
+  height: 6px;
+  background: linear-gradient(
+    to right,
+    #ff218c,
+    #ffd800,
+    #21b1ff,
+    #ff218c
+  );
+  background-size: 200% 100%;
+}
+
+/* Asexual flag: four equal stripes, black/grey/white/purple (the 2010 AVEN
+   community-vote design). Hex values verified against flagcolorcodes.com's
+   Asexual page. */
+body[data-pride='asexual']::before {
+  content: '';
+  display: block;
+  height: 6px;
+  background: linear-gradient(
+    to right,
+    #000000,
+    #a3a3a3,
+    #ffffff,
+    #800080,
+    #000000
+  );
+  background-size: 200% 100%;
+}
+
+/* Sapphic flag: there is no single universally-agreed sapphic flag the way
+   there is for bi/pan/ace -- multiple designs circulate (a 2018 four-stripe
+   violet/pink/yellow/green flag by Tumblr user Lydia; a purple/white/pink
+   "5 stripe" fan palette on color-hex.com; and the pink/near-white/violet
+   "flower" flag, created by Tumblr user lesbeux-moved on 2015-08-14 and
+   simplified to one stylised violet by pride-color-schemes on 2017-06-25).
+   The lesbeux/pride-color-schemes flower flag is the one used here: it's
+   the design independently described as "the most widely recognized and
+   used symbol for the sapphic/WLW community online" (LGBTQ Nation, "All
+   about the Sapphic Pride flag"), distinct from the lesbian sunset flag
+   below (this app implements both, separately, as distinct modes). Hex
+   values cross-checked against two independent sources that agree exactly
+   -- flagcolorcodes.com's "Sapphic Pride" page and gendergender.com's
+   sapphic reference page: pink #fd8ba8 (top/bottom stripes, "love"),
+   near-white #fbf2ff (the ground the violet sits on), and lavender #c76bc5
+   (the violet's petals, "token of sapphic desire"). The flower's yellow
+   stamen (#fdd768 in both sources) is a small dot on the real artwork, not
+   a stripe, so it's left out of this stripe-bar approximation. Symmetric
+   pink-white-violet-white-pink, same shape as the trans flag above. */
+body[data-pride='sapphic']::before {
+  content: '';
+  display: block;
+  height: 6px;
+  background: linear-gradient(
+    to right,
+    #fd8ba8,
+    #fbf2ff,
+    #c76bc5,
+    #fbf2ff,
+    #fd8ba8,
+    #fd8ba8
+  );
+  background-size: 200% 100%;
+}
+
+/* Lesbian flag: the seven-stripe "sunset" design (Emily Gwen, 2018) --
+   confirmed via Wikipedia's "Lesbian flags" article as the design a
+   popular five-stripe variant was later derived from; this app uses the
+   original seven-stripe palette for full stripe fidelity, the same way the
+   rainbow bar above keeps all seven of its stripes rather than a
+   simplified subset. Hex values verified against flagcolorcodes.com's
+   Lesbian Pride page. */
+body[data-pride='lesbian']::before {
+  content: '';
+  display: block;
+  height: 6px;
+  background: linear-gradient(
+    to right,
+    #d52d00,
+    #ef7627,
+    #ff9a56,
+    #ffffff,
+    #d162a4,
+    #b55690,
+    #a30262,
+    #d52d00
+  );
+  background-size: 200% 100%;
+}
+
 /* A static flag already reads as "on"; motion makes it unmistakable. Gated
    behind `prefers-reduced-motion` -- vestibular-disorder guidance is
    explicit that scrolling/shifting gradients are a real trigger, not just a
@@ -104,7 +223,12 @@ body[data-pride='trans']::before {
    noted here. */
 @media (prefers-reduced-motion: no-preference) {
   body[data-pride='rainbow']::before,
-  body[data-pride='trans']::before {
+  body[data-pride='trans']::before,
+  body[data-pride='bisexual']::before,
+  body[data-pride='pansexual']::before,
+  body[data-pride='asexual']::before,
+  body[data-pride='sapphic']::before,
+  body[data-pride='lesbian']::before {
     animation: pride-shimmer 6s linear infinite;
   }
 }
@@ -147,9 +271,69 @@ body[data-pride='trans'] nav::after {
   background-size: 200% 100%;
 }
 
+body[data-pride='bisexual'] nav::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 6px;
+  background: linear-gradient(to right, #d60270 0%, #d60270 40%, #9b4f96 40%, #9b4f96 60%, #0038a8 60%, #0038a8 100%);
+  background-size: 200% 100%;
+}
+
+body[data-pride='pansexual'] nav::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 6px;
+  background: linear-gradient(to right, #ff218c, #ffd800, #21b1ff, #ff218c);
+  background-size: 200% 100%;
+}
+
+body[data-pride='asexual'] nav::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 6px;
+  background: linear-gradient(to right, #000000, #a3a3a3, #ffffff, #800080, #000000);
+  background-size: 200% 100%;
+}
+
+body[data-pride='sapphic'] nav::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 6px;
+  background: linear-gradient(to right, #fd8ba8, #fbf2ff, #c76bc5, #fbf2ff, #fd8ba8, #fd8ba8);
+  background-size: 200% 100%;
+}
+
+body[data-pride='lesbian'] nav::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 6px;
+  background: linear-gradient(to right, #d52d00, #ef7627, #ff9a56, #ffffff, #d162a4, #b55690, #a30262, #d52d00);
+  background-size: 200% 100%;
+}
+
 @media (prefers-reduced-motion: no-preference) {
   body[data-pride='rainbow'] nav::after,
-  body[data-pride='trans'] nav::after {
+  body[data-pride='trans'] nav::after,
+  body[data-pride='bisexual'] nav::after,
+  body[data-pride='pansexual'] nav::after,
+  body[data-pride='asexual'] nav::after,
+  body[data-pride='sapphic'] nav::after,
+  body[data-pride='lesbian'] nav::after {
     animation: pride-shimmer 6s linear infinite reverse;
   }
 }
@@ -174,9 +358,54 @@ body[data-pride='trans'] [data-site-title] {
   color: transparent;
 }
 
+body[data-pride='bisexual'] [data-site-title] {
+  background: linear-gradient(90deg, #d60270 0%, #d60270 40%, #9b4f96 40%, #9b4f96 60%, #0038a8 60%, #0038a8 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+body[data-pride='pansexual'] [data-site-title] {
+  background: linear-gradient(90deg, #ff218c, #ffd800, #21b1ff, #ff218c);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+body[data-pride='asexual'] [data-site-title] {
+  background: linear-gradient(90deg, #000000, #a3a3a3, #ffffff, #800080, #000000);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+body[data-pride='sapphic'] [data-site-title] {
+  background: linear-gradient(90deg, #fd8ba8, #fbf2ff, #c76bc5, #fbf2ff, #fd8ba8, #fd8ba8);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+body[data-pride='lesbian'] [data-site-title] {
+  background: linear-gradient(90deg, #d52d00, #ef7627, #ff9a56, #ffffff, #d162a4, #b55690, #a30262, #d52d00);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
 @media (prefers-reduced-motion: no-preference) {
   body[data-pride='rainbow'] [data-site-title],
-  body[data-pride='trans'] [data-site-title] {
+  body[data-pride='trans'] [data-site-title],
+  body[data-pride='bisexual'] [data-site-title],
+  body[data-pride='pansexual'] [data-site-title],
+  body[data-pride='asexual'] [data-site-title],
+  body[data-pride='sapphic'] [data-site-title],
+  body[data-pride='lesbian'] [data-site-title] {
     animation: pride-shimmer 4s linear infinite;
   }
 }
@@ -214,6 +443,51 @@ button[aria-pressed='true'][aria-label*='trans']::before {
   inset: -3px;
   border-radius: 999px;
   background: conic-gradient(#5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa, #5bcefa);
+  z-index: -1;
+}
+
+button[aria-pressed='true'][aria-label*='bisexual']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#d60270 0deg, #d60270 144deg, #9b4f96 144deg, #9b4f96 216deg, #0038a8 216deg, #0038a8 360deg);
+  z-index: -1;
+}
+
+button[aria-pressed='true'][aria-label*='pansexual']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#ff218c, #ffd800, #21b1ff, #ff218c);
+  z-index: -1;
+}
+
+button[aria-pressed='true'][aria-label*='asexual']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#000000, #a3a3a3, #ffffff, #800080, #000000);
+  z-index: -1;
+}
+
+button[aria-pressed='true'][aria-label*='sapphic']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#fd8ba8, #fbf2ff, #c76bc5, #fbf2ff, #fd8ba8, #fd8ba8);
+  z-index: -1;
+}
+
+button[aria-pressed='true'][aria-label*='lesbian']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#d52d00, #ef7627, #ff9a56, #ffffff, #d162a4, #b55690, #a30262, #d52d00);
   z-index: -1;
 }
 
@@ -295,8 +569,15 @@ button[aria-pressed='true'][aria-label*='trans']::before {
 
 /* A flag-coloured scrollbar while pride mode is on. `scrollbar-color`
    (Firefox) only accepts a solid thumb colour, not a gradient -- a
-   representative mid-flag shade stands in there for each mode; Chromium/
-   WebKit get the full gradient via the pseudo-elements below. */
+   representative mid-flag shade stands in there for each mode (by
+   convention, each mode's second stripe -- both rainbow's #ff8c00 and
+   trans's #f5a9b8 above are their flag's second colour -- since the first
+   stripe repeats as the shimmer loop's seam and picking the second avoids
+   that ambiguity); Chromium/WebKit get the full gradient via the
+   pseudo-elements below. Sapphic is the one exception: its second stripe
+   is the near-white #fbf2ff ground colour, which would be almost invisible
+   against a transparent track, so its distinctive violet (#c76bc5) is used
+   instead. */
 body[data-pride='rainbow'] {
   scrollbar-color: #ff8c00 transparent;
   scrollbar-width: thin;
@@ -307,14 +588,49 @@ body[data-pride='trans'] {
   scrollbar-width: thin;
 }
 
+body[data-pride='bisexual'] {
+  scrollbar-color: #9b4f96 transparent;
+  scrollbar-width: thin;
+}
+
+body[data-pride='pansexual'] {
+  scrollbar-color: #ffd800 transparent;
+  scrollbar-width: thin;
+}
+
+body[data-pride='asexual'] {
+  scrollbar-color: #a3a3a3 transparent;
+  scrollbar-width: thin;
+}
+
+body[data-pride='sapphic'] {
+  scrollbar-color: #c76bc5 transparent;
+  scrollbar-width: thin;
+}
+
+body[data-pride='lesbian'] {
+  scrollbar-color: #ef7627 transparent;
+  scrollbar-width: thin;
+}
+
 body[data-pride='rainbow']::-webkit-scrollbar,
-body[data-pride='trans']::-webkit-scrollbar {
+body[data-pride='trans']::-webkit-scrollbar,
+body[data-pride='bisexual']::-webkit-scrollbar,
+body[data-pride='pansexual']::-webkit-scrollbar,
+body[data-pride='asexual']::-webkit-scrollbar,
+body[data-pride='sapphic']::-webkit-scrollbar,
+body[data-pride='lesbian']::-webkit-scrollbar {
   width: 12px;
   height: 12px;
 }
 
 body[data-pride='rainbow']::-webkit-scrollbar-track,
-body[data-pride='trans']::-webkit-scrollbar-track {
+body[data-pride='trans']::-webkit-scrollbar-track,
+body[data-pride='bisexual']::-webkit-scrollbar-track,
+body[data-pride='pansexual']::-webkit-scrollbar-track,
+body[data-pride='asexual']::-webkit-scrollbar-track,
+body[data-pride='sapphic']::-webkit-scrollbar-track,
+body[data-pride='lesbian']::-webkit-scrollbar-track {
   background: transparent;
 }
 
@@ -325,6 +641,31 @@ body[data-pride='rainbow']::-webkit-scrollbar-thumb {
 
 body[data-pride='trans']::-webkit-scrollbar-thumb {
   background: linear-gradient(180deg, #5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa);
+  border-radius: 999px;
+}
+
+body[data-pride='bisexual']::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #d60270 0%, #d60270 40%, #9b4f96 40%, #9b4f96 60%, #0038a8 60%, #0038a8 100%);
+  border-radius: 999px;
+}
+
+body[data-pride='pansexual']::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #ff218c, #ffd800, #21b1ff);
+  border-radius: 999px;
+}
+
+body[data-pride='asexual']::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #000000, #a3a3a3, #ffffff, #800080);
+  border-radius: 999px;
+}
+
+body[data-pride='sapphic']::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #fd8ba8, #fbf2ff, #c76bc5, #fbf2ff, #fd8ba8);
+  border-radius: 999px;
+}
+
+body[data-pride='lesbian']::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #d52d00, #ef7627, #ff9a56, #ffffff, #d162a4, #b55690, #a30262);
   border-radius: 999px;
 }
 
@@ -356,8 +697,8 @@ body {
   );
 }
 
-/* `[data-pride='rainbow']`/`[data-pride='trans']` pick up the same flag
-   colours the striped nav bars already use (see above), but spread across
+/* Each `[data-pride='...']` mode picks up the same flag colours its
+   striped nav bar already uses (see above), but spread across
    a vertical wash at ~5% opacity instead of a solid stripe -- the loud,
    unmistakably-on signal stays the animated bars; this is the quiet
    reinforcement bleeding into the atmosphere behind them, per this
@@ -388,6 +729,60 @@ body[data-pride='trans'] {
     color-mix(in srgb, #ffffff 5%, transparent) 50%,
     color-mix(in srgb, #f5a9b8 5%, transparent) 70%,
     color-mix(in srgb, #5bcefa 5%, transparent) 100%
+  );
+}
+
+body[data-pride='bisexual'] {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, #d60270 5%, transparent) 0%,
+    color-mix(in srgb, #d60270 5%, transparent) 20%,
+    color-mix(in srgb, #9b4f96 5%, transparent) 50%,
+    color-mix(in srgb, #0038a8 5%, transparent) 80%,
+    color-mix(in srgb, #0038a8 5%, transparent) 100%
+  );
+}
+
+body[data-pride='pansexual'] {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, #ff218c 5%, transparent) 0%,
+    color-mix(in srgb, #ffd800 5%, transparent) 50%,
+    color-mix(in srgb, #21b1ff 5%, transparent) 100%
+  );
+}
+
+body[data-pride='asexual'] {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, #000000 5%, transparent) 0%,
+    color-mix(in srgb, #a3a3a3 5%, transparent) 33%,
+    color-mix(in srgb, #ffffff 5%, transparent) 66%,
+    color-mix(in srgb, #800080 5%, transparent) 100%
+  );
+}
+
+body[data-pride='sapphic'] {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, #fd8ba8 5%, transparent) 0%,
+    color-mix(in srgb, #fbf2ff 5%, transparent) 30%,
+    color-mix(in srgb, #c76bc5 5%, transparent) 50%,
+    color-mix(in srgb, #fbf2ff 5%, transparent) 70%,
+    color-mix(in srgb, #fd8ba8 5%, transparent) 100%
+  );
+}
+
+body[data-pride='lesbian'] {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, #d52d00 5%, transparent) 0%,
+    color-mix(in srgb, #ef7627 5%, transparent) 16%,
+    color-mix(in srgb, #ff9a56 5%, transparent) 33%,
+    color-mix(in srgb, #ffffff 5%, transparent) 50%,
+    color-mix(in srgb, #d162a4 5%, transparent) 66%,
+    color-mix(in srgb, #b55690 5%, transparent) 83%,
+    color-mix(in srgb, #a30262 5%, transparent) 100%
   );
 }
 

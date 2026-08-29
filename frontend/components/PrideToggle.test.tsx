@@ -16,21 +16,28 @@ describe('PrideToggle', () => {
     expect(container.querySelector('.prideSparkles')).not.toBeInTheDocument();
   });
 
-  it('cycles off -> rainbow -> trans -> off, setting document.body.dataset.pride at each step', () => {
+  it('cycles off -> rainbow -> trans -> bisexual -> pansexual -> asexual -> sapphic -> lesbian -> off, setting document.body.dataset.pride at each step', () => {
     const { container } = renderWithMantine(<PrideToggle />);
     const button = screen.getByRole('button');
 
-    fireEvent.click(button);
-    expect(screen.getByLabelText('Pride mode: rainbow. Click to toggle.')).toBeInTheDocument();
-    expect(button).toHaveAttribute('aria-pressed', 'true');
-    expect(document.body.dataset.pride).toBe('rainbow');
-    expect(container.querySelector('.prideSparkles')).toBeInTheDocument();
+    const cycle: Array<[string, string]> = [
+      ['rainbow', '🏳️‍🌈'],
+      ['trans', '🏳️‍⚧️'],
+      ['bisexual', '🏳️'],
+      ['pansexual', '🏳️'],
+      ['asexual', '🏳️'],
+      ['sapphic', '🏳️'],
+      ['lesbian', '🏳️'],
+    ];
 
-    fireEvent.click(button);
-    expect(screen.getByLabelText('Pride mode: trans. Click to toggle.')).toBeInTheDocument();
-    expect(button).toHaveAttribute('aria-pressed', 'true');
-    expect(document.body.dataset.pride).toBe('trans');
-    expect(container.querySelector('.prideSparkles')).toBeInTheDocument();
+    for (const [mode, emoji] of cycle) {
+      fireEvent.click(button);
+      expect(screen.getByLabelText(`Pride mode: ${mode}. Click to toggle.`)).toBeInTheDocument();
+      expect(button).toHaveAttribute('aria-pressed', 'true');
+      expect(document.body.dataset.pride).toBe(mode);
+      expect(button).toHaveTextContent(emoji);
+      expect(container.querySelector('.prideSparkles')).toBeInTheDocument();
+    }
 
     fireEvent.click(button);
     expect(screen.getByLabelText('Pride mode: off. Click to toggle.')).toBeInTheDocument();
@@ -50,6 +57,28 @@ describe('PrideToggle', () => {
     expect(button).toHaveTextContent('🏳️‍⚧️');
   });
 
+  it('shows the plain white flag glyph, with a distinct sparkle set, for each of the newer flags without a dedicated emoji sequence', () => {
+    const { container } = renderWithMantine(<PrideToggle />);
+    const button = screen.getByRole('button');
+
+    // off -> rainbow -> trans -> bisexual
+    fireEvent.click(button);
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(screen.getByLabelText('Pride mode: bisexual. Click to toggle.')).toBeInTheDocument();
+    expect(button).toHaveTextContent('🏳️');
+    const bisexualSparkles = container.querySelectorAll('.prideSparkle');
+    expect(bisexualSparkles).toHaveLength(3);
+    expect(Array.from(bisexualSparkles).map((s) => s.textContent)).toEqual(['💗', '💜', '💙']);
+
+    // -> pansexual
+    fireEvent.click(button);
+    expect(screen.getByLabelText('Pride mode: pansexual. Click to toggle.')).toBeInTheDocument();
+    expect(button).toHaveTextContent('🏳️');
+    const pansexualSparkles = container.querySelectorAll('.prideSparkle');
+    expect(Array.from(pansexualSparkles).map((s) => s.textContent)).toEqual(['💗', '💛', '💙']);
+  });
+
   it('persists the preference in localStorage across remounts', () => {
     const { unmount } = renderWithMantine(<PrideToggle />);
     fireEvent.click(screen.getByRole('button')); // -> rainbow
@@ -59,6 +88,18 @@ describe('PrideToggle', () => {
 
     renderWithMantine(<PrideToggle />);
     expect(screen.getByLabelText('Pride mode: trans. Click to toggle.')).toBeInTheDocument();
+  });
+
+  it('persists a newer flag mode (sapphic) in localStorage across remounts', () => {
+    const { unmount } = renderWithMantine(<PrideToggle />);
+    const button = screen.getByRole('button');
+    // off -> rainbow -> trans -> bisexual -> pansexual -> asexual -> sapphic
+    for (let i = 0; i < 6; i++) fireEvent.click(button);
+    expect(localStorage.getItem('pride-mode')).toBe('sapphic');
+    unmount();
+
+    renderWithMantine(<PrideToggle />);
+    expect(screen.getByLabelText('Pride mode: sapphic. Click to toggle.')).toBeInTheDocument();
   });
 
   it('treats a pre-existing boolean-era stored value as rainbow, not off', () => {
