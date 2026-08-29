@@ -249,4 +249,20 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["swr-alton".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    #[test]
+    fn lner_ecml_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Aberdeen sits on `ecml-aberdeen`, north of the Doncaster/Newark
+        // junctions that Tasks 6.2-6.4's not-yet-written Leeds/Hull/Lincoln
+        // branches will share `ecml-doncaster`/`ecml-fenland` with — no
+        // other line touches `ecml-aberdeen` today, so this should stay
+        // exclusive to `lner-ecml` and not propagate anywhere else.
+        let inc = incident("LNER-1", "Points failure at Aberdeen", "Points failure causing delays at Aberdeen.", &["GR"], &["ABD"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["lner-ecml".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
