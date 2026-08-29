@@ -11,6 +11,7 @@ mod schema;
 mod matching;
 mod journey;
 mod eta;
+mod dedup;
 
 use clap::Parser;
 use config::Config;
