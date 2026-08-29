@@ -95,12 +95,12 @@ segment = "chiltern-main-line"
 # reasoning as Banbury above.
 
 [[stations]]
-crs = "WRP"
+crs = "WRW"
 role = "minor"
 segment = "chiltern-main-line"
 
 [[stations]]
-crs = "WRW"
+crs = "WRP"
 role = "minor"
 segment = "chiltern-main-line"
 
