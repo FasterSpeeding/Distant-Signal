@@ -87,6 +87,20 @@ services:
       AUTHENTIK_POSTGRESQL__NAME: authentik
       # Deliberately NOT set: AUTHENTIK_BOOTSTRAP_PASSWORD/_HASH/_EMAIL/
       # _TOKEN -- see the file header comment above.
+      #
+      # Telemetry, confirmed against
+      # https://docs.goauthentik.io/install-config/configuration/ for
+      # 2026.8.0:
+      #   AUTHENTIK_ERROR_REPORTING__ENABLED already defaults to `false`
+      #   (error reports + anonymous performance data would otherwise go to
+      #   sentry.io) -- pinned explicitly here so a future authentik
+      #   version changing that default can't silently start phoning home
+      #   for a dev-only local IdP.
+      #   AUTHENTIK_DISABLE_UPDATE_CHECK defaults to `false`, i.e. the
+      #   inbuilt update-checker is ON by default and does phone home --
+      #   this one actually changes behaviour, unlike the line above.
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
     # Matches the official reference compose's shm_size for both server and
     # worker (Django/Postgres shared-memory headroom).
     shm_size: 512mb

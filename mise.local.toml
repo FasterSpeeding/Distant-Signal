@@ -1,2 +1,15 @@
+# mise's own "usage stats" telemetry: after installing a tool it POSTs the
+# tool name/version and OS/arch (plus a hashed IP, server-side, for daily
+# dedup) to mise-versions.jdx.dev, purely to power that site's tool-
+# popularity charts. Opt-out setting confirmed at
+# https://mise.jdx.dev/configuration/settings.html --
+# `use_versions_host_track` defaults to true; setting it false here (rather
+# than leaving it to each contributor's global mise config) disables it
+# unconditionally for this repo. Unrelated to `use_versions_host` itself,
+# which just lets mise use mise-versions.jdx.dev as a version-list/GitHub-
+# metadata cache to dodge GitHub API rate limits -- left at its default.
+[settings]
+use_versions_host_track = false
+
 [tools]
 bun = "latest"
