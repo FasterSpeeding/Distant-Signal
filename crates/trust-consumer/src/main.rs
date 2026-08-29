@@ -8,6 +8,7 @@ mod config;
 mod feed;
 mod health;
 mod schema;
+mod matching;
 
 use clap::Parser;
 use config::Config;
