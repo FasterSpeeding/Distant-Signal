@@ -588,7 +588,7 @@ trustConsumer:
   kafka:
     brokers: ""
     topic: ""
-    consumerGroup: nr-status-trust-consumer
+    consumerGroup: distant-signal-trust-consumer
     saslMechanism: ""
     # -- Consumer key/secret. Follows the chart's normal secrets rule: an
     # existingSecret takes priority; otherwise these values (possibly
