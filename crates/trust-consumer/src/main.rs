@@ -9,6 +9,7 @@ mod feed;
 mod health;
 mod schema;
 mod matching;
+mod journey;
 
 use clap::Parser;
 use config::Config;
