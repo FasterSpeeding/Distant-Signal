@@ -1,6 +1,7 @@
 # Distant Signal: Design Document
 
-A TfL-style line status aggregator for UK National Rail.
+A personal UK rail companion: line-status aggregation, individual train
+tracking, accounts, and (soon) ticket/Delay-Repay support.
 
 This document captures the design, the decisions behind it, and the open
 questions, in enough detail that an implementer (human or LLM) can extend
@@ -359,16 +360,11 @@ model and aggregation logic in §5 and §6 carried over largely unchanged.
 
 For an implementer picking this up, the recommended order:
 
-**Stage 1 — make the existing code production-ready.**
-1. Wire up a real Knowledgebase XML poller. Parse `<Incident>` elements,
-   extract operator codes from `<Affects><Operators>` and station hits
-   from a CRS lookup table applied to `<Description>` text.
-2. Wire up an LDBWS sampler. Use `httpx` against the new REST endpoint,
-   or `zeep` if sticking with SOAP. Deduplicate the union of all lines'
-   `sample_stations` to minimise calls.
-3. Schedule both with APScheduler or a simple asyncio loop. Persist
-   results to Postgres.
-4. Wrap `aggregate()` in a FastAPI app, serve the four core endpoints.
+**Stage 1 — make the existing code production-ready.** Done: the
+Knowledgebase and LDBWS pollers, scheduling, Postgres persistence, and the
+HTTP read API are all implemented (`crates/poller-incidents`,
+`crates/poller-ldbws`, `crates/aggregator`, `crates/api` — see §4). See
+§10 for what's actually still open.
 
 **Stage 2 — broaden the line catalogue.**
 1. Add the busiest 15-20 lines first. Major main lines (ECML, GWML,
@@ -453,15 +449,10 @@ that lives next to the line definition. Defaults exist for the common case.
   service that splits at Haslemere with portions to different
   destinations) aren't modelled directly — define each branch as a
   separate line with a shared trunk segment.
-- **Line catalogue is small.** Two main lines plus three SWR lines is
-  enough to demonstrate the design; production needs ~50-100 lines.
-- **No HTTP layer.** Aggregator output isn't yet served; FastAPI wrap is
-  straightforward but not done.
-- **No persistence.** Aggregator currently runs in-memory only. Need a
-  Postgres schema (incidents, samples, line_status, line_status_history).
-- **No history.** TfL exposes `/Line/{id}/Status/{from}/to/{to}`. We
-  don't yet, because we don't store status snapshots. Add a
-  `line_status_history` table written on every aggregation cycle.
+- **Line catalogue is still growing.** ~20 lines defined today (WCML,
+  Thameslink, SWR, Northern, Elizabeth line, Cross Country, and their
+  branches); production coverage of all major TOCs/regional networks
+  needs ~50-100 lines.
 - **Severity for engineering works.** Currently mapped to PLANNED_CLOSURE
   regardless of actual impact. A planned partial closure should map to
   PART_CLOSURE; needs a richer mapping.

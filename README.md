@@ -11,7 +11,7 @@ real differentiator.
 
 ## Layout
 
-- `crates/` — a nine-crate Rust workspace: `common`, `api`, `aggregator`,
+- `crates/` — a ten-crate Rust workspace: `common`, `api`, `aggregator`,
   `enricher`, `trust-consumer`, and five `poller-*` crates.
 - `frontend/` — the Next.js web frontend.
 - `charts/distant-signal/` — the Helm chart for deploying the whole stack.
