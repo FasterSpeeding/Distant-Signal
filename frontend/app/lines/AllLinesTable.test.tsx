@@ -10,7 +10,7 @@ vi.mock('next/navigation', () => ({
 
 function report(overrides: Partial<LineStatusReport> & { id: string; name: string }): LineStatusReport {
   return {
-    $type: 'NRStatus.LineStatusReport',
+    $type: 'DistantSignal.LineStatusReport',
     modeName: 'national-rail',
     operators: [],
     computedAt: '2026-07-15T09:00:00Z',
@@ -228,7 +228,7 @@ describe('AllLinesTable responsive columns', () => {
 
   const mobileReports: LineStatusReport[] = [
     {
-      $type: 'NRStatus.LineStatusReport',
+      $type: 'DistantSignal.LineStatusReport',
       id: 'northern',
       name: 'Northern',
       modeName: 'national-rail',
@@ -287,7 +287,7 @@ describe('AllLinesTable responsive columns', () => {
     // the mobile summary text must guard against separately from `stats`.
     const zeroSampleReports: LineStatusReport[] = [
       {
-        $type: 'NRStatus.LineStatusReport',
+        $type: 'DistantSignal.LineStatusReport',
         id: 'northern',
         name: 'Northern',
         modeName: 'national-rail',

@@ -5,7 +5,7 @@ import { LineStatusCard } from './LineStatusCard';
 import type { LineStatusReport } from '@/lib/types';
 
 const report: LineStatusReport = {
-  $type: 'NRStatus.LineStatusReport',
+  $type: 'DistantSignal.LineStatusReport',
   id: 'wcml',
   name: 'West Coast Main Line',
   modeName: 'national-rail',

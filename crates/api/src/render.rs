@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 pub fn to_tfl_shape(report: &LineStatusReport, computed_at: DateTime<Utc>, detail: bool) -> Value {
     json!({
-        "$type": "NRStatus.LineStatusReport",
+        "$type": "DistantSignal.LineStatusReport",
         "id": report.id,
         "name": report.name,
         "modeName": report.mode_name,
@@ -129,7 +129,7 @@ mod tests {
     fn renders_top_level_fields() {
         let report = sample_report(None);
         let json = to_tfl_shape(&report, sample_computed_at(), false);
-        assert_eq!(json["$type"], "NRStatus.LineStatusReport");
+        assert_eq!(json["$type"], "DistantSignal.LineStatusReport");
         assert_eq!(json["id"], "wcml");
         assert_eq!(json["name"], "West Coast Main Line");
         assert_eq!(json["modeName"], "national-rail");

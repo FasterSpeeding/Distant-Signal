@@ -14,7 +14,7 @@ function status(reason: string, severity = 9): LineStatus {
 
 function report(id: string, name: string, statuses: LineStatus[]): LineStatusReport {
   return {
-    $type: 'NRStatus.LineStatusReport',
+    $type: 'DistantSignal.LineStatusReport',
     id,
     name,
     modeName: 'national-rail',
