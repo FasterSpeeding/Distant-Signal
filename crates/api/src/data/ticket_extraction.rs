@@ -248,7 +248,14 @@ mod parse_pkpass_tests {
 /// docs/superpowers/specs/2026-08-29-journey-ticket-tracking-design.md's
 /// Research summary §3 and Open Question 2) -- this is a genuinely
 /// fragile, lower-confidence tier than `.pkpass` parsing, by design; an
-/// unmatched field is left `None` for manual completion, never guessed at.
+/// unmatched field is left `None` for manual completion, never guessed at
+/// when nothing matches. `ROUTE_PATTERN` in particular is best-effort in
+/// the other direction too: because it matches against unstructured,
+/// unanchored text with no field boundaries, it can occasionally capture
+/// nearby boilerplate prose rather than the actual route (see that
+/// pattern's own doc comment) -- `train_tracking::validate_ticket_entry`'s
+/// CRS-format check (Task 2) is what actually prevents an unedited false
+/// match from ever being saved, not this regex's own precision.
 pub fn parse_pdf_text(text: &str) -> PartialTicket {
     let operator = KNOWN_RETAILER_MARKERS.iter().find(|marker| text.contains(**marker)).map(|marker| marker.to_string());
 
@@ -275,12 +282,22 @@ const TICKET_TYPE_KEYWORDS: &[&str] =
 /// worked example uses ("18:32 London Waterloo to Woking, Off-Peak Day
 /// Single") -- deliberately conservative (letters/spaces/apostrophes/
 /// hyphens only) since this matches against unstructured extracted text
-/// with no field boundaries at all. Confirm this against 1-2 real e-ticket
-/// PDFs at implementation time (Open Question 2 flags real samples as
-/// needed, same as `.pkpass`'s Open Question 1) and adjust -- this is a
-/// starting point, not a pattern verified against real tickets.
-static ROUTE_PATTERN: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"([A-Za-z][A-Za-z '\-]+?)\s+to\s+([A-Za-z][A-Za-z '\-]+?)[,\.\n]").unwrap());
+/// with no field boundaries at all. The trailing delimiter accepts a
+/// comma/period/newline OR end-of-string, so a route with nothing after it
+/// (e.g. the destination is the last thing in the extracted text) still
+/// matches. `captures()` returns the leftmost match in the whole document
+/// with no anchoring to a specific line, so this can and occasionally will
+/// latch onto unrelated boilerplate prose containing "... to ..." before
+/// the real route line (e.g. "Please remember to bring photo ID... Leeds
+/// to York."), not just the intended route -- this is a known, accepted
+/// imprecision, not a bug to chase here; see `parse_pdf_text`'s doc comment
+/// for why that's still safe. Confirm this against 1-2 real e-ticket PDFs
+/// at implementation time (Open Question 2 flags real samples as needed,
+/// same as `.pkpass`'s Open Question 1) and adjust -- this is a starting
+/// point, not a pattern verified against real tickets.
+static ROUTE_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"([A-Za-z][A-Za-z '\-]+?)\s+to\s+([A-Za-z][A-Za-z '\-]+?)(?:[,\.\n]|$)").unwrap()
+});
 
 #[cfg(test)]
 mod parse_pdf_text_tests {
@@ -314,6 +331,16 @@ mod parse_pdf_text_tests {
     fn no_ticket_type_keyword_present_yields_none_not_a_guess() {
         let ticket = parse_pdf_text("Trainline: London Waterloo to Woking");
         assert_eq!(ticket.ticket_type, None);
+    }
+
+    #[test]
+    fn a_route_with_nothing_after_the_destination_still_matches() {
+        // No trailing comma/period/newline after "Woking" -- the
+        // destination is the last thing in the text. See ROUTE_PATTERN's
+        // doc comment for why `$` is part of its trailing delimiter.
+        let ticket = parse_pdf_text("Trainline: London Waterloo to Woking");
+        assert_eq!(ticket.origin_crs, Some("London Waterloo".to_string()));
+        assert_eq!(ticket.destination_crs, Some("Woking".to_string()));
     }
 }
 

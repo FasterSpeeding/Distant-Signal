@@ -120,18 +120,30 @@ async fn get_delay_repay_estimate(
         .map_err(internal_error("read tracked train state"))?
         .ok_or((StatusCode::NOT_FOUND, "no tracked train with that id".to_string()))?;
 
+    Ok(Json(build_delay_repay_response(&ticket, &state)))
+}
+
+/// Pure response assembly for `get_delay_repay_estimate`, extracted out of
+/// the handler so it's unit-testable without a `PgPool`/`App` at all --
+/// deliberately given no I/O capability of any kind, consistent with this
+/// whole feature's "the estimator's own call sites stay provably
+/// read-only/pure" posture (see `delay_repay_rules`'s module doc).
+fn build_delay_repay_response(
+    ticket: &train_tracking::TrackedTrainTicket,
+    state: &train_tracking::TrackedTrainState,
+) -> DelayRepayEstimateResponse {
     let estimate = match (ticket.operator.as_deref(), state.delay_minutes) {
         (Some(operator), Some(delay_minutes)) => delay_repay_rules::estimate_delay_repay(operator, delay_minutes),
         _ => None,
     };
     let claim_url = ticket.operator.as_deref().map(delay_repay_rules::claim_url_for).unwrap_or(delay_repay_rules::GENERIC_CLAIM_URL);
 
-    Ok(Json(DelayRepayEstimateResponse {
+    DelayRepayEstimateResponse {
         delay_minutes: state.delay_minutes,
         estimate,
         claim_url: claim_url.to_string(),
         disclaimer: DELAY_REPAY_ROUTE_DISCLAIMER,
-    }))
+    }
 }
 
 async fn post_track(
@@ -228,16 +240,42 @@ async fn post_pkpass_upload(
 /// doc comment for why `_user`/`_tracking_id` are otherwise unused, and
 /// the same REVIEW-BEFORE-SAVE note: no `sqlx::query` call, no database
 /// handle, anywhere in this function.
+///
+/// Unlike `.pkpass` parsing (a bounded zip-entry read), `ticket_extraction::parse_pdf`
+/// runs the third-party `pdf_extract` crate over untrusted, potentially
+/// pathological PDF bytes with no time bound of its own -- CPU-bound,
+/// synchronous work that would otherwise stall a tokio worker thread for
+/// the whole API, not just this route, if called directly from this async
+/// handler. It's pushed onto a blocking-pool thread via `spawn_blocking`
+/// and given a hard wall-clock budget via `timeout` so a pathological
+/// upload degrades to one failed request, not a stuck worker thread.
 async fn post_pdf_upload(
     _user: AuthenticatedUser,
     Path(_tracking_id): Path<i64>,
     mut multipart: Multipart,
 ) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
     let bytes = read_single_file_field(&mut multipart, "file").await?;
-    ticket_extraction::parse_pdf(&bytes)
-        .map(Json)
-        .map_err(|err| (StatusCode::UNPROCESSABLE_ENTITY, format!("could not read this as a PDF e-ticket: {err}")))
+
+    let parsed = tokio::time::timeout(PDF_PARSE_TIMEOUT, tokio::task::spawn_blocking(move || ticket_extraction::parse_pdf(&bytes))).await;
+
+    match parsed {
+        Ok(Ok(Ok(ticket))) => Ok(Json(ticket)),
+        Ok(Ok(Err(err))) => Err((StatusCode::UNPROCESSABLE_ENTITY, format!("could not read this as a PDF e-ticket: {err}"))),
+        Ok(Err(join_err)) => {
+            tracing::error!(error = ?join_err, "PDF parse task panicked or was cancelled");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, "failed to parse PDF e-ticket".to_string()))
+        }
+        Err(_elapsed) => {
+            Err((StatusCode::GATEWAY_TIMEOUT, "PDF e-ticket parsing took too long; try a smaller or simpler file".to_string()))
+        }
+    }
 }
+
+/// Wall-clock budget for a single PDF's text extraction (Finding 2 of the
+/// final review of this plan) -- generous for any legitimate ticket PDF
+/// (typically well under a second), bounded against a pathological upload
+/// tying up a blocking-pool thread indefinitely.
+const PDF_PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Shared by this route and Task 9's PDF upload route: reads the single
 /// multipart field named `field_name` (expected to be `"file"` for both)
@@ -261,5 +299,92 @@ fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusC
     move |err| {
         tracing::error!(error = ?err, operation, "train tracking request failed");
         (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to {operation}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Utc};
+
+    use super::*;
+
+    // Fixed instants for the `created_at`/`eta_next` fields below -- their
+    // exact values are irrelevant to every test in this module, only their
+    // presence/absence (`Option`-ness) is.
+    fn fixed_instant() -> DateTime<Utc> {
+        "2026-08-29T12:00:00Z".parse().unwrap()
+    }
+
+    fn ticket(operator: Option<&str>) -> train_tracking::TrackedTrainTicket {
+        train_tracking::TrackedTrainTicket {
+            id: 1,
+            tracked_train_id: 1,
+            operator: operator.map(str::to_string),
+            ticket_type: Some("Off-Peak Day Single".to_string()),
+            origin_crs: Some("KGX".to_string()),
+            destination_crs: Some("EDB".to_string()),
+            source: "manual".to_string(),
+            created_at: fixed_instant(),
+        }
+    }
+
+    fn state(delay_minutes: Option<i32>) -> train_tracking::TrackedTrainState {
+        train_tracking::TrackedTrainState {
+            id: 1,
+            service_date: "2026-08-29".parse().unwrap(),
+            pin_origin_crs: "KGX".to_string(),
+            pin_destination_crs: Some("EDB".to_string()),
+            resolution_status: "resolved".to_string(),
+            train_uid: Some("A12345".to_string()),
+            train_id: Some("1A23".to_string()),
+            status: Some("late".to_string()),
+            last_reported_location: Some("York".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes,
+            next_calling_point: Some("Newcastle".to_string()),
+            eta_next: Some(fixed_instant()),
+            eta_source: Some("darwin-estimated".to_string()),
+        }
+    }
+
+    /// axum's `Router::route` panics synchronously, at construction time,
+    /// on a route-table conflict it can't disambiguate -- this test exists
+    /// purely to catch that class of bug at `cargo test` time instead of at
+    /// production startup.
+    #[test]
+    fn router_builds_without_panicking() {
+        let _ = router();
+    }
+
+    #[test]
+    fn dr30_operator_with_a_qualifying_delay_gets_a_specific_estimate_and_claim_url() {
+        let response = build_delay_repay_response(&ticket(Some("LNER")), &state(Some(45)));
+
+        let estimate = response.estimate.expect("LNER + 45 minutes should clear the DR30 30-minute band");
+        assert_eq!(estimate.scheme, "DR30");
+        assert_eq!(estimate.percentage, 50);
+        assert_eq!(response.claim_url, "https://delayrepay.lner.co.uk/delayrepayV2/");
+        assert_eq!(response.delay_minutes, Some(45));
+    }
+
+    #[test]
+    fn no_operator_on_the_ticket_yields_no_estimate_but_still_a_real_claim_link_and_disclaimer() {
+        let response = build_delay_repay_response(&ticket(None), &state(Some(45)));
+
+        assert_eq!(response.estimate, None);
+        assert_eq!(response.claim_url, delay_repay_rules::GENERIC_CLAIM_URL);
+        assert!(!response.disclaimer.is_empty());
+    }
+
+    #[test]
+    fn an_unresolved_delay_yields_no_estimate_but_claim_url_and_disclaimer_are_still_populated() {
+        // Safety property #3: a caller must never see a bare/absent
+        // caveat, even when the train hasn't resolved/reported a delay yet.
+        let response = build_delay_repay_response(&ticket(Some("LNER")), &state(None));
+
+        assert_eq!(response.estimate, None);
+        assert_eq!(response.delay_minutes, None);
+        assert_eq!(response.claim_url, "https://delayrepay.lner.co.uk/delayrepayV2/");
+        assert!(!response.disclaimer.is_empty());
     }
 }
