@@ -46,24 +46,49 @@
 //! of scope for the task that introduced this file, and are deliberately
 //! left for a follow-up rather than half-done here.
 //!
-//! **A failed post plus Kafka redelivery loses the resolution binding.**
+//! **A failed post is recovered by a restart, not by an in-process retry --
+//! and only if that restart happens before the next successful commit.**
 //! `process_message` mutates `state.resolved`, `state.pending_activations`
 //! and `state.last_derived` as it builds each event -- *before* `main.rs`
 //! has attempted, let alone confirmed, the `post_train_events` call for that
-//! batch. When the post fails, `main.rs` deliberately does not commit
-//! offsets, so Kafka redelivers the same messages; but by then the
-//! Activation has already been `remove`d from `pending_activations` and the
-//! `train_id` already inserted into `resolved`. The redelivered Movement is
-//! therefore no longer "freshly resolving", and goes out a second time with
-//! `resolved_train_uid: None` and `resolved_train_id: None`. The event row
-//! itself is still written correctly and idempotently (`dedup_key` is
-//! computed from the message's own fields, not from this state), and it
-//! still carries the right `tracked_train_id` -- but the one message that
-//! would have flipped the DB row to `'resolved'` has lost its binding, which
-//! is the most likely way to land in the previous paragraph's stuck-pending
-//! state. Fixing this means making the map mutations transactional with
-//! respect to a successful post, which is the same restructuring named
-//! above.
+//! batch. This paragraph used to describe that ordering as costing the
+//! resolution binding on a Kafka *redelivery* of the same messages. That
+//! premise was wrong, and why is worth stating precisely.
+//!
+//! `StreamConsumer::recv` never hands the same message to a running process
+//! twice, whatever the offset state -- committed offsets govern where a
+//! *new* consumer session resumes, not what an existing one replays
+//! (verified against rdkafka 0.39.0's consumer API and librdkafka 2.12.1's
+//! `rd_kafka_offset_store` contract in `rdkafka.h`, which is about the
+//! stored/committed position only). So there is no in-process redelivery for
+//! these maps to go stale against: a batch whose post fails is simply
+//! dropped from this process's view. Recovery is a restart, and a restart
+//! rebuilds every one of these maps from scratch -- `main.rs` constructs a
+//! fresh `ProcessorState::default()`, seeds `resolved` from the reference
+//! reload, and re-parks Activations from whatever the feed replays. The
+//! replayed Movement therefore resolves its pin as if for the first time,
+//! and the pin is still `pending` in the database, because the post that
+//! would have changed that is precisely the one that failed.
+//!
+//! What remains is narrower but real. `feed/kafka.rs` now stores an offset
+//! only when `commit` is called (`enable.auto.offset.store=false`), so a
+//! failed post confirms nothing -- but the *next* message received
+//! overwrites the offset being held, and committing that one commits past
+//! the failed one. A sustained `api` outage therefore confirms nothing at
+//! all and is fully recoverable by a restart (asserted by `main.rs`'s
+//! `a_sustained_outage_never_commits`), while a single transient failure
+//! sandwiched between successes is still lost once the following batch
+//! commits. Closing that last gap means retrying the unposted batch
+//! in-process rather than pulling the next one, *with* a retry bound so a
+//! permanently-unpostable batch can't stall the consumer forever -- a
+//! design decision of its own, deliberately left for follow-up rather than
+//! half-done here.
+//!
+//! The Activation-binding consequence above survives in one form: if a
+//! `0001` Activation's offset was already committed before the failure, the
+//! restart's replay begins after it, so the resolving Movement goes out with
+//! `resolved_train_uid: None` and lands in the previous paragraph's
+//! stuck-`pending` state.
 //!
 //! Two smaller, deliberate consequences of shapes fixed in earlier tasks,
 //! noted here so they aren't mistaken for oversights:
