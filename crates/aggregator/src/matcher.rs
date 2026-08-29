@@ -266,4 +266,26 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["overground-liberty".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // London Overground's Lioness line (former Watford DC line, Euston -
+    // Watford Junction) shares only a single station (Willesden Junction)
+    // with the Mildmay line, on physically separate track either side of
+    // it — a station-level overlap, not a shared segment. Standalone for
+    // the shared-segment testing convention: exclusive-segment test only,
+    // same exception class as c2c/Merseyrail.
+    //
+    // Uses Bushey (BSH) rather than Watford Junction (WFJ): WFJ also
+    // appears on `west-coast-main-line.toml` (a real station-level overlap
+    // the brief didn't call out), which would make an incident there match
+    // both lines and defeat the point of this exclusive-segment test.
+    #[test]
+    fn overground_lioness_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("LO-2", "Points failure at Bushey", "Points failure causing delays at Bushey.", &["LO"], &["BSH"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["overground-lioness".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
