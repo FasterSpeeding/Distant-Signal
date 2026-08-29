@@ -5,6 +5,8 @@
 //! general auth framework — just enough to keep the ingestion endpoints
 //! from being reachable by anyone who can hit the API's port.
 
+pub mod oidc;
+
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
