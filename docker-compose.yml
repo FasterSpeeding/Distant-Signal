@@ -299,7 +299,17 @@ services:
       KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-nr-status-trust-consumer}
       KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
       KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
-      KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM:-PLAIN}
+      # No `:-PLAIN` fallback, deliberately: config.rs gives this field no
+      # clap default precisely so a wrong guess can't run silently (RDM's
+      # mechanism is still a GAP), and a compose-level default reintroduced
+      # exactly that. Same posture as the Helm chart's `fail` guard on
+      # trustConsumer.kafka.saslMechanism. Verified both ways by running the
+      # binary: with the variable unset clap refuses to start ("the following
+      # required arguments were not provided: --kafka-sasl-mechanism"), and
+      # with it set empty -- what compose passes through for an unset var --
+      # librdkafka refuses at connect ("Invalid value for configuration
+      # property \"sasl.mechanisms\""). Either way it stops, loudly.
+      KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM}
       API_INGEST_URL: http://api:8080/private/train-events
       API_TRACKED_TRAINS_URL: http://api:8080/private/tracked-trains
       INTERNAL_TOKEN: ${INTERNAL_TOKEN}
