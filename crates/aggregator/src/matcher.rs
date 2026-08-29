@@ -301,4 +301,52 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["swr-alton".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    #[test]
+    fn west_anglia_exclusive_segment_incident_does_not_propagate() {
+        // Bishop's Stortford is deep in `waml-trunk-london` territory, well
+        // away from Cambridge (the only station this line shares with any
+        // other committed line — see the next test). No other `lines/*.toml`
+        // file touches this station, so this should stay scoped to
+        // greater-anglia-west-anglia only.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LE-3",
+            "Signal failure at Bishop's Stortford",
+            "Signal failure causing delays to Greater Anglia services.",
+            &["LE"],
+            &["BIS"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["greater-anglia-west-anglia".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn west_anglia_cambridge_is_station_overlap_only_with_xc_stansted() {
+        // Cambridge (CBG) is on both greater-anglia-west-anglia.toml's
+        // `waml-mainline` segment and xc-stansted.toml's `xc-stansted`
+        // segment (CrossCountry's Birmingham-Stansted service also calls
+        // there). The two files deliberately do NOT share a segment name
+        // for this station (see greater-anglia-west-anglia.toml's decision
+        // comment — reusing xc-stansted's segment name would incorrectly
+        // mark its whole Midlands trunk as shared trunk with this line), so
+        // an incident here should match both lines independently, each
+        // still classified as ExclusiveSegment rather than escalating to
+        // SharedSegment.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("LE-4", "Points failure at Cambridge", "Points failure causing delays.", &["LE"], &["CBG"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["greater-anglia-west-anglia".to_string(), "xc-stansted".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
 }
