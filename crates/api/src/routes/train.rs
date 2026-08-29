@@ -12,7 +12,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::{NaiveDate, Utc};
-use common::TrackPinRequest;
+use common::{TicketEntryRequest, TrackPinRequest};
 use serde::Serialize;
 
 use crate::app::{App, Router};
@@ -24,6 +24,7 @@ pub fn router() -> Router {
         .route("/Train/track", axum::routing::post(post_track))
         .route("/Train/{tracking_id}", axum::routing::get(get_by_tracking_id))
         .route("/Train/by-uid/{train_uid}/{date}", axum::routing::get(get_by_uid_and_date))
+        .route("/Train/{tracking_id}/tickets", axum::routing::post(post_ticket).get(get_tickets))
 }
 
 #[derive(Debug, Serialize)]
@@ -31,6 +32,48 @@ pub fn router() -> Router {
 struct TrackPinResponse {
     tracking_id: i64,
     resolution_status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TicketCreatedResponse {
+    ticket_id: i64,
+}
+
+async fn post_ticket(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(tracking_id): Path<i64>,
+    Json(entry): Json<TicketEntryRequest>,
+) -> Result<Json<TicketCreatedResponse>, (StatusCode, String)> {
+    train_tracking::validate_ticket_entry(&entry).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
+    match train_tracking::tracked_train_owner(&app.database, tracking_id).await.map_err(internal_error("check tracked train ownership"))? {
+        Some(owner) if owner == user.id => {}
+        _ => return Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string())),
+    }
+
+    let ticket_id = train_tracking::create_ticket(&app.database, tracking_id, &entry, &user.id)
+        .await
+        .map_err(internal_error("create ticket"))?;
+
+    Ok(Json(TicketCreatedResponse { ticket_id }))
+}
+
+async fn get_tickets(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(tracking_id): Path<i64>,
+) -> Result<Json<Vec<train_tracking::TrackedTrainTicket>>, (StatusCode, String)> {
+    match train_tracking::tracked_train_owner(&app.database, tracking_id).await.map_err(internal_error("check tracked train ownership"))? {
+        Some(owner) if owner == user.id => {}
+        _ => return Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string())),
+    }
+
+    let tickets = train_tracking::list_tickets_for_tracked_train(&app.database, tracking_id, &user.id)
+        .await
+        .map_err(internal_error("list tickets"))?;
+    Ok(Json(tickets))
 }
 
 async fn post_track(
