@@ -95,7 +95,12 @@ async fn callback(State(app): State<App>, headers: axum::http::HeaderMap, Query(
             &openidconnect::Nonce::new(stored.nonce),
         )
         .await;
-    let (identity, refresh_token) = match exchange_result {
+    // The refresh token is deliberately dropped rather than persisted:
+    // nothing in this plan consumes one (no silent renewal), and
+    // `users::insert_session` explains why storing an unused live IdP
+    // credential is not worth the blast radius. `exchange_code` still
+    // surfaces it so the eventual refresh work has nothing to re-plumb.
+    let (identity, _refresh_token) = match exchange_result {
         Ok(result) => result,
         Err(err) => {
             tracing::warn!(error = ?err, "OIDC code exchange failed");
@@ -116,7 +121,6 @@ async fn callback(State(app): State<App>, headers: axum::http::HeaderMap, Query(
         &app.database,
         &auth::hash_session_token(&session_token),
         &user.id,
-        refresh_token.as_deref(),
         app.config.session_ttl_days,
     )
     .await;

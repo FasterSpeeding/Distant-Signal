@@ -170,7 +170,11 @@ impl OidcClient {
     /// job, not re-implemented here), extracts the four claims this app
     /// cares about into `RawClaims`, and maps them through
     /// `identity_from_claims`. Also returns the refresh token, if the
-    /// provider issued one (not guaranteed).
+    /// provider issued one (not guaranteed) -- though no caller consumes
+    /// it today: `routes::auth::callback` deliberately drops it rather
+    /// than persisting it, since nothing implements silent renewal yet
+    /// (see `data::users::insert_session`). It is surfaced here so that
+    /// work has nothing to re-plumb through the exchange.
     pub async fn exchange_code(
         &self,
         code: String,

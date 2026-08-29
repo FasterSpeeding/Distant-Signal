@@ -74,20 +74,25 @@ pub async fn upsert_user(pool: &PgPool, identity: &OidcIdentity) -> Result<User>
     Ok(row)
 }
 
-pub async fn insert_session(
-    pool: &PgPool,
-    hashed_token: &str,
-    user_id: &str,
-    refresh_token: Option<&str>,
-    ttl_days: i64,
-) -> Result<()> {
+/// `sessions.refresh_token` is deliberately left NULL. The design doc's
+/// only use for it is silent ID-token renewal before local session expiry
+/// ("Expiry and refresh"), and nothing in this plan implements that -- the
+/// column is written by no other path and read by none at all. Storing a
+/// live IdP credential server-side with zero present consumer is pure
+/// added blast radius on a database leak, and the design doc's own Open
+/// Question 5 already flags that this schema would hold it in plaintext
+/// with no column-encryption precedent anywhere in the repo.
+///
+/// The column itself stays in the schema, unused, for whoever implements
+/// refresh: it is nullable, so nothing needs migrating when that lands,
+/// and this is the only INSERT that would have to start binding it.
+pub async fn insert_session(pool: &PgPool, hashed_token: &str, user_id: &str, ttl_days: i64) -> Result<()> {
     sqlx::query(
         "INSERT INTO sessions (id, user_id, refresh_token, created_at, expires_at) \
-         VALUES ($1, $2, $3, NOW(), NOW() + make_interval(days => $4))",
+         VALUES ($1, $2, NULL, NOW(), NOW() + make_interval(days => $3))",
     )
     .bind(hashed_token)
     .bind(user_id)
-    .bind(refresh_token)
     .bind(ttl_days as i32)
     .execute(pool)
     .await?;
@@ -194,9 +199,7 @@ mod db_tests {
         let user = upsert_user(&pool, &identity).await.expect("upsert user");
         assert_eq!(user.id, "TEST-USER-ROUND-TRIP");
 
-        insert_session(&pool, "test-hashed-token", &user.id, None, 14)
-            .await
-            .expect("insert session");
+        insert_session(&pool, "test-hashed-token", &user.id, 14).await.expect("insert session");
 
         let found = get_session_with_user(&pool, "test-hashed-token")
             .await
