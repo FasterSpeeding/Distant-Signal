@@ -171,6 +171,19 @@ mod tests {
     }
 
     #[test]
+    fn wcml_operators_use_avantis_real_code_not_transport_for_wales() {
+        // Regression guard: this file's operators list once had "AW"
+        // (Transport for Wales' code) where "VT" (Avanti West Coast's
+        // real code, inherited from Virgin Trains) belonged. See
+        // lines/west-coast-main-line.toml's `operators` comment for the
+        // sourcing behind this fix.
+        let lines = load_line("wcml");
+        let wcml = lines.get("wcml").expect("wcml line should exist");
+        assert!(wcml.operators.iter().any(|op| op == "VT"), "wcml operators should contain VT (Avanti West Coast)");
+        assert!(!wcml.operators.iter().any(|op| op == "AW"), "wcml operators should not contain AW (Transport for Wales)");
+    }
+
+    #[test]
     fn excluded_keyword_vetoes_match() {
         let lines = load_line("wcml");
         let registry = SegmentRegistry::new(&lines);
