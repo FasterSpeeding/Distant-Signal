@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
         .allow_origin(Any);
 
     let (metrics_layer, metrics_handle) = PrometheusMetricLayerBuilder::new()
-        .with_prefix("nr_status")
+        .with_prefix("distant_signal")
         .with_default_metrics()
         .build_pair();
 

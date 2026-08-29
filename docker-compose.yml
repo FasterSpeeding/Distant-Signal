@@ -298,7 +298,7 @@ services:
       # plan's Prerequisites).
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       KAFKA_TOPIC: ${KAFKA_TOPIC}
-      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-nr-status-trust-consumer}
+      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-distant-signal-trust-consumer}
       KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
       KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
       # No `:-PLAIN` fallback, deliberately: config.rs gives this field no

@@ -25,7 +25,7 @@ vi.mock('next/headers', () => ({
 }));
 
 const sampleReport = {
-  $type: 'NRStatus.LineStatusReport',
+  $type: 'DistantSignal.LineStatusReport',
   id: 'wcml',
   name: 'West Coast Main Line',
   modeName: 'national-rail',

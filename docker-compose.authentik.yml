@@ -52,7 +52,7 @@
 # as the documented fallback.
 #
 # SSO_ISSUER_URL for this local IdP:
-#   http://authentik.localhost:9000/application/o/nr-status/
+#   http://authentik.localhost:9000/application/o/distant-signal/
 
 services:
   authentik-postgres:

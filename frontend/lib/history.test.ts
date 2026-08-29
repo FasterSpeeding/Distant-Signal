@@ -4,7 +4,7 @@ import type { LineStatusHistoryEntry } from './types';
 
 function entry(computedAt: string, statuses: Array<[number, string]>): LineStatusHistoryEntry {
   return {
-    $type: 'NRStatus.LineStatusReport',
+    $type: 'DistantSignal.LineStatusReport',
     id: 'northern',
     name: 'Northern',
     modeName: 'national-rail',
