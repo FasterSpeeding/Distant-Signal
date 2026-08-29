@@ -5,7 +5,7 @@
 //! testable without a database.
 
 use chrono::{DateTime, Utc};
-use common::{TrackPinRequest, TrackedTrainRef, TrainMovementEventMessage};
+use common::{TicketEntryRequest, TrackPinRequest, TrackedTrainRef, TrainMovementEventMessage};
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -54,6 +54,88 @@ pub async fn create_pin(pool: &PgPool, pin: &TrackPinRequest, user_id: &str) -> 
     .await?;
 
     Ok(row.0)
+}
+
+/// Every allowed value of `tracked_train_tickets.source` -- kept in one
+/// place (this constant, not repeated string literals) so this app-layer
+/// check and the migration's own CHECK constraint (Task 1) can't silently
+/// drift apart; if they ever do, the DB constraint is the backstop.
+const TICKET_SOURCES: [&str; 4] = ["manual", "pkpass-semantics", "pkpass-heuristic", "pdf-heuristic"];
+
+/// This is the actual mechanism behind "review before save" for the
+/// `.pkpass`/PDF ingestion tiers (Tasks 6-9), not merely a data-quality
+/// nicety: neither of those formats can ever recover a real CRS code (both
+/// only ever give station NAMES, e.g. "Kings Cross" -- see
+/// `crates/api/src/data/ticket_extraction.rs`'s module doc). Rejecting a
+/// non-3-letter value here means a `PartialTicket` preview resubmitted
+/// unedited is *guaranteed* to fail this check, forcing a human to correct
+/// it into a real code before anything is ever saved.
+pub fn validate_ticket_entry(entry: &TicketEntryRequest) -> Result<(), String> {
+    if !TICKET_SOURCES.contains(&entry.source.as_str()) {
+        return Err(format!("source must be one of {TICKET_SOURCES:?}"));
+    }
+    if let Some(crs) = &entry.origin_crs
+        && crs.len() != 3
+    {
+        return Err("origin_crs must be a 3-letter CRS code".to_string());
+    }
+    if let Some(crs) = &entry.destination_crs
+        && crs.len() != 3
+    {
+        return Err("destination_crs must be a 3-letter CRS code".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod ticket_entry_tests {
+    use super::*;
+
+    fn entry(origin_crs: Option<&str>, source: &str) -> TicketEntryRequest {
+        TicketEntryRequest {
+            operator: Some("LNER".to_string()),
+            ticket_type: Some("single".to_string()),
+            origin_crs: origin_crs.map(str::to_string),
+            destination_crs: Some("EDB".to_string()),
+            source: source.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_well_formed_manual_entry_is_valid() {
+        assert!(validate_ticket_entry(&entry(Some("KGX"), "manual")).is_ok());
+    }
+
+    #[test]
+    fn missing_optional_fields_are_valid() {
+        let entry = TicketEntryRequest {
+            operator: None,
+            ticket_type: None,
+            origin_crs: None,
+            destination_crs: None,
+            source: "manual".to_string(),
+        };
+        assert!(validate_ticket_entry(&entry).is_ok());
+    }
+
+    #[test]
+    fn a_station_name_instead_of_a_crs_code_is_rejected() {
+        // Exactly the "Kings Cross" vs "KGX" case this check exists for --
+        // see this function's doc comment.
+        assert!(validate_ticket_entry(&entry(Some("Kings Cross"), "manual")).is_err());
+    }
+
+    #[test]
+    fn every_declared_source_is_accepted() {
+        for source in TICKET_SOURCES {
+            assert!(validate_ticket_entry(&entry(Some("KGX"), source)).is_ok(), "{source} should be valid");
+        }
+    }
+
+    #[test]
+    fn an_unknown_source_is_rejected() {
+        assert!(validate_ticket_entry(&entry(Some("KGX"), "barcode-decoded")).is_err());
+    }
 }
 
 /// Row shape for `list_active_tracked_trains`'s query -- identical fields
@@ -284,4 +366,94 @@ mod tests {
         let departure: DateTime<Utc> = "2026-06-15T02:00:00Z".parse().unwrap(); // 10h ago
         assert!(validate_pin(&pin("WAT", departure), now).is_err());
     }
+}
+
+/// Returns the owning `user_id` for a tracked train, or `None` if no such
+/// tracked train exists. `POST /Train/{trackingId}/tickets` (Task 3) uses
+/// this to answer "does this tracked train exist AND belong to the caller"
+/// before creating a ticket against it (there's no existing ticket row yet
+/// to filter by, unlike the read paths below). A mismatch or missing
+/// tracked train both map to the same `404` at the route layer -- never
+/// `403` -- matching `docs/superpowers/plans/2026-08-28-user-accounts-sso.md`'s
+/// existing "exists but not yours" convention.
+pub async fn tracked_train_owner(pool: &PgPool, tracking_id: i64) -> anyhow::Result<Option<String>> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT user_id FROM tracked_trains WHERE id = $1").bind(tracking_id).fetch_optional(pool).await?;
+    Ok(row.map(|(id,)| id))
+}
+
+pub async fn create_ticket(
+    pool: &PgPool,
+    tracked_train_id: i64,
+    entry: &TicketEntryRequest,
+    user_id: &str,
+) -> anyhow::Result<i64> {
+    let row: (i64,) = sqlx::query_as(
+        "INSERT INTO tracked_train_tickets \
+            (tracked_train_id, user_id, operator, ticket_type, origin_crs, destination_crs, source) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         RETURNING id",
+    )
+    .bind(tracked_train_id)
+    .bind(user_id)
+    .bind(&entry.operator)
+    .bind(&entry.ticket_type)
+    .bind(&entry.origin_crs)
+    .bind(&entry.destination_crs)
+    .bind(&entry.source)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
+/// The public read-model for a ticket, returned directly as JSON by
+/// `GET /Train/{trackingId}/tickets` (Task 3). Never leaks `user_id` --
+/// same posture as `TrackedTrainState`.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedTrainTicket {
+    pub id: i64,
+    pub tracked_train_id: i64,
+    pub operator: Option<String>,
+    pub ticket_type: Option<String>,
+    pub origin_crs: Option<String>,
+    pub destination_crs: Option<String>,
+    pub source: String,
+    pub created_at: DateTime<Utc>,
+}
+
+const TICKET_SELECT: &str = "\
+    SELECT id, tracked_train_id, operator, ticket_type, origin_crs, destination_crs, source, created_at \
+    FROM tracked_train_tickets";
+
+/// Filters directly on `(tracked_train_id, user_id)` -- no join needed,
+/// per this table's own ownership-redundancy design (see Task 1's migration
+/// comment). A caller who doesn't own `tracking_id` gets an empty list,
+/// identical to "you own it but have no tickets yet" -- Task 3's route
+/// additionally checks `tracked_train_owner` first so the two cases are
+/// distinguished at the HTTP layer (404 vs 200 []).
+pub async fn list_tickets_for_tracked_train(
+    pool: &PgPool,
+    tracking_id: i64,
+    user_id: &str,
+) -> anyhow::Result<Vec<TrackedTrainTicket>> {
+    let rows = sqlx::query_as::<_, TrackedTrainTicket>(&format!(
+        "{TICKET_SELECT} WHERE tracked_train_id = $1 AND user_id = $2 ORDER BY created_at"
+    ))
+    .bind(tracking_id)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Used by the Delay Repay estimate route (Task 5), which needs a single
+/// ticket by its own id, still scoped to the caller.
+pub async fn get_ticket_owned(pool: &PgPool, ticket_id: i64, user_id: &str) -> anyhow::Result<Option<TrackedTrainTicket>> {
+    let row = sqlx::query_as::<_, TrackedTrainTicket>(&format!("{TICKET_SELECT} WHERE id = $1 AND user_id = $2"))
+        .bind(ticket_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row)
 }
