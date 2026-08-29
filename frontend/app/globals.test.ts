@@ -104,8 +104,9 @@ describe('background theming', () => {
   // link-colour section above also has to respect).
   it('washes the body in a low-opacity, variable-driven gradient rather than a fixed colour', () => {
     // `body(?!\[)`: matches the base `body { ... }` rule but not
-    // `body[data-pride='true'] { ... }`, which follows immediately after
-    // in the file and has its own assertions below.
+    // `body[data-pride='rainbow'] { ... }`/`body[data-pride='trans'] { ... }`,
+    // which follow immediately after in the file and have their own
+    // assertions below.
     const rule = css.match(/body(?!\[)\s*\{\s*background-image:[^}]*\}/);
     expect(rule).not.toBeNull();
     expect(rule![0]).toContain('color-mix(in srgb, var(--mantine-color-grape-6)');
@@ -115,9 +116,9 @@ describe('background theming', () => {
     expect(rule![0]).toMatch(/color-mix\(in srgb, var\(--mantine-color-grape-6\) \d%/);
   });
 
-  it("overrides the wash under pride mode with the same seven hexes the flag bars use, still at low opacity", () => {
-    const barRule = css.match(/body\[data-pride='true'\]::before\s*\{[^}]*background:[^;]*;/);
-    const washRule = css.match(/body\[data-pride='true'\]\s*\{\s*background-image:[^}]*\}/);
+  it("overrides the wash under rainbow pride mode with the same seven hexes the flag bars use, still at low opacity", () => {
+    const barRule = css.match(/body\[data-pride='rainbow'\]::before\s*\{[^}]*background:[^;]*;/);
+    const washRule = css.match(/body\[data-pride='rainbow'\]\s*\{\s*background-image:[^}]*\}/);
     expect(barRule).not.toBeNull();
     expect(washRule).not.toBeNull();
 
@@ -129,18 +130,35 @@ describe('background theming', () => {
     expect(washRule![0]).toMatch(/\d%, transparent\)/);
   });
 
+  it("overrides the wash under trans pride mode with the same hexes the flag bars use, still at low opacity", () => {
+    const barRule = css.match(/body\[data-pride='trans'\]::before\s*\{[^}]*background:[^;]*;/);
+    const washRule = css.match(/body\[data-pride='trans'\]\s*\{\s*background-image:[^}]*\}/);
+    expect(barRule).not.toBeNull();
+    expect(washRule).not.toBeNull();
+
+    const hexes = [...new Set(barRule![0].match(/#[0-9a-f]{6}/gi)!.map((h) => h.toLowerCase()))];
+    expect(hexes.length).toBeGreaterThan(0);
+    for (const hex of hexes) {
+      expect(washRule![0].toLowerCase()).toContain(`color-mix(in srgb, ${hex}`);
+    }
+    expect(washRule![0]).toMatch(/\d%, transparent\)/);
+  });
+
   it('gives nav an unconditional positioning context, not one scoped to pride mode', () => {
     // Regression guard: this used to be `body[data-pride='true'] nav { position: relative; }`,
-    // the only consumer at the time. The always-on nav divider below needs
-    // it too now, so it must not have stayed pride-only.
-    expect(css).not.toMatch(/body\[data-pride='true'\]\s*nav\s*\{\s*position:\s*relative;\s*\}/);
+    // the only consumer at the time (back when this toggle was a plain
+    // on/off boolean, before it grew a third `'trans'` state). The
+    // always-on nav divider below needs it too now, so it must not have
+    // stayed pride-only under either mode's selector.
+    expect(css).not.toMatch(/body\[data-pride='rainbow'\]\s*nav\s*\{\s*position:\s*relative;\s*\}/);
+    expect(css).not.toMatch(/body\[data-pride='trans'\]\s*nav\s*\{\s*position:\s*relative;\s*\}/);
     const rule = css.match(/\bnav\s*\{\s*position:\s*relative;\s*\}/);
     expect(rule).not.toBeNull();
   });
 
   it('keeps the always-on dashed nav divider clear of the pride bar band so the two never overlap', () => {
     const divider = css.match(/nav::before\s*\{[^}]*\}/);
-    const prideBar = css.match(/body\[data-pride='true'\]\s*nav::after\s*\{[^}]*\}/);
+    const prideBar = css.match(/body\[data-pride='rainbow'\]\s*nav::after\s*\{[^}]*\}/);
     expect(divider).not.toBeNull();
     expect(prideBar).not.toBeNull();
 

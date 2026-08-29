@@ -47,16 +47,20 @@ a[data-text-link]:focus-visible {
 }
 
 /* `components/PrideToggle.tsx` sets `document.body.dataset.pride` from a
-   client-only localStorage preference (off by default, so SSR and the
-   pre-mount client render never need this rule to exist). A flag-striped
-   bar painted above the whole page, not a change to any element's own
-   colour -- keeps this fully separate from `lib/severity.ts`'s
-   `GROUP_COLOR` map, which stays semantic-only per
-   docs/superpowers/specs/2026-08-18-grape-theme-design.md. `::before` on
-   `body` rather than restyling `nav`'s existing border: that border is an
-   inline style in `app/layout.tsx` (higher specificity than any stylesheet
-   rule without `!important`), and a separate bar avoids fighting it. */
-body[data-pride='true']::before {
+   client-only localStorage preference -- one of `'off'` (the default, so
+   SSR and the pre-mount client render never need any of these rules to
+   exist), `'rainbow'`, or `'trans'`, cycled through the same way
+   `ThemeToggle` cycles light/dark/auto. A flag-striped bar painted above
+   the whole page, not a change to any element's own colour -- keeps this
+   fully separate from `lib/severity.ts`'s `GROUP_COLOR` map, which stays
+   semantic-only per docs/superpowers/specs/2026-08-18-grape-theme-design.md.
+   `::before` on `body` rather than restyling `nav`'s existing border: that
+   border is an inline style in `app/layout.tsx` (higher specificity than
+   any stylesheet rule without `!important`), and a separate bar avoids
+   fighting it. The two modes' rules are kept side by side throughout this
+   file rather than factored into one shared selector, so each flag's exact
+   stripe colours/count stay easy to read and edit independently. */
+body[data-pride='rainbow']::before {
   content: '';
   display: block;
   height: 6px;
@@ -73,14 +77,34 @@ body[data-pride='true']::before {
   background-size: 200% 100%;
 }
 
-/* A static rainbow already reads as "on"; motion makes it unmistakable.
-   Gated behind `prefers-reduced-motion` -- vestibular-disorder guidance is
+/* Trans flag: light blue / pink / white / pink / light blue (the standard
+   Monica Helms five-stripe design), repeating the first stripe at the end
+   for the same seamless 200%-width shimmer loop the rainbow bar uses. */
+body[data-pride='trans']::before {
+  content: '';
+  display: block;
+  height: 6px;
+  background: linear-gradient(
+    to right,
+    #5bcefa,
+    #f5a9b8,
+    #ffffff,
+    #f5a9b8,
+    #5bcefa,
+    #5bcefa
+  );
+  background-size: 200% 100%;
+}
+
+/* A static flag already reads as "on"; motion makes it unmistakable. Gated
+   behind `prefers-reduced-motion` -- vestibular-disorder guidance is
    explicit that scrolling/shifting gradients are a real trigger, not just a
    taste issue, so a reduced-motion viewer gets the same bar frozen on one
    frame rather than the animation being silently skipped without a reason
    noted here. */
 @media (prefers-reduced-motion: no-preference) {
-  body[data-pride='true']::before {
+  body[data-pride='rainbow']::before,
+  body[data-pride='trans']::before {
     animation: pride-shimmer 6s linear infinite;
   }
 }
@@ -101,7 +125,7 @@ body[data-pride='true']::before {
    it's unconditional there, so nothing extra is needed here. Runs the
    shimmer in reverse so the two bars visibly move opposite directions
    rather than reading as one bar duplicated. */
-body[data-pride='true'] nav::after {
+body[data-pride='rainbow'] nav::after {
   content: '';
   position: absolute;
   left: 0;
@@ -112,8 +136,20 @@ body[data-pride='true'] nav::after {
   background-size: 200% 100%;
 }
 
+body[data-pride='trans'] nav::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 6px;
+  background: linear-gradient(to right, #5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa, #5bcefa);
+  background-size: 200% 100%;
+}
+
 @media (prefers-reduced-motion: no-preference) {
-  body[data-pride='true'] nav::after {
+  body[data-pride='rainbow'] nav::after,
+  body[data-pride='trans'] nav::after {
     animation: pride-shimmer 6s linear infinite reverse;
   }
 }
@@ -122,7 +158,7 @@ body[data-pride='true'] nav::after {
    `app/layout.tsx`) -- the site name itself goes rainbow-gradient text
    while pride mode is on. `background-clip: text` needs `color: transparent`
    to reveal the gradient rather than painting solid text over it. */
-body[data-pride='true'] [data-site-title] {
+body[data-pride='rainbow'] [data-site-title] {
   background: linear-gradient(90deg, #e40303, #ff8c00, #ffed00, #008026, #004dff, #750787, #e40303);
   background-size: 200% 100%;
   -webkit-background-clip: text;
@@ -130,8 +166,17 @@ body[data-pride='true'] [data-site-title] {
   color: transparent;
 }
 
+body[data-pride='trans'] [data-site-title] {
+  background: linear-gradient(90deg, #5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa, #5bcefa);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
 @media (prefers-reduced-motion: no-preference) {
-  body[data-pride='true'] [data-site-title] {
+  body[data-pride='rainbow'] [data-site-title],
+  body[data-pride='trans'] [data-site-title] {
     animation: pride-shimmer 4s linear infinite;
   }
 }
@@ -140,21 +185,35 @@ body[data-pride='true'] [data-site-title] {
    from `ThemeToggle` at a glance beyond the emoji. Targets the rendered
    `aria-pressed`/`aria-label` pair `PrideToggle.tsx` already sets, rather
    than adding a bespoke class, so the visual state can never drift out of
-   sync with what's announced to assistive tech. A spinning conic-gradient
-   ring behind the button (`::before`, `z-index: -1`) rather than a border
-   override -- Mantine's `outline` variant paints its own border from a CSS
-   var, and fighting that with `!important` is worse than layering a ring
+   sync with what's announced to assistive tech. `aria-pressed` alone can't
+   distinguish the two active modes (it's a plain boolean), so the ring's
+   colour keys off the mode word `PrideToggle.tsx` puts in the label text
+   instead (`[aria-label*='rainbow']`/`[aria-label*='trans']`) -- still
+   sourced from the same single string that drives the accessible name, so
+   it can't drift out of sync either. A spinning conic-gradient ring behind
+   the button (`::before`, `z-index: -1`) rather than a border override --
+   Mantine's `outline` variant paints its own border from a CSS var, and
+   fighting that with `!important` is worse than layering a ring
    underneath it. */
 button[aria-pressed='true'][aria-label^='Pride mode'] {
   position: relative;
 }
 
-button[aria-pressed='true'][aria-label^='Pride mode']::before {
+button[aria-pressed='true'][aria-label*='rainbow']::before {
   content: '';
   position: absolute;
   inset: -3px;
   border-radius: 999px;
   background: conic-gradient(#e40303, #ff8c00, #ffed00, #008026, #004dff, #750787, #e40303);
+  z-index: -1;
+}
+
+button[aria-pressed='true'][aria-label*='trans']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa, #5bcefa);
   z-index: -1;
 }
 
@@ -234,26 +293,38 @@ button[aria-pressed='true'][aria-label^='Pride mode']::before {
   }
 }
 
-/* A rainbow scrollbar while pride mode is on. `scrollbar-color` (Firefox)
-   only accepts a solid thumb colour, not a gradient -- `#ff8c00` stands in
-   as the representative shade there; Chromium/WebKit get the full
-   gradient via the pseudo-elements below. */
-body[data-pride='true'] {
+/* A flag-coloured scrollbar while pride mode is on. `scrollbar-color`
+   (Firefox) only accepts a solid thumb colour, not a gradient -- a
+   representative mid-flag shade stands in there for each mode; Chromium/
+   WebKit get the full gradient via the pseudo-elements below. */
+body[data-pride='rainbow'] {
   scrollbar-color: #ff8c00 transparent;
   scrollbar-width: thin;
 }
 
-body[data-pride='true']::-webkit-scrollbar {
+body[data-pride='trans'] {
+  scrollbar-color: #f5a9b8 transparent;
+  scrollbar-width: thin;
+}
+
+body[data-pride='rainbow']::-webkit-scrollbar,
+body[data-pride='trans']::-webkit-scrollbar {
   width: 12px;
   height: 12px;
 }
 
-body[data-pride='true']::-webkit-scrollbar-track {
+body[data-pride='rainbow']::-webkit-scrollbar-track,
+body[data-pride='trans']::-webkit-scrollbar-track {
   background: transparent;
 }
 
-body[data-pride='true']::-webkit-scrollbar-thumb {
+body[data-pride='rainbow']::-webkit-scrollbar-thumb {
   background: linear-gradient(180deg, #e40303, #ff8c00, #ffed00, #008026, #004dff, #750787);
+  border-radius: 999px;
+}
+
+body[data-pride='trans']::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa);
   border-radius: 999px;
 }
 
@@ -285,17 +356,18 @@ body {
   );
 }
 
-/* `[data-pride='true']` picks up the same rainbow the flag-striped nav
-   bars already use (see above), but spread across a vertical wash at ~5%
-   opacity instead of a solid stripe -- the loud, unmistakably-on signal
-   stays the animated bars; this is the quiet reinforcement bleeding into
-   the atmosphere behind them, per this feature's design brief. Element
-   selector specificity (`body[data-pride='true']` beats plain `body`) is
-   enough to override the base wash without `!important`. Static rather
-   than shimmering: the bars already carry the motion cue, and stacking a
-   second animated gradient behind the whole page would fight the
-   `prefers-reduced-motion` intent of keeping ambient chrome calm. */
-body[data-pride='true'] {
+/* `[data-pride='rainbow']`/`[data-pride='trans']` pick up the same flag
+   colours the striped nav bars already use (see above), but spread across
+   a vertical wash at ~5% opacity instead of a solid stripe -- the loud,
+   unmistakably-on signal stays the animated bars; this is the quiet
+   reinforcement bleeding into the atmosphere behind them, per this
+   feature's design brief. Element selector specificity
+   (`body[data-pride='...']` beats plain `body`) is enough to override the
+   base wash without `!important`. Static rather than shimmering: the bars
+   already carry the motion cue, and stacking a second animated gradient
+   behind the whole page would fight the `prefers-reduced-motion` intent of
+   keeping ambient chrome calm. */
+body[data-pride='rainbow'] {
   background-image: linear-gradient(
     180deg,
     color-mix(in srgb, #e40303 5%, transparent) 0%,
@@ -308,9 +380,20 @@ body[data-pride='true'] {
   );
 }
 
+body[data-pride='trans'] {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, #5bcefa 5%, transparent) 0%,
+    color-mix(in srgb, #f5a9b8 5%, transparent) 30%,
+    color-mix(in srgb, #ffffff 5%, transparent) 50%,
+    color-mix(in srgb, #f5a9b8 5%, transparent) 70%,
+    color-mix(in srgb, #5bcefa 5%, transparent) 100%
+  );
+}
+
 /* `nav` needs a positioning context for the dashed divider below, and the
    pride bar's `nav::after` above needs one too -- previously scoped to
-   `body[data-pride='true'] nav` since it was the only consumer. Now that
+   `body[data-pride='...'] nav` since those were the only consumers. Now that
    the always-on divider below needs it too, it's unconditional; harmless
    when pride is off, since nothing else here depends on nav's static
    position. */
@@ -320,7 +403,7 @@ nav {
 
 /* The dashed "route line": sits just above nav's own `border-bottom`
    (an inline style in `app/layout.tsx`, so this can't restyle that border
-   directly -- see the note above `body[data-pride='true']::before` earlier
+   directly -- see the note above `body[data-pride='rainbow']::before` earlier
    in this file for why a separate layer beats fighting inline-style
    specificity). Positioned at `bottom: 2px` (inside the nav box) rather
    than nav::after's `bottom: -3px` (outside it, used by the pride bar) so

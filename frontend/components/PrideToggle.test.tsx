@@ -16,38 +16,54 @@ describe('PrideToggle', () => {
     expect(container.querySelector('.prideSparkles')).not.toBeInTheDocument();
   });
 
-  it('turns on when clicked, sets document.body.dataset.pride for globals.css to key off, and shows sparkles', () => {
-    const { container } = renderWithMantine(<PrideToggle />);
-    fireEvent.click(screen.getByRole('button'));
-
-    expect(screen.getByLabelText('Pride mode: on. Click to toggle.')).toBeInTheDocument();
-    expect(screen.getByRole('button')).toHaveAttribute('aria-pressed', 'true');
-    expect(document.body.dataset.pride).toBe('true');
-
-    const sparkles = container.querySelector('.prideSparkles');
-    expect(sparkles).toBeInTheDocument();
-    expect(sparkles).toHaveAttribute('aria-hidden', 'true');
-  });
-
-  it('toggles back off on a second click, and hides the sparkles again', () => {
+  it('cycles off -> rainbow -> trans -> off, setting document.body.dataset.pride at each step', () => {
     const { container } = renderWithMantine(<PrideToggle />);
     const button = screen.getByRole('button');
 
     fireEvent.click(button);
-    fireEvent.click(button);
+    expect(screen.getByLabelText('Pride mode: rainbow. Click to toggle.')).toBeInTheDocument();
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    expect(document.body.dataset.pride).toBe('rainbow');
+    expect(container.querySelector('.prideSparkles')).toBeInTheDocument();
 
+    fireEvent.click(button);
+    expect(screen.getByLabelText('Pride mode: trans. Click to toggle.')).toBeInTheDocument();
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    expect(document.body.dataset.pride).toBe('trans');
+    expect(container.querySelector('.prideSparkles')).toBeInTheDocument();
+
+    fireEvent.click(button);
     expect(screen.getByLabelText('Pride mode: off. Click to toggle.')).toBeInTheDocument();
-    expect(document.body.dataset.pride).toBe('false');
+    expect(button).toHaveAttribute('aria-pressed', 'false');
+    expect(document.body.dataset.pride).toBe('off');
     expect(container.querySelector('.prideSparkles')).not.toBeInTheDocument();
+  });
+
+  it('shows a different emoji and sparkle set for rainbow vs. trans', () => {
+    renderWithMantine(<PrideToggle />);
+    const button = screen.getByRole('button');
+
+    fireEvent.click(button);
+    expect(button).toHaveTextContent('🏳️‍🌈');
+
+    fireEvent.click(button);
+    expect(button).toHaveTextContent('🏳️‍⚧️');
   });
 
   it('persists the preference in localStorage across remounts', () => {
     const { unmount } = renderWithMantine(<PrideToggle />);
-    fireEvent.click(screen.getByRole('button'));
-    expect(localStorage.getItem('pride-mode')).toBe('true');
+    fireEvent.click(screen.getByRole('button')); // -> rainbow
+    fireEvent.click(screen.getByRole('button')); // -> trans
+    expect(localStorage.getItem('pride-mode')).toBe('trans');
     unmount();
 
     renderWithMantine(<PrideToggle />);
-    expect(screen.getByLabelText('Pride mode: on. Click to toggle.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Pride mode: trans. Click to toggle.')).toBeInTheDocument();
+  });
+
+  it('treats a pre-existing boolean-era stored value as rainbow, not off', () => {
+    localStorage.setItem('pride-mode', 'true');
+    renderWithMantine(<PrideToggle />);
+    expect(screen.getByLabelText('Pride mode: rainbow. Click to toggle.')).toBeInTheDocument();
   });
 });
