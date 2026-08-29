@@ -249,4 +249,23 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["swr-alton".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // `gwr-main-line`'s Bristol-bound exclusive segment starts at Chippenham
+    // (CPM), the first station beyond Swindon reached only by GWML-via-Bath
+    // services (South Wales Main Line diverges at Wootton Bassett Junction,
+    // just west of Swindon). No sibling GWR line exists yet in this batch
+    // (Tasks 4.2-4.5 add them later and will add the shared-trunk
+    // propagation assertion for `gwr-trunk-paddington` once they do), so
+    // this only asserts the exclusive-segment case, mirroring
+    // `swr_exclusive_segment_incident_does_not_propagate`.
+    #[test]
+    fn gwr_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-1", "Points failure at Chippenham", "Points failure causing delays at Chippenham.", &["GW"], &["CPM"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-main-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
