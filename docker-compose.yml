@@ -278,6 +278,42 @@ services:
       SWEEP_INTERVAL_SECS: ${SWEEP_INTERVAL_SECS:-3600}
       RUST_LOG: ${RUST_LOG:-info}
 
+  trust-consumer:
+    build:
+      context: .
+      dockerfile: docker/trust-consumer.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # crates/trust-consumer/src/config.rs: Config. GAP: KAFKA_BROKERS,
+      # KAFKA_TOPIC, and KAFKA_SASL_MECHANISM are unconfirmed against a
+      # live RDM Train Movements catalogue entry -- placeholders until a
+      # real subscription resolves them (see local.env.example and this
+      # plan's Prerequisites).
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-nr-status-trust-consumer}
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
+      KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM:-PLAIN}
+      API_INGEST_URL: http://api:8080/private/train-events
+      API_TRACKED_TRAINS_URL: http://api:8080/private/tracked-trains
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      REFERENCE_RELOAD_SECS: ${REFERENCE_RELOAD_SECS:-60}
+      RETENTION_DAYS: ${RETENTION_DAYS_TRAIN_EVENTS:-90}
+      HEALTH_BIND_URL: 0.0.0.0:8081
+      RUST_LOG: ${RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
   frontend:
     build:
       context: .
