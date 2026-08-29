@@ -56,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut router = Router::new()
         .merge(routes::line_status::router())
+        .merge(routes::train::router())
         .nest("/public", routes::public_router())
         .nest("/private", routes::private_router(app.clone()));
 

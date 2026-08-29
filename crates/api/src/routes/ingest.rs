@@ -23,6 +23,7 @@ use serde::Serialize;
 
 use crate::app::{App, Router};
 use crate::data::queries;
+use crate::data::train_tracking as queries_train_tracking;
 
 pub fn router() -> Router {
     Router::new()
@@ -43,6 +44,8 @@ pub fn router() -> Router {
             "/tfl-line-status",
             axum::routing::get(get_tfl_line_status_last_fetched).post(post_tfl_line_status),
         )
+        .route("/train-events", axum::routing::post(post_train_events))
+        .route("/tracked-trains", axum::routing::get(get_active_tracked_trains))
 }
 
 #[derive(Debug, Serialize)]
@@ -146,6 +149,33 @@ async fn post_tfl_line_status(
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
+}
+
+/// `trust-consumer`'s per-poll-cycle batch of TRUST-derived events for
+/// tracked trains -- see `queries_train_tracking::upsert_train_event`.
+async fn post_train_events(
+    State(app): State<App>,
+    Json(events): Json<Vec<common::TrainMovementEventMessage>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    for event in &events {
+        queries_train_tracking::upsert_train_event(&app.database, event)
+            .await
+            .map_err(internal_error)?;
+    }
+    Ok(Json(UpsertResponse { upserted: events.len() as u64 }))
+}
+
+/// `trust-consumer`'s periodic reference reload -- pending and
+/// resolved-but-not-completed tracked trains, so it can recognize incoming
+/// TRUST messages against them after a restart. See
+/// `queries_train_tracking::list_active_tracked_trains`.
+async fn get_active_tracked_trains(
+    State(app): State<App>,
+) -> Result<Json<Vec<common::TrackedTrainRef>>, (StatusCode, String)> {
+    let rows = queries_train_tracking::list_active_tracked_trains(&app.database)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(rows))
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {

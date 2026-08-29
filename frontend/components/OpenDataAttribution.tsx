@@ -29,6 +29,21 @@ import { Box, Text } from '@mantine/core';
  * rather than needing to sit directly alongside every individual piece of
  * NRE-derived content.
  *
+ * Network Rail Infrastructure Limited's own open-data feeds (the TRUST
+ * movement feed powering individual train tracking) are a THIRD, distinct
+ * licence from the NRE terms above -- Network Rail's own terms explicitly
+ * prohibit using NR/NRE/TOC branding or describing an app as "official"
+ * (see docs/superpowers/specs/2026-08-28-train-tracking-design.md's
+ * Licensing section). The line below is deliberately unbranded (no logo,
+ * no link styled as an endorsement) and factual rather than using NRE's
+ * fixed "Powered by..." wording, which is NRE's own licence condition, not
+ * Network Rail's. TODO: this exact wording has not been through the
+ * dedicated legal sign-off pass this feature's design doc calls for
+ * (separate from the NRE Ts&Cs review below) -- re-verify against Network
+ * Rail's current open-data-feeds page before this feature's data ships to
+ * real users, the same way the NRE wording above was independently
+ * verified first.
+ *
  * A plain Server Component with no interactivity, rendered once by the root
  * layout so it is on every page. */
 export function OpenDataAttribution() {
@@ -50,6 +65,9 @@ export function OpenDataAttribution() {
         >
           Powered by National Rail Enquiries
         </a>
+      </Text>
+      <Text size="xs" c="dimmed">
+        Live train movement data from Network Rail&apos;s open data feeds
       </Text>
     </Box>
   );
