@@ -32,7 +32,30 @@ pub fn find_darwin_eta(
         .find(|d| !d.is_cancelled && d.destination_crs.eq_ignore_ascii_case(target_destination))?;
 
     let time = NaiveTime::parse_from_str(&matched.estimated, "%H:%M").ok()?;
-    Utc.from_local_datetime(&service_date.and_time(time)).single()
+    london_to_utc(service_date.and_time(time))
+}
+
+/// Resolves a Darwin wall-clock time to the instant it names. Darwin
+/// publishes Europe/London local times, not UTC -- building the
+/// `DateTime<Utc>` directly from `HH:MM` made every `darwin-estimated` ETA
+/// exactly an hour late for the ~7 months of British Summer Time, i.e. most
+/// of the year, and the error was invisible in winter.
+///
+/// Same `LocalResult` handling as
+/// `crates/poller-tfl/src/dlr/timetable.rs::london_to_utc`, and for the same
+/// reason: a departure board really does carry 01:00-01:59 times, which are
+/// the ones that occur twice on the autumn clock change and not at all on
+/// the spring one. The ambiguous hour takes the first (BST) occurrence, and
+/// a nonexistent local time yields `None` so the caller simply leaves TRUST's
+/// own ETA in place -- this whole overlay is best-effort, so declining to
+/// guess costs nothing. (The aggregator's variant panics on those cases
+/// instead, but it only ever resolves local 02:00, which is never ambiguous.)
+fn london_to_utc(naive: chrono::NaiveDateTime) -> Option<DateTime<Utc>> {
+    match chrono_tz::Europe::London.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
+        chrono::LocalResult::Ambiguous(earliest, _) => Some(earliest.with_timezone(&Utc)),
+        chrono::LocalResult::None => None,
+    }
 }
 
 #[cfg(test)]
@@ -61,12 +84,16 @@ mod tests {
         assert_eq!(find_darwin_eta(&[departure("WOK", "18:40", false)], None, None, date), None);
     }
 
+    /// August is inside British Summer Time, so Darwin's `18:41` is
+    /// 17:41 UTC. The offset is not hardcoded anywhere: `chrono_tz` derives
+    /// it from the date, which `a_winter_estimate_is_utc_because_gmt_is_utc`
+    /// below pins down from the other side.
     #[test]
     fn matches_by_pinned_destination_and_parses_hhmm() {
         let date: NaiveDate = "2026-08-28".parse().unwrap();
         let samples = vec![departure("WOK", "18:41", false)];
         let eta = find_darwin_eta(&samples, Some("WOK"), None, date);
-        assert_eq!(eta, Some("2026-08-28T18:41:00Z".parse().unwrap()));
+        assert_eq!(eta, Some("2026-08-28T17:41:00Z".parse().unwrap()));
     }
 
     #[test]
@@ -74,7 +101,40 @@ mod tests {
         let date: NaiveDate = "2026-08-28".parse().unwrap();
         let samples = vec![departure("SUR", "18:45", false)];
         let eta = find_darwin_eta(&samples, None, Some("SUR"), date);
-        assert_eq!(eta, Some("2026-08-28T18:45:00Z".parse().unwrap()));
+        assert_eq!(eta, Some("2026-08-28T17:45:00Z".parse().unwrap()));
+    }
+
+    /// The same wall-clock time in January is UTC, because GMT is UTC. Held
+    /// alongside the BST case so the pair proves the conversion is
+    /// date-driven rather than a constant -- a blanket "subtract an hour"
+    /// would fail here, and the original "it's already UTC" bug would fail
+    /// the BST cases above.
+    #[test]
+    fn a_winter_estimate_is_utc_because_gmt_is_utc() {
+        let date: NaiveDate = "2026-01-15".parse().unwrap();
+        let samples = vec![departure("WOK", "18:41", false)];
+        let eta = find_darwin_eta(&samples, Some("WOK"), None, date);
+        assert_eq!(eta, Some("2026-01-15T18:41:00Z".parse().unwrap()));
+    }
+
+    /// 01:30 on the spring-forward Sunday never happens in London. The
+    /// overlay declines rather than inventing an instant -- the caller then
+    /// keeps whatever trust-consumer already computed.
+    #[test]
+    fn a_nonexistent_local_time_yields_no_eta_rather_than_a_guess() {
+        let date: NaiveDate = "2026-03-29".parse().unwrap(); // BST begins 01:00
+        let samples = vec![departure("WOK", "01:30", false)];
+        assert_eq!(find_darwin_eta(&samples, Some("WOK"), None, date), None);
+    }
+
+    /// 01:30 on the autumn Sunday happens twice; the first (BST) occurrence
+    /// wins, matching `poller-tfl`'s timetable resolution.
+    #[test]
+    fn an_ambiguous_local_time_takes_the_first_occurrence() {
+        let date: NaiveDate = "2026-10-25".parse().unwrap(); // BST ends 02:00
+        let samples = vec![departure("WOK", "01:30", false)];
+        let eta = find_darwin_eta(&samples, Some("WOK"), None, date);
+        assert_eq!(eta, Some("2026-10-25T00:30:00Z".parse().unwrap()));
     }
 
     #[test]
