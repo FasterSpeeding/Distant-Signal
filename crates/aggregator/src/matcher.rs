@@ -226,6 +226,12 @@ mod tests {
         let inc = incident("XC-1", "Signal failure at Birmingham New Street", "Services are delayed.", &["XC"], &["BHM"]);
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        // `wcml-birmingham.toml` (added after this test was first written) also
+        // terminates at Birmingham New Street, on its own exclusive
+        // `wcml-birmingham-branch` segment -- station-level overlap with the
+        // CrossCountry hub, same precedent xc-south-coast.toml/xc-manchester.toml
+        // already documented for Coventry/Stafford/Crewe. It's a real sixth
+        // line affected by this incident, just with a different scope.
         assert_eq!(
             matched_ids,
             HashSet::from([
@@ -234,10 +240,15 @@ mod tests {
                 "xc-cardiff".to_string(),
                 "xc-south-coast".to_string(),
                 "xc-stansted".to_string(),
+                "wcml-birmingham".to_string(),
             ])
         );
         for m in &matches {
-            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            if m.line.id == "wcml-birmingham" {
+                assert_eq!(m.scope, MatchScope::ExclusiveSegment, "wcml-birmingham should be ExclusiveSegment");
+            } else {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
         }
     }
 
@@ -261,5 +272,45 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["swr-alton".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn wcml_birmingham_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "VT-1",
+            "Points failure at Birmingham International",
+            "Points failure causing delays to services at Birmingham International.",
+            &["VT"],
+            &["BHI"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["wcml-birmingham".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn wcml_birmingham_shared_trunk_incident_propagates_to_wcml_spine() {
+        // Rugby is the diverging junction: `wcml-birmingham.toml` reuses
+        // `west-coast-main-line.toml`'s own `wcml-midlands` segment tag there
+        // (see that file's comment), so an incident at Rugby should be a
+        // SharedSegment match for both lines, not exclusive to either.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "VT-2",
+            "Signal failure at Rugby",
+            "Signal failure causing delays to services at Rugby.",
+            &["VT"],
+            &["RUG"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["wcml".to_string(), "wcml-birmingham".to_string()]));
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+        }
     }
 }
