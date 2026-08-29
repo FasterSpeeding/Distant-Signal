@@ -1,3 +1,4 @@
+use axum_prometheus::PrometheusMetricLayerBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -48,10 +49,22 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods([axum::http::Method::GET])
         .allow_origin(Any);
 
+    let (metrics_layer, metrics_handle) = PrometheusMetricLayerBuilder::new()
+        .with_prefix("nr_status")
+        .with_default_metrics()
+        .build_pair();
+
     let router = Router::new()
         .merge(routes::line_status::router())
         .nest("/public", routes::public_router())
         .nest("/private", routes::private_router(app.clone()))
+        // Deliberately NOT gated by require_internal_token or CORS-scoped
+        // -- see docs/superpowers/specs/2026-08-29-metrics-design.md's
+        // Open Question 3: read-only, cluster-internal only (no Ingress
+        // route, ever), NetworkPolicy-gated when NetworkPolicy is enabled
+        // (this plan's Task 10).
+        .route("/metrics", axum::routing::get(move || async move { metrics_handle.render() }))
+        .layer(metrics_layer)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(app.clone());
