@@ -271,4 +271,52 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["southeastern-main-line".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // southeastern-chatham (Batch 5, Task 5.2) shares no segment with any
+    // other already-curated line: its DVP overlap with
+    // southeastern-main-line.toml is station-only (the two lines approach
+    // Dover Priory from physically different directions), documented in
+    // southeastern-chatham.toml's own header comment. So, like
+    // seml_exclusive_segment_incident_does_not_propagate above, there's
+    // only an exclusive-segment test here, none for shared-trunk
+    // propagation.
+    #[test]
+    fn chatham_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-2",
+            "Signal failure at Ramsgate",
+            "Signal failure causing delays to Southeastern services.",
+            &["SE"],
+            &["RAM"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["southeastern-chatham".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // The two branches within this one file (chatham-coastal via Ramsgate,
+    // chatham-dover via Canterbury East) are both exclusive to
+    // southeastern-chatham - an incident on the Dover branch shouldn't
+    // pull in southeastern-main-line even though both lines terminate at
+    // DVP (station overlap only, not a shared segment; see the file's own
+    // header comment).
+    #[test]
+    fn chatham_dover_branch_incident_does_not_propagate_to_seml() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-3",
+            "Points failure at Adisham",
+            "Points failure causing delays to Southeastern services.",
+            &["SE"],
+            &["ADM"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["southeastern-chatham".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
