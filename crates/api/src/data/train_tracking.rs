@@ -5,7 +5,7 @@
 //! testable without a database.
 
 use chrono::{DateTime, Utc};
-use common::TrackPinRequest;
+use common::{TrackPinRequest, TrackedTrainRef, TrainMovementEventMessage};
 use sqlx::PgPool;
 
 /// A pin more than this far in the past is almost certainly a stale
@@ -53,6 +53,132 @@ pub async fn create_pin(pool: &PgPool, pin: &TrackPinRequest, user_id: &str) -> 
     .await?;
 
     Ok(row.0)
+}
+
+/// Row shape for `list_active_tracked_trains`'s query -- identical fields
+/// to `common::TrackedTrainRef`, but with `sqlx::FromRow` derived, since
+/// that derive can't live on `TrackedTrainRef` itself (`crates/common` has
+/// no `sqlx` dependency at all). Private: nothing outside this function
+/// needs it. See `crates/api/src/data/queries.rs`'s `TflLineSummaryRow`/
+/// `row_to_report` for the precedent this mirrors.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct TrackedTrainRow {
+    id: i64,
+    service_date: chrono::NaiveDate,
+    pin_origin_crs: String,
+    pin_scheduled_departure: DateTime<Utc>,
+    resolution_status: String,
+    train_uid: Option<String>,
+    train_id: Option<String>,
+}
+
+impl From<TrackedTrainRow> for TrackedTrainRef {
+    fn from(row: TrackedTrainRow) -> Self {
+        TrackedTrainRef {
+            id: row.id,
+            service_date: row.service_date,
+            pin_origin_crs: row.pin_origin_crs,
+            pin_scheduled_departure: row.pin_scheduled_departure,
+            resolution_status: row.resolution_status,
+            train_uid: row.train_uid,
+            train_id: row.train_id,
+        }
+    }
+}
+
+/// What `trust-consumer` needs for its periodic reference reload (Task
+/// 14): pending pins to attempt resolving, and already-resolved ones to
+/// recognize incoming TRUST messages against, after a restart or on its
+/// periodic reload. "Active" excludes `completed`/`cancelled` rows in
+/// `train_current_state` and `unresolved` rows in `tracked_trains` --
+/// there is nothing further for trust-consumer to do with either.
+pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<TrackedTrainRef>> {
+    let rows = sqlx::query_as::<_, TrackedTrainRow>(
+        "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_scheduled_departure, \
+                tt.resolution_status, tt.train_uid, tt.train_id \
+         FROM tracked_trains tt \
+         LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
+         WHERE tt.resolution_status != 'unresolved' \
+           AND (cs.status IS NULL OR cs.status NOT IN ('completed', 'cancelled'))",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(TrackedTrainRef::from).collect())
+}
+
+/// Idempotent: resolves the pin (if `resolved_train_uid`/`resolved_train_id`
+/// are `Some`), inserts the event row with `ON CONFLICT DO NOTHING`
+/// (dedup'd on `(tracked_train_id, dedup_key)` -- a Kafka-redelivered
+/// message is silently dropped here), and upserts `train_current_state`.
+/// The `train_current_state` upsert always writes on every event, even a
+/// redelivered duplicate the event insert just dropped -- writing the same
+/// current-state values twice is harmless (idempotent by construction, not
+/// merely by dedup), so this doesn't need to be conditioned on whether the
+/// event insert actually inserted a row.
+pub async fn upsert_train_event(pool: &PgPool, event: &TrainMovementEventMessage) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+
+    if let (Some(train_uid), Some(train_id)) = (&event.resolved_train_uid, &event.resolved_train_id) {
+        sqlx::query(
+            "UPDATE tracked_trains \
+             SET train_uid = $2, train_id = $3, resolution_status = 'resolved', resolved_at = NOW() \
+             WHERE id = $1",
+        )
+        .bind(event.tracked_train_id)
+        .bind(train_uid)
+        .bind(train_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    sqlx::query(
+        "INSERT INTO train_movement_events \
+            (tracked_train_id, dedup_key, msg_type, event_type, loc_stanox, loc_crs, \
+             planned_timestamp, actual_timestamp, variation_status, raw_body) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+         ON CONFLICT (tracked_train_id, dedup_key) DO NOTHING",
+    )
+    .bind(event.tracked_train_id)
+    .bind(&event.dedup_key)
+    .bind(&event.msg_type)
+    .bind(&event.event_type)
+    .bind(&event.loc_stanox)
+    .bind(&event.loc_crs)
+    .bind(event.planned_timestamp)
+    .bind(event.actual_timestamp)
+    .bind(&event.variation_status)
+    .bind(&event.raw_body)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO train_current_state \
+            (tracked_train_id, status, last_reported_location, last_event_type, \
+             delay_minutes, next_calling_point, eta_next, eta_source, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) \
+         ON CONFLICT (tracked_train_id) DO UPDATE SET \
+            status                  = EXCLUDED.status, \
+            last_reported_location  = EXCLUDED.last_reported_location, \
+            last_event_type         = EXCLUDED.last_event_type, \
+            delay_minutes            = EXCLUDED.delay_minutes, \
+            next_calling_point       = EXCLUDED.next_calling_point, \
+            eta_next                 = EXCLUDED.eta_next, \
+            eta_source               = EXCLUDED.eta_source, \
+            updated_at               = NOW()",
+    )
+    .bind(event.tracked_train_id)
+    .bind(&event.status)
+    .bind(&event.last_reported_location)
+    .bind(&event.last_event_type)
+    .bind(event.delay_minutes)
+    .bind(&event.next_calling_point)
+    .bind(event.eta_next)
+    .bind(&event.eta_source)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
 }
 
 #[cfg(test)]

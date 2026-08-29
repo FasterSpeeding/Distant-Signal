@@ -575,6 +575,34 @@ pub struct TrainMovementEventMessage {
                                     // written back by trust-consumer.
 }
 
+/// What `trust-consumer` needs to know about each active tracked train:
+/// pending pins to attempt resolving, and already-resolved ones to
+/// recognize incoming TRUST messages against, after a restart or on its
+/// periodic reload (see Task 14). "Active" excludes `completed`/`cancelled`
+/// rows in `train_current_state` and `unresolved` rows in `tracked_trains`
+/// -- there is nothing further for trust-consumer to do with either.
+///
+/// Lives here rather than in `crates/api/src/data/train_tracking.rs`
+/// (where the brief's ingest-route return type is otherwise defined)
+/// because `trust-consumer` (Task 14), which has no direct DB access,
+/// deserializes this exact struct from the JSON `GET
+/// /private/tracked-trains` returns — the same snake_case,
+/// `Serialize + Deserialize`, no-`sqlx::FromRow` wire-type convention
+/// already used by `TrainMovementEventMessage` above. `crates/api`'s
+/// `list_active_tracked_trains` still queries Postgres directly; it maps
+/// its result rows into this type rather than deriving `sqlx::FromRow` on
+/// it, since `crates/common` has no `sqlx` dependency.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackedTrainRef {
+    pub id: i64,
+    pub service_date: chrono::NaiveDate,
+    pub pin_origin_crs: String,
+    pub pin_scheduled_departure: DateTime<Utc>,
+    pub resolution_status: String,
+    pub train_uid: Option<String>,
+    pub train_id: Option<String>,
+}
+
 /// Reference data for a station, as published by the station-reference feed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StationReference {
