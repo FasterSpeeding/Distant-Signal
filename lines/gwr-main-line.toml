@@ -69,10 +69,17 @@ match_keywords = ["Great Western Main Line", "GWML"]
 # Ordered London to Bristol. Principal/express-pattern stations only, per
 # the gap-analysis section this task is grounded in
 # (docs/superpowers/specs/2026-08-29-line-coverage-gap-analysis.md, "Great
-# Western Railway (GWR)"); all CRS and TIPLOC codes below were verified
-# against Wikidata, ianvisits.co.uk and railwaydata.co.uk (cross-checked
-# against one another), since railwaycodes.org.uk itself was rate-limiting
-# during this task's research.
+# Western Railway (GWR)"). All CRS and TIPLOC codes below were verified
+# directly against railwaycodes.org.uk's own CRS/TIPLOC table (the
+# authoritative primary source; it rate-limited some requests during initial
+# research but was successfully retried for every station here), and
+# cross-checked against Wikidata, ianvisits.co.uk and railwaydata.co.uk,
+# which all agree. Note railwaycodes.org.uk's table also carries a STANME
+# (station mnemonic) column distinct from TIPLOC — e.g. Swindon's STANME is
+# "SWINDON" and Bristol Temple Meads' is "BRISTOLTM", easy to mistake for
+# the TIPLOC at a glance; the TIPLOC values below (SDON, BRSTLTM) are taken
+# from the correct column and were re-confirmed after a review flagged the
+# apparent mismatch.
 [[stations]]
 crs = "PAD"
 tiploc = "PADTON"
