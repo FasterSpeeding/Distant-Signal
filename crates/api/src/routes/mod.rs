@@ -4,6 +4,7 @@ use axum::middleware;
 use crate::app::{App, Router};
 use crate::auth::require_internal_token;
 
+pub mod auth;
 pub mod freshness;
 pub mod health;
 pub mod ingest;
@@ -41,6 +42,7 @@ pub fn public_router() -> Router {
         .merge(lines::router())
         .merge(preferences::router())
         .merge(reference::router())
+        .merge(auth::router())
 }
 
 /// Takes the app state directly (rather than picking it up later via

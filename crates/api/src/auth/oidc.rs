@@ -53,12 +53,29 @@ pub fn identity_from_claims(claims: RawClaims) -> OidcIdentity {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OidcConfig {
     pub issuer_url: String,
     pub client_id: String,
     pub client_secret: String,
     pub redirect_url: String,
+}
+
+/// Hand-rolled rather than `#[derive(Debug)]` -- a derived impl would print
+/// `client_secret` in plaintext, which is exactly the kind of thing that
+/// ends up in a log line the moment anything ever debug-formats an
+/// `OidcConfig`/`OidcClient`/`AppState` value. Every other field here is
+/// non-sensitive (or already a documented, deliberately-not-secret
+/// deployment detail), so only `client_secret` needs redacting.
+impl std::fmt::Debug for OidcConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OidcConfig")
+            .field("issuer_url", &self.issuer_url)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .field("redirect_url", &self.redirect_url)
+            .finish()
+    }
 }
 
 /// `CoreClient` after `from_provider_metadata` + `set_redirect_uri`, at its
