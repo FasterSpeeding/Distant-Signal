@@ -60,8 +60,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
-pub const SESSION_COOKIE_NAME: &str = "nr_session";
-pub const LOGIN_STATE_COOKIE_NAME: &str = "nr_login";
+pub const SESSION_COOKIE_NAME: &str = "distant_signal_session";
+pub const LOGIN_STATE_COOKIE_NAME: &str = "distant_signal_login";
 
 /// Parses a `Cookie` request header for one named value. Hand-rolled
 /// rather than pulling in `axum-extra`'s `CookieJar` -- this app needs
@@ -77,12 +77,23 @@ pub fn parse_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     })
 }
 
-pub fn set_cookie_header(name: &str, value: &str, max_age_secs: i64) -> String {
-    format!("{name}={value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={max_age_secs}")
+/// `secure` MUST be the browser-facing origin's actual scheme, not a fixed
+/// `true` -- a `Secure` cookie is unconditionally rejected by the browser
+/// over plain HTTP (confirmed live: local dev, served over
+/// `http://localhost:3000`, could never actually receive either cookie
+/// this app sets, since every `Set-Cookie` unconditionally carried
+/// `Secure`). Callers derive this from `sso_redirect_url`'s scheme -- see
+/// `routes/auth.rs`'s `cookie_secure` -- since that's the one config value
+/// that's already the real, operator-configured, browser-facing origin
+/// this app is served from in any given environment.
+pub fn set_cookie_header(name: &str, value: &str, max_age_secs: i64, secure: bool) -> String {
+    let secure = if secure { "Secure; " } else { "" };
+    format!("{name}={value}; Path=/; HttpOnly; {secure}SameSite=Lax; Max-Age={max_age_secs}")
 }
 
-pub fn clear_cookie_header(name: &str) -> String {
-    format!("{name}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0")
+pub fn clear_cookie_header(name: &str, secure: bool) -> String {
+    let secure = if secure { "Secure; " } else { "" };
+    format!("{name}=; Path=/; HttpOnly; {secure}SameSite=Lax; Max-Age=0")
 }
 
 /// A fresh, high-entropy opaque session/login-state token: 256 bits of OS
@@ -180,34 +191,34 @@ mod tests {
     #[test]
     fn parse_cookie_finds_a_single_named_cookie() {
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(axum::http::header::COOKIE, "nr_session=abc123".parse().unwrap());
-        assert_eq!(parse_cookie(&headers, "nr_session"), Some("abc123".to_string()));
+        headers.insert(axum::http::header::COOKIE, "distant_signal_session=abc123".parse().unwrap());
+        assert_eq!(parse_cookie(&headers, "distant_signal_session"), Some("abc123".to_string()));
     }
 
     #[test]
     fn parse_cookie_finds_one_among_several() {
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(axum::http::header::COOKIE, "theme=dark; nr_session=abc123; other=x".parse().unwrap());
-        assert_eq!(parse_cookie(&headers, "nr_session"), Some("abc123".to_string()));
+        headers.insert(axum::http::header::COOKIE, "theme=dark; distant_signal_session=abc123; other=x".parse().unwrap());
+        assert_eq!(parse_cookie(&headers, "distant_signal_session"), Some("abc123".to_string()));
     }
 
     #[test]
     fn parse_cookie_returns_none_when_absent() {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(axum::http::header::COOKIE, "theme=dark".parse().unwrap());
-        assert_eq!(parse_cookie(&headers, "nr_session"), None);
+        assert_eq!(parse_cookie(&headers, "distant_signal_session"), None);
     }
 
     #[test]
     fn parse_cookie_returns_none_with_no_cookie_header_at_all() {
         let headers = axum::http::HeaderMap::new();
-        assert_eq!(parse_cookie(&headers, "nr_session"), None);
+        assert_eq!(parse_cookie(&headers, "distant_signal_session"), None);
     }
 
     #[test]
-    fn set_cookie_header_includes_all_required_attributes() {
-        let header = set_cookie_header("nr_session", "abc123", 1_209_600);
-        assert!(header.starts_with("nr_session=abc123;"));
+    fn set_cookie_header_includes_all_required_attributes_when_secure() {
+        let header = set_cookie_header("distant_signal_session", "abc123", 1_209_600, true);
+        assert!(header.starts_with("distant_signal_session=abc123;"));
         assert!(header.contains("HttpOnly"));
         assert!(header.contains("Secure"));
         assert!(header.contains("SameSite=Lax"));
@@ -216,10 +227,27 @@ mod tests {
     }
 
     #[test]
+    fn set_cookie_header_omits_secure_over_plain_http() {
+        // A `Secure` cookie is unconditionally rejected by the browser over
+        // plain HTTP -- this is the live bug this parameter fixes.
+        let header = set_cookie_header("distant_signal_session", "abc123", 1_209_600, false);
+        assert!(!header.contains("Secure"));
+        assert!(header.contains("HttpOnly"));
+        assert!(header.contains("SameSite=Lax"));
+    }
+
+    #[test]
     fn clear_cookie_header_zeroes_max_age() {
-        let header = clear_cookie_header("nr_session");
-        assert!(header.starts_with("nr_session=;"));
+        let header = clear_cookie_header("distant_signal_session", true);
+        assert!(header.starts_with("distant_signal_session=;"));
         assert!(header.contains("Max-Age=0"));
+        assert!(header.contains("Secure"));
+    }
+
+    #[test]
+    fn clear_cookie_header_omits_secure_over_plain_http() {
+        let header = clear_cookie_header("distant_signal_session", false);
+        assert!(!header.contains("Secure"));
     }
 
     #[test]

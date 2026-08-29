@@ -23,6 +23,19 @@ pub fn router() -> Router {
         .route("/auth/session", axum::routing::get(session))
 }
 
+/// Whether the `Secure` cookie attribute is appropriate for the browser
+/// this app is actually serving. `sso_redirect_url` is the one config
+/// value that's already the real, operator-set, browser-facing callback
+/// origin (e.g. `http://localhost:3000/...` in local dev, a real
+/// `https://...` URL in any deployed environment) -- a `Secure` cookie is
+/// unconditionally rejected by the browser when the page isn't served
+/// over HTTPS, confirmed live against local dev before this existed (every
+/// `Set-Cookie` here used to hardcode `Secure`, so login could never
+/// actually set a cookie over plain `http://localhost:3000`).
+fn cookie_secure(app: &App) -> bool {
+    app.config.sso_redirect_url.starts_with("https://")
+}
+
 async fn login(State(app): State<App>) -> Response {
     let (url, pkce_verifier, csrf_state, nonce) = match app.oidc.authorize_url().await {
         Ok(v) => v,
@@ -49,7 +62,7 @@ async fn login(State(app): State<App>) -> Response {
     let mut response = Redirect::temporary(url.as_str()).into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
-        HeaderValue::from_str(&auth::set_cookie_header(auth::LOGIN_STATE_COOKIE_NAME, &login_state_id, 900))
+        HeaderValue::from_str(&auth::set_cookie_header(auth::LOGIN_STATE_COOKIE_NAME, &login_state_id, 900, cookie_secure(&app)))
             .expect("cookie header value is always valid ASCII"),
     );
     response
@@ -133,12 +146,12 @@ async fn callback(State(app): State<App>, headers: axum::http::HeaderMap, Query(
     let mut response = Redirect::temporary(&app.config.sso_post_login_redirect_url).into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
-        HeaderValue::from_str(&auth::set_cookie_header(auth::SESSION_COOKIE_NAME, &session_token, max_age))
+        HeaderValue::from_str(&auth::set_cookie_header(auth::SESSION_COOKIE_NAME, &session_token, max_age, cookie_secure(&app)))
             .expect("cookie header value is always valid ASCII"),
     );
     response.headers_mut().append(
         header::SET_COOKIE,
-        HeaderValue::from_str(&auth::clear_cookie_header(auth::LOGIN_STATE_COOKIE_NAME))
+        HeaderValue::from_str(&auth::clear_cookie_header(auth::LOGIN_STATE_COOKIE_NAME, cookie_secure(&app)))
             .expect("cookie header value is always valid ASCII"),
     );
     response
@@ -157,7 +170,7 @@ async fn logout(State(app): State<App>, headers: axum::http::HeaderMap) -> Respo
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
-        HeaderValue::from_str(&auth::clear_cookie_header(auth::SESSION_COOKIE_NAME))
+        HeaderValue::from_str(&auth::clear_cookie_header(auth::SESSION_COOKIE_NAME, cookie_secure(&app)))
             .expect("cookie header value is always valid ASCII"),
     );
     response

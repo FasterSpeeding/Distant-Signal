@@ -114,7 +114,7 @@ describe('api client', () => {
   // be invisible to the backend and every one of these pages would render
   // unpersonalized (or, before the 401 tolerance below, not at all).
   it('getPreferences forwards the incoming request cookies to the backend', async () => {
-    incomingCookies.header = 'nr_session=abc123; theme=dark';
+    incomingCookies.header = 'distant_signal_session=abc123; theme=dark';
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response(JSON.stringify({ pinnedLines: ['wcml'], pinnedStations: [] }), { status: 200 })),
@@ -122,7 +122,7 @@ describe('api client', () => {
     await expect(getPreferences()).resolves.toEqual({ pinnedLines: ['wcml'], pinnedStations: [] });
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/preferences',
-      expect.objectContaining({ headers: { Cookie: 'nr_session=abc123; theme=dark' } }),
+      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123; theme=dark' } }),
     );
   });
 

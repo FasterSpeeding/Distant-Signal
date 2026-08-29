@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
     // (crates/api/src/auth.rs) — a header check CORS doesn't bypass.
     //
     // READ THIS BEFORE CHANGING THE TWO LINES BELOW. /public/* now also
-    // carries cookie-based session auth (the `nr_session` cookie, see
+    // carries cookie-based session auth (the `distant_signal_session` cookie, see
     // crates/api/src/auth.rs), including endpoints that mutate a user's
     // data. What keeps `allow_origin(Any)` from being a cross-origin
     // request-forgery hole is exactly two things, both load-bearing:
