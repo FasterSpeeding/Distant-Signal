@@ -249,4 +249,43 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["swr-alton".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // `tfw-cambrian` is, at this point in the line catalogue, a genuinely
+    // standalone line: no other file yet shares its Shrewsbury-Dovey
+    // Junction trunk or either of its two branches (see the comments in
+    // `lines/tfw-cambrian.toml`), so there's no sibling-line propagation
+    // assertion to write here -- only the exclusive-segment case applies.
+    #[test]
+    fn cambrian_coast_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-1",
+            "Signal failure at Barmouth",
+            "Signal failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["BRM"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tfw-cambrian".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn cambrian_aberystwyth_branch_incident_does_not_propagate_to_coast_branch() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-2",
+            "Trespass incident at Aberystwyth",
+            "Trespass incident causing delays to Transport for Wales services.",
+            &["AW"],
+            &["AYW"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tfw-cambrian".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
