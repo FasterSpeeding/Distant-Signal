@@ -9,7 +9,7 @@
 //! eventual frontend page.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::StatusCode;
 use chrono::{NaiveDate, Utc};
 use common::{TicketEntryRequest, TrackPinRequest};
@@ -17,7 +17,7 @@ use serde::Serialize;
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
-use crate::data::{eta_blend, train_tracking, delay_repay_rules};
+use crate::data::{eta_blend, ticket_extraction, train_tracking, delay_repay_rules};
 
 pub fn router() -> Router {
     Router::new()
@@ -26,6 +26,15 @@ pub fn router() -> Router {
         .route("/Train/by-uid/{train_uid}/{date}", axum::routing::get(get_by_uid_and_date))
         .route("/Train/{tracking_id}/tickets", axum::routing::post(post_ticket).get(get_tickets))
         .route("/Train/{tracking_id}/tickets/{ticket_id}/delay-repay", axum::routing::get(get_delay_repay_estimate))
+        .route("/Train/{tracking_id}/tickets/pkpass", axum::routing::post(post_pkpass_upload))
+        // 8 MiB: generous for a real boarding pass or e-ticket PDF (both
+        // are typically tens of KB to low single-digit MB), bounded
+        // against abuse. Applies to every route on this router, including
+        // the small-JSON ones above -- harmless headroom for those, load-
+        // bearing for the two upload routes (this one and Task 9's PDF
+        // route). See this plan's Global Constraints on file upload
+        // hygiene.
+        .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
 }
 
 #[derive(Debug, Serialize)]
@@ -188,6 +197,43 @@ async fn blend_darwin_eta(app: &App, mut state: train_tracking::TrackedTrainStat
         state.eta_source = Some("darwin-estimated".to_string());
     }
     state
+}
+
+/// `tracking_id` is accepted in the path for URL-shape consistency with
+/// every other `/Train/{trackingId}/tickets/...` route, and `_user`
+/// requires the caller be logged in (no anonymous file-parsing endpoint --
+/// see this plan's Global Constraints), but neither is otherwise used:
+/// this handler reads and writes no `tracked_train_id`-scoped row at all.
+/// It parses an uploaded file and returns a preview; the tracking id only
+/// matters to the client's later, separate confirm request
+/// (`POST /Train/{trackingId}/tickets`, Task 3).
+///
+/// REVIEW-BEFORE-SAVE, structurally: this function contains no
+/// `sqlx::query` call and touches no database handle -- there is nothing
+/// in this file that could accidentally persist an unreviewed upload. See
+/// this plan's Global Constraints.
+async fn post_pkpass_upload(
+    _user: AuthenticatedUser,
+    Path(_tracking_id): Path<i64>,
+    mut multipart: Multipart,
+) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
+    let bytes = read_single_file_field(&mut multipart, "file").await?;
+    ticket_extraction::parse_pkpass(&bytes)
+        .map(Json)
+        .map_err(|err| (StatusCode::UNPROCESSABLE_ENTITY, format!("could not read this as a train .pkpass: {err}")))
+}
+
+/// Shared by this route and Task 9's PDF upload route: reads the single
+/// multipart field named `field_name` (expected to be `"file"` for both)
+/// into memory and returns its raw bytes.
+async fn read_single_file_field(multipart: &mut Multipart, field_name: &str) -> Result<Vec<u8>, (StatusCode, String)> {
+    while let Some(field) = multipart.next_field().await.map_err(|err| (StatusCode::BAD_REQUEST, format!("malformed upload: {err}")))? {
+        if field.name() == Some(field_name) {
+            let bytes = field.bytes().await.map_err(|err| (StatusCode::BAD_REQUEST, format!("failed to read upload: {err}")))?;
+            return Ok(bytes.to_vec());
+        }
+    }
+    Err((StatusCode::BAD_REQUEST, format!("no '{field_name}' field in upload")))
 }
 
 /// Shared 500 mapper for every route in this file. Takes the operation that
