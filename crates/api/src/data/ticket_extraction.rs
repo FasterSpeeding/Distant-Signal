@@ -241,3 +241,106 @@ mod parse_pkpass_tests {
         assert!(parse_pkpass(b"this is definitely not a zip file").is_err());
     }
 }
+
+/// Pure: given a PDF's already-extracted raw text, applies a small,
+/// explicitly per-retailer set of best-effort heuristics. No standardised
+/// UK rail e-ticket PDF layout exists across retailers (see
+/// docs/superpowers/specs/2026-08-29-journey-ticket-tracking-design.md's
+/// Research summary §3 and Open Question 2) -- this is a genuinely
+/// fragile, lower-confidence tier than `.pkpass` parsing, by design; an
+/// unmatched field is left `None` for manual completion, never guessed at.
+pub fn parse_pdf_text(text: &str) -> PartialTicket {
+    let operator = KNOWN_RETAILER_MARKERS.iter().find(|marker| text.contains(**marker)).map(|marker| marker.to_string());
+
+    let (origin, destination) = ROUTE_PATTERN
+        .captures(text)
+        .map(|caps| (Some(caps[1].trim().to_string()), Some(caps[2].trim().to_string())))
+        .unwrap_or((None, None));
+
+    let text_lower = text.to_lowercase();
+    let ticket_type = TICKET_TYPE_KEYWORDS.iter().find(|kw| text_lower.contains(&kw.to_lowercase())).map(|kw| kw.to_string());
+
+    PartialTicket { operator, ticket_type, origin_crs: origin, destination_crs: destination, source: "pdf-heuristic" }
+}
+
+/// The "smallest possible set of known templates" the design doc's Open
+/// Question 2 calls for -- LNER and Trainline only, per that same note.
+/// Expanding this list is real follow-up work, not attempted here.
+const KNOWN_RETAILER_MARKERS: &[&str] = &["LNER", "Trainline"];
+
+const TICKET_TYPE_KEYWORDS: &[&str] =
+    &["Anytime Day Single", "Off-Peak Day Single", "Off-Peak Day Return", "Advance Single", "Season", "Open Return"];
+
+/// Matches the "<origin> to <destination>" shape the design doc's own
+/// worked example uses ("18:32 London Waterloo to Woking, Off-Peak Day
+/// Single") -- deliberately conservative (letters/spaces/apostrophes/
+/// hyphens only) since this matches against unstructured extracted text
+/// with no field boundaries at all. Confirm this against 1-2 real e-ticket
+/// PDFs at implementation time (Open Question 2 flags real samples as
+/// needed, same as `.pkpass`'s Open Question 1) and adjust -- this is a
+/// starting point, not a pattern verified against real tickets.
+static ROUTE_PATTERN: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"([A-Za-z][A-Za-z '\-]+?)\s+to\s+([A-Za-z][A-Za-z '\-]+?)[,\.\n]").unwrap());
+
+#[cfg(test)]
+mod parse_pdf_text_tests {
+    use super::*;
+
+    #[test]
+    fn matches_the_design_docs_own_worked_example() {
+        let text = "LNER e-ticket\n18:32 London Waterloo to Woking, Off-Peak Day Single\nFare: withheld";
+        let ticket = parse_pdf_text(text);
+        assert_eq!(ticket.operator, Some("LNER".to_string()));
+        assert_eq!(ticket.origin_crs, Some("London Waterloo".to_string()));
+        assert_eq!(ticket.destination_crs, Some("Woking".to_string()));
+        assert_eq!(ticket.ticket_type, Some("Off-Peak Day Single".to_string()));
+        assert_eq!(ticket.source, "pdf-heuristic");
+    }
+
+    #[test]
+    fn an_unrecognized_retailer_yields_no_operator_guess() {
+        let ticket = parse_pdf_text("Some Other Retailer Ltd e-ticket, King's Cross to York, Anytime Day Single");
+        assert_eq!(ticket.operator, None);
+    }
+
+    #[test]
+    fn text_with_no_route_pattern_match_yields_no_stations() {
+        let ticket = parse_pdf_text("LNER receipt: thank you for your purchase");
+        assert_eq!(ticket.origin_crs, None);
+        assert_eq!(ticket.destination_crs, None);
+    }
+
+    #[test]
+    fn no_ticket_type_keyword_present_yields_none_not_a_guess() {
+        let ticket = parse_pdf_text("Trainline: London Waterloo to Woking");
+        assert_eq!(ticket.ticket_type, None);
+    }
+}
+
+/// Thin wrapper: validates the `%PDF-` magic header, extracts the native
+/// text layer via the third-party `pdf_extract` crate, and hands off to
+/// `parse_pdf_text` (the actual logic, fully unit-tested above).
+///
+/// `catch_unwind`: `pdf_extract` parses untrusted, potentially-malformed
+/// input via code this app doesn't control; a panic inside it must fail
+/// this one request, not take the whole handler down. See this plan's
+/// Global Constraints on file upload hygiene.
+pub fn parse_pdf(bytes: &[u8]) -> anyhow::Result<PartialTicket> {
+    anyhow::ensure!(bytes.starts_with(b"%PDF-"), "not a PDF file (missing %PDF- header)");
+
+    let text = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(bytes))
+        .map_err(|_| anyhow::anyhow!("PDF text extraction panicked"))?
+        .map_err(|err| anyhow::anyhow!("failed to extract text from PDF: {err}"))?;
+
+    Ok(parse_pdf_text(&text))
+}
+
+#[cfg(test)]
+mod parse_pdf_tests {
+    use super::*;
+
+    #[test]
+    fn bytes_without_the_pdf_magic_header_are_rejected_before_extraction_is_attempted() {
+        assert!(parse_pdf(b"this is not a pdf").is_err());
+    }
+}

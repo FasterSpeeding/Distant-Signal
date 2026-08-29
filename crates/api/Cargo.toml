@@ -16,8 +16,10 @@ dotenv = "0.15.0"
 glob = "0.3.3"
 oauth2 = "5.0"
 openidconnect = "4.0"
+pdf-extract = "0.12"
 rand = "0.8"
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+regex = "1"
 # PINNED TO 0.12 ON PURPOSE, not merely "not upgraded yet": oauth2 5.0 (via
 # openidconnect 4.0) implements its `AsyncHttpClient` trait for
 # reqwest 0.12's `Client`, so `auth::oidc` can only pass its client to
