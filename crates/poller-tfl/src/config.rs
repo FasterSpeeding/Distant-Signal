@@ -64,4 +64,11 @@ pub struct Config {
     /// only (see the plan's Global Constraints).
     #[arg(long, env, default_value = "940GZZDLPOP")]
     pub dlr_pilot_stop_point_id: String,
+
+    /// Port for this poller's Prometheus `/metrics` endpoint. See
+    /// docs/superpowers/plans/2026-08-29-metrics.md's Global Constraints
+    /// for why this differs from api.service.port -- api reuses its
+    /// existing HTTP listener, this poller has none, so it needs a new one.
+    #[arg(long, env, default_value_t = 9091)]
+    pub metrics_port: u16,
 }
