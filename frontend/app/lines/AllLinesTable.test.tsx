@@ -20,7 +20,7 @@ function report(overrides: Partial<LineStatusReport> & { id: string; name: strin
 }
 
 const lines: LineSummary[] = [
-  { id: 'wcml', name: 'West Coast Main Line', category: 'Long Distance', operators: ['AW'], source: 'catalogue' },
+  { id: 'wcml', name: 'West Coast Main Line', category: 'Long Distance', operators: ['VT'], source: 'catalogue' },
   { id: 'gwr', name: 'Great Western Railway', category: 'Long Distance', operators: ['GW'], source: 'catalogue' },
   { id: 'swr', name: 'South Western', category: 'Regional', operators: ['SW', 'GW'], source: 'catalogue' },
 ];
@@ -58,7 +58,7 @@ const reports: LineStatusReport[] = [
 ];
 
 const tocs: Suggestion[] = [
-  { code: 'AW', name: 'Avanti West Coast' },
+  { code: 'VT', name: 'Avanti West Coast' },
   { code: 'GW', name: 'Great Western Railway' },
   { code: 'SW', name: 'South Western Railway' },
 ];
@@ -118,9 +118,9 @@ describe('AllLinesTable', () => {
     // earlier `await` sees nothing. One synchronous snapshot avoids that.
     const optionText = screen.getAllByRole('option').map((o) => o.textContent);
     expect(optionText).toEqual([
-      'AW - Avanti West Coast',
       'GW - Great Western Railway',
       'SW - South Western Railway',
+      'VT - Avanti West Coast',
     ]);
   });
 
@@ -148,7 +148,7 @@ describe('AllLinesTable', () => {
     // Synchronous, single-pass query -- see the comment on the option-label
     // test above for why this can't be split across an `await`.
     const optionText = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(optionText).toEqual(['AW - Avanti West Coast']);
+    expect(optionText).toEqual(['VT - Avanti West Coast']);
   });
 
   it('supports searching the operator filter by typing a code instead of a name', async () => {

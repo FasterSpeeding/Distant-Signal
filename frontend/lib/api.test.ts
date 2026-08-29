@@ -29,7 +29,7 @@ const sampleReport = {
   id: 'wcml',
   name: 'West Coast Main Line',
   modeName: 'national-rail',
-  operators: ['AW'],
+  operators: ['VT'],
   lineStatuses: [],
 };
 

@@ -9,7 +9,7 @@ const report: LineStatusReport = {
   id: 'wcml',
   name: 'West Coast Main Line',
   modeName: 'national-rail',
-  operators: ['AW'],
+  operators: ['VT'],
   computedAt: '2026-07-15T09:00:00Z',
   lineStatuses: [
     {

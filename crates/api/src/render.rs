@@ -102,7 +102,7 @@ mod tests {
             id: "wcml".to_string(),
             name: "West Coast Main Line".to_string(),
             mode_name: "national-rail".to_string(),
-            operators: vec!["AW".to_string()],
+            operators: vec!["VT".to_string()],
             statuses: vec![LineStatus {
                 severity: Severity::MinorDelays,
                 reason: "Signal failure".to_string(),
@@ -133,7 +133,7 @@ mod tests {
         assert_eq!(json["id"], "wcml");
         assert_eq!(json["name"], "West Coast Main Line");
         assert_eq!(json["modeName"], "national-rail");
-        assert_eq!(json["operators"][0], "AW");
+        assert_eq!(json["operators"][0], "VT");
     }
 
     #[test]

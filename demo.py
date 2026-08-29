@@ -44,7 +44,7 @@ def main():
         summary="Major disruption between Watford Junction and Milton Keynes Central",
         description="Lines blocked between Watford Junction and Milton Keynes "
                     "Central due to a trespass incident. Severe delays expected.",
-        operators=["AW", "LM"],
+        operators=["VT", "LM"],
         affected_stations=["WFJ", "MKC"],
         severity_hint="major",
         valid_from=now - timedelta(minutes=20),

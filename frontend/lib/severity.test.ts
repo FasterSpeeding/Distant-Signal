@@ -57,7 +57,7 @@ describe('worstStatus', () => {
     id: 'wcml',
     name: 'West Coast Main Line',
     modeName: 'national-rail',
-    operators: ['AW'],
+    operators: ['VT'],
     lineStatuses: [],
     computedAt: '2026-07-15T09:00:00Z',
   };
