@@ -36,7 +36,13 @@ operators = [
 # Minor intermediate calls are omitted; only principal stations are listed,
 # following `xc-manchester.toml`'s convention.
 sample_stations = ["LIV", "MAN", "PRE", "CAR", "GLC", "EDB"]
-match_keywords = ["Anglo-Scottish", "TransPennine Express"]
+# Just the route-specific phrase, not the operator's own brand name — see
+# `xc-manchester.toml`'s comment on why a bare operator name doesn't
+# belong here: this batch adds sibling TP-operator files (`tpe-south`,
+# `tpe-north`, `tpe-borders`), and "TransPennine Express" alone would
+# match all of them on almost every TPE incident, defeating
+# match_keywords' purpose as a route-disambiguating signal.
+match_keywords = ["Anglo-Scottish"]
 
 # Long-distance inter-city thresholds, matching `west-coast-main-line.toml`
 # and `xc-manchester.toml`'s treatment of comparable services.
