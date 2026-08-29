@@ -501,6 +501,80 @@ pub struct StationSample {
     pub departures: Vec<StationDeparture>,
 }
 
+/// Pin-creation payload for `POST /Train/track` (`crates/api/src/routes/train.rs`).
+/// Deliberately does NOT include `train_uid` -- per the design doc's
+/// Tracking semantics, the pinned service is only ever known by what a
+/// departure-board view already has (RDM's ephemeral `serviceID`-adjacent
+/// fields), never by a durable train identity at pin time. Resolution to
+/// `(train_uid, service_date)` happens later, out of band, once
+/// trust-consumer observes a matching TRUST Activation (see
+/// docs/superpowers/plans/2026-08-28-train-tracking.md Task 10).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackPinRequest {
+    pub service_date: chrono::NaiveDate,
+    pub origin_crs: String,
+    pub scheduled_departure: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_crs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+}
+
+/// One TRUST-derived event for a tracked train, as `trust-consumer` posts
+/// it to `POST /private/train-events`. Carries both the raw event (for the
+/// immutable log, `train_movement_events`) and trust-consumer's own
+/// derived current-state fields (for `train_current_state`) in the same
+/// message -- denormalize-on-write, per this plan's Global Constraints.
+///
+/// `resolved_train_uid`/`resolved_train_id` are only `Some` on the one
+/// message that resolves a pending pin (i.e. the Activation-derived
+/// event); every subsequent event for the same tracked train carries them
+/// as `None`, since the binding doesn't change again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrainMovementEventMessage {
+    pub tracked_train_id: i64,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_train_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_train_id: Option<String>,
+
+    pub dedup_key: String,
+    pub msg_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loc_stanox: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loc_crs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_timestamp: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_timestamp: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variation_status: Option<String>,
+    pub raw_body: serde_json::Value,
+
+    // Derived current-state fields, computed by trust-consumer (Tasks
+    // 11-12) and written straight through to train_current_state.
+    pub status: String, // "awaiting_activation" | "en_route" | "cancelled" | "completed"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reported_location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_minutes: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_calling_point: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_next: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_source: Option<String>, // "trust-propagated", set by trust-consumer.
+                                    // "darwin-estimated" is only ever
+                                    // produced at read time (Task 6), never
+                                    // written back by trust-consumer.
+}
+
 /// Reference data for a station, as published by the station-reference feed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StationReference {
