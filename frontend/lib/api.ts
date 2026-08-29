@@ -179,5 +179,8 @@ export async function getTrackedTrainById(id: number): Promise<TrackedTrainState
 }
 
 export async function getTrackedTrainByUidAndDate(uid: string, date: string): Promise<TrackedTrainState> {
-  return fetchJson<TrackedTrainState>(`${baseUrl()}/Train/by-uid/${uid}/${date}`, { cache: 'no-store' });
+  return fetchJson<TrackedTrainState>(
+    `${baseUrl()}/Train/by-uid/${encodeURIComponent(uid)}/${encodeURIComponent(date)}`,
+    { cache: 'no-store' },
+  );
 }

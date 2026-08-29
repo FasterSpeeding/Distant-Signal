@@ -102,6 +102,19 @@ describe('TrainJourney', () => {
     expect(screen.getByText(/Surbiton/)).toBeInTheDocument();
   });
 
+  it('resolved + en_route with no movement fields at all: shows a "no movement data" fallback', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'en_route',
+        })}
+      />,
+    );
+    expect(screen.getByText('No movement data reported yet.')).toBeInTheDocument();
+  });
+
   it('resolved + completed: shows the same arrived treatment as the no-next-stop en_route case', () => {
     renderWithMantine(
       <TrainJourney

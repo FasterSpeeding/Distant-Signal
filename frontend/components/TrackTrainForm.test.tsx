@@ -78,7 +78,9 @@ describe('TrackTrainForm', () => {
     );
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
-    fireEvent.change(screen.getByLabelText(/Scheduled departure/), { target: { value: '2026-08-28T18:32' } });
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-28 18:32:00' },
+    });
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     await waitFor(() => {
@@ -95,7 +97,9 @@ describe('TrackTrainForm', () => {
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
     fireEvent.change(screen.getByLabelText(/Destination CRS code/), { target: { value: 'WOK' } });
-    fireEvent.change(screen.getByLabelText(/Scheduled departure/), { target: { value: '2026-08-28T18:32' } });
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-28 18:32:00' },
+    });
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     const loginLink = await screen.findByRole('link', { name: 'Log in to track this train' });
@@ -114,7 +118,9 @@ describe('TrackTrainForm', () => {
     );
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
-    fireEvent.change(screen.getByLabelText(/Scheduled departure/), { target: { value: '2026-08-28T18:32' } });
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-28 18:32:00' },
+    });
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     expect(await screen.findByText('scheduled_departure is too far in the past to track')).toBeInTheDocument();
@@ -125,9 +131,63 @@ describe('TrackTrainForm', () => {
     fetchMock.mockResolvedValue(new Response('internal error', { status: 500 }));
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
-    fireEvent.change(screen.getByLabelText(/Scheduled departure/), { target: { value: '2026-08-28T18:32' } });
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-28 18:32:00' },
+    });
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     expect(await screen.findByText("Couldn't create the tracking pin. Try again.")).toBeInTheDocument();
+  });
+
+  it('on an empty-body 400, still shows the generic error message rather than nothing', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response('', { status: 400 }));
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-28 18:32:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    expect(await screen.findByText("Couldn't create the tracking pin. Try again.")).toBeInTheDocument();
+  });
+
+  it('on a network failure, shows the generic error message instead of failing silently', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new Error('network down'))),
+    );
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-28 18:32:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    expect(await screen.findByText("Couldn't create the tracking pin. Try again.")).toBeInTheDocument();
+  });
+
+  it('derives service_date from the picker\'s local wall-clock date, not the UTC date', async () => {
+    // A local time just after midnight, near a UTC day boundary (e.g.
+    // during BST, UTC+1): the naive `new Date(...).toISOString().slice(0,
+    // 10)` approach would roll this back to '2026-08-28', the WRONG
+    // calendar date the user actually picked.
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ trackingId: 7, resolutionStatus: 'pending' }), { status: 200 }),
+    );
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-29 00:30:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init!.body as string);
+    expect(body.service_date).toBe('2026-08-29');
   });
 });

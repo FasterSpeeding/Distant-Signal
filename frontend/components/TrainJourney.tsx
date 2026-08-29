@@ -111,6 +111,22 @@ export function TrainJourney({ state }: { state: TrackedTrainState }) {
 }
 
 function JourneyDetails({ state }: { state: TrackedTrainState }) {
+  const hasMovementData =
+    state.lastReportedLocation !== null ||
+    state.delayMinutes !== null ||
+    state.nextCallingPoint !== null ||
+    state.etaNext !== null;
+
+  if (!hasMovementData) {
+    return (
+      <Stack gap={4}>
+        <Text size="sm" c="dimmed">
+          No movement data reported yet.
+        </Text>
+      </Stack>
+    );
+  }
+
   return (
     <Stack gap={4}>
       {state.lastReportedLocation && (

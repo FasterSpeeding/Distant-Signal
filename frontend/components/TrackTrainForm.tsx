@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button, Group, Stack, TextInput } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
@@ -39,15 +39,29 @@ export function TrackTrainForm({ initialOrigin = '' }: { initialOrigin?: string 
   const originValid = CRS_PATTERN.test(originCrs.trim());
   const canSubmit = originValid && scheduledDeparture !== null && !submitting;
 
-  async function handleSubmit() {
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
     if (!canSubmit || scheduledDeparture === null) return;
     setSubmitting(true);
     setNeedsLogin(false);
     setFieldError(null);
     try {
-      const departure = new Date(scheduledDeparture);
+      // `scheduledDeparture` is the DateTimePicker's own local-wall-clock
+      // string, `'YYYY-MM-DD HH:mm:ss'` (@mantine/dates' `assign-time.mjs`
+      // formats it via `date.format('YYYY-MM-DD HH:mm:ss')`) -- not ISO
+      // 8601. Its first 10 characters are already the local calendar date
+      // the user picked, so `service_date` is read directly off the raw
+      // string rather than round-tripped through `Date`/UTC, which would
+      // give the wrong day for any departure in the first hour after local
+      // midnight while the local UTC offset is positive (e.g. BST). The
+      // space-separated form also isn't one of the ECMAScript-guaranteed-
+      // parseable date formats (only a `T` separator is), so it's
+      // normalized to `'YYYY-MM-DDTHH:mm:ss'` before being handed to `Date`
+      // for the (correctly UTC) `scheduled_departure` field.
+      const serviceDate = scheduledDeparture.slice(0, 10);
+      const departure = new Date(scheduledDeparture.replace(' ', 'T'));
       const body: TrackPinRequest = {
-        service_date: departure.toISOString().slice(0, 10),
+        service_date: serviceDate,
         origin_crs: originCrs.trim().toUpperCase(),
         scheduled_departure: departure.toISOString(),
         ...(destinationCrs.trim() ? { destination_crs: destinationCrs.trim().toUpperCase() } : {}),
@@ -70,9 +84,12 @@ export function TrackTrainForm({ initialOrigin = '' }: { initialOrigin?: string 
         return;
       }
       if (response.status === 400) {
-        setFieldError(await response.text());
+        const text = await response.text();
+        setFieldError(text || "Couldn't create the tracking pin. Try again.");
         return;
       }
+      setFieldError("Couldn't create the tracking pin. Try again.");
+    } catch {
       setFieldError("Couldn't create the tracking pin. Try again.");
     } finally {
       setSubmitting(false);
@@ -80,7 +97,7 @@ export function TrackTrainForm({ initialOrigin = '' }: { initialOrigin?: string 
   }
 
   return (
-    <Stack gap="md">
+    <Stack gap="md" component="form" onSubmit={handleSubmit}>
       <TextInput
         label="Origin CRS code"
         placeholder="e.g. WAT"
@@ -119,7 +136,7 @@ export function TrackTrainForm({ initialOrigin = '' }: { initialOrigin?: string 
         </Alert>
       )}
       <Group>
-        <Button onClick={handleSubmit} disabled={!canSubmit}>
+        <Button type="submit" disabled={!canSubmit}>
           {submitting ? 'Tracking…' : 'Track this train'}
         </Button>
         {needsLogin && (
