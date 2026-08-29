@@ -4,18 +4,21 @@ llm.baseUrl/model guard and poller-deployments.yaml's empty-baseUrl guard.
 Unlike the pollers, trust-consumer has no `enabled` toggle and renders
 unconditionally, so the guard is unconditional too.
 
-Both values are plain `String` fields on crates/trust-consumer/src/config.rs's
+All three values are plain `String` fields on crates/trust-consumer/src/config.rs's
 clap Config with no default -- an empty string parses fine, so the pod would
 boot and then fail to connect to Kafka forever with nothing but log noise to
 show for it. See that file's doc comment: the exact RDM Train Movements
-broker address and topic name are GAP-flagged as unconfirmed, so there is no
-sane default to fall back to.
+broker address, topic name, and SASL mechanism are all GAP-flagged as
+unconfirmed, so there is no sane default to fall back to.
 */}}
 {{- if not .Values.trustConsumer.kafka.brokers }}
 {{- fail "trustConsumer.kafka.brokers is empty. Set it to the RDM Train Movements Kafka broker address(es) (e.g. --set trustConsumer.kafka.brokers=kafka.raildata.org.uk:9094). An empty value would deploy a trust-consumer that never connects." }}
 {{- end }}
 {{- if not .Values.trustConsumer.kafka.topic }}
 {{- fail "trustConsumer.kafka.topic is empty. Set it to the confirmed RDM Train Movements Kafka topic name. An empty value would deploy a trust-consumer that never connects." }}
+{{- end }}
+{{- if not .Values.trustConsumer.kafka.saslMechanism }}
+{{- fail "trustConsumer.kafka.saslMechanism is empty. Set it to the confirmed RDM Kafka product's SASL mechanism (e.g. --set trustConsumer.kafka.saslMechanism=PLAIN or SCRAM-SHA-512). crates/trust-consumer/src/config.rs's doc comment flags this as GAP: unconfirmed whether RDM's Kafka product uses PLAIN or a SCRAM variant -- an empty value would deploy a trust-consumer that silently guesses wrong and never connects." }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -75,7 +78,6 @@ spec:
             periodSeconds: 15
             failureThreshold: 6 # tolerate a real reconnect cycle before restarting the pod
           env:
-            {{- include "nr-status.databaseEnv" . | nindent 12 }}
             - name: KAFKA_BROKERS
               value: {{ .Values.trustConsumer.kafka.brokers | quote }}
             - name: KAFKA_TOPIC
