@@ -311,4 +311,23 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["overground-mildmay".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // London Overground's Suffragette line (former Gospel Oak to Barking
+    // line) has no genuine shared segment with any sibling Overground
+    // line — its only touchpoint (Gospel Oak, with Mildmay) is a
+    // station-level overlap, and South Tottenham (this line) is a
+    // genuinely different station from Seven Sisters (Weaver line)
+    // despite being nearby. Standalone for the shared-segment testing
+    // convention: exclusive-segment test only, same exception class as
+    // c2c/Merseyrail.
+    #[test]
+    fn overground_suffragette_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("LO-4", "Points failure at Barking Riverside", "Points failure causing delays at Barking Riverside.", &["LO"], &["BGV"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["overground-suffragette".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
