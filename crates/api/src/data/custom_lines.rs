@@ -97,10 +97,12 @@ pub async fn get_custom_line(pool: &PgPool, id: &str) -> Result<Option<CustomLin
 /// pinned, invisible on the home page until the user remembers to pin it
 /// themselves) serves no one. The pin insert tolerates a conflict
 /// (`ON CONFLICT DO NOTHING`): `pinned_lines` has no FK to `custom_lines`
-/// by design (ids are unauthenticated, client-supplied strings via
-/// `PUT /preferences/pinned-lines` — see the preferences migration), so a
-/// stale row for this exact id can already exist from an earlier pin of
-/// an id that didn't correspond to any line yet. Without this, creating a
+/// by design (ids are free-form, client-supplied strings via
+/// `PUT /preferences/pinned-lines`, never validated against any line
+/// catalogue — see the preferences migration; that endpoint does require
+/// an authenticated user now, but it still accepts any id the client
+/// sends), so a stale row for this exact id can already exist from an
+/// earlier pin of an id that didn't correspond to any line yet. Without this, creating a
 /// line whose slug collides with such a stale pin would roll back an
 /// otherwise-valid `custom_lines` insert and surface as a 500.
 pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine, user_id: &str) -> Result<CustomLine> {
