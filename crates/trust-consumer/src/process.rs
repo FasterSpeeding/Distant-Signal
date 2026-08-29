@@ -1,0 +1,500 @@
+//! The full consume -> parse -> match/derive -> write -> commit cycle,
+//! generic over `MovementFeed` so it's testable against `FakeMovementFeed`
+//! without a broker. This is this plan's answer to "no wiremock for
+//! Kafka" in practice, not just in the abstract -- see `feed::MovementFeed`'s
+//! doc comment for the reasoning.
+//!
+//! # Known simplification left for follow-up work
+//!
+//! **STANOX->CRS translation is not implemented.** `loc_crs` is hardcoded
+//! `None` throughout `process_message`, and `matching::resolve_origin_departure`
+//! is consequently handed the raw `loc_stanox` where it documents wanting a
+//! CRS. TRUST messages carry STANOX codes, not CRS; the `crates/api`-owned
+//! `stations` reference table doesn't currently store a STANOX column
+//! (`common::StationReference` has no such field -- confirmed, not assumed).
+//! Closing this gap is a small, self-contained follow-up: add a STANOX
+//! column to the stations migration, source it from whatever RDM reference
+//! product publishes the STANOX<->CRS mapping (unconfirmed -- another GAP),
+//! and thread a lookup table into `process_message`. Until then,
+//! `last_reported_location` falls back to the raw STANOX (per
+//! `journey::apply_movement`'s existing fallback), which is honest but not
+//! display-friendly, and a pin only resolves when its `pin_origin_crs`
+//! happens to compare equal to the feed's STANOX string.
+//!
+//! Two smaller, deliberate consequences of shapes fixed in earlier tasks,
+//! noted here so they aren't mistaken for oversights:
+//!
+//! - `raw_body` is always `serde_json::json!({})`. `schema::parse_envelope`
+//!   deserializes each envelope's body into a typed struct and drops the
+//!   original `serde_json::Value`, so there is no raw body left to forward
+//!   by the time a message reaches this module.
+//! - `eta::propagate_eta` is not called. It only ever returns `Some` when
+//!   given a `remaining_scheduled` timestamp, and this crate has no
+//!   calling-point schedule to supply one until a future CIF-backed pass --
+//!   so `eta_next`/`eta_source` are always `None` here rather than being
+//!   filled by a call that could only ever be a no-op.
+
+use std::collections::HashMap;
+
+use crate::feed::MovementFeed;
+use crate::journey::DerivedState;
+use crate::schema::TrustMessage;
+
+/// In-memory mirror of what `api`'s active-tracked-trains reference set
+/// contains, refreshed on `run_once`'s caller's own schedule (main.rs's
+/// reference-reload timer). Kept as a plain argument rather than internal
+/// state so `run_once` stays an easy-to-assert function of
+/// (feed, reference, state) -> events.
+pub struct Reference {
+    pub pending: Vec<crate::matching::PendingPin>,
+}
+
+/// Cross-batch memory the processing loop accumulates as it observes the
+/// feed. Owned by `main.rs` for the whole lifetime of the process and
+/// passed in by `&mut`, NOT rebuilt per `run_once` call: every one of these
+/// maps exists precisely because a later TRUST message needs something a
+/// strictly earlier one carried, and TRUST spreads a single train's
+/// Activation / origin Movement / later Movements / Cancellation across
+/// many batches.
+///
+/// Bundled into one struct rather than passed as three `&mut HashMap`
+/// parameters so that adding a fourth kind of carried-over state later is a
+/// field, not a signature change rippling through every call site and test.
+#[derive(Debug, Default)]
+pub struct ProcessorState {
+    /// `train_id -> tracked_train_id`, populated the first time a Movement
+    /// resolves a pending pin. Consulted FIRST by every message type: a
+    /// train_id in here is already attributed, so it must never go back
+    /// through `matching::resolve_origin_departure` (that function matches
+    /// *origin departures* against pins; re-running it on a mid-journey
+    /// event would at best fail and at worst mis-attribute).
+    pub resolved: HashMap<String, i64>,
+
+    /// `train_id -> train_uid`, populated by Activation messages. An
+    /// Activation alone can't resolve a pin (per Task 10: this app has no
+    /// CIF lookup to bridge `train_uid` to a scheduled departure time), so
+    /// it only parks its `train_uid` here to be claimed by whichever
+    /// Movement does the resolving. Removed on claim -- one-shot.
+    pub pending_activations: HashMap<String, String>,
+
+    /// `train_id -> most recently derived state`. Supplies the real
+    /// `previous` argument to `journey::apply_movement`/`apply_cancellation`
+    /// -- without it a Cancellation would be derived against a blank
+    /// `awaiting_activation()` and silently lose the last-known location
+    /// that `journey::apply_cancellation` exists to preserve.
+    pub last_derived: HashMap<String, DerivedState>,
+}
+
+/// One full cycle: pull whatever the feed has, parse it, resolve/derive
+/// against `reference` and `state`, and return the batch of events that
+/// would be posted to `api` -- NOT posted here, so tests can assert on the
+/// returned `Vec` directly without an HTTP layer in the loop at all.
+/// `main.rs`'s real loop posts this return value and only then calls
+/// `feed.commit()`.
+pub async fn run_once<F: MovementFeed>(
+    feed: &mut F,
+    reference: &Reference,
+    state: &mut ProcessorState,
+) -> anyhow::Result<Vec<common::TrainMovementEventMessage>> {
+    let raw_batches = feed.next_batch().await?;
+    let mut events = Vec::new();
+
+    for raw in raw_batches {
+        let messages = crate::schema::parse_batch(&raw)?;
+        for message in messages {
+            if let Some(event) = process_message(&message, reference, state) {
+                events.push(event);
+            }
+        }
+    }
+
+    Ok(events)
+}
+
+fn process_message(
+    message: &TrustMessage,
+    reference: &Reference,
+    state: &mut ProcessorState,
+) -> Option<common::TrainMovementEventMessage> {
+    match message {
+        // An Activation never produces a posted event of its own -- it only
+        // parks its train_uid for the Movement that eventually resolves a
+        // pin for this train_id to claim.
+        TrustMessage::Activation(activation) => {
+            state
+                .pending_activations
+                .insert(activation.train_id.clone(), activation.train_uid.clone());
+            None
+        }
+
+        TrustMessage::Movement(movement) => {
+            let planned = movement.planned_timestamp.as_deref().and_then(parse_epoch_millis);
+            let actual = movement.actual_timestamp.as_deref().and_then(parse_epoch_millis);
+            let loc_crs = None; // STANOX->CRS translation: see this module's docs.
+
+            // Already-resolved train_ids short-circuit matching entirely;
+            // only a genuinely unseen train_id is offered to the pins.
+            let (tracked_train_id, freshly_resolved) = match state.resolved.get(&movement.train_id).copied() {
+                Some(tracked_train_id) => (tracked_train_id, false),
+                None => {
+                    let tracked_train_id = actual.and_then(|actual_ts| {
+                        crate::matching::resolve_origin_departure(
+                            movement.loc_stanox.as_deref()?,
+                            actual_ts,
+                            &reference.pending,
+                        )
+                    })?;
+                    state.resolved.insert(movement.train_id.clone(), tracked_train_id);
+                    (tracked_train_id, true)
+                }
+            };
+
+            let previous = previous_state(state, &movement.train_id);
+            let mut derived = crate::journey::apply_movement(&previous, movement, loc_crs);
+            if let (Some(p), Some(a), Some("LATE")) = (planned, actual, movement.variation_status.as_deref()) {
+                derived.delay_minutes = Some((a - p).num_minutes() as i32);
+            }
+            state.last_derived.insert(movement.train_id.clone(), derived.clone());
+
+            // `resolved_train_uid`/`resolved_train_id` are only ever `Some`
+            // on the one message that resolves a pending pin (see
+            // `common::TrainMovementEventMessage`'s docs); the train_uid is
+            // whatever an earlier Activation parked, or `None` if this
+            // process never saw one.
+            let (resolved_train_uid, resolved_train_id) = if freshly_resolved {
+                (
+                    state.pending_activations.remove(&movement.train_id),
+                    Some(movement.train_id.clone()),
+                )
+            } else {
+                (None, None)
+            };
+
+            let dedup = crate::dedup::dedup_key(
+                &movement.train_id,
+                "0003",
+                Some(&movement.event_type),
+                movement.loc_stanox.as_deref(),
+                movement.planned_timestamp.as_deref(),
+            );
+
+            Some(common::TrainMovementEventMessage {
+                tracked_train_id,
+                resolved_train_uid,
+                resolved_train_id,
+                dedup_key: dedup,
+                msg_type: "0003".to_string(),
+                event_type: Some(movement.event_type.clone()),
+                loc_stanox: movement.loc_stanox.clone(),
+                loc_crs: loc_crs.map(str::to_string),
+                planned_timestamp: planned,
+                actual_timestamp: actual,
+                variation_status: movement.variation_status.clone(),
+                raw_body: serde_json::json!({}),
+                status: derived.status,
+                last_reported_location: derived.last_reported_location,
+                last_event_type: derived.last_event_type,
+                delay_minutes: derived.delay_minutes,
+                next_calling_point: derived.next_calling_point,
+                eta_next: None,
+                eta_source: None,
+            })
+        }
+
+        TrustMessage::Cancellation(cancellation) => {
+            // A cancellation can only ever arrive for a train_id some
+            // earlier Movement already resolved -- it carries no location
+            // to match a pin on, so an unresolved one is dropped rather
+            // than run through `resolve_origin_departure` a second time.
+            let tracked_train_id = state.resolved.get(&cancellation.train_id).copied()?;
+
+            let previous = previous_state(state, &cancellation.train_id);
+            let derived = crate::journey::apply_cancellation(&previous);
+            state.last_derived.insert(cancellation.train_id.clone(), derived.clone());
+
+            let dedup = crate::dedup::dedup_key(&cancellation.train_id, "0002", None, None, None);
+
+            Some(common::TrainMovementEventMessage {
+                tracked_train_id,
+                resolved_train_uid: None,
+                resolved_train_id: None,
+                dedup_key: dedup,
+                msg_type: "0002".to_string(),
+                event_type: None,
+                loc_stanox: None,
+                loc_crs: None,
+                planned_timestamp: None,
+                // TRUST's confirmed `canx_timestamp` is the time the
+                // cancellation actually happened; it is the only timestamp
+                // this message shape carries, so it lands in the event's
+                // generic `actual_timestamp` rather than being dropped.
+                actual_timestamp: cancellation.canx_timestamp.as_deref().and_then(parse_epoch_millis),
+                variation_status: None,
+                raw_body: serde_json::json!({}),
+                status: derived.status,
+                last_reported_location: derived.last_reported_location,
+                last_event_type: derived.last_event_type,
+                delay_minutes: derived.delay_minutes,
+                next_calling_point: derived.next_calling_point,
+                eta_next: None,
+                eta_source: None,
+            })
+        }
+
+        TrustMessage::ChangeOfOrigin(change) => passthrough_event(&change.train_id, "0006", state),
+        TrustMessage::ChangeOfIdentity(change) => passthrough_event(&change.train_id, "0007", state),
+
+        // Already logged and dropped by `schema::parse_envelope`; there is
+        // no confirmed body shape to derive anything from.
+        TrustMessage::Unknown(_) => None,
+    }
+}
+
+/// `0006`/`0007` are recorded, not interpreted. Neither `journey` nor any
+/// other module in this crate has a confirmed derivation rule for a change
+/// of origin or of identity, and both message shapes carry nothing but a
+/// `train_id` (see `schema.rs`), so inventing one would be guesswork. The
+/// honest handling is to post the event -- so the change is visible in
+/// `train_movement_events` -- with the train's derived state passed through
+/// unchanged, exactly as `journey::apply_movement` already passes
+/// `next_calling_point` through when it lacks the information to update it.
+fn passthrough_event(
+    train_id: &str,
+    msg_type: &str,
+    state: &ProcessorState,
+) -> Option<common::TrainMovementEventMessage> {
+    let tracked_train_id = state.resolved.get(train_id).copied()?;
+    let derived = previous_state(state, train_id);
+
+    Some(common::TrainMovementEventMessage {
+        tracked_train_id,
+        resolved_train_uid: None,
+        resolved_train_id: None,
+        dedup_key: crate::dedup::dedup_key(train_id, msg_type, None, None, None),
+        msg_type: msg_type.to_string(),
+        event_type: None,
+        loc_stanox: None,
+        loc_crs: None,
+        planned_timestamp: None,
+        actual_timestamp: None,
+        variation_status: None,
+        raw_body: serde_json::json!({}),
+        status: derived.status,
+        last_reported_location: derived.last_reported_location,
+        last_event_type: derived.last_event_type,
+        delay_minutes: derived.delay_minutes,
+        next_calling_point: derived.next_calling_point,
+        eta_next: None,
+        eta_source: None,
+    })
+}
+
+/// The last state derived for this train, or a blank `awaiting_activation`
+/// if this is the first event ever seen for it.
+fn previous_state(state: &ProcessorState, train_id: &str) -> DerivedState {
+    state
+        .last_derived
+        .get(train_id)
+        .cloned()
+        .unwrap_or_else(DerivedState::awaiting_activation)
+}
+
+fn parse_epoch_millis(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let millis: i64 = raw.parse().ok()?;
+    chrono::DateTime::from_timestamp_millis(millis)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::feed::FakeMovementFeed;
+    use crate::matching::PendingPin;
+
+    fn reference_with_one_pending(id: i64, crs: &str, scheduled: &str) -> Reference {
+        Reference {
+            pending: vec![PendingPin {
+                tracked_train_id: id,
+                pin_origin_crs: crs.to_string(),
+                pin_scheduled_departure: scheduled.parse().unwrap(),
+            }],
+        }
+    }
+
+    /// A resolving origin departure at WAT, matching the pin every test
+    /// below builds with `reference_with_one_pending(1, "WAT", ...)`.
+    const ORIGIN_DEPARTURE: &str = r#"[{"header":{"msg_type":"0003"},"body":{
+        "train_id":"221832406","event_type":"DEPARTURE",
+        "planned_timestamp":"1787941920000","actual_timestamp":"1787941920000",
+        "loc_stanox":"WAT","variation_status":"ON TIME"
+    }}]"#;
+
+    #[tokio::test]
+    async fn a_matching_movement_produces_one_event() {
+        let mut feed = FakeMovementFeed::new(vec![vec![ORIGIN_DEPARTURE.to_string()]]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tracked_train_id, 1);
+        assert_eq!(events[0].status, "en_route");
+    }
+
+    #[tokio::test]
+    async fn a_movement_with_no_matching_pin_produces_no_event() {
+        let raw_batch = r#"[{"header":{"msg_type":"0003"},"body":{
+            "train_id":"999","event_type":"DEPARTURE",
+            "planned_timestamp":"1787941920000","actual_timestamp":"1787941920000",
+            "loc_stanox":"PAD","variation_status":"ON TIME"
+        }}]"#;
+        let mut feed = FakeMovementFeed::new(vec![vec![raw_batch.to_string()]]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_empty_batch_produces_no_events_and_is_not_an_error() {
+        let mut feed = FakeMovementFeed::new(vec![vec![]]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_activation_supplies_the_train_uid_to_the_movement_that_resolves_the_pin() {
+        let activation = r#"[{"header":{"msg_type":"0001"},"body":{
+            "train_id":"221832406","train_uid":"C21373","toc_id":"SW",
+            "train_service_code":"22345000","schedule_wtt_id":"WTT1",
+            "schedule_start_date":"2026-08-28","schedule_end_date":"2026-08-28"
+        }}]"#;
+        let mut feed = FakeMovementFeed::new(vec![
+            vec![activation.to_string()],
+            vec![ORIGIN_DEPARTURE.to_string()],
+        ]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        let activation_events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert!(activation_events.is_empty(), "an Activation alone posts nothing");
+
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].resolved_train_uid, Some("C21373".to_string()));
+        assert_eq!(events[0].resolved_train_id, Some("221832406".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_second_movement_reuses_the_resolution_without_re_resolving() {
+        // The second movement is at WOK, which matches no pin at all -- the
+        // only way it can produce an event is via the resolved-train_id map
+        // the first call populated.
+        let later_arrival = r#"[{"header":{"msg_type":"0003"},"body":{
+            "train_id":"221832406","event_type":"ARRIVAL",
+            "planned_timestamp":"1787943000000","actual_timestamp":"1787943000000",
+            "loc_stanox":"WOK","variation_status":"ON TIME"
+        }}]"#;
+        let mut feed = FakeMovementFeed::new(vec![
+            vec![ORIGIN_DEPARTURE.to_string()],
+            vec![later_arrival.to_string()],
+        ]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        let first = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(first[0].resolved_train_id, Some("221832406".to_string()));
+
+        let second = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].tracked_train_id, 1, "same tracked train as the resolving movement");
+        assert_eq!(second[0].last_reported_location, Some("WOK".to_string()));
+        assert_eq!(second[0].resolved_train_uid, None, "only the resolving message carries these");
+        assert_eq!(second[0].resolved_train_id, None);
+    }
+
+    #[tokio::test]
+    async fn a_cancellation_after_a_movement_preserves_the_last_known_location() {
+        let cancellation = r#"[{"header":{"msg_type":"0002"},"body":{
+            "train_id":"221832406","canx_timestamp":"1787943600000","canx_type":"EN ROUTE"
+        }}]"#;
+        let mut feed = FakeMovementFeed::new(vec![
+            vec![ORIGIN_DEPARTURE.to_string()],
+            vec![cancellation.to_string()],
+        ]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        let movement_events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(movement_events[0].last_reported_location, Some("WAT".to_string()));
+
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tracked_train_id, 1);
+        assert_eq!(events[0].msg_type, "0002");
+        assert_eq!(events[0].status, "cancelled");
+        assert_eq!(
+            events[0].last_reported_location,
+            Some("WAT".to_string()),
+            "the cancellation is derived against the movement's state, not a blank one",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancellation_for_an_unresolved_train_produces_no_event() {
+        let cancellation = r#"[{"header":{"msg_type":"0002"},"body":{
+            "train_id":"221832406","canx_timestamp":"1787943600000","canx_type":"AT ORIGIN"
+        }}]"#;
+        let mut feed = FakeMovementFeed::new(vec![vec![cancellation.to_string()]]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert!(events.is_empty(), "nothing to attribute the cancellation to");
+    }
+
+    #[tokio::test]
+    async fn a_change_of_origin_passes_the_derived_state_through_unchanged() {
+        let change_of_origin = r#"[{"header":{"msg_type":"0006"},"body":{"train_id":"221832406"}}]"#;
+        let mut feed = FakeMovementFeed::new(vec![
+            vec![ORIGIN_DEPARTURE.to_string()],
+            vec![change_of_origin.to_string()],
+        ]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        run_once(&mut feed, &reference, &mut state).await.unwrap();
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].msg_type, "0006");
+        assert_eq!(events[0].tracked_train_id, 1);
+        assert_eq!(events[0].status, "en_route");
+        assert_eq!(events[0].last_reported_location, Some("WAT".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_change_of_identity_for_an_unresolved_train_produces_no_event() {
+        let change_of_identity = r#"[{"header":{"msg_type":"0007"},"body":{"train_id":"221832406"}}]"#;
+        let mut feed = FakeMovementFeed::new(vec![vec![change_of_identity.to_string()]]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_message_type_produces_no_event() {
+        let unknown = r#"[{"header":{"msg_type":"0005"},"body":{"anything":"goes"}}]"#;
+        let mut feed = FakeMovementFeed::new(vec![vec![unknown.to_string()]]);
+        let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
+        let mut state = ProcessorState::default();
+
+        let events = run_once(&mut feed, &reference, &mut state).await.unwrap();
+        assert!(events.is_empty());
+    }
+}
