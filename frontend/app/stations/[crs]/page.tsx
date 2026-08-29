@@ -72,7 +72,10 @@ export default async function StationDisruptionPage({
     <Stack p="lg" gap="md">
       <Group justify="space-between">
         <Title order={1}>Disruptions at {heading}</Title>
-        <PinToggle kind="station" id={crs} initiallyPinned={preferences.pinnedStations.includes(crs)} />
+        <Group gap="md">
+          <TextLink href={`/track?origin=${crs}`}>Track a train from here</TextLink>
+          <PinToggle kind="station" id={crs} initiallyPinned={preferences.pinnedStations.includes(crs)} />
+        </Group>
       </Group>
 
       {reports.length === 0 && <Text c="dimmed">No disruptions affecting this station.</Text>}
