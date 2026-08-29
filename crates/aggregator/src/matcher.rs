@@ -249,4 +249,26 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["swr-alton".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // southeastern-main-line is the first Southeastern file in this catalogue
+    // (Batch 5, Task 5.1) and shares no segment with any already-curated
+    // line — thameslink-core.toml overlaps at LBG by station only, not by
+    // segment (see the comment in southeastern-main-line.toml). So there's
+    // no shared-trunk propagation test here, only the exclusive-segment one.
+    #[test]
+    fn seml_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-1",
+            "Signal failure at Ashford International",
+            "Signal failure causing delays to Southeastern services.",
+            &["SE"],
+            &["AFK"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["southeastern-main-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
