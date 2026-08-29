@@ -16,6 +16,15 @@ oauth2 = "5.0"
 openidconnect = "4.0"
 rand = "0.8"
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+# PINNED TO 0.12 ON PURPOSE, not merely "not upgraded yet": oauth2 5.0 (via
+# openidconnect 4.0) implements its `AsyncHttpClient` trait for
+# reqwest 0.12's `Client`, so `auth::oidc` can only pass its client to
+# `request_async` while this crate resolves the same reqwest major that
+# oauth2 does. A `cargo add reqwest@0.13` for something unrelated would
+# give this crate a *different* `reqwest::Client` type, and the failure
+# surfaces as an unsatisfied-trait-bound error at the `request_async` call
+# site with no mention of the version split. Bump this only together with
+# an oauth2/openidconnect release that targets the newer reqwest.
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "gzip"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde-inline-default = "1.0.1"
