@@ -249,4 +249,29 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["swr-alton".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    #[test]
+    fn cumbrian_coast_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("NT-1", "Signal failure at Whitehaven", "Signal failure causing delays on the Cumbrian Coast.", &["NT"], &["WTH"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-cumbrian-coast".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn cumbrian_coast_shared_trunk_incident_propagates_to_furness() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("NT-2", "Points failure at Barrow-in-Furness", "Points failure causing delays at Barrow.", &["NT"], &["BIF"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("northern-cumbrian-coast"));
+        assert!(matched_ids.contains("northern-furness"));
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+        }
+    }
 }
