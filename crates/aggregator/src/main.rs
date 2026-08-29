@@ -30,7 +30,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::parse();
-    common::metrics::install(config.metrics_port)?;
+    if config.metrics_enabled {
+        common::metrics::install(config.metrics_port)?;
+    }
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&config.database_url)

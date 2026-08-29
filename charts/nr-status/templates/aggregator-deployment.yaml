@@ -58,6 +58,14 @@ spec:
           {{- end }}
           env:
             {{- include "nr-status.databaseEnv" . | nindent 12 }}
+            # Always rendered, unlike the port env var below: this is
+            # the Rust-side toggle that actually stops the binary from
+            # starting its /metrics listener (`metrics_enabled` in
+            # crates/aggregator/src/config.rs). Omitting the port/env/annotations
+            # alone would not -- Kubernetes container ports are purely
+            # declarative -- so this must render "false" too, not vanish.
+            - name: METRICS_ENABLED
+              value: {{ .Values.metrics.enabled | quote }}
             {{- if .Values.metrics.enabled }}
             - name: METRICS_PORT
               value: {{ .Values.metrics.port | quote }}

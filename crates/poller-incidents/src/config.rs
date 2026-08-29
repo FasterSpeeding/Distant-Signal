@@ -39,4 +39,16 @@ pub struct Config {
     /// existing HTTP listener, this poller has none, so it needs a new one.
     #[arg(long, env, default_value_t = 9091)]
     pub metrics_port: u16,
+
+    /// Whether to start this service's Prometheus `/metrics` listener at
+    /// all. Distinct from `metrics_port` (which port to use IF started) --
+    /// this is what actually satisfies "metrics.enabled=false leaves the
+    /// service working exactly as it does today" (see the Helm chart's
+    /// `metrics.enabled` value and this branch's final whole-branch
+    /// review, Important finding #2): omitting the containerPort/env/
+    /// annotations in the chart alone does not stop the process from
+    /// listening, since Kubernetes container ports are purely
+    /// declarative.
+    #[arg(long, env, default_value_t = true)]
+    pub metrics_enabled: bool,
 }

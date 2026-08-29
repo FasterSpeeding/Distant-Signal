@@ -89,7 +89,9 @@ async fn main() -> anyhow::Result<()> {
     // every request unauthenticated instead of refusing to start. Catch that
     // here, before the client is built.
     require_non_empty_key(&config.tfl_app_key)?;
-    common::metrics::install(config.metrics_port)?;
+    if config.metrics_enabled {
+        common::metrics::install(config.metrics_port)?;
+    }
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
 
     let poll_interval = Duration::from_secs(config.poll_interval_secs);

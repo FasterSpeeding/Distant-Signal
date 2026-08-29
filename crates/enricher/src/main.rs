@@ -22,6 +22,14 @@ use llm::LlmClient;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 
+/// Bare (unprefixed) name of the LLM-call duration histogram, shared by the
+/// `install_with_buckets` bucket override in `main` and the `histogram!`
+/// call in `record_llm_call_metrics`. Both must name the *same* metric --
+/// the override is matched by exact name, so two independently hand-written
+/// copies of this string could silently desync, leaving the histogram on
+/// the module-wide default buckets with nothing to flag it.
+const LLM_DURATION_METRIC: &str = "enricher_llm_call_duration_seconds";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
@@ -31,13 +39,15 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::parse();
-    common::metrics::install_with_buckets(
-        config.metrics_port,
-        &[(
-            &common::metrics::metric_name("enricher_llm_call_duration_seconds"),
-            &[1.0, 5.0, 15.0, 30.0, 60.0, 90.0, 120.0, 180.0, 300.0],
-        )],
-    )?;
+    if config.metrics_enabled {
+        common::metrics::install_with_buckets(
+            config.metrics_port,
+            &[(
+                &common::metrics::metric_name(LLM_DURATION_METRIC),
+                &[1.0, 5.0, 15.0, 30.0, 60.0, 90.0, 120.0, 180.0, 300.0],
+            )],
+        )?;
+    }
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -210,7 +220,7 @@ async fn sweep_loop(pool: PgPool, llm: Arc<LlmClient>, model_version: String, mi
 /// to time out," not the outcome label.
 fn record_llm_call_metrics(call: &'static str, elapsed: std::time::Duration, success: bool) {
     metrics::histogram!(
-        common::metrics::metric_name("enricher_llm_call_duration_seconds"),
+        common::metrics::metric_name(LLM_DURATION_METRIC),
         "call" => call
     )
     .record(elapsed.as_secs_f64());

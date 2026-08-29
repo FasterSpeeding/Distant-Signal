@@ -28,6 +28,18 @@ pub fn metric_name(suffix: &str) -> String {
     format!("nr_status_{suffix}")
 }
 
+/// Default histogram bucket boundaries applied to every metric recorded
+/// via this module's install functions, covering roughly 50ms to 2
+/// minutes -- wide enough for a poll cycle or an aggregator cycle without
+/// per-metric tuning. Without an explicit bucket set,
+/// `metrics-exporter-prometheus` renders every histogram as a rolling
+/// 60-second-window summary instead of a true Prometheus histogram -- its
+/// quantiles silently read 0 once the last observation ages out of that
+/// window, which is misleading for any poller whose cycle is longer than
+/// 60s (five of the seven binaries this module serves). See this branch's
+/// final whole-branch review, Critical finding #1.
+const DEFAULT_BUCKETS: &[f64] = &[0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0];
+
 /// Installs the process-global Prometheus recorder and starts its embedded
 /// HTTP listener on `0.0.0.0:<port>`, serving `/metrics` in Prometheus text
 /// exposition format. Must be called exactly once, near the top of `main`,
@@ -43,18 +55,15 @@ pub fn metric_name(suffix: &str) -> String {
 /// this feature's design pass
 /// (docs/superpowers/specs/2026-08-29-metrics-design.md).
 ///
-/// Note: the exact builder method names below
-/// (`PrometheusBuilder::with_http_listener`, `.install()`) match
-/// `metrics-exporter-prometheus` 0.18's documented usage as of the design
-/// doc's research pass, but this plan was written without the ability to
-/// compile-check against the crate directly -- confirm against `cargo doc
-/// -p metrics-exporter-prometheus --open` while implementing this step.
+/// Every histogram recorded through the recorder this installs gets
+/// [`DEFAULT_BUCKETS`] unless `install_with_buckets` was given an explicit
+/// per-metric override for it.
 pub fn install(port: u16) -> Result<()> {
     install_with_buckets(port, &[])
 }
 
-/// Like [`install`], but additionally applies custom Prometheus histogram
-/// bucket boundaries to specific metrics by exact name -- e.g. so a
+/// Like [`install`], but additionally overrides the module-wide
+/// [`DEFAULT_BUCKETS`] for specific metrics by exact name -- e.g. so a
 /// histogram tracking calls to an endpoint with a known request timeout can
 /// have buckets extending past that timeout, making a call that's *about*
 /// to time out show up as "slow" rather than invisible until it becomes a
@@ -70,7 +79,12 @@ pub fn install(port: u16) -> Result<()> {
 /// itself.
 pub fn install_with_buckets(port: u16, bucket_overrides: &[(&str, &[f64])]) -> Result<()> {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
-    let mut builder = PrometheusBuilder::new().with_http_listener(addr);
+    let mut builder = PrometheusBuilder::new()
+        .with_http_listener(addr)
+        // Global default first; the per-metric `set_buckets_for_metric`
+        // calls below take precedence over it for the names they match.
+        .set_buckets(DEFAULT_BUCKETS)
+        .context("failed to set the default histogram buckets")?;
     for (name, buckets) in bucket_overrides {
         builder = builder
             .set_buckets_for_metric(Matcher::Full((*name).to_string()), buckets)
@@ -105,8 +119,8 @@ mod tests {
     // Constraints ("Testing convention for metrics") for why: it sets a
     // process-global recorder exactly once per process, which doesn't
     // compose with Rust's default concurrent, same-binary test execution.
-    // Verified instead by Task 1 Step 7's manual curl check below, and
-    // implicitly by every downstream task's own manual verification step,
-    // each of which depends on `install` having actually started a
-    // listener.
+    // Verified instead by a manual curl against a running binary's
+    // /metrics endpoint, and implicitly by every downstream task's own
+    // manual verification step, each of which depends on `install` having
+    // actually started a listener.
 }
