@@ -16,13 +16,14 @@ describe('PrideToggle', () => {
     expect(container.querySelector('.prideSparkles')).not.toBeInTheDocument();
   });
 
-  it('cycles off -> rainbow -> trans -> bisexual -> pansexual -> asexual -> sapphic -> lesbian -> off, setting document.body.dataset.pride at each step', () => {
+  it('cycles off -> rainbow -> trans -> nonbinary -> bisexual -> pansexual -> asexual -> sapphic -> lesbian -> off, setting document.body.dataset.pride at each step', () => {
     const { container } = renderWithMantine(<PrideToggle />);
     const button = screen.getByRole('button');
 
     const cycle: Array<[string, string]> = [
       ['rainbow', '🏳️‍🌈'],
       ['trans', '🏳️‍⚧️'],
+      ['nonbinary', '🏳️'],
       ['bisexual', '🏳️'],
       ['pansexual', '🏳️'],
       ['asexual', '🏳️'],
@@ -61,14 +62,21 @@ describe('PrideToggle', () => {
     const { container } = renderWithMantine(<PrideToggle />);
     const button = screen.getByRole('button');
 
-    // off -> rainbow -> trans -> bisexual
+    // off -> rainbow -> trans -> nonbinary
     fireEvent.click(button);
     fireEvent.click(button);
+    fireEvent.click(button);
+    expect(screen.getByLabelText('Pride mode: nonbinary. Click to toggle.')).toBeInTheDocument();
+    expect(button).toHaveTextContent('🏳️');
+    const nonbinarySparkles = container.querySelectorAll('.prideSparkle');
+    expect(nonbinarySparkles).toHaveLength(3);
+    expect(Array.from(nonbinarySparkles).map((s) => s.textContent)).toEqual(['💛', '🤍', '💜']);
+
+    // -> bisexual
     fireEvent.click(button);
     expect(screen.getByLabelText('Pride mode: bisexual. Click to toggle.')).toBeInTheDocument();
     expect(button).toHaveTextContent('🏳️');
     const bisexualSparkles = container.querySelectorAll('.prideSparkle');
-    expect(bisexualSparkles).toHaveLength(3);
     expect(Array.from(bisexualSparkles).map((s) => s.textContent)).toEqual(['💗', '💜', '💙']);
 
     // -> pansexual
@@ -93,8 +101,8 @@ describe('PrideToggle', () => {
   it('persists a newer flag mode (sapphic) in localStorage across remounts', () => {
     const { unmount } = renderWithMantine(<PrideToggle />);
     const button = screen.getByRole('button');
-    // off -> rainbow -> trans -> bisexual -> pansexual -> asexual -> sapphic
-    for (let i = 0; i < 6; i++) fireEvent.click(button);
+    // off -> rainbow -> trans -> nonbinary -> bisexual -> pansexual -> asexual -> sapphic
+    for (let i = 0; i < 7; i++) fireEvent.click(button);
     expect(localStorage.getItem('pride-mode')).toBe('sapphic');
     unmount();
 

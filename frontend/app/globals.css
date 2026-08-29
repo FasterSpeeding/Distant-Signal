@@ -49,8 +49,8 @@ a[data-text-link]:focus-visible {
 /* `components/PrideToggle.tsx` sets `document.body.dataset.pride` from a
    client-only localStorage preference -- one of `'off'` (the default, so
    SSR and the pre-mount client render never need any of these rules to
-   exist), `'rainbow'`, `'trans'`, `'bisexual'`, `'pansexual'`, `'asexual'`,
-   `'sapphic'`, or `'lesbian'`, cycled through the same way `ThemeToggle`
+   exist), `'rainbow'`, `'trans'`, `'nonbinary'`, `'bisexual'`, `'pansexual'`,
+   `'asexual'`, `'sapphic'`, or `'lesbian'`, cycled through the same way `ThemeToggle`
    cycles light/dark/auto. A flag-striped bar painted above the whole page,
    not a change to any element's own colour -- keeps this fully separate
    from `lib/severity.ts`'s `GROUP_COLOR` map, which stays semantic-only per
@@ -93,6 +93,25 @@ body[data-pride='trans']::before {
     #f5a9b8,
     #5bcefa,
     #5bcefa
+  );
+  background-size: 200% 100%;
+}
+
+/* Non-binary flag: four equal stripes, yellow/white/purple/black (Kye
+   Rowan, 2014). Hex values verified against flagcolorcodes.com's
+   Non-binary page; the black stripe is #2c2c2c there, deliberately not the
+   pure #000000 the asexual flag's black stripe above uses. */
+body[data-pride='nonbinary']::before {
+  content: '';
+  display: block;
+  height: 6px;
+  background: linear-gradient(
+    to right,
+    #fcf434,
+    #ffffff,
+    #9c59d1,
+    #2c2c2c,
+    #fcf434
   );
   background-size: 200% 100%;
 }
@@ -224,6 +243,7 @@ body[data-pride='lesbian']::before {
 @media (prefers-reduced-motion: no-preference) {
   body[data-pride='rainbow']::before,
   body[data-pride='trans']::before,
+  body[data-pride='nonbinary']::before,
   body[data-pride='bisexual']::before,
   body[data-pride='pansexual']::before,
   body[data-pride='asexual']::before,
@@ -268,6 +288,17 @@ body[data-pride='trans'] nav::after {
   bottom: -3px;
   height: 6px;
   background: linear-gradient(to right, #5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa, #5bcefa);
+  background-size: 200% 100%;
+}
+
+body[data-pride='nonbinary'] nav::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 6px;
+  background: linear-gradient(to right, #fcf434, #ffffff, #9c59d1, #2c2c2c, #fcf434);
   background-size: 200% 100%;
 }
 
@@ -329,6 +360,7 @@ body[data-pride='lesbian'] nav::after {
 @media (prefers-reduced-motion: no-preference) {
   body[data-pride='rainbow'] nav::after,
   body[data-pride='trans'] nav::after,
+  body[data-pride='nonbinary'] nav::after,
   body[data-pride='bisexual'] nav::after,
   body[data-pride='pansexual'] nav::after,
   body[data-pride='asexual'] nav::after,
@@ -352,6 +384,14 @@ body[data-pride='rainbow'] [data-site-title] {
 
 body[data-pride='trans'] [data-site-title] {
   background: linear-gradient(90deg, #5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa, #5bcefa);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+body[data-pride='nonbinary'] [data-site-title] {
+  background: linear-gradient(90deg, #fcf434, #ffffff, #9c59d1, #2c2c2c, #fcf434);
   background-size: 200% 100%;
   -webkit-background-clip: text;
   background-clip: text;
@@ -401,6 +441,7 @@ body[data-pride='lesbian'] [data-site-title] {
 @media (prefers-reduced-motion: no-preference) {
   body[data-pride='rainbow'] [data-site-title],
   body[data-pride='trans'] [data-site-title],
+  body[data-pride='nonbinary'] [data-site-title],
   body[data-pride='bisexual'] [data-site-title],
   body[data-pride='pansexual'] [data-site-title],
   body[data-pride='asexual'] [data-site-title],
@@ -443,6 +484,15 @@ button[aria-pressed='true'][aria-label*='trans']::before {
   inset: -3px;
   border-radius: 999px;
   background: conic-gradient(#5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa, #5bcefa);
+  z-index: -1;
+}
+
+button[aria-pressed='true'][aria-label*='nonbinary']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#fcf434, #ffffff, #9c59d1, #2c2c2c, #fcf434);
   z-index: -1;
 }
 
@@ -574,10 +624,11 @@ button[aria-pressed='true'][aria-label*='lesbian']::before {
    trans's #f5a9b8 above are their flag's second colour -- since the first
    stripe repeats as the shimmer loop's seam and picking the second avoids
    that ambiguity); Chromium/WebKit get the full gradient via the
-   pseudo-elements below. Sapphic is the one exception: its second stripe
-   is the near-white #fbf2ff ground colour, which would be almost invisible
-   against a transparent track, so its distinctive violet (#c76bc5) is used
-   instead. */
+   pseudo-elements below. Sapphic and non-binary are the two exceptions:
+   sapphic's second stripe is the near-white #fbf2ff ground colour and
+   non-binary's second stripe is plain white #ffffff, both of which would
+   be almost invisible against a transparent track, so each uses its
+   distinctive violet/purple instead (#c76bc5 and #9c59d1 respectively). */
 body[data-pride='rainbow'] {
   scrollbar-color: #ff8c00 transparent;
   scrollbar-width: thin;
@@ -585,6 +636,11 @@ body[data-pride='rainbow'] {
 
 body[data-pride='trans'] {
   scrollbar-color: #f5a9b8 transparent;
+  scrollbar-width: thin;
+}
+
+body[data-pride='nonbinary'] {
+  scrollbar-color: #9c59d1 transparent;
   scrollbar-width: thin;
 }
 
@@ -615,6 +671,7 @@ body[data-pride='lesbian'] {
 
 body[data-pride='rainbow']::-webkit-scrollbar,
 body[data-pride='trans']::-webkit-scrollbar,
+body[data-pride='nonbinary']::-webkit-scrollbar,
 body[data-pride='bisexual']::-webkit-scrollbar,
 body[data-pride='pansexual']::-webkit-scrollbar,
 body[data-pride='asexual']::-webkit-scrollbar,
@@ -626,6 +683,7 @@ body[data-pride='lesbian']::-webkit-scrollbar {
 
 body[data-pride='rainbow']::-webkit-scrollbar-track,
 body[data-pride='trans']::-webkit-scrollbar-track,
+body[data-pride='nonbinary']::-webkit-scrollbar-track,
 body[data-pride='bisexual']::-webkit-scrollbar-track,
 body[data-pride='pansexual']::-webkit-scrollbar-track,
 body[data-pride='asexual']::-webkit-scrollbar-track,
@@ -641,6 +699,11 @@ body[data-pride='rainbow']::-webkit-scrollbar-thumb {
 
 body[data-pride='trans']::-webkit-scrollbar-thumb {
   background: linear-gradient(180deg, #5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa);
+  border-radius: 999px;
+}
+
+body[data-pride='nonbinary']::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #fcf434, #ffffff, #9c59d1, #2c2c2c);
   border-radius: 999px;
 }
 
@@ -729,6 +792,16 @@ body[data-pride='trans'] {
     color-mix(in srgb, #ffffff 5%, transparent) 50%,
     color-mix(in srgb, #f5a9b8 5%, transparent) 70%,
     color-mix(in srgb, #5bcefa 5%, transparent) 100%
+  );
+}
+
+body[data-pride='nonbinary'] {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, #fcf434 5%, transparent) 0%,
+    color-mix(in srgb, #ffffff 5%, transparent) 33%,
+    color-mix(in srgb, #9c59d1 5%, transparent) 66%,
+    color-mix(in srgb, #2c2c2c 5%, transparent) 100%
   );
 }
 

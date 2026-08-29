@@ -145,10 +145,11 @@ describe('background theming', () => {
   });
 
   // The same wash/bar-hex-parity contract as rainbow/trans above, extended
-  // to the five modes PrideToggle grew afterwards (bisexual, pansexual,
-  // asexual, sapphic, lesbian) -- table-driven since it's the exact same
-  // assertion shape repeated per mode rather than five hand-written copies.
-  it.each(['bisexual', 'pansexual', 'asexual', 'sapphic', 'lesbian'])(
+  // to the six modes PrideToggle grew afterwards (nonbinary, bisexual,
+  // pansexual, asexual, sapphic, lesbian) -- table-driven since it's the
+  // exact same assertion shape repeated per mode rather than six
+  // hand-written copies.
+  it.each(['nonbinary', 'bisexual', 'pansexual', 'asexual', 'sapphic', 'lesbian'])(
     "overrides the wash under %s pride mode with the same hexes the flag bar uses, still at low opacity",
     (mode) => {
       const barRule = css.match(new RegExp(`body\\[data-pride='${mode}'\\]::before\\s*\\{[^}]*background:[^;]*;`));
