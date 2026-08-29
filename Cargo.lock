@@ -2323,6 +2323,7 @@ dependencies = [
  "clap",
  "common",
  "dotenv",
+ "metrics",
  "quick-xml",
  "reqwest 0.13.4",
  "serde",

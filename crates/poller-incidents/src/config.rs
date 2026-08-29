@@ -32,4 +32,11 @@ pub struct Config {
     /// RSPS5050 P-03-00 Rev A §10: "Recommend every 5 minutes."
     #[arg(long, env, default_value_t = 300)]
     pub poll_interval_secs: u64,
+
+    /// Port for this poller's Prometheus `/metrics` endpoint. See
+    /// docs/superpowers/plans/2026-08-29-metrics.md's Global Constraints
+    /// for why this differs from api.service.port -- api reuses its
+    /// existing HTTP listener, this poller has none, so it needs a new one.
+    #[arg(long, env, default_value_t = 9091)]
+    pub metrics_port: u16,
 }
