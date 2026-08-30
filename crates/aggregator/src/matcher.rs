@@ -382,4 +382,31 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["scotrail-fife-borders".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 10.5 (ScotRail Highland Main Line): no sibling `lines/*.toml`
+    // file touches this line's `scotrail-highland-main-line` segment yet
+    // (see `lines/scotrail-highland-main-line.toml`'s own comments on the
+    // Inverness-area segment-naming handoff left open for Tasks
+    // 10.6/10.7/10.10), so there is no shared-segment propagation to
+    // assert today -- only exclusive-segment non-propagation, mirroring
+    // `scotrail_central_belt_exclusive_segment_incident_does_not_propagate`.
+    // The incident is placed at Kingussie (on the line's exclusive
+    // Perth-Carrbridge segment), not Inverness, since Inverness's own
+    // segment fate is deliberately left open for a later task to decide.
+    #[test]
+    fn scotrail_highland_main_line_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-7",
+            "Signal failure at Kingussie",
+            "Signal failure causing delays to ScotRail services at Kingussie.",
+            &["SR"],
+            &["KIN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-highland-main-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
