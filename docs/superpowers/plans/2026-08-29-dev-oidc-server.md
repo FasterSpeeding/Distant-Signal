@@ -4,7 +4,7 @@
 
 **Goal:** Let a developer bring up a fully working local OIDC identity
 provider (Authentik) as an opt-in part of either deployment path this repo
-already supports — `docker compose` or the `charts/nr-status` Helm chart —
+already supports — `docker compose` or the `charts/distant-signal` Helm chart —
 so `SSO_ISSUER_URL`/`SSO_CLIENT_ID`/`SSO_CLIENT_SECRET`/`SSO_REDIRECT_URL`/
 `SSO_POST_LOGIN_REDIRECT_URL` (`crates/api/src/data/config.rs:58-106`) point
 at something real and the login flow added by
@@ -25,7 +25,7 @@ code:
    two blueprint files (`authentik-blueprints/`) bind-mounted read-only —
    no bootstrap admin, open self-service signup, a fixed deterministic
    OAuth2 client matching this app's own `SSO_*` config.
-2. **Helm (`charts/nr-status/`)** — a new `devAuthentik.enabled` values.yaml
+2. **Helm (`charts/distant-signal/`)** — a new `devAuthentik.enabled` values.yaml
    flag (default `false`) rendering hand-rolled plain Kubernetes manifests
    (explicitly *not* a subchart dependency on `goauthentik/helm` — see
    Global Constraints), a `ConfigMap` carrying byte-for-byte copies of the
@@ -112,7 +112,7 @@ implement them:
 - **No subchart dependency on `goauthentik/helm`, on either path.**
   Explicitly rejected by the design doc (its `dependencies:` block pulls
   Bitnami's OCI `postgresql` chart plus `authentik-remote-cluster`,
-  contradicting `charts/nr-status`'s own "one chart, one namespace, one
+  contradicting `charts/distant-signal`'s own "one chart, one namespace, one
   command. No subchart dependencies... installable in an air-gapped
   cluster" goal, `docs/superpowers/specs/2026-08-18-helm-chart-design.md:19-21`).
   Every Kubernetes object this plan adds is a hand-rolled plain manifest,
@@ -133,7 +133,7 @@ implement them:
 - **One blueprint definition, two physical copies, kept byte-for-byte
   identical.** `authentik-blueprints/oauth2-client.yaml` and
   `authentik-blueprints/open-signup.yaml` (Task 1) are the source; Helm's
-  `charts/nr-status/files/devauthentik-blueprints/` copies (Task 6) must
+  `charts/distant-signal/files/devauthentik-blueprints/` copies (Task 6) must
   match them exactly — Helm's `.Files.Get` cannot read paths outside the
   chart directory, so there is no way to avoid physical duplication. Task 6
   verifies this with `diff`; keeping the two in sync on any future edit is
@@ -200,15 +200,15 @@ implement them:
 - **New top-level files/directories this plan introduces:**
   `authentik-blueprints/oauth2-client.yaml`,
   `authentik-blueprints/open-signup.yaml`, `docker-compose.authentik.yml`,
-  `charts/nr-status/files/devauthentik-blueprints/oauth2-client.yaml`,
-  `charts/nr-status/files/devauthentik-blueprints/open-signup.yaml`,
-  `charts/nr-status/templates/devauthentik-blueprints-configmap.yaml`,
-  `charts/nr-status/templates/devauthentik-secret.yaml`,
-  `charts/nr-status/templates/devauthentik-postgres-statefulset.yaml`,
-  `charts/nr-status/templates/devauthentik-postgres-service.yaml`,
-  `charts/nr-status/templates/devauthentik-server-deployment.yaml`,
-  `charts/nr-status/templates/devauthentik-worker-deployment.yaml`,
-  `charts/nr-status/templates/devauthentik-service.yaml`.
+  `charts/distant-signal/files/devauthentik-blueprints/oauth2-client.yaml`,
+  `charts/distant-signal/files/devauthentik-blueprints/open-signup.yaml`,
+  `charts/distant-signal/templates/devauthentik-blueprints-configmap.yaml`,
+  `charts/distant-signal/templates/devauthentik-secret.yaml`,
+  `charts/distant-signal/templates/devauthentik-postgres-statefulset.yaml`,
+  `charts/distant-signal/templates/devauthentik-postgres-service.yaml`,
+  `charts/distant-signal/templates/devauthentik-server-deployment.yaml`,
+  `charts/distant-signal/templates/devauthentik-worker-deployment.yaml`,
+  `charts/distant-signal/templates/devauthentik-service.yaml`.
 - **Task ordering: compose path complete and independently verifiable
   before any Helm task starts.** Tasks 1-4 are the whole compose path,
   ending in a live end-to-end check. Tasks 5-13 are the whole Helm path,
@@ -252,7 +252,7 @@ apply, need more:
   mount at `/blueprints/local`) and, once proven, Task 6 (Helm `ConfigMap`,
   byte-for-byte copies).
 
-- [ ] **Step 1: Write `authentik-blueprints/oauth2-client.yaml`**
+- [x] **Step 1: Write `authentik-blueprints/oauth2-client.yaml`**
 
 The design doc's own Research section (lines 222-246) gives this content at
 sketch-but-concrete level, confirmed against the upstream blueprint schema
@@ -270,7 +270,7 @@ comment:
 # and docker-compose.authentik.yml's header comment) and, once the Helm
 # path exists, the identical fixed values api-deployment.yaml computes when
 # devAuthentik.enabled and api.sso.clientId/clientSecret are left empty
-# (charts/nr-status/templates/_helpers.tpl's nr-status.devAuthentikClientId/
+# (charts/distant-signal/templates/_helpers.tpl's nr-status.devAuthentikClientId/
 # nr-status.devAuthentikClientSecret).
 #
 # `signing_key`/`authorization_flow` !Find lookups depend on Authentik's OWN
@@ -306,7 +306,7 @@ attrs:
   provider: !Find [authentik_providers_oauth2.oauth2provider, [name, nr-status-dev]]
 ```
 
-- [ ] **Step 2: Write `authentik-blueprints/open-signup.yaml`**
+- [x] **Step 2: Write `authentik-blueprints/open-signup.yaml`**
 
 The design doc describes this file's shape (adapted from upstream
 `blueprints/example/flows-enrollment-2-stage.yaml`, given a fixed slug, its
@@ -484,7 +484,7 @@ attrs:
   enrollment_flow: !Find [authentik_flows.flow, [slug, nr-status-dev-enrollment]]
 ```
 
-- [ ] **Step 3: Static YAML-validity check**
+- [x] **Step 3: Static YAML-validity check**
 
 Run:
 ```bash
@@ -497,7 +497,15 @@ accepts the blueprint schema itself** — that requires a running Authentik
 instance and is covered by Task 4's live verification, where the
 blueprint's actual apply/failure is visible in `authentik-worker`'s logs.
 
-- [ ] **Step 4: Commit**
+> **Audit note (2026-08-30):** The literal command above fails as written —
+> `yaml.safe_load_all` has no constructor for Authentik's own custom
+> `!Find`/`!Env`/`!KeyOf` tags, which both real blueprint files legitimately
+> use (and which the plan's own Task 1 Step 1 sketch already uses too, so
+> this isn't specific to anything added later). Verified instead with a
+> `yaml.SafeLoader` subclass that registers a pass-through multi-constructor
+> for any `!`-tag; both files parsed with no error under that loader.
+
+- [x] **Step 4: Commit**
 
 ```bash
 git add authentik-blueprints/oauth2-client.yaml authentik-blueprints/open-signup.yaml
@@ -517,7 +525,7 @@ git commit -m "Add Authentik blueprints for the local dev OIDC client and open s
   services and the `authentik_postgres_data` named volume. Never referenced
   unless a developer's `COMPOSE_FILE` explicitly names this file (Task 3).
 
-- [ ] **Step 1: Write the file**
+- [x] **Step 1: Write the file**
 
 ```yaml
 # Local dev-only Authentik IdP overlay -- OPT-IN, never loaded unless a
@@ -651,7 +659,7 @@ volumes:
   authentik_postgres_data:
 ```
 
-- [ ] **Step 2: Static config-resolution check**
+- [x] **Step 2: Static config-resolution check**
 
 Run:
 ```bash
@@ -663,7 +671,7 @@ YAML and interpolation (including the `${AUTHENTIK_SECRET_KEY:?...}` guard
 resolving now that it's set) **without starting any container** — it does
 not confirm the services actually boot; that's Task 4.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docker-compose.authentik.yml
@@ -681,7 +689,7 @@ git commit -m "Add opt-in docker-compose.authentik.yml local dev IdP overlay"
 already made mechanically possible. `local.env.example` is deliberately
 **not** touched, per the design doc (it "stays production-style run").
 
-- [ ] **Step 1: Add a comment next to `COMPOSE_FILE`**
+- [x] **Step 1: Add a comment next to `COMPOSE_FILE`**
 
 In `dev.env.example`, next to the existing
 `COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml` line (around line
@@ -699,7 +707,7 @@ itself:
 # See docs/superpowers/specs/2026-08-29-dev-oidc-server-design.md.
 ```
 
-- [ ] **Step 2: Document the local-dev SSO values in the existing OIDC block**
+- [x] **Step 2: Document the local-dev SSO values in the existing OIDC block**
 
 In the existing OIDC SSO comment block (around lines 103-124), after the
 existing "point at a real or locally-run OIDC-compliant SSO server..."
@@ -723,7 +731,7 @@ placeholders exactly as they are — this task only adds documentation, it
 does not change what a fresh `dev.env` boots against by default (per Global
 Constraints: the opt-out stays the default).
 
-- [ ] **Step 3: Confirm the unmodified default path still resolves**
+- [x] **Step 3: Confirm the unmodified default path still resolves**
 
 Run:
 ```bash
@@ -734,7 +742,7 @@ introduce a stray syntax error, and that `COMPOSE_FILE`'s actual value is
 unchanged (the default two-file dev stack still resolves with no Authentik
 overlay in play).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add dev.env.example
@@ -749,7 +757,28 @@ git commit -m "Document the opt-in local Authentik IdP overlay in dev.env.exampl
 requires before any Helm task starts: the compose path fully built and
 independently proven, not merely rendered.
 
-- [ ] **Step 1: Static config-resolution check with the overlay enabled**
+> **Audit note (2026-08-30):** Steps 2-7 below require Docker (or another
+> container runtime) plus network access to pull real images. No sandbox
+> this plan has been worked in so far — including the one that originally
+> built this branch (per commit `34bde7b`'s own message: "No live Authentik
+> or Docker check was possible in this sandbox") and this later audit pass
+> (confirmed: no `docker`/`docker compose` binary, and `podman run` fails
+> with `fuse-overlayfs: cannot mount: Operation not permitted`) — has had
+> that available. These steps remain genuinely **not verified**, not
+> assumed to pass, per this task's own instructions above. Everything that
+> *could* be checked without live infrastructure (file content review, and
+> Step 1's static `docker compose ... config` check, run for real with a
+> downloaded standalone `docker-compose` binary against a real `dev.env`)
+> has been checked and passes. The real bugs this live verification would
+> have caught were, in fact, found and fixed via live debugging against a
+> Tailscale-exposed instance in a separate prior session outside any
+> sandbox (see `authentik-blueprints/oauth2-client.yaml`'s and
+> `open-signup.yaml`'s own header comments, and `crates/api/src/auth.rs` /
+> `crates/api/src/routes/auth.rs`'s `cookie_secure()` helper) — but that is
+> not the same thing as this specific task's steps having been run and
+> recorded here, so they stay unchecked.
+
+- [x] **Step 1: Static config-resolution check with the overlay enabled**
 
 Run:
 ```bash
@@ -859,13 +888,13 @@ the compose path were proven end to end when it wasn't.
 ### Task 5: `devAuthentik` values.yaml block
 
 **Files:**
-- Modify: `charts/nr-status/values.yaml`
+- Modify: `charts/distant-signal/values.yaml`
 
 **Interfaces:**
 - Produces: `devAuthentik.{enabled,hostname,image,secretKey,service,hostAliasIP,postgresql,resources,nodeSelector,tolerations,affinity}`.
   Consumed by every subsequent Helm task.
 
-- [ ] **Step 1: Add the block**
+- [x] **Step 1: Add the block**
 
 Insert between the existing `api:` block (ends around line 375) and
 `aggregator:` (starts around line 379):
@@ -886,7 +915,7 @@ Insert between the existing `api:` block (ends around line 375) and
 # computes api.sso.issuerUrl/clientId/clientSecret/redirectUrl/
 # postLoginRedirectUrl from the values below and the fixed blueprint-
 # provisioned client_id/client_secret in
-# charts/nr-status/files/devauthentik-blueprints/oauth2-client.yaml (the
+# charts/distant-signal/files/devauthentik-blueprints/oauth2-client.yaml (the
 # SAME fixed values docker-compose.authentik.yml's blueprint uses -- see
 # authentik-blueprints/oauth2-client.yaml). An operator who sets any
 # api.sso.* value explicitly keeps it; devAuthentik never overrides an
@@ -960,21 +989,21 @@ devAuthentik:
   affinity: {}
 ```
 
-- [ ] **Step 2: Confirm the chart still renders unaffected**
+- [x] **Step 2: Confirm the chart still renders unaffected**
 
 Run:
 ```bash
-helm lint charts/nr-status
-helm template charts/nr-status --set api.sso.issuerUrl=https://x --set api.sso.clientId=x --set api.sso.clientSecret=x --set api.sso.redirectUrl=https://x --set api.sso.postLoginRedirectUrl=https://x >/dev/null
+helm lint charts/distant-signal
+helm template charts/distant-signal --set api.sso.issuerUrl=https://x --set api.sso.clientId=x --set api.sso.clientSecret=x --set api.sso.redirectUrl=https://x --set api.sso.postLoginRedirectUrl=https://x >/dev/null
 ```
 Expected: both succeed with no error — the new block is inert until a later
 task's templates reference it (`devAuthentik.enabled` defaults to `false`,
 and nothing reads it yet).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
-git add charts/nr-status/values.yaml
+git add charts/distant-signal/values.yaml
 git commit -m "Add the devAuthentik values.yaml block"
 ```
 
@@ -983,21 +1012,21 @@ git commit -m "Add the devAuthentik values.yaml block"
 ### Task 6: Blueprint `ConfigMap` delivery
 
 **Files:**
-- Create: `charts/nr-status/files/devauthentik-blueprints/oauth2-client.yaml`
-- Create: `charts/nr-status/files/devauthentik-blueprints/open-signup.yaml`
-- Create: `charts/nr-status/templates/devauthentik-blueprints-configmap.yaml`
+- Create: `charts/distant-signal/files/devauthentik-blueprints/oauth2-client.yaml`
+- Create: `charts/distant-signal/files/devauthentik-blueprints/open-signup.yaml`
+- Create: `charts/distant-signal/templates/devauthentik-blueprints-configmap.yaml`
 
 **Interfaces:**
 - Produces: a `ConfigMap` named `<fullname>-devauthentik-blueprints` whose
   data keys are the two blueprint filenames. Consumed by Task 9's server
   and worker `Deployment`s (mounted at `/blueprints/local`).
 
-- [ ] **Step 1: Copy the blueprint files byte-for-byte**
+- [x] **Step 1: Copy the blueprint files byte-for-byte**
 
 ```bash
-mkdir -p charts/nr-status/files/devauthentik-blueprints
-cp authentik-blueprints/oauth2-client.yaml charts/nr-status/files/devauthentik-blueprints/oauth2-client.yaml
-cp authentik-blueprints/open-signup.yaml charts/nr-status/files/devauthentik-blueprints/open-signup.yaml
+mkdir -p charts/distant-signal/files/devauthentik-blueprints
+cp authentik-blueprints/oauth2-client.yaml charts/distant-signal/files/devauthentik-blueprints/oauth2-client.yaml
+cp authentik-blueprints/open-signup.yaml charts/distant-signal/files/devauthentik-blueprints/open-signup.yaml
 ```
 Helm's `.Files.Get` can only read paths inside the chart directory, so this
 physical duplication is unavoidable, not an oversight — see Global
@@ -1005,7 +1034,7 @@ Constraints. Keeping the two copies in sync on any future edit is a
 documented, not automated, maintenance duty; Step 3 below verifies they
 start in sync.
 
-- [ ] **Step 2: Write `devauthentik-blueprints-configmap.yaml`**
+- [x] **Step 2: Write `devauthentik-blueprints-configmap.yaml`**
 
 ```yaml
 {{- if .Values.devAuthentik.enabled }}
@@ -1028,17 +1057,17 @@ this file now, it will not render correctly until Task 7 lands, which is
 fine since it's still gated behind `devAuthentik.enabled: false` by
 default.
 
-- [ ] **Step 3: Verify byte-for-byte parity and render shape**
+- [x] **Step 3: Verify byte-for-byte parity and render shape**
 
 ```bash
-diff authentik-blueprints/oauth2-client.yaml charts/nr-status/files/devauthentik-blueprints/oauth2-client.yaml
-diff authentik-blueprints/open-signup.yaml charts/nr-status/files/devauthentik-blueprints/open-signup.yaml
+diff authentik-blueprints/oauth2-client.yaml charts/distant-signal/files/devauthentik-blueprints/oauth2-client.yaml
+diff authentik-blueprints/open-signup.yaml charts/distant-signal/files/devauthentik-blueprints/open-signup.yaml
 ```
 Expected: both produce no output (files identical). This step cannot fully
 confirm the `ConfigMap` template itself renders correctly until Task 7's
 helpers exist — re-run after Task 7:
 ```bash
-helm template charts/nr-status --set devAuthentik.enabled=true \
+helm template charts/distant-signal --set devAuthentik.enabled=true \
   --set api.sso.issuerUrl=https://x --set api.sso.clientId=x --set api.sso.clientSecret=x --set api.sso.redirectUrl=https://x --set api.sso.postLoginRedirectUrl=https://x \
   --show-only templates/devauthentik-blueprints-configmap.yaml
 ```
@@ -1046,10 +1075,10 @@ Expected: a `ConfigMap` with exactly two data keys
 (`oauth2-client.yaml`, `open-signup.yaml`) whose content matches the two
 source files.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
-git add charts/nr-status/files/devauthentik-blueprints charts/nr-status/templates/devauthentik-blueprints-configmap.yaml
+git add charts/distant-signal/files/devauthentik-blueprints charts/distant-signal/templates/devauthentik-blueprints-configmap.yaml
 git commit -m "Deliver the dev IdP blueprints to Kubernetes via a ConfigMap"
 ```
 
@@ -1058,8 +1087,8 @@ git commit -m "Deliver the dev IdP blueprints to Kubernetes via a ConfigMap"
 ### Task 7: `_helpers.tpl` additions and `devauthentik-secret.yaml`
 
 **Files:**
-- Modify: `charts/nr-status/templates/_helpers.tpl`
-- Create: `charts/nr-status/templates/devauthentik-secret.yaml`
+- Modify: `charts/distant-signal/templates/_helpers.tpl`
+- Create: `charts/distant-signal/templates/devauthentik-secret.yaml`
 
 **Interfaces:**
 - Produces: `nr-status.devAuthentikFullname`,
@@ -1074,9 +1103,9 @@ git commit -m "Deliver the dev IdP blueprints to Kubernetes via a ConfigMap"
   `nr-status.devAuthentikHostAliasIP`; and the `Secret` object
   `devauthentik-secret.yaml`. Consumed by Tasks 6, 8, 9, 10, 11.
 
-- [ ] **Step 1: Add naming and secret-reference helpers**
+- [x] **Step 1: Add naming and secret-reference helpers**
 
-Append to `charts/nr-status/templates/_helpers.tpl`:
+Append to `charts/distant-signal/templates/_helpers.tpl`:
 
 ```
 {{/*
@@ -1120,7 +1149,7 @@ devauthentik-secret.yaml.
 Fixed, blueprint-provisioned OIDC client id/secret for the local dev IdP --
 IDENTICAL literal values to authentik-blueprints/oauth2-client.yaml (the
 compose path's blueprint, Task 1) and its byte-for-byte chart copy at
-charts/nr-status/files/devauthentik-blueprints/oauth2-client.yaml (Task 6).
+charts/distant-signal/files/devauthentik-blueprints/oauth2-client.yaml (Task 6).
 Not secret in any meaningful sense -- known-in-advance, dev-only, committed
 to git in both places -- but still routed through secret.yaml's
 sso-client-secret entry for clientSecret rather than inlined directly in a
@@ -1187,7 +1216,7 @@ writing an IP of "".
 {{- end }}
 ```
 
-- [ ] **Step 2: Write `devauthentik-secret.yaml`**
+- [x] **Step 2: Write `devauthentik-secret.yaml`**
 
 ```yaml
 {{- if .Values.devAuthentik.enabled }}
@@ -1223,11 +1252,11 @@ data:
 {{- end }}
 ```
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 ```bash
-helm lint charts/nr-status
-helm template charts/nr-status --set devAuthentik.enabled=true \
+helm lint charts/distant-signal
+helm template charts/distant-signal --set devAuthentik.enabled=true \
   --set api.sso.issuerUrl=https://x --set api.sso.clientId=x --set api.sso.clientSecret=x --set api.sso.redirectUrl=https://x --set api.sso.postLoginRedirectUrl=https://x \
   --show-only templates/devauthentik-secret.yaml
 ```
@@ -1239,10 +1268,10 @@ comment and in the chart README (`lookup` always returns empty during
 offline rendering), not a bug in this task. Also re-run Task 6 Step 3's
 `ConfigMap` render now that `nr-status.devAuthentikFullname` exists.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
-git add charts/nr-status/templates/_helpers.tpl charts/nr-status/templates/devauthentik-secret.yaml
+git add charts/distant-signal/templates/_helpers.tpl charts/distant-signal/templates/devauthentik-secret.yaml
 git commit -m "Add devAuthentik naming helpers and its generated Secret"
 ```
 
@@ -1251,8 +1280,8 @@ git commit -m "Add devAuthentik naming helpers and its generated Secret"
 ### Task 8: Dedicated Authentik Postgres — `StatefulSet` and `Service`
 
 **Files:**
-- Create: `charts/nr-status/templates/devauthentik-postgres-statefulset.yaml`
-- Create: `charts/nr-status/templates/devauthentik-postgres-service.yaml`
+- Create: `charts/distant-signal/templates/devauthentik-postgres-statefulset.yaml`
+- Create: `charts/distant-signal/templates/devauthentik-postgres-service.yaml`
 
 **Interfaces:**
 - Consumes: `nr-status.devAuthentikPostgresFullname`,
@@ -1261,7 +1290,7 @@ git commit -m "Add devAuthentik naming helpers and its generated Secret"
   `volumeClaimTemplates` entry. Consumed by Task 9's server/worker env
   (`AUTHENTIK_POSTGRESQL__HOST`).
 
-- [ ] **Step 1: Write `devauthentik-postgres-statefulset.yaml`**
+- [x] **Step 1: Write `devauthentik-postgres-statefulset.yaml`**
 
 Mirrors `postgres-statefulset.yaml` exactly in shape — same `PGDATA`
 subdirectory fix, same explicit `runAsUser`/`runAsGroup`/`fsGroup: 999`,
@@ -1385,7 +1414,7 @@ spec:
 {{- end }}
 ```
 
-- [ ] **Step 2: Write `devauthentik-postgres-service.yaml`**
+- [x] **Step 2: Write `devauthentik-postgres-service.yaml`**
 
 Mirrors `postgres-service.yaml` exactly — headless, for stable pod DNS:
 
@@ -1409,27 +1438,27 @@ spec:
 {{- end }}
 ```
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 ```bash
-helm lint charts/nr-status
-helm template charts/nr-status --set devAuthentik.enabled=true \
+helm lint charts/distant-signal
+helm template charts/distant-signal --set devAuthentik.enabled=true \
   --set api.sso.issuerUrl=https://x --set api.sso.clientId=x --set api.sso.clientSecret=x --set api.sso.redirectUrl=https://x --set api.sso.postLoginRedirectUrl=https://x \
   --show-only templates/devauthentik-postgres-statefulset.yaml,templates/devauthentik-postgres-service.yaml
 ```
 Expected: both objects render. **Static YAML-shape check only** — if
 `kubeconform` or a `kubectl` with API-schema access is available, also run:
 ```bash
-helm template charts/nr-status --set devAuthentik.enabled=true ... | kubeconform -summary
+helm template charts/distant-signal --set devAuthentik.enabled=true ... | kubeconform -summary
 ```
 (or `kubectl apply --dry-run=client -f -`, per the base chart's own stated
 verification convention). If neither tool is available in this environment,
 report this schema-validation half as not run, not as passing.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
-git add charts/nr-status/templates/devauthentik-postgres-statefulset.yaml charts/nr-status/templates/devauthentik-postgres-service.yaml
+git add charts/distant-signal/templates/devauthentik-postgres-statefulset.yaml charts/distant-signal/templates/devauthentik-postgres-service.yaml
 git commit -m "Add a dedicated Postgres StatefulSet for the Kubernetes dev IdP"
 ```
 
@@ -1438,8 +1467,8 @@ git commit -m "Add a dedicated Postgres StatefulSet for the Kubernetes dev IdP"
 ### Task 9: Authentik server and worker `Deployment`s
 
 **Files:**
-- Create: `charts/nr-status/templates/devauthentik-server-deployment.yaml`
-- Create: `charts/nr-status/templates/devauthentik-worker-deployment.yaml`
+- Create: `charts/distant-signal/templates/devauthentik-server-deployment.yaml`
+- Create: `charts/distant-signal/templates/devauthentik-worker-deployment.yaml`
 
 **Interfaces:**
 - Consumes: `nr-status.devAuthentikFullname`/`devAuthentikWorkerFullname`/
@@ -1449,7 +1478,7 @@ git commit -m "Add a dedicated Postgres StatefulSet for the Kubernetes dev IdP"
   worker` on the same image). Consumed by Task 10 (the server's `Service`
   fronts this `Deployment`).
 
-- [ ] **Step 1: Write `devauthentik-server-deployment.yaml`**
+- [x] **Step 1: Write `devauthentik-server-deployment.yaml`**
 
 `Deployment`, not `StatefulSet` — Authentik's own state lives entirely in
 its Postgres, matching the design doc's own reasoning. Reuses this chart's
@@ -1583,7 +1612,7 @@ spec:
 {{- end }}
 ```
 
-- [ ] **Step 2: Write `devauthentik-worker-deployment.yaml`**
+- [x] **Step 2: Write `devauthentik-worker-deployment.yaml`**
 
 Same image, `args: ["worker"]`, no `ports`/probes — like the aggregator,
 the worker exposes no HTTP surface; failure handling is restart-on-exit via
@@ -1678,11 +1707,11 @@ spec:
 {{- end }}
 ```
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 ```bash
-helm lint charts/nr-status
-helm template charts/nr-status --set devAuthentik.enabled=true \
+helm lint charts/distant-signal
+helm template charts/distant-signal --set devAuthentik.enabled=true \
   --set api.sso.issuerUrl=https://x --set api.sso.clientId=x --set api.sso.clientSecret=x --set api.sso.redirectUrl=https://x --set api.sso.postLoginRedirectUrl=https://x \
   --show-only templates/devauthentik-server-deployment.yaml,templates/devauthentik-worker-deployment.yaml
 ```
@@ -1691,10 +1720,10 @@ Authentik actually boots successfully under `readOnlyRootFilesystem: true`
 plus the probes/health paths above cannot be confirmed without a live
 cluster; that is Task 13's optional live check, not this task's.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
-git add charts/nr-status/templates/devauthentik-server-deployment.yaml charts/nr-status/templates/devauthentik-worker-deployment.yaml
+git add charts/distant-signal/templates/devauthentik-server-deployment.yaml charts/distant-signal/templates/devauthentik-worker-deployment.yaml
 git commit -m "Add server and worker Deployments for the Kubernetes dev IdP"
 ```
 
@@ -1703,7 +1732,7 @@ git commit -m "Add server and worker Deployments for the Kubernetes dev IdP"
 ### Task 10: `NodePort` `Service` for the Authentik server
 
 **Files:**
-- Create: `charts/nr-status/templates/devauthentik-service.yaml`
+- Create: `charts/distant-signal/templates/devauthentik-service.yaml`
 
 **Interfaces:**
 - Produces: a `NodePort` `Service` fronting Task 9's server `Deployment`
@@ -1713,7 +1742,7 @@ git commit -m "Add server and worker Deployments for the Kubernetes dev IdP"
   external prerequisite (the local cluster forwarding this `NodePort` to
   loopback) is satisfied.
 
-- [ ] **Step 1: Write the file**
+- [x] **Step 1: Write the file**
 
 ```yaml
 {{- if .Values.devAuthentik.enabled }}
@@ -1749,18 +1778,18 @@ spec:
 {{- end }}
 ```
 
-- [ ] **Step 2: Verify**
+- [x] **Step 2: Verify**
 
 ```bash
-helm lint charts/nr-status
-helm template charts/nr-status --set devAuthentik.enabled=true \
+helm lint charts/distant-signal
+helm template charts/distant-signal --set devAuthentik.enabled=true \
   --set api.sso.issuerUrl=https://x --set api.sso.clientId=x --set api.sso.clientSecret=x --set api.sso.redirectUrl=https://x --set api.sso.postLoginRedirectUrl=https://x \
   --show-only templates/devauthentik-service.yaml
 ```
 Expected: a `NodePort` `Service` with `port: 30900` and `nodePort: 30900`
 (both present). Then confirm the guard fires:
 ```bash
-helm template charts/nr-status --set devAuthentik.enabled=true --set devAuthentik.service.nodePort=31234 \
+helm template charts/distant-signal --set devAuthentik.enabled=true --set devAuthentik.service.nodePort=31234 \
   --set api.sso.issuerUrl=https://x --set api.sso.clientId=x --set api.sso.clientSecret=x --set api.sso.redirectUrl=https://x --set api.sso.postLoginRedirectUrl=https://x
 ```
 Expected: render **fails** with the `fail` message above (`port` still
@@ -1773,10 +1802,10 @@ external-to-the-chart prerequisite (kind's `extraPortMappings`, `minikube
 tunnel`, k3d's `--port`) — this task cannot enforce or verify that step;
 Task 12 documents it, Task 13 checks it where a real cluster is available.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
-git add charts/nr-status/templates/devauthentik-service.yaml
+git add charts/distant-signal/templates/devauthentik-service.yaml
 git commit -m "Add the NodePort Service fronting the Kubernetes dev IdP"
 ```
 
@@ -1785,8 +1814,8 @@ git commit -m "Add the NodePort Service fronting the Kubernetes dev IdP"
 ### Task 11: Wire `devAuthentik` into `api-deployment.yaml` and `secret.yaml`
 
 **Files:**
-- Modify: `charts/nr-status/templates/api-deployment.yaml`
-- Modify: `charts/nr-status/templates/secret.yaml`
+- Modify: `charts/distant-signal/templates/api-deployment.yaml`
+- Modify: `charts/distant-signal/templates/secret.yaml`
 
 **Interfaces:**
 - Consumes: `nr-status.devAuthentikIssuerUrl`/`ClientId`/`ClientSecret`/
@@ -1797,9 +1826,9 @@ git commit -m "Add the NodePort Service fronting the Kubernetes dev IdP"
   conditional `hostAliases` entry. `secret.yaml`'s `sso-client-secret`
   entry gains the same fallback.
 
-- [ ] **Step 1: Make the `api.sso.*` fail guards conditional**
+- [x] **Step 1: Make the `api.sso.*` fail guards conditional**
 
-In `charts/nr-status/templates/api-deployment.yaml`, replace the existing
+In `charts/distant-signal/templates/api-deployment.yaml`, replace the existing
 top-of-file block (the five `{{- if not .Values.api.sso.X }}{{- fail ... }}{{- end }}`
 guards, currently lines 1-28) with:
 
@@ -1809,7 +1838,7 @@ Fail-fast on an unusable SSO config -- same pattern as before, EXCEPT an
 empty api.sso.* value is no longer automatically fatal when
 devAuthentik.enabled: true. In that case the value is computed instead,
 from devAuthentik.* and the fixed blueprint-provisioned client id/secret
-(charts/nr-status/templates/_helpers.tpl's nr-status.devAuthentik* helpers)
+(charts/distant-signal/templates/_helpers.tpl's nr-status.devAuthentik* helpers)
 -- see docs/superpowers/specs/2026-08-29-dev-oidc-server-design.md's Helm
 chart support section. An operator's explicit api.sso.* value ALWAYS wins
 over the computed default; devAuthentik never overrides one.
@@ -1836,7 +1865,7 @@ over the computed default; devAuthentik never overrides one.
 {{- end }}
 ```
 
-- [ ] **Step 2: Use the computed values in the env section**
+- [x] **Step 2: Use the computed values in the env section**
 
 Further down in the same file, in the container `env` list, replace the
 existing four plain-value `SSO_*` entries (leave `SSO_CLIENT_SECRET`'s
@@ -1859,7 +1888,7 @@ Step 4 below):
               value: {{ $postLoginRedirectUrl | quote }}
 ```
 
-- [ ] **Step 3: Add the conditional `hostAliases` entry**
+- [x] **Step 3: Add the conditional `hostAliases` entry**
 
 In the same file, in the pod spec (immediately after
 `automountServiceAccountToken: false`, before `imagePullSecrets`):
@@ -1880,9 +1909,9 @@ In the same file, in the pod spec (immediately after
       {{- end }}
 ```
 
-- [ ] **Step 4: Add the fallback to `secret.yaml`**
+- [x] **Step 4: Add the fallback to `secret.yaml`**
 
-In `charts/nr-status/templates/secret.yaml`, replace the existing
+In `charts/distant-signal/templates/secret.yaml`, replace the existing
 `sso-client-secret` block:
 
 ```yaml
@@ -1898,11 +1927,11 @@ In `charts/nr-status/templates/secret.yaml`, replace the existing
 {{- end -}}
 ```
 
-- [ ] **Step 5: Verify — new computed-default path renders**
+- [x] **Step 5: Verify — new computed-default path renders**
 
 ```bash
-helm lint charts/nr-status
-helm template charts/nr-status --set devAuthentik.enabled=true --set devAuthentik.hostAliasIP=10.96.0.42 \
+helm lint charts/distant-signal
+helm template charts/distant-signal --set devAuthentik.enabled=true --set devAuthentik.hostAliasIP=10.96.0.42 \
   --show-only templates/api-deployment.yaml
 ```
 Expected: renders without any `fail` (previously this combination —
@@ -1913,10 +1942,10 @@ the original unconditional guards). Grep the output for
 `devAuthentik`-derived values, and for `hostAliases` to confirm the entry
 is present (since `hostAliasIP` was set explicitly here).
 
-- [ ] **Step 6: Verify — explicit `api.sso.*` still wins**
+- [x] **Step 6: Verify — explicit `api.sso.*` still wins**
 
 ```bash
-helm template charts/nr-status --set devAuthentik.enabled=true --set devAuthentik.hostAliasIP=10.96.0.42 \
+helm template charts/distant-signal --set devAuthentik.enabled=true --set devAuthentik.hostAliasIP=10.96.0.42 \
   --set api.sso.issuerUrl=https://real-idp.example.com/realms/rail \
   --set api.sso.clientId=real-client --set api.sso.clientSecret=real-secret \
   --set api.sso.redirectUrl=https://real.example.com/api/auth/callback \
@@ -1927,20 +1956,20 @@ Expected: shows `https://real-idp.example.com/realms/rail`, not the
 computed `devAuthentik` value — confirms an explicit operator value is
 never overridden even when `devAuthentik.enabled` is also `true`.
 
-- [ ] **Step 7: Verify — the original real-IdP path still fails as before**
+- [x] **Step 7: Verify — the original real-IdP path still fails as before**
 
 ```bash
-helm template charts/nr-status
+helm template charts/distant-signal
 ```
 (no overrides at all — `devAuthentik.enabled` defaults `false`, `api.sso.*`
 all empty). Expected: render still **fails**, with the same class of
 message as before this task (confirms this task did not accidentally make
 the SSO config optional for a real-IdP install).
 
-- [ ] **Step 8: Verify — `hostAliases` absence when `lookup` can't resolve**
+- [x] **Step 8: Verify — `hostAliases` absence when `lookup` can't resolve**
 
 ```bash
-helm template charts/nr-status --set devAuthentik.enabled=true \
+helm template charts/distant-signal --set devAuthentik.enabled=true \
   --set api.sso.issuerUrl=https://x --set api.sso.clientId=x --set api.sso.clientSecret=x --set api.sso.redirectUrl=https://x --set api.sso.postLoginRedirectUrl=https://x \
   --show-only templates/api-deployment.yaml | grep -c hostAliases
 ```
@@ -1952,10 +1981,10 @@ contract, but it also means this static check cannot confirm the
 `lookup`-against-a-live-Service path itself works — only Task 13's
 optional live-cluster check can.**
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
-git add charts/nr-status/templates/api-deployment.yaml charts/nr-status/templates/secret.yaml
+git add charts/distant-signal/templates/api-deployment.yaml charts/distant-signal/templates/secret.yaml
 git commit -m "Compute api.sso.* defaults and a hostAliases entry from devAuthentik"
 ```
 
@@ -1964,13 +1993,13 @@ git commit -m "Compute api.sso.* defaults and a hostAliases entry from devAuthen
 ### Task 12: Documentation — `NOTES.txt` and README
 
 **Files:**
-- Modify: `charts/nr-status/templates/NOTES.txt`
-- Modify: `charts/nr-status/README.md`
+- Modify: `charts/distant-signal/templates/NOTES.txt`
+- Modify: `charts/distant-signal/README.md`
 
 **Interfaces:** none — this task only surfaces what Tasks 5-11 already
 built, plus the design's own open risks, to whoever runs `helm install`.
 
-- [ ] **Step 1: Add a `devAuthentik`-enabled block to `NOTES.txt`**
+- [x] **Step 1: Add a `devAuthentik`-enabled block to `NOTES.txt`**
 
 Insert after the existing "Read the internal token" block, before the
 poller-status block:
@@ -1983,7 +2012,7 @@ poller-status block:
 ############################################################################
 
 This is a throwaway, unhardened local Authentik instance for exercising
-this app's own login flow -- see charts/nr-status/README.md's "Local dev
+this app's own login flow -- see charts/distant-signal/README.md's "Local dev
 identity provider" section and
 docs/superpowers/specs/2026-08-29-dev-oidc-server-design.md for the full
 design and its OPEN RISKS, not fully verified against a real cluster as of
@@ -1993,7 +2022,7 @@ this writing:
    {{ .Values.devAuthentik.service.nodePort }} to your machine's loopback
    interface, AT THE SAME PORT NUMBER, or your browser cannot reach
    Authentik at all. This is outside this chart's control -- see the
-   worked examples in charts/nr-status/README.md (kind's
+   worked examples in charts/distant-signal/README.md (kind's
    extraPortMappings, `minikube tunnel`, k3d's `--port`).
 
 2. If this is your FIRST `helm install` with devAuthentik.enabled=true, and
@@ -2026,9 +2055,9 @@ frontend is reachable at exactly http://localhost:3000, e.g.:
 {{- end }}
 ```
 
-- [ ] **Step 2: Add a "Local dev identity provider" README section**
+- [x] **Step 2: Add a "Local dev identity provider" README section**
 
-Insert into `charts/nr-status/README.md`, after the existing "Single
+Insert into `charts/distant-signal/README.md`, after the existing "Single
 sign-on (OIDC)" section (currently ending around line 239) and before
 "Using an external database" (currently line 240):
 
@@ -2100,17 +2129,17 @@ hand-rolled deployment rather than the official `goauthentik/helm` chart
 (see its Non-goals).
 ```
 
-- [ ] **Step 3: Add a `### devAuthentik` values-reference subsection**
+- [x] **Step 3: Add a `### devAuthentik` values-reference subsection**
 
 In the "Values reference" section, add a `### devAuthentik` subsection
 (same table format as the existing `### postgresql`/`### api` subsections)
 immediately after `### api`, listing every field from Task 5's values.yaml
 block with its default and a one-line description.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 ```bash
-helm lint charts/nr-status
+helm lint charts/distant-signal
 ```
 Expected: clean — `NOTES.txt` is templated, so a syntax error there would
 fail lint. There is no automated check for documentation *accuracy* beyond
@@ -2118,10 +2147,10 @@ this and human review; this task's own earlier tasks already wrote the
 comments this documentation cross-references, so the main risk is drift,
 not fabrication.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git add charts/nr-status/templates/NOTES.txt charts/nr-status/README.md
+git add charts/distant-signal/templates/NOTES.txt charts/distant-signal/README.md
 git commit -m "Document the devAuthentik local dev IdP path in NOTES.txt and the README"
 ```
 
@@ -2131,38 +2160,38 @@ git commit -m "Document the devAuthentik local dev IdP path in NOTES.txt and the
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: `helm lint`**
+- [x] **Step 1: `helm lint`**
 
-Run: `helm lint charts/nr-status`
+Run: `helm lint charts/distant-signal`
 Expected: clean, no warnings introduced by this plan's changes.
 
-- [ ] **Step 2: Confirm the real-IdP path is unaffected**
+- [x] **Step 2: Confirm the real-IdP path is unaffected**
 
 ```bash
-helm template charts/nr-status \
+helm template charts/distant-signal \
   --set api.sso.issuerUrl=https://x --set api.sso.clientId=x --set api.sso.clientSecret=x --set api.sso.redirectUrl=https://x --set api.sso.postLoginRedirectUrl=https://x
 ```
 Expected: renders the full stack exactly as it did before this plan
 (`devAuthentik.enabled` defaults `false`; no `devauthentik-*` objects
 appear). Then:
 ```bash
-helm template charts/nr-status
+helm template charts/distant-signal
 ```
 Expected: **fails**, same as before this plan (`api.sso.*` required, no
 `devAuthentik` opt-out of that requirement by default).
 
-- [ ] **Step 3: Confirm the full `devAuthentik` stack renders**
+- [x] **Step 3: Confirm the full `devAuthentik` stack renders**
 
 ```bash
-helm template charts/nr-status --set devAuthentik.enabled=true
+helm template charts/distant-signal --set devAuthentik.enabled=true
 ```
 Expected: renders cleanly with computed `api.sso.*` defaults and every
 `devauthentik-*` object, no `fail` triggered.
 
-- [ ] **Step 4: Confirm `devAuthentik` composes with an external main database**
+- [x] **Step 4: Confirm `devAuthentik` composes with an external main database**
 
 ```bash
-helm template charts/nr-status --set devAuthentik.enabled=true \
+helm template charts/distant-signal --set devAuthentik.enabled=true \
   --set postgresql.enabled=false \
   --set externalDatabase.url=postgres://nr_status:s3cret@db.example.com:5432/nr_status
 ```
@@ -2170,20 +2199,20 @@ Expected: renders cleanly — confirms `devAuthentik`'s own dedicated
 Postgres is fully independent of the app's own `DATABASE_URL` choice, per
 the design's stated independence rationale.
 
-- [ ] **Step 5: Schema check on the rendered output**
+- [x] **Step 5: Schema check on the rendered output**
 
 ```bash
-helm template charts/nr-status --set devAuthentik.enabled=true | kubeconform -summary
+helm template charts/distant-signal --set devAuthentik.enabled=true | kubeconform -summary
 ```
 (or `helm template ... | kubectl apply --dry-run=client -f -` if `kubectl`
 with API-schema access is available instead). Expected: no schema errors.
 **If neither `kubeconform` nor a schema-aware `kubectl` is available in
 this environment, report this step as not run, not as passing.**
 
-- [ ] **Step 6: Confirm no secret value leaks outside a `Secret` object**
+- [x] **Step 6: Confirm no secret value leaks outside a `Secret` object**
 
 ```bash
-helm template charts/nr-status --set devAuthentik.enabled=true \
+helm template charts/distant-signal --set devAuthentik.enabled=true \
   | awk '/^kind: Secret/{s=1} /^kind: [A-Za-z]+/{if($2!="Secret")s=0} !s' \
   | grep -iE "authentik-secret-key|devauthentik.*password"
 ```
@@ -2200,11 +2229,11 @@ deliberately not sensitive, per Global Constraints.
 
 ```bash
 kind create cluster --config <config with the 30900 extraPortMappings entry from Task 12>
-helm install nr-status-test charts/nr-status -n nr-status-test --create-namespace \
+helm install nr-status-test charts/distant-signal -n nr-status-test --create-namespace \
   --set devAuthentik.enabled=true --set devAuthentik.hostAliasIP=<predictable kind service CIDR IP>
 kubectl get pods -n nr-status-test -w
 ```
-Then, per the documented gap: `helm upgrade nr-status-test charts/nr-status
+Then, per the documented gap: `helm upgrade nr-status-test charts/distant-signal
 -n nr-status-test --reuse-values` once. Confirm every `devauthentik-*` pod
 reaches `Ready`, and — in a real browser — that
 `http://authentik.localhost:30900/` loads with no Host-header rejection,
@@ -2214,7 +2243,17 @@ still fails if it doesn't. **If this step cannot be run, state so plainly
 in this task's record rather than letting Steps 1-6's static passes stand
 in for it.**
 
-- [ ] **Step 8: Confirm no leftover uncommitted changes**
+> **Audit note (2026-08-30):** Not run. No `kind`/`minikube`/`k3d` and no
+> working container runtime are available in this environment (`podman run`
+> fails with `fuse-overlayfs: cannot mount: Operation not permitted`, no
+> `docker` daemon/socket present). Steps 1-6's static `helm lint`/`helm
+> template` passes (including a `kubeconform -summary` schema check against
+> the full rendered `devAuthentik` stack: 21/21 resources valid) do **not**
+> stand in for this — this step is left unchecked rather than assumed to
+> pass, per its own instruction above and the design doc's own admission
+> that the Helm path's live-cluster behavior was never smoke-tested.
+
+- [x] **Step 8: Confirm no leftover uncommitted changes**
 
 Run: `git status`
 Expected: clean working tree (everything committed task-by-task above).
