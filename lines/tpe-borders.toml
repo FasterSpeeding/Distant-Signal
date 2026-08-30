@@ -90,6 +90,9 @@ operators = [
 #   nationalrail.co.uk) — a legitimate very-minor call, omitted below per
 #   this catalogue's "principal stations only" convention, same treatment
 #   `xc-manchester.toml` gives its own minor calls.
+# - East Linton: on the same Dunbar-Edinburgh stretch, also a very-low-
+#   frequency call on this line — omitted below for the same
+#   "principal stations only" reason as Cramlington above.
 #
 # CRS sourcing: NCL (tiploc NWCSTLE) reused verbatim from the
 # already-curated `northern-tyne-valley.toml`. EDB reused verbatim from
@@ -102,7 +105,14 @@ operators = [
 # confirmed for MPT/ALM/BWK/RSN/DUN, so `tiploc` is omitted for those
 # rather than guessed.
 sample_stations = ["NCL", "BWK", "EDB"]
-destination_crs_filter = ["MPT", "ALM", "BWK", "RSN", "DUN", "EDB"]
+# destination_crs_filter is an inclusive whitelist consumed by LDBWS
+# sampling in `aggregation.rs` — it must list this route's two real
+# termini (Newcastle and Edinburgh Waverley), not intermediate calls,
+# same convention every other file in the catalogue follows (e.g.
+# `northern-tyne-valley.toml`'s `["NCL", "CAR", "HEX", "MCE"]`, its own
+# four real termini). Listing only intermediate stations here would drop
+# every terminus-bound departure from sampling.
+destination_crs_filter = ["NCL", "EDB"]
 # No match_keywords: TPE's own name for this route is simply "Borders",
 # which collides with ScotRail's own, separate "Borders Railway"
 # (Edinburgh-Tweedbank — noted in this batch's own gap-analysis as a

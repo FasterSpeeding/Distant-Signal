@@ -252,10 +252,11 @@ mod tests {
 
     // No shared-segment-propagation test for tpe-anglo-scottish: per the
     // batch's pre-flight scan it only overlaps sibling TPE lines at
-    // station level (Liverpool Lime Street / Manchester Piccadilly), and
-    // has no shared segment with wcml/xc-manchester/northern by design
-    // (station-overlap-only, same precedent as xc-manchester.toml). It's
-    // a genuinely standalone line for this assertion.
+    // station level (Liverpool Lime Street / Manchester Piccadilly, and
+    // Edinburgh Waverley with tpe-borders), and has no shared segment with
+    // wcml/xc-manchester/northern by design (station-overlap-only, same
+    // precedent as xc-manchester.toml). It's a genuinely standalone line
+    // for this assertion.
     #[test]
     fn tpe_anglo_scottish_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();

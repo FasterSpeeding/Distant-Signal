@@ -10,7 +10,12 @@ operators = [
 # live at tpexpress.co.uk/travelling-with-us/timetables) names this route
 # "Anglo-Scottish: Liverpool and Manchester to Glasgow and Edinburgh" —
 # one of TPE's four current named routes (South, Borders, North being the
-# other three; each is its own line definition in this batch).
+# other three; each is its own line definition in this batch). Some
+# Manchester-end services additionally start/terminate at Manchester
+# Airport (MIA) rather than Manchester Piccadilly, so it's included below
+# as this route's third western terminus alongside Liverpool Lime Street
+# and Manchester Piccadilly, even though TPE's own route name only says
+# "Manchester".
 #
 # North of Carlisle the route is Y-shaped: Glasgow and Edinburgh services
 # share the same line as far as Lockerbie, then split — Glasgow-bound
@@ -54,8 +59,9 @@ match_keywords = ["Anglo-Scottish"]
 minor_delays_pct = 0.30
 delay_threshold_minutes = 10
 
-# Ordered Liverpool/Manchester -> Preston -> Carlisle, then splitting to
-# Glasgow (via Motherwell) and Edinburgh (via Haymarket) beyond Lockerbie.
+# Ordered Liverpool/Manchester/Manchester Airport -> Preston -> Carlisle,
+# then splitting to Glasgow (via Motherwell) and Edinburgh (via Haymarket)
+# beyond Lockerbie.
 [[stations]]
 crs = "LIV"
 role = "terminus"
@@ -66,6 +72,9 @@ crs = "MAN"
 role = "terminus"
 segment = "tpe-anglo-scottish-nw"
 
+# Manchester Airport's CRS (MIA) confirmed independently via Wikipedia's
+# infobox and nationalrail.co.uk's own station page — same two-source
+# standard as the other new-to-catalogue codes elsewhere in this file.
 [[stations]]
 crs = "MIA"
 role = "terminus"
@@ -114,8 +123,9 @@ crs = "LOC"
 role = "junction"
 segment = "tpe-anglo-scottish-scotland"
 
-# Glasgow branch. Motherwell's CRS (MTH) confirmed independently via
-# Wikipedia's infobox and nationalrail.co.uk's own station page.
+# Glasgow branch. Motherwell's CRS (MTH) and Glasgow Central's CRS (GLC)
+# each confirmed independently via Wikipedia's infobox and
+# nationalrail.co.uk's own station page.
 [[stations]]
 crs = "MTH"
 role = "major"
