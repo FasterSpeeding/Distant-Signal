@@ -31,14 +31,14 @@ operators = ["SR"]
 # scope for `operators` here, matching how no other file in this catalogue
 # adds Caledonian Sleeper's own code to a ScotRail line.
 
-sample_stations = ["GLQ", "DMR", "CRN", "FTW", "MLG"]
+sample_stations = ["GLQ", "DMR", "CNR", "FTW", "MLG"]
 # GLQ (Glasgow Queen Street, this line's own terminus -- also a
 # `sample_stations` entry in `scotrail-central-belt.toml` and
 # `scotrail-glasgow-suburban.toml`, a real LDBWS ambiguity at a station
 # used by three different physical services/platform groups; see the GLQ
 # station comment below for why this file does not reuse either sibling's
 # segment there), DMR (Dalmuir, the genuine shared-trunk station with
-# `scotrail-glasgow-suburban.toml`'s own `west-trunk` segment), CRN
+# `scotrail-glasgow-suburban.toml`'s own `west-trunk` segment), CNR
 # (Crianlarich, the real junction where Oban and Fort William/Mallaig
 # services divide/combine), FTW (Fort William, this file's own internal
 # trunk/branch junction for the Mallaig extension), and MLG (Mallaig, this
@@ -46,7 +46,7 @@ sample_stations = ["GLQ", "DMR", "CRN", "FTW", "MLG"]
 
 destination_crs_filter = ["FTW", "MLG"]
 # GLQ and DMR are also `sample_stations` entries in `scotrail-central-belt`
-# and `scotrail-glasgow-suburban` respectively (and CRN/FTW/MLG will be
+# and `scotrail-glasgow-suburban` respectively (and CNR/FTW/MLG will be
 # shared with `scotrail-west-highland-oban.toml`'s own sample stations for
 # the Glasgow-Crianlarich stretch once that file exists). Filtering LDBWS
 # departures to `destination_crs` of FTW or MLG cleanly separates this
@@ -225,8 +225,8 @@ delay_threshold_minutes = 10
 #    `scotrail-west-highland-fort-william-exclusive` trunk (both service
 #    patterns call there); the next station, Banavie, starts the
 #    Mallaig-extension-exclusive segment, tagged
-#    `scotrail-west-highland-mallaig`. The regression test for this (in
-#    `crates/aggregator/src/segments.rs`) asserts the same-file structural
+#    `scotrail-west-highland-mallaig`. The regression tests for this (in
+#    `crates/aggregator/src/matcher.rs`) assert the same-file structural
 #    fact: an incident on the Crianlarich-Fort-William stretch (e.g. at
 #    Tulloch) matches this line only with `ExclusiveSegment` scope, and
 #    separately an incident on the Mallaig extension (e.g. at Glenfinnan)
