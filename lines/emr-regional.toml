@@ -64,31 +64,43 @@ delay_threshold_minutes = 10
 # runs fast between Manchester Piccadilly/Stockport and Sheffield, unlike
 # Northern's all-stations Hope Valley service.
 
-# --- RULING 1: Manchester Piccadilly - Stockport - Sheffield IS genuine
-# track-sharing with `northern-hope-valley.toml`, contradicting the gap
-# analysis's "without literal track-sharing in most places" hedge for this
-# specific stretch (the brief explicitly asked to confirm rather than
-# assume this). The Hope Valley Line ("Hope Valley Line" Wikipedia article)
-# is the *only* direct passenger route between Manchester Piccadilly and
-# Sheffield; that article's own services section separately confirms EMR's
-# Liverpool-Norwich service as one of three operators running over it
-# (alongside Northern's stopping service and TransPennine Express's
-# Liverpool-Cleethorpes service), calling at "Manchester Piccadilly,
-# Stockport, Sheffield" specifically. Segment name `northern-hope-valley` is
-# therefore reused verbatim (not a new name) for MAN and SPT below, per the
-# schema's "same segment name in multiple files = shared trunk" rule -
-# `northern-hope-valley.toml`'s own single segment already spans exactly
-# this station set (plus wayside halts this line doesn't call at), so
-# reusing it is a clean subset, not a coarse-segment mismatch (contrast
-# `xc-manchester.toml`'s deliberate *non*-sharing with `wcml` for the same
-# reason that WCML's segment there is far coarser than the shared stretch).
-# Cost if wrong: bounded but not negligible - if this reasoning is mistaken
-# (e.g. some other, non-Hope-Valley routing were used), a Manchester
-# Piccadilly or Stockport incident would over-propagate as SharedSegment to
-# this line when it shouldn't. Considered low-risk given two independent
-# Wikipedia articles (East Midlands Railway's and Hope Valley Line's own
-# services sections) agree on the calling pattern, and there is no other
-# physical rail route between Manchester and Sheffield to be confused with.
+# --- RULING 1 (revised after final review): Manchester Piccadilly -
+# Stockport - Sheffield IS genuine physical track-sharing with
+# `northern-hope-valley.toml`'s Hope Valley Line, but is NOT a shared
+# *segment name* - a coarse-granularity mismatch, the same shape as
+# Ruling 4 below (Peterborough/Ely vs `xc-stansted.toml`) and this file's
+# own sibling `emr-rural-branches.toml`'s Poacher Line ruling. The Hope
+# Valley Line ("Hope Valley Line" Wikipedia article) is the *only* direct
+# passenger route between Manchester Piccadilly and Sheffield; that
+# article's own services section separately confirms EMR's Liverpool-
+# Norwich service as one of three operators running over it (alongside
+# Northern's stopping service and TransPennine Express's Liverpool-
+# Cleethorpes service), calling at "Manchester Piccadilly, Stockport,
+# Sheffield" specifically - so the underlying track-sharing claim stands
+# exactly as before.
+#
+# However, reusing `northern-hope-valley.toml`'s own segment name verbatim
+# was found (in this batch's final whole-branch review) to violate this
+# catalogue's shared-segment invariant: every pre-existing shared segment
+# has a byte-identical station set across every file that uses it, but
+# `northern-hope-valley.toml`'s own `northern-hope-valley` segment also
+# covers Edale/Hope/Dore (EDL/HOP/DOR) wayside halts this line doesn't
+# call at at all. Because `SegmentRegistry::is_shared` operates per
+# segment name across the whole catalogue (checking only which files use a
+# name, not which specific stations), reusing it here would have
+# incorrectly promoted `northern-hope-valley.toml`'s own EDL/HOP/DOR
+# stations to "shared" too, even though nothing in this file touches them
+# - regressing pre-existing data this batch has no business changing. So:
+# `emr-regional-hope-valley`, a new name exclusive to this file, is used
+# for MAN/SPT instead. Cost if wrong (i.e. if the team later decides this
+# corridor really should propagate jointly): bounded - both lines already
+# independently match a Manchester Piccadilly/Stockport incident via
+# StationHit/ExclusiveSegment regardless of segment name; the only effect
+# of this choice is that neither line reports SharedSegment for the other
+# at this specific overlap. See the regression test in
+# `crates/aggregator/src/matcher.rs` confirming both lines independently
+# match a Stockport incident without over-propagating (mirrors
+# `emr_rural_branches_poacher_line_and_emr_regional_both_match_grantham_without_over_propagating`).
 [[stations]]
 crs = "LIV"
 role = "terminus"
@@ -130,16 +142,16 @@ segment = "emr-regional-liverpool"
 [[stations]]
 crs = "MAN"
 role = "junction"
-segment = "northern-hope-valley"
+segment = "emr-regional-hope-valley"
 # Manchester Piccadilly: junction where this line joins the Hope Valley
-# Line shared trunk. See Ruling 1 above.
+# Line's physical track (see Ruling 1 above - not a shared segment name).
 
 [[stations]]
 crs = "SPT"
 role = "junction"
-segment = "northern-hope-valley"
+segment = "emr-regional-hope-valley"
 # Stockport: also a `northern-hope-valley.toml` station (role "junction"
-# there too). See Ruling 1 above.
+# there too, under that file's own segment name). See Ruling 1 above.
 
 # --- RULING 2: Sheffield - Chesterfield IS genuine track-sharing with
 # `emr-midland-main-line.toml`'s `emr-mml-north` segment - this is the
@@ -151,7 +163,10 @@ segment = "northern-hope-valley"
 # Bradway Tunnel"), with no other passenger route mentioned between the two
 # towns (the article's only "alternative route" mention, the Hope Valley
 # Line, serves Manchester, not Chesterfield). `emr-mml-north` in
-# `emr-midland-main-line.toml` already spans exactly LGE-DBY-CHD-SHF; this
+# `emr-midland-main-line.toml` now spans exactly CHD-SHF (split out from
+# the rest of that file's route by this batch's final review, to keep the
+# shared-segment extent byte-identical between the two files, per the
+# catalogue-wide convention); this
 # line's own overlap (SHF-CHD only, arriving from Manchester via Hope Valley
 # rather than from Derby) is a clean subset of that same physical
 # trackage, so the segment name is reused verbatim rather than invented.

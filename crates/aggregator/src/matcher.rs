@@ -301,22 +301,30 @@ mod tests {
         assert_eq!(by_id.get("emr-midland-main-line"), Some(&MatchScope::SharedSegment));
     }
 
-    // Same file, Ruling 1: Manchester Piccadilly-Stockport-Sheffield
-    // genuinely shares Hope Valley Line trackage with
-    // `northern-hope-valley.toml`, so an incident there should propagate to
-    // both lines as SharedSegment. `xc-manchester.toml` also lists SPT (its
-    // own `xc-manchester` segment, an unrelated WCML route that merely
-    // passes through the same station) so it legitimately appears too, as
-    // ExclusiveSegment - not asserted away, just not the focus of this test.
+    // Same file, Ruling 1 (revised after final review): Manchester
+    // Piccadilly-Stockport-Sheffield genuinely shares Hope Valley Line
+    // *track* with `northern-hope-valley.toml`, but NOT a shared *segment
+    // name* (see that file's Ruling 1 comment for why - a coarse-
+    // granularity mismatch, the same shape as the Grantham test below).
+    // This test confirms the intended, narrower outcome: an incident at
+    // Stockport matches both lines independently, each still classified
+    // within its own file (`emr-regional` as ExclusiveSegment on its own
+    // `emr-regional-hope-valley` segment, `northern-hope-valley` as
+    // ExclusiveSegment on its own `northern-hope-valley` segment - neither
+    // reports SharedSegment for the other). `xc-manchester.toml` also
+    // lists SPT (its own `xc-manchester` segment, an unrelated WCML route
+    // that merely passes through the same station) so it legitimately
+    // appears too, as ExclusiveSegment - not asserted away, just not the
+    // focus of this test.
     #[test]
-    fn emr_regional_stockport_incident_shared_with_hope_valley() {
+    fn emr_regional_stockport_and_hope_valley_both_match_without_over_propagating() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident("EMRR-3", "Overhead line damage at Stockport", "Overhead line damage causing delays to services at Stockport.", &["EM"], &["SPT"]);
         let matches = lines_affected_by(&inc, &lines, &registry);
         let by_id: HashMap<String, MatchScope> = matches.iter().map(|m| (m.line.id.clone(), m.scope)).collect();
-        assert_eq!(by_id.get("emr-regional"), Some(&MatchScope::SharedSegment));
-        assert_eq!(by_id.get("northern-hope-valley"), Some(&MatchScope::SharedSegment));
+        assert_eq!(by_id.get("emr-regional"), Some(&MatchScope::ExclusiveSegment));
+        assert_eq!(by_id.get("northern-hope-valley"), Some(&MatchScope::ExclusiveSegment));
     }
 
     // `lines/emr-connect.toml` (Batch 7, Task 7.3): the real EMR Connect
@@ -407,7 +415,7 @@ mod tests {
     // Matlock) diverges from the Midland Main Line at Ambergate Junction,
     // just south of Ambergate station (Wikipedia's "Ambergate railway
     // station" article), so Derby-Ambergate is genuine shared trunk with
-    // `emr-midland-main-line.toml`'s `emr-mml-north` segment, reused
+    // `emr-midland-main-line.toml`'s `emr-mml-derby` segment, reused
     // verbatim in this file's Branch 3. Derby (DBY) is the only station
     // common to both files' own station lists (the intercity MML service
     // skips Duffield/Belper/Ambergate entirely), so it is the only station

@@ -5,7 +5,7 @@ category = "commuter"  # local stopping service, matches thameslink-core.toml's 
 operators = ["EM"]  # East Midlands Railway
 
 # Single ultimate destination: Corby (see the route-scope ruling below).
-destination_crs_filter = ["COR"]
+destination_crs_filter = ["STP", "COR"]
 
 sample_stations = ["STP", "LTN", "BDM", "COR"]
 
@@ -87,7 +87,6 @@ segment = "emr-mml-south"
 
 [[stations]]
 crs = "BDM"
-tiploc = "BEDFDM"  # reused from emr-midland-main-line.toml
 role = "junction"
 segment = "emr-mml-south"
 # Bedford: last station of the emr-mml-south segment (see ruling above);
