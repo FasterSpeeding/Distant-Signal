@@ -402,4 +402,47 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["wcml-north-wales".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    #[test]
+    fn wmr_snow_hill_dorridge_branch_exclusive_segment_incident_does_not_propagate() {
+        // Dorridge is on the exclusive `wmr-snow-hill-dorridge` segment,
+        // starting after the Tyseley junction (per the shared-trunk rule of
+        // thumb) -- this line has no meaningful overlap with any existing
+        // WCML/XC file (Snow Hill/Moor Street, not Birmingham New Street),
+        // so there's no shared-segment counterpart to assert here.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LM-1",
+            "Signal failure at Dorridge",
+            "Signal failure causing delays to services at Dorridge.",
+            &["LM"],
+            &["DDG"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["wmr-snow-hill".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn wmr_snow_hill_stratford_branch_exclusive_segment_incident_does_not_propagate() {
+        // Stratford-upon-Avon is on the exclusive `wmr-snow-hill-stratford`
+        // segment (the North Warwickshire Line), starting after the same
+        // Tyseley junction as the Dorridge branch above, but tagged with a
+        // distinct segment name since it's a different physical branch.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LM-2",
+            "Points failure at Stratford-upon-Avon",
+            "Points failure causing delays to services at Stratford-upon-Avon.",
+            &["LM"],
+            &["SAV"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["wmr-snow-hill".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
