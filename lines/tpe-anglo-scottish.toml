@@ -30,8 +30,12 @@ operators = [
 # No segment here is shared with any other line in this batch either:
 # `tpe-south` and `tpe-north` only overlap this line at the Liverpool Lime
 # Street / Manchester Piccadilly termini (station-level only, not a shared
-# segment), and `tpe-borders` has no overlap at all. This line is therefore
-# treated as standalone for the shared-segment-propagation regression test.
+# segment), and `tpe-borders` overlaps this line only at Edinburgh Waverley
+# (EDB) — independently a terminus of both files. Same station-level-only
+# treatment as above: no shared segment name, since an incident at EDB
+# already matches both lines by station lookup regardless (see
+# `tpe-borders.toml`'s own note on this). This line is therefore treated as
+# standalone for the shared-segment-propagation regression test.
 #
 # Minor intermediate calls are omitted; only principal stations are listed,
 # following `xc-manchester.toml`'s convention.
