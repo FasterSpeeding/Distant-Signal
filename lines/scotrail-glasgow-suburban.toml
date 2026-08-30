@@ -202,6 +202,19 @@ segment = "scotrail-glasgow-suburban-west-trunk"
 # Dalreoch article (cross-checked against National Rail Enquiries for the
 # CRS code), which shows the actual split is one station further out, at
 # Dalreoch. Corrected below.
+#
+# UPDATE (Task 10.8, `lines/scotrail-west-highland-fort-william.toml`):
+# that file independently re-confirmed this same West Highland Line
+# sharing fact (see its own Sources comments) and reused this exact
+# `scotrail-glasgow-suburban-west-trunk` segment name for its own DMR/DBC
+# station entries. `SegmentRegistry::is_shared` now correctly reports this
+# segment shared between `scotrail-glasgow-suburban` and
+# `scotrail-west-highland-fort-william`, and
+# `scotrail_west_highland_shares_glasgow_suburban_west_trunk_incident_propagates`
+# in `crates/aggregator/src/matcher.rs` asserts the resulting
+# `MatchScope::SharedSegment` propagation for both lines. That file's own
+# GLQ entry deliberately does NOT reuse this segment (or
+# `scotrail-central-belt`'s) -- see its own sourcing comments.
 
 [[stations]]
 crs = "DLR"
