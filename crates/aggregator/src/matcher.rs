@@ -250,11 +250,18 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
-    // `tfw-cambrian` is, at this point in the line catalogue, a genuinely
-    // standalone line: no other file yet shares its Shrewsbury-Dovey
-    // Junction trunk or either of its two branches (see the comments in
-    // `lines/tfw-cambrian.toml`), so there's no sibling-line propagation
-    // assertion to write here -- only the exclusive-segment case applies.
+    // `tfw-cambrian`'s own trunk segment (`tfw-cambrian-trunk`) is still
+    // unique to Cambrian -- no other file shares that exact segment name,
+    // so an incident away from Shrewsbury only ever matches Cambrian as
+    // `MatchScope::ExclusiveSegment`, which is what this test covers.
+    // Shrewsbury itself, however, is now a genuine three-way overlap point:
+    // `tfw-marches.toml` (Task 11.5) and `tfw-heart-of-wales.toml` both tag
+    // SHR with the shared `tfw-heart-of-wales-shrewsbury` segment, while
+    // Cambrian keeps SHR on its own exclusive `tfw-cambrian-trunk` segment
+    // (the Cambrian Line diverges west immediately, still station-overlap
+    // only there -- see `lines/tfw-cambrian.toml`'s own comment). So an
+    // incident specifically at Shrewsbury resolves three ways at once: see
+    // `shrewsbury_three_way_overlap_resolves_per_line` below for that case.
     #[test]
     fn cambrian_coast_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -486,5 +493,39 @@ mod tests {
         for m in &matches {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment", m.line.id);
         }
+    }
+
+    // Shrewsbury is a genuine three-way overlap point, introduced by Task
+    // 11.5: `tfw-cambrian.toml` tags SHR with its own exclusive
+    // `tfw-cambrian-trunk` segment (the Cambrian Line diverges west
+    // immediately -- station-overlap only there, per that file's own
+    // comment), while `tfw-marches.toml` and `tfw-heart-of-wales.toml` both
+    // tag SHR with the shared `tfw-heart-of-wales-shrewsbury` segment (see
+    // the comment above Craven Arms in `lines/tfw-marches.toml` for the
+    // shared-trunk sourcing). So a single incident at SHR should resolve
+    // differently per line, all at once: Cambrian stays
+    // `MatchScope::ExclusiveSegment`, while Marches and Heart of Wales are
+    // both `MatchScope::SharedSegment`.
+    #[test]
+    fn shrewsbury_three_way_overlap_resolves_per_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-9",
+            "Signal failure at Shrewsbury",
+            "Signal failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["SHR"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let scopes: HashMap<String, MatchScope> =
+            matches.iter().map(|m| (m.line.id.clone(), m.scope)).collect();
+        assert_eq!(
+            scopes.keys().cloned().collect::<HashSet<String>>(),
+            HashSet::from(["tfw-cambrian".to_string(), "tfw-marches".to_string(), "tfw-heart-of-wales".to_string()])
+        );
+        assert_eq!(scopes["tfw-cambrian"], MatchScope::ExclusiveSegment);
+        assert_eq!(scopes["tfw-marches"], MatchScope::SharedSegment);
+        assert_eq!(scopes["tfw-heart-of-wales"], MatchScope::SharedSegment);
     }
 }

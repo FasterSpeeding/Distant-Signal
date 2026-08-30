@@ -291,9 +291,14 @@ segment = "tfw-marches-north"
 # split a dedicated "Chester-area" segment name out of its current
 # single-segment design, which is out of this task's scope (that file is
 # already committed and reviewed, per Tasks 11.1-11.4's precedent of
-# leaving already-reviewed sibling files alone) -- so, exactly like
+# leaving already-reviewed sibling files alone) -- so, in the same spirit as
 # `tfw-north-wales-coast.toml`'s own Llandudno Junction decision against
 # `tfw-conwy-valley.toml`, this is treated as station-overlap-only for now.
+# The parallel isn't exact: Chester has ~3km of confirmed physically-shared
+# trackage via Saltney Junction, whereas Llandudno Junction is a pure
+# station touch with no shared running beyond it -- the two cases share only
+# their scoping conclusion (station-overlap-only for now), not their
+# underlying physical facts.
 # A future integration task should read this comment and
 # `tfw-north-wales-coast.toml`'s own cross-batch note (about
 # `wcml-north-wales.toml`) together, and decide whether to split a genuine
