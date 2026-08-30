@@ -680,4 +680,34 @@ mod tests {
             );
         }
     }
+
+    // A third genuine overlap this task's own research found, caught during
+    // review after an earlier draft of gwr-bristol-suburban.toml's own WEY
+    // comment wrongly claimed SWR's route "is not otherwise catalogued yet":
+    // Weymouth (WEY) is also swr-south-west-main.toml's own terminus (its
+    // own exclusive `swr-swml-south` segment). gwr-bristol-suburban's own
+    // Bristol-Weymouth service never runs over any of swr-south-west-
+    // main.toml's own claimed stations except WEY itself, so this stays
+    // station overlap only, not a shared segment — different segment names
+    // (`gwr-bristol-weymouth` vs `swr-swml-south`) mean no incorrect
+    // `SharedSegment` cross-propagation. Mirrors
+    // `gwr_bristol_suburban_station_overlap_with_gwr_main_line_stays_exclusive_each_line`
+    // above.
+    #[test]
+    fn gwr_bristol_suburban_station_overlap_with_swr_south_west_main_stays_exclusive_each_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-17", "Flooding at Weymouth", "Flooding causing delays at Weymouth.", &["GW"], &["WEY"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-bristol-suburban".to_string(), "swr-south-west-main".to_string()]));
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should stay ExclusiveSegment (station overlap, not a shared segment)",
+                m.line.id
+            );
+        }
+    }
 }

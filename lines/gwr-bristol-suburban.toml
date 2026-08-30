@@ -25,7 +25,7 @@ destination_crs_filter = ["SVB", "WEY"]
 # The two real, verified termini of this file's two groups.
 
 # One per group/segment below, for a clean read of each.
-sample_stations = ["AVM", "BTH", "WEY"]
+sample_stations = ["AVN", "BTH", "WEY"]
 
 # "Severn Beach line" and "Heart of Wessex line" are the two groups' own
 # well-established current infrastructure/branding names (both are literal
@@ -300,7 +300,12 @@ segment = "gwr-west-of-england"
 # The real physical junction where this line's own Weymouth-bound exclusive
 # segment below begins (see comment above) — per the shared-trunk rule of
 # thumb (SCHEMA.md), the junction station itself stays on the shared trunk.
-# Row's tiploc copied verbatim from gwr-west-of-england.toml.
+# Row's tiploc copied verbatim from gwr-west-of-england.toml. Role is
+# deliberately "junction" here even though gwr-west-of-england.toml's own
+# CLC row uses "minor" — a per-file role choice, not a sync error: this
+# file's own research specifically confirmed Castle Cary's real physical
+# junction role (the Weymouth line diverging here), which that earlier
+# file's own research didn't have occasion to flag.
 
 # --- Castle Cary - Weymouth: this line's own exclusive segment, past the
 #     shared-trunk junction ---
@@ -347,8 +352,19 @@ segment = "gwr-bristol-weymouth"
 crs = "WEY"
 role = "terminus"
 segment = "gwr-bristol-weymouth"
-# This group's terminus. Also served by South Western Railway's own,
-# unrelated London Waterloo-Weymouth route (not part of this Bristol-area
-# group, and SWR's route is not otherwise catalogued yet) — not claimed
-# here; `operators` stays `["GW"]` per this file's own scope (see comment
-# at top).
+# This group's terminus. WEY is also swr-south-west-main.toml's own
+# terminus (its own exclusive `swr-swml-south` segment, `operators =
+# ["SW"]`, its own "Weymouth line" match_keywords entry) — a third genuine
+# station overlap this task's research found, corrected during review after
+# an earlier draft of this comment wrongly claimed SWR's route "is not
+# otherwise catalogued yet." Real, physical track sharing plausibly exists
+# further up SWR's own route too, but this file's own scope (Bristol-
+# Weymouth via Bath/Castle Cary) never runs over any of swr-south-west-
+# main.toml's own claimed stations except WEY itself, so — mirroring the
+# BTH/BRI vs gwr-main-line.toml treatment above — this stays station
+# overlap only, not a shared segment: `gwr-bristol-weymouth` and
+# `swr-swml-south` are different segment names, so no incorrect
+# `SharedSegment` cross-propagation occurs; `operators` stays `["GW"]` per
+# this file's own scope (see comment at top). See
+# `gwr_bristol_suburban_station_overlap_with_swr_south_west_main_stays_exclusive_each_line`
+# in matcher.rs for the regression test confirming this.
