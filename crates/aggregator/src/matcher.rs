@@ -312,4 +312,30 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["tfw-heart-of-wales".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // `tfw-conwy-valley` is, at this point in the line catalogue, a
+    // genuinely standalone line: it uses a single whole-line segment name
+    // and no other file in the catalogue shares it yet.
+    // `tfw-north-wales-coast.toml` (Task 11.4, the one real shared-trunk
+    // candidate at Llandudno Junction) does not exist yet, so there's no
+    // sibling-line propagation assertion to write here -- only the
+    // exclusive-segment case applies. See the comments in
+    // `lines/tfw-conwy-valley.toml` for the forward-bet segment name Task
+    // 11.4 is expected to read and decide on.
+    #[test]
+    fn conwy_valley_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-4",
+            "Signal failure at Betws-y-Coed",
+            "Signal failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["BYC"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tfw-conwy-valley".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
