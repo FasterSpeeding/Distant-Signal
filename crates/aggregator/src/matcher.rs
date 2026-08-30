@@ -271,7 +271,9 @@ mod tests {
         assert!(matched_ids.contains("northern-cumbrian-coast"));
         assert!(matched_ids.contains("northern-furness"));
         for m in &matches {
-            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            if m.line.id == "northern-cumbrian-coast" || m.line.id == "northern-furness" {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
         }
     }
 
@@ -417,6 +419,20 @@ mod tests {
             if m.line.id == "northern" || m.line.id == "northern-blackpool" || m.line.id == "northern-clitheroe" {
                 assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
             }
+        }
+        // `northern-calder-valley.toml` also has an MCV entry, but tagged
+        // with its own exclusive `northern-calder-valley` segment rather
+        // than `northern-manchester` (see that file's own comment on why
+        // the two termini are unrelated track). Guard against a future
+        // regression where Calder Valley's MCV entry gets accidentally
+        // merged into the shared `northern-manchester` segment.
+        if matched_ids.contains("northern-calder-valley") {
+            let calder_valley_match = matches.iter().find(|m| m.line.id == "northern-calder-valley").unwrap();
+            assert_eq!(
+                calder_valley_match.scope,
+                MatchScope::ExclusiveSegment,
+                "northern-calder-valley should be ExclusiveSegment"
+            );
         }
     }
 }
