@@ -4,7 +4,7 @@ mode = "national-rail"
 category = "regional"
 operators = ["NT"]
 
-sample_stations = ["MBR", "GMT", "WTB"]
+sample_stations = ["NNT", "GMT", "WTB"]
 match_keywords = ["Esk Valley Line"]
 
 # A handful of weekday/Saturday services extend beyond Middlesbrough towards
@@ -13,6 +13,15 @@ match_keywords = ["Esk Valley Line"]
 # to James Cook, Middlesbrough and on to Hartlepool, Sunderland and
 # Newcastle"), so a single `destination_crs_filter` list of MBR/NNT/WTB would
 # be incomplete for those workings. Omitted rather than guessed at.
+#
+# `sample_stations` deliberately excludes MBR (Middlesbrough) for a related
+# reason: Northern also runs the separate, unmodelled Tees Valley service
+# (Darlington/Bishop Auckland-Middlesbrough-Saltburn/Hartlepool) through the
+# same station, and without a `destination_crs_filter` to disambiguate,
+# LDBWS sampling at MBR would be swamped by Tees Valley departures rather
+# than the handful of daily Whitby workings. NNT (Nunthorpe), GMT (Grosmont)
+# and WTB (Whitby) are Esk-Valley-only stations, so the operator-only filter
+# is sufficient there without needing a `destination_crs_filter`.
 
 # Sparser than the already-tuned Furness/Yorkshire Coast branches: the line's
 # own Community Rail Partnership site (eskvalleyrailway.co.uk/timetable/)
