@@ -848,6 +848,35 @@ This plan does not scope them either, for the same reason: they aren't
 confirmed enough yet to turn into a task without inventing detail. A
 future revision of the gap-analysis document should confirm them first.
 
+**Follow-up discovered during Batch 8's final review, not fixed in this
+batch:** `lines/northern-furness.toml` (one of the pre-existing 20 files,
+predating this whole plan) tags **all four** of its stations (LAN, CNF,
+ULV, BIF) with the segment name `northern-furness`, not just the junction
+station (BIF). Batch 8's Task 8.1 (`lines/northern-cumbrian-coast.toml`)
+correctly puts only BIF on that same shared segment name, per SCHEMA.md's
+shared-trunk rule of thumb — but because `northern-furness.toml` itself
+was never scoped for correction (Global Constraints: a batch never edits
+a `lines/*.toml` file it didn't create), the shared segment name is now
+used by a second file, so `SegmentRegistry::is_shared("northern-furness")`
+returns true for ALL of Furness's stations, not just Barrow. An incident
+at Lancaster, Carnforth, or Ulverston — nowhere near the Cumbrian Coast
+Line — now resolves to `MatchScope::SharedSegment` instead of
+`MatchScope::ExclusiveSegment`, so the Furness Line can no longer report a
+purely exclusive incident anywhere on its own exclusive territory. This is
+a live behavior change introduced by Batch 8, not a pre-existing bug (it
+only manifests once a second file claims the segment name), and no
+regression test currently catches it. **Recommended fix, for a future
+task (in this batch's own follow-up pass, or bundled into whichever batch
+next touches Northern's existing files):** split
+`lines/northern-furness.toml` so only BIF keeps the shared
+`northern-furness` segment, and move LAN/CNF/ULV onto a new exclusive
+segment (e.g. `northern-furness-branch`), matching the same shared-trunk
+rule of thumb every other file in this batch already follows. Add a
+`segments.rs` or `matcher.rs` regression test asserting a Lancaster/
+Carnforth/Ulverston incident matches only `northern-furness` as
+`ExclusiveSegment`, mirroring `swr_exclusive_segment_incident_does_not_
+propagate`.
+
 ---
 
 ## Batch 9: TransPennine Express
