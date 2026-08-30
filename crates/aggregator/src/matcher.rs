@@ -366,6 +366,55 @@ mod tests {
     }
 
     #[test]
+    fn lner_lincoln_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Lincoln sits on `lner-lincoln`, exclusive to this file — the real
+        // physical divergence from the ECML is the Newark flat crossing,
+        // just north of Newark Northgate (no CRS code), but the shared
+        // trunk still ends at Newark Northgate per `lner-ecml.toml`'s own
+        // instruction (see that file's NNG entry and this file's
+        // comments), so Lincoln is this branch's first exclusive station.
+        let inc = incident(
+            "LNER-6",
+            "Signal failure at Lincoln",
+            "Signal failure causing delays to services at Lincoln.",
+            &["GR"],
+            &["LCN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["lner-lincoln".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn lner_lincoln_newark_northgate_shared_trunk_propagates_to_ecml() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Newark Northgate is `ecml-fenland`, shared between `lner-ecml`
+        // and `lner-lincoln` (both run over the same ECML trunk to Newark
+        // Northgate before the Lincoln branch peels off onto the
+        // Nottingham-Lincoln line at the Newark flat crossing).
+        let inc = incident(
+            "LNER-7",
+            "Points failure at Newark Northgate",
+            "Points failure causing disruption to services through Newark Northgate.",
+            &["GR"],
+            &["NNG"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("lner-ecml"));
+        assert!(matched_ids.contains("lner-lincoln"));
+        for m in &matches {
+            if m.line.id.starts_with("lner-") {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
+        }
+    }
+
+    #[test]
     fn lner_leeds_station_overlap_at_leeds_does_not_share_northern_segment() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
