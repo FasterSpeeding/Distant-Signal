@@ -531,6 +531,13 @@ mod tests {
     // courtesy hand-off for Task 5.14's thameslink-southern.toml, not yet a
     // real cross-file shared trunk - see that file's own header comment), so
     // it now joins this set as a fifth independent exclusive-segment match.
+    //
+    // Updated by Task 5.9 (southern-oxted-uckfield.toml): that file also has
+    // a station at LBG (its own `oxted-london-bridge-approach` segment - the
+    // usual London terminus for its Uckfield branch service, see that
+    // file's own header comment for why this is station overlap, not a
+    // shared trunk, with every other line here), so it now joins this set
+    // as a sixth independent exclusive-segment match.
     #[test]
     fn lbg_station_overlap_matches_senk_thameslink_core_seml_and_hayes_as_independent_exclusive_segments() {
         let lines = load_all_lines();
@@ -552,6 +559,7 @@ mod tests {
                 "southeastern-main-line".to_string(),
                 "southeastern-hayes-line".to_string(),
                 "southern-brighton-main-line".to_string(),
+                "southern-oxted-uckfield".to_string(),
             ])
         );
         for m in &matches {
@@ -804,6 +812,97 @@ mod tests {
         assert_eq!(
             matched_ids,
             HashSet::from(["southern-coastway-west".to_string(), "swr-portsmouth-direct".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    // Task 5.9 (southern-oxted-uckfield.toml). An incident on this line's
+    // own exclusive `oxted-uckfield-branch` segment (past the Hurst Green
+    // junction) should stay exclusive to this line alone - mirrors
+    // swr_exclusive_segment_incident_does_not_propagate and
+    // elizabeth_branch_incident_stays_on_its_branch above. This line shares
+    // no segment name with any sibling file (its three real overlaps - VIC,
+    // LBG and ECR, all station overlap only per this file's own header
+    // comment - are exercised by the two tests below and by the updated LBG
+    // test above), so no SharedSegment propagation test is added for this
+    // line, per COMMON.md's own "skip only for a genuinely standalone line"
+    // exception.
+    #[test]
+    fn oxted_uckfield_branch_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SN-6",
+            "Signal failure at Buxted",
+            "Signal failure causing delays to Southern services.",
+            &["SN"],
+            &["BXD"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["southern-oxted-uckfield".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 5.9. Same for the East Grinstead branch (the other branch past
+    // Hurst Green Junction) - an incident there should also stay exclusive
+    // to this line. Per this file's own header comment, East Grinstead is
+    // confirmed as Southern's own Oxted line terminus (not Thameslink
+    // territory, despite the gap analysis grouping it with Thameslink's
+    // southern branches) - no Thameslink sibling file exists yet, so this
+    // stays a plain exclusive-segment case for now; see that file's own
+    // HAND-OFF NOTE for what a future Thameslink southern-branches file
+    // should re-check.
+    #[test]
+    fn oxted_east_grinstead_branch_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SN-7",
+            "Points failure at Lingfield",
+            "Points failure causing delays to Southern services.",
+            &["SN"],
+            &["LFD"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["southern-oxted-uckfield".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 5.9. Victoria (VIC) is also southern-brighton-main-line.toml's
+    // own terminus and southeastern-chatham.toml's own station. Per this
+    // file's own STATION OVERLAP AT VIC / LBG / ECR header comment: whether
+    // Oxted line services physically share fast/slow tracks with those
+    // other services out of Victoria was not confirmed to COMMON.md's bar,
+    // so this is treated as station overlap only (this file's own
+    // `oxted-victoria-approach` segment, not reusing either sibling's
+    // segment name) - same judgment call as the AFK/Ramsgate/LBG overlaps
+    // exercised elsewhere in this module. Confirms an incident at Victoria
+    // matches all three lines independently, each still scoped
+    // ExclusiveSegment, never SharedSegment.
+    #[test]
+    fn vic_station_overlap_matches_brighton_main_line_chatham_and_oxted_uckfield_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SN-8",
+            "Signal failure at Victoria",
+            "Signal failure causing delays to Southern services.",
+            &["SN"],
+            &["VIC"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "southern-brighton-main-line".to_string(),
+                "southeastern-chatham".to_string(),
+                "southern-oxted-uckfield".to_string(),
+            ])
         );
         for m in &matches {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
