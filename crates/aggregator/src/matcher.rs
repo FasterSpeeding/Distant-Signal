@@ -288,4 +288,28 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["tfw-cambrian".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // `tfw-heart-of-wales` is, at this point in the line catalogue, a
+    // genuinely standalone line: `tfw-marches.toml` (the one real
+    // shared-trunk candidate, for the Shrewsbury-Craven Arms stretch) does
+    // not exist yet, so there's no sibling-line propagation assertion to
+    // write here -- only the exclusive-segment case applies. See the
+    // comments in `lines/tfw-heart-of-wales.toml` for the forward-bet
+    // segment name Task 11.5 is expected to read and decide on.
+    #[test]
+    fn heart_of_wales_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-3",
+            "Signal failure at Llandrindod",
+            "Signal failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["LLO"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tfw-heart-of-wales".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
