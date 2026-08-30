@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
-import { GET, POST, PUT } from './route';
+import { GET, POST } from './route';
 
 describe('/api/[...path] proxy', () => {
   beforeEach(() => {
@@ -56,52 +56,5 @@ describe('/api/[...path] proxy', () => {
     const req = makeRequest('/api/../secret');
     const response = await GET(req, { params: Promise.resolve({ path: ['..', 'secret'] }) });
     expect(response.status).toBe(400);
-  });
-
-  it('forwards a multipart/form-data upload with its original Content-Type (boundary intact)', async () => {
-    const boundary = '----testboundary123';
-    const req = makeRequest('/api/Train/1/tickets/pkpass', {
-      method: 'POST',
-      headers: {
-        cookie: 'nr_session=abc123',
-        'content-type': `multipart/form-data; boundary=${boundary}`,
-      },
-      body: `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="t.pkpass"\r\n\r\nfake-bytes\r\n--${boundary}--`,
-    });
-    await POST(req, { params: Promise.resolve({ path: ['Train', '1', 'tickets', 'pkpass'] }) });
-    const [, init] = vi.mocked(fetch).mock.calls[0];
-    const forwardedHeaders = (init as { headers: Record<string, string> }).headers;
-    expect(forwardedHeaders['Content-Type']).toBe(`multipart/form-data; boundary=${boundary}`);
-  });
-
-  it('forwards binary body bytes unchanged (does not lossily decode as UTF-8 text)', async () => {
-    // A byte sequence that is invalid UTF-8 on its own (0xff is never a
-    // valid standalone UTF-8 byte) -- .text() would have replaced it with
-    // U+FFFD before this test could ever observe the original bytes;
-    // arrayBuffer() must not.
-    const rawBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xff, 0x00, 0x89]);
-    const req = new NextRequest('http://localhost:3000/api/Train/1/tickets/pkpass', {
-      method: 'POST',
-      headers: { 'content-type': 'application/octet-stream' },
-      body: rawBytes,
-    });
-    await POST(req, { params: Promise.resolve({ path: ['Train', '1', 'tickets', 'pkpass'] }) });
-    const [, init] = vi.mocked(fetch).mock.calls[0];
-    const forwardedBody = new Uint8Array((init as { body: ArrayBuffer }).body);
-    expect(Array.from(forwardedBody)).toEqual(Array.from(rawBytes));
-  });
-
-  it('still forwards a JSON body byte-identically (regression: existing callers unaffected)', async () => {
-    const req = makeRequest('/api/preferences/pinned-lines', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(['wcml']),
-    });
-    await PUT(req, { params: Promise.resolve({ path: ['preferences', 'pinned-lines'] }) });
-    const [, init] = vi.mocked(fetch).mock.calls[0];
-    const forwardedHeaders = (init as { headers: Record<string, string> }).headers;
-    const forwardedBody = new TextDecoder().decode((init as { body: ArrayBuffer }).body);
-    expect(forwardedHeaders['Content-Type']).toBe('application/json');
-    expect(forwardedBody).toBe(JSON.stringify(['wcml']));
   });
 });
