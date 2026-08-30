@@ -8,10 +8,31 @@ operators = [
          # included (genuine scheduled stops, not just track-sharing).
 ]
 
-destination_crs_filter = ["HHD"]
+destination_crs_filter = ["HHD", "CTR"]
 # South, midpoint, near-north, terminus.
 sample_stations = ["CTR", "RHL", "BNG", "HHD"]
 match_keywords = ["North Wales Coast Line", "North Wales Main Line"]
+
+# `destination_crs_filter` direction-coverage note (final review Important
+# #3): originally `["HHD"]` only, which the sourcing note below already
+# flags as a risk without having acted on it -- "the majority of Avanti
+# Euston-Chester/North Wales trains terminate at Chester (1tph); only a
+# minority (6/day) continue to Holyhead", so a `HHD`-only filter silently
+# dropped the majority of Chester-terminating departures sampled at RHL/BNG.
+# Since this file's own scope starts at Chester and doesn't extend south of
+# it, `CTR` is added as a second anchor here -- the same extend-with-
+# opposite-direction-anchor remedy `tfw-conwy-valley.toml` established
+# (`["LLJ", "BFF"]`), rather than `tfw-marches.toml`'s omit-entirely remedy.
+# This is safe: `destination_crs_filter` is only evaluated against
+# departures sampled at this file's own `sample_stations` (`CTR`, `RHL`,
+# `BNG`, `HHD`), and RHL/BNG/HHD are exclusive to this line -- no other
+# catalogued line reaches them, so any departure there with destination
+# `CTR` is unambiguously a North Wales Coast Line service. `CTR` is also
+# shared with `tfw-marches.toml` at the station level, but a departure
+# whose destination is also `CTR` is a logical impossibility at Chester
+# itself (a train can't depart from and terminate at the same station), so
+# adding `CTR` to the filter has no effect there and can't misclassify a
+# Marches departure as North Wales Coast Line.
 
 # Sourcing note (per the catalogue's "cross-checked against a second
 # source" curation standard established for tfw-cambrian.toml,

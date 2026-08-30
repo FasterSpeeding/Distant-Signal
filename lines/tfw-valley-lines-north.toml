@@ -119,10 +119,17 @@ delay_threshold_minutes = 5
 # Aberdare and Treherbert) remain four physically distinct corridors with
 # their own historic company identities, converging only at the Cardiff hub
 # below -- genuinely different from the City Line/Coryton, Cardiff Bay and
-# Vale of Glamorgan/Barry routes (Cardiff Railway/Barry Railway/GWR lineage)
-# that Task 11.7 (`tfw-valley-lines-south.toml`, not yet written) is expected
-# to cover. The plan's split matches this real infrastructure-identity
-# distinction, so this file keeps it rather than deviating.
+# Vale of Glamorgan/Barry routes (Cardiff Railway/Barry Railway/GWR lineage).
+# (Updated during the final whole-branch review's fix wave, Minor #4: this
+# used to describe Task 11.7 as "not yet written" and merely "expected to
+# cover" that other scope -- stale now that Task 11.7 has landed.
+# `tfw-valley-lines-south.toml` exists (commit `255cd29`, fixed further at
+# `476a4ec`) and covers City Line/Coryton/Cardiff Bay only; it does NOT
+# cover Vale of Glamorgan/Barry/Penarth -- that scope was deliberately
+# excluded and disclosed as an open, still-uncovered gap in that file's own
+# top-of-file comments, not silently dropped.) The plan's split matches this
+# real infrastructure-identity distinction, so this file keeps it rather
+# than deviating.
 #
 # Cardiff terminus decision: both Cardiff Central (CDF) and Cardiff Queen
 # Street (CDQ) are included below as a shared hub used by all four branches.
@@ -169,6 +176,14 @@ delay_threshold_minutes = 5
 # services consolidated back onto the single station now simply named
 # Abercynon; it is not listed separately below.
 
+# This file is "bundled": a Cardiff hub plus four physically distinct
+# branches (Rhymney; the Taff Vale trunk shared by Merthyr/Aberdare/
+# Treherbert; then each of those three branches individually) concatenated
+# in one station list below, not a single continuous end-to-end route. A
+# future reader relying on file order (e.g. for `stations_between`-style
+# logic) should not assume consecutive entries are geographically adjacent
+# across a branch boundary.
+#
 # --- Cardiff hub: shared by all four branches below (Rhymney, Merthyr,
 # Aberdare and Treherbert/Rhondda). See the Cardiff terminus decision note
 # above for why both stations are included, and the segment-naming note
