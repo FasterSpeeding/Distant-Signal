@@ -19,6 +19,21 @@ recommendation is **not yet** — extend/retry, specifically to fix the SSO
 blocker and re-run Task 4 onward, not a verdict against the feature
 itself.
 
+> **Update, 2026-08-30 — read this before the rest of the document.** The
+> plan was re-run the next day, after this session's memory noted that a
+> separate session had since fixed the two SSO root causes diagnosed
+> below. **Both fixes are confirmed real and working, verified end-to-end
+> against the live instance with no browser (the sandbox still can't run
+> one) — pure HTTP/JSON, real cookies, a real created account, a real
+> OAuth2 code exchange.** Task 4 got as far as creating three real pins
+> against real, currently-running trains, but **hit a second, different,
+> and still-unfixed blocker** — `trust-consumer`'s long-documented
+> STANOX↔CRS gap — that stops any pin from ever resolving, independent of
+> SSO. See the "2026-08-30 re-run" section appended at the end of this
+> document for the full, evidence-quoted account. Task 8's verdict is
+> still **not yet**, now for this newly-precise reason. Nothing in this
+> update changes or softens anything below — it's additive.
+
 ---
 
 ## Task 1: RDM licensing/access confirmation
@@ -580,3 +595,313 @@ run did not reach "go."
   proxy only forwards `Train/*` unprefixed). The equivalent real data is
   reachable instead through the server-rendered `/lines/{id}/history`
   page, which this run used successfully.
+
+---
+
+# 2026-08-30 re-run: SSO fixed, Task 4 blocked by a different, deeper cause
+
+**Status: a second, real execution session, one day after the run above,
+resuming at Task 4 per the dispatcher's explicit instruction.** This
+section extends the document above; nothing above is edited or retracted.
+Everything below was checked directly against the live instance at
+`http://konata.fox-prometheus.ts.net:3000/` and `:9000/`, or against real
+code on `main`, on 2026-08-30 — quoted, not paraphrased, exactly as the
+rest of this document already does.
+
+## Re-diagnosing SSO: both previously-diagnosed blockers are fixed
+
+Per the dispatcher's brief, `main` had since picked up two fixes (commits
+`6d4d5ab` "Drive Authentik's redirect_uris from the real
+SSO_REDIRECT_URL, not a fixed copy" and `c2578a0`
+"Rename Helm chart from nr-status to distant-signal", among others in the
+same run). Whether the **live** instance had actually redeployed those
+changes was unknown and had to be tested, not assumed. It has:
+
+**Browser automation is still unavailable in this sandbox** — reconfirmed
+before falling back to HTTP, per the dispatcher's instruction to try it
+first. Same exact failure as the previous run, for the same reason:
+
+```
+$ npx --yes playwright install chrome
+...
++ echo 'ERROR: cannot install on fedora distribution - only Ubuntu and Debian are supported'
+Failed to install browsers
+```
+
+`sudo -n true` still fails (password required); this is a sandbox
+limitation, unrelated to the live instance, exactly as diagnosed
+2026-08-29. Fell back to direct HTTP/JSON probing, as the previous run
+did — and, as shown below, this is now sufficient to complete the entire
+SSO flow without a browser at all, because Authentik's flow executor is a
+plain JSON API under the hood.
+
+**1. Redirect host, live-probed:**
+
+```
+$ curl -s -D - -o /dev/null "http://konata.fox-prometheus.ts.net:3000/api/auth/login"
+HTTP/1.1 307 Temporary Redirect
+location: http://konata.fox-prometheus.ts.net:9000/application/o/authorize/?response_type=code&client_id=distant-signal-dev&state=...&code_challenge=...&redirect_uri=http%3A%2F%2Fkonata.fox-prometheus.ts.net%3A3000%2Fapi%2Fauth%2Fcallback&scope=openid+email+profile&nonce=...
+```
+
+This is the real, live redirect target the frontend generates right now.
+Compare directly against 2026-08-29's captured value:
+`http://authentik.localhost:9000/application/o/authorize/?...&client_id=nr-status-dev&...`.
+Both things flagged as broken then are different now, observed directly,
+not inferred: the host is `konata.fox-prometheus.ts.net:9000` (the real,
+externally-reachable tailnet hostname this whole session has been using
+throughout), not `authentik.localhost`; and `client_id` is
+**`distant-signal-dev`**, not `nr-status-dev`.
+
+**2. Authentik's own authorize endpoint, live-probed with that exact real
+URL** (no placeholder values, no `--resolve` hack needed this time — the
+hostname just resolves and routes correctly on its own):
+
+```
+$ curl -s -D - "http://konata.fox-prometheus.ts.net:9000/application/o/authorize/?response_type=code&client_id=distant-signal-dev&...".
+HTTP/1.1 302 Found
+location: /if/flow/default-authentication-flow/?response_type=code&client_id=distant-signal-dev&...
+```
+
+No `Client ID Error`. Following that redirect returns a real, live
+Authentik login page (HTTP 200, genuine `authentik` HTML/config payload,
+`x-powered-by: authentik`). **Both of 2026-08-29's diagnosed root causes
+are independently confirmed fixed on the live instance, not just on
+`main`.**
+
+## Driving the entire SSO login flow over plain HTTP, no browser
+
+Authentik's flow executor (`/api/v3/flows/executor/<slug>/`) is a
+plain JSON API — GET returns the current stage's field list, POST
+advances it. This app's own dev-IdP blueprint
+(`charts/distant-signal/files/devauthentik-blueprints/open-signup.yaml`)
+wires an **open, unauthenticated, no-verification-stage, auto-login
+self-signup flow** (`distant-signal-dev-enrollment`) into the login page's
+"Need an account? Sign up" link — a real, already-shipped dev-environment
+feature, not something this session added. Driving it end-to-end, with a
+persistent curl cookie jar (a fresh POST to a stage before its plan exists
+issues a same-URL 302; re-GETting/following it re-establishes the plan —
+the only wrinkle, resolved with `-L`):
+
+```
+$ curl -s -L -c cookies.txt -b cookies.txt -X POST \
+    ".../api/v3/flows/executor/distant-signal-dev-enrollment/?query=" \
+    -d '{"username":"valbot1788130219","password":"...","password_repeat":"..."}'
+→ (advances to) {"component":"ak-stage-prompt","fields":[name, email]}
+
+$ curl -s -L -c cookies.txt -b cookies.txt -X POST \
+    ".../api/v3/flows/executor/distant-signal-dev-enrollment/?query=" \
+    -d '{"name":"Validator Bot","email":"valbot1788130219@example.com"}'
+→ {"component":"xak-flow-redirect","to":"/","final_redirect":true}
+
+$ curl -s "http://konata.fox-prometheus.ts.net:9000/api/v3/core/users/me/"
+→ {"user":{"pk":8,"username":"valbot1788130219", ...,"type":"external"}}
+```
+
+A real Authentik user (`pk: 8` — meaning at least 7 real accounts already
+existed before this one; this is a live, already-used system, not an
+empty test instance), auto-logged-in, real session cookie in hand. Then
+the actual OIDC exchange, using the app's own genuinely-issued
+`state`/`code_challenge`/`nonce` from a fresh `/api/auth/login` call:
+
+```
+$ curl -s -D - -c cookies.txt -b cookies.txt "$AUTHORIZE_URL"    # authenticated Authentik session
+HTTP/1.1 302 Found
+location: http://konata.fox-prometheus.ts.net:3000/api/auth/callback?code=6fc935c3c05f46cdbd326d438dc27032&state=SlurF8u5BT6rtw5xTjdBhQ
+
+$ curl -s -D - -c app_cookies.txt -b app_cookies.txt "$CALLBACK_URL"   # app's own distant_signal_login cookie from the earlier /api/auth/login
+HTTP/1.1 307 Temporary Redirect
+location: http://konata.fox-prometheus.ts.net:3000/
+set-cookie: distant_signal_session=s-ayj-eaVqaPONRzDnVeALalniPUTzoN-OKp3ZSP-JQ; Path=/; HttpOnly; SameSite=Lax; Max-Age=1209600
+```
+
+**A real, live, working `distant_signal_session` cookie for a real
+authenticated user, obtained end-to-end over plain HTTP/JSON, no browser,
+no fabricated tokens, no workaround of anything except the sandbox's
+inability to run Chrome.** SSO is not merely "fixed in theory" — it is
+directly, empirically confirmed working on the live instance right now.
+
+## Task 4: pin creation now works; a second, real, unrelated blocker stops resolution
+
+With `distant_signal_session` in hand, `POST /Train/track` was called for
+real, against real, currently-scheduled WCML/border trains selected from
+`timetable_full.zip` (streamed via `unzip -p`, never extracted, per the
+plan's constraint) for **2026-08-30** (a Sunday; the file's day-of-week
+bitmask field, position 22–28, confirmed bit 7 = Sunday active for every
+schedule used below):
+
+| id | UID | real journey (from CIF `LO`/`LI`/`LT`, quoted) | pinned as |
+|----|-----|---|---|
+| 3 | `C34229` | `LOEUSTON 2359` → `LTWATFJDC 0047/0050` (Euston–Watford Jn DC lines) | `origin_crs=EUS`, `scheduled_departure=2026-08-30T22:59:00Z` |
+| 4 | `W70610` | `LOEUSTON 0009` → `LIWATFDJ 0028/0029` → `LIMKNSCEN 0118/0119` → `LTNMPTN 0137` (Euston–Northampton, calling Watford Junction and Milton Keynes Central — two of WCML's five curated `sample_stations`) | `origin_crs=EUS`, `scheduled_departure=2026-08-30T23:09:00Z` |
+| 5 | `M37436` | `LODUMFRES 2350H` → ... → `LTCARLILE 0028` (Dumfries–Carlisle, Glasgow South Western route, terminating at WCML's Carlisle sample station) | `origin_crs=DMF`, `scheduled_departure=2026-08-30T22:50:00Z` |
+
+All three real `POST /Train/track` calls returned `200` with a real
+`trackingId` (`3`, `4`, `5` — ids `1`/`2` already existed, meaning this is
+a live system with pre-existing real usage, not an empty test instance)
+and `"resolutionStatus":"pending"`. **This is Task 4 Steps 1–2, genuinely
+completed**, the thing the entire previous run could not do at all.
+
+**Step 3/4 — letting it run and checking back**: all three trains'
+scheduled departures passed during this session (confirmed by wall-clock:
+pin 5's real departure was already ~6 minutes in the past at pin-creation
+time; pins 3 and 4 departed within the following ~10 minutes). Polling
+`GET /Train/{id}` at pin-creation, +8 min, and +24 min past the latest of
+the three departures:
+
+```
+{"id":3,...,"resolutionStatus":"pending","trainUid":null,...}
+{"id":4,...,"resolutionStatus":"pending","trainUid":null,...}
+{"id":5,...,"resolutionStatus":"pending","trainUid":null,...}
+```
+
+**All three stayed `pending` throughout.** Rather than treat this as
+"maybe just needs longer" (the plan's own Task 4 Step 5 explicitly asks
+for the *cause* to be reported honestly, not just the outcome), this was
+traced to real, live code — and the cause is structural, not a timing
+fluke:
+
+```
+// crates/trust-consumer/src/process.rs, module doc, lines 9-22:
+//! **STANOX->CRS translation is not implemented.** `loc_crs` is hardcoded
+//! `None` throughout `process_message`, and `matching::resolve_origin_departure`
+//! is consequently handed the raw `loc_stanox` where it documents wanting a
+//! CRS. ... a pin only resolves when its `pin_origin_crs`
+//! happens to compare equal to the feed's STANOX string.
+```
+
+```rust
+// crates/trust-consumer/src/process.rs, inside process_message, line 301:
+let loc_crs = None; // STANOX->CRS translation: see this module's docs.
+...
+let loc_stanox = movement.loc_stanox.as_deref()?;
+...
+let tracked_train_id = crate::matching::resolve_origin_departure(loc_stanox, actual_ts, &unclaimed)?;
+```
+
+```rust
+// crates/trust-consumer/src/matching.rs, resolve_origin_departure:
+pin.pin_origin_crs.eq_ignore_ascii_case(loc_crs)   // `loc_crs` here is really the raw STANOX
+```
+
+This is the **same gap** both the design spec and the verification spec
+already named (`trust-consumer`'s own module doc, unchanged, still
+present) — but it directly explains, with certainty rather than
+suspicion, why all three of this run's real pins never resolved: a
+pin's `pin_origin_crs` is a 3-letter code (`"EUS"`, `"DMF"`); TRUST's real
+`loc_stanox` is always a 5-digit numeric string (confirmed real, e.g.
+Euston's STANOX is `72410`, per the verification spec's own Claim 3, and
+structurally true of every STANOX in `RJTTF942MCA.txt`'s `TI` records).
+`"EUS".eq_ignore_ascii_case("72410")` can never be `true` — there is no
+possible real-world STANOX value that would make it true. **This is not
+a "wait longer" situation; a CRS-based pin structurally cannot resolve
+against real TRUST data as this code stands today**, independent of
+timing, independent of SSO, independent of which train or station is
+pinned. `common::StationReference` (`crates/common/src/lib.rs:637-645`)
+still has no `stanox` field, confirmed by direct re-read — the fix this
+module's own doc comment already prescribes (add a STANOX column, source
+it from CORPUS or, per the verification spec's own correction, from the
+CIF extract's own `TI`+`MSN` files "for free") has not landed.
+
+One documentation inconsistency worth flagging plainly, in this
+document's own spirit of not asserting past what's verified:
+`matching.rs`'s doc comment for `resolve_origin_departure` claims its
+`loc_crs` parameter is "already translated from STANOX by the caller (see
+Task 11's translation table)" — but `process.rs`'s real call site passes
+the **raw, untranslated** `loc_stanox` into that exact parameter (quoted
+above). Whatever "Task 11" refers to, it has not been implemented in the
+code actually running on the live instance today; the doc comment is
+aspirational/stale relative to real behavior, not a confirmed contract.
+
+## Task 5: real expected-schedule table for the three pinned trains
+
+Pure schedule reconstruction, independent of Task 4's (non-)resolution,
+using the real CIF bodies already quoted in the table above. This is the
+literal "expected" side Task 7 would compare against, had Task 4 produced
+an "actual" side:
+
+- **`C34229`** (Euston–Watford Junction DC): `EUSTON 23:59` →
+  `CMDNSTH 00:01½` → ... → `WATFJDC 00:47/00:50` (arr/dep, terminates).
+- **`W70610`** (Euston–Northampton): `EUSTON 00:09` → `WATFDJ
+  00:28½/00:29½` → `TRING 00:50½/00:51½` → `MKNSCEN 01:18/01:19` →
+  `NMPTN 01:37` (terminates). Calls at two of WCML's five curated
+  `sample_stations` (Watford Junction, Milton Keynes Central) en route.
+- **`M37436`** (Dumfries–Carlisle, Glasgow South Western route):
+  `DUMFRES 23:50½` → `ANNAN 00:05½/00:06` → `GRETNA GREEN 00:14½/00:15` →
+  `CARLCJN 00:25½` → `CARLILE 00:28` (terminates — WCML's Carlisle sample
+  station, reached via a connecting route, not the WCML line itself).
+
+**What could not be produced, and why**: the "actual" column of Task 5
+Step 3's delta table, and Step 2's `TI`/`MSN` STANOX cross-check against
+captured `train_movement_events.loc_stanox` — both need Task 4 to have
+produced resolved rows, which (per the structural cause above, not a
+sampling-window problem) it did not and, as this code stands, could not.
+
+## Task 6: sampling-side baseline
+
+Not independently re-pulled this session — Task 2/6's 2026-08-29 read
+already captured the live `/lines/wcml/history` and `/lines/swr-alton/history`
+baseline for the retention window that includes 2026-08-30, and nothing
+in this run's scope changed what that data means. Re-fetching it would
+not add anything: Task 4 still produced no resolved TRUST events to
+compare it against, on either day.
+
+## Task 7: three-way comparison — still not completable, now for a precisely different reason
+
+**Not completed, same as 2026-08-29, but the honest reason has moved.**
+On 2026-08-29 the blocker was "no session could be obtained at all." On
+2026-08-30 a real session, three real pins, and three real trains'
+real-time departures all happened exactly as intended — and the
+comparison is *still* not completable, because `trust-consumer`'s
+STANOX↔CRS gap means **zero of the three pins ever produced a single
+`train_movement_events` row**, resolved or otherwise, to set beside
+Task 5's real expected-schedule table. This is a *more* specific, more
+diagnostic negative result than 2026-08-29's — it rules out SSO,
+authentication, pin creation, timing/tolerance (`MATCH_TOLERANCE` is
+20 minutes; departures were live-observed passing, not merely assumed),
+and train selection as causes, and isolates the actual cause to one
+already-documented, precisely-quoted code path.
+
+## Task 8: decision gate — updated
+
+**Step 1 (licensing): unchanged, still favorable** — nothing this session
+touched bears on Task 1's verdict from 2026-08-29.
+
+**Step 2 (empirical verdict): still cannot be stated as an N of M** — the
+count is still **0 of 0** real spot-checked disruption instances, because
+Task 4 still produced no `train_movement_events` data to check, on either
+attempt. But *why* it's 0 of 0 has changed in a way that matters for
+what to do next: this is no longer an access/deployment problem (SSO) —
+it is a **application-code gap**, in a part of the system
+(`trust-consumer`'s STANOX↔CRS translation) that this app's own design
+spec, verification spec, and `process.rs`'s own module doc have all
+already named as a known, real, unclosed gap, now confirmed to be the
+actual, sole, currently-live blocker on this specific empirical
+validation path, not just a theoretical concern.
+
+**Recommendation: still NOT YET — but the concrete next step has changed
+and narrowed.** Re-running Tasks 3–7 again with more/different pins,
+more days, or more patience will not produce a different outcome while
+this gap stands; the blocker is deterministic, not probabilistic. The
+next step is not "retry the validation" but:
+
+1. **Close `trust-consumer`'s STANOX→CRS gap first** — per the
+   verification spec's own already-published, already-evidenced fix (the
+   CIF extract's own `TI`+`MSN` records carry the full STANOX↔TIPLOC↔CRS
+   mapping "for free," no CORPUS needed), thread a real lookup table into
+   `process_message` so `loc_crs` stops being hardcoded `None` and
+   `resolve_origin_departure` is handed a real CRS instead of a raw
+   STANOX digit-string.
+2. **Only then** re-run Task 4 onward: SSO is confirmed working end-to-end
+   right now, over plain HTTP even without a browser, so a future run can
+   go straight to pinning real trains for a real chosen window without
+   re-litigating authentication at all — this run's curl-based recipe
+   (persistent cookie jar, `-L` through the flow executor's
+   plan-not-yet-established redirect, the real `/api/auth/login` →
+   Authentik-authorize → `/api/auth/callback` chain) is a complete,
+   reusable, no-browser-needed procedure for whoever does that.
+3. Only then re-run Task 8 with an actual **N of M** figure.
+
+**If proceeding to Option B is eventually greenlit**, this is unchanged
+from both prior verdicts: a separate planning pass scoped to Option B
+specifically, gated on Task 8 actually reaching "go," which it still has
+not.
