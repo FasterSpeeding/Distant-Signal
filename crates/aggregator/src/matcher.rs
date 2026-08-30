@@ -524,28 +524,19 @@ mod tests {
     }
 
     #[test]
-    fn grand_central_internal_trunk_segment_stays_exclusive() {
+    fn grand_central_kings_cross_trunk_shared_trunk_propagates_to_bradford() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
-        // Doncaster is on `gc-trunk-kings-cross`, the internal trunk Grand
-        // Central's own Sunderland and Bradford Interchange branches share
-        // before diverging (mirroring how `swr-south-west-main.toml` shares
-        // a trunk with other SWR files) — except here the trunk is entirely
-        // self-contained within this one file, so `gc-trunk-kings-cross` is
-        // never "shared" per `SegmentRegistry::is_shared` (that requires
-        // more than one *line*, and `grand-central` is the only line using
-        // this segment name). This is the same-file, self-contained
-        // propagation check the task brief calls for: an incident on the
-        // internal trunk still resolves `grand-central` with
-        // `ExclusiveSegment` scope, confirming both branches' shared
-        // stations are correctly tagged.
-        //
-        // Doncaster is also a real station on `lner-ecml`, `lner-leeds`,
-        // `lner-hull` and `cross-country` (their own, differently-named
-        // segments) — those lines are expected to match too by station, but
-        // that overlap is already covered by this file's own
-        // `lner_*_doncaster_shared_trunk_propagates_to_ecml` tests, so it's
-        // not re-asserted here.
+        // Final review, Fix #1: `grand-central.toml` used to model BOTH the
+        // King's Cross-Sunderland and King's Cross-Bradford Interchange
+        // routes as one non-linear file, with a `gc-trunk-kings-cross`
+        // segment that could never be a real shared trunk (only one *line*
+        // used the name). Split into `grand-central.toml` (Sunderland) and
+        // `grand-central-bradford.toml` (Bradford Interchange), which now
+        // genuinely share `gc-trunk-kings-cross` across King's Cross,
+        // Peterborough and Doncaster — mirroring
+        // `swr_shared_trunk_incident_propagates` above. An incident at
+        // Doncaster should now match both files, each SharedSegment.
         let inc = incident(
             "GC-2",
             "Points failure at Doncaster",
@@ -554,8 +545,89 @@ mod tests {
             &["DON"],
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
-        let gc_match = matches.iter().find(|m| m.line.id == "grand-central").expect("grand-central should match on its own trunk station");
-        assert_eq!(gc_match.scope, MatchScope::ExclusiveSegment);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("grand-central"));
+        assert!(matched_ids.contains("grand-central-bradford"));
+        for m in &matches {
+            if m.line.id.starts_with("grand-central") {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
+        }
+    }
+
+    #[test]
+    fn grand_central_bradford_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Halifax sits on `gc-bradford`, exclusive to `grand-central-bradford`
+        // — no other line in this catalogue reaches Halifax on Grand
+        // Central's own segment naming, so this should stay exclusive and
+        // not propagate anywhere else. Mirrors
+        // `grand_central_exclusive_segment_incident_does_not_propagate`
+        // above (the Sunderland-side equivalent), added for the new
+        // Bradford file per the final review, Fix #1.
+        let inc = incident(
+            "GC-3",
+            "Signal failure at Halifax",
+            "Signal failure causing delays to services at Halifax.",
+            &["GC"],
+            &["HFX"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["grand-central-bradford".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn grand_central_birmingham_shopping_centre_mention_vetoes_match() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Final review, Fix #3: `excluded_keywords` was narrowed from a bare
+        // "Birmingham" to "Grand Central, Birmingham" (the shopping
+        // centre's own name+city, per Wikipedia's "Grand Central,
+        // Birmingham" article), so it should still veto an incident that
+        // genuinely mentions the shopping centre. Mirrors
+        // `excluded_keyword_vetoes_match`'s style above.
+        let inc = incident(
+            "GC-4",
+            "Fire alarm at Grand Central, Birmingham",
+            "A fire alarm was activated at the Grand Central, Birmingham shopping centre, next to New Street station.",
+            &[],
+            &[],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(!matched_ids.contains("grand-central"), "shopping-centre mention should still veto grand-central");
+        assert!(!matched_ids.contains("grand-central-bradford"), "shopping-centre mention should still veto grand-central-bradford");
+    }
+
+    #[test]
+    fn grand_central_unrelated_birmingham_mention_does_not_veto_match() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Final review, Fix #3: the old bare "Birmingham" exclusion would
+        // have wrongly vetoed a genuine Grand Central incident that happens
+        // to mention Birmingham for an unrelated reason (e.g. a diversion
+        // routed via Birmingham). The narrowed "Grand Central, Birmingham"
+        // phrase should NOT fire here, so the incident matches via the
+        // `match_keywords` "Grand Central" phrase instead.
+        let inc = incident(
+            "GC-5",
+            "Grand Central service diverted",
+            "A Grand Central service was diverted via Birmingham due to engineering works.",
+            &[],
+            &[],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("grand-central"), "unrelated Birmingham mention should not veto grand-central");
+        assert!(matched_ids.contains("grand-central-bradford"), "unrelated Birmingham mention should not veto grand-central-bradford");
+        for m in &matches {
+            if m.line.id.starts_with("grand-central") {
+                assert_eq!(m.scope, MatchScope::KeywordOnly, "{} should match via keyword only", m.line.id);
+            }
+        }
     }
 
     #[test]
