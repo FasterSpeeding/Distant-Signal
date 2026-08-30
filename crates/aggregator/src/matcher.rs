@@ -394,4 +394,21 @@ mod tests {
             );
         }
     }
+
+    // Task 4.4 split `gwr-west-of-england` (Reading-Taunton line) into its own
+    // file. Its exclusive segment (`gwr-west-of-england`) covers Newbury
+    // through Castle Cary — none of that stretch is shared with any other
+    // catalogued line, so Westbury should stay a clean ExclusiveSegment case,
+    // mirroring `swr_exclusive_segment_incident_does_not_propagate` /
+    // `gwr_cotswold_exclusive_segment_incident_does_not_propagate`.
+    #[test]
+    fn gwr_west_of_england_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-7", "Points failure at Westbury", "Points failure causing delays at Westbury.", &["GW"], &["WSB"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-west-of-england".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
