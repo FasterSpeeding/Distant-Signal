@@ -352,4 +352,90 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["emr-connect".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // `lines/emr-rural-branches.toml` (Batch 7, Task 7.4): Worksop is this
+    // bundled line's Robin Hood Line branch's own exclusive territory - no
+    // other file in this catalogue lists WRK, and that file's own ruling
+    // documents confirming (rather than assuming) no genuine shared trunk
+    // exists for this specific branch beyond the Nottingham station itself.
+    #[test]
+    fn emr_rural_branches_worksop_incident_stays_on_its_own_branch() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("EMRB-1", "Signal failure at Worksop", "Signal failure causing delays to services at Worksop.", &["EM"], &["WRK"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["emr-rural-branches".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Same file: the brief anticipated no genuine shared-trunk stretch for
+    // any of these three branches beyond station-level overlap. Research
+    // found genuine shared *track* between the Poacher Line (Nottingham-
+    // Skegness) and `emr-regional.toml`'s Liverpool-Norwich service, both of
+    // which run over the same Nottingham-Grantham line metals (the dedicated
+    // "Nottingham-Grantham line" Wikipedia article confirms this) - but this
+    // file's Branch 2 ruling comment explains why the segment *name* is
+    // deliberately NOT shared regardless: `emr-regional.toml`'s
+    // `emr-regional-east` segment is coarser than the genuine overlap (it
+    // also spans that file's deliberately-exclusive Alfreton station and its
+    // Peterborough-Ely-Norwich continuation), so reusing it here would
+    // incorrectly promote those unrelated stations to "shared" too - reusing
+    // it in an earlier draft of this file broke the pre-existing
+    // `emr_regional_erewash_incident_stays_on_its_own_line` test below by
+    // doing exactly that. This test instead confirms the intended, narrower
+    // outcome: an incident at Grantham matches both lines independently,
+    // each still classified within its own file (`emr-rural-branches` as
+    // ExclusiveSegment on its own `emr-poacher-skegness` segment,
+    // `emr-regional` as ExclusiveSegment on its own `emr-regional-east`
+    // segment - neither reports SharedSegment for the other).
+    #[test]
+    fn emr_rural_branches_poacher_line_and_emr_regional_both_match_grantham_without_over_propagating() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("EMRB-2", "Points failure at Grantham", "Points failure causing delays to services at Grantham.", &["EM"], &["GRA"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let by_id: HashMap<String, MatchScope> = matches.iter().map(|m| (m.line.id.clone(), m.scope)).collect();
+        assert_eq!(by_id.get("emr-rural-branches"), Some(&MatchScope::ExclusiveSegment));
+        assert_eq!(by_id.get("emr-regional"), Some(&MatchScope::ExclusiveSegment));
+    }
+
+    // Same file: the second confirmed shared-trunk exception, and this one
+    // DOES reuse a sibling file's segment name (a clean subset, unlike the
+    // Poacher Line case above - see the Branch 3 ruling comment for why the
+    // two cases are treated differently). The Derwent Valley Line (Derby-
+    // Matlock) diverges from the Midland Main Line at Ambergate Junction,
+    // just south of Ambergate station (Wikipedia's "Ambergate railway
+    // station" article), so Derby-Ambergate is genuine shared trunk with
+    // `emr-midland-main-line.toml`'s `emr-mml-north` segment, reused
+    // verbatim in this file's Branch 3. Derby (DBY) is the only station
+    // common to both files' own station lists (the intercity MML service
+    // skips Duffield/Belper/Ambergate entirely), so it is the only station
+    // where an incident can demonstrate both lines matching together as
+    // SharedSegment.
+    #[test]
+    fn emr_rural_branches_matlock_branch_shared_with_midland_main_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("EMRB-3", "Overhead line damage at Derby", "Overhead line damage causing delays to services at Derby.", &["EM"], &["DBY"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let by_id: HashMap<String, MatchScope> = matches.iter().map(|m| (m.line.id.clone(), m.scope)).collect();
+        assert_eq!(by_id.get("emr-rural-branches"), Some(&MatchScope::SharedSegment));
+        assert_eq!(by_id.get("emr-midland-main-line"), Some(&MatchScope::SharedSegment));
+    }
+
+    // Same file: Matlock itself is this branch's terminus, on the exclusive
+    // `emr-matlock-branch` segment (starts at Whatstandwell, the station
+    // after Ambergate Junction) - confirms the exclusive tail behaves
+    // correctly alongside the shared-trunk stretch tested above.
+    #[test]
+    fn emr_rural_branches_matlock_incident_stays_on_its_own_branch() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("EMRB-4", "Trespass at Matlock", "Trespass incident causing delays at Matlock.", &["EM"], &["MAT"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["emr-rural-branches".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
