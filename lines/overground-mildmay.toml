@@ -3,12 +3,21 @@ name = "Mildmay line"
 mode = "national-rail"
 category = "commuter"
 operators = ["LO"]
+sample_stations = ["RMD", "CMD", "SRA", "CLJ"]
 
 # Former North London line core (Richmond to Stratford) plus the former
 # West London line's north end (a Clapham Junction branch), converging at
 # Willesden Junction. Two branches, each ordered geographically within its
 # own `[[stations]]` block; the Clapham Junction branch rejoins the core
 # at Willesden Junction, which is only listed once (in the core block).
+#
+# NOTE: this file models more than one physical branch in a single
+# `stations` list. If a future "incident affects stations between A and B"
+# range-parser is ever built per `lines/SCHEMA.md`'s ordering rule, it must
+# not assume the whole list is one single physical sequence — a range query
+# spanning a branch boundary (e.g. "between Willesden Junction and
+# Shepherd's Bush") would incorrectly sweep through the other branch's
+# stations too.
 #
 # Primrose Hill and Mildmay Park are deliberately excluded — Primrose Hill
 # closed to passengers in 1992, Mildmay Park closed in 1934, and neither
@@ -138,7 +147,7 @@ role = "major"
 segment = "overground-mildmay-east"
 
 [[stations]]
-crs = "HOM"
+crs = "HMN"
 role = "minor"
 segment = "overground-mildmay-east"
 

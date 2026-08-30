@@ -144,5 +144,7 @@ mod tests {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         assert!(!registry.is_shared("overground-liberty"));
+        assert!(!registry.is_shared("overground-suffragette"));
+        assert!(!registry.is_shared("overground-weaver-chingford"));
     }
 }

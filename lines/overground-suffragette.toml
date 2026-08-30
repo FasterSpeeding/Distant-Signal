@@ -3,6 +3,7 @@ name = "Suffragette line"
 mode = "national-rail"
 category = "commuter"
 operators = ["LO"]
+sample_stations = ["GPO", "LEM", "BGV"]
 
 # Former Gospel Oak to Barking line ("Goblin"), 13 stations, extended to
 # Barking Riverside in Feb 2022.
@@ -39,7 +40,7 @@ role = "minor"
 segment = "overground-suffragette"
 
 [[stations]]
-crs = "SOT"
+crs = "STO"
 role = "minor"
 segment = "overground-suffragette"
 

@@ -260,7 +260,7 @@ mod tests {
     fn overground_liberty_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
-        let inc = incident("LO-1", "Signal failure at Upminster", "Signal failure causing delays at Upminster.", &["LO"], &["UMN"]);
+        let inc = incident("LO-1", "Signal failure at Upminster", "Signal failure causing delays at Upminster.", &["LO"], &["UPM"]);
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["overground-liberty".to_string()]));
@@ -376,12 +376,12 @@ mod tests {
         let inc = incident("LO-7", "Signal failure at Canonbury", "Signal failure causing delays at Canonbury.", &["LO"], &["CNN"]);
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert!(matched_ids.contains("overground-mildmay"));
-        assert!(matched_ids.contains("overground-windrush"));
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["overground-mildmay".to_string(), "overground-windrush".to_string()])
+        );
         for m in &matches {
-            if m.line.id.starts_with("overground-") {
-                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
-            }
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
         }
     }
 }

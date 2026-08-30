@@ -3,6 +3,7 @@ name = "Windrush line"
 mode = "national-rail"
 category = "commuter"
 operators = ["LO"]
+sample_stations = ["HHY", "SQE", "NWX", "CYP", "WCY", "CLJ"]
 
 # Former East London line (extended). Core from the shared Canonbury
 # curve down to Surrey Quays, then four branches: New Cross (direct); a
@@ -10,6 +11,14 @@ operators = ["LO"]
 # into Crystal Palace and West Croydon; and a separate Clapham Junction
 # branch from Surrey Quays. Each branch/trunk is its own `[[stations]]`
 # block, ordered geographically within itself, per SCHEMA's curation rule.
+#
+# NOTE: this file models more than one physical branch in a single
+# `stations` list. If a future "incident affects stations between A and B"
+# range-parser is ever built per `lines/SCHEMA.md`'s ordering rule, it must
+# not assume the whole list is one single physical sequence — a range query
+# spanning a branch boundary (e.g. mixing the Crystal Palace and West
+# Croydon branch stations) would incorrectly sweep through the other
+# branch's stations too.
 #
 # `overground-canonbury-curve`: this line and `overground-mildmay` both
 # call at Highbury & Islington (HHY) and Canonbury (CNN) — the real curve
@@ -23,7 +32,8 @@ operators = ["LO"]
 # for the same explanation from that file's side, kept consistent with
 # this one (same CRS codes, same segment string), matching this
 # catalogue's cross-file citation convention used elsewhere (e.g.
-# `lines/wcml-north-wales.toml`/`lines/tfw-north-wales-coast.toml`).
+# `lines/elizabeth-shenfield.toml`'s note on the `elizabeth-line`/
+# `elizabeth-central` shared-segment convention).
 #
 # Battersea Park, on the Clapham Junction branch, receives a reduced/
 # limited service compared to the line's other four termini (New Cross,
@@ -88,7 +98,7 @@ role = "minor"
 segment = "overground-windrush-core"
 
 [[stations]]
-crs = "WAP"
+crs = "WPE"
 role = "minor"
 segment = "overground-windrush-core"
 

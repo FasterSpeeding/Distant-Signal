@@ -3,6 +3,7 @@ name = "Lioness line"
 mode = "national-rail"
 category = "commuter"
 operators = ["LO"]
+sample_stations = ["EUS", "WMB", "HRW", "WFJ"]
 
 # The former Watford DC line, Euston to Watford Junction, 19 stations.
 #
@@ -32,12 +33,12 @@ role = "terminus"
 segment = "overground-lioness"
 
 [[stations]]
-crs = "KBH"
+crs = "SOH"
 role = "minor"
 segment = "overground-lioness"
 
 [[stations]]
-crs = "SOH"
+crs = "KBN"
 role = "minor"
 segment = "overground-lioness"
 
@@ -67,22 +68,22 @@ role = "minor"
 segment = "overground-lioness"
 
 [[stations]]
-crs = "NWB"
-role = "minor"
-segment = "overground-lioness"
-
-[[stations]]
 crs = "WMB"
 role = "major"
 segment = "overground-lioness"
 
 [[stations]]
-crs = "KNT"
+crs = "NWB"
 role = "minor"
 segment = "overground-lioness"
 
 [[stations]]
 crs = "SOK"
+role = "minor"
+segment = "overground-lioness"
+
+[[stations]]
+crs = "KNT"
 role = "minor"
 segment = "overground-lioness"
 

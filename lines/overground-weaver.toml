@@ -3,12 +3,20 @@ name = "Weaver line"
 mode = "national-rail"
 category = "commuter"
 operators = ["LO"]
+sample_stations = ["LST", "HAC", "ENF", "CHN", "CHI"]
 
 # Former Lea Valley lines. A trunk from Liverpool Street splits into three
 # branches (Enfield Town, Cheshunt, Chingford); the Enfield Town and
 # Cheshunt branches themselves share a sub-trunk out to Edmonton Green.
 # Each branch/trunk is its own `[[stations]]` block, ordered geographically
 # within itself, per SCHEMA's curation rule.
+#
+# NOTE: this file models more than one physical branch in a single
+# `stations` list. If a future "incident affects stations between A and B"
+# range-parser is ever built per `lines/SCHEMA.md`'s ordering rule, it must
+# not assume the whole list is one single physical sequence — a range query
+# spanning a branch boundary (e.g. mixing Enfield Town and Chingford branch
+# stations) would incorrectly sweep through the other branch's stations too.
 #
 # The Enfield Town/Cheshunt sub-trunk sharing is internal to this one line
 # and file — SCHEMA's segment-sharing mechanism only cares about sharing

@@ -3,6 +3,7 @@ name = "Liberty line"
 mode = "national-rail"
 category = "commuter"
 operators = ["LO"]
+sample_stations = ["RMF", "EMP", "UPM"]
 
 # The former Romford to Upminster line — the line's own historic name,
 # now branded Liberty after London Overground's Nov 2024 line-naming
@@ -30,6 +31,6 @@ role = "minor"
 segment = "overground-liberty"
 
 [[stations]]
-crs = "UMN"
+crs = "UPM"
 role = "terminus"
 segment = "overground-liberty"
