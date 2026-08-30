@@ -447,4 +447,64 @@ mod tests {
             assert_eq!(m.scope, expected, "{} scope mismatch", m.line.id);
         }
     }
+
+    #[test]
+    fn grand_central_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Sunderland sits on `gc-sunderland`, exclusive to `grand-central` —
+        // no other line in this catalogue reaches Sunderland, so this should
+        // stay exclusive and not propagate anywhere else. Per the task
+        // brief, no shared-trunk test against `lner-ecml.toml` (or any other
+        // LNER file) is required for Grand Central: the plan is explicit
+        // that Grand Central's relationship to LNER is station-overlap-only
+        // (shared at King's Cross/Peterborough/Doncaster/York, none of which
+        // this test touches), not a forced shared segment.
+        let inc = incident(
+            "GC-1",
+            "Signal failure at Sunderland",
+            "Signal failure causing delays to services at Sunderland.",
+            &["GC"],
+            &["SUN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["grand-central".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn grand_central_internal_trunk_segment_stays_exclusive() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Doncaster is on `gc-trunk-kings-cross`, the internal trunk Grand
+        // Central's own Sunderland and Bradford Interchange branches share
+        // before diverging (mirroring how `swr-south-west-main.toml` shares
+        // a trunk with other SWR files) — except here the trunk is entirely
+        // self-contained within this one file, so `gc-trunk-kings-cross` is
+        // never "shared" per `SegmentRegistry::is_shared` (that requires
+        // more than one *line*, and `grand-central` is the only line using
+        // this segment name). This is the same-file, self-contained
+        // propagation check the task brief calls for: an incident on the
+        // internal trunk still resolves `grand-central` with
+        // `ExclusiveSegment` scope, confirming both branches' shared
+        // stations are correctly tagged.
+        //
+        // Doncaster is also a real station on `lner-ecml`, `lner-leeds`,
+        // `lner-hull` and `cross-country` (their own, differently-named
+        // segments) — those lines are expected to match too by station, but
+        // that overlap is already covered by this file's own
+        // `lner_*_doncaster_shared_trunk_propagates_to_ecml` tests, so it's
+        // not re-asserted here.
+        let inc = incident(
+            "GC-2",
+            "Points failure at Doncaster",
+            "Points failure causing disruption to services through Doncaster.",
+            &["GC"],
+            &["DON"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let gc_match = matches.iter().find(|m| m.line.id == "grand-central").expect("grand-central should match on its own trunk station");
+        assert_eq!(gc_match.scope, MatchScope::ExclusiveSegment);
+    }
 }
