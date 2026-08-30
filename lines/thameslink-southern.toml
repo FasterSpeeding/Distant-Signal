@@ -73,19 +73,31 @@ delay_threshold_minutes = 4
 #
 # For the two flagged coordination questions (see BRIGHTON and SEVENOAKS
 # sections below), a genuine non-Wikipedia second source was also sought,
-# per COMMON.md's bar - thetrainline.com's own live journey-planner pages
+# per COMMON.md's bar. thetrainline.com's own live journey-planner pages
 # (an independent commercial source drawing on the National Rail timetable
 # feed, not another Wikipedia article) confirmed real, current, bookable
-# direct services for both: "Direct trains available" London Bridge-
-# Brighton (~81/day, operated by Southern and Thameslink) and London
-# Blackfriars-Sevenoaks (~39/day, operated by Thameslink). GTR's own
-# thameslinkrailway.com (both its network-map page and the specific
+# direct services exist for both routes: "Direct trains available" London
+# Bridge-Brighton (~81/day, operated by Southern and Thameslink) and London
+# Blackfriars-Sevenoaks (~39/day, operated by Thameslink). NOTE, on review:
+# thetrainline.com is NOT one of COMMON.md's four approved second-source
+# categories ("railwaycodes.org.uk, Network Rail's own route pages,
+# National Rail Enquiries, or the TOC's own site") and only shows
+# service-existence, not physical track-sharing/calling-pattern facts - it
+# does NOT clear the bar for the Brighton coordination claim (see BRIGHTON
+# section below for the corrected finding; the Sevenoaks/Chatham finding
+# does not depend on it either way, since that stretch was already treated
+# as station-overlap-only for an unrelated, independent granularity
+# reason - see SEVENOAKS section below). GTR's own thameslinkrailway.com
+# (both its network-map page and the specific
 # timetables.thameslinkrailway.com citation URLs Wikipedia's own "Thameslink"
 # article uses) returned HTTP 403/loading-only content for every URL tried,
 # same block southern-brighton-main-line.toml's own SOURCING note already
 # recorded; nationalrail.co.uk's own station-details pages confirm only the
 # managing operator, not route/calling-pattern prose, also matching that
-# file's own finding.
+# file's own finding. No genuine second source of the required type was
+# found for either the Brighton or the Sevenoaks/Chatham track-sharing
+# claim - both are documented as Wikipedia-sourced leads, not confirmed
+# facts, matching this batch's disclosure convention.
 #
 # ============================================================================
 # CORE BOUNDARY - Blackfriars, not "south of London Bridge"
@@ -106,7 +118,7 @@ delay_threshold_minutes = 4
 # BFR and Elephant & Castle (EPH, the point where Sevenoaks and Sutton Loop
 # split from each other) are both genuinely shared by both of THIS file's
 # OWN branches, so per the shared-trunk rule of thumb they sit on one
-# internal segment (`thameslink-southern-widened-lines`) - not shared with
+# internal segment (`thameslink-southern-trunk`) - not shared with
 # any other file (a name unique to this file), but correctly marking an
 # incident there as affecting both of this file's own branches together
 # rather than exclusively one.
@@ -114,14 +126,14 @@ delay_threshold_minutes = 4
 crs = "BFR"
 tiploc = "BLCKFRS"
 role = "junction"
-segment = "thameslink-southern-widened-lines"
+segment = "thameslink-southern-trunk"
 # Blackfriars. Station overlap only with thameslink-core.toml's own
 # `thameslink-core` segment - see CORE BOUNDARY above.
 
 [[stations]]
 crs = "EPH"
 role = "junction"
-segment = "thameslink-southern-widened-lines"
+segment = "thameslink-southern-trunk"
 # Elephant & Castle. Sevenoaks and Sutton Loop branches split from each
 # other here (see below); Brighton branch does not touch this station at
 # all (it runs via London Bridge instead - see BRIGHTON below).
@@ -501,33 +513,61 @@ segment = "thameslink-sutton-loop"
 
 # ============================================================================
 # BRIGHTON BRANCH - Task 5.6 coordination (London Bridge/Windmill Bridge
-# Jn/East Croydon): CONFIRMED on independent re-verification, clearing this
-# batch's two-source bar. `southern-bml-north` is reused verbatim for the
-# specific stretch that was actually asked for (see EXTENSION below for why
-# `southern-bml-south`, further south, is NOT also reused).
+# Jn/East Croydon): REVISED after review - does NOT clear this batch's
+# two-source bar after all. `southern-bml-north` is NOT reused; this whole
+# branch (LBG through BTN) uses this file's own segment name,
+# `thameslink-brighton`, station overlap only against
+# southern-brighton-main-line.toml.
 # ============================================================================
-# southern-brighton-main-line.toml's own SEGMENT NAMING comment flags its
-# "Bedford to Brighton via London Bridge" finding as Wikipedia-only and
-# below this batch's confirmation bar, and explicitly asks this file to
-# independently re-verify from scratch against a proper second source
-# before reusing `southern-bml-north`. Done here: Wikipedia's "Thameslink"
-# article gives the same calling pattern that file found (East Croydon,
-# Gatwick Airport, Three Bridges, Haywards Heath, Burgess Hill, Hassocks,
-# Preston Park), independently corroborated by a SEPARATE Wikipedia article,
-# "East Croydon railway station" ("4 trains per hour to Bedford via London
-# Bridge" and, separately, "4 trains per hour to Brighton" - the same
-# service's two direction-labels, with the Brighton-bound figure carrying no
-# "via Redhill" qualifier, unlike this station's other, unrelated Thameslink
-# services to Three Bridges/Horsham/Gatwick Airport which explicitly are
-# "via Redhill" - i.e. a different route not on this file's own list, see
-# below), AND - clearing COMMON.md's actual bar, a non-Wikipedia source -
-# thetrainline.com's own live journey-planner page, which confirms ~81
-# direct London Bridge-Brighton trains/day operated by "Southern" and
-# "Thameslink" (see SOURCING above). This clears the bar Task 5.6 itself
-# could not clear (it had only a single Wikipedia article for this specific
-# finding) - `southern-bml-north` is reused verbatim below for LBG/ECR only
-# (see PAST EAST CROYDON below for why sharing is NOT also asserted further
-# south, even though this file's own stations continue there).
+# An earlier draft of this file reused `southern-bml-north` verbatim for
+# LBG/ECR, reasoning that thetrainline.com's live journey-planner page
+# (confirming ~81 direct daily London Bridge-Brighton trains, operated by
+# Southern and Thameslink) was a qualifying non-Wikipedia second source.
+# On review this was wrong, for two reasons:
+#   1. COMMON.md's approved second-source list is a closed set -
+#      "railwaycodes.org.uk, Network Rail's own route pages, National Rail
+#      Enquiries, or the TOC's own site" - and a commercial ticket retailer
+#      is none of those four categories. Arguing thetrainline.com "should"
+#      count because it draws on the same underlying timetable data is an
+#      argument for expanding the approved list, not a citation showing it
+#      is already on it.
+#   2. Even setting that aside, what thetrainline.com actually shows is a
+#      service-existence/operator-brand fact (this route exists, run by
+#      these two operators) - it doesn't attest physical track sharing, the
+#      calling pattern, or the Quarry-line-vs-via-Redhill alignment
+#      question. The actual route claim was still really being carried by
+#      Wikipedia's "Thameslink" article plus a second Wikipedia article
+#      ("East Croydon railway station") - exactly the combination COMMON.md
+#      rules out.
+#
+# Two sibling tasks already tried and failed to clear this exact bar for
+# this exact claim: southern-brighton-main-line.toml's own SOURCING note
+# documents four failed non-Wikipedia source attempts (nationalrail.co.uk
+# had no route prose, gatwickexpress.com/southernrailway.com/
+# thameslinkrailway.com all returned HTTP 403, networkrail.co.uk 404'd,
+# railwaycodes.org.uk's CRS/ELR tables are codes-and-mileage only) before
+# falling back to a Wikipedia-only, explicitly-unconfirmed finding.
+# southern-oxted-uckfield.toml went further and explicitly distinguished
+# nationalrail.co.uk as a genuine second source for station-identity facts
+# but NOT for service-pattern facts, declining to share a segment at this
+# same corridor on that basis. This file was asserting sharing that both
+# siblings, using the same or stronger sourcing, explicitly declined to
+# assert - so the SharedSegment claim is withdrawn.
+#
+# The gap analysis's own framing ("almost certainly a shared-trunk segment
+# once both exist") is a conjecture, not a stated fact, and doesn't
+# independently license the claim either.
+#
+# Per southern-brighton-main-line.toml's own fallback instruction for
+# exactly this outcome ("state that plainly and treat LBG/East Croydon as
+# station overlap only, same as southeastern-metro-north-kent.toml does
+# today for its own unconfirmed stretch"), this branch is treated the same
+# way this file's own Sevenoaks branch already treats the Lewisham
+# question: real service exists (confirmed - Wikipedia's "Thameslink"
+# article plus the East Croydon infobox both independently describe it),
+# but genuine PHYSICAL TRACK SHARING with southern-brighton-main-line.toml
+# is not confirmed to this batch's required bar, so it is not modelled as
+# one.
 #
 # Windmill Bridge Junction itself (per southern-brighton-main-line.toml's
 # own comment, sourced from Wikipedia's "Quarry line" article) has no CRS
@@ -536,59 +576,47 @@ segment = "thameslink-sutton-loop"
 crs = "LBG"
 tiploc = "LNDNBDG"
 role = "junction"
-segment = "southern-bml-north"
+segment = "thameslink-brighton"
 # London Bridge. Also thameslink-core.toml's own terminus (station overlap
 # only there, different segment name - see CORE BOUNDARY above) and
 # southeastern-metro-north-kent.toml's/southeastern-main-line.toml's/
 # southeastern-hayes-line.toml's/southern-oxted-uckfield.toml's own station
-# (station overlap only with all four, unaffected by this file - see
-# SEVENOAKS BRANCH above for why this file's own Sevenoaks branch does NOT
-# reuse southeastern-metro-north-kent.toml's own LBG-area segment name).
-# GENUINELY shared with southern-brighton-main-line.toml specifically - see
-# above.
+# (station overlap only with all four - see SEVENOAKS BRANCH above for why
+# this file's own Sevenoaks branch does NOT reuse
+# southeastern-metro-north-kent.toml's own LBG-area segment name either).
+# Also southern-brighton-main-line.toml's own station - station overlap
+# only, NOT a shared segment - see above for why the earlier draft's
+# SharedSegment claim here was withdrawn.
 
 [[stations]]
 crs = "ECR"
 role = "junction"
-segment = "southern-bml-north"
-# East Croydon. Junction station per the shared-trunk rule of thumb
-# (SCHEMA.md) - stays on the shared segment; the exclusive/extended-shared
-# stretch below starts at the next station.
+segment = "thameslink-brighton"
+# East Croydon. Also southern-brighton-main-line.toml's own station (its
+# own `southern-bml-north` segment) and southern-oxted-uckfield.toml's own
+# station (its own `oxted-trunk` segment) - station overlap only with both,
+# see above.
 
 # ============================================================================
 # PAST EAST CROYDON - this branch's real terminus is Brighton, not East
 # Croydon, so its own stations have to be listed all the way there (the
-# curation rules require ordering stations end to end) - but the shared-
-# segment REUSE stops at `southern-bml-north`/East Croydon, matching
-# exactly what Task 5.6's hand-off asked this file to verify and no
-# further.
+# curation rules require ordering stations end to end). The whole branch,
+# LBG through BTN, is one segment (`thameslink-brighton`), matching the
+# precedent thameslink-bedford.toml/thameslink-cambridge.toml already set
+# of using a single segment name for a branch's entire length including its
+# own core-boundary station.
 #
-# There IS suggestive evidence this sharing continues past East Croydon
-# too: East Croydon's own Wikipedia infobox separately lists "4 trains per
-# hour to Brighton" alongside the "4 tph to Bedford via London Bridge"
-# figure already used above (the same service's two direction-labels), with
-# no "via Redhill" qualifier - unlike this station's other, unrelated
-# Thameslink services to Three Bridges/Horsham/Gatwick Airport, which
-# explicitly ARE "via Redhill" - suggesting the Brighton-bound service stays
-# on the same direct/fast alignment southern-brighton-main-line.toml's own
-# `southern-bml-south` segment models (GTW, TBD, HHE, BUG, HSK, PRP, BTN),
-# and thetrainline.com's own London Bridge-Brighton confirmation (above)
-# covers the whole journey, not just as far as East Croydon.
-#
-# This is genuinely beyond what this task was asked to verify though
-# ("noted for your awareness, not something you're required to chase" -
-# southern-brighton-main-line.toml's own CAVEAT), and reusing
-# `southern-bml-south` here would ripple into several of that file's own
-# already-committed regression tests that currently assert it as EXCLUSIVE
-# to southern-brighton-main-line (e.g. Hassocks, Preston Park, Brighton
-# itself) - a footprint well beyond this task's own scoped mandate to
-# verify one specific stretch. So: NOT reused. This file's own stations
-# below use their own segment name instead, station overlap only against
-# `southern-bml-south` - the lead above is documented here for a future
-# task/controller to pick up and verify to this batch's bar, not acted on,
-# matching the "noted, not acted on" pattern already used elsewhere in this
-# file (Otford/Sevenoaks spur, Sutton Loop/Southern overlap) for real but
-# out-of-scope overlaps.
+# East Croydon's own Wikipedia infobox separately lists "4 trains per hour
+# to Brighton" alongside the "4 tph to Bedford via London Bridge" figure
+# (the same service's two direction-labels), with no "via Redhill"
+# qualifier - unlike this station's other, unrelated Thameslink services to
+# Three Bridges/Horsham/Gatwick Airport, which explicitly ARE "via
+# Redhill" - suggesting the Brighton-bound service stays on the same
+# direct/fast alignment southern-brighton-main-line.toml's own
+# `southern-bml-south` segment models (GTW, TBD, HHE, BUG, HSK, PRP, BTN).
+# This is the same evidentiary situation as the LBG/ECR stretch above
+# though (Wikipedia-only, no qualifying second source found), so it is not
+# modelled as shared either, for the same reason.
 [[stations]]
 crs = "GTW"
 role = "major"

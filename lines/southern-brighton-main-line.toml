@@ -117,22 +117,23 @@ match_keywords = ["Brighton Main Line", "Gatwick Express"]
 # not listed as a [[stations]] entry - only LBG and ECR (its two real-
 # station endpoints) are.
 #
-# Segment name PROPOSED for this stretch: `southern-bml-north` (covering LBG
-# and ECR below). This is a candidate name only, not a confirmed shared
-# trunk - no test in this file asserts SharedSegment for it, and none
-# should be added anywhere in this catalogue until the underlying fact is
-# actually confirmed. Task 5.14's implementer MUST NOT take this file's
-# finding as pre-verified: independently re-verify the Thameslink
-# LBG-East Croydon-Brighton working from scratch against a proper second
-# source (nationalrail.co.uk had no route prose and thameslinkrailway.com
-# blocked automated fetches for this task - a live session, a different
-# fetch tool, or a timetable/PDF source may fare better) before reusing
-# `southern-bml-north`
-# verbatim or asserting a genuine shared trunk. If Task 5.14 also can't
-# clear the bar, follow the same rule this file follows: state that plainly
-# and treat LBG/East Croydon as station overlap only, same as
-# southeastern-metro-north-kent.toml does today for its own unconfirmed
-# stretch.
+# OUTCOME (Task 5.14, lines/thameslink-southern.toml): still NOT confirmed
+# to this batch's required bar. Task 5.14 re-verified this working from
+# scratch and found thetrainline.com's live journey-planner page (confirming
+# real, current, bookable direct London Bridge-Brighton services), but that
+# source is not one of COMMON.md's four approved second-source categories
+# and only shows service-existence, not physical track-sharing - so it does
+# not clear the bar either. `southern-bml-north` (covering LBG and ECR
+# below) therefore remains this file's own segment name only; it was NOT
+# reused by thameslink-southern.toml, which instead treats its own LBG/ECR
+# stations as station overlap only, matching this file's own fallback
+# instruction and the same treatment southeastern-metro-north-kent.toml
+# already gives its own unconfirmed Lewisham stretch. See
+# thameslink-southern.toml's own BRIGHTON BRANCH header comment for the full
+# writeup of what was tried and why it still doesn't clear the bar. No test
+# in this file or thameslink-southern.toml asserts SharedSegment for this
+# stretch, and none should be added anywhere in this catalogue until the
+# underlying fact is actually confirmed by a qualifying source.
 #
 # CAVEAT/lead for Task 5.14 (equally unconfirmed): the same Wikipedia
 # "Thameslink" article and East Croydon's own infobox ("2 tph to Three
