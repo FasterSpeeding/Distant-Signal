@@ -93,21 +93,29 @@ delay_threshold_minutes = 10
 #    Per the rule of thumb, Inverness through Dingwall (inclusive) is
 #    tagged `scotrail-inverness-dingwall-trunk` -- a deliberately
 #    line-neutral name (mirroring `swr-trunk-waterloo`'s naming pattern:
-#    named for the shared geography, not for either owning line) so that
-#    Task 10.7, when it independently confirms this same topology, can
-#    reuse this exact string for its own Inverness-Dingwall station
-#    entries and get real shared-trunk propagation for free. Today, before
-#    `lines/scotrail-kyle.toml` exists, this segment has exactly one user
-#    (this file), so `SegmentRegistry::is_shared` correctly reports it as
-#    *not* shared yet -- see the matcher.rs test comments for how this is
-#    handled without asserting a propagation behaviour this file alone
-#    cannot produce.
+#    named for the shared geography, not for either owning line), reserved
+#    here so that Task 10.7's Kyle of Lochalsh Line could reuse this exact
+#    string for its own Inverness-Dingwall station entries and get real
+#    shared-trunk propagation for free.
 #
-#    NOTE for Task 10.7: do not reuse this segment name past Dingwall --
-#    stations north of Dingwall (Alness onward) are Far-North-exclusive
-#    track the Kyle Line never touches; tagging them with this shared name
-#    would incorrectly propagate a Far-North-only incident (e.g. at
-#    Georgemas Junction) onto the Kyle Line.
+#    UPDATE (Task 10.7, now merged): `lines/scotrail-kyle.toml` did
+#    independently confirm this same topology (see its own Sources
+#    comments) and reused this exact segment name. `SegmentRegistry::
+#    is_shared` now correctly reports this segment shared between
+#    `scotrail-far-north` and `scotrail-kyle`, and
+#    `scotrail_shared_inverness_dingwall_trunk_incident_propagates` in
+#    `crates/aggregator/src/matcher.rs` asserts the resulting
+#    `MatchScope::SharedSegment` propagation for both lines. Per the note
+#    below, `lines/scotrail-kyle.toml` does not reuse this segment name
+#    past Dingwall -- its own exclusive track (Garve onward) is tagged
+#    `scotrail-kyle-exclusive` instead.
+#
+#    (Original note for Task 10.7, kept for history:) do not reuse this
+#    segment name past Dingwall -- stations north of Dingwall (Alness
+#    onward) are Far-North-exclusive track the Kyle Line never touches;
+#    tagging them with this shared name would incorrectly propagate a
+#    Far-North-only incident (e.g. at Georgemas Junction) onto the Kyle
+#    Line.
 #
 # 2. Georgemas Junction: confirmed via Wikipedia's "Georgemas Junction
 #    railway station" article as "the northernmost railway junction in the
@@ -403,9 +411,10 @@ segment = "scotrail-far-north-thurso"
 # === Scope boundaries (documented, not modelled) ===
 #
 # - Kyle of Lochalsh Line (Dingwall-Kyle via Inverness): real, sourced
-#   above, assigned to Task 10.7 of this same batch. Not modelled as its
-#   own file here; only the shared Inverness-Dingwall trunk segment name
-#   is prepared for it to reuse (see the segment-structure note above).
+#   above, now its own file (`lines/scotrail-kyle.toml`, Task 10.7,
+#   merged), which reused this file's `scotrail-inverness-dingwall-trunk`
+#   segment name after independently confirming the same topology (see
+#   the segment-structure note above).
 # - Highland Main Line, Aberdeen-Inverness Line: real, already covered
 #   (Highland Main Line, Task 10.5, merged) or pending (Aberdeen-Inverness,
 #   Task 10.10) elsewhere in this batch. Confirmed via this file's own
