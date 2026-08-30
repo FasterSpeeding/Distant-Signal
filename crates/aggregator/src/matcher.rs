@@ -297,4 +297,30 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["tpe-south".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // No shared-segment-propagation test for tpe-borders: per this task's
+    // own pre-flight scan it has no real overlap with anything else in
+    // the catalogue, including this batch's own tpe-north — the
+    // Newcastle boundary between them is ruled a terminus-to-terminus
+    // handoff, not a shared trunk (mirrors how west-coast-main-line.toml
+    // and xc-manchester.toml treat their own Crewe overlap), and
+    // Edinburgh Waverley's overlap with tpe-anglo-scottish is
+    // station-level only (same precedent xc-manchester.toml set for
+    // shared termini). Genuinely standalone for this assertion.
+    #[test]
+    fn tpe_borders_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TPE-3",
+            "Signal failure at Berwick-upon-Tweed",
+            "Signal failure causing delays to TransPennine Express services at Berwick-upon-Tweed.",
+            &["TP"],
+            &["BWK"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tpe-borders".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
