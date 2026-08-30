@@ -306,4 +306,92 @@ mod tests {
             }
         }
     }
+
+    // `gwr-south-wales`'s (Task 4.3) own exclusive segment covers Bristol
+    // Parkway through Swansea. Bridgend (BGN) is not shared with any other
+    // line's own station list in this catalogue, so this is a clean
+    // ExclusiveSegment case, mirroring
+    // `swr_exclusive_segment_incident_does_not_propagate` /
+    // `gwr_cotswold_exclusive_segment_incident_does_not_propagate`. See
+    // `gwr_south_wales_station_overlap_with_xc_cardiff_stays_exclusive_each_line`
+    // below for the deliberately-not-shared overlap case at Newport/Cardiff
+    // (task-4.3-brief.md's plan-mandated "don't force a shared segment"
+    // decision), and `gwr_trunk_paddington_incident_propagates_to_south_wales`
+    // for the shared-trunk case.
+    #[test]
+    fn gwr_south_wales_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-4", "Overhead line damage at Bridgend", "Overhead line damage causing delays at Bridgend.", &["GW"], &["BGN"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-south-wales".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `gwr-main-line`, `gwr-cotswold` and `gwr-south-wales` all share the
+    // `gwr-trunk-paddington` segment, but only at the stations each file
+    // actually lists on it: gwr-cotswold.toml stops at DID (Cotswold
+    // services diverge onto the Cherwell Valley line there, before Swindon),
+    // while gwr-main-line.toml and gwr-south-wales.toml both continue
+    // through SWI. Didcot Parkway (DID) is therefore the one station all
+    // three files genuinely share, so an incident there should propagate to
+    // all three as a shared-trunk event. Mirrors
+    // `swr_shared_trunk_incident_propagates`'s full-set-assertion shape, now
+    // extended to a third sibling per task-4.3-brief.md's test requirement
+    // #2 (that requirement names Swindon as the example station, but Swindon
+    // is not actually on gwr-cotswold.toml's own station list — see that
+    // file's own segment-naming comment — so Didcot is used here instead to
+    // get a real three-way match rather than a two-way one).
+    #[test]
+    fn gwr_trunk_paddington_incident_propagates_to_south_wales() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-5", "Signal failure at Didcot Parkway", "Signal failure causing delays to GWR services.", &["GW"], &["DID"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["gwr-main-line".to_string(), "gwr-cotswold".to_string(), "gwr-south-wales".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+        }
+    }
+
+    // task-4.3-brief.md's plan-mandated regression guard: Cardiff Central is
+    // a real station overlap between `gwr-south-wales` (this task) and
+    // `xc-cardiff.toml` (already committed) — both lines call there, but via
+    // physically different corridors for most of their length (South Wales
+    // Main Line via Bristol Parkway/Severn Tunnel vs. xc-cardiff's Gloucester
+    // to Newport Line via Chepstow), and per this task's file-scope
+    // restriction (lines/gwr-south-wales.toml + matcher.rs only, not
+    // xc-cardiff.toml) neither file reuses the other's segment name for
+    // NWP/CDF. So an incident at Cardiff Central should match BOTH lines
+    // (real station overlap — each notified about an incident at "their"
+    // station) but EACH must stay `MatchScope::ExclusiveSegment` for its own
+    // segment, never `SharedSegment` — confirming the two lines' overlap
+    // here stays a station-level thing, not a segment-level one. See
+    // gwr-south-wales.toml's own segment-naming comment for the research
+    // this decision is based on (a genuine, not just assumed, finding that
+    // physical track sharing exists further up the corridor at Severn Tunnel
+    // Junction, deliberately not modelled as a shared segment given this
+    // task's file-scope limits).
+    #[test]
+    fn gwr_south_wales_station_overlap_with_xc_cardiff_stays_exclusive_each_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-6", "Points failure at Cardiff Central", "Points failure causing delays at Cardiff Central.", &["GW"], &["CDF"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-south-wales".to_string(), "xc-cardiff".to_string()]));
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should stay ExclusiveSegment (station overlap, not a shared segment)",
+                m.line.id
+            );
+        }
+    }
 }
