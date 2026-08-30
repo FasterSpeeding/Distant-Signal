@@ -323,4 +323,43 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["tpe-borders".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // No shared-segment-propagation test for tpe-north: no segment name it
+    // uses is shared with any other line, including this batch's own
+    // tpe-borders (the Newcastle boundary between them is a
+    // terminus-to-terminus handoff, not a shared trunk — see tpe-north's
+    // own file comments, consistent with tpe-borders's). Genuinely
+    // standalone for that assertion, despite unusually heavy *station*-level
+    // overlap with northern/cross-country/northern-tyne-valley (station
+    // hits alone still produce a `Match` per overlapping line — see below).
+    //
+    // Station choice for the exclusive-segment test below: almost every
+    // principal station on tpe-north's route also appears in another line
+    // file (LIV/NLW/MCV/HUD/LDS/YRK in `northern.toml`, DAR/DHM/YRK also in
+    // `cross-country.toml`, NCL in `cross-country.toml`/
+    // `northern-tyne-valley.toml`/`tpe-borders.toml`), and `match_one`
+    // matches per-line on raw station hits before segment classification —
+    // so an incident at any of those stations would also match those other
+    // lines (each independently as their own ExclusiveSegment, since no
+    // segment *name* collides), failing a "matches only tpe-north"
+    // assertion. Verified by grepping `lines/*.toml`: Chester-le-Street
+    // (CLS) is the one tpe-north station that appears in no other line
+    // file, so it's used here instead of the Darlington/Newcastle choice
+    // this task's brief originally suggested.
+    #[test]
+    fn tpe_north_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TPE-4",
+            "Signal failure at Chester-le-Street",
+            "Signal failure causing delays to TransPennine Express services at Chester-le-Street.",
+            &["TP"],
+            &["CLS"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tpe-north".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
