@@ -10,6 +10,8 @@ import type {
   Suggestion,
   SessionInfo,
   TrackedTrainState,
+  TrackedTrainTicket,
+  DelayRepayEstimateResponse,
 } from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
@@ -183,4 +185,61 @@ export async function getTrackedTrainByUidAndDate(uid: string, date: string): Pr
     `${baseUrl()}/Train/by-uid/${encodeURIComponent(uid)}/${encodeURIComponent(date)}`,
     { cache: 'no-store' },
   );
+}
+
+/** Per-user, session-gated ticket list for one tracked train
+ * (`GET /Train/{trackingId}/tickets`). Same cookie-forwarding pattern as
+ * `getPreferences`/`getSession` (a Server Component's own fetch does not
+ * inherit the incoming request's cookies). Returns `null` on BOTH `401`
+ * and `404` -- deliberately not thrown as `ApiNotFoundError`, since "you're
+ * not the owner of this pin" is an expected, common outcome for a public,
+ * shareable tracked-train page (every non-owner viewer hits this), not an
+ * exceptional one. This collapses two different real conditions (not
+ * logged in at all vs. logged in but not the owner) into one `null` --
+ * `components/TicketPanel.tsx` tells them apart itself by separately
+ * calling the existing `getSession()` first, since widening this
+ * function's own signature would depart from the design spec's own
+ * hand-written contract for it. */
+export async function getTicketsForTrackedTrain(trackingId: number): Promise<TrackedTrainTicket[] | null> {
+  const url = `${baseUrl()}/Train/${trackingId}/tickets`;
+  const cookieHeader = (await cookies()).toString();
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+  });
+  if (response.status === 401 || response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw errorForResponse(url, response);
+  }
+  return response.json() as Promise<TrackedTrainTicket[]>;
+}
+
+/** Per-ticket Delay Repay estimate
+ * (`GET /Train/{trackingId}/tickets/{ticketId}/delay-repay`). Same
+ * cookie-forwarding and null-on-401/404 shape as
+ * `getTicketsForTrackedTrain` above -- called only from within the "you
+ * own this pin" branch `TicketPanel` has already established (see that
+ * component), so a `null` here in practice means the specific ticket id
+ * didn't resolve under this tracking id, a narrower condition than the
+ * top-level list's 401/404 split -- `TicketPanel` treats it as "no
+ * estimate to show for this ticket" rather than failing the whole page. */
+export async function getDelayRepayEstimate(
+  trackingId: number,
+  ticketId: number,
+): Promise<DelayRepayEstimateResponse | null> {
+  const url = `${baseUrl()}/Train/${trackingId}/tickets/${ticketId}/delay-repay`;
+  const cookieHeader = (await cookies()).toString();
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+  });
+  if (response.status === 401 || response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw errorForResponse(url, response);
+  }
+  return response.json() as Promise<DelayRepayEstimateResponse>;
 }
