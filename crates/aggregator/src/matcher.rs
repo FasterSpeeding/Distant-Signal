@@ -232,6 +232,13 @@ mod tests {
         // CrossCountry hub, same precedent xc-south-coast.toml/xc-manchester.toml
         // already documented for Coventry/Stafford/Crewe. It's a real sixth
         // line affected by this incident, just with a different scope.
+        //
+        // `wmr-cross-city.toml` (added after this test was first written) also
+        // passes through Birmingham New Street, on its own exclusive
+        // `wmr-cross-city-trunk` segment -- same station-level-overlap-only
+        // pattern as `wcml-birmingham.toml` above (this task's own brief calls
+        // out this exact precedent). It's a real seventh line affected by this
+        // incident, still ExclusiveSegment.
         assert_eq!(
             matched_ids,
             HashSet::from([
@@ -241,11 +248,12 @@ mod tests {
                 "xc-south-coast".to_string(),
                 "xc-stansted".to_string(),
                 "wcml-birmingham".to_string(),
+                "wmr-cross-city".to_string(),
             ])
         );
         for m in &matches {
-            if m.line.id == "wcml-birmingham" {
-                assert_eq!(m.scope, MatchScope::ExclusiveSegment, "wcml-birmingham should be ExclusiveSegment");
+            if m.line.id == "wcml-birmingham" || m.line.id == "wmr-cross-city" {
+                assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment", m.line.id);
             } else {
                 assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
             }
@@ -443,6 +451,52 @@ mod tests {
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["wmr-snow-hill".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn wmr_cross_city_redditch_branch_exclusive_segment_incident_does_not_propagate() {
+        // Redditch is on the exclusive `wmr-cross-city-redditch` segment,
+        // starting after the Barnt Green junction (per the shared-trunk rule
+        // of thumb) -- this line's only real station-level overlaps with
+        // other catalogue files are at Lichfield Trent Valley, University and
+        // Birmingham New Street, all on the trunk, and none of those are
+        // shared-segment (see `wmr-cross-city.toml`'s own comment) -- so
+        // there's no shared-segment counterpart to assert for this line.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LM-3",
+            "Signal failure at Redditch",
+            "Signal failure causing delays to services at Redditch.",
+            &["LM"],
+            &["RDC"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["wmr-cross-city".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn wmr_cross_city_bromsgrove_branch_exclusive_segment_incident_does_not_propagate() {
+        // Bromsgrove is on the exclusive `wmr-cross-city-bromsgrove` segment,
+        // starting after the same Barnt Green junction as the Redditch branch
+        // above, but tagged with a distinct segment name since it's a
+        // different physical branch (added as a second southern terminus once
+        // electrification reached it in 2018).
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LM-4",
+            "Points failure at Bromsgrove",
+            "Points failure causing delays to services at Bromsgrove.",
+            &["LM"],
+            &["BMV"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["wmr-cross-city".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 }
