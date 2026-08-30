@@ -76,24 +76,31 @@ operators = [
 # on this shared segment; this line's own exclusive segment,
 # `lnwr-northampton`, starts at the next station, Wolverton.
 #
-# NOTE FOR TASK 1.8 (`lines/lnwr-birmingham-crewe.toml`, not yet written
-# when this file was authored): reuse `lnwr-euston-trunk` verbatim for
-# whichever of EUS/WFJ/LBZ/BLY/MKC your file also lists, so the shared
-# segment is real on both sides -- this is what makes an incident at, say,
-# Leighton Buzzard propagate to both LNWR files as `SharedSegment`. One
-# further wrinkle this file deliberately leaves open rather than
-# pre-deciding: source 1(b) above shows the real Birmingham-bound semi-fast
-# also calls at Wolverton and Northampton (this line's own exclusive
-# `lnwr-northampton` segment) on its way through to Long Buckby/Rugby/
-# Coventry/Birmingham -- so if your file also models a Birmingham-via-
-# Northampton working stopping at WOL/NMP, those two stations may belong on
-# a *shared* segment between the two files too (not exclusive to this one),
-# which would mean `lnwr-northampton` should be reused rather than treated
-# as this line's private segment. Evaluate that against whatever station
-# granularity you choose for the Birmingham branch before deciding; don't
-# assume exclusivity here without rechecking.
+# TASK 1.8 RESOLUTION (`lines/lnwr-birmingham-crewe.toml` now exists):
+# `lnwr-euston-trunk` is reused verbatim by that file for EUS/WFJ/LBZ/BLY/MKC,
+# confirming the shared segment on both sides. The WOL/NMP wrinkle this
+# comment used to leave open is resolved too: Task 1.8's own research found
+# that this line's "Euston-Northampton" working is not actually a distinct
+# real-world service -- every LNWR train calling at Wolverton and
+# Northampton continues on to Birmingham New Street (there is no separate
+# short-working terminating at Northampton). So WOL/NMP are physically run
+# by the exact same trains as `lnwr-birmingham-crewe.toml`'s Birmingham
+# branch, and `lnwr-northampton` is a genuinely SHARED segment between the
+# two files, not exclusive to this one -- see that file's own comment for
+# the full derivation and sourcing. NMP's `role` below has been updated
+# from "terminus" to reflect that it is not, in reality, the end of the
+# line (this file simply stops modelling the working there, per the Task
+# 1.7/1.8 split); the segment name itself is unchanged.
 
 destination_crs_filter = ["NMP"]
+# CAVEAT (flagged by Task 1.8's research, not changed here -- out of that
+# task's scope, which was the WOL/NMP segment question, not this file's
+# LDBWS-sampling design): since no real-world working actually terminates
+# at Northampton (see the resolution note above), an LDBWS lookup at
+# EUS/MKC would report `destination_crs = "BHM"` (or "CRE") for these
+# trains, not "NMP" -- so this filter may never actually match a real
+# service today. Left as-is pending its own dedicated look, rather than
+# reworking this file's sampling design as a side effect of Task 1.8.
 sample_stations = ["EUS", "MKC", "NMP"]
 # No match_keywords: no confirmed Knowledgebase-used route name for this
 # specific working (the "Northampton Loop Line" name only appears in
@@ -144,8 +151,9 @@ segment = "lnwr-northampton"
 
 [[stations]]
 crs = "NMP"
-role = "terminus"
+role = "major"
 segment = "lnwr-northampton"
-# Some real-world workings continue beyond here to Birmingham New Street
-# via Long Buckby/Rugby/Coventry -- not modelled in this file, see Task 1.8
-# note above.
+# The real-world working continues beyond here to Birmingham New Street via
+# Long Buckby/Rugby/Coventry -- not modelled in this file, see the Task 1.8
+# resolution note above. `role` is "major", not "terminus": this is where
+# this file stops modelling the working, not where the real train ends.

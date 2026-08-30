@@ -239,6 +239,12 @@ mod tests {
         // pattern as `wcml-birmingham.toml` above (this task's own brief calls
         // out this exact precedent). It's a real seventh line affected by this
         // incident, still ExclusiveSegment.
+        //
+        // `lnwr-birmingham-crewe.toml` (added after this test was first
+        // written, Task 1.8) also terminates at Birmingham New Street, on its
+        // own exclusive `lnwr-birmingham` segment -- same station-overlap-only
+        // pattern as the two lines above. It's a real eighth line affected by
+        // this incident, still ExclusiveSegment.
         assert_eq!(
             matched_ids,
             HashSet::from([
@@ -249,10 +255,11 @@ mod tests {
                 "xc-stansted".to_string(),
                 "wcml-birmingham".to_string(),
                 "wmr-cross-city".to_string(),
+                "lnwr-birmingham-crewe".to_string(),
             ])
         );
         for m in &matches {
-            if m.line.id == "wcml-birmingham" || m.line.id == "wmr-cross-city" {
+            if m.line.id == "wcml-birmingham" || m.line.id == "wmr-cross-city" || m.line.id == "lnwr-birmingham-crewe" {
                 assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment", m.line.id);
             } else {
                 assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
@@ -284,6 +291,14 @@ mod tests {
 
     #[test]
     fn wcml_birmingham_exclusive_segment_incident_does_not_propagate() {
+        // `lnwr-birmingham-crewe.toml` (added after this test was first
+        // written, Task 1.8) also calls at Birmingham International, on its
+        // own exclusive `lnwr-birmingham` segment -- station-level overlap
+        // with the Avanti branch, same "overlap is fine, segment-sharing is
+        // a deliberate choice" precedent already exercised elsewhere in this
+        // file (e.g. `xc_hub_incident_propagates_to_every_cross_country_arm`).
+        // It's a real second line affected by this incident, still
+        // ExclusiveSegment (different segment name, no sharing).
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -295,8 +310,13 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["wcml-birmingham".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["wcml-birmingham".to_string(), "lnwr-birmingham-crewe".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment", m.line.id);
+        }
     }
 
     #[test]
@@ -321,6 +341,16 @@ mod tests {
         // also reuses `wcml-midlands` at Rugby -- like `wcml-liverpool.toml`
         // it doesn't diverge from the spine until Crewe -- so it's a real
         // fifth line affected by this incident, still SharedSegment.
+        //
+        // `lnwr-birmingham-crewe.toml` (added after this test was first
+        // written, Task 1.8) also calls at Rugby -- it's the genuine physical
+        // reconvergence point between that file's two internal branches
+        // (Northampton Loop and Trent Valley Line), tagged there with its
+        // own exclusive `lnwr-rugby` segment, deliberately NOT sharing
+        // `wcml-midlands` (same station-overlap-not-segment-sharing
+        // precedent `xc-manchester.toml` already set, per that task's own
+        // brief). It's a real sixth line affected by this incident, but
+        // ExclusiveSegment rather than SharedSegment.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -340,10 +370,15 @@ mod tests {
                 "wcml-manchester".to_string(),
                 "wcml-liverpool".to_string(),
                 "wcml-north-wales".to_string(),
+                "lnwr-birmingham-crewe".to_string(),
             ])
         );
         for m in &matches {
-            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            if m.line.id == "lnwr-birmingham-crewe" {
+                assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment", m.line.id);
+            } else {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
         }
     }
 
@@ -501,15 +536,17 @@ mod tests {
     }
 
     #[test]
-    fn lnwr_euston_commuter_exclusive_segment_incident_does_not_propagate() {
-        // Northampton is on the exclusive `lnwr-northampton` segment,
-        // starting after the Milton Keynes Central junction (per the
-        // shared-trunk rule of thumb) -- Task 1.8's sibling file
-        // (`lines/lnwr-birmingham-crewe.toml`) doesn't exist yet as of this
-        // test, so there's no shared-trunk counterpart to assert yet; see
-        // `lnwr-euston-commuter.toml`'s own comment for the confirmed
-        // LNWR-internal shared-trunk segment name (`lnwr-euston-trunk`,
-        // Euston through Milton Keynes Central) that Task 1.8 should reuse.
+    fn lnwr_northampton_shared_segment_incident_propagates_to_both_lnwr_lines() {
+        // Task 1.8 resolved the WOL/NMP question `lnwr-euston-commuter.toml`
+        // (Task 1.7) deliberately left open: Northampton is on the
+        // `lnwr-northampton` segment, which both LNWR files now use, because
+        // Task 1.8's research found this isn't really two distinct
+        // real-world workings -- every LNWR train calling at Northampton
+        // continues on to Birmingham New Street (see
+        // `lines/lnwr-birmingham-crewe.toml`'s own comment for the full
+        // sourcing). This test replaces the old
+        // `lnwr_euston_commuter_exclusive_segment_incident_does_not_propagate`
+        // test, which asserted ExclusiveSegment here before that resolution.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -521,7 +558,63 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["lnwr-euston-commuter".to_string()]));
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["lnwr-euston-commuter".to_string(), "lnwr-birmingham-crewe".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+        }
+    }
+
+    #[test]
+    fn lnwr_euston_trunk_shared_segment_incident_propagates_to_both_lnwr_lines() {
+        // Leighton Buzzard is on `lnwr-euston-trunk`, the confirmed
+        // LNWR-internal shared-trunk segment (Euston through Milton Keynes
+        // Central) that `lnwr-birmingham-crewe.toml` (Task 1.8) reuses
+        // verbatim from `lnwr-euston-commuter.toml` (Task 1.7) -- see that
+        // file's own comment for the full derivation. Leighton Buzzard
+        // appears in no other catalogued line, so this is a clean two-line
+        // assertion, mirroring `swr_shared_trunk_incident_propagates` and
+        // `xc_hub_incident_propagates_to_every_cross_country_arm`.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LM-6",
+            "Overhead line damage at Leighton Buzzard",
+            "Overhead line damage causing delays to services at Leighton Buzzard.",
+            &["LM"],
+            &["LBZ"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["lnwr-euston-commuter".to_string(), "lnwr-birmingham-crewe".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+        }
+    }
+
+    #[test]
+    fn lnwr_birmingham_crewe_exclusive_segment_incident_does_not_propagate() {
+        // Canley is on the exclusive `lnwr-birmingham` segment (the
+        // Birmingham branch, beyond the Rugby reconvergence point) -- not
+        // shared with any other catalogued line's segment tag, and not
+        // otherwise a station on any other line in the catalogue.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LM-7",
+            "Signal failure at Canley",
+            "Signal failure causing delays to services at Canley.",
+            &["LM"],
+            &["CNL"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["lnwr-birmingham-crewe".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 }
