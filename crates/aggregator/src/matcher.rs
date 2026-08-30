@@ -351,4 +351,26 @@ mod tests {
             }
         }
     }
+
+    // `lines/northern-esk-valley.toml` (Task 8.5) is a genuinely standalone
+    // line per the gap analysis ("entirely separate from anything currently
+    // modelled") - no other line in this catalogue shares any track with
+    // it, so there is no shared-trunk regression test to write, only the
+    // exclusive-segment one below.
+    #[test]
+    fn esk_valley_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-7",
+            "Signal failure at Glaisdale",
+            "Signal failure causing delays on the Esk Valley Line at Glaisdale.",
+            &["NT"],
+            &["GLS"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-esk-valley".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
