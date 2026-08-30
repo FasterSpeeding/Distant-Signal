@@ -1080,4 +1080,76 @@ mod tests {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
         }
     }
+
+    // Task 5.12 (thameslink-bedford.toml). This file's `mml-bedford-
+    // st-pancras` segment (Kentish Town through Bedford) is named and
+    // documented, per this file's own header comment, as the segment
+    // Batch 7's EMR Midland Main Line file is required to cite and reuse
+    // verbatim for its own Bedford-St Pancras section - but that sibling
+    // file doesn't exist in this worktree yet, so no SharedSegment test for
+    // that pairing is added here (would fail to compile/pass without the
+    // sibling). Until that file exists and reuses the name, this segment is
+    // exclusive to this line alone: an incident at Harpenden, a station on
+    // that segment untouched by any other curated line, should stay
+    // exclusive to this line - mirrors
+    // swr_exclusive_segment_incident_does_not_propagate and
+    // elizabeth_branch_incident_stays_on_its_branch above.
+    #[test]
+    fn thameslink_bedford_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TL-1",
+            "Signal failure at Harpenden",
+            "Signal failure causing delays to train services.",
+            &["TL"],
+            &["HPD"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["thameslink-bedford".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 5.12. St Pancras International (STP) is where this file's
+    // northern branch meets thameslink-core.toml's own terminus, and is
+    // also southeastern-highspeed.toml's own terminus (`hs1-domestic`).
+    // Per this file's own SEGMENT NAMING header comment, this is
+    // deliberately kept as station overlap only in every direction: this
+    // file's own `mml-bedford-st-pancras` segment name is NOT reused by
+    // thameslink-core (whose `thameslink-core` segment also covers
+    // Farringdon/City Thameslink/Blackfriars/London Bridge, none of which
+    // this branch file touches - reusing the name verbatim would
+    // incorrectly mark those untouched stations SharedSegment too, exactly
+    // the trap southeastern-highspeed.toml's own header comment already
+    // flags for `seml-coast`/`chatham-medway`). Confirms an incident at STP
+    // matches all three lines independently, each still scoped
+    // ExclusiveSegment, never SharedSegment - mirrors
+    // afk_station_overlap_matches_both_seml_and_hs1_as_independent_exclusive_segments
+    // above.
+    #[test]
+    fn stp_station_overlap_matches_thameslink_core_bedford_and_highspeed_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TL-2",
+            "Signal failure at St Pancras International",
+            "Signal failure causing delays to train services.",
+            &["TL"],
+            &["STP"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "thameslink-core".to_string(),
+                "thameslink-bedford".to_string(),
+                "southeastern-highspeed".to_string(),
+            ])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
 }
