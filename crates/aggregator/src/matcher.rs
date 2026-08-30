@@ -266,4 +266,56 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["emr-midland-main-line".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // `lines/emr-regional.toml` (Batch 7, Task 7.2): exclusive-segment check
+    // on the Erewash Valley stretch (Alfreton), which - per that file's
+    // Ruling 3 comment - is station-overlap-only with
+    // `emr-midland-main-line.toml`'s Nottingham spur, not a shared segment.
+    #[test]
+    fn emr_regional_erewash_incident_stays_on_its_own_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("EMRR-1", "Signal failure at Alfreton", "Signal failure causing delays to services at Alfreton.", &["EM"], &["ALF"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["emr-regional".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Same file, Ruling 2: Chesterfield-Sheffield genuinely shares Midland
+    // Main Line trackage with `emr-midland-main-line.toml`'s `emr-mml-north`
+    // segment, so an incident there should propagate to both lines as
+    // SharedSegment. `cross-country.toml` also lists CHD (its own
+    // `xc-yorkshire` segment, per that Sheffield/Chesterfield stretch's
+    // established station-overlap-only precedent) so it legitimately
+    // appears too, as ExclusiveSegment - not asserted away, just not the
+    // focus of this test.
+    #[test]
+    fn emr_regional_chesterfield_incident_shared_with_midland_main_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("EMRR-2", "Points failure at Chesterfield", "Points failure causing delays to services at Chesterfield.", &["EM"], &["CHD"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let by_id: HashMap<String, MatchScope> = matches.iter().map(|m| (m.line.id.clone(), m.scope)).collect();
+        assert_eq!(by_id.get("emr-regional"), Some(&MatchScope::SharedSegment));
+        assert_eq!(by_id.get("emr-midland-main-line"), Some(&MatchScope::SharedSegment));
+    }
+
+    // Same file, Ruling 1: Manchester Piccadilly-Stockport-Sheffield
+    // genuinely shares Hope Valley Line trackage with
+    // `northern-hope-valley.toml`, so an incident there should propagate to
+    // both lines as SharedSegment. `xc-manchester.toml` also lists SPT (its
+    // own `xc-manchester` segment, an unrelated WCML route that merely
+    // passes through the same station) so it legitimately appears too, as
+    // ExclusiveSegment - not asserted away, just not the focus of this test.
+    #[test]
+    fn emr_regional_stockport_incident_shared_with_hope_valley() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("EMRR-3", "Overhead line damage at Stockport", "Overhead line damage causing delays to services at Stockport.", &["EM"], &["SPT"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let by_id: HashMap<String, MatchScope> = matches.iter().map(|m| (m.line.id.clone(), m.scope)).collect();
+        assert_eq!(by_id.get("emr-regional"), Some(&MatchScope::SharedSegment));
+        assert_eq!(by_id.get("northern-hope-valley"), Some(&MatchScope::SharedSegment));
+    }
 }
