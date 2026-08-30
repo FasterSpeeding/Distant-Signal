@@ -339,4 +339,47 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["scotrail-ayrshire".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 10.4 (ScotRail Fife Circle + Borders Railway): this file
+    // bundles two genuinely separate routes with distinct segment-name
+    // prefixes (`scotrail-fife-circle*` / `scotrail-borders`), neither of
+    // which is shared with any other `lines/*.toml` file today (see
+    // `lines/scotrail-fife-borders.toml`'s own comments on why the
+    // Edinburgh Waverley/Haymarket overlap with `scotrail-central-belt`
+    // isn't modelled as a shared segment) -- so, mirroring Task 10.3's
+    // two-exclusive-segments treatment, one exclusive-segment
+    // non-propagation assertion per route, not a shared-segment one.
+    #[test]
+    fn scotrail_fife_circle_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-5",
+            "Signal failure at Kirkcaldy",
+            "Signal failure causing delays to ScotRail services at Kirkcaldy.",
+            &["SR"],
+            &["KDY"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-fife-borders".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn scotrail_borders_railway_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-6",
+            "Points failure at Galashiels",
+            "Points failure causing delays to ScotRail services at Galashiels.",
+            &["SR"],
+            &["GAL"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-fife-borders".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
