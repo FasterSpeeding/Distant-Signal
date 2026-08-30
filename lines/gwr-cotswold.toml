@@ -32,9 +32,13 @@ match_keywords = ["Cotswold Line"]
 # Charlbury has historically been single-track with passing loops (Wikipedia
 # "Cotswold Line": Charlbury is "the first stop for faster trains over the
 # line" past the redoubled section) — a service reduction or blockage here
-# has an outsized effect versus a frequent double-tracked main line. Mirrors
-# northern-tyne-valley.toml's rationale for a similar rural/no-alternative
-# regional line.
+# has an outsized effect versus a frequent double-tracked main line. The
+# {0.30, 10} pair itself is the dominant catalogue precedent for this
+# situation (also used by cross-country.toml, all four xc-*.toml files, and
+# northern-yorkshire-coast.toml/northern-hope-valley.toml) — not
+# northern-tyne-valley.toml, which actually uses a different override shape
+# (`reduced_service_pct = 0.35`, not a `delay_threshold_minutes` override);
+# corrected here from an earlier draft that miscited it.
 [severity_overrides]
 minor_delays_pct = 0.30
 delay_threshold_minutes = 10
@@ -162,6 +166,30 @@ crs = "PSH"
 tiploc = "PERSHOR"
 role = "minor"
 segment = "gwr-cotswold"
+
+[[stations]]
+crs = "WOP"
+role = "major"
+segment = "gwr-cotswold"
+# Worcestershire Parkway, opened 23 February 2020 (en.wikipedia.org/wiki/
+# Worcestershire_Parkway_railway_station: "opened on 23 February 2020").
+# This file's own inclusion standard ("every station-level article checked
+# states a direct 1 tph to London Paddington service") is met here too: the
+# same article's current off-peak service section states GWR runs "1 train
+# per hour to London Paddington via Oxford" and "1 train per hour to
+# Worcester Shrub Hill (some continuing to Worcester Foregate Street, Great
+# Malvern and Hereford)" — the same onward pattern already documented at the
+# top of this file. It's also a major interchange (CrossCountry's
+# Birmingham-Bristol/Cardiff/Nottingham/Edinburgh routes cross here too, on
+# a separate low-level platform pair), matching this file's own "major" role
+# for a similarly significant interchange (WOS). Geographic position
+# confirmed via the same article's route diagram: preceding station Worcester
+# Shrub Hill, following station Stoulton (an unstaffed location further
+# towards Pershore/Evesham) — i.e. it sits between Pershore and Worcester
+# Shrub Hill on this line, as placed below. TIPLOC not independently
+# verified against railwaycodes.org.uk in this pass (page did not return a
+# result for this station); left unset per this batch's own convention
+# rather than guess.
 
 [[stations]]
 crs = "WOS"

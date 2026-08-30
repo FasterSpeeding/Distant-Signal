@@ -346,6 +346,26 @@ role = "minor"
 segment = "gwr-thames-valley"
 
 [[stations]]
+crs = "NRC"
+role = "minor"
+segment = "gwr-thames-valley"
+# Newbury Racecourse, previously omitted here as non-principal alongside
+# Reading West/Theale/Aldermaston/Midgham/Thatcham (per the comment above and
+# gwr-west-of-england.toml's own scoping note) — but unlike those, this
+# task's re-verification found NRC currently carries a genuine regular
+# scheduled stopping service, not just a race-day-only one. Wikipedia
+# (en.wikipedia.org/wiki/Newbury_Racecourse_railway_station) confirms this is
+# still current, not merely historical: the station is "served by local
+# services operated by Great Western Railway between Reading and Newbury"
+# year-round, with "a regular stopping service... introduced for the
+# station" in 1990 that continues today (passenger-count figures given for
+# as recently as 2023/24), plus extra race-day-only shuttles layered on top.
+# Corrects an earlier draft of this file's own comment (see the Branch 2
+# comment above, "Reading West, Theale, Aldermaston, Midgham, Thatcham,
+# Newbury Racecourse") which wrongly implied NRC was in the same
+# non-principal-omission bucket as those other halts.
+
+[[stations]]
 crs = "NBY"
 tiploc = "NEWBURY"
 role = "terminus"

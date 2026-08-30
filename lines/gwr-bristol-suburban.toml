@@ -259,17 +259,32 @@ segment = "gwr-bristol-weymouth"
 # `xc-south-west`/`gwr-trunk-paddington` earlier in this batch, not a
 # single-waypoint coincidence, and unlike this task's own BTH/BRI finding
 # above, this exact overlap is the one the brief itself directs reusing the
-# sibling's segment name for. `gwr-west-of-england` (established by
-# gwr-west-of-england.toml, Task 4.4) is therefore reused verbatim below
-# for WSB, FRO, BRU and CLC — the whole Westbury-Castle Cary stretch both
-# sourced quotes describe as shared, not just the two named endpoint
-# stations, since Frome and Bruton sit physically between them on that same
-# described stretch (Frome itself sits on what its own page calls "a looped
-# branch" off the through line via Clink Road Junction, rejoining before
-# Witham/Bruton — noted here for completeness, since it's a slightly softer
-# case than Westbury/Castle Cary's own direct station-level confirmation,
-# but still covered by both sources' "as far as Castle Cary"/"share tracks
-# between Westbury and Castle Cary" language for the stretch as a whole).
+# sibling's segment name for.
+#
+# --- Corrected scope: WSB/CLC only, not the whole Westbury-Castle Cary
+#     stretch ---
+#
+# An earlier draft of this file reused gwr-west-of-england.toml's own
+# exclusive segment name, `gwr-west-of-england`, verbatim for WSB, FRO, BRU
+# AND CLC, reasoning that both sourced quotes describe the whole stretch as
+# shared. That was wrong: neither source actually names Frome or Bruton as
+# a shared station, only Westbury and Castle Cary; Frome itself sits on what
+# its own page calls "a looped branch" off the through line via Clink Road
+# Junction, and gwr-west-of-england.toml's own text independently confirms
+# Frome is NOT on its route (reached via Clink Road Junction, off the
+# direct Castle Cary route its own principal expresses use — see that
+# file's own comment). Reusing the sibling's segment name for FRO/BRU also
+# pulled Newbury (NBY), a station gwr-bristol-suburban.toml's own service
+# never reaches, into "shared" status catalogue-wide, since segment sharing
+# is tracked per segment name, not per individual station. Fixed by
+# introducing a new, narrower segment name, `gwr-westbury-castle-cary`,
+# used below ONLY for WSB and CLC — the two stations both sourced quotes
+# actually name, and the only two stations both real services actually
+# call at. Frome and Bruton move onto this file's OWN segment,
+# `gwr-bristol-weymouth` (the segment this file already uses for its other
+# exclusive Bristol-Weymouth-group stations) — they are this line's own
+# exclusive territory, not genuinely shared with gwr-west-of-england.toml at
+# all, consistent with that file's own stated reasoning for excluding Frome.
 # Witham (the historic intermediate station, not the modern junction of the
 # same name) is deliberately excluded — its own Wikipedia infobox confirms
 # it "closed" to passengers in 1966.
@@ -277,7 +292,7 @@ segment = "gwr-bristol-weymouth"
 crs = "WSB"
 tiploc = "WSTBRYW"
 role = "junction"
-segment = "gwr-west-of-england"
+segment = "gwr-westbury-castle-cary"
 # This line's own approach joins the shared Reading to Taunton Line/Heart of
 # Wessex trunk here (see comment above). Row's tiploc copied verbatim from
 # gwr-west-of-england.toml.
@@ -285,18 +300,22 @@ segment = "gwr-west-of-england"
 [[stations]]
 crs = "FRO"
 role = "minor"
-segment = "gwr-west-of-england"
+segment = "gwr-bristol-weymouth"
+# This line's own exclusive territory, not part of the genuinely-shared
+# WSB/CLC stretch — see corrected-scope comment above.
 
 [[stations]]
 crs = "BRU"
 role = "minor"
-segment = "gwr-west-of-england"
+segment = "gwr-bristol-weymouth"
+# This line's own exclusive territory, not part of the genuinely-shared
+# WSB/CLC stretch — see corrected-scope comment above.
 
 [[stations]]
 crs = "CLC"
 tiploc = "CCARY"
 role = "junction"
-segment = "gwr-west-of-england"
+segment = "gwr-westbury-castle-cary"
 # The real physical junction where this line's own Weymouth-bound exclusive
 # segment below begins (see comment above) — per the shared-trunk rule of
 # thumb (SCHEMA.md), the junction station itself stays on the shared trunk.
@@ -320,6 +339,19 @@ segment = "gwr-west-of-england"
 crs = "YVP"
 role = "minor"
 segment = "gwr-bristol-weymouth"
+
+[[stations]]
+crs = "THO"
+role = "minor"
+segment = "gwr-bristol-weymouth"
+# Thornford, previously missing from this file despite being open, GWR-
+# operated and on the same footing as Yetminster/Chetnole below. Confirmed
+# open and currently served (en.wikipedia.org/wiki/Thornford_railway_station:
+# "Great Western Railway manages the station and operates" services on the
+# Heart of Wessex line, Bristol Temple Meads-Weymouth via this stretch). A
+# request stop, same as Yetminster/Chetnole ("This is a request stop so
+# passengers must signal clearly to the driver if they wish to board the
+# train"), hence the same "minor" role.
 
 [[stations]]
 crs = "YET"
