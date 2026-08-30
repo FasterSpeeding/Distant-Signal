@@ -289,13 +289,14 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
-    // `tfw-heart-of-wales` is, at this point in the line catalogue, a
-    // genuinely standalone line: `tfw-marches.toml` (the one real
-    // shared-trunk candidate, for the Shrewsbury-Craven Arms stretch) does
-    // not exist yet, so there's no sibling-line propagation assertion to
-    // write here -- only the exclusive-segment case applies. See the
-    // comments in `lines/tfw-heart-of-wales.toml` for the forward-bet
-    // segment name Task 11.5 is expected to read and decide on.
+    // `tfw-heart-of-wales` is standalone on its own southern stretch
+    // (Craven Arms southwards) -- `tfw-marches.toml` (Task 11.5) now exists
+    // but only shares the Shrewsbury-Craven Arms stretch, not the branch
+    // south of Craven Arms towards Llandrindod/Swansea, so an incident well
+    // south of Craven Arms should still match only Heart of Wales, as
+    // `MatchScope::ExclusiveSegment`. See
+    // `heart_of_wales_shrewsbury_shared_trunk_propagates` below for the
+    // shared-trunk case Task 11.5 decided on.
     #[test]
     fn heart_of_wales_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -388,6 +389,99 @@ mod tests {
         assert_eq!(
             matched_ids,
             HashSet::from(["tfw-conwy-valley".to_string(), "tfw-north-wales-coast".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment", m.line.id);
+        }
+    }
+
+    // `tfw-marches` (Task 11.5). An incident on a station well away from
+    // both coordination points (the Shrewsbury-Craven Arms shared trunk
+    // with Heart of Wales, and the Chester station-overlap with North
+    // Wales Coast) should match only this line, as
+    // `MatchScope::ExclusiveSegment` -- e.g. Hereford, which sits on
+    // `tfw-marches-south`, a segment no other line in the catalogue uses.
+    #[test]
+    fn marches_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-6",
+            "Signal failure at Hereford",
+            "Signal failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["HFD"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tfw-marches".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Craven Arms is on both `tfw-marches` and `tfw-heart-of-wales`, and
+    // Task 11.5 ruled -- after independently verifying the physical
+    // track-sharing claim against three separate Wikipedia articles (see
+    // the comments above Craven Arms in `lines/tfw-marches.toml`) -- that
+    // this is a genuine shared trunk, not mere station overlap: Heart of
+    // Wales services physically run over Marches Line metals between
+    // Craven Arms and Shrewsbury, calling at the intermediate station
+    // Church Stretton along the way. Both files tag Craven Arms (and
+    // Church Stretton, and Shrewsbury) with the same segment name,
+    // `tfw-heart-of-wales-shrewsbury` (reusing the forward-bet name
+    // `tfw-heart-of-wales.toml` left for this file to pick up), so an
+    // incident there should propagate to both lines, each classified
+    // `MatchScope::SharedSegment`.
+    #[test]
+    fn heart_of_wales_shrewsbury_shared_trunk_propagates() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-7",
+            "Points failure at Craven Arms",
+            "Points failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["CRV"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["tfw-marches".to_string(), "tfw-heart-of-wales".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+        }
+    }
+
+    // Chester is on both `tfw-marches` and `tfw-north-wales-coast`, but
+    // Task 11.5 ruled that overlap station-overlap-only rather than a
+    // shared trunk, mirroring `tfw-north-wales-coast.toml`'s own Llandudno
+    // Junction decision against `tfw-conwy-valley.toml`: despite genuine
+    // physical track sharing existing at Saltney Junction on the final
+    // approach into Chester (see the comment above Chester in
+    // `lines/tfw-marches.toml`), `tfw-north-wales-coast.toml` uses one
+    // single whole-line segment name for its entire route, so reusing it
+    // here would incorrectly mark that line's whole route (Rhyl, Bangor,
+    // Holyhead, etc.) as shared with Marches. So the two files use distinct
+    // segment names at Chester, and an incident there should match both
+    // lines independently, each still classified as
+    // `MatchScope::ExclusiveSegment` (not `SharedSegment`).
+    #[test]
+    fn chester_station_overlap_matches_both_lines_as_exclusive() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-8",
+            "Points failure at Chester",
+            "Points failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["CTR"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["tfw-marches".to_string(), "tfw-north-wales-coast".to_string()])
         );
         for m in &matches {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment", m.line.id);
