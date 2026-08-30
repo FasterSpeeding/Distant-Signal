@@ -318,4 +318,38 @@ mod tests {
         assert_eq!(by_id.get("emr-regional"), Some(&MatchScope::SharedSegment));
         assert_eq!(by_id.get("northern-hope-valley"), Some(&MatchScope::SharedSegment));
     }
+
+    // `lines/emr-connect.toml` (Batch 7, Task 7.3): the real EMR Connect
+    // route runs St Pancras - Corby, not just to Luton Airport Parkway, so
+    // it shares `emr-midland-main-line.toml`'s `emr-mml-south` (St Pancras
+    // - Bedford) and `emr-mml-trunk` (Wellingborough - Kettering) segments
+    // for its entire route bar the final station. An incident anywhere on
+    // that shared stretch should propagate to both lines as SharedSegment -
+    // mirrors `swr_shared_trunk_incident_propagates`.
+    #[test]
+    fn emr_connect_shared_trunk_incident_propagates() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("EMC-1", "Signal failure at Wellingborough", "Signal failure causing delays to services at Wellingborough.", &["EM"], &["WEL"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let by_id: HashMap<String, MatchScope> = matches.iter().map(|m| (m.line.id.clone(), m.scope)).collect();
+        assert_eq!(by_id.get("emr-connect"), Some(&MatchScope::SharedSegment));
+        assert_eq!(by_id.get("emr-midland-main-line"), Some(&MatchScope::SharedSegment));
+    }
+
+    // Same file: Corby is this line's only exclusive station (not on the
+    // shared St Pancras-Kettering trunk, and not present in
+    // `emr-midland-main-line.toml` at all - see that file's route-scope
+    // ruling comment), so an incident there should stay local to
+    // `emr-connect` as ExclusiveSegment.
+    #[test]
+    fn emr_connect_corby_incident_stays_on_its_own_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("EMC-2", "Points failure at Corby", "Points failure causing delays to services at Corby.", &["EM"], &["COR"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["emr-connect".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
