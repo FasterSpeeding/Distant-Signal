@@ -304,24 +304,97 @@ mod tests {
 
     #[test]
     fn west_anglia_exclusive_segment_incident_does_not_propagate() {
-        // Bishop's Stortford is deep in `waml-trunk-london` territory, well
-        // away from Cambridge (the only station this line shares with any
-        // other committed line — see the next test). No other `lines/*.toml`
-        // file touches this station, so this should stay scoped to
+        // Newport is on `waml-mainline` (Elsenham-Cambridge), well beyond
+        // Stansted Mountfitchet where greater-anglia-stansted-express.toml
+        // (Task 2.3) diverges onto its own airport branch, and beyond
+        // Cambridge is the only other overlap this line has with any other
+        // committed line (see the next test). No other `lines/*.toml` file
+        // touches this station, so this should stay scoped to
         // greater-anglia-west-anglia only.
+        //
+        // NOTE: this test used to use Bishop's Stortford (BIS), but that
+        // station is on `waml-trunk-london`, which greater-anglia-
+        // stansted-express.toml now genuinely shares (see that file's
+        // segment-decision comment and the
+        // stansted_express_shared_trunk_incident_propagates test below) — an
+        // incident there now correctly escalates to SharedSegment and
+        // matches both lines, so it's no longer a valid "stays exclusive"
+        // example.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
             "LE-3",
-            "Signal failure at Bishop's Stortford",
+            "Signal failure at Newport",
             "Signal failure causing delays to Greater Anglia services.",
             &["LE"],
-            &["BIS"],
+            &["NWE"],
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["greater-anglia-west-anglia".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn stansted_express_shared_trunk_incident_propagates() {
+        // Tottenham Hale is on `waml-trunk-london`, genuinely shared between
+        // greater-anglia-west-anglia.toml (Task 2.2) and
+        // greater-anglia-stansted-express.toml (Task 2.3) per the latter's
+        // segment-decision comment (both routes run over the same physical
+        // West Anglia Main Line tracks from Liverpool Street through
+        // Stansted Mountfitchet). An incident here should propagate to both
+        // lines as SharedSegment.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LE-5",
+            "Signal failure at Tottenham Hale",
+            "Signal failure causing delays to Greater Anglia services.",
+            &["LE"],
+            &["TOM"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["greater-anglia-west-anglia".to_string(), "greater-anglia-stansted-express".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+        }
+    }
+
+    #[test]
+    fn stansted_express_airport_is_station_overlap_only_with_xc_stansted() {
+        // Stansted Airport (SSD) is the terminus of
+        // greater-anglia-stansted-express.toml's own exclusive
+        // `stansted-express-branch` segment, but is also the terminus of
+        // xc-stansted.toml's whole-route `xc-stansted` segment (CrossCountry's
+        // Birmingham-Stansted service, approaching via a different leg of the
+        // triangular junction north of Stansted Mountfitchet — see the
+        // segment-decision comment in greater-anglia-stansted-express.toml).
+        // The two files deliberately do NOT share a segment name here, so an
+        // incident should match both lines independently, each still
+        // classified as ExclusiveSegment rather than escalating to
+        // SharedSegment.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LE-6",
+            "Points failure at Stansted Airport",
+            "Points failure causing delays.",
+            &["LE"],
+            &["SSD"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["greater-anglia-stansted-express".to_string(), "xc-stansted".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
     }
 
     #[test]
