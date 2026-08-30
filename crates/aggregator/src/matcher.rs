@@ -443,4 +443,104 @@ mod tests {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
         }
     }
+
+    // southeastern-metro-north-kent (Batch 5, Task 5.4) covers the
+    // Bexleyheath line and Dartford Loop line, both diverging from a
+    // shared London Bridge-Lewisham trunk (`southeastern-lewisham-
+    // corridor`). Per this file's own header comment (FINDING 2), research
+    // for this task could NOT confirm the gap analysis's premise that
+    // Thameslink genuinely shares that trunk under normal service - so no
+    // sibling file uses `southeastern-lewisham-corridor` yet, and an
+    // incident on this line's own exclusive Bexleyheath branch (past the
+    // Lewisham junction) should stay exclusive to this line alone. Mirrors
+    // swr_exclusive_segment_incident_does_not_propagate and
+    // elizabeth_branch_incident_stays_on_its_branch above.
+    #[test]
+    fn senk_bexleyheath_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-8",
+            "Points failure at Bexleyheath",
+            "Points failure causing delays to Southeastern services.",
+            &["SE"],
+            &["BXH"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["southeastern-metro-north-kent".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Same for the Dartford Loop branch (the other branch in this one
+    // file, diverging from the shared trunk at Hither Green rather than at
+    // Lewisham itself) - an incident on it should also stay exclusive to
+    // this line, and shouldn't spuriously pull in the Bexleyheath branch's
+    // own segment name either (the two branches use different segment
+    // names, `senk-bexleyheath` vs `senk-dartford-loop`, despite being the
+    // same file/line).
+    #[test]
+    fn senk_dartford_loop_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-9",
+            "Signal failure at Sidcup",
+            "Signal failure causing delays to Southeastern services.",
+            &["SE"],
+            &["SID"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["southeastern-metro-north-kent".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // LBG is also thameslink-core.toml's own terminus (its own segment
+    // ends there too) and southeastern-main-line.toml's own `seml-london`
+    // station, but per this file's header comment that's station overlap
+    // only, not a shared trunk - same judgment southeastern-main-line.toml
+    // already made for LBG/Thameslink. Confirms an LBG incident matches
+    // all three lines independently, each still scoped ExclusiveSegment,
+    // never SharedSegment - mirrors
+    // afk_station_overlap_matches_both_seml_and_hs1_as_independent_exclusive_segments
+    // above.
+    //
+    // NOTE for Task 5.14 (lines/thameslink-southern.toml, not yet
+    // written): this task could not add the shared-segment propagation
+    // test the batch's testing convention otherwise requires (mirrors
+    // swr_shared_trunk_incident_propagates /
+    // xc_hub_incident_propagates_to_every_cross_country_arm) because that
+    // sibling file doesn't exist yet. If Task 5.14's own research
+    // independently confirms genuine Thameslink running over the London
+    // Bridge-Lewisham stretch and it reuses `southeastern-lewisham-
+    // corridor` verbatim, its implementer should add a test here (or in
+    // that task's own matcher tests) asserting an incident on that shared
+    // segment matches BOTH `southeastern-metro-north-kent` and
+    // `thameslink-southern` with `MatchScope::SharedSegment`.
+    #[test]
+    fn lbg_station_overlap_matches_senk_thameslink_core_and_seml_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-10",
+            "Signal failure at London Bridge",
+            "Signal failure causing delays to Southeastern services.",
+            &["SE"],
+            &["LBG"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "southeastern-metro-north-kent".to_string(),
+                "thameslink-core".to_string(),
+                "southeastern-main-line".to_string(),
+            ])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
 }
