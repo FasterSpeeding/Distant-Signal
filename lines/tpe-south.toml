@@ -60,6 +60,18 @@ operators = [
 # standalone for the shared-segment-propagation regression test — see the
 # matcher test file for the note on why that assertion is skipped here.
 #
+# `lines/cross-country.toml`'s `xc-yorkshire` segment also covers DON and
+# SHF (the same two stations this file reuses CRS/tiploc data from), so
+# there's real multi-station geographic overlap with CrossCountry's
+# Yorkshire hub here too — not just a shared terminus. This file
+# deliberately does NOT share that segment name: CrossCountry's exclusive
+# territory continues from these stations towards Leeds/York on
+# `xc-yorkshire`, while TPE South's continues towards Scunthorpe/
+# Cleethorpes and towards Manchester/Liverpool — the two lines' exclusive
+# territories diverge immediately in both directions from DON/SHF. Same
+# station-overlap-only reasoning as the Stockport and Manchester Piccadilly
+# overlaps documented above.
+#
 # Minor intermediate calls (Liverpool South Parkway, Warrington West/
 # Central, Birchwood, Irlam, Urmston, Manchester Oxford Road, Meadowhall,
 # Barnetby, Habrough) are omitted, following `xc-manchester.toml`'s
