@@ -506,6 +506,14 @@ mod tests {
     // afk_station_overlap_matches_both_seml_and_hs1_as_independent_exclusive_segments
     // above.
     //
+    // Task 5.5 (southeastern-hayes-line.toml) added a fourth LBG overlap:
+    // its own `hayes-london` segment also calls at LBG (see that file's own
+    // header comment for why it does NOT reuse senk's
+    // `southeastern-lewisham-corridor` name despite passing through the
+    // same station - the Hayes line's own calling pattern skips New
+    // Cross/St Johns, so the two runs aren't confirmed to share physical
+    // track for that stretch).
+    //
     // NOTE for Task 5.14 (lines/thameslink-southern.toml, not yet
     // written): this task could not add the shared-segment propagation
     // test the batch's testing convention otherwise requires (mirrors
@@ -519,7 +527,7 @@ mod tests {
     // segment matches BOTH `southeastern-metro-north-kent` and
     // `thameslink-southern` with `MatchScope::SharedSegment`.
     #[test]
-    fn lbg_station_overlap_matches_senk_thameslink_core_and_seml_as_independent_exclusive_segments() {
+    fn lbg_station_overlap_matches_senk_thameslink_core_seml_and_hayes_as_independent_exclusive_segments() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -537,7 +545,60 @@ mod tests {
                 "southeastern-metro-north-kent".to_string(),
                 "thameslink-core".to_string(),
                 "southeastern-main-line".to_string(),
+                "southeastern-hayes-line".to_string(),
             ])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    // Task 5.5 (southeastern-hayes-line.toml). An incident on the Hayes
+    // line's own exclusive branch (past Lewisham, e.g. West Wickham) should
+    // stay exclusive to this line - mirrors
+    // swr_exclusive_segment_incident_does_not_propagate and
+    // elizabeth_branch_incident_stays_on_its_branch above.
+    #[test]
+    fn hayes_branch_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-11",
+            "Signal failure at West Wickham",
+            "Signal failure causing delays to Southeastern services.",
+            &["SE"],
+            &["WWI"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["southeastern-hayes-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 5.5 (southeastern-hayes-line.toml). Lewisham (LEW) is a station
+    // overlap between this file's own `hayes-london` segment and
+    // southeastern-metro-north-kent.toml's `southeastern-lewisham-corridor`
+    // - two different segment names for the same station, per this file's
+    // own header comment (not a shared trunk, since the Hayes line's own
+    // calling pattern diverges from senk's before Lewisham). Confirms an
+    // incident there matches both lines independently, each still scoped
+    // ExclusiveSegment, never SharedSegment.
+    #[test]
+    fn lew_station_overlap_matches_hayes_line_and_senk_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-12",
+            "Signal failure at Lewisham",
+            "Signal failure causing delays to Southeastern services.",
+            &["SE"],
+            &["LEW"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["southeastern-hayes-line".to_string(), "southeastern-metro-north-kent".to_string()])
         );
         for m in &matches {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
