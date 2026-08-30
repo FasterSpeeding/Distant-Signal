@@ -39,7 +39,9 @@ operators = [
 # South Parkway -- unlike `wcml-manchester.toml` there is no second,
 # physically distinct branch to model here.
 
-destination_crs_filter = ["LIV"]
+# EUS covers up-direction (London-bound) services, since LIV alone can't
+# match trains terminating there.
+destination_crs_filter = ["LIV", "EUS"]
 sample_stations = ["RUN", "LIV"]
 # No match_keywords: same reasoning as `wcml-birmingham.toml` and
 # `wcml-manchester.toml` -- "Liverpool" alone is far too generic (would

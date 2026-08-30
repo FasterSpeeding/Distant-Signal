@@ -66,7 +66,12 @@ operators = [
 # or Manchester branches), so both termini are listed here to avoid
 # under-matching the majority Chester-terminating services via LDBWS
 # destination inference.
-destination_crs_filter = ["CTR", "HHD"]
+# EUS covers up-direction (London-bound) services -- both CTR and HHD are
+# near-unmatchable on their own since services calling there are almost
+# always continuing past or originating from further down the line, not
+# terminating there in the down direction captured by a departure-board
+# destination field.
+destination_crs_filter = ["CTR", "HHD", "EUS"]
 sample_stations = ["CTR", "HHD"]
 # No match_keywords: same reasoning as the other WCML branch files in this
 # batch -- neither "North Wales Main Line" nor "North Wales Coast Line" is

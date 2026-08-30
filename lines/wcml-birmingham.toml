@@ -12,7 +12,12 @@ operators = [
   # metals but that's a distinct, unmodelled local service, not this line.
 ]
 
-destination_crs_filter = ["BHM"]
+# EUS covers up-direction (London-bound) services -- BHM alone can't match
+# trains terminating there, same defect class corrected for
+# `lnwr-euston-commuter.toml`'s destination_crs_filter. WVH covers the
+# through-to-Wolverhampton workings this file's own comment above already
+# documents (some Avanti Birmingham services continue past New Street).
+destination_crs_filter = ["BHM", "WVH", "EUS"]
 sample_stations = ["COV", "BHM"]
 # No match_keywords: same reasoning as `xc-manchester.toml` -- this branch
 # has no route name the Knowledgebase is confirmed to use consistently, and

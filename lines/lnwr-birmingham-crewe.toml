@@ -123,9 +123,18 @@ operators = [
 # branch only) for a Crewe-branch incident, and
 # `stations_between("LBK", "NUN")` would incorrectly span both branches'
 # exclusive segments even though no single physical train calls at both.
-# This function has no call sites anywhere in the workspace today (same as
-# noted in `wcml-manchester.toml`), so there's no live bug -- flagged here
-# so it isn't rediscovered the hard way if it's ever wired up.
+# `stations_between` itself has no call sites in the workspace (same as
+# noted in `wcml-manchester.toml`), but `routes_from_stations` in
+# `crates/aggregator/src/aggregation.rs` makes the identical flat-order
+# assumption over this same station list, and IS live -- it's called from
+# the incident-processing path to build the user-visible `affected_routes`
+# on every incident-derived status. So this hazard is real today, not
+# theoretical: an incident naming stations on two different branches of
+# this diamond (e.g. one on the Birmingham branch, one on the Crewe
+# branch) can produce a geographically wrong affected-route summary.
+# Making `routes_from_stations` branch-aware is out of scope for this plan
+# (it's aggregator logic, not line data) -- flagged here as a known
+# follow-up, not fixed, same as `wcml-manchester.toml`'s own caveat.
 
 destination_crs_filter = ["BHM", "CRE"]
 # One sample station on the shared trunk, one at the internal reconvergence

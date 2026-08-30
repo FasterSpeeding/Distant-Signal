@@ -41,7 +41,9 @@ operators = [
 # literally apply here beyond "one file can legitimately hold more than a
 # single straight line of stations").
 
-destination_crs_filter = ["MAN"]
+# EUS covers up-direction (London-bound) services, since MAN alone can't
+# match trains terminating there.
+destination_crs_filter = ["MAN", "EUS"]
 # One sample station per branch plus the shared terminus.
 sample_stations = ["STO", "WML", "MAN"]
 # No match_keywords: same reasoning as `xc-manchester.toml` and
@@ -66,11 +68,17 @@ sample_stations = ["STO", "WML", "MAN"]
 # assumes a single straight line of stations; it is NOT safe to call
 # across this file's two branches. E.g. `stations_between("STO", "MAN")`
 # would incorrectly include CRE and WML, which sit between STO and MAN in
-# file order but are on the *other*, physically unaffected branch. This
-# function has no call sites anywhere in the workspace today, so there's
-# no live bug -- but if it's ever wired up, a caller crossing both
-# branches of this file needs its own handling (out of this file's scope
-# to fix; flagged here so it isn't rediscovered the hard way).
+# file order but are on the *other*, physically unaffected branch.
+# `stations_between` itself has no call sites in the workspace, but
+# `routes_from_stations` in `crates/aggregator/src/aggregation.rs` makes
+# the identical flat-order assumption over this same station list, and IS
+# live -- it's called from the incident-processing path to build the
+# user-visible `affected_routes` on every incident-derived status. So this
+# hazard is real today, not theoretical: an incident naming stations on
+# both branches of this file can produce a geographically wrong
+# affected-route summary. Making `routes_from_stations` branch-aware is
+# out of scope for this plan (it's aggregator logic, not line data) --
+# flagged here as a known follow-up, not fixed.
 #
 # EUS through STA reuse `west-coast-main-line.toml`'s own `wcml-london`/
 # `wcml-midlands` segment tags verbatim (same trunk-sharing pattern
