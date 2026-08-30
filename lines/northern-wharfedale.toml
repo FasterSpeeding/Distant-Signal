@@ -1,0 +1,146 @@
+id = "northern-wharfedale"
+name = "Wharfedale Line"
+mode = "national-rail"
+category = "regional"
+operators = ["NT"]
+
+destination_crs_filter = ["LDS", "BDQ", "ILK"]
+sample_stations = ["GSY", "BEY", "ILK"]
+match_keywords = ["Wharfedale Line"]
+
+# Leeds and Bradford Forster Square to Ilkley, via two parallel approaches
+# that converge at Guiseley. Per the gap analysis
+# (docs/superpowers/specs/2026-08-29-line-coverage-gap-analysis.md,
+# "Northern - is the existing 6-branch coverage actually complete?"), Airedale
+# and Wharfedale "share track as far as Shipley". Wikipedia's Wharfedale line
+# article confirms the divergence point from the Bradford Forster Square
+# direction: "The service to Ilkley branches north of Shipley railway
+# station" (https://en.wikipedia.org/wiki/Wharfedale_line) - matching
+# `northern-airedale.toml`'s own framing of Shipley as the last station both
+# lines have in common on that approach.
+#
+# --- Shared-trunk naming: reused verbatim from Task 8.3, per plan mandate ---
+# `lines/northern-airedale.toml` (Task 8.3, already committed) named the
+# shared Bradford Forster Square-to-Shipley stretch `northern-shipley-trunk`
+# and documented that whoever wrote this file should reuse that exact name.
+# Reused verbatim below on BDQ and SHY - the same two stations Task 8.3 put
+# on that segment (see `northern-airedale.toml`'s own "Shared-trunk naming
+# decision" comment, which also puts LDS on that segment - see the note
+# immediately below for why this file diverges on LDS specifically).
+#
+# --- Why LDS is NOT tagged `northern-shipley-trunk` here (a deliberate,
+# sourced deviation from the "tag LDS/BDQ/SHY" framing in the task brief) ---
+# Unlike Airedale, where Leeds-bound and Bradford-bound trains genuinely
+# converge onto one another's track at Shipley, Wharfedale's Leeds approach
+# does not touch Shipley at all. Wikipedia's Wharfedale line article
+# describes two structurally distinct approaches: the Leeds section runs
+# "via Calverley along the Aire valley" through the modern Kirkstall Forge
+# stop, while the Bradford Forster Square section shares track with Airedale
+# through Manningham, Frizinghall and Shipley before turning north through
+# Baildon. The two "come together at Esholt Junction" - a closed, unstaffed
+# location south of Guiseley, well past Shipley
+# (https://en.wikipedia.org/wiki/Wharfedale_line). Guiseley station's own
+# Wikipedia article corroborates this independently: "Guiseley is the first
+# station that is served by trains on both branches of the line"
+# (https://en.wikipedia.org/wiki/Guiseley_railway_station) - i.e. not
+# Shipley, and not any station on the Leeds approach. Baildon station's
+# article corroborates from the Bradford-branch side: Baildon "has no direct
+# service to Leeds" via this route, confirming the two approaches are
+# genuinely separate corridors rather than one route with two names
+# (https://en.wikipedia.org/wiki/Baildon_railway_station). Given this,
+# tagging LDS as part of `northern-shipley-trunk` would assert a shared
+# physical corridor that doesn't exist for this line's Leeds services, and
+# would cause the matcher to propagate a Leeds-side incident to Airedale (or
+# vice versa) incorrectly. Instead LDS is tagged with this file's own
+# exclusive `northern-wharfedale` segment - CRS-level station overlap with
+# `northern-airedale.toml` (both files legitimately list LDS) without
+# segment-sharing, exactly the `xc-manchester.toml`/`northern-calder-
+# valley.toml` precedent: "station overlap is fine, segment-sharing is a
+# deliberate choice." (See `northern-calder-valley.toml`'s own comment for
+# the same pattern applied to LDS/MCV against `northern.toml`.)
+#
+# --- Station list and ordering ---
+# LDS and KLF form the Leeds/Kirkstall Forge approach; BDQ, SHY and BLD form
+# the Bradford Forster Square/Shipley/Baildon approach; both converge at
+# Guiseley (GSY) and continue as one route through Menston, Burley-in-
+# Wharfedale and Ben Rhydding to Ilkley. Per SCHEMA.md's shared-trunk rule of
+# thumb, the exclusive `northern-wharfedale` segment starts at the station
+# after the Shipley junction (Baildon) on the Bradford approach; the whole
+# Leeds approach (LDS, KLF) is likewise exclusive since neither station sits
+# on track shared with another line in this catalogue. Kirkstall Forge
+# (opened 2016) is included despite being a smaller stop, since it is the
+# only intermediate station on the Leeds approach and omitting it would
+# leave that branch undocumented; Manningham and Frizinghall on the Bradford
+# approach are omitted as intermediate halts, matching the "only principal
+# stations" precedent set by `xc-manchester.toml` and
+# `northern-cumbrian-coast.toml` (and followed by `northern-airedale.toml`
+# for the same Bradford approach). Esholt Junction, where the two approaches
+# physically meet, is not a served station (closed) and so has no entry.
+#
+# CRS codes cross-checked against two independent sources each (Wikipedia
+# station infoboxes and nationalrail.co.uk station detail pages), fetched
+# 2026-08-30; LDS, BDQ and SHY were already verified in-repo via
+# `northern-airedale.toml`.
+[[stations]]
+crs = "LDS"
+tiploc = "LEEDS"
+role = "terminus"
+segment = "northern-wharfedale"
+
+[[stations]]
+crs = "KLF"
+role = "minor"
+segment = "northern-wharfedale"
+# Kirkstall Forge - the only intermediate stop on the Leeds/Aire Valley
+# approach; does not touch Shipley. See the "Why LDS is NOT tagged" comment
+# above.
+
+[[stations]]
+crs = "BDQ"
+role = "terminus"
+segment = "northern-shipley-trunk"
+# Bradford Forster Square - the other parallel starting terminus, shared
+# with `northern-airedale.toml` as far as Shipley.
+
+[[stations]]
+crs = "SHY"
+role = "junction"
+segment = "northern-shipley-trunk"
+# Shipley: last station in common with the Airedale Line on this approach;
+# the Wharfedale service branches north towards Baildon immediately after.
+
+[[stations]]
+crs = "BLD"
+role = "minor"
+segment = "northern-wharfedale"
+# Baildon - first station exclusive to Wharfedale on the Bradford approach,
+# per SCHEMA.md's shared-trunk rule of thumb (exclusive segment starts at
+# the station after the junction).
+
+[[stations]]
+crs = "GSY"
+role = "junction"
+segment = "northern-wharfedale"
+# Guiseley - where the Leeds/Kirkstall Forge approach and the Bradford
+# Forster Square/Shipley/Baildon approach converge (at Esholt Junction,
+# immediately south of here) and continue as one route to Ilkley.
+
+[[stations]]
+crs = "MNN"
+role = "minor"
+segment = "northern-wharfedale"
+
+[[stations]]
+crs = "BUW"
+role = "minor"
+segment = "northern-wharfedale"
+
+[[stations]]
+crs = "BEY"
+role = "minor"
+segment = "northern-wharfedale"
+
+[[stations]]
+crs = "ILK"
+role = "terminus"
+segment = "northern-wharfedale"

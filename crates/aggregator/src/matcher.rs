@@ -292,11 +292,6 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
-    // Task 8.4 (Wharfedale Line) owns the shared-trunk regression test for
-    // `northern-shipley-trunk` (Leeds/Bradford Forster Square/Shipley),
-    // added once `lines/northern-wharfedale.toml` also exists and shares
-    // that segment name - see the shared-trunk naming comment at the top of
-    // `lines/northern-airedale.toml`.
     #[test]
     fn airedale_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -312,5 +307,48 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["northern-airedale".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn wharfedale_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-5",
+            "Signal failure at Ilkley",
+            "Signal failure causing delays on the Wharfedale Line at Ilkley.",
+            &["NT"],
+            &["ILK"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-wharfedale".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // The `northern-shipley-trunk` shared-trunk regression test, owned by
+    // Task 8.4 per the plan (added once `lines/northern-wharfedale.toml`
+    // also exists and shares that segment name - see the shared-trunk
+    // naming comment at the top of `lines/northern-airedale.toml`).
+    #[test]
+    fn shipley_trunk_shared_incident_propagates_to_airedale_and_wharfedale() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-6",
+            "Signal failure at Shipley",
+            "Signal failure causing delays to Northern services at Shipley.",
+            &["NT"],
+            &["SHY"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("northern-airedale"));
+        assert!(matched_ids.contains("northern-wharfedale"));
+        for m in &matches {
+            if m.line.id == "northern-airedale" || m.line.id == "northern-wharfedale" {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
+        }
     }
 }
