@@ -499,4 +499,29 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["wmr-cross-city".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    #[test]
+    fn lnwr_euston_commuter_exclusive_segment_incident_does_not_propagate() {
+        // Northampton is on the exclusive `lnwr-northampton` segment,
+        // starting after the Milton Keynes Central junction (per the
+        // shared-trunk rule of thumb) -- Task 1.8's sibling file
+        // (`lines/lnwr-birmingham-crewe.toml`) doesn't exist yet as of this
+        // test, so there's no shared-trunk counterpart to assert yet; see
+        // `lnwr-euston-commuter.toml`'s own comment for the confirmed
+        // LNWR-internal shared-trunk segment name (`lnwr-euston-trunk`,
+        // Euston through Milton Keynes Central) that Task 1.8 should reuse.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LM-5",
+            "Signal failure at Northampton",
+            "Signal failure causing delays to services at Northampton.",
+            &["LM"],
+            &["NMP"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["lnwr-euston-commuter".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
