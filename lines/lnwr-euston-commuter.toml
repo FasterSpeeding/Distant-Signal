@@ -92,15 +92,19 @@ operators = [
 # line (this file simply stops modelling the working there, per the Task
 # 1.7/1.8 split); the segment name itself is unchanged.
 
-destination_crs_filter = ["NMP"]
-# CAVEAT (flagged by Task 1.8's research, not changed here -- out of that
-# task's scope, which was the WOL/NMP segment question, not this file's
-# LDBWS-sampling design): since no real-world working actually terminates
-# at Northampton (see the resolution note above), an LDBWS lookup at
-# EUS/MKC would report `destination_crs = "BHM"` (or "CRE") for these
-# trains, not "NMP" -- so this filter may never actually match a real
-# service today. Left as-is pending its own dedicated look, rather than
-# reworking this file's sampling design as a side effect of Task 1.8.
+destination_crs_filter = ["BHM", "CRE"]
+# CORRECTED (post-Task-1.8-review): originally `["NMP"]`, but that's a
+# live, load-bearing defect, not just a documentation gap --
+# `crates/aggregator/src/aggregation.rs`'s `belongs_to_line` gates on this
+# field, so `["NMP"]` would silently and permanently disable
+# LDBWS-inferred severity for this line (no sampled `StationDeparture`
+# ever reports `destination_crs == "NMP"`, per the same research above:
+# every real LNWR train calling at EUS/MKC/WOL/NMP continues through to
+# Birmingham New Street or Crewe). Corrected to the two real termini a
+# train passing through this file's modelled Euston-Northampton stretch
+# would actually show -- matching `lnwr-birmingham-crewe.toml`'s own
+# already-verified filter (`["BHM", "CRE"]`) exactly, since both files
+# model different windows onto the same underlying services.
 sample_stations = ["EUS", "MKC", "NMP"]
 # No match_keywords: no confirmed Knowledgebase-used route name for this
 # specific working (the "Northampton Loop Line" name only appears in

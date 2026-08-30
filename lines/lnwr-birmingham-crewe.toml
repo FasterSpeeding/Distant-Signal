@@ -138,11 +138,14 @@ sample_stations = ["MKC", "RUG", "BHM", "CRE"]
 # `wcml-birmingham.toml`, `wcml-liverpool.toml`, `wmr-*` files, etc.).
 # Station and operator evidence carries it instead.
 
-# Same long-distance/sparser-service reasoning `wcml-manchester.toml` and
-# `xc-manchester.toml` already apply to their own WCML-metals branches --
-# unlike `lnwr-euston-commuter.toml`'s dense inner-suburban stretch, both
-# branches here run well beyond the London commuter belt (Crewe is ~150
-# miles from Euston) at 1-2tph.
+# Same long-distance/sparser-service reasoning and values `xc-manchester.toml`
+# already applies to its own WCML-metals branch -- unlike
+# `lnwr-euston-commuter.toml`'s dense inner-suburban stretch, both branches
+# here run well beyond the London commuter belt (Crewe is ~150 miles from
+# Euston) at 1-2tph. (`wcml-manchester.toml` models a comparable WCML-metals
+# fork but carries no `severity_overrides` of its own -- confirmed via grep
+# before citing it here -- so `xc-manchester.toml` is the correct precedent
+# for these specific values.)
 [severity_overrides]
 minor_delays_pct = 0.30
 delay_threshold_minutes = 10
