@@ -277,6 +277,25 @@ mod tests {
         }
     }
 
+    // Regression test for the segment-split fix applied when
+    // `lines/northern-cumbrian-coast.toml` was merged: `northern-furness.toml`
+    // originally tagged ALL FOUR of its stations (not just the shared
+    // junction, BIF) with `segment = "northern-furness"`, which would have
+    // silently reclassified a Lancaster/Carnforth/Ulverston incident as
+    // SharedSegment purely because a second file also used that literal
+    // segment name for BIF. LAN/CNF/ULV now sit on their own exclusive
+    // `northern-furness-branch` segment -- this asserts that split holds.
+    #[test]
+    fn furness_branch_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("NT-FUR", "Signal failure at Ulverston", "Signal failure causing delays at Ulverston.", &["NT"], &["ULV"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-furness".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
     #[test]
     fn calder_valley_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
