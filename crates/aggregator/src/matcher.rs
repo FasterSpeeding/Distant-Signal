@@ -420,21 +420,25 @@ mod tests {
     // file. Originally its exclusive segment (`gwr-west-of-england`) covered
     // Newbury through Castle Cary with no *cross-file segment-name* sharing
     // at all. Task 4.6 (gwr-bristol-suburban.toml) found genuine physical
-    // track sharing at Westbury/Castle Cary and reused this exact segment
-    // name for its own WSB/CLC rows (see
-    // `gwr_west_of_england_trunk_incident_propagates_to_bristol_suburban`
-    // below for that case) — since segment sharing is tracked per segment
-    // *name*, not per individual station, this means the whole
-    // `gwr-west-of-england` segment (including Newbury, which
-    // gwr-bristol-suburban's own service never reaches) is now considered
-    // "shared" by the registry too. There is no longer a station on this
-    // line's own network that is both single-line-matching *and*
-    // ExclusiveSegment (PAD/RDG sit on `gwr-trunk-paddington`, NBY/WSB/CLC on
-    // the now-shared `gwr-west-of-england`, TAU/EXD on `xc-south-west`) — see
+    // track sharing at Westbury/Castle Cary, but an early draft of that fix
+    // reused the whole `gwr-west-of-england` segment name (including Newbury,
+    // which gwr-bristol-suburban's own service never reaches, and Frome/
+    // Bruton, which are gwr-bristol-suburban's own exclusive territory) —
+    // wrong, since segment sharing is tracked per segment *name*, not per
+    // individual station, so that draft mislabelled all three as "shared"
+    // catalogue-wide. The final-review fix wave introduced a new, narrower
+    // segment name, `gwr-westbury-castle-cary`, covering ONLY Westbury (WSB)
+    // and Castle Cary (CLC) — the two stations both files' own cited sources
+    // actually name as shared. Newbury (NBY) reverts to being a genuinely
+    // exclusive station on this line's own `gwr-west-of-england` segment
+    // (gwr-bristol-suburban.toml never reaches it), and Frome/Bruton move
+    // onto gwr-bristol-suburban.toml's own `gwr-bristol-weymouth` segment.
+    // See `gwr_westbury_castle_cary_trunk_incident_propagates_to_bristol_
+    // suburban` below for the corrected shared-segment case, and
     // `gwr_thames_valley_station_overlap_with_gwr_west_of_england_stays_
-    // exclusive_each_line` below for the Newbury case's updated SharedSegment
-    // expectation, a direct, accepted knock-on effect of Task 4.6's
-    // segment-name reuse rather than a regression.
+    // exclusive_each_line` below for the Newbury case, now back to
+    // ExclusiveSegment on both sides (a real station overlap, not a segment
+    // share).
 
     // Task 4.4's second file, `gwr-cornish-main-line`, picks up its own
     // exclusive segment (also named `gwr-cornish-main-line`) at Liskeard,
@@ -577,17 +581,18 @@ mod tests {
     // Junction) is real shared Berks and Hants line track (see
     // gwr-thames-valley.toml's own segment-naming comment). Kept as station
     // overlap only for this task's file-scope reasons, mirroring the Oxford/
-    // gwr-cotswold.toml case above. gwr-thames-valley itself stays
-    // ExclusiveSegment (its own `gwr-thames-valley` segment name is not
-    // shared with anything). gwr-west-of-england's own scope, however,
-    // changed from ExclusiveSegment to SharedSegment as of Task 4.6
-    // (gwr-bristol-suburban.toml reuses the `gwr-west-of-england` segment
-    // name for a genuine shared trunk elsewhere on that line, at Westbury/
-    // Castle Cary — see `gwr_west_of_england_trunk_incident_propagates_to_
-    // bristol_suburban` below for the direct case) — segment
-    // sharing is tracked per segment name, not per station, so this
-    // pre-existing overlap's scope shifts too even though NBY itself is
-    // untouched by gwr-bristol-suburban's own service.
+    // gwr-cotswold.toml case above. An earlier draft of gwr-bristol-
+    // suburban.toml's own Westbury/Castle Cary fix mistakenly reused the
+    // whole `gwr-west-of-england` segment name (not just WSB/CLC), which
+    // pulled NBY into SharedSegment status too even though
+    // gwr-bristol-suburban's own service never reaches it. The final-review
+    // fix wave narrowed that shared segment to a new name,
+    // `gwr-westbury-castle-cary` (WSB/CLC only — see
+    // `gwr_westbury_castle_cary_trunk_incident_propagates_to_bristol_
+    // suburban` below), so NBY is once again a genuinely exclusive station on
+    // gwr-west-of-england's own `gwr-west-of-england` segment: both lines
+    // should now stay `MatchScope::ExclusiveSegment` for their own segment,
+    // confirming this is a real station overlap, not a segment-level share.
     #[test]
     fn gwr_thames_valley_station_overlap_with_gwr_west_of_england_stays_exclusive_each_line() {
         let lines = load_all_lines();
@@ -597,12 +602,12 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["gwr-thames-valley".to_string(), "gwr-west-of-england".to_string()]));
         for m in &matches {
-            let expected = if m.line.id == "gwr-west-of-england" {
-                MatchScope::SharedSegment
-            } else {
-                MatchScope::ExclusiveSegment
-            };
-            assert_eq!(m.scope, expected, "{} scope mismatch", m.line.id);
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should stay ExclusiveSegment (station overlap, not a shared segment)",
+                m.line.id
+            );
         }
     }
 
@@ -627,15 +632,21 @@ mod tests {
     // stations' own Wikipedia pages independently confirm this ("the Reading
     // to Taunton Line and the Heart of Wessex Line... share tracks between
     // Westbury and Castle Cary stations"), the same shape as `xc-south-west`/
-    // `gwr-trunk-paddington` earlier in this batch. gwr-bristol-suburban.toml
-    // reuses gwr-west-of-england.toml's own `gwr-west-of-england` segment
-    // name verbatim for Westbury, so an incident there should propagate to
-    // both lines as a shared-trunk event, mirroring
+    // `gwr-trunk-paddington` earlier in this batch. An earlier draft reused
+    // gwr-west-of-england.toml's own `gwr-west-of-england` segment name
+    // verbatim for this — wrong, because that also pulled Newbury (not
+    // reached by gwr-bristol-suburban.toml's service) and Frome/Bruton
+    // (gwr-bristol-suburban.toml's own exclusive territory, not actually
+    // shared) into "shared" status. The final-review fix wave introduced a
+    // new, narrower segment name, `gwr-westbury-castle-cary`, covering ONLY
+    // Westbury (WSB) and Castle Cary (CLC) — the two stations both files'
+    // own cited sources actually name as shared. An incident at either
+    // should still propagate to both lines as a shared-trunk event, mirroring
     // `swr_shared_trunk_incident_propagates`'s / `gwr_trunk_xc_south_west_
     // incident_propagates_across_west_of_england_and_cornish_main_line`'s
     // shape.
     #[test]
-    fn gwr_west_of_england_trunk_incident_propagates_to_bristol_suburban() {
+    fn gwr_westbury_castle_cary_trunk_incident_propagates_to_bristol_suburban() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident("GW-15", "Points failure at Westbury", "Points failure causing delays at Westbury.", &["GW"], &["WSB"]);
