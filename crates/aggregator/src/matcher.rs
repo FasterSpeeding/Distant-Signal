@@ -399,4 +399,29 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["c2c".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    #[test]
+    fn merseyrail_northern_kirkby_branch_incident_does_not_propagate() {
+        // The Kirkby/Headbolt Lane branch (merseyrail-northern-kirkby) is
+        // exclusive to merseyrail-northern.toml - it doesn't touch the
+        // Southport or Ormskirk branches, nor (per that file's own
+        // central-Liverpool research comment) the not-yet-drafted
+        // merseyrail-wirral.toml. Task 12.5 should add the complementary
+        // "station overlap, not shared segment" test at Liverpool
+        // Central/Moorfields once merseyrail-wirral.toml exists, mirroring
+        // `chiltern_banbury_incident_matches_by_station_not_shared_segment`.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "ME-1",
+            "Signal failure at Fazakerley",
+            "Signal failure causing delays to Merseyrail Northern Line services.",
+            &["ME"],
+            &["FAZ"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["merseyrail-northern".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
