@@ -84,6 +84,20 @@ match_keywords = ["Coastway West", "West Coastway"]
 # is reused between any of the three files.
 #
 # ============================================================================
+# STATION-OVERLAP CHECK - xc-south-coast.toml (checked, NO overlap found)
+# ============================================================================
+# The brief also asked to check for overlap with existing XC files. Checked
+# directly: xc-south-coast.toml's own [[stations]] list is BHM/COV/LMS/BAN/
+# OXF/RDG/BSK/WIN/SOU/BMH - its "South Coast" route runs Birmingham to
+# Bournemouth via Banbury/Oxford/Reading/Basingstoke/Winchester/Southampton,
+# terminating at Bournemouth, and never reaches Chichester, Havant, or any
+# other station this file lists. A repo-wide grep of every CRS code in this
+# file below against every `lines/*.toml` file confirms no overlap exists
+# with xc-south-coast.toml (or any other XC file) anywhere on this line -
+# the only two overlaps found in the whole catalogue are the Brighton and
+# Havant/Portsmouth ones documented elsewhere in this file.
+#
+# ============================================================================
 # STATION-OVERLAP AT HAVANT/PORTSMOUTH - swr-portsmouth-direct.toml
 # ============================================================================
 # This is the real, flagged overlap the brief asked to check (it named
