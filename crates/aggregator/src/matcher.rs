@@ -409,4 +409,56 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["scotrail-highland-main-line".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 10.6 (ScotRail Far North Line): the Wick and Thurso branches
+    // each get their own exclusive segment
+    // (`scotrail-far-north-wick`/`scotrail-far-north-thurso`), used only by
+    // this one file, so an incident on either branch should stay local to
+    // `scotrail-far-north` with `ExclusiveSegment` scope -- mirroring
+    // `swr_exclusive_segment_incident_does_not_propagate`.
+    //
+    // This file also tags Inverness-Dingwall as
+    // `scotrail-inverness-dingwall-trunk`, intended as a future shared
+    // trunk with Task 10.7's Kyle of Lochalsh Line (see
+    // `lines/scotrail-far-north.toml`'s own comments) -- but since that
+    // sibling file does not exist yet, there is no `SharedSegment`
+    // propagation to assert today for that segment; the same-file
+    // trunk-vs-branch structure (Inverness-Georgemas Junction shared by
+    // both the Wick and Thurso branches) is instead asserted directly via
+    // `SegmentRegistry` in `crates/aggregator/src/segments.rs`, since
+    // `MatchScope::SharedSegment` is a cross-line-file concept that a
+    // single-line file cannot exercise on its own.
+    #[test]
+    fn scotrail_far_north_wick_branch_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-8",
+            "Points failure at Wick",
+            "Points failure causing delays to ScotRail services at Wick.",
+            &["SR"],
+            &["WCK"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-far-north".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn scotrail_far_north_thurso_branch_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-9",
+            "Signal failure at Thurso",
+            "Signal failure causing delays to ScotRail services at Thurso.",
+            &["SR"],
+            &["THS"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-far-north".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
