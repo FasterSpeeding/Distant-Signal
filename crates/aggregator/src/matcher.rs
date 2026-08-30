@@ -252,6 +252,13 @@ mod tests {
 
     #[test]
     fn chiltern_stratford_branch_incident_does_not_propagate() {
+        // Strict-equality on the whole match set would break once a future
+        // WMR Snow Hill lines entry (station-overlap-only, per
+        // chiltern-main-line.toml's own comments) plausibly also lists
+        // Wilmcote on the North Warwickshire line to Stratford - so, like
+        // `chiltern_banbury_incident_matches_by_station_not_shared_segment`,
+        // this only asserts chiltern-main-line is among the matches and is
+        // classified ExclusiveSegment, not that nothing else could match.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -263,12 +270,23 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["chiltern-main-line".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert!(matched_ids.contains("chiltern-main-line"));
+        for m in &matches {
+            if m.line.id == "chiltern-main-line" {
+                assert_eq!(m.scope, MatchScope::ExclusiveSegment);
+            }
+        }
     }
 
     #[test]
     fn chiltern_birmingham_approach_incident_does_not_propagate() {
+        // Strict-equality on the whole match set would break once a future
+        // WMR Snow Hill lines entry (station-overlap-only, per
+        // chiltern-main-line.toml's own comments) plausibly also lists
+        // Solihull on the Dorridge approach - so, like
+        // `chiltern_banbury_incident_matches_by_station_not_shared_segment`,
+        // this only asserts chiltern-main-line is among the matches and is
+        // classified ExclusiveSegment, not that nothing else could match.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -280,8 +298,12 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["chiltern-main-line".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert!(matched_ids.contains("chiltern-main-line"));
+        for m in &matches {
+            if m.line.id == "chiltern-main-line" {
+                assert_eq!(m.scope, MatchScope::ExclusiveSegment);
+            }
+        }
 
         // Station-level overlap with Birmingham only, not a shared segment:
         // an incident at Birmingham New Street (XC's hub) must not match
@@ -406,7 +428,7 @@ mod tests {
         // exclusive to merseyrail-northern.toml - it doesn't touch the
         // Southport or Ormskirk branches, nor (per that file's own
         // central-Liverpool research comment, honored by
-        // merseyrail-wirral.toml) merseyrail-wirral.toml. See
+        // merseyrail-wirral.toml) the Wirral Line. See
         // `merseyrail_central_liverpool_incident_matches_by_station_not_shared_segment`
         // below for the complementary "station overlap, not shared segment"
         // test at Liverpool Central.

@@ -44,16 +44,16 @@ tiploc = "MARYLBN"
 role = "terminus"
 segment = "chiltern-marylebone"
 # Also the southern terminus of the Marylebone-Aylesbury stopping service
-# (lines/chiltern-aylesbury.toml, Task 12.2, not yet drafted). The two
-# routes share Network Rail metals from Marylebone out to Neasden
-# Junction before diverging (Aylesbury trains continue north alongside
-# the Metropolitan line via Harrow-on-the-Hill; this line heads west via
-# Northolt Junction/South Ruislip towards High Wycombe) — real shared
-# mileage, but only Marylebone itself is in this file's station list, so
-# it gets its own segment rather than being folded into
-# "chiltern-main-line". Whoever drafts chiltern-aylesbury.toml should grep
-# for "chiltern-marylebone" and decide whether to reuse this segment name
-# for Marylebone in that file too.
+# (lines/chiltern-aylesbury.toml, Task 12.2). The two routes share Network
+# Rail metals from Marylebone out to Neasden Junction before diverging
+# (Aylesbury trains continue north alongside the Metropolitan line via
+# Harrow-on-the-Hill; this line heads west via Northolt Junction/South
+# Ruislip towards High Wycombe) — real shared mileage, but only Marylebone
+# itself is in this file's station list, so it gets its own segment rather
+# than being folded into "chiltern-main-line". RESOLVED: this segment IS
+# shared with chiltern-aylesbury.toml, which reuses the "chiltern-
+# marylebone" segment name for its own Marylebone entry (see that file's
+# own comment for its side of this, around its Marylebone station block).
 
 [[stations]]
 crs = "HWY"
@@ -71,6 +71,10 @@ segment = "chiltern-main-line"
 # a nearby curve) to two-source standard, so no "junction" role or branch
 # detail is asserted here. Left as a plain major stop; Task 12.2 should do
 # its own verification for that branch.
+# RESOLVED in chiltern-aylesbury.toml (see its Oxford-branch comment,
+# around its "IMPORTANT CORRECTION" paragraph): the Oxford branch actually
+# leaves via a purpose-built chord near Bicester Village, not through
+# Bicester North itself.
 
 [[stations]]
 crs = "BAN"
@@ -138,6 +142,8 @@ segment = "chiltern-birmingham-approach"
 # the xc-manchester.toml/xc-south-coast.toml "station overlap is fine"
 # precedent. CrossCountry's Birmingham hub segment (xc-birmingham) touches
 # neither Moor Street nor Snow Hill at all: XC uses New Street.
+# TIPLOC confirmed against railwaycodes.org.uk's crsb.shtm CRS/NLC/TIPLOC/
+# STANOX table, which lists TIPLOC=BHAMMRS for this station.
 
 [[stations]]
 crs = "BSW"
@@ -171,6 +177,15 @@ segment = "chiltern-stratford-branch"
 
 [[stations]]
 crs = "SAV"
-tiploc = "SOAV"
 role = "terminus"
 segment = "chiltern-stratford-branch"
+# TIPLOC omitted: a focused verification pass (railwaycodes.org.uk's
+# crss.shtm CRS/NLC/TIPLOC/STANME/STANOX table, Wikipedia, and a couple of
+# other rail-reference sites) couldn't confirm a real TIPLOC for this
+# station to a reasonable standard in the time available (the
+# railwaycodes.org.uk page content available to this pass was truncated
+# before reaching "Stratford-upon-Avon" alphabetically, and the previously
+# asserted "SOAV" wasn't corroborated anywhere else) - deleted rather than
+# guessed, per SCHEMA.md's optional-field precedent (also used by
+# merseyrail-northern.toml, which omits TIPLOCs entirely for the same
+# reason).

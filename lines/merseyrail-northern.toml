@@ -149,7 +149,12 @@ role = "minor"
 segment = "merseyrail-northern-southport"
 
 # --- Core trunk: Sandhills (Southport junction) through central Liverpool
-# to Hunts Cross. All three branches use this section. ---
+# to Hunts Cross. Only the Southport branch runs the full length of this
+# section: Southport services continue through to Hunts Cross, while
+# Ormskirk and Kirkby/Headbolt Lane services join it as far as central
+# Liverpool but terminate there rather than continuing south (per this
+# file's own `destination_crs_filter` above, which lists OMS and HBL as
+# destinations in their own right, distinct from the SOP<->HNX pairing). ---
 [[stations]]
 crs = "SDL"
 role = "junction"

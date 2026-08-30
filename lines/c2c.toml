@@ -18,10 +18,9 @@ delay_threshold_minutes = 4
 # Standalone line: nationalised (previously franchised) c2c operates a
 # single, largely self-contained route between Fenchurch Street and
 # Shoeburyness. Per the 2026-08-29 line-coverage gap analysis, no segment
-# here is shared with any other file in the catalogue — the only station
-# also served by another line's *stations* list is Barking, and no other
-# line's segment reaches Barking (checked via `grep -h 'segment = '
-# lines/*.toml`, and no line touches CRS `BKG`). Both segments below
+# here is shared with any other file in the catalogue — no other line in
+# the catalogue touches Barking at all (confirmed via `grep -h 'crs = "BKG"'
+# lines/*.toml`: CRS `BKG` appears only in this file). Both segments below
 # (`c2c-main-line`, `c2c-ockendon-loop`) are therefore exclusive to this
 # file — no shared-trunk regression test is included, only the
 # exclusive-segment assertion (see the plan's Global Constraints:
@@ -45,6 +44,9 @@ crs = "FST"
 tiploc = "FENCHRS"
 role = "terminus"
 segment = "c2c-main-line"
+# TIPLOC confirmed against railwaycodes.org.uk's crsf.shtm CRS/NLC/TIPLOC/
+# STANME/STANOX table, which lists TIPLOC=FENCHRS (distinct from the
+# STANME column's "FENCHURST").
 
 [[stations]]
 crs = "LHS"

@@ -93,12 +93,18 @@ segment = "chiltern-aylesbury-branch"
 
 [[stations]]
 crs = "AMR"
-tiploc = "AMERSHAM"
+tiploc = "AMERSHM"
 role = "major"
 segment = "chiltern-aylesbury-branch"
 # Northern terminus of the shared Metropolitan line trackage - some
 # Underground services terminate here while Chiltern's National Rail
 # service continues alone towards Aylesbury.
+# TIPLOC corrected from an earlier "AMERSHAM" (8 chars, invalid - TIPLOCs
+# are max 7 chars and this was the sole 8-char outlier across the whole
+# catalogue) to "AMERSHM", confirmed against railwaycodes.org.uk's crsa.shtm
+# CRS/NLC/TIPLOC/STANME/STANOX table, which lists TIPLOC=AMERSHM distinct
+# from the STANME column's "AMERSHAM" (the likely source of the original
+# find-replace-style error).
 
 [[stations]]
 crs = "GMN"
