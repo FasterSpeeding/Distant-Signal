@@ -316,12 +316,16 @@ mod tests {
     // `tfw-conwy-valley` is, at this point in the line catalogue, a
     // genuinely standalone line: it uses a single whole-line segment name
     // and no other file in the catalogue shares it yet.
-    // `tfw-north-wales-coast.toml` (Task 11.4, the one real shared-trunk
-    // candidate at Llandudno Junction) does not exist yet, so there's no
-    // sibling-line propagation assertion to write here -- only the
-    // exclusive-segment case applies. See the comments in
-    // `lines/tfw-conwy-valley.toml` for the forward-bet segment name Task
-    // 11.4 is expected to read and decide on.
+    // `tfw-north-wales-coast.toml` (Task 11.4) now exists and also reaches
+    // Llandudno Junction, but Task 11.4 deliberately ruled that overlap
+    // "station-overlap-only" rather than a genuine shared trunk (the Conwy
+    // Valley Line diverges south immediately at the junction, with no track
+    // actually shared by both lines' services beyond that one calling
+    // point) -- so the two files use distinct segment names there and this
+    // remains an exclusive-segment case for Conwy Valley. See
+    // `lines/tfw-north-wales-coast.toml`'s comments for the full reasoning,
+    // and `llj_station_overlap_matches_both_lines_as_exclusive` below for
+    // the assertion that exercises the overlap itself.
     #[test]
     fn conwy_valley_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -337,5 +341,56 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["tfw-conwy-valley".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `tfw-north-wales-coast` (Task 11.4). An incident on a station well
+    // away from the Llandudno Junction overlap should match only this line,
+    // as `MatchScope::ExclusiveSegment` -- e.g. Rhyl.
+    #[test]
+    fn north_wales_coast_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "VT-1",
+            "Signal failure at Rhyl",
+            "Signal failure causing delays to services on the North Wales Coast Line.",
+            &["AW"],
+            &["RHL"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tfw-north-wales-coast".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Llandudno Junction is on both `tfw-conwy-valley` and
+    // `tfw-north-wales-coast`, but Task 11.4 ruled that overlap
+    // station-overlap-only rather than a shared trunk (see the comment
+    // above `conwy_valley_exclusive_segment_incident_does_not_propagate`
+    // and the comments in `lines/tfw-north-wales-coast.toml`). So an
+    // incident there should match both lines independently, each still
+    // classified as `MatchScope::ExclusiveSegment` (not `SharedSegment` --
+    // that scope only applies when a segment name is genuinely shared
+    // across line files, which is deliberately not the case here).
+    #[test]
+    fn llj_station_overlap_matches_both_lines_as_exclusive() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-5",
+            "Points failure at Llandudno Junction",
+            "Points failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["LLJ"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["tfw-conwy-valley".to_string(), "tfw-north-wales-coast".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment", m.line.id);
+        }
     }
 }
