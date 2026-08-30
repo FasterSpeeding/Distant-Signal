@@ -53,7 +53,24 @@ sample_stations = ["STO", "WML", "MAN"]
 
 # London Euston to Manchester Piccadilly, ordered south-east to north-west
 # along the shared spine, then as two diverging branches, then the shared
-# final approach into Manchester Piccadilly.
+# final approach into Manchester Piccadilly. Because of the reconverging Y
+# shape, this file order is NOT strictly geographic once the branches
+# start (STO/MAC, the Stoke-on-Trent branch, are listed before CRE/WML,
+# the Crewe/Wilmslow branch, purely as a narrative choice -- see the
+# per-branch comments below).
+#
+# Caveat for future maintainers: `common::LineDefinition::stations_between`
+# does an index-range lookup over this flat, file-ordered list (the
+# mechanism behind `SCHEMA.md`'s "if A appears before B in your station
+# list, every station between A and B is implicated" curation rule). That
+# assumes a single straight line of stations; it is NOT safe to call
+# across this file's two branches. E.g. `stations_between("STO", "MAN")`
+# would incorrectly include CRE and WML, which sit between STO and MAN in
+# file order but are on the *other*, physically unaffected branch. This
+# function has no call sites anywhere in the workspace today, so there's
+# no live bug -- but if it's ever wired up, a caller crossing both
+# branches of this file needs its own handling (out of this file's scope
+# to fix; flagged here so it isn't rediscovered the hard way).
 #
 # EUS through STA reuse `west-coast-main-line.toml`'s own `wcml-london`/
 # `wcml-midlands` segment tags verbatim (same trunk-sharing pattern
