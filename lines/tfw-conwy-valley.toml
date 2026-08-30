@@ -4,7 +4,7 @@ mode = "national-rail"
 category = "regional"
 operators = ["AW"]
 
-destination_crs_filter = ["BFF"]
+destination_crs_filter = ["LLJ", "BFF"]
 sample_stations = ["LLJ", "BYC", "BFF"]
 match_keywords = ["Conwy Valley Line"]
 
