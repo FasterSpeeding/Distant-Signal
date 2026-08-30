@@ -548,4 +548,36 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["hull-trains".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    #[test]
+    fn lumo_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Falkirk High sits on `lumo-glasgow`, exclusive to `lumo` — no
+        // other line in this catalogue has a station at Falkirk High, so
+        // this should stay exclusive and not propagate anywhere else. Per
+        // the task brief (the same standalone-operator exception
+        // `grand-central.toml` and `hull-trains.toml` already established
+        // for their own relationship to LNER), no shared-trunk test against
+        // any `lner-*.toml` file is required for Lumo: `lumo.toml`'s
+        // station-level overlap with `lner-ecml.toml` (King's Cross,
+        // Stevenage, Newcastle, Morpeth, Edinburgh Waverley, Haymarket) is
+        // deliberate and documented, not a forced shared segment. None of
+        // those shared stations are used here, so no pre-existing test
+        // needed updating for this task (unlike Task 6.6's Selby situation
+        // with `lner-hull.toml`) — checked: no other test in this file
+        // references King's Cross, Stevenage, Newcastle, Morpeth, Edinburgh
+        // Waverley or Haymarket.
+        let inc = incident(
+            "LD-1",
+            "Signal failure at Falkirk High",
+            "Signal failure causing delays to services at Falkirk High.",
+            &["LD"],
+            &["FKK"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["lumo".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
