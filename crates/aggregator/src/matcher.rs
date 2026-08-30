@@ -314,6 +314,58 @@ mod tests {
     }
 
     #[test]
+    fn lner_hull_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Selby sits on `lner-hull`, exclusive to this file — the real
+        // physical divergence from the ECML is Temple Hirst Junction
+        // (north of Doncaster, no CRS code), but the shared trunk still
+        // ends at Doncaster per `lner-ecml.toml`'s own instruction (see
+        // that file's DON entry and this file's comments), so Selby is
+        // this branch's first exclusive station.
+        let inc = incident(
+            "LNER-4",
+            "Signal failure at Selby",
+            "Signal failure causing delays to services at Selby.",
+            &["GR"],
+            &["SBY"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["lner-hull".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn lner_hull_doncaster_shared_trunk_propagates_to_ecml() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Doncaster is `ecml-doncaster`, shared between `lner-ecml` and
+        // `lner-hull` (both run over the same ECML trunk to Doncaster
+        // before the Hull branch peels off toward Selby/Brough). Mirrors
+        // `lner_leeds_doncaster_shared_trunk_propagates_to_ecml` above;
+        // `lner-leeds` also shares this segment, so it's expected to show
+        // up here too, but only `lner-ecml`/`lner-hull` are asserted since
+        // that's what this test is about.
+        let inc = incident(
+            "LNER-5",
+            "Points failure at Doncaster",
+            "Points failure causing disruption to services through Doncaster.",
+            &["GR"],
+            &["DON"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("lner-ecml"));
+        assert!(matched_ids.contains("lner-hull"));
+        for m in &matches {
+            if m.line.id.starts_with("lner-") {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
+        }
+    }
+
+    #[test]
     fn lner_leeds_station_overlap_at_leeds_does_not_share_northern_segment() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
