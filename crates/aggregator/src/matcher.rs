@@ -908,4 +908,85 @@ mod tests {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
         }
     }
+
+    // Task 5.10 (great-northern-kings-lynn.toml). No shared-segment test is
+    // added for the LNER pairing documented in that file's own LNER HAND-OFF
+    // comment (`gn-ecml-slow-lines`) - `lines/lner-ecml.toml` (Batch 6) is
+    // being written in a separate, parallel git worktree and does not exist
+    // here, so a test asserting it would fail. Add that test once both
+    // files exist and Batch 6 confirms whether it reuses the segment name.
+    //
+    // This confirms the direct Peterborough branch (diverging from the
+    // Cambridge/King's Lynn branch at Hitchin - see that file's own
+    // CAMBRIDGE/KING'S LYNN comment) stays exclusive to this line, same
+    // pattern as swr_exclusive_segment_incident_does_not_propagate and
+    // elizabeth_branch_incident_stays_on_its_branch above.
+    #[test]
+    fn gn_kings_lynn_peterborough_branch_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "GN-1",
+            "Signal failure at Huntingdon",
+            "Signal failure causing delays to GN train services.",
+            &["GN"],
+            &["HUN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["great-northern-kings-lynn".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 5.10. Same for the Cambridge/King's Lynn branch (the other
+    // branch past Hitchin) - an incident there should also stay exclusive
+    // to this line, and shouldn't spuriously pull in the direct Peterborough
+    // branch's own segment name either (the two branches use different
+    // segment names despite being the same file/line).
+    #[test]
+    fn gn_kings_lynn_cambridge_branch_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "GN-2",
+            "Points failure at Baldock",
+            "Points failure causing delays to GN train services.",
+            &["GN"],
+            &["BDK"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["great-northern-kings-lynn".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 5.10. Cambridge (CBG) is also xc-stansted.toml's own terminus,
+    // reached via a physically distinct route (Ely/March, not Hitchin/
+    // Royston) - per that file's own STATION OVERLAP comment, this is
+    // station overlap only, not a shared trunk. Confirms an incident there
+    // matches both lines independently, each still scoped ExclusiveSegment,
+    // never SharedSegment - same pattern as
+    // vic_station_overlap_matches_brighton_main_line_chatham_and_oxted_uckfield_as_independent_exclusive_segments
+    // above.
+    #[test]
+    fn cbg_station_overlap_matches_great_northern_kings_lynn_and_xc_stansted_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "GN-3",
+            "Signal failure at Cambridge",
+            "Signal failure causing delays to train services.",
+            &["GN"],
+            &["CBG"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["great-northern-kings-lynn".to_string(), "xc-stansted".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
 }
