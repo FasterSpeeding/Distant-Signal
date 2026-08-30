@@ -276,6 +276,40 @@ mod tests {
     }
 
     #[test]
+    fn elizabeth_heathrow_incident_stays_exclusive_of_heathrow_express() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Final review, Fix #4: the mirror of
+        // `heathrow_express_incident_stays_exclusive_of_elizabeth_heathrow`
+        // above. HWV is a real station on BOTH `heathrow-express` and
+        // `elizabeth-heathrow`. Without `heathrow-express.toml`'s new
+        // `excluded_keywords = ["Elizabeth line", "Piccadilly line"]` veto,
+        // an incident like this one (which names the Elizabeth line in its
+        // text and hits a station both lines share) would station-hit-match
+        // `heathrow-express` too. `elizabeth-line` (the trunk file) also
+        // legitimately keyword-matches this incident via its own
+        // `match_keywords = ["Elizabeth line", ...]`, unrelated to this
+        // fix -- not asserted against here, since it's not what this test
+        // is about.
+        let inc = incident(
+            "XR-2",
+            "Signal failure at Heathrow Terminal 5",
+            "A signal failure is causing delays to Elizabeth line services near Heathrow Terminal 5.",
+            &["XR"],
+            &["HWV"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(
+            !matched_ids.contains("heathrow-express"),
+            "heathrow-express should be vetoed by its own excluded_keywords, not station-match HWV"
+        );
+        assert!(matched_ids.contains("elizabeth-heathrow"));
+        let eh_match = matches.iter().find(|m| m.line.id == "elizabeth-heathrow").expect("elizabeth-heathrow should match");
+        assert_eq!(eh_match.scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
     fn swr_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
@@ -442,10 +476,18 @@ mod tests {
     fn lner_lincoln_newark_northgate_shared_trunk_propagates_to_ecml() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
-        // Newark Northgate is `ecml-fenland`, shared between `lner-ecml`
-        // and `lner-lincoln` (both run over the same ECML trunk to Newark
-        // Northgate before the Lincoln branch peels off onto the
-        // Nottingham-Lincoln line at the Newark flat crossing).
+        // Newark Northgate is `ecml-fenland`, shared between ALL FOUR of
+        // `lner-ecml`, `lner-hull`, `lner-leeds` and `lner-lincoln` today
+        // (all run over the same ECML trunk to/through Newark Northgate
+        // before their own branches peel off further north or, for
+        // Lincoln, at the Newark flat crossing right here) -- confirmed by
+        // grepping each `lner-*.toml` file's own NNG entry. Final review,
+        // Fix #5: tightened from the previous `contains`-based partial
+        // assertion (which only checked `lner-ecml`/`lner-lincoln`) to
+        // exact `HashSet` equality, matching the Global Constraint's own
+        // wording ("matches every line sharing it") more literally, mirrors
+        // `xc_hub_incident_propagates_to_every_cross_country_arm`'s style
+        // above.
         let inc = incident(
             "LNER-7",
             "Points failure at Newark Northgate",
@@ -455,12 +497,17 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert!(matched_ids.contains("lner-ecml"));
-        assert!(matched_ids.contains("lner-lincoln"));
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "lner-ecml".to_string(),
+                "lner-hull".to_string(),
+                "lner-leeds".to_string(),
+                "lner-lincoln".to_string(),
+            ])
+        );
         for m in &matches {
-            if m.line.id.starts_with("lner-") {
-                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
-            }
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
         }
     }
 

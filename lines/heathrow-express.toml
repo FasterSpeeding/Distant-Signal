@@ -26,6 +26,18 @@ match_keywords = ["Heathrow Express"]
 # place now that this file exists, and this file's own segment-naming
 # discussion for why no `excluded_keywords` entry is added here in the
 # other direction.
+#
+# Final review, Fix #4: the original required re-check only reasoned about
+# one direction (whether `elizabeth-heathrow.toml` should still exclude
+# "Heathrow Express" -- concluded yes). The mirror direction was missed: an
+# Elizabeth-line-only incident naming a Heathrow station could now
+# station-match this file too, once/if station-level matching (`has_station`
+# without a segment classification, i.e. Tier 1's `StationHit` fallback) is
+# live for these shared PAD/HXX/HWV stations. Mirroring
+# `elizabeth-heathrow.toml`'s own exclusion list closes that gap
+# symmetrically -- both risks (Elizabeth line and Piccadilly line each
+# serving the same terminals as Heathrow Express) apply in both directions.
+excluded_keywords = ["Elizabeth line", "Piccadilly line"]
 
 [severity_overrides]
 minor_delays_pct = 0.20
@@ -124,12 +136,21 @@ delay_threshold_minutes = 4
 # comment already describes. Demonstrated directly by
 # `heathrow_express_incident_stays_exclusive_of_elizabeth_heathrow` in
 # `crates/aggregator/src/matcher.rs`, which shows the veto is still live and
-# still doing necessary work with this file in place. Conversely, no
-# `excluded_keywords` entry is added to THIS file for "Elizabeth line" or
-# similar: no evidence was found of Elizabeth-line-branded Knowledgebase
-# text plausibly being confused for Heathrow Express (the reverse direction
-# the original exclusion guards against does not have a mirrored, evidenced
-# risk here).
+# still doing necessary work with this file in place.
+#
+# UPDATE (final review, Fix #4): the re-check above only reasoned about one
+# direction. The mirror was missed: an Elizabeth-line-only incident naming a
+# shared Heathrow station could station-match THIS file too, once/if
+# station-level matching is live for these shared PAD/HXX/HWV stations.
+# This file now carries its own `excluded_keywords = ["Elizabeth line",
+# "Piccadilly line"]`, mirroring `elizabeth-heathrow.toml`'s list, closing
+# that gap symmetrically. Residual limitation, documented rather than fixed
+# here: `is_excluded` is a whole-line veto, so a genuine incident affecting
+# BOTH the Elizabeth line and Heathrow Express simultaneously (e.g. a shared
+# Terminal 5 infrastructure failure) would now have one side silently
+# dropped by the other's exclusion list. This is an accepted, documented
+# tradeoff -- precision over recall for the rare both-affected case -- not
+# an oversight.
 # ---------------------------------------------------------------------
 
 [[stations]]
