@@ -707,15 +707,18 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
-    // Task 5.7. Brighton (BTN) is also southern-brighton-main-line.toml's
-    // own terminus, but per this file's own header comment that's station
-    // overlap only (the two lines diverge immediately east of Brighton
-    // onto physically different routes, and use different segment names -
-    // `coastway-east-brighton` here vs `southern-bml-victoria`/
-    // `southern-bml-south` there) - same judgment call as the LBG overlaps
-    // exercised above. Confirms an incident at Brighton matches both lines
-    // independently, each still scoped ExclusiveSegment, never
-    // SharedSegment.
+    // Task 5.7, updated by Task 5.8. Brighton (BTN) is also
+    // southern-brighton-main-line.toml's own terminus, but per this file's
+    // own header comment that's station overlap only (the two lines
+    // diverge immediately east of Brighton onto physically different
+    // routes, and use different segment names - `coastway-east-brighton`
+    // here vs `southern-bml-victoria`/`southern-bml-south` there) - same
+    // judgment call as the LBG overlaps exercised above. Task 5.8
+    // (southern-coastway-west.toml) added a third line at this same
+    // station (its own `coastway-west-brighton` segment, diverging west
+    // out of Brighton) - see that file's own header comment. Confirms an
+    // incident at Brighton matches all three lines independently, each
+    // still scoped ExclusiveSegment, never SharedSegment.
     #[test]
     fn btn_station_overlap_matches_coastway_east_and_brighton_main_line_as_independent_exclusive_segments() {
         let lines = load_all_lines();
@@ -731,7 +734,76 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["southern-coastway-east".to_string(), "southern-brighton-main-line".to_string()])
+            HashSet::from([
+                "southern-coastway-east".to_string(),
+                "southern-brighton-main-line".to_string(),
+                "southern-coastway-west".to_string(),
+            ])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    // Task 5.8 (southern-coastway-west.toml). An incident on this line's
+    // own exclusive `coastway-west-brighton` segment (a station no other
+    // curated file touches) should stay exclusive to this line alone -
+    // mirrors swr_exclusive_segment_incident_does_not_propagate and
+    // coastway_east_exclusive_segment_incident_does_not_propagate above.
+    // This line shares no segment name with any sibling file (its two
+    // real overlaps - Brighton with southern-brighton-main-line.toml/
+    // southern-coastway-east.toml, and Havant/Portsmouth with
+    // swr-portsmouth-direct.toml - are both deliberately station overlap
+    // only, per this file's own header comment), so no SharedSegment
+    // propagation test is added for this line, per COMMON.md's own "skip
+    // only for a genuinely standalone line" exception - the two station-
+    // overlap tests below exercise both real overlaps instead.
+    #[test]
+    fn coastway_west_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SN-4",
+            "Signal failure at Chichester",
+            "Signal failure causing delays to Southern services.",
+            &["SN"],
+            &["CCH"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["southern-coastway-west".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 5.8. Havant (HAV) is also swr-portsmouth-direct.toml's own
+    // station (on that file's `swr-portsmouth-direct` segment). Per this
+    // file's own STATION-OVERLAP AT HAVANT/PORTSMOUTH header comment: this
+    // is genuine physical track-sharing (Southern's West Coastway stopping
+    // service and SWR's Portsmouth Direct service both run Havant-
+    // Bedhampton-Hilsea-Fratton-Portsmouth into Portsmouth), but per the
+    // cross-operator precedent xc-south-coast.toml/xc-manchester.toml
+    // already set, segment names are only reused between sibling lines of
+    // the SAME operator - SN and SW are different operators, so this is
+    // treated as station overlap, not a shared trunk, same judgment call
+    // as the AFK/Ramsgate overlaps between Southeastern and HS1 above.
+    // Confirms an incident at Havant matches both lines independently,
+    // each still scoped ExclusiveSegment, never SharedSegment.
+    #[test]
+    fn hav_station_overlap_matches_coastway_west_and_swr_portsmouth_direct_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SN-5",
+            "Signal failure at Havant",
+            "Signal failure causing delays to services.",
+            &["SN"],
+            &["HAV"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["southern-coastway-west".to_string(), "swr-portsmouth-direct".to_string()])
         );
         for m in &matches {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
