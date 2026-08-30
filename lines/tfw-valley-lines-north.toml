@@ -93,8 +93,21 @@ delay_threshold_minutes = 5
 #
 # Branch-grouping research (the task brief's explicit invitation to verify
 # or deviate from the plan's 4-way Rhymney/Merthyr/Aberdare/Treherbert
-# split): confirmed sound, not a deviation. Wikipedia's current umbrella
-# article ("Valleys & Cardiff Local Routes") describes Transport for Wales's
+# split): confirmed sound, not a deviation. Note this file deliberately
+# breaks from this catalogue's usual one-file-per-named-branch pattern for
+# multi-branch operators (`northern.toml`, `west-coast-main-line.toml`,
+# `elizabeth-line.toml`, `thameslink-core.toml` each split into one file per
+# named branch, with a shared trunk segment tying them together). That's not
+# an oversight here: both this task's own plan bullet and the gap-analysis
+# document's TfW section frame the Cardiff Valley Lines as "structurally
+# more like Merseyrail's two-line metro than a long-distance route", and
+# Merseyrail's own line file bundles multiple named branches (Kirkby,
+# Ormskirk) into one `id` the same way this file bundles Rhymney, Merthyr,
+# Aberdare and Rhondda/Treherbert -- a dense commuter metro radiating from
+# one city-centre hub, not a spine-and-arms long-distance network, is this
+# catalogue's actual dividing line for the one-file-per-branch convention.
+# Wikipedia's current umbrella article ("Valleys & Cardiff Local Routes")
+# describes Transport for Wales's
 # June 2024 timetable as chaining individual *train workings* end-to-end
 # across Cardiff in ways that cross this file's own boundary -- e.g. Rhymney
 # services continuing onto the Vale of Glamorgan Line toward Bridgend/Barry
