@@ -538,6 +538,15 @@ mod tests {
     // file's own header comment for why this is station overlap, not a
     // shared trunk, with every other line here), so it now joins this set
     // as a sixth independent exclusive-segment match.
+    // Updated by Task 5.14 (thameslink-southern.toml): that file's own
+    // Brighton branch also meets London Bridge here, and - unlike every
+    // other line in this set - genuinely reuses
+    // southern-brighton-main-line.toml's own `southern-bml-north` segment
+    // name (independently re-verified, not just assumed - see that file's
+    // own BRIGHTON BRANCH header comment). So thameslink-southern and
+    // southern-brighton-main-line are now a genuine SharedSegment pair at
+    // LBG, while the other four lines remain independent ExclusiveSegment
+    // station-overlap matches, unaffected.
     #[test]
     fn lbg_station_overlap_matches_senk_thameslink_core_seml_and_hayes_as_independent_exclusive_segments() {
         let lines = load_all_lines();
@@ -560,10 +569,16 @@ mod tests {
                 "southeastern-hayes-line".to_string(),
                 "southern-brighton-main-line".to_string(),
                 "southern-oxted-uckfield".to_string(),
+                "thameslink-southern".to_string(),
             ])
         );
         for m in &matches {
-            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+            let expected = if m.line.id == "southern-brighton-main-line" || m.line.id == "thameslink-southern" {
+                MatchScope::SharedSegment
+            } else {
+                MatchScope::ExclusiveSegment
+            };
+            assert_eq!(m.scope, expected, "{} should be {:?}", m.line.id, expected);
         }
     }
 
@@ -632,7 +647,15 @@ mod tests {
     // when this test was first written - that overlap is now covered
     // separately by
     // btn_station_overlap_matches_coastway_east_and_brighton_main_line_as_independent_exclusive_segments
-    // below. HSK remains exclusive to this line.
+    // below. HSK remains exclusive to `southern-bml-south`.
+    //
+    // Updated by Task 5.14 (thameslink-southern.toml): that file's own
+    // Brighton branch also calls at Hassocks, on its own `thameslink-
+    // brighton` segment - deliberately NOT the same name as this line's own
+    // `southern-bml-south` (see thameslink-southern.toml's own PAST EAST
+    // CROYDON header comment for why that lead was documented but not
+    // acted on), so this is a second independent ExclusiveSegment match,
+    // not a SharedSegment one.
     #[test]
     fn southern_bml_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -646,8 +669,13 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["southern-brighton-main-line".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["southern-brighton-main-line".to_string(), "thameslink-southern".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
     }
 
     // Task 5.6. NOTE ON WHAT THIS ACTUALLY PROVES (corrected after review -
@@ -671,6 +699,12 @@ mod tests {
     // `belongs_to_line` - is exercised by a separate test,
     // `belongs_to_line_gatwick_express_operator_folds_in_via_operators_list`
     // in `aggregation.rs`, which WOULD fail without `GX` in `operators`.
+    //
+    // Updated by Task 5.14 (thameslink-southern.toml): that file's own
+    // Brighton branch also calls at Preston Park, on its own
+    // `thameslink-brighton` segment - a second independent ExclusiveSegment
+    // station-overlap match, same reasoning as
+    // southern_bml_exclusive_segment_incident_does_not_propagate above.
     #[test]
     fn southern_bml_station_hit_matches_regardless_of_gx_or_sn_operator_tag() {
         let lines = load_all_lines();
@@ -684,8 +718,13 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["southern-brighton-main-line".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["southern-brighton-main-line".to_string(), "thameslink-southern".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
     }
 
     // Task 5.7 (southern-coastway-east.toml). An incident on this line's
@@ -727,6 +766,14 @@ mod tests {
     // out of Brighton) - see that file's own header comment. Confirms an
     // incident at Brighton matches all three lines independently, each
     // still scoped ExclusiveSegment, never SharedSegment.
+    // Updated by Task 5.14 (thameslink-southern.toml): that file's own
+    // Brighton branch also terminates at Brighton, on its own
+    // `thameslink-brighton` segment - deliberately NOT the same name as
+    // southern-brighton-main-line.toml's own `southern-bml-south` here (see
+    // that file's own PAST EAST CROYDON header comment for why the
+    // southern-bml-south sharing lead found past East Croydon was
+    // documented but not acted on), so this remains a fourth independent
+    // ExclusiveSegment station-overlap match, not a SharedSegment one.
     #[test]
     fn btn_station_overlap_matches_coastway_east_and_brighton_main_line_as_independent_exclusive_segments() {
         let lines = load_all_lines();
@@ -746,6 +793,7 @@ mod tests {
                 "southern-coastway-east".to_string(),
                 "southern-brighton-main-line".to_string(),
                 "southern-coastway-west".to_string(),
+                "thameslink-southern".to_string(),
             ])
         );
         for m in &matches {
@@ -1238,6 +1286,217 @@ mod tests {
         assert_eq!(
             matched_ids,
             HashSet::from(["great-northern-kings-lynn".to_string(), "thameslink-cambridge".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    // Task 5.14 (thameslink-southern.toml). An incident on this line's own
+    // exclusive Catford Loop stretch (`thameslink-sevenoaks-catford`,
+    // between Elephant & Castle and the rejoin with the Chatham Main Line
+    // at Shortlands - see that segment below) should stay exclusive to
+    // this line alone - mirrors swr_exclusive_segment_incident_does_not_propagate
+    // and elizabeth_branch_incident_stays_on_its_branch above.
+    #[test]
+    fn thameslink_sevenoaks_catford_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TL-4",
+            "Signal failure at Catford",
+            "Signal failure causing delays to train services.",
+            &["TL"],
+            &["CTF"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["thameslink-southern".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 5.14. The Sutton Loop (`thameslink-sutton-loop`) is exclusive to
+    // this line everywhere except the single Wimbledon station overlap
+    // (see wim_station_overlap_matches_swr_trunk_and_thameslink_southern_
+    // as_independent_segments below) - an incident elsewhere on the loop
+    // should stay exclusive, mirroring the Catford Loop test above.
+    #[test]
+    fn thameslink_sutton_loop_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TL-5",
+            "Signal failure at Sutton Common",
+            "Signal failure causing delays to train services.",
+            &["TL"],
+            &["SUC"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["thameslink-southern".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 5.14. Genuine physical track sharing exists here (the Sevenoaks
+    // branch's Catford Loop stretch rejoins the Chatham Main Line at
+    // Shortlands and shares track with southeastern-chatham.toml's own
+    // approach as far as Swanley - see thameslink-southern.toml's own
+    // header comment), but it is deliberately NOT modelled as a
+    // SharedSegment: southeastern-chatham.toml's own `chatham-london`
+    // segment bundles this stretch together with its own Victoria-Herne
+    // Hill approach (which this file's Sevenoaks branch never touches), so
+    // reusing that name verbatim would incorrectly also mark Victoria/BKJ/
+    // Herne Hill as SharedSegment - exactly the trap
+    // thameslink-cambridge.toml's own OVERLAP (a)/(b) comment warns about.
+    // Confirms an incident at Swanley matches both lines independently,
+    // each still scoped ExclusiveSegment, never SharedSegment - mirrors
+    // bfr_station_overlap_matches_thameslink_core_and_thameslink_southern_
+    // as_independent_exclusive_segments above.
+    #[test]
+    fn say_station_overlap_matches_chatham_and_thameslink_southern_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TL-6",
+            "Signal failure at Swanley",
+            "Signal failure causing delays to train services.",
+            &["TL"],
+            &["SAY"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["southeastern-chatham".to_string(), "thameslink-southern".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    // Task 5.14. This is the REQUIRED shared-segment regression test for
+    // the flagged Task 5.6 coordination: `southern-bml-north` is reused
+    // verbatim between southern-brighton-main-line.toml and this file for
+    // the London Bridge/East Croydon stretch, per thameslink-southern.toml's
+    // own BRIGHTON BRANCH header comment (independently re-verified against
+    // a non-Wikipedia source, clearing the bar Task 5.6 itself could not
+    // clear alone). southern-oxted-uckfield.toml also has its own,
+    // differently-named, exclusive segment at East Croydon
+    // (`oxted-trunk`) - included here via `contains` rather than an exact
+    // set, mirroring swr_shared_trunk_incident_propagates above, since that
+    // third line's own independent ExclusiveSegment match at this station
+    // isn't what this test is checking.
+    #[test]
+    fn southern_bml_north_shared_trunk_incident_propagates_to_thameslink_southern() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TL-7",
+            "Signal failure at East Croydon",
+            "Signal failure causing delays to train services.",
+            &["TL"],
+            &["ECR"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("thameslink-southern"));
+        assert!(matched_ids.contains("southern-brighton-main-line"));
+        for m in &matches {
+            if m.line.id == "thameslink-southern" || m.line.id == "southern-brighton-main-line" {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
+        }
+    }
+
+    // Task 5.14. Blackfriars is this file's own core-boundary junction for
+    // the Sevenoaks/Sutton Loop branches (`thameslink-southern-widened-lines`)
+    // and also thameslink-core.toml's own station (`thameslink-core`) -
+    // station overlap only, same judgment call as every other core-boundary
+    // overlap in this batch (STP in thameslink-bedford.toml/
+    // thameslink-cambridge.toml, LBG above) - mirrors
+    // stp_station_overlap_matches_thameslink_core_bedford_and_highspeed_as_independent_exclusive_segments
+    // above.
+    #[test]
+    fn bfr_station_overlap_matches_thameslink_core_and_thameslink_southern_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TL-8",
+            "Signal failure at Blackfriars",
+            "Signal failure causing delays to train services.",
+            &["TL"],
+            &["BFR"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["thameslink-core".to_string(), "thameslink-southern".to_string()]));
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    // Task 5.14. Wimbledon is this file's own Sutton Loop station
+    // (`thameslink-sutton-loop`, reached via Haydons Road) and also all
+    // three SWR files' own shared `swr-trunk-waterloo` station (reached via
+    // Clapham Junction) - a physically distinct approach, so station
+    // overlap only against the SWR trio, not a fourth member of their own
+    // shared trunk. Confirms an incident at Wimbledon still propagates
+    // across the three SWR lines as SharedSegment (mirrors
+    // swr_shared_trunk_incident_propagates above) while this file's own
+    // match stays independently ExclusiveSegment.
+    #[test]
+    fn wim_station_overlap_matches_swr_trunk_and_thameslink_southern_as_independent_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TL-9",
+            "Signal failure at Wimbledon",
+            "Signal failure causing delays to train services.",
+            &["TL"],
+            &["WIM"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "swr-south-west-main".to_string(),
+                "swr-portsmouth-direct".to_string(),
+                "swr-alton".to_string(),
+                "thameslink-southern".to_string(),
+            ])
+        );
+        for m in &matches {
+            if m.line.id == "thameslink-southern" {
+                assert_eq!(m.scope, MatchScope::ExclusiveSegment, "thameslink-southern should be ExclusiveSegment (different segment name)");
+            } else {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
+        }
+    }
+
+    // Task 5.14. Sevenoaks is this file's own branch terminus
+    // (`thameslink-sevenoaks-otford`, reached via Bat & Ball) and also
+    // southeastern-main-line.toml's own station (`seml-weald`, reached via
+    // Dunton Green) - two physically distinct approaches per Sevenoaks
+    // station's own Wikipedia article (see thameslink-southern.toml's own
+    // SEV comment), so station overlap only, not a shared segment.
+    #[test]
+    fn sev_station_overlap_matches_seml_and_thameslink_southern_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TL-10",
+            "Signal failure at Sevenoaks",
+            "Signal failure causing delays to train services.",
+            &["TL"],
+            &["SEV"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["southeastern-main-line".to_string(), "thameslink-southern".to_string()])
         );
         for m in &matches {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
