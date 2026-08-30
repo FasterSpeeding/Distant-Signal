@@ -24,21 +24,35 @@ match_keywords = ["Merseyrail Northern Line"]
 # Central-Liverpool / Wirral Line decision (binding for Task 12.5's
 # merseyrail-wirral.toml, not yet drafted when this file was written):
 # researched via Wikipedia's Liverpool Central, Moorfields and Liverpool
-# James Street station articles, cross-checked against each other. Verdict:
-# STATION-OVERLAP ONLY, not a shared physical trunk, following
+# James Street station articles (mutually consistent), THEN cross-checked
+# against a second, independent, non-Wikipedia source:
+# railwaycodes.org.uk's tunnels database (crs/tunnels2.shtm), which lists
+# two physically and historically distinct tunnels rather than one shared
+# structure: "Great George Street" (cross-referenced as Liverpool Central),
+# 0m 1012y, opened 1874, operator CLC (Cheshire Lines Committee), running
+# between St James and Liverpool Central - the ex-CLC route that the 1977
+# Northern Line "Link" tunnel extends north from; and the "Mersey" tunnel,
+# 1m 350y, opened 1886, operator Mersey (Mersey Railway), between James
+# Street and Birkenhead Central, with a separate "loop extension" (4m 462y)
+# dated 1892 (Hamilton Square-Birkenhead Park) and 1978 (the "Liverpool
+# Deep Level Loop") - the ancestor/extension that the Wirral Line's "Loop"
+# tunnel uses. Different pre-group operators, different opening dates,
+# different physical tunnels; they only meet at the shared station
+# buildings of Liverpool Central and Moorfields, on different platforms
+# (Wikipedia: Northern Line uses Liverpool Central platforms 1-2 and
+# Moorfields' low-level platforms; Wirral Line uses Liverpool Central
+# platform 3 and Moorfields' deep-level platform, via James Street and
+# Lime Street Low Level, neither of which the Northern Line serves - per
+# Liverpool James Street's own article the old Central-James Street link
+# track is kept only for empty-stock moves between depots, not passenger
+# service). Two independent sources agree: no shared running track for
+# revenue service in either direction.
+#
+# Verdict: STATION-OVERLAP ONLY, not a shared physical trunk, following
 # xc-south-coast.toml's precedent (see its Banbury/Leamington Spa
-# comments) rather than the SWR/Chiltern shared-segment pattern. The
-# Northern Line runs through the 1977 "Link" tunnel (Liverpool Central
-# platforms 1-2, low level, continuing to Moorfields then north to
-# Sandhills); the Wirral Line runs through the separate 1977 "Loop" tunnel
-# (Liverpool Central platform 3, deep level, via James Street and Lime
-# Street Low Level). The two tunnels only meet at the shared station
-# buildings of Liverpool Central and Moorfields - different platforms, and
-# per Liverpool James Street's own article the old Central-James Street
-# link is kept only for empty-stock moves between depots, not passenger
-# service. So an infrastructure incident in one tunnel does not run trains
-# on the other. `merseyrail-wirral.toml` should therefore NOT reuse this
-# file's `merseyrail-northern-core` segment name for its own central-Liverpool
+# comments) rather than the SWR/Chiltern shared-segment pattern.
+# `merseyrail-wirral.toml` should therefore NOT reuse this file's
+# `merseyrail-northern-core` segment name for its own central-Liverpool
 # stations; it should tag Liverpool Central/Moorfields with its own
 # exclusive segment, exactly like chiltern-main-line.toml and
 # xc-south-coast.toml both independently tag Banbury. Station-level overlap
