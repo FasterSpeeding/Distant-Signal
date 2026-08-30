@@ -303,6 +303,11 @@ mod tests {
         // branches (via Stoke-on-Trent and via Crewe/Wilmslow) travel over
         // this same shared spine before diverging further north, so it's a
         // real third line affected by this incident, all three SharedSegment.
+        //
+        // `wcml-liverpool.toml` (added after this test was first written)
+        // also reuses `wcml-midlands` at Rugby -- it doesn't diverge from
+        // the spine until Crewe, further north -- so it's a real fourth
+        // line affected by this incident, still SharedSegment.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -316,7 +321,12 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["wcml".to_string(), "wcml-birmingham".to_string(), "wcml-manchester".to_string()])
+            HashSet::from([
+                "wcml".to_string(),
+                "wcml-birmingham".to_string(),
+                "wcml-manchester".to_string(),
+                "wcml-liverpool".to_string(),
+            ])
         );
         for m in &matches {
             assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
@@ -339,6 +349,28 @@ mod tests {
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["wcml-manchester".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn wcml_liverpool_exclusive_segment_incident_does_not_propagate() {
+        // Runcorn is on the exclusive `wcml-liverpool-branch` segment,
+        // starting immediately after the Crewe junction (per the
+        // shared-trunk rule of thumb) -- not shared with any other line's
+        // segment tag, even though `wcml-manchester.toml` also diverges at
+        // Crewe (onto a different physical branch, via Wilmslow).
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "VT-6",
+            "Overhead line damage at Runcorn",
+            "Overhead line damage causing delays to services at Runcorn.",
+            &["VT"],
+            &["RUN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["wcml-liverpool".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 }
