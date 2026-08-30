@@ -299,4 +299,44 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["scotrail-glasgow-suburban".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 10.3 (ScotRail Ayrshire Coast): no other `lines/*.toml` file
+    // touches this line's Glasgow-Ayr trunk or its Girvan/Stranraer branch
+    // yet (see `lines/scotrail-ayrshire.toml`'s own comments), so there is
+    // no shared-segment propagation to assert today -- only exclusive-
+    // segment non-propagation for each of this file's two segments,
+    // mirroring `scotrail_central_belt_exclusive_segment_incident_does_not_propagate`.
+    #[test]
+    fn scotrail_ayrshire_glasgow_ayr_trunk_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-3",
+            "Signal failure at Kilwinning",
+            "Signal failure causing delays to ScotRail services at Kilwinning.",
+            &["SR"],
+            &["KWN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-ayrshire".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn scotrail_ayrshire_stranraer_branch_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-4",
+            "Level crossing fault at Girvan",
+            "Level crossing fault causing delays to ScotRail services at Girvan.",
+            &["SR"],
+            &["GIR"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-ayrshire".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
