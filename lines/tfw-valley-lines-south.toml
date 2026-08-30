@@ -14,7 +14,7 @@ operators = ["AW"]
 # Cardiff Bay have no such ambiguity: nothing continues past either.
 destination_crs_filter = ["COY", "CDB"]
 sample_stations = ["CDQ", "CDF", "COY", "CDB"]
-match_keywords = ["City Line", "Coryton Line", "Cardiff Bay Line"]
+match_keywords = ["Cardiff City Line", "Coryton Line", "Cardiff Bay Line"]
 
 # Sourcing note (same "Wikipedia infobox, fetched station by station, cross-
 # checked against a live verbatim-quoted railwaycodes.org.uk row" standard
@@ -145,19 +145,31 @@ delay_threshold_minutes = 5
 # file made its decision; it has been updated in place in matcher.rs, not
 # left stale -- `tfw-valley-lines-north.toml` itself was not edited).
 #
-# Radyr junction decision: also SHARED, for the same reason, reusing
-# `tfw-valley-lines-north.toml`'s `tfw-valley-taff-trunk` segment name for
-# Radyr alone (not the whole City Line) -- per the shared-trunk rule of
-# thumb, only the junction station itself carries the shared name; the City
+# Radyr junction decision: also SHARED, for the same reason, but via a
+# dedicated Radyr-only segment name, `tfw-valley-radyr-junction`, minted in
+# both files rather than reusing `tfw-valley-lines-north.toml`'s
+# `tfw-valley-taff-trunk` name for Radyr alone. Segment sharing is indexed
+# by name across the whole catalogue, not per-station, so reusing the Taff
+# trunk name here would have falsely flagged the six other, unrelated
+# stations on that trunk (Cathays, Llandaf, Taffs Well, Treforest, Treforest
+# Estate, Pontypridd) as shared too -- this file's City Line never runs
+# through any of them. `tfw-valley-radyr-junction` follows the same
+# single-station-junction pattern `tfw-valley-lines-north.toml` already uses
+# at Abercynon (`tfw-valley-merthyr-aberdare-junction`), which is likewise
+# shared by only the two branches that genuinely meet there. Radyr's own
+# Wikipedia article confirms genuine physical junction: "the station is on
+# the Merthyr Line, and is also the northern terminus of the City Line,"
+# with the City Line historically diverging "immediately south of the
+# station" via its own separate corridor (Waterhall Junction) rather than
+# via the Taff Vale trunk's Llandaf/Cathays route -- i.e. the two corridors
+# genuinely meet only at Radyr's own platforms, not further south. The City
 # Line's own exclusive segment resumes at the next station, Danescourt.
-# Radyr's own Wikipedia article confirms genuine physical junction: "the
-# station is on the Merthyr Line, and is also the northern terminus of the
-# City Line," with the City Line historically diverging "immediately south
-# of the station" via its own separate corridor (Waterhall Junction) rather
-# than via the Taff Vale trunk's Llandaf/Cathays route -- i.e. the two
-# corridors genuinely meet only at Radyr's own platforms, not further south,
-# matching the same shared-trunk-at-the-junction-only pattern
-# `tfw-valley-lines-north.toml` used at Pontypridd and Abercynon.
+#
+# (Post-landing fix note: the original Task 11.7 diff reused
+# `tfw-valley-taff-trunk` verbatim for Radyr, which had exactly the
+# false-sharing effect described above. This was caught in review and fixed
+# by minting `tfw-valley-radyr-junction` here and in
+# `tfw-valley-lines-north.toml`'s own RDR entry.)
 
 # --- Cardiff hub: shared with `tfw-valley-lines-north.toml`'s four branches.
 # See the Cardiff hub segment-sharing decision above.
@@ -212,11 +224,12 @@ segment = "tfw-valley-city-line"
 crs = "RDR"
 tiploc = "RADYR"
 role = "junction"
-segment = "tfw-valley-taff-trunk"
+segment = "tfw-valley-radyr-junction"
 # Radyr: this file's own northern terminus for the City Line, and a genuine
 # physical junction with `tfw-valley-lines-north.toml`'s Taff Vale trunk. See
-# the Radyr junction decision above for why this reuses that file's segment
-# name rather than an exclusive one of this file's own.
+# the Radyr junction decision above for why this reuses that file's
+# dedicated `tfw-valley-radyr-junction` segment name rather than an
+# exclusive one of this file's own.
 
 # --- Coryton Line: Cardiff Queen Street to Coryton via Heath, ordered south
 # to north. A separate corridor from the City Line above -- both historically

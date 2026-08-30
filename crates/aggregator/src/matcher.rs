@@ -615,13 +615,16 @@ mod tests {
 
     // `tfw-valley-lines-north` (Task 11.6) x `tfw-valley-lines-south`
     // (Task 11.7): the Radyr junction-sharing decision (see
-    // `tfw-valley-lines-south.toml`'s own comment). Radyr sits on
-    // `tfw-valley-lines-north.toml`'s `tfw-valley-taff-trunk` segment
-    // (shared internally by the Merthyr, Aberdare and Rhondda/Treherbert
-    // branches) and `tfw-valley-lines-south.toml` deliberately reuses that
-    // same segment name for Radyr alone, as the City Line's own northern
-    // terminus/junction -- so an incident there should propagate to both
-    // files, both `MatchScope::SharedSegment`.
+    // `tfw-valley-lines-south.toml`'s own comment). Radyr carries its own
+    // dedicated, Radyr-only segment name, `tfw-valley-radyr-junction`,
+    // minted in both files (fix round 1: this used to reuse
+    // `tfw-valley-lines-north.toml`'s `tfw-valley-taff-trunk` segment name
+    // for Radyr alone, which incorrectly made every other station on that
+    // segment register as shared too -- see
+    // `valley_lines_north_exclusive_pontypridd_segment_does_not_propagate`
+    // below for the regression test guarding against that) -- so an
+    // incident at Radyr itself should still propagate to both files, both
+    // `MatchScope::SharedSegment`.
     #[test]
     fn valley_lines_radyr_junction_shared_segment_propagates() {
         let lines = load_all_lines();
@@ -642,5 +645,36 @@ mod tests {
         for m in &matches {
             assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
         }
+    }
+
+    // `tfw-valley-lines-north` (Task 11.6), fix round 1 regression test.
+    // Pontypridd (PPD) sits on `tfw-valley-taff-trunk`, the segment shared
+    // *within this file* by the Merthyr, Aberdare and Rhondda/Treherbert
+    // branches -- but it is not, and must never become, shared with
+    // `tfw-valley-lines-south.toml`: the City Line (that file) only touches
+    // this trunk at Radyr itself, via its own dedicated
+    // `tfw-valley-radyr-junction` segment, not at Pontypridd or any of the
+    // other five stations on `tfw-valley-taff-trunk` (Cathays, Llandaf,
+    // Taffs Well, Treforest, Treforest Estate). This guards against the
+    // original Task 11.7 bug, where south's Radyr entry reused
+    // `tfw-valley-taff-trunk` verbatim and made `SegmentRegistry` (which
+    // indexes sharing by segment-name string across the whole catalogue,
+    // not per-station) incorrectly resolve Pontypridd as `SharedSegment`
+    // too.
+    #[test]
+    fn valley_lines_north_exclusive_pontypridd_segment_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-14",
+            "Signal failure at Pontypridd",
+            "Signal failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["PPD"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tfw-valley-lines-north".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 }

@@ -156,7 +156,7 @@ delay_threshold_minutes = 5
 # file's four routes, unlike the Chester case where two lines merely touched
 # at one station with a much thinner sharing claim. See
 # `valley_lines_north_exclusive_rhymney_segment_does_not_propagate` and
-# `valley_lines_north_cardiff_hub_is_exclusive_pending_task_11_7` in
+# `valley_lines_cardiff_hub_shared_segment_propagates` in
 # `crates/aggregator/src/matcher.rs` for the regression tests this file adds.
 #
 # Only currently open, passenger-served stations are listed. On the Aberdare
@@ -339,15 +339,20 @@ segment = "tfw-valley-taff-trunk"
 crs = "RDR"
 tiploc = "RADYR"
 role = "junction"
-segment = "tfw-valley-taff-trunk"
+segment = "tfw-valley-radyr-junction"
 # Radyr: also the northern terminus of the Cardiff City Line (Coryton
 # branch), per this station's own Wikipedia article ("Immediately south of
-# the station, the Cardiff City line diverged southwards"). That line is
-# Task 11.7's territory, not this file's -- no line file in this catalogue
-# reaches it yet, so no shared-segment question with it arises here today; a
-# future `tfw-valley-lines-south.toml` should read this comment and decide
-# deliberately whether Radyr itself warrants a shared segment name, per the
-# shared-trunk rule of thumb, rather than assuming either way.
+# the station, the Cardiff City line diverged southwards"). `tfw-valley-
+# lines-south.toml` (Task 11.7) confirmed this is a genuine physical
+# junction and reuses this exact segment name for its own RDR entry -- a
+# dedicated, Radyr-only segment, distinct from this file's own Taff trunk
+# above, following the same single-station-junction pattern as Abercynon
+# below (`tfw-valley-merthyr-aberdare-junction`). This was fixed in a
+# post-landing review: the original Task 11.7 diff had south's RDR entry
+# reuse `tfw-valley-taff-trunk` verbatim, which incorrectly made every other
+# station on that segment name (Cathays, Llandaf, Taffs Well, Treforest,
+# Treforest Estate, Pontypridd) register as shared too, since segment
+# sharing is indexed by name across the whole catalogue, not per-station.
 
 [[stations]]
 crs = "TAF"
