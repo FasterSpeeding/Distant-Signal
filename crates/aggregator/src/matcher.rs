@@ -278,13 +278,16 @@ mod tests {
 
     #[test]
     fn greater_anglia_exclusive_far_end_does_not_propagate() {
-        // Colchester is well beyond Shenfield, on Greater Anglia's
-        // exclusive territory — the Elizabeth line goes no further than
-        // Shenfield. An incident here should stay scoped to
-        // greater-anglia-main-line only.
+        // Diss is well beyond Shenfield, on Greater Anglia's exclusive
+        // territory — the Elizabeth line goes no further than Shenfield —
+        // and isn't a junction for any branch in this batch either (unlike
+        // Colchester, which greater-anglia-essex-branches.toml's Sunshine
+        // Coast branch now genuinely shares `geml-mainline` with; see
+        // essex_branches_shared_trunk_incident_propagates below). An
+        // incident here should stay scoped to greater-anglia-main-line only.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
-        let inc = incident("LE-2", "Signal failure at Colchester", "Signal failure causing delays.", &["LE"], &["COL"]);
+        let inc = incident("LE-2", "Signal failure at Diss", "Signal failure causing delays.", &["LE"], &["DIS"]);
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["greater-anglia-main-line".to_string()]));
@@ -421,5 +424,92 @@ mod tests {
         for m in &matches {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
         }
+    }
+
+    #[test]
+    fn essex_branches_witham_is_station_overlap_only_with_main_line() {
+        // Witham is on both greater-anglia-main-line.toml's `geml-mainline`
+        // segment and greater-anglia-essex-branches.toml's own
+        // `braintree-branch` segment (the Braintree branch's real junction).
+        // Per that file's segment-decision note, the two files deliberately
+        // do NOT share a segment name here — reusing `geml-mainline` verbatim
+        // would (confirmed empirically while drafting that file) incorrectly
+        // reclassify unrelated far-flung `geml-mainline` stations (e.g. Diss,
+        // Norwich) as shared trunk too, since SegmentRegistry::is_shared marks
+        // a segment name shared globally, not per overlapping station. So an
+        // incident here should match both lines independently, each still
+        // classified as ExclusiveSegment rather than escalating to
+        // SharedSegment — mirroring the Romford/Shenfield precedent in
+        // `elizabeth_branch_incident_stays_on_its_branch` above.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LE-7",
+            "Points failure at Witham",
+            "Points failure causing delays to Greater Anglia services.",
+            &["LE"],
+            &["WTM"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["greater-anglia-main-line".to_string(), "greater-anglia-essex-branches".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    #[test]
+    fn essex_branches_colchester_is_station_overlap_only_with_main_line() {
+        // Colchester is on both greater-anglia-main-line.toml's
+        // `geml-mainline` segment and greater-anglia-essex-branches.toml's
+        // own `sunshine-coast-main` segment (the Sunshine Coast line's real
+        // junction). Same reasoning and same non-sharing decision as Witham
+        // above: station-level overlap only, each line classified
+        // independently as ExclusiveSegment.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LE-9",
+            "Points failure at Colchester",
+            "Points failure causing delays to Greater Anglia services.",
+            &["LE"],
+            &["COL"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["greater-anglia-main-line".to_string(), "greater-anglia-essex-branches".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    #[test]
+    fn essex_branches_exclusive_segment_incident_does_not_propagate() {
+        // Southminster is on `crouch-valley-line`, exclusive to
+        // greater-anglia-essex-branches.toml. Per that file's Southminster-
+        // branch deviation note: the branch's real, verified junction is
+        // Wickford on the Shenfield-Southend line, two hops from the GEML
+        // via a line not covered by any file in this catalogue — so unlike
+        // the Braintree/Sunshine Coast branches above, this segment is not
+        // tagged as shared with greater-anglia-main-line or any other line.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LE-8",
+            "Signal failure at Southminster",
+            "Signal failure causing delays to Greater Anglia services.",
+            &["LE"],
+            &["SMN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["greater-anglia-essex-branches".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 }
