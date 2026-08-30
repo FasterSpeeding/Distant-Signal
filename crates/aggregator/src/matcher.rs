@@ -405,11 +405,11 @@ mod tests {
         // The Kirkby/Headbolt Lane branch (merseyrail-northern-kirkby) is
         // exclusive to merseyrail-northern.toml - it doesn't touch the
         // Southport or Ormskirk branches, nor (per that file's own
-        // central-Liverpool research comment) the not-yet-drafted
-        // merseyrail-wirral.toml. Task 12.5 should add the complementary
-        // "station overlap, not shared segment" test at Liverpool
-        // Central/Moorfields once merseyrail-wirral.toml exists, mirroring
-        // `chiltern_banbury_incident_matches_by_station_not_shared_segment`.
+        // central-Liverpool research comment, honored by
+        // merseyrail-wirral.toml) merseyrail-wirral.toml. See
+        // `merseyrail_central_liverpool_incident_matches_by_station_not_shared_segment`
+        // below for the complementary "station overlap, not shared segment"
+        // test at Liverpool Central.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -423,5 +423,57 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["merseyrail-northern".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn merseyrail_wirral_new_brighton_branch_incident_does_not_propagate() {
+        // The New Brighton branch (merseyrail-wirral-new-brighton) is
+        // exclusive to merseyrail-wirral.toml - it doesn't touch the West
+        // Kirby, Chester or Ellesmere Port branches, nor does it touch
+        // merseyrail-northern.toml at all (that file has no stations on the
+        // Wirral peninsula).
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "ME-2",
+            "Signal failure at Wallasey Grove Road",
+            "Signal failure causing delays to Merseyrail Wirral Line services.",
+            &["ME"],
+            &["WLG"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["merseyrail-wirral".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn merseyrail_central_liverpool_incident_matches_by_station_not_shared_segment() {
+        // Liverpool Central sits on both merseyrail-northern.toml and
+        // merseyrail-wirral.toml, but the two files deliberately don't
+        // share a segment name there (see merseyrail-northern.toml's own
+        // central-Liverpool research comment, honored unchanged by
+        // merseyrail-wirral.toml): the Northern Line's Link tunnel and the
+        // Wirral Line's Loop tunnel are physically distinct, meeting only
+        // at the station buildings. An incident there should therefore
+        // match both lines individually by station, each classified
+        // against its own (exclusive) segment - mirrors
+        // `chiltern_banbury_incident_matches_by_station_not_shared_segment`.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "ME-3",
+            "Points failure at Liverpool Central",
+            "Points failure causing delays to Merseyrail services.",
+            &[],
+            &["LVC"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("merseyrail-northern"));
+        assert!(matched_ids.contains("merseyrail-wirral"));
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment (station overlap, not segment-sharing)", m.line.id);
+        }
     }
 }
