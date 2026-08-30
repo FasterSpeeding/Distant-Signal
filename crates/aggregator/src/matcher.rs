@@ -528,4 +528,57 @@ mod tests {
         assert_eq!(scopes["tfw-marches"], MatchScope::SharedSegment);
         assert_eq!(scopes["tfw-heart-of-wales"], MatchScope::SharedSegment);
     }
+
+    // `tfw-valley-lines-north` (Task 11.6). An incident on a station well
+    // into the Rhymney Line's own exclusive corridor (its own segment,
+    // `tfw-valley-rhymney`, used by no other branch in this file and no
+    // other file in the catalogue) should match only this line, as
+    // `MatchScope::ExclusiveSegment` -- e.g. Caerphilly.
+    #[test]
+    fn valley_lines_north_exclusive_rhymney_segment_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-10",
+            "Signal failure at Caerphilly",
+            "Signal failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["CPH"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tfw-valley-lines-north".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `tfw-valley-lines-north` (Task 11.6), documenting the intra-file
+    // branch structure at the Cardiff hub (Cardiff Central and Cardiff
+    // Queen Street), per the task recipe's note that the cross-file
+    // `SharedSegment` assertion for this hub is deferred to Task 11.7
+    // (`tfw-valley-lines-south.toml`, not yet written): all four branches in
+    // this file (Rhymney, Merthyr, Aberdare, Rhondda/Treherbert) tag Cardiff
+    // Queen Street with the same `tfw-valley-cardiff-hub` segment name, but
+    // because they're all still just one line *file* (one `id`), the
+    // `SegmentRegistry` sees exactly one line using that segment name today
+    // -- so this resolves as `MatchScope::ExclusiveSegment`, not
+    // `SharedSegment`, until Task 11.7 decides whether to reuse the same
+    // segment name for its own routes through the same two platforms (see
+    // the segment-naming comment in `lines/tfw-valley-lines-north.toml`
+    // above the Cardiff hub stations).
+    #[test]
+    fn valley_lines_north_cardiff_hub_is_exclusive_pending_task_11_7() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-11",
+            "Points failure at Cardiff Queen Street",
+            "Points failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["CDQ"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tfw-valley-lines-north".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
