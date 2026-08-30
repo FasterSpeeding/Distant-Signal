@@ -115,7 +115,7 @@ delay_threshold_minutes = 10
 # stations) are deliberately omitted here, matching gwr-cotswold.toml's
 # precedent for omitting non-principal halts.
 #
-# --- Branch 1: Didcot Parkway - Oxford (via Culham, Radley, Appleford) ---
+# --- Branch 1: Didcot Parkway - Oxford (via Appleford, Culham, Radley) ---
 #
 # en.wikipedia.org/wiki/Didcot_Parkway_railway_station and
 # en.wikipedia.org/wiki/Oxford_railway_station both independently describe a
@@ -129,7 +129,10 @@ delay_threshold_minutes = 10
 # Oxford to and from Banbury every two hours"); Appleford (thinner, "one
 # train every two hours in each direction," no Sunday service, but still a
 # genuine, currently-operating calling point, so included rather than
-# omitted).
+# omitted). Geographic order (Didcot Parkway - Appleford - Culham - Radley -
+# Oxford) confirmed via each station's own Wikipedia infobox
+# preceding/following-station chain: Appleford's neighbours are Didcot
+# Parkway and Culham; Culham's neighbours are Appleford and Radley.
 #
 # Oxford (OXF) overlap: OXF is also gwr-cotswold.toml's own exclusive
 # segment's starting station (Task 4.2's research: Cotswold Line services
@@ -280,6 +283,15 @@ segment = "gwr-thames-valley"
 # shared (see above).
 
 [[stations]]
+crs = "APF"
+tiploc = "APPLEFD"
+role = "minor"
+segment = "gwr-thames-valley"
+# Thinnest-served station on this file (2-hourly, no Sunday service — see
+# segment-naming comment above) but a genuine, currently-operating calling
+# point, so included rather than omitted.
+
+[[stations]]
 crs = "CUM"
 tiploc = "CULHAM"
 role = "minor"
@@ -290,15 +302,6 @@ crs = "RAD"
 tiploc = "RDLEY"
 role = "minor"
 segment = "gwr-thames-valley"
-
-[[stations]]
-crs = "APF"
-tiploc = "APPLEFD"
-role = "minor"
-segment = "gwr-thames-valley"
-# Thinnest-served station on this file (2-hourly, no Sunday service — see
-# segment-naming comment above) but a genuine, currently-operating calling
-# point, so included rather than omitted.
 
 [[stations]]
 crs = "OXF"
