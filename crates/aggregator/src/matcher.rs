@@ -240,6 +240,42 @@ mod tests {
     }
 
     #[test]
+    fn heathrow_express_incident_stays_exclusive_of_elizabeth_heathrow() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        // Task 6.8: Heathrow Terminal 5 (HWV) is a real station on BOTH
+        // `heathrow-express` (its own exclusive `hx-paddington-heathrow`
+        // segment) and `elizabeth-heathrow` (its own, differently-named
+        // `elizabeth-heathrow` segment) -- the two lines genuinely serve the
+        // same terminal buildings. Without `elizabeth-heathrow.toml`'s
+        // pre-existing `excluded_keywords = ["Heathrow Express", ...]` veto,
+        // an incident like this one (which names Heathrow Express in its
+        // text and hits a station both lines share) would station-hit-match
+        // `elizabeth-heathrow` too. This is the required re-check from the
+        // task brief, made concrete: with `heathrow-express.toml` now a
+        // real, matchable line, the pre-existing exclusion on
+        // `elizabeth-heathrow.toml` is confirmed still necessary and is left
+        // unchanged (see `heathrow-express.toml`'s own file-level comment
+        // for the full reasoning) -- this test is the evidence for that
+        // conclusion, not just an assertion of it.
+        let inc = incident(
+            "HX-1",
+            "Points failure at Heathrow Terminal 5",
+            "A points failure is causing delays to Heathrow Express services near Heathrow Terminal 5.",
+            &["HX"],
+            &["HWV"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["heathrow-express".to_string()]),
+            "elizabeth-heathrow should be vetoed by its own excluded_keywords, not station-match HWV"
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
     fn swr_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
