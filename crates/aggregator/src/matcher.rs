@@ -411,4 +411,55 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["gwr-west-of-england".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 4.4's second file, `gwr-cornish-main-line`, picks up its own
+    // exclusive segment (also named `gwr-cornish-main-line`) at Liskeard,
+    // the first station west of Plymouth not already claimed by
+    // cross-country.toml's `xc-south-west` segment. Truro is deep inside
+    // that exclusive stretch, so this should stay a clean ExclusiveSegment
+    // case, mirroring `gwr_west_of_england_exclusive_segment_incident_does_not_propagate`
+    // above.
+    #[test]
+    fn gwr_cornish_main_line_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-8", "Signal failure at Truro", "Signal failure causing delays at Truro.", &["GW"], &["TRU"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-cornish-main-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 4.4's research found a genuine multi-station shared trunk with
+    // cross-country.toml's own `xc-south-west` segment (Taunton-Exeter St
+    // Davids-Newton Abbot-Plymouth, on the Bristol to Exeter line / South
+    // Devon Main Line) — unlike gwr-south-wales.toml's single-waypoint
+    // overlaps with cross-country.toml/xc-cardiff.toml, which deliberately
+    // stayed station-only (see
+    // `gwr_south_wales_station_overlap_with_xc_cardiff_stays_exclusive_each_line`
+    // above). Exeter St Davids (EXD) is the station both of Task 4.4's own
+    // files share with each other (the west-of-england/Cornish Main Line
+    // split boundary) *and* with cross-country.toml, so an incident there
+    // should propagate to all three as a shared-trunk event, mirroring
+    // `swr_shared_trunk_incident_propagates`'s / `xc_hub_incident_propagates_
+    // to_every_cross_country_arm`'s full-set-assertion shape.
+    #[test]
+    fn gwr_trunk_xc_south_west_incident_propagates_across_west_of_england_and_cornish_main_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-9", "Flooding at Exeter St Davids", "Flooding causing delays to GWR and CrossCountry services.", &["GW"], &["EXD"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "gwr-west-of-england".to_string(),
+                "gwr-cornish-main-line".to_string(),
+                "cross-country".to_string(),
+            ])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+        }
+    }
 }
