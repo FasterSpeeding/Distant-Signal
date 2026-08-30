@@ -635,17 +635,29 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
-    // Task 5.6. Confirms the Gatwick Express fold-in decision actually
-    // works end to end: an incident tagged with the `GX` operator (not
-    // `SN`) at Preston Park - one of Gatwick Express's own peak-only
-    // calling points, see this file's own fold-in comment - still resolves
-    // to `southern-brighton-main-line` via its `operators` list, on the
-    // line's own exclusive segment, exactly as an `SN`-tagged incident
-    // would. This is what "fold-in rather than a separate file" is meant to
-    // buy: no second line definition is needed for Gatwick Express traffic
-    // to match correctly.
+    // Task 5.6. NOTE ON WHAT THIS ACTUALLY PROVES (corrected after review -
+    // the original comment here overclaimed): an incident tagged with the
+    // `GX` operator at Preston Park - one of Gatwick Express's own
+    // (Wikipedia-only-sourced, see southern-brighton-main-line.toml's own
+    // header comment) peak-only calling points - still resolves to
+    // `southern-brighton-main-line`, ExclusiveSegment. But this is a
+    // station-hit match: `match_one`'s Tier 1 path matches on
+    // `line.has_station(crs)` alone (see `common::LineDefinition::
+    // has_station`) and never consults `operators`, so this test would pass
+    // identically even if `GX` were never added to this line's `operators`
+    // list - PRP is already this line's own station regardless of who's
+    // asking. It does NOT exercise the `operators` field or prove the
+    // fold-in decision "works" in the sense the file's own comment claims.
+    // What it does confirm: a `GX`-tagged incident at a real Brighton Main
+    // Line station isn't accidentally excluded or misrouted by this line's
+    // matching logic - a narrower but still real assurance.
+    //
+    // The `operators` field's actual role - LDBWS sample classification via
+    // `belongs_to_line` - is exercised by a separate test,
+    // `belongs_to_line_gatwick_express_operator_folds_in_via_operators_list`
+    // in `aggregation.rs`, which WOULD fail without `GX` in `operators`.
     #[test]
-    fn southern_bml_gatwick_express_operator_folds_into_brighton_main_line() {
+    fn southern_bml_station_hit_matches_regardless_of_gx_or_sn_operator_tag() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(

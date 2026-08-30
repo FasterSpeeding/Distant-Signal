@@ -13,39 +13,75 @@ match_keywords = ["Brighton Main Line", "Gatwick Express"]
 # ============================================================================
 # SOURCING AND VERIFICATION
 # ============================================================================
-# Station list and calling patterns confirmed via Wikipedia's "Brighton Main
-# Line", "Gatwick Express" and "Southern (train operating company)" articles,
-# cross-checked against each other and against each station's own Wikipedia
-# infobox for CRS codes (railwaycodes.org.uk's crs*.shtm pages were tried
-# first but hit the same alphabetical-page-truncation issue already flagged
-# in southeastern-metro-north-kent.toml's own sourcing comment, so the
-# per-station-infobox fallback that file used was used here too). This is
-# the first GTR-brand file in the catalogue (thameslink-core.toml predates
-# this batch); Southern's other services - the West/East Coastway lines
-# (Eastbourne, Hastings, Portsmouth) and the Oxted/Uckfield branches - are
-# NOT covered here and are separate future files, mirroring how
-# thameslink-core.toml's own header already promises separate branch files
-# for what it doesn't cover.
+# Station list (CRS codes, ordering) confirmed via Wikipedia's "Brighton Main
+# Line" and "Southern (train operating company)" articles, cross-checked
+# against each other and against each station's own Wikipedia infobox, with
+# CRS codes independently spot-checked against railwaycodes.org.uk's
+# crs*.shtm pages where those loaded (some, e.g. crsb.shtm, hit the same
+# alphabetical-page-truncation issue already flagged in
+# southeastern-metro-north-kent.toml's own sourcing comment - the
+# per-station-infobox fallback that file used was used for those; crst.shtm
+# loaded fully and independently confirms TBD). This is the first GTR-brand
+# file in the catalogue (thameslink-core.toml predates this batch);
+# Southern's other services - the West/East Coastway lines (Eastbourne,
+# Hastings, Portsmouth) and the Oxted/Uckfield branches - are NOT covered
+# here and are separate future files, mirroring how thameslink-core.toml's
+# own header already promises separate branch files for what it doesn't
+# cover.
+#
+# TWO FACTS BELOW THIS FILE'S FOLD-IN DECISION AND ITS TASK 5.14 HAND-OFF
+# ARE WIKIPEDIA-ONLY SOURCED AND FALL SHORT OF THIS BATCH'S TWO-SOURCE BAR.
+# COMMON.md requires cross-checking against railwaycodes.org.uk, Network
+# Rail's own route pages, National Rail Enquiries, or the TOC's own site -
+# not a second Wikipedia article. A real attempt was made to get a proper
+# second source for both facts below: nationalrail.co.uk's own station
+# detail pages for GTW/ECR/HHE/BTN load fine but only name the managing
+# operator (e.g. "Station managed by Southern"), not stop-by-stop calling
+# patterns or cross-operator track-sharing; gatwickexpress.com,
+# southernrailway.com and thameslinkrailway.com all return HTTP 403 to
+# automated fetches; networkrail.co.uk's route pages 404 at every URL tried;
+# railwaycodes.org.uk's CRS/ELR tables are a codes-and-mileage reference and
+# don't carry service-pattern prose at all (confirmed by checking - the ELR
+# entries near "Brighton" list only mileages, e.g. "BPJ ... London Bridge
+# via Redhill", nothing about which trains call where). No genuine second
+# source of the required type could be reached for either fact. Per
+# COMMON.md's own rule, both are flagged plainly below as unconfirmed to
+# this batch's bar rather than asserted as verified - see each section.
 #
 # ============================================================================
 # GATWICK EXPRESS: FOLD-IN, NOT A SEPARATE FILE
 # ============================================================================
 # The gap analysis describes Gatwick Express as "a single non-stop
 # Victoria-Gatwick service" - that undersells its current calling pattern.
-# Per Wikipedia's "Gatwick Express" article (current, as of its most recent
-# revision): off-peak the branded service now runs London Victoria - Gatwick
-# Airport - Haywards Heath - Brighton (2 tph, "calling at Gatwick Airport,
-# Haywards Heath"), with weekday peak services (0600-0900 northbound,
-# 1700-2000 southbound) additionally calling at Preston Park, Hassocks and
-# Burgess Hill. Only the Sunday-only half-hourly Victoria-Gatwick Airport
-# shuttle is genuinely non-stop end to end. So it is NOT strictly non-stop
-# any more - but every station it calls at (VIC, GTW, HHE, PRP, HSK, BUG,
-# BTN) is already a station on this file's own Brighton Main Line list
-# below, i.e. it is a strict subset of this line's own calling pattern, not
-# a materially divergent route. That satisfies the brief's fold-in test, so
-# `GX` is added to `operators` above rather than splitting out a
-# `southern-gatwick-express.toml` file. No deviation from the plan's file
-# count as a result.
+# Per Wikipedia's "Gatwick Express" article ONLY (cross-checked against a
+# second Wikipedia article, "Southern (train operating company)", but NOT
+# against a source of the type COMMON.md requires - see the SOURCING note
+# above for what was tried and failed): off-peak the branded service now
+# runs London Victoria - Gatwick Airport - Haywards Heath - Brighton (2 tph,
+# "calling at Gatwick Airport, Haywards Heath"), with weekday peak services
+# additionally calling at Preston Park, Hassocks and Burgess Hill; only the
+# Sunday-only half-hourly Victoria-Gatwick Airport shuttle is genuinely
+# non-stop end to end. TREAT THIS SPECIFIC CALLING-PATTERN DETAIL (the exact
+# stations, the tph counts, the peak/off-peak split) AS UNCONFIRMED - it is
+# below this batch's sourcing bar and should not be relied on as a verified
+# fact elsewhere in this catalogue.
+#
+# The fold-in decision itself rests on a narrower and safer claim that
+# doesn't depend on those specifics being exactly right: whatever Gatwick
+# Express's precise calling pattern is, it is uncontested (effectively
+# definitional to the branded service, not a specific-boundary claim) that
+# it runs only between London Victoria and Brighton/Gatwick Airport over the
+# Brighton Main Line, calling only at intermediate stations that are also
+# principal Brighton Main Line stations - it does not serve anywhere off
+# this file's own list below. So even discounting the unconfirmed specifics
+# above, no station this file would need to add for Gatwick Express falls
+# outside its own already-covered Brighton Main Line list, which is the
+# actual test the brief sets for fold-in vs. split. On that basis `GX` is
+# still added to `operators` above rather than splitting out a
+# `southern-gatwick-express.toml` file - but this is a more conservative
+# justification than the original "well supported" framing, and the
+# specific service-pattern comments on BUG/HSK/PRP below should be read as
+# Wikipedia-only detail, not confirmed fact.
 #
 # ============================================================================
 # SEGMENT NAMING - the London Bridge/Windmill Bridge Jn/East Croydon
@@ -53,46 +89,63 @@ match_keywords = ["Brighton Main Line", "Gatwick Express"]
 # ============================================================================
 # thameslink-core.toml terminates its own `thameslink-core` segment at LBG
 # with the comment "Trains diverge south of London Bridge - handled by
-# branch line definitions". Per Wikipedia's "Thameslink" article, one of
-# those branches is real and current: an off-peak "Bedford to Brighton"
-# service (2 tph) that runs "over the Brighton Main Line (via London
-# Bridge)", calling at London Bridge and East Croydon en route to Gatwick
-# Airport and Brighton. This is a genuine, standing, everyday service - NOT
-# an occasional engineering diversion, which is the important distinction
-# from Task 5.4's southeastern-metro-north-kent.toml finding for the
-# UNRELATED London Bridge-Lewisham stretch (that file's own FINDING 2
-# concluded Thameslink only diverts through Lewisham during Greenwich Line
-# outages, so did NOT name a genuine shared trunk there). This is a
-# different corridor and a different, positive, finding.
+# branch line definitions". Per Wikipedia's "Thameslink" article ONLY
+# (cross-checked against a second Wikipedia article, "Quarry line", for the
+# Windmill Bridge Junction detail below, but NOT against a source of the
+# type COMMON.md requires - see the SOURCING note above for what was tried
+# and failed): one of those branches is described as an off-peak "Bedford to
+# Brighton" service (2 tph) that runs "over the Brighton Main Line (via
+# London Bridge)", calling at London Bridge and East Croydon en route to
+# Gatwick Airport and Brighton.
 #
-# Windmill Bridge Junction itself (confirmed via Wikipedia's "Quarry line"
-# article as a real, named junction just north of East Croydon) is where
-# the Victoria-approach and London Bridge-approach branches physically
-# converge before reaching East Croydon; it has no CRS code and is not a
-# passenger station, so it is not listed as a [[stations]] entry - only
-# LBG and ECR (its two real-station endpoints) are.
+# THIS IS WIKIPEDIA-ONLY SOURCED AND FALLS BELOW THIS BATCH'S CONFIRMATION
+# BAR - treat it as an unconfirmed lead, not a confirmed fact. In particular,
+# do NOT treat "this is a genuine standing everyday service, not an
+# engineering diversion" as established the way Task 5.4's
+# southeastern-metro-north-kent.toml FINDING 2 established the opposite for
+# the unrelated London Bridge-Lewisham stretch (that file's finding rested
+# on the same kind of single-article claim too, for what it's worth, but
+# that's Task 5.4's own call, not license to treat this one as settled).
+# Wikipedia's account here is plausible and specific enough to be worth
+# recording as a lead, but it is NOT independently verified.
 #
-# Segment name chosen for this stretch: `southern-bml-north` (covering LBG
-# and ECR below). Task 5.14's implementer: reuse this exact string verbatim
-# on `thameslink-southern.toml`'s own LBG/East Croydon-area stations IF your
-# own independent research confirms the same genuine everyday Thameslink
-# working this comment describes. This is a courtesy comment, not a
-# blocking dependency - no test in this file asserts SharedSegment for this
-# stretch today, since `thameslink-southern.toml` doesn't exist yet to share
-# it with (same caveat southeastern-metro-north-kent.toml's own
-# `southeastern-lewisham-corridor` comment states for its own hand-off).
+# Windmill Bridge Junction itself (per Wikipedia's "Quarry line" article,
+# a real, named junction just north of East Croydon, also unconfirmed to
+# the required bar) is where the Victoria-approach and London Bridge-
+# approach branches are described as physically converging before reaching
+# East Croydon; it has no CRS code and is not a passenger station, so it is
+# not listed as a [[stations]] entry - only LBG and ECR (its two real-
+# station endpoints) are.
 #
-# CAVEAT/lead for Task 5.14: the same Wikipedia "Thameslink" article and
-# East Croydon's own infobox ("2 tph to Three Bridges via Redhill", "1 tph
-# to Gatwick Airport via Redhill") suggest the real Bedford-Brighton
-# service's shared running may extend further south than just to East
-# Croydon - possibly as far as Gatwick Airport/Three Bridges/Brighton (via
-# Redhill, not necessarily this file's own direct Quarry Line alignment).
-# That is beyond this task's own scoped stretch (LBG/Windmill Bridge Jn/
-# East Croydon only, per this task's brief) and beyond what this file's own
-# research fully chased down - noted here so Task 5.14 doesn't miss it, not
-# acted on. `southern-bml-south` (East Croydon to Brighton, below) is left
-# as this line's own exclusive segment for now.
+# Segment name PROPOSED for this stretch: `southern-bml-north` (covering LBG
+# and ECR below). This is a candidate name only, not a confirmed shared
+# trunk - no test in this file asserts SharedSegment for it, and none
+# should be added anywhere in this catalogue until the underlying fact is
+# actually confirmed. Task 5.14's implementer MUST NOT take this file's
+# finding as pre-verified: independently re-verify the Thameslink
+# LBG-East Croydon-Brighton working from scratch against a proper second
+# source (nationalrail.co.uk had no route prose and thameslinkrailway.com
+# blocked automated fetches for this task - a live session, a different
+# fetch tool, or a timetable/PDF source may fare better) before reusing
+# `southern-bml-north`
+# verbatim or asserting a genuine shared trunk. If Task 5.14 also can't
+# clear the bar, follow the same rule this file follows: state that plainly
+# and treat LBG/East Croydon as station overlap only, same as
+# southeastern-metro-north-kent.toml does today for its own unconfirmed
+# stretch.
+#
+# CAVEAT/lead for Task 5.14 (equally unconfirmed): the same Wikipedia
+# "Thameslink" article and East Croydon's own infobox ("2 tph to Three
+# Bridges via Redhill", "1 tph to Gatwick Airport via Redhill") suggest the
+# described Bedford-Brighton service's shared running may extend further
+# south than just to East Croydon - possibly as far as Gatwick Airport/
+# Three Bridges/Brighton (via Redhill, not necessarily this file's own
+# direct Quarry Line alignment). That is beyond this task's own scoped
+# stretch (LBG/Windmill Bridge Jn/East Croydon only, per this task's brief)
+# and was not chased down further, let alone verified - noted here so Task
+# 5.14 doesn't miss the lead, not acted on. `southern-bml-south` (East
+# Croydon to Brighton, below) is left as this line's own exclusive segment
+# for now.
 #
 # ============================================================================
 # STATIONS - ordered south from each London terminus; Victoria and London
@@ -118,8 +171,9 @@ segment = "southern-bml-north"
 # already ends here) - station overlap only against that file's segment,
 # same precedent as thameslink-core/southeastern-main-line elsewhere in this
 # catalogue. See the SEGMENT NAMING comment above for why this station's OWN
-# segment here (`southern-bml-north`) is named as a courtesy hand-off for
-# Task 5.14, not yet an actual cross-file shared trunk.
+# segment here (`southern-bml-north`) is only a PROPOSED courtesy hand-off
+# name for Task 5.14, resting on an unconfirmed-to-bar Wikipedia-only
+# finding - not a confirmed cross-file shared trunk.
 
 [[stations]]
 crs = "ECR"
@@ -158,20 +212,21 @@ segment = "southern-bml-south"
 crs = "BUG"
 role = "minor"
 segment = "southern-bml-south"
-# Burgess Hill. Peak-only Gatwick Express calling point (see fold-in note
-# above).
+# Burgess Hill. Wikipedia describes this as a peak-only Gatwick Express
+# calling point (unconfirmed to this batch's bar - see fold-in note above);
+# it is a principal Brighton Main Line station regardless.
 
 [[stations]]
 crs = "HSK"
 role = "minor"
 segment = "southern-bml-south"
-# Hassocks. Peak-only Gatwick Express calling point.
+# Hassocks. Same peak-only Gatwick Express caveat as Burgess Hill above.
 
 [[stations]]
 crs = "PRP"
 role = "minor"
 segment = "southern-bml-south"
-# Preston Park. Peak-only Gatwick Express calling point.
+# Preston Park. Same peak-only Gatwick Express caveat as Burgess Hill above.
 
 [[stations]]
 crs = "BTN"
