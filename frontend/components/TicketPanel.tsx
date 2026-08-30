@@ -30,12 +30,17 @@ export async function TicketPanel({ trackingId }: { trackingId: number }) {
     // doesn't guarantee this viewer owns this particular pin, so the copy
     // doesn't promise something a subsequent not-the-owner outcome might
     // immediately take back.
+    //
+    // No outer <Text> wrapper: TextLink already renders its own Mantine
+    // <Text> (a <p> by default), so wrapping it in another <Text> would
+    // nest a <p> inside a <p> -- invalid HTML and a React dev warning.
+    // Rendered directly, matching the established local convention for
+    // this exact "inline TextLink to /api/auth/login" login nudge (see
+    // PinToggle.tsx and TrackTrainForm.tsx).
     return (
-      <Text size="sm">
-        <TextLink href="/api/auth/login" underline="always">
-          Log in to attach a ticket to this journey
-        </TextLink>
-      </Text>
+      <TextLink href="/api/auth/login" underline="always">
+        Log in to attach a ticket to this journey
+      </TextLink>
     );
   }
 
