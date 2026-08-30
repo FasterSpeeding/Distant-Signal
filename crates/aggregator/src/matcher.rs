@@ -311,4 +311,71 @@ mod tests {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment (station overlap, not segment-sharing)", m.line.id);
         }
     }
+
+    #[test]
+    fn chiltern_marylebone_shared_trunk_incident_propagates_to_both_files() {
+        // chiltern-aylesbury.toml reuses chiltern-main-line.toml's
+        // "chiltern-marylebone" segment tag for Marylebone itself (Task
+        // 12.1's comment invited this): both files' services genuinely
+        // originate there before diverging at Neasden Junction.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "CH-4",
+            "Points failure at Marylebone",
+            "Points failure causing delays to Chiltern Railways services.",
+            &["CH"],
+            &["MYB"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("chiltern-main-line"));
+        assert!(matched_ids.contains("chiltern-aylesbury"));
+        for m in &matches {
+            if m.line.id.starts_with("chiltern-") {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
+        }
+    }
+
+    #[test]
+    fn chiltern_aylesbury_branch_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "CH-5",
+            "Signal failure at Amersham",
+            "Signal failure causing delays to Chiltern Railways services.",
+            &["CH"],
+            &["AMR"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["chiltern-aylesbury".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn chiltern_oxford_branch_incident_does_not_propagate() {
+        // The Oxford branch (folded into chiltern-aylesbury.toml) is a
+        // physically distinct corridor from both this file's own Amersham
+        // branch and chiltern-main-line.toml's Birmingham route (it only
+        // shares Marylebone itself, per the file's own comments) - an
+        // incident here should stay exclusive to chiltern-aylesbury and not
+        // leak onto chiltern-main-line or xc-south-coast (which also calls
+        // at Oxford, station-overlap only).
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "CH-6",
+            "Trespass incident at Bicester Village",
+            "Trespass incident causing delays to Chiltern Railways services.",
+            &["CH"],
+            &["BIT"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["chiltern-aylesbury".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
