@@ -308,6 +308,11 @@ mod tests {
         // also reuses `wcml-midlands` at Rugby -- it doesn't diverge from
         // the spine until Crewe, further north -- so it's a real fourth
         // line affected by this incident, still SharedSegment.
+        //
+        // `wcml-north-wales.toml` (added after this test was first written)
+        // also reuses `wcml-midlands` at Rugby -- like `wcml-liverpool.toml`
+        // it doesn't diverge from the spine until Crewe -- so it's a real
+        // fifth line affected by this incident, still SharedSegment.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -326,6 +331,7 @@ mod tests {
                 "wcml-birmingham".to_string(),
                 "wcml-manchester".to_string(),
                 "wcml-liverpool".to_string(),
+                "wcml-north-wales".to_string(),
             ])
         );
         for m in &matches {
@@ -371,6 +377,29 @@ mod tests {
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["wcml-liverpool".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn wcml_north_wales_exclusive_segment_incident_does_not_propagate() {
+        // Rhyl is on the exclusive `wcml-north-wales-branch` segment,
+        // starting immediately after the Crewe junction (per the
+        // shared-trunk rule of thumb) -- not shared with any other line's
+        // segment tag, even though `wcml-manchester.toml` and
+        // `wcml-liverpool.toml` also diverge at Crewe (onto different
+        // physical branches, via Wilmslow and Runcorn respectively).
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "VT-7",
+            "Overhead line damage at Rhyl",
+            "Overhead line damage causing delays to services at Rhyl.",
+            &["VT"],
+            &["RHL"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["wcml-north-wales".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 }
