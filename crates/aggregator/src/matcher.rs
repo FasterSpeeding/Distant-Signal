@@ -373,4 +373,50 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["northern-esk-valley".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    #[test]
+    fn clitheroe_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-8",
+            "Signal failure at Blackburn",
+            "Signal failure causing delays on the Ribble Valley Line at Blackburn.",
+            &["NT"],
+            &["BBN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-clitheroe".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `northern-clitheroe.toml`'s MCV entry joins the existing
+    // `northern-manchester` shared segment already used by `northern.toml`
+    // and `northern-blackpool.toml` (confirmed genuine track-sharing through
+    // Bolton, not just both routes touching Manchester - see the
+    // top-of-file comment in `lines/northern-clitheroe.toml`), making it a
+    // three-way shared trunk.
+    #[test]
+    fn manchester_victoria_hub_incident_propagates_to_northern_blackpool_and_clitheroe() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-9",
+            "Signal failure at Manchester Victoria",
+            "Signal failure causing delays to Northern services at Manchester Victoria.",
+            &["NT"],
+            &["MCV"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("northern"));
+        assert!(matched_ids.contains("northern-blackpool"));
+        assert!(matched_ids.contains("northern-clitheroe"));
+        for m in &matches {
+            if m.line.id == "northern" || m.line.id == "northern-blackpool" || m.line.id == "northern-clitheroe" {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
+        }
+    }
 }
