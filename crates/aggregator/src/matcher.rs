@@ -417,29 +417,32 @@ mod tests {
     }
 
     // Task 4.4 split `gwr-west-of-england` (Reading-Taunton line) into its own
-    // file. Its exclusive segment (`gwr-west-of-england`) covers Newbury
-    // through Castle Cary — none of that stretch is shared with any other
-    // catalogued line, so Westbury should stay a clean ExclusiveSegment case,
-    // mirroring `swr_exclusive_segment_incident_does_not_propagate` /
-    // `gwr_cotswold_exclusive_segment_incident_does_not_propagate`.
-    #[test]
-    fn gwr_west_of_england_exclusive_segment_incident_does_not_propagate() {
-        let lines = load_all_lines();
-        let registry = SegmentRegistry::new(&lines);
-        let inc = incident("GW-7", "Points failure at Westbury", "Points failure causing delays at Westbury.", &["GW"], &["WSB"]);
-        let matches = lines_affected_by(&inc, &lines, &registry);
-        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["gwr-west-of-england".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
-    }
+    // file. Originally its exclusive segment (`gwr-west-of-england`) covered
+    // Newbury through Castle Cary with no *cross-file segment-name* sharing
+    // at all. Task 4.6 (gwr-bristol-suburban.toml) found genuine physical
+    // track sharing at Westbury/Castle Cary and reused this exact segment
+    // name for its own WSB/CLC rows (see
+    // `gwr_west_of_england_trunk_incident_propagates_to_bristol_suburban`
+    // below for that case) — since segment sharing is tracked per segment
+    // *name*, not per individual station, this means the whole
+    // `gwr-west-of-england` segment (including Newbury, which
+    // gwr-bristol-suburban's own service never reaches) is now considered
+    // "shared" by the registry too. There is no longer a station on this
+    // line's own network that is both single-line-matching *and*
+    // ExclusiveSegment (PAD/RDG sit on `gwr-trunk-paddington`, NBY/WSB/CLC on
+    // the now-shared `gwr-west-of-england`, TAU/EXD on `xc-south-west`) — see
+    // `gwr_thames_valley_station_overlap_with_gwr_west_of_england_stays_
+    // exclusive_each_line` below for the Newbury case's updated SharedSegment
+    // expectation, a direct, accepted knock-on effect of Task 4.6's
+    // segment-name reuse rather than a regression.
 
     // Task 4.4's second file, `gwr-cornish-main-line`, picks up its own
     // exclusive segment (also named `gwr-cornish-main-line`) at Liskeard,
     // the first station west of Plymouth not already claimed by
     // cross-country.toml's `xc-south-west` segment. Truro is deep inside
     // that exclusive stretch, so this should stay a clean ExclusiveSegment
-    // case, mirroring `gwr_west_of_england_exclusive_segment_incident_does_not_propagate`
-    // above.
+    // case, mirroring `swr_exclusive_segment_incident_does_not_propagate` /
+    // `gwr_cotswold_exclusive_segment_incident_does_not_propagate` above.
     #[test]
     fn gwr_cornish_main_line_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -574,7 +577,17 @@ mod tests {
     // Junction) is real shared Berks and Hants line track (see
     // gwr-thames-valley.toml's own segment-naming comment). Kept as station
     // overlap only for this task's file-scope reasons, mirroring the Oxford/
-    // gwr-cotswold.toml case above.
+    // gwr-cotswold.toml case above. gwr-thames-valley itself stays
+    // ExclusiveSegment (its own `gwr-thames-valley` segment name is not
+    // shared with anything). gwr-west-of-england's own scope, however,
+    // changed from ExclusiveSegment to SharedSegment as of Task 4.6
+    // (gwr-bristol-suburban.toml reuses the `gwr-west-of-england` segment
+    // name for a genuine shared trunk elsewhere on that line, at Westbury/
+    // Castle Cary — see `gwr_west_of_england_trunk_incident_propagates_to_
+    // bristol_suburban` below for the direct case) — segment
+    // sharing is tracked per segment name, not per station, so this
+    // pre-existing overlap's scope shifts too even though NBY itself is
+    // untouched by gwr-bristol-suburban's own service.
     #[test]
     fn gwr_thames_valley_station_overlap_with_gwr_west_of_england_stays_exclusive_each_line() {
         let lines = load_all_lines();
@@ -583,6 +596,81 @@ mod tests {
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["gwr-thames-valley".to_string(), "gwr-west-of-england".to_string()]));
+        for m in &matches {
+            let expected = if m.line.id == "gwr-west-of-england" {
+                MatchScope::SharedSegment
+            } else {
+                MatchScope::ExclusiveSegment
+            };
+            assert_eq!(m.scope, expected, "{} scope mismatch", m.line.id);
+        }
+    }
+
+    // Task 4.6's own exclusive segment (`gwr-severn-beach`) covers the whole
+    // Severn Beach branch — Severn Beach itself (SVB) is not shared with any
+    // other catalogued line, so this should stay a clean ExclusiveSegment
+    // case, mirroring `swr_exclusive_segment_incident_does_not_propagate` /
+    // `gwr_cotswold_exclusive_segment_incident_does_not_propagate`.
+    #[test]
+    fn gwr_bristol_suburban_severn_beach_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-14", "Trespass incident at Severn Beach", "Trespass incident causing delays at Severn Beach.", &["GW"], &["SVB"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-bristol-suburban".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 4.6's research found a genuine, multi-station shared trunk with
+    // gwr-west-of-england.toml between Westbury and Castle Cary — both
+    // stations' own Wikipedia pages independently confirm this ("the Reading
+    // to Taunton Line and the Heart of Wessex Line... share tracks between
+    // Westbury and Castle Cary stations"), the same shape as `xc-south-west`/
+    // `gwr-trunk-paddington` earlier in this batch. gwr-bristol-suburban.toml
+    // reuses gwr-west-of-england.toml's own `gwr-west-of-england` segment
+    // name verbatim for Westbury, so an incident there should propagate to
+    // both lines as a shared-trunk event, mirroring
+    // `swr_shared_trunk_incident_propagates`'s / `gwr_trunk_xc_south_west_
+    // incident_propagates_across_west_of_england_and_cornish_main_line`'s
+    // shape.
+    #[test]
+    fn gwr_west_of_england_trunk_incident_propagates_to_bristol_suburban() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-15", "Points failure at Westbury", "Points failure causing delays at Westbury.", &["GW"], &["WSB"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["gwr-west-of-england".to_string(), "gwr-bristol-suburban".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+        }
+    }
+
+    // A second, genuine (not just assumed) overlap this task's own research
+    // found beyond the Westbury/Castle Cary one the brief itself names: Bath
+    // Spa (BTH) and Bristol Temple Meads (BRI) are also gwr-main-line.toml's
+    // own exclusive-segment stations (its `gwr-main-line` segment). This
+    // task's research confirms genuine physical track sharing (there is only
+    // one railway between Bristol Temple Meads and Bath Spa), but
+    // `gwr-main-line` also covers Chippenham (CPM), which this line's own
+    // Bristol-Weymouth service does not reach — the same file-scope reason
+    // gwr-thames-valley.toml's Oxford/Newbury cases stayed station-overlap
+    // only (see `gwr_thames_valley_station_overlap_with_gwr_cotswold_stays_
+    // exclusive_each_line` above). So an incident at Bath Spa should match
+    // both lines (real station overlap) but each must stay
+    // `MatchScope::ExclusiveSegment`, never `SharedSegment`.
+    #[test]
+    fn gwr_bristol_suburban_station_overlap_with_gwr_main_line_stays_exclusive_each_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-16", "Overhead line damage at Bath Spa", "Overhead line damage causing delays at Bath Spa.", &["GW"], &["BTH"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-bristol-suburban".to_string(), "gwr-main-line".to_string()]));
         for m in &matches {
             assert_eq!(
                 m.scope,
