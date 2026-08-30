@@ -460,6 +460,44 @@ mod tests {
         }
     }
 
+    // Church Stretton (CTT) is an ordinary intermediate stop on the same
+    // Shrewsbury-Craven Arms shared trunk exercised above, added to
+    // `tfw-heart-of-wales.toml` during the final whole-branch review's fix
+    // wave (Important #2) -- previously that file's station list jumped
+    // straight from Shrewsbury to Craven Arms, omitting Church Stretton
+    // entirely, which silently broke this exact propagation guarantee for
+    // an incident reported there specifically (it would have matched
+    // `tfw-marches` correctly but had no way to also match
+    // `tfw-heart-of-wales`, since CTT wasn't in that file's station list at
+    // all). Both files now tag Church Stretton with the same segment name,
+    // `tfw-heart-of-wales-shrewsbury` (see the sourcing/decision note above
+    // Craven Arms in `lines/tfw-marches.toml`, and the comment above CTT in
+    // `lines/tfw-heart-of-wales.toml`), so an incident there should
+    // propagate to both lines, each classified `MatchScope::SharedSegment`
+    // -- mirroring `heart_of_wales_shrewsbury_shared_trunk_propagates`
+    // above exactly, just at a different station on the same shared trunk.
+    #[test]
+    fn church_stretton_shared_trunk_propagates() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-15",
+            "Signal failure at Church Stretton",
+            "Signal failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["CTT"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["tfw-marches".to_string(), "tfw-heart-of-wales".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+        }
+    }
+
     // Chester is on both `tfw-marches` and `tfw-north-wales-coast`, but
     // Task 11.5 ruled that overlap station-overlap-only rather than a
     // shared trunk, mirroring `tfw-north-wales-coast.toml`'s own Llandudno

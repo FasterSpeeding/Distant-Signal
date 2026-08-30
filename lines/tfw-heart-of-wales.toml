@@ -80,18 +80,33 @@ delay_threshold_minutes = 10
 # runs on the separate West Wales main line, not the Heart of Wales Line's
 # own dedicated single-track infrastructure. No stations are called between
 # Llanelli and Swansea. No West Wales / South Wales main line file exists
-# yet anywhere in this catalogue to coordinate a shared segment name with
-# (same situation Task 1.4 documented for `wcml-north-wales.toml` and Chester-
-# Holyhead), so `tfw-heart-of-wales-swansea` is a standalone forward bet: a
-# future South Wales/West Wales line file should read this file and decide
-# deliberately whether to share that segment name, rather than assuming
-# either way.
+# yet anywhere in this catalogue to coordinate a shared segment name with.
+# (Reworded during the final whole-branch review's fix wave, Minor #2: this
+# used to compare itself to Task 1.4's Chester-Holyhead situation in
+# `wcml-north-wales.toml`, but that comparison is now stale -- Task 1.4 has
+# since landed, on Batch 1's own worktree branch, and `tfw-north-wales-
+# coast.toml`'s own parallel comment about it was already updated to match
+# during this batch's Task 11.8. The West Wales/South Wales gap here is a
+# separate, still-genuinely-unresolved situation of its own -- no such file
+# exists for this particular gap -- not the same situation carried forward
+# from Task 1.4.) `tfw-heart-of-wales-swansea` is a standalone forward bet:
+# a future South Wales/West Wales line file should read this file and
+# decide deliberately whether to share that segment name, rather than
+# assuming either way.
 #
 # Only principal calling points are listed; no further request-stop halts
-# are known to be omitted on this line beyond what's already listed (the
-# Wikipedia infobox's "29 stations" count for Craven Arms-Llanelli is
-# consistent with the 29 stations enumerated below for that stretch, plus
-# Shrewsbury and Swansea at the two ends).
+# are known to be omitted on this line beyond what's already listed. The
+# Wikipedia infobox's "29 stations" count for Craven Arms-Llanelli
+# contradicts this file's own tally, rather than corroborating it: this
+# file actually enumerates 30 stations for that stretch (CRV through LLE
+# inclusive, plus Shrewsbury and Swansea at the two ends) -- one more than
+# Wikipedia's infobox claims. (Church Stretton, added during this same fix
+# wave's Important #2, doesn't affect this count: it's geographically north
+# of Craven Arms, between Shrewsbury and Craven Arms, so it falls outside
+# the Craven Arms-Llanelli stretch this count covers.) This discrepancy is
+# left disclosed rather than silently resolved either way -- a future
+# editor re-checking the infobox's raw wikitext may find the source of the
+# mismatch.
 [[stations]]
 crs = "SHR"
 role = "junction"
@@ -99,6 +114,27 @@ segment = "tfw-heart-of-wales-shrewsbury"
 # Shrewsbury is also a junction with the Cambrian Line (`tfw-cambrian.toml`)
 # and the Wolverhampton/Chester routes, at station level only -- no track is
 # shared with those since the Cambrian Line diverges west immediately.
+
+[[stations]]
+crs = "CTT"
+role = "minor"
+segment = "tfw-heart-of-wales-shrewsbury"
+# Church Stretton: added during the final whole-branch review (Important
+# #2) -- this file's station list previously jumped straight from
+# Shrewsbury to Craven Arms, omitting this intermediate stop entirely, which
+# silently broke the shared-trunk matching guarantee `tfw-marches.toml`
+# establishes for this exact stretch (see that file's own Craven Arms
+# comment and the `heart_of_wales_shrewsbury_shared_trunk_propagates` /
+# `church_stretton_shared_trunk_propagates` tests in
+# `crates/aggregator/src/matcher.rs`). CRS code confirmed independently
+# (not assumed) via this station's own Wikipedia infobox: "CTT". Positioned
+# here between Shrewsbury and Craven Arms per real geography -- Church
+# Stretton sits "12+3/4 miles south of Shrewsbury", i.e. north of Craven
+# Arms, per its own Wikipedia article, matching the south-to-north CRV ->
+# CTT -> SHR ordering already used in `tfw-marches.toml`. No TIPLOC listed:
+# not confirmed against a live source during this fix wave, matching this
+# file's own convention (see the sourcing note above) of omitting rather
+# than guessing.
 
 [[stations]]
 crs = "CRV"
