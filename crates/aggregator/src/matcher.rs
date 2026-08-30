@@ -989,4 +989,95 @@ mod tests {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
         }
     }
+
+    // Task 5.11 (great-northern-suburban.toml). This file's research
+    // (documented in its own SHARED-TRUNK RESEARCH FINDING header comment)
+    // confirmed the Moorgate suburban service physically joins the East
+    // Coast Main Line at Finsbury Park and runs over the same
+    // `gn-ecml-slow-lines` corridor `great-northern-kings-lynn.toml` already
+    // documents as far as Welwyn Garden City - but with a different calling
+    // pattern (Moorgate stops at extra local stations that file's semi-fast
+    // service skips), so - mirroring `southeastern-highspeed.toml`'s own
+    // decision for the same "same track, different calling pattern"
+    // situation - the segment name is deliberately NOT reused. This file is
+    // therefore genuinely standalone with respect to cross-file segment
+    // sharing (no `SharedSegment` propagation test is added, per COMMON.md's
+    // own exception for a standalone line). This test confirms an incident
+    // on this line's own exclusive `gn-moorgate-hertford-branch` segment
+    // (Winchmore Hill - not a station either sibling GN file touches) stays
+    // exclusive to this line alone - mirrors
+    // swr_exclusive_segment_incident_does_not_propagate and
+    // elizabeth_branch_incident_stays_on_its_branch above.
+    #[test]
+    fn gn_suburban_hertford_branch_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "GN-4",
+            "Signal failure at Winchmore Hill",
+            "Signal failure causing delays to GN train services.",
+            &["GN"],
+            &["WIH"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["great-northern-suburban".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 5.11. Same for the Welwyn Garden City branch's own local-only
+    // stops (the other branch past Alexandra Palace) - an incident at
+    // Oakleigh Park, a station `great-northern-kings-lynn.toml`'s semi-fast
+    // service never calls at, should also stay exclusive to this line, and
+    // shouldn't spuriously pull in the Hertford Loop branch's own segment
+    // name either (the two branches use different segment names despite
+    // being the same file/line).
+    #[test]
+    fn gn_suburban_wgc_branch_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "GN-5",
+            "Points failure at Oakleigh Park",
+            "Points failure causing delays to GN train services.",
+            &["GN"],
+            &["OKL"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["great-northern-suburban".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 5.11. Finsbury Park (FPK) is also `great-northern-kings-lynn.toml`'s
+    // own `gn-ecml-slow-lines` station - per this file's own SHARED-TRUNK
+    // RESEARCH FINDING header comment, this is a genuine physical overlap
+    // (both services' trains run over the same East Coast Main Line slow
+    // lines here) but with different calling patterns, so it's deliberately
+    // kept as station overlap only, not a shared segment name - same
+    // judgment call as the AFK/Ramsgate/LBG overlaps between Southeastern
+    // and HS1 exercised above. Confirms an incident at Finsbury Park matches
+    // both lines independently, each still scoped ExclusiveSegment, never
+    // SharedSegment.
+    #[test]
+    fn fpk_station_overlap_matches_great_northern_suburban_and_kings_lynn_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "GN-6",
+            "Signal failure at Finsbury Park",
+            "Signal failure causing delays to GN train services.",
+            &["GN"],
+            &["FPK"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["great-northern-suburban".to_string(), "great-northern-kings-lynn".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
 }
