@@ -253,11 +253,11 @@ mod tests {
     // `gwr-main-line`'s Bristol-bound exclusive segment starts at Chippenham
     // (CPM), the first station beyond Swindon reached only by GWML-via-Bath
     // services (South Wales Main Line diverges at Wootton Bassett Junction,
-    // just west of Swindon). No sibling GWR line exists yet in this batch
-    // (Tasks 4.2-4.5 add them later and will add the shared-trunk
-    // propagation assertion for `gwr-trunk-paddington` once they do), so
-    // this only asserts the exclusive-segment case, mirroring
-    // `swr_exclusive_segment_incident_does_not_propagate`.
+    // just west of Swindon), mirroring
+    // `swr_exclusive_segment_incident_does_not_propagate`. See
+    // `gwr_trunk_paddington_incident_propagates_to_cotswold` below for the
+    // shared-trunk case, now that `gwr-cotswold` (Task 4.2) also shares
+    // `gwr-trunk-paddington`.
     #[test]
     fn gwr_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -267,5 +267,43 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["gwr-main-line".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `gwr-cotswold`'s (Task 4.2) own exclusive segment starts at Oxford
+    // (OXF), the first station beyond Didcot reached only by Cotswold Line
+    // services (South Wales/Bristol-bound gwr-main-line services continue
+    // west towards Swindon at Didcot instead). Mirrors
+    // `swr_exclusive_segment_incident_does_not_propagate` /
+    // `gwr_exclusive_segment_incident_does_not_propagate`.
+    #[test]
+    fn gwr_cotswold_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-2", "Signal failure at Moreton-in-Marsh", "Signal failure causing delays at Moreton-in-Marsh.", &["GW"], &["MIM"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-cotswold".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `gwr-main-line` and `gwr-cotswold` both share the `gwr-trunk-paddington`
+    // segment (PAD/RDG/DID) established by Task 4.1 and reused verbatim by
+    // Task 4.2. An incident at Didcot (a station on that shared segment)
+    // should propagate to both lines as a shared-trunk event. Mirrors
+    // `swr_shared_trunk_incident_propagates`'s shape.
+    #[test]
+    fn gwr_trunk_paddington_incident_propagates_to_cotswold() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-3", "Signal failure at Didcot Parkway", "Signal failure causing delays to GWR services.", &["GW"], &["DID"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert!(matched_ids.contains("gwr-main-line"));
+        assert!(matched_ids.contains("gwr-cotswold"));
+        for m in &matches {
+            if m.line.id.starts_with("gwr-") {
+                assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+            }
+        }
     }
 }
