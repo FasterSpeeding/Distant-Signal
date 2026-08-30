@@ -282,9 +282,12 @@ mod tests {
         // territory — the Elizabeth line goes no further than Shenfield —
         // and isn't a junction for any branch in this batch either (unlike
         // Colchester, which greater-anglia-essex-branches.toml's Sunshine
-        // Coast branch now genuinely shares `geml-mainline` with; see
-        // essex_branches_shared_trunk_incident_propagates below). An
-        // incident here should stay scoped to greater-anglia-main-line only.
+        // Coast branch also lists as its own real junction — but as
+        // station-level overlap only, each independently ExclusiveSegment,
+        // not a shared `geml-mainline` segment; see
+        // essex_branches_colchester_is_station_overlap_only_with_main_line
+        // below). An incident here should stay scoped to
+        // greater-anglia-main-line only.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident("LE-2", "Signal failure at Diss", "Signal failure causing delays.", &["LE"], &["DIS"]);
