@@ -378,4 +378,25 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["chiltern-aylesbury".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    #[test]
+    fn c2c_exclusive_segment_incident_does_not_propagate() {
+        // c2c is a standalone line with no shared segment anywhere in the
+        // catalogue (per the 2026-08-29 line-coverage gap analysis and
+        // lines/c2c.toml's own comment) - only the exclusive-segment
+        // assertion is required here, no shared-trunk test.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "CC-1",
+            "Signal failure at Basildon",
+            "Signal failure causing delays to c2c services.",
+            &["CC"],
+            &["BSO"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["c2c".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
