@@ -272,4 +272,29 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["tpe-anglo-scottish".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // No shared-segment-propagation test for tpe-south either: per this
+    // task's own pre-flight scan it only overlaps sibling TPE lines at
+    // station level (Liverpool Lime Street / Manchester Piccadilly with
+    // tpe-anglo-scottish and tpe-north; no overlap at all with
+    // tpe-borders), and has no shared segment with xc-manchester/northern
+    // by design (station-overlap-only, same precedent as
+    // xc-manchester.toml and tpe-anglo-scottish.toml). Genuinely standalone
+    // for this assertion.
+    #[test]
+    fn tpe_south_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TPE-2",
+            "Signal failure at Grimsby Town",
+            "Signal failure causing delays to TransPennine Express services at Grimsby Town.",
+            &["TP"],
+            &["GMB"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tpe-south".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
