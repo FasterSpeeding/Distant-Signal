@@ -23,17 +23,21 @@ export function TextLink({
   href,
   children,
   underline = 'hover',
+  target,
+  rel,
 }: {
   href: string;
   children: React.ReactNode;
   underline?: 'hover' | 'always';
+  target?: string;
+  rel?: string;
 }) {
   return (
     // The undecorated resting state comes from the stylesheet rather than
     // the `style={{ textDecoration: 'none' }}` these call sites used to
     // carry: an inline style outranks every selector, so a hover rule
     // would never have got a look in.
-    <Link href={href} data-text-link={underline}>
+    <Link href={href} data-text-link={underline} target={target} rel={rel}>
       <Text c="var(--mantine-color-anchor)">{children}</Text>
     </Link>
   );
