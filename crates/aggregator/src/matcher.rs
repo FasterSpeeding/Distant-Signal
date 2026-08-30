@@ -515,4 +515,116 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["greater-anglia-essex-branches".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    #[test]
+    fn suffolk_branches_exclusive_segment_incident_does_not_propagate() {
+        // Sudbury is the terminus of `gainsborough-line`, exclusive to
+        // greater-anglia-suffolk-branches.toml. It isn't a junction or
+        // overlap point for any other committed line, so an incident here
+        // should stay scoped to greater-anglia-suffolk-branches only.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LE-10",
+            "Signal failure at Sudbury",
+            "Signal failure causing delays to Greater Anglia services.",
+            &["LE"],
+            &["SUY"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["greater-anglia-suffolk-branches".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn suffolk_branches_marks_tey_is_station_overlap_only_with_main_line() {
+        // Marks Tey is on both greater-anglia-main-line.toml's
+        // `geml-mainline` segment and greater-anglia-suffolk-branches.toml's
+        // own `gainsborough-line` segment (the Sudbury branch's real
+        // junction). Per that file's segment-decision note (mirroring
+        // Task 2.4's Witham/Colchester precedent), the two files
+        // deliberately do NOT share a segment name here — reusing
+        // `geml-mainline` verbatim would incorrectly reclassify unrelated
+        // far-flung `geml-mainline` stations (e.g. Diss, Norwich) as shared
+        // trunk too, since SegmentRegistry::is_shared marks a segment name
+        // shared globally, not per overlapping station. So an incident here
+        // should match both lines independently, each still classified as
+        // ExclusiveSegment rather than escalating to SharedSegment.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LE-11",
+            "Points failure at Marks Tey",
+            "Points failure causing delays to Greater Anglia services.",
+            &["LE"],
+            &["MKT"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["greater-anglia-main-line".to_string(), "greater-anglia-suffolk-branches".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    #[test]
+    fn suffolk_branches_ipswich_is_station_overlap_only_with_main_line() {
+        // Ipswich is on both greater-anglia-main-line.toml's `geml-mainline`
+        // segment and greater-anglia-suffolk-branches.toml's own
+        // `felixstowe-branch` segment (where Felixstowe branch passenger
+        // services originate; the branch's true physical fork is one stop
+        // further out at Westerfield). Same non-sharing decision as Marks
+        // Tey above: station-level overlap only, each line classified
+        // independently as ExclusiveSegment.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LE-12",
+            "Points failure at Ipswich",
+            "Points failure causing delays to Greater Anglia services.",
+            &["LE"],
+            &["IPS"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["greater-anglia-main-line".to_string(), "greater-anglia-suffolk-branches".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    #[test]
+    fn suffolk_branches_manningtree_is_station_overlap_only_with_main_line() {
+        // Manningtree is on both greater-anglia-main-line.toml's
+        // `geml-mainline` segment and greater-anglia-suffolk-branches.toml's
+        // own `mayflower-line` segment (the Mayflower line's real junction).
+        // Same non-sharing decision as Marks Tey and Ipswich above:
+        // station-level overlap only, each line classified independently as
+        // ExclusiveSegment.
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LE-13",
+            "Points failure at Manningtree",
+            "Points failure causing delays to Greater Anglia services.",
+            &["LE"],
+            &["MNG"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["greater-anglia-main-line".to_string(), "greater-anglia-suffolk-branches".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
 }
