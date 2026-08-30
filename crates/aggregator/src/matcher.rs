@@ -526,6 +526,11 @@ mod tests {
     // that task's own matcher tests) asserting an incident on that shared
     // segment matches BOTH `southeastern-metro-north-kent` and
     // `thameslink-southern` with `MatchScope::SharedSegment`.
+    // Updated by Task 5.6 (southern-brighton-main-line.toml): that file also
+    // has a station at LBG (its own `southern-bml-north` segment, named as a
+    // courtesy hand-off for Task 5.14's thameslink-southern.toml, not yet a
+    // real cross-file shared trunk - see that file's own header comment), so
+    // it now joins this set as a fifth independent exclusive-segment match.
     #[test]
     fn lbg_station_overlap_matches_senk_thameslink_core_seml_and_hayes_as_independent_exclusive_segments() {
         let lines = load_all_lines();
@@ -546,6 +551,7 @@ mod tests {
                 "thameslink-core".to_string(),
                 "southeastern-main-line".to_string(),
                 "southeastern-hayes-line".to_string(),
+                "southern-brighton-main-line".to_string(),
             ])
         );
         for m in &matches {
@@ -603,5 +609,55 @@ mod tests {
         for m in &matches {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
         }
+    }
+
+    // Task 5.6 (southern-brighton-main-line.toml). An incident on this
+    // line's own exclusive `southern-bml-south` segment (past the ECR
+    // junction) should stay exclusive to this line alone - mirrors
+    // swr_exclusive_segment_incident_does_not_propagate and
+    // elizabeth_branch_incident_stays_on_its_branch above. No other
+    // already-curated line touches Brighton, so this also confirms no
+    // accidental station-overlap match.
+    #[test]
+    fn southern_bml_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SN-1",
+            "Signal failure at Brighton",
+            "Signal failure causing delays to Southern services.",
+            &["SN"],
+            &["BTN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["southern-brighton-main-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 5.6. Confirms the Gatwick Express fold-in decision actually
+    // works end to end: an incident tagged with the `GX` operator (not
+    // `SN`) at Preston Park - one of Gatwick Express's own peak-only
+    // calling points, see this file's own fold-in comment - still resolves
+    // to `southern-brighton-main-line` via its `operators` list, on the
+    // line's own exclusive segment, exactly as an `SN`-tagged incident
+    // would. This is what "fold-in rather than a separate file" is meant to
+    // buy: no second line definition is needed for Gatwick Express traffic
+    // to match correctly.
+    #[test]
+    fn southern_bml_gatwick_express_operator_folds_into_brighton_main_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "GX-1",
+            "Delays at Preston Park",
+            "Gatwick Express services are delayed at Preston Park.",
+            &["GX"],
+            &["PRP"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["southern-brighton-main-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 }
