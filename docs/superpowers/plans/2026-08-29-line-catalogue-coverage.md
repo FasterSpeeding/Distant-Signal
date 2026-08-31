@@ -1064,9 +1064,11 @@ anything else").
   uses New Street).
 
 - [ ] **Task 12.2 — `lines/chiltern-aylesbury.toml`** (Marylebone–
-  Aylesbury stopping service via Amersham, folding the Bicester
-  North–Oxford branch per the gap analysis's `swr-alton.toml`-style
-  precedent). Operators: `CH`.
+  Aylesbury stopping service via Amersham, folding the Bicester–Oxford
+  branch per the gap analysis's `swr-alton.toml`-style precedent; the
+  branch diverges via a purpose-built chord near Bicester Village, not
+  through Bicester North — see the correction in
+  `lines/chiltern-aylesbury.toml`'s own comments). Operators: `CH`.
 
 - [ ] **Task 12.3 — `lines/c2c.toml`** (Fenchurch Street–Shoeburyness via
   Basildon, the London, Tilbury & Southend line, including the minor

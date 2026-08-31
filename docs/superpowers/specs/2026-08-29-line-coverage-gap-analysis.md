@@ -430,7 +430,8 @@ absolute ridership than the England-wide commuter gaps above it.
 upcoming). Code `CH`. Marylebone–Birmingham Snow Hill main line (via High
 Wycombe, Bicester, Warwick, with a Stratford-upon-Avon extension),
 Marylebone–Aylesbury stopping service (via Amersham), and a
-Bicester North–Oxford branch.
+Bicester–Oxford branch (diverges via a purpose-built chord near Bicester
+Village, not through Bicester North).
 
 **(b) Estimate: 2–3 files** (Snow Hill main line, Aylesbury line, possibly
 folding the Oxford branch into the main line the way `swr-alton.toml`
