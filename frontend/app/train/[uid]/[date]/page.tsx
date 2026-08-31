@@ -2,6 +2,7 @@ import { Stack, Title } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import { getTrackedTrainByUidAndDate, ApiNotFoundError } from '@/lib/api';
 import { TrainJourney } from '@/components/TrainJourney';
+import { TicketPanel } from '@/components/TicketPanel';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -34,6 +35,7 @@ export default async function TrackedTrainByUidPage({
     <Stack p="lg" gap="md">
       <Title order={1}>Train {uid}</Title>
       <TrainJourney state={state} />
+      <TicketPanel trackingId={state.id} />
     </Stack>
   );
 }
