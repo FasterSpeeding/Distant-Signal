@@ -185,6 +185,22 @@ delay_threshold_minutes = 10
 #    leaving a documented-but-unconfirmed sharing question in comments
 #    (its own Haymarket/Bathgate note) rather than force-modelling it.
 #
+#    UPDATE (Task 10.9, fix round 1, now merged): this open question is
+#    about `scotrail-central-belt.toml` specifically and remains exactly
+#    as undecided as above. It is a SEPARATE question from whether GLQ is
+#    shared between the two West Highland files themselves, which Task
+#    10.9 confirmed it is (per the "combined trains ... splitting at
+#    Crianlarich" sourcing already quoted above -- the same physical train
+#    from GLQ itself, not just from Dalmuir onward). `lines/scotrail-west-
+#    highland-oban.toml` now reuses this exact `scotrail-west-highland-
+#    glasgow-terminus` segment name for its own GLQ entry, making it a
+#    genuine two-way shared segment between `scotrail-west-highland-fort-
+#    william` and `scotrail-west-highland-oban`, asserted by
+#    `scotrail_west_highland_shares_glasgow_terminus_incident_propagates`
+#    in `crates/aggregator/src/matcher.rs`. No change was needed to this
+#    file's own GLQ entry (`scotrail-west-highland-glasgow-terminus` was
+#    already its name) -- only the sibling file's GLQ entry changed.
+#
 # 2. Crianlarich (Oban/Fort William-Mallaig split): confirmed via a fresh
 #    fetch of Wikipedia's "Crianlarich railway station" article:
 #    "Northbound, Crianlarich is where the combined trains for Oban and

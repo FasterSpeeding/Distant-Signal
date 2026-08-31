@@ -670,4 +670,53 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["scotrail-west-highland-oban".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 10.9 (fix round 1, post-review): GLQ (Glasgow Queen Street) is
+    // reused verbatim as `scotrail-west-highland-glasgow-terminus` by both
+    // `scotrail-west-highland-fort-william` and
+    // `scotrail-west-highland-oban` -- see both files' own GLQ comments
+    // for why (the "combined trains ... splitting at Crianlarich" sourcing
+    // means the shared corridor genuinely starts at GLQ itself, not just
+    // from Dalmuir onward). GLQ is ALSO a real `[[stations]]` entry in
+    // `scotrail-central-belt.toml` (its own exclusive
+    // `scotrail-central-belt` segment) and `scotrail-glasgow-suburban.toml`
+    // (its own exclusive `scotrail-glasgow-suburban-core` segment) -- both
+    // genuinely different physical platform groups/services at the same
+    // named station, unaffected by this fix. So an incident at GLQ
+    // correctly matches all four lines, but with different scopes: the two
+    // West Highland lines get `SharedSegment` (this test's own point),
+    // while Central Belt and Glasgow Suburban each stay `ExclusiveSegment`
+    // on their own unrelated segments.
+    #[test]
+    fn scotrail_west_highland_shares_glasgow_terminus_incident_propagates() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-17",
+            "Points failure at Glasgow Queen Street",
+            "Points failure causing delays to ScotRail services at Glasgow Queen Street.",
+            &["SR"],
+            &["GLQ"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "scotrail-central-belt".to_string(),
+                "scotrail-glasgow-suburban".to_string(),
+                "scotrail-west-highland-fort-william".to_string(),
+                "scotrail-west-highland-oban".to_string(),
+            ])
+        );
+        for m in &matches {
+            let expected = match m.line.id.as_str() {
+                "scotrail-west-highland-fort-william" | "scotrail-west-highland-oban" => {
+                    MatchScope::SharedSegment
+                }
+                _ => MatchScope::ExclusiveSegment,
+            };
+            assert_eq!(m.scope, expected, "{} scope mismatch", m.line.id);
+        }
+    }
 }
