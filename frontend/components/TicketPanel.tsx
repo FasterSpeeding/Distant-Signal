@@ -24,7 +24,17 @@ import type { TrackedTrainTicket } from '@/lib/types';
  * change to `getTicketsForTrackedTrain`'s own spec-pinned signature, is how
  * this plan resolves that gap -- see this plan's own top-level note on it. */
 export async function TicketPanel({ trackingId }: { trackingId: number }) {
-  const session = await getSession();
+  // Same defensive fallback as app/layout.tsx: an auth-status glitch should
+  // degrade to the login nudge, not break this whole page for every
+  // visitor. This component has no route-level `error.tsx` boundary of its
+  // own (`app/error.tsx` is the root boundary), so an uncaught rejection
+  // here would otherwise take down the entire tracked-train page.
+  const session = await getSession().catch(() => ({
+    authenticated: false,
+    id: null,
+    email: null,
+    name: null,
+  }));
   if (!session.authenticated) {
     // Worded as "attach a ticket," not "see your ticket" -- logging in
     // doesn't guarantee this viewer owns this particular pin, so the copy

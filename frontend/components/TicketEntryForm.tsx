@@ -2,9 +2,9 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Badge, Button, FileInput, Group, Stack, Tabs, TextInput } from '@mantine/core';
+import { Alert, Button, FileInput, Group, Stack, Tabs, TextInput } from '@mantine/core';
 import { TextLink } from './TextLink';
-import type { PartialTicket, TicketEntryRequest, TicketSource } from '@/lib/types';
+import type { PartialTicket, TicketCreatedResponse, TicketEntryRequest, TicketSource } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 type Tab = 'manual' | 'pkpass' | 'pdf';
@@ -168,6 +168,11 @@ export function TicketEntryForm({ trackingId, label }: { trackingId: number; lab
       });
 
       if (response.ok) {
+        // `{ ticketId }` -- not needed beyond confirming a 200 came back
+        // with the documented shape (there's no per-ticket detail view to
+        // route to yet), but typed here rather than the body being read as
+        // untyped `any` or left unparsed.
+        const created: TicketCreatedResponse = await response.json();
         setOpen(false);
         resetFields();
         router.refresh();
@@ -199,7 +204,17 @@ export function TicketEntryForm({ trackingId, label }: { trackingId: number; lab
 
   return (
     <Stack gap="md">
-      <Tabs value={tab} onChange={(value) => setTab((value as Tab) ?? 'manual')}>
+      <Tabs
+        value={tab}
+        onChange={(value) => {
+          setTab((value as Tab) ?? 'manual');
+          // A stale error from a previous failed upload on another tab
+          // shouldn't linger on screen once the user has switched away --
+          // no new upload attempt has happened yet on whichever tab they
+          // land on.
+          setUploadError(null);
+        }}
+      >
         <Tabs.List>
           <Tabs.Tab value="manual">Manual entry</Tabs.Tab>
           <Tabs.Tab value="pkpass">Upload .pkpass</Tabs.Tab>
@@ -215,7 +230,7 @@ export function TicketEntryForm({ trackingId, label }: { trackingId: number; lab
                 setOperator(event.currentTarget.value);
                 clearAutoFilled('operator');
               }}
-              rightSection={autoFilled.has('operator') ? <Badge size="xs">auto-filled</Badge> : undefined}
+              description={autoFilled.has('operator') ? 'Auto-filled — please check this value' : undefined}
             />
             <TextInput
               label="Ticket type"
@@ -224,7 +239,7 @@ export function TicketEntryForm({ trackingId, label }: { trackingId: number; lab
                 setTicketType(event.currentTarget.value);
                 clearAutoFilled('ticketType');
               }}
-              rightSection={autoFilled.has('ticketType') ? <Badge size="xs">auto-filled</Badge> : undefined}
+              description={autoFilled.has('ticketType') ? 'Auto-filled — please check this value' : undefined}
             />
             <TextInput
               label="Origin CRS code"

@@ -41,6 +41,12 @@ describe('TicketEntryForm', () => {
     return document.querySelector('input[type="file"][accept=".pkpass"]') as HTMLInputElement;
   }
 
+  // Same rationale as `getPkpassFileInput` above -- told apart from the
+  // `.pkpass` tab's hidden input by its distinct `accept` value.
+  function getPdfFileInput(): HTMLInputElement {
+    return document.querySelector('input[type="file"][accept="application/pdf"]') as HTMLInputElement;
+  }
+
   it('starts collapsed, showing only the entry-point button', () => {
     renderWithMantine(<TicketEntryForm trackingId={1} label="Add a ticket for this journey" />);
     expect(screen.getByRole('button', { name: 'Add a ticket for this journey' })).toBeInTheDocument();
@@ -168,6 +174,23 @@ describe('TicketEntryForm', () => {
       const body = JSON.parse((init as RequestInit).body as string);
       expect(body.source).toBe('pkpass-heuristic');
       expect(body.origin_crs).toBe('KGX');
+    });
+  });
+
+  it('pdf upload: posts to the pdf-specific upload route, not the pkpass one', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({ operator: 'LNER', ticketType: null, originCrs: null, destinationCrs: null, source: 'pdf-heuristic' }),
+        { status: 200 },
+      ),
+    );
+    openForm();
+    fireEvent.click(screen.getByRole('tab', { name: 'Upload PDF e-ticket' }));
+    const file = new File(['fake'], 'ticket.pdf', { type: 'application/pdf' });
+    fireEvent.change(getPdfFileInput(), { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith('/api/Train/1/tickets/pdf', expect.objectContaining({ method: 'POST' }));
     });
   });
 
