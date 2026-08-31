@@ -15,7 +15,8 @@ import { theme } from '@/lib/theme';
 
 export const metadata: Metadata = {
   title: 'Distant Signal',
-  description: 'Line status for UK National Rail, TfL-style.',
+  description:
+    'A personal UK rail companion: TfL-style line status, live train tracking, and ticket/Delay-Repay support — with first-class handling of operators whose routes share trunk track, so an incident is only ever flagged on the lines it actually affects.',
 };
 
 // A separate async Server Component (rather than awaiting inline in

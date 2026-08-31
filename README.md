@@ -1,8 +1,8 @@
 # Distant Signal
 
 A personal UK rail companion: line-status aggregation in the TfL-Unified-API
-style, individual train tracking, accounts, and (soon) ticket/Delay-Repay
-support. It has first-class support for operators with multiple parallel
+style, individual train tracking, accounts, and ticket/Delay-Repay support.
+It has first-class support for operators with multiple parallel
 routes that share trunk track (SWR, Southeastern, Northern, etc.) — knowing
 the difference between an incident on a *shared trunk* (which should
 propagate to every line using that trunk) and an incident on an *exclusive
