@@ -648,6 +648,36 @@ mod tests {
         }
     }
 
+    // Post-review fix round 2: unlike Dumbarton Central above, Hyndland
+    // (and Dalreoch/Partick alongside it) is NOT physically traversed by
+    // West Highland Line trains -- they run non-stop between Glasgow
+    // Queen Street and Dumbarton Central. Hyndland/Dalreoch/Partick were
+    // previously mistakenly tagged onto the same
+    // `scotrail-glasgow-suburban-west-trunk` segment name as DMR/DBC,
+    // which made `SegmentRegistry::is_shared` (name-keyed, not
+    // station-keyed) incorrectly report an incident here as shared with
+    // the West Highland lines too. They are now retagged onto
+    // `scotrail-glasgow-suburban-west-approach`, exclusive to this file --
+    // see `lines/scotrail-glasgow-suburban.toml`'s own HYN comment for the
+    // full explanation. An incident at Hyndland should therefore match
+    // only `scotrail-glasgow-suburban`, with `ExclusiveSegment` scope.
+    #[test]
+    fn scotrail_glasgow_suburban_west_approach_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-15B",
+            "Signal failure at Hyndland",
+            "Signal failure causing delays to ScotRail services at Hyndland.",
+            &["SR"],
+            &["HYN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-glasgow-suburban".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
     // Task 10.9 (ScotRail West Highland Line, Oban arm): this line's own
     // exclusive track beyond Crianlarich (tagged
     // `scotrail-west-highland-oban-exclusive`, used only by this one file)

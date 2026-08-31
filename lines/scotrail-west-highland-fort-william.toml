@@ -209,7 +209,7 @@ delay_threshold_minutes = 10
 #    task brief's own summary and the gap analysis's "materially two
 #    different routes off a shared Glasgow trunk" framing, now
 #    independently verified against a live source rather than trusted from
-#    the brief. Per the rule of thumb, Dumbarton Central through Crianlarich
+#    the brief. Per the rule of thumb, Helensburgh Upper through Crianlarich
 #    (inclusive) is tagged `scotrail-west-highland-glasgow-crianlarich` --
 #    a deliberately line-neutral name (mirroring
 #    `scotrail-inverness-dingwall-trunk`'s own naming pattern: named for

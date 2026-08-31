@@ -161,9 +161,27 @@ role = "terminus"
 segment = "scotrail-glasgow-suburban-milngavie-branch"
 
 [[stations]]
+crs = "PTK"
+role = "junction"
+segment = "scotrail-glasgow-suburban-west-approach"
+# Partick: Glasgow Subway interchange; also where Argyle Line services
+# join North Clyde metals westbound towards Dalmuir/Milngavie. Partick is
+# the first stop out of Glasgow on this line's own western approach
+# track.
+#
+# CORRECTION (post-review fix round 2): moved here from its previous
+# position after HLC/CGD/BHC further down this file, which put it out of
+# geographic order -- `crates/aggregator/src/aggregation.rs`'s
+# `routes_from_stations` sorts an incident's affected stations by their
+# position in this `[[stations]]` list to build "between A and B" route
+# descriptions, and a misordered station there can produce a reversed or
+# wrong-sounding range. See the HYN entry immediately below for why this
+# station's segment name also changed in the same pass.
+
+[[stations]]
 crs = "HYN"
 role = "junction"
-segment = "scotrail-glasgow-suburban-west-trunk"
+segment = "scotrail-glasgow-suburban-west-approach"
 # Hyndland: per Wikipedia's own Hyndland article, "immediately to the west
 # of the station is Hyndland East Junction where the Yoker and Singer
 # (including the Milngavie branch) lines diverge" -- so the physical split
@@ -176,6 +194,32 @@ segment = "scotrail-glasgow-suburban-west-trunk"
 # divergence point, not asserted as the divergence point itself; exclusive
 # segment starts at the next station, MLN, per the shared-trunk rule of
 # thumb.
+#
+# CORRECTION (post-review fix round 2): Hyndland, Dalreoch (DLR, below)
+# and Partick (above) were previously all tagged onto the SAME
+# `scotrail-glasgow-suburban-west-trunk` segment name used by DMR (Dalmuir)
+# and DBC (Dumbarton Central) below -- the segment this file genuinely
+# shares with `scotrail-west-highland-fort-william.toml` and
+# `scotrail-west-highland-oban.toml`. That was wrong: `SegmentRegistry::
+# is_shared` (in `crates/aggregator/src/segments.rs`) keys on segment NAME
+# only, not station, so it made an incident at Hyndland, Dalreoch or
+# Partick get classified as `MatchScope::SharedSegment` and surface a
+# false, user-visible "also affects other lines" claim -- even though West
+# Highland Line trains run non-stop between Glasgow Queen Street and
+# Dumbarton Central and do not physically call at Hyndland, Dalreoch or
+# Partick at all (see both West Highland files' own DMR comments: "WHL
+# trains run non-stop between here and Glasgow Queen Street"). West
+# Highland services only join this line's own metals from Dumbarton
+# Central (DBC) onward towards Glasgow.
+#
+# Hyndland, Dalreoch and Partick are therefore retagged onto a new segment
+# exclusive to this file, `scotrail-glasgow-suburban-west-approach`,
+# splitting the old west-trunk segment at DMR/DBC: everything on this
+# line's own approach track that is NOT physically traversed by West
+# Highland trains is `west-approach`; DMR and DBC, and the genuinely
+# shared stretch they represent, stay on `west-trunk` (unchanged --
+# neither the sibling West Highland files nor their own segment name were
+# touched by this fix).
 
 [[stations]]
 crs = "DMR"
@@ -232,7 +276,7 @@ segment = "scotrail-glasgow-suburban-west-trunk"
 [[stations]]
 crs = "DLR"
 role = "junction"
-segment = "scotrail-glasgow-suburban-west-trunk"
+segment = "scotrail-glasgow-suburban-west-approach"
 # Dalreoch: the real Balloch/Helensburgh split point. Wikipedia's Dalreoch
 # article, describing the station's own track layout: "the line diverging
 # to the right becomes single track and heads to Balloch. The line to the
@@ -240,6 +284,12 @@ segment = "scotrail-glasgow-suburban-west-trunk"
 # immediately follows Dumbarton Central (moving away from Glasgow) and
 # precedes Renton (Balloch direction) / Cardross (Helensburgh direction).
 # CRS code DLR cross-checked against National Rail Enquiries.
+#
+# Retagged (post-review fix round 2) from `scotrail-glasgow-suburban-
+# west-trunk` to `scotrail-glasgow-suburban-west-approach` -- see the HYN
+# comment above for the full explanation: Dalreoch, like Hyndland and
+# Partick, is not physically traversed by West Highland Line trains, so it
+# isn't part of the segment genuinely shared with the West Highland files.
 
 [[stations]]
 crs = "BHC"
@@ -257,13 +307,6 @@ segment = "scotrail-glasgow-suburban-helensburgh-branch"
 crs = "HLC"
 role = "terminus"
 segment = "scotrail-glasgow-suburban-helensburgh-branch"
-
-[[stations]]
-crs = "PTK"
-role = "junction"
-segment = "scotrail-glasgow-suburban-west-trunk"
-# Partick: Glasgow Subway interchange; also where Argyle Line services
-# join North Clyde metals westbound towards Dalmuir/Milngavie.
 
 # --- Core: Charing Cross, Glasgow Queen Street (Low Level) ---
 
