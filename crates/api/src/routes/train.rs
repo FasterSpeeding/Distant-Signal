@@ -22,6 +22,7 @@ use crate::data::{eta_blend, ticket_extraction, train_tracking, delay_repay_rule
 pub fn router() -> Router {
     Router::new()
         .route("/Train/track", axum::routing::post(post_track))
+        .route("/Train/mine", axum::routing::get(get_my_tracked_trains))
         .route("/Train/{tracking_id}", axum::routing::get(get_by_tracking_id))
         .route("/Train/by-uid/{train_uid}/{date}", axum::routing::get(get_by_uid_and_date))
         .route("/Train/{tracking_id}/tickets", axum::routing::post(post_ticket).get(get_tickets))
@@ -158,6 +159,24 @@ async fn post_track(
         .map_err(internal_error("create tracking pin"))?;
 
     Ok(Json(TrackPinResponse { tracking_id, resolution_status: "pending" }))
+}
+
+/// Always `200` with a (possibly empty) array for any authenticated
+/// caller -- never `404`, unlike the ticket routes' "exists but not
+/// yours -> 404" convention (Decision 1 of the design spec). There's no
+/// id in the URL to be wrong about: the only two real outcomes are
+/// "logged in, here's your list" and "not logged in, bare 401" (handled
+/// by the `AuthenticatedUser` extractor itself, before this function
+/// runs) -- matching `post_track`'s own two-outcome shape more closely
+/// than the ticket routes' three-outcome one.
+async fn get_my_tracked_trains(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+) -> Result<Json<Vec<train_tracking::TrackedTrainListItem>>, (StatusCode, String)> {
+    let trains = train_tracking::list_tracked_trains_for_user(&app.database, &user.id)
+        .await
+        .map_err(internal_error("list tracked trains"))?;
+    Ok(Json(trains))
 }
 
 async fn get_by_tracking_id(
