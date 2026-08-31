@@ -719,4 +719,77 @@ mod tests {
             assert_eq!(m.scope, expected, "{} scope mismatch", m.line.id);
         }
     }
+
+    // Task 10.10 (ScotRail Aberdeen - Inverness Line): this line's own
+    // exclusive track (Aberdeen through Inverness Airport, tagged
+    // `scotrail-aberdeen-inverness`) is used only by this one file, so an
+    // incident there should stay local with `ExclusiveSegment` scope --
+    // mirroring `swr_exclusive_segment_incident_does_not_propagate`.
+    #[test]
+    fn scotrail_aberdeen_inverness_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-18",
+            "Signal failure at Elgin",
+            "Signal failure causing delays to ScotRail services at Elgin.",
+            &["SR"],
+            &["ELG"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-aberdeen-inverness".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Task 10.10 (ScotRail Aberdeen - Inverness Line): the load-bearing
+    // shared-trunk test this pairing exists for. Task 10.5
+    // (`scotrail-highland-main-line.toml`) reserved the segment name
+    // `scotrail-highland-inverness-approach` for its own Inverness station
+    // entry, deliberately not assuming a shared segment on
+    // platform-sharing evidence alone; this file independently confirmed
+    // genuine track-sharing (Wikipedia's Millburn Junction detail,
+    // cross-checked against railwaycodes.org.uk's own ELR database -- see
+    // `lines/scotrail-aberdeen-inverness.toml`'s own Sources comments) and
+    // reused the exact same segment name.
+    //
+    // Inverness is also a station on `scotrail-far-north` and
+    // `scotrail-kyle` (tagged `scotrail-inverness-dingwall-trunk`, that
+    // pair's own independently-confirmed shared trunk from Task 10.6/10.7)
+    // -- `LineDefinition::has_station` matches on station presence
+    // regardless of segment name, so an incident at Inverness hits all
+    // four lines, mirroring
+    // `scotrail_west_highland_shares_glasgow_terminus_incident_propagates`'s
+    // precedent for a station where two independent shared-trunk pairs
+    // happen to converge. Since Inverness sits on a genuine cross-file
+    // shared segment for *both* pairs (not merely a same-line exclusive
+    // segment for either), all four lines get `MatchScope::SharedSegment`
+    // here -- unlike the Glasgow Queen Street case, where only two of the
+    // four lines had a cross-file shared segment at that station.
+    #[test]
+    fn scotrail_shared_highland_inverness_approach_incident_propagates() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-19",
+            "Points failure at Inverness",
+            "Points failure causing delays to ScotRail services at Inverness.",
+            &["SR"],
+            &["INV"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "scotrail-highland-main-line".to_string(),
+                "scotrail-aberdeen-inverness".to_string(),
+                "scotrail-far-north".to_string(),
+                "scotrail-kyle".to_string(),
+            ])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+        }
+    }
 }

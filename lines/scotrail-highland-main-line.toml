@@ -225,6 +225,22 @@ segment = "scotrail-highland-inverness-approach"
 # fate is deliberately left open per the above. No shared-segment
 # propagation assertion is made today, mirroring how Tasks 10.1-10.4
 # handled the "no sibling ScotRail line exists yet" situation.
+#
+# UPDATE (Task 10.10, now merged): `lines/scotrail-aberdeen-inverness.toml`
+# did independently confirm genuine track-sharing (not just platform
+# sharing) on this approach -- via Wikipedia's "Aberdeen and Perth lines
+# diverge at Millburn Junction, a short distance beyond Welsh's Bridge" plus
+# an independent railwaycodes.org.uk ELR cross-check (ELR "ANI3" ends at
+# Millburn Junction; the final stretch into Inverness runs on this line's
+# own ELR "HGL2") -- and reused this exact segment name for its own INV
+# entry, per option (a) above. `SegmentRegistry::is_shared` now correctly
+# reports `scotrail-highland-inverness-approach` shared between
+# `scotrail-highland-main-line` and `scotrail-aberdeen-inverness`, and
+# `scotrail_shared_highland_inverness_approach_incident_propagates` in
+# `crates/aggregator/src/matcher.rs` asserts the resulting
+# `MatchScope::SharedSegment` propagation for both lines. Per Task 10.6/10.7's
+# own findings (unchanged by this update), the Far North and Kyle lines do
+# not share this segment.
 
 # === Sources (cross-checked per the plan's Global Constraints) ===
 #
