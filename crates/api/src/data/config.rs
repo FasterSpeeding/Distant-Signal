@@ -121,6 +121,22 @@ pub struct ServiceArguments {
     #[arg(long, env, default_value_t = 14)]
     pub session_ttl_days: i64,
 
+    /// How many days of `line_status_history` rows the aggregator actually
+    /// keeps before `queries::prune_history` (`crates/aggregator`) deletes
+    /// them. This crate never reads or prunes that table itself -- the
+    /// only reason this field exists here is so `/public/history-retention`
+    /// (`routes/history_retention.rs`) can hand the frontend's history
+    /// range picker the real ceiling, instead of the frontend guessing or
+    /// hardcoding a number that could silently drift from what's actually
+    /// configured. Deployments MUST set this to the same value they give
+    /// the aggregator's own `HISTORY_RETENTION_DAYS` -- `docker-compose.yml`
+    /// and the Helm chart (`values.yaml`'s `aggregator.historyRetentionDays`)
+    /// both source both services' env vars from the one value, but nothing
+    /// in this crate enforces the two staying in sync beyond that
+    /// convention.
+    #[arg(long, env, default_value_t = 7)]
+    pub history_retention_days: i64,
+
     /// Whether to expose the `/metrics` route and its request-metrics
     /// middleware. Unlike the other 7 binaries, `api`'s own HTTP listener
     /// stays up regardless (it's the main service) -- this only controls

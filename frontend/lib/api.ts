@@ -7,6 +7,7 @@ import type {
   CustomLineDetail,
   LineDefinitionSummary,
   DataFreshness,
+  HistoryRetention,
   Suggestion,
   SessionInfo,
   TrackedTrainState,
@@ -172,6 +173,16 @@ export async function getLineDefinition(id: string): Promise<LineDefinitionSumma
 
 export async function getDataFreshness(): Promise<DataFreshness> {
   return fetchJson<DataFreshness>(`${baseUrl()}/public/freshness`, {
+    cache: 'no-store',
+  });
+}
+
+/** How many days of `line_status_history` the backend actually retains —
+ * see `lib/types.ts`'s `HistoryRetention` doc. Fetched by the
+ * `/lines/[id]/history` page so it can tell the user honestly when a
+ * requested range extends beyond what's actually kept. */
+export async function getHistoryRetention(): Promise<HistoryRetention> {
+  return fetchJson<HistoryRetention>(`${baseUrl()}/public/history-retention`, {
     cache: 'no-store',
   });
 }
