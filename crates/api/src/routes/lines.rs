@@ -370,6 +370,12 @@ mod tests {
     }
 
     #[test]
+    fn an_overground_tfl_line_with_an_nr_counterpart_is_suppressed() {
+        // Area 2 -- see docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md.
+        assert!(is_merged_into_nr_line("tfl-mildmay"));
+    }
+
+    #[test]
     fn a_tfl_line_with_no_nr_counterpart_is_not_suppressed() {
         assert!(!is_merged_into_nr_line("tfl-northern"));
     }

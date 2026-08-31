@@ -326,6 +326,22 @@ mod tests {
     }
 
     #[test]
+    fn tfl_ids_to_overlay_covers_multiple_merged_lines_at_once() {
+        // Area 2 -- see docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md.
+        // Proves this is genuinely table-driven across more than one entry,
+        // not just Elizabeth line's single row.
+        let rows = vec![
+            row("elizabeth-line", vec![]),
+            row("overground-mildmay", vec![]),
+            row("northern", vec![]),
+        ];
+        assert_eq!(
+            tfl_ids_to_overlay(&rows),
+            vec!["tfl-elizabeth".to_string(), "tfl-mildmay".to_string()]
+        );
+    }
+
+    #[test]
     fn overlay_for_finds_the_matching_tfl_row() {
         let nr_row = row("elizabeth-line", vec![]);
         let tfl_rows = vec![row("tfl-elizabeth", vec![a_status("Minor delays")])];
