@@ -7,17 +7,45 @@ operators = ["SE"]
 sample_stations = ["CHX", "LEW", "ELE", "HYS"]
 match_keywords = ["Hayes line"]
 
-# southeastern-metro-north-kent.toml (Task 5.4) is Southeastern's other
-# south-east-London metro corridor (Dartford Loop/Bexleyheath, informally
-# "Sidcup line"). This file adds the same courtesy for its own named route
-# plus those two, so an operator-only "SE" incident that happens to name
-# another Southeastern route explicitly shouldn't also tag this file.
+# REVIEW FIX (final whole-branch review of this batch): four entries were
+# REMOVED from this list - "South Eastern Main Line", "Dartford Loop line",
+# "Bexleyheath line" and "Sidcup line".
+#
+# The original rationale written here was that "an operator-only 'SE'
+# incident that happens to name another Southeastern route explicitly
+# shouldn't also tag this file". That rationale does not hold up:
+# `lines_affected_by` in crates/aggregator/src/matcher.rs already drops
+# every `OperatorOnly` match whenever any precise match exists, and this
+# file's own `match_keywords` is just ["Hayes line"], so no KeywordOnly
+# false positive was possible either. The only LIVE effect these entries had
+# was on the station-hit path - and there they were actively harmful.
+#
+# `is_excluded` is a HARD VETO evaluated BEFORE station matching, so it
+# vetoes a line even when the incident lists a CRS genuinely on that line.
+# All four removed entries pointed at sibling files this file really does
+# share stations with: southeastern-main-line.toml shares CHX/LBG, and
+# southeastern-metro-north-kent.toml (which owns all three of the "Dartford
+# Loop line"/"Bexleyheath line"/"Sidcup line" names - see SCOPE above)
+# shares CHX/LBG/LEW. An incident like "Disruption between London Bridge and
+# Lewisham affecting the Hayes line and the Dartford Loop line" with
+# `affected_stations = ["LEW"]` therefore vetoed BOTH this file and
+# southeastern-metro-north-kent.toml at once - each excluded the other's
+# name - returning zero matches for exactly the multi-line incident these
+# two files were written to model. Station-CRS matching already gives the
+# correct, precise signal here; see
+# lew_station_overlap_matches_hayes_line_and_senk_... and
+# sibling_line_names_no_longer_veto_a_shared_station_hit in matcher.rs.
+#
+# The remaining entries are kept because they cause none of that harm
+# (verified station-by-station against each sibling's own CRS list):
+#   - "Chatham Main Line": southeastern-chatham.toml shares no station at
+#     all with this file.
+#   - "Javelin"/"High Speed 1": southeastern-highspeed.toml likewise shares
+#     no station with this file.
+#   - "North Kent Line": no file in this catalogue models that line yet, so
+#     it is a forward-looking placeholder with zero current risk.
 excluded_keywords = [
-    "South Eastern Main Line",
     "Chatham Main Line",
-    "Dartford Loop line",
-    "Bexleyheath line",
-    "Sidcup line",
     "North Kent Line",
     "Javelin",
     "High Speed 1",

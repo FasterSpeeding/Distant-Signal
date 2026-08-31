@@ -8,14 +8,29 @@ sample_stations = ["TON", "AFK", "DVP"]
 match_keywords = ["South Eastern Main Line"]
 
 # Southeastern also operates the Hastings line (Tonbridge - Tunbridge Wells -
-# Battle - Hastings) and the Chatham Main Line (Victoria - Chatham -
-# Ramsgate/Dover). Both are distinct historic routes with their own
-# Wikipedia articles and diverge well before/away from this line's stations,
-# so a bare "Southeastern"/operator-only match on those routes shouldn't
-# also tag this file. Chatham gets its own file (Task 5.2 in this batch);
-# the Hastings line via Tunbridge Wells currently has no line-catalogue
-# task anywhere in this plan and is a known coverage gap.
-excluded_keywords = ["Hastings line", "Chatham Main Line"]
+# Battle - Hastings), a distinct historic route with its own Wikipedia
+# article that diverges well before/away from this line's stations and
+# shares no station with this file, so a bare "Southeastern"/operator-only
+# match on it shouldn't also tag this file. The Hastings line via Tunbridge
+# Wells currently has no line-catalogue task anywhere in this plan and is a
+# known coverage gap.
+#
+# REVIEW FIX (final whole-branch review of this batch): "Chatham Main Line"
+# was removed from this list. southeastern-chatham.toml (Task 5.2) and this
+# file both terminate at Dover Priory (DVP is listed in both files'
+# `[[stations]]`), and `is_excluded` in crates/aggregator/src/matcher.rs is
+# a HARD VETO evaluated BEFORE station matching - so an incident naming both
+# routes with `affected_stations = ["DVP"]` was being silently vetoed on
+# both files at once, returning zero matches where two correct StationHit/
+# ExclusiveSegment matches belonged. The entry also bought nothing: an
+# `OperatorOnly` "SE" match is already dropped by `lines_affected_by`
+# whenever any precise match exists, and this file's own `match_keywords`
+# is just ["South Eastern Main Line"], so no KeywordOnly false positive was
+# possible either. Station-CRS matching already disambiguates DVP correctly
+# (see chatham_dover_branch_incident_does_not_propagate_to_seml in
+# matcher.rs). "Hastings line" stays: no file in the catalogue models that
+# route, and it shares no station with this file, so it causes no such harm.
+excluded_keywords = ["Hastings line"]
 
 # Charing Cross/Cannon Street, via Sevenoaks and Tonbridge, to Ashford
 # International, then via Folkestone to Dover Priory. Ordered London to

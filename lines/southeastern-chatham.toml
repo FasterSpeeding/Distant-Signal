@@ -7,15 +7,27 @@ operators = ["SE"]
 sample_stations = ["VIC", "CTM", "RAM", "DVP"]
 match_keywords = ["Chatham Main Line"]
 
-# southeastern-main-line.toml (Task 5.1, this batch) is the South Eastern
-# Main Line - a physically distinct route out of Charing Cross/Cannon
-# Street via Sevenoaks/Tonbridge/Ashford, sharing the "Southeastern"/"SE"
-# operator identity but no track with this file except at the Dover Priory
-# terminus itself (see the DVP comment below). "Hastings line" is also a
-# distinct, separate corridor (diverging from the SEML at Tonbridge, not
-# from anywhere on this line). An operator-only "SE" incident that happens
-# to name either of those routes explicitly shouldn't also tag this file.
-excluded_keywords = ["South Eastern Main Line", "Hastings line"]
+# "Hastings line" is a distinct, separate Southeastern corridor (diverging
+# from the SEML at Tonbridge, not from anywhere on this line) that shares no
+# station with this file, so an operator-only "SE" incident naming it
+# explicitly shouldn't also tag this file.
+#
+# REVIEW FIX (final whole-branch review of this batch): "South Eastern Main
+# Line" was removed from this list. southeastern-main-line.toml (Task 5.1)
+# and this file both terminate at Dover Priory - DVP is listed in both
+# files' `[[stations]]` (see the DVP comment below) - and `is_excluded` in
+# crates/aggregator/src/matcher.rs is a HARD VETO evaluated BEFORE station
+# matching, so an incident naming both routes with
+# `affected_stations = ["DVP"]` was silently vetoed on both files at once,
+# returning zero matches instead of the two correct ones. The entry bought
+# nothing either: `lines_affected_by` already drops every `OperatorOnly`
+# match whenever any precise match exists, and this file's own
+# `match_keywords` is just ["Chatham Main Line"], so no KeywordOnly false
+# positive was possible. Station-CRS matching already disambiguates DVP
+# correctly (see chatham_dover_branch_incident_does_not_propagate_to_seml
+# in matcher.rs). "Hastings line" stays - no file models that route and it
+# shares no station here, so it causes none of the above harm.
+excluded_keywords = ["Hastings line"]
 
 # London Victoria to Ramsgate and Dover Priory via Herne Hill, Bromley
 # South and the Medway towns (Chatham, Gillingham). Ordered London to

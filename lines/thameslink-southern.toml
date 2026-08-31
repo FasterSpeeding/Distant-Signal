@@ -214,10 +214,12 @@ segment = "thameslink-sevenoaks-catford"
 # (see below).
 
 # ============================================================================
-# GENUINE TRACK SHARING FOUND (not the one either coordination hand-off
+# LIKELY TRACK SHARING FOUND (not the one either coordination hand-off
 # expected): the Catford Loop Line rejoins the Chatham Main Line at
-# Shortlands - but NOT modelled as a SharedSegment, for a granularity
-# reason, not a factual one
+# Shortlands - but NOT modelled as a SharedSegment. The decisive reason is a
+# granularity one (see below), which holds regardless; the supporting
+# evidence also falls short of this batch's sourcing bar, same as this
+# file's other unconfirmed claims
 # ============================================================================
 # southeastern-chatham.toml's own SRT (Shortlands) entry already has a
 # comment flagging this: "Catford Loop Line diverges here (alternative
@@ -232,8 +234,23 @@ segment = "thameslink-sevenoaks-catford"
 # ("Two train operators provide service at Swanley: Southeastern... and
 # Thameslink") and thetrainline.com's non-Wikipedia confirmation of real
 # booked London Blackfriars-Sevenoaks Thameslink services (see SOURCING
-# above). This IS genuine, everyday, current shared physical track from
-# Shortlands to Swanley - not an occasional diversion.
+# above).
+#
+# CORRECTED on review, for consistency with this file's own sourcing
+# standard: the Shortlands-Swanley stretch APPEARS to be genuine, everyday,
+# current shared physical track on the available sources - but that evidence
+# does NOT clear this batch's required sourcing bar. Two of the three
+# sources are Wikipedia articles, and the third (thetrainline.com) is not
+# one of COMMON.md's four approved second-source categories and shows
+# service existence rather than physical track-sharing - the exact
+# limitation this file's own SOURCING note at lines 82-90 already records,
+# and the exact reason the Brighton claim was downgraded to "documented
+# lead, not confirmed fact" there. Claiming this one IS confirmed while
+# ruling the other one out on identical evidence would contradict this
+# file's own stated standard. So it is recorded here as a well-supported but
+# unconfirmed lead, and treated as station-overlap-only regardless - the
+# same treatment the modelling decision below already independently arrives
+# at for its own granularity reason.
 #
 # BUT: southeastern-chatham.toml's own `chatham-london` segment does not
 # stop at Shortlands - it starts all the way back at Victoria (VIC, BKJ,
@@ -256,8 +273,8 @@ segment = "thameslink-sevenoaks-catford"
 #
 # So: this file's own segment name is used instead below
 # (`thameslink-sevenoaks-shortlands-swanley`), station overlap only against
-# southeastern-chatham.toml's `chatham-london`, even though real track
-# sharing exists for this specific SRT-SAY stretch. Splitting that already-
+# southeastern-chatham.toml's `chatham-london`, even though track sharing
+# very likely exists for this specific SRT-SAY stretch. Splitting that already-
 # committed file's own `chatham-london` segment into a Victoria-only piece
 # and a Shortlands-Swanley piece (which WOULD let this genuine overlap be
 # modelled precisely) is out of scope for this task - it would mean editing

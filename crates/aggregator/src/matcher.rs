@@ -632,6 +632,52 @@ mod tests {
         }
     }
 
+    // REGRESSION TEST for this batch's final-review fix: sibling-line names
+    // in an incident's text must not veto a genuine station hit.
+    //
+    // `is_excluded` is a HARD VETO evaluated in `lines_affected_by` BEFORE
+    // `match_one` ever looks at `affected_stations`, so an
+    // `excluded_keywords` entry naming a sibling line suppresses that file
+    // even when the incident lists a CRS genuinely on it. Before this fix,
+    // southeastern-hayes-line.toml excluded "Dartford Loop line" and
+    // southeastern-metro-north-kent.toml excluded "Hayes line", so a real
+    // incident naming BOTH routes and listing a station both files list
+    // (LEW - Lewisham, where the two corridors diverge, and also CHX/LBG)
+    // vetoed BOTH files at once and returned zero Southeastern matches - the
+    // exact multi-line incident these two files were written to model. The
+    // vetoes have been removed from both files' `excluded_keywords`; the
+    // station-CRS path already disambiguates this correctly, as
+    // lew_station_overlap_matches_hayes_line_and_senk_as_independent_exclusive_segments
+    // above shows for the no-line-names-in-text case.
+    //
+    // The veto MECHANISM itself is unchanged and still proven by
+    // excluded_keyword_vetoes_match above (a genuinely foreign service on a
+    // line that shares no station with the excluding file) - only the
+    // specific data entries that misapplied it to station-sharing siblings
+    // were removed.
+    #[test]
+    fn sibling_line_names_no_longer_veto_a_shared_station_hit() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-13",
+            "Disruption between London Bridge and Lewisham",
+            "Disruption between London Bridge and Lewisham affecting the Hayes line and the Dartford Loop line.",
+            &["SE"],
+            &["LEW"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["southeastern-hayes-line".to_string(), "southeastern-metro-north-kent".to_string()]),
+            "both named lines list LEW and must both match; before the fix each vetoed the other and this was empty"
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
     // Task 5.6 (southern-brighton-main-line.toml). An incident on this
     // line's own exclusive `southern-bml-south` segment (past the ECR
     // junction) should stay exclusive to this line alone - mirrors
@@ -1414,7 +1460,7 @@ mod tests {
     }
 
     // Task 5.14. Blackfriars is this file's own core-boundary junction for
-    // the Sevenoaks/Sutton Loop branches (`thameslink-southern-widened-lines`)
+    // the Sevenoaks/Sutton Loop branches (`thameslink-southern-trunk`)
     // and also thameslink-core.toml's own station (`thameslink-core`) -
     // station overlap only, same judgment call as every other core-boundary
     // overlap in this batch (STP in thameslink-bedford.toml/

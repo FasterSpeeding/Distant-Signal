@@ -14,10 +14,28 @@ match_keywords = ["Javelin", "High Speed 1"]
 # branded "Southeastern High Speed", running from St Pancras International
 # over High Speed 1 (HS1/CTRL) - purpose-built, largely grade-separated
 # high-speed infrastructure opened 2007-2009 - before rejoining classic
-# Southeastern metals for its onward Kent-coast legs. An operator-only "SE"
-# incident that happens to explicitly name either classic route shouldn't
-# also tag this file.
-excluded_keywords = ["South Eastern Main Line", "Chatham Main Line"]
+# Southeastern metals for its onward Kent-coast legs.
+#
+# REVIEW FIX (final whole-branch review of this batch): this file previously
+# carried `excluded_keywords = ["South Eastern Main Line", "Chatham Main
+# Line"]`. Both entries have been removed and the key dropped entirely, the
+# same state as the 24 other files in this catalogue that never declared it.
+# Reason: this file genuinely SHARES stations with both of those files - AFK/
+# FKW/FKC/DVP with southeastern-main-line.toml, and SOO/RTR/CTM/GLM/RAI/SIT/
+# TEY/FAV/WHI/HNB/BCH/WGA/MAR/BSR/DMP/RAM/DVP with southeastern-chatham.toml
+# (the file's own comment above already explains the Javelin rejoins classic
+# metals over exactly that track). `is_excluded` in
+# crates/aggregator/src/matcher.rs is a HARD VETO evaluated BEFORE station
+# matching, so an incident naming a classic route and listing one of those
+# shared CRS codes was silently vetoing this file even though the Javelin
+# genuinely calls there - zeroing out a correct match. The entries bought
+# nothing in return: `lines_affected_by` already drops every `OperatorOnly`
+# match whenever any precise match exists, and this file's own
+# `match_keywords` is ["Javelin", "High Speed 1"], neither of which the
+# classic routes' own incident text uses, so no KeywordOnly false positive
+# was possible either. Station-CRS matching already draws the right line
+# here - see afk_station_overlap_matches_both_seml_and_hs1_..., hs1_ashford_
+# station_overlap_..., and hs1_northkent_station_overlap_... in matcher.rs.
 
 # Sourced from Wikipedia's "British Rail Class 395" article and the "High
 # Speed" section of Wikipedia's "Southeastern (train operating company)"
