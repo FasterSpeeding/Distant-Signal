@@ -1090,12 +1090,21 @@ anything else").
   Line, a loop via Liverpool Central/Moorfields out to New Brighton, West
   Kirby, Chester, Ellesmere Port). Operators: `ME`.
 
-- [ ] **Task 12.6: Batch verification.** Full workspace test run; this is
-  also the plan's final batch, so also run a full `cargo test --workspace`
-  once (not just the three `lines/`-consuming crates) to catch any
-  unrelated regression, and confirm `git status` is clean with nothing
-  outside `lines/*.toml` and the specific `crates/aggregator/src/*.rs`
-  test files touched across all 12 batches.
+- [ ] **Task 12.6: Batch verification.** This plan executed as 12 parallel
+  per-batch worktrees/branches, not one shared worktree — like every other
+  batch's own verification task, this one only has Batch 12's own changes
+  present and so can only confirm Batch 12's own slice of the catalogue,
+  not the full 12-batch total. Within this worktree: run `cargo test -p
+  aggregator -p common -p api` with all of Batch 12's changes present,
+  confirm every new test from Tasks 12.1–12.5 passes alongside the full
+  pre-existing suite, and — since this is also the plan's final batch —
+  additionally run a full `cargo test --workspace` once (not just the
+  three `lines/`-consuming crates) to catch any unrelated regression.
+  Confirm `git status` is clean within this worktree with nothing outside
+  `lines/*.toml` and the specific `crates/aggregator/src/*.rs` test files
+  touched by Batch 12. Whole-catalogue verification across all 12 batches
+  together is only possible once all 12 branches are merged, and is a
+  separate step outside this plan's own per-batch tasks.
 
 ---
 
