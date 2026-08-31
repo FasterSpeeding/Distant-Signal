@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse, Pill } from '@mantine/core';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
+import { TextLink } from '@/components/TextLink';
 import type { CustomLineDetail } from '@/lib/types';
 
 /** Posts to the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
@@ -13,7 +14,18 @@ import type { CustomLineDetail } from '@/lib/types';
  * With `existingLine` set, edits that line via PUT instead of creating a
  * new one via POST. `cancelHref` opts into a Cancel action rendered beside
  * the submit button; without it the submit button keeps the Stack's full
- * width, which is what the create-line page wants. */
+ * width, which is what the create-line page wants.
+ *
+ * `create_line`/`update_line` both require `AuthenticatedUser`
+ * (`crates/api/src/routes/lines.rs`), and `/lines/[id]/page.tsx` now only
+ * links to this form's edit mode for the line's real owner (see that
+ * page's `isOwner` gate). So a `401` here can, in practice, only happen
+ * from a session that lapses between page load and this submit — the same
+ * narrow race `TicketPanel`'s design already reasoned about (Decision 4,
+ * docs/superpowers/specs/2026-08-29-journey-ticket-tracking-frontend-design.md).
+ * Matches `PinToggle`'s established `needsLogin` pattern: catch the `401`
+ * specifically and show a login prompt, never the raw backend rejection
+ * text (`"no session"`) this used to fall through to. */
 export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: CustomLineDetail; cancelHref?: string }) {
   const router = useRouter();
   const [name, setName] = useState(existingLine?.name ?? '');
@@ -25,6 +37,9 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
   const [destinationCrsFilter, setDestinationCrsFilter] = useState<string[]>(existingLine?.destinationCrsFilter ?? []);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Set on a 401 from the create/update request, cleared at the start of
+  // every fresh submit attempt — same shape as `PinToggle`'s `needsLogin`.
+  const [needsLogin, setNeedsLogin] = useState(false);
 
   const [operatorsQuery, setOperatorsQuery] = useState('');
   const { suggestions: operatorSuggestions } = useSuggestions(operatorsQuery, searchTocs);
@@ -65,6 +80,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
 
   async function handleSubmit() {
     setError(null);
+    setNeedsLogin(false);
     if (name.trim().length === 0) {
       setError('Name is required.');
       return;
@@ -83,8 +99,16 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         body: JSON.stringify({ name, operators, stations, headcodePrefixes, destinationCrsFilter }),
       });
       if (!response.ok) {
-        const message = await response.text();
-        setError(message || `Request failed: ${response.status}`);
+        // A 401's body is the backend's plain-text rejection ("no
+        // session") -- never shown to the user as-is (see this
+        // component's own doc comment). Every other non-ok status still
+        // falls through to the generic error text, unchanged from before.
+        if (response.status === 401) {
+          setNeedsLogin(true);
+        } else {
+          const message = await response.text();
+          setError(message || `Request failed: ${response.status}`);
+        }
         setSubmitting(false);
         return;
       }
@@ -163,6 +187,11 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         </Stack>
       </Collapse>
       {error && <Text c="red">{error}</Text>}
+      {needsLogin && (
+        <TextLink href="/api/auth/login" underline="always">
+          Log in to {existingLine ? 'edit' : 'create'} a line
+        </TextLink>
+      )}
       {cancelHref ? (
         // Paired actions sit on one right-aligned row so the secondary
         // reads as a peer of the primary rather than an afterthought

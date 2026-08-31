@@ -59,9 +59,15 @@ pub async fn list_custom_lines(pool: &PgPool) -> Result<Vec<CustomLine>> {
 
 /// Fetches one custom line by id, or `None` if no custom line has that id
 /// (including catalogue-line ids, which are never rows in this table).
-pub async fn get_custom_line(pool: &PgPool, id: &str) -> Result<Option<CustomLine>> {
+/// The second element of the tuple is the row's `user_id` (`None` for a
+/// legacy pre-ownership-retrofit row -- see
+/// `crates/api/migrations/20260828100000_add_ownership.sql` -- not just
+/// "anonymous author," since custom lines have never had an anonymous
+/// *write* path). `get_line` (the only caller that needs it) uses this to
+/// compute `CustomLineDetail.isOwner`; `get_line_definition` ignores it.
+pub async fn get_custom_line(pool: &PgPool, id: &str) -> Result<Option<(CustomLine, Option<String>)>> {
     let row = sqlx::query(
-        "SELECT id, name, operators, stations, headcode_prefixes, destination_crs_filter \
+        "SELECT id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id \
          FROM custom_lines WHERE id = $1",
     )
     .bind(id)
@@ -72,14 +78,17 @@ pub async fn get_custom_line(pool: &PgPool, id: &str) -> Result<Option<CustomLin
         return Ok(None);
     };
 
-    Ok(Some(CustomLine {
-        id: row.try_get("id")?,
-        name: row.try_get("name")?,
-        operators: row.try_get("operators")?,
-        stations: row.try_get("stations")?,
-        headcode_prefixes: row.try_get("headcode_prefixes")?,
-        destination_crs_filter: row.try_get("destination_crs_filter")?,
-    }))
+    Ok(Some((
+        CustomLine {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            operators: row.try_get("operators")?,
+            stations: row.try_get("stations")?,
+            headcode_prefixes: row.try_get("headcode_prefixes")?,
+            destination_crs_filter: row.try_get("destination_crs_filter")?,
+        },
+        row.try_get("user_id")?,
+    )))
 }
 
 /// Inserts a new custom line, deriving its id from `new.name` via
@@ -241,5 +250,88 @@ mod tests {
     #[test]
     fn slugify_trims_trailing_punctuation() {
         assert_eq!(slugify("Trailing---"), "custom-trailing");
+    }
+}
+
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_custom_line_reports_the_owning_user_id_or_none_for_a_legacy_row \
+                -- --ignored`"]
+    async fn get_custom_line_reports_the_owning_user_id_or_none_for_a_legacy_row() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ('TEST-CUSTOM-LINE-OWNER', 'owner@example.com', 'Owner') \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture user");
+
+        // The real write path: identical to what `create_line` does.
+        let owned = insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Owned Line".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-CUSTOM-LINE-OWNER",
+        )
+        .await
+        .expect("insert owned line");
+
+        let (_, owner) = get_custom_line(&pool, &owned.id)
+            .await
+            .expect("get custom line")
+            .expect("line should exist");
+        assert_eq!(owner, Some("TEST-CUSTOM-LINE-OWNER".to_string()));
+
+        // A legacy row that predates the ownership retrofit (see
+        // `crates/api/migrations/20260828100000_add_ownership.sql`) has a
+        // NULL `user_id` -- inserted directly, since `insert_custom_line`
+        // always attributes an owner now and has no way to produce this
+        // shape itself.
+        sqlx::query(
+            "INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id, created_at) \
+             VALUES ('custom-test-legacy-line', 'Test Legacy Line', '{}', '{WOK,CLJ}', '{}', '{}', NULL, NOW())",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed legacy fixture line");
+
+        let (_, legacy_owner) = get_custom_line(&pool, "custom-test-legacy-line")
+            .await
+            .expect("get custom line")
+            .expect("line should exist");
+        assert_eq!(legacy_owner, None);
+
+        sqlx::query("DELETE FROM custom_lines WHERE id = $1")
+            .bind(&owned.id)
+            .execute(&pool)
+            .await
+            .expect("cleanup owned fixture line");
+        sqlx::query("DELETE FROM custom_lines WHERE id = 'custom-test-legacy-line'")
+            .execute(&pool)
+            .await
+            .expect("cleanup legacy fixture line");
+        sqlx::query("DELETE FROM pinned_lines WHERE user_id = 'TEST-CUSTOM-LINE-OWNER'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture pins");
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-CUSTOM-LINE-OWNER'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture user");
     }
 }

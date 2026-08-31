@@ -19,6 +19,7 @@ const existingLine: CustomLineDetail = {
   stations: ['WOK', 'CLJ'],
   headcodePrefixes: [],
   destinationCrsFilter: [],
+  isOwner: true,
 };
 
 describe('CustomLineForm', () => {
@@ -120,5 +121,64 @@ describe('CustomLineForm', () => {
 
     const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls.some(([url]) => String(url).startsWith('/api/lines'))).toBe(false);
+  });
+
+  // `/lines/[id]/page.tsx` only links to this form's edit mode for the
+  // line's owner, so a 401 here can only come from a session that lapses
+  // between page load and this submit. Same `needsLogin` treatment as
+  // `PinToggle`: a login prompt, never the raw backend rejection text
+  // ("no session") this used to render straight into a red <Text>.
+  it('a 401 on save shows a login prompt instead of the raw backend error text', async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      if (typeof url === 'string' && url.startsWith('/api/lines')) {
+        return new Response('no session', { status: 401 });
+      }
+      return new Response('[]', { status: 200 });
+    });
+
+    renderWithProvider({ existingLine });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    const loginLink = await screen.findByRole('link', { name: 'Log in to edit a line' });
+    expect(loginLink).toHaveAttribute('href', '/api/auth/login');
+    expect(screen.queryByText('no session')).not.toBeInTheDocument();
+  });
+
+  it('a 401 on create shows a login prompt worded for creating, not editing', async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      if (typeof url === 'string' && url.startsWith('/api/lines')) {
+        return new Response('no session', { status: 401 });
+      }
+      return new Response('[]', { status: 200 });
+    });
+
+    renderWithProvider();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My Commute' } });
+    const stationInput = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    fireEvent.change(stationInput, { target: { value: 'WOK' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    fireEvent.change(stationInput, { target: { value: 'CLJ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create line' }));
+
+    const loginLink = await screen.findByRole('link', { name: 'Log in to create a line' });
+    expect(loginLink).toHaveAttribute('href', '/api/auth/login');
+  });
+
+  // Every other non-ok status keeps the old behaviour -- only a 401 is
+  // treated as "you need to log in".
+  it('a non-401 failure shows the raw backend error text, not a login prompt', async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      if (typeof url === 'string' && url.startsWith('/api/lines')) {
+        return new Response('a line needs at least 2 stations', { status: 400 });
+      }
+      return new Response('[]', { status: 200 });
+    });
+
+    renderWithProvider({ existingLine });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText('a line needs at least 2 stations')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Log in to/ })).not.toBeInTheDocument();
   });
 });
