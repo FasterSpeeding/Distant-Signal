@@ -93,6 +93,21 @@ direct search of that file, not an oversight this plan is guessing at).
      assertion only for a genuinely standalone line with no shared
      segment (e.g. c2c, Merseyrail) and say so in the task's acceptance
      criteria.
+  3. **Station overlap without segment sharing** turned out to be the
+     dominant pattern across the catalogue, not an edge case: two files'
+     station lists genuinely overlap at a real station, but the physical
+     track/segment isn't shared, so each line independently resolves
+     `MatchScope::ExclusiveSegment` at that station rather than one
+     propagated `MatchScope::SharedSegment` match. Whenever a task's
+     station-list research turns up this situation (per the
+     "station overlap is fine, segment-sharing is a deliberate choice"
+     precedent above), add a regression test asserting exactly that —
+     both (or all) lines match, and every match stays
+     `MatchScope::ExclusiveSegment` — mirroring the many existing
+     `*_station_overlap_*` tests in `crates/aggregator/src/matcher.rs`
+     (e.g. `llj_station_overlap_matches_both_lines_as_exclusive`,
+     `chester_station_overlap_matches_both_lines_as_exclusive`,
+     `gwr_south_wales_station_overlap_with_xc_cardiff_stays_exclusive_each_line`).
   Every task also re-runs `cargo test -p aggregator -p common -p api`
   (the three crates that call `LineDefinition::from_dir` over `lines/`) to
   confirm the whole directory still parses — see the Recipe below.
