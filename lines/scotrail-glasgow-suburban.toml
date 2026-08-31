@@ -215,6 +215,19 @@ segment = "scotrail-glasgow-suburban-west-trunk"
 # `MatchScope::SharedSegment` propagation for both lines. That file's own
 # GLQ entry deliberately does NOT reuse this segment (or
 # `scotrail-central-belt`'s) -- see its own sourcing comments.
+#
+# UPDATE (Task 10.9, now merged): `lines/scotrail-west-highland-oban.toml`
+# independently re-confirmed the same West Highland sharing fact --
+# Dumbarton Central's own Wikipedia article explicitly names "trains ...
+# between Glasgow and Oban and Mallaig," not just Fort William/Mallaig --
+# and reused this exact `scotrail-glasgow-suburban-west-trunk` segment name
+# for its own DMR/DBC entries too, making this a genuine three-way shared
+# segment across `scotrail-glasgow-suburban`,
+# `scotrail-west-highland-fort-william` and
+# `scotrail-west-highland-oban`. The propagation test above now asserts all
+# three line IDs. That file's own GLQ entry likewise does NOT reuse this
+# segment (it gets its own line-specific terminus segment, mirroring
+# `scotrail-west-highland-fort-william`'s identical GLQ boundary choice).
 
 [[stations]]
 crs = "DLR"

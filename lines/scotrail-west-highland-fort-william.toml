@@ -156,6 +156,16 @@ delay_threshold_minutes = 10
 #    `scotrail_west_highland_shares_glasgow_suburban_west_trunk_incident_propagates`
 #    in `crates/aggregator/src/matcher.rs`.
 #
+#    UPDATE (Task 10.9, now merged): `lines/scotrail-west-highland-oban.toml`
+#    independently re-confirmed that Oban services also call at Dalmuir and
+#    Dumbarton Central before diverging (Dumbarton Central's own Wikipedia
+#    article explicitly names "trains ... between Glasgow and Oban and
+#    Mallaig," not just Fort William/Mallaig) and reused this exact
+#    `scotrail-glasgow-suburban-west-trunk` segment name for its own DMR/DBC
+#    entries too, making it a genuine three-way shared segment. The
+#    `scotrail_west_highland_shares_glasgow_suburban_west_trunk_incident_propagates`
+#    test above is updated to assert all three line IDs.
+#
 #    GLQ (Glasgow Queen Street) itself is NOT tagged onto this shared
 #    segment, nor onto `scotrail-central-belt`'s own `scotrail-central-belt`
 #    segment for the same physical station. Per a fresh fetch of Wikipedia's
@@ -200,6 +210,21 @@ delay_threshold_minutes = 10
 #    cross-file shared-trunk propagation test needs completing once Task
 #    10.9's file exists and reuses this name, exactly as Task 10.6 left it
 #    for Task 10.7.
+#
+#    UPDATE (Task 10.9, now merged): `lines/scotrail-west-highland-oban.toml`
+#    independently re-confirmed this same shared-track claim (see its own
+#    verification-note comments, citing the "West Highland Line",
+#    "Crianlarich railway station" and "Dumbarton Central railway station"
+#    Wikipedia articles) and reused this exact segment name for its own
+#    Glasgow-Crianlarich station entries. `SegmentRegistry::is_shared` now
+#    correctly reports this segment shared between
+#    `scotrail-west-highland-fort-william` and
+#    `scotrail-west-highland-oban`, and the placeholder exclusive-segment
+#    test that used to live at `crates/aggregator/src/matcher.rs` has been
+#    replaced with
+#    `scotrail_west_highland_shares_glasgow_crianlarich_trunk_incident_propagates`,
+#    asserting `MatchScope::SharedSegment` for both lines -- mirroring
+#    `scotrail_shared_inverness_dingwall_trunk_incident_propagates`.
 #
 #    Stations north of Crianlarich (Upper Tyndrum onward) are this line's
 #    own exclusive track -- the Oban branch diverges south-west instead --
