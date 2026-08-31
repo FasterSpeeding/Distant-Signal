@@ -19,6 +19,22 @@ use sqlx::PgPool;
 /// it even starts running" is an explicit design goal.
 const MAX_PIN_AGE: chrono::Duration = chrono::Duration::hours(6);
 
+/// Caps `list_tracked_trains_for_user`'s response size. No retention or
+/// pruning job exists anywhere in this codebase for `tracked_trains`
+/// (grepped for `DELETE FROM tracked_trains`/`prune`/`expire`/`retention`
+/// -- only `ON DELETE CASCADE` foreign keys and unrelated matches turned
+/// up), so this table grows without bound for as long as a user keeps
+/// tracking trains, and this cap is the only bound on one HTTP response.
+/// `100` is a reasonable-sounding round number, not a researched or
+/// load-tested figure -- this codebase has no real-world data yet on how
+/// many trains a typical user tracks over their account's lifetime. If
+/// usage patterns show this is too low or unnecessarily high, revisit it
+/// once real usage exists -- same posture `MAX_PIN_AGE` already took.
+/// See docs/superpowers/specs/2026-08-31-tracked-trains-list-design.md's
+/// Open Questions 1-2 (also: no pagination/"load more" is designed for
+/// what falls past this cap).
+const MINE_LIST_LIMIT: i64 = 100;
+
 pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), String> {
     if pin.origin_crs.trim().is_empty() {
         return Err("origin_crs must not be empty".to_string());
@@ -296,6 +312,60 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
            cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source \
     FROM tracked_trains tt \
     LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id";
+
+/// A user's own tracked-train list, lighter than `TrackedTrainState`
+/// (Decision 1 of the design spec) -- excludes live movement detail
+/// (`train_id`, `last_reported_location`, `last_event_type`,
+/// `next_calling_point`, `eta_next`, `eta_source`), which belongs on the
+/// single-train detail page, not a multi-row list. `pin_scheduled_departure`
+/// is new here -- no other existing route selects it (Finding 4 of the
+/// design spec). Lives API-crate-side only, same as `TrackedTrainState`/
+/// `TrackedTrainTicket` -- never sent between Rust services, only
+/// serialized to JSON for the frontend.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedTrainListItem {
+    pub id: i64,
+    pub service_date: chrono::NaiveDate,
+    pub pin_origin_crs: String,
+    pub pin_destination_crs: Option<String>,
+    pub pin_scheduled_departure: DateTime<Utc>,
+    pub resolution_status: String,
+    pub train_uid: Option<String>,
+    pub status: Option<String>,
+    pub delay_minutes: Option<i32>,
+    pub tracked_at: DateTime<Utc>,
+}
+
+/// A user's own tracked trains, most-recently-tracked first (`tracked_at
+/// DESC`, deliberately NOT `pin_scheduled_departure` -- a train pinned a
+/// month in advance would otherwise sit ahead of one pinned five minutes
+/// ago for a service that's delayed right now, which is very likely the
+/// one thing the caller actually wants to check on; see Decision 2 of the
+/// design spec), capped at `MINE_LIST_LIMIT` rows. No status-based
+/// filtering -- `train_current_state.status` can never actually reach
+/// `'completed'` in this codebase today (a separate, already-flagged gap
+/// in `crates/trust-consumer/src/journey.rs`, not fixed here), so an
+/// "active only" filter would silently do almost nothing while implying
+/// curation that isn't happening; this function intentionally does not
+/// attempt one.
+pub async fn list_tracked_trains_for_user(pool: &PgPool, user_id: &str) -> anyhow::Result<Vec<TrackedTrainListItem>> {
+    let rows = sqlx::query_as::<_, TrackedTrainListItem>(
+        "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
+                tt.pin_scheduled_departure, tt.resolution_status, tt.train_uid, \
+                cs.status, cs.delay_minutes, tt.tracked_at \
+         FROM tracked_trains tt \
+         LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
+         WHERE tt.user_id = $1 \
+         ORDER BY tt.tracked_at DESC \
+         LIMIT $2",
+    )
+    .bind(user_id)
+    .bind(MINE_LIST_LIMIT)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
 
 pub async fn get_by_tracking_id(pool: &PgPool, id: i64) -> anyhow::Result<Option<TrackedTrainState>> {
     let row = sqlx::query_as::<_, TrackedTrainState>(&format!("{TRACKED_TRAIN_STATE_SELECT} WHERE tt.id = $1"))
