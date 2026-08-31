@@ -7,6 +7,7 @@ use crate::auth::require_internal_token;
 pub mod auth;
 pub mod freshness;
 pub mod health;
+pub mod history_retention;
 pub mod ingest;
 pub mod line_status;
 pub mod lines;
@@ -40,6 +41,7 @@ pub fn public_router() -> Router {
     Router::new()
         .merge(health::router())
         .merge(freshness::router())
+        .merge(history_retention::router())
         .merge(lines::router())
         .merge(preferences::router())
         .merge(reference::router())

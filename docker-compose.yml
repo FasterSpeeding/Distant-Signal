@@ -112,6 +112,11 @@ services:
       # var is absent — a bare ${SESSION_TTL_DAYS} would hand clap an empty
       # string and fail to parse as i64. Repeat the default here.
       SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-14}
+      # Must be kept equal to the aggregator service's own
+      # HISTORY_RETENTION_DAYS below -- see
+      # crates/api/src/data/config.rs's history_retention_days doc comment.
+      # Same variable, same default, read from the one env file.
+      HISTORY_RETENTION_DAYS: ${HISTORY_RETENTION_DAYS:-7}
     ports:
       - "${API_HOST_PORT:-8080}:8080"
     healthcheck:

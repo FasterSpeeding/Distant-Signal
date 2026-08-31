@@ -185,3 +185,35 @@ export function resolveRange(
     preset,
   };
 }
+
+/** Whether `range.from` reaches back further than the backend's real
+ * `line_status_history` retention window allows — and if so, by how many
+ * whole days. `retentionDays` is the real, server-reported ceiling (see
+ * `lib/api.ts`'s `getHistoryRetention`), never a guessed/hardcoded number:
+ * it's an admin-configurable knob (`crates/aggregator/src/config.rs`'s
+ * `history_retention_days`, default 7) that can legitimately differ across
+ * deployments, so this must be checked against the real value, not assumed.
+ *
+ * Returns `null` when the requested range is fully within what's retained
+ * (nothing to warn about) or when `retentionDays` is unknown (the caller
+ * couldn't fetch it — see `resolveHistoryRetentionDays` in `page.tsx`, which
+ * degrades to `null` on fetch failure rather than guessing).
+ *
+ * This exists because a truncated result and a genuinely quiet line are
+ * otherwise indistinguishable to a user: `resolveRange`'s "Last 30 days"
+ * preset can ask for a window wider than what the backend has ever kept,
+ * and the history route just returns whatever rows still exist in range —
+ * silently fewer than requested, with no signal that the rest was pruned
+ * rather than simply uneventful. */
+export function retentionShortfallDays(
+  range: Pick<ResolvedRange, 'from'>,
+  retentionDays: number | null,
+  now: number,
+): number | null {
+  if (retentionDays === null) return null;
+  const fromMs = Date.parse(range.from);
+  if (Number.isNaN(fromMs)) return null;
+  const oldestRetainedMs = now - retentionDays * DAY_MS;
+  if (fromMs >= oldestRetainedMs) return null;
+  return Math.ceil((oldestRetainedMs - fromMs) / DAY_MS);
+}

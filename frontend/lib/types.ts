@@ -88,6 +88,16 @@ export interface DataFreshness {
   tfl: string | null;
 }
 
+/** `GET /public/history-retention`'s response: how many days of
+ * `line_status_history` the backend actually keeps, echoed from the
+ * aggregator's own `HISTORY_RETENTION_DAYS` (see
+ * `crates/api/src/routes/history_retention.rs`). Used by the
+ * `/lines/[id]/history` page to tell a genuinely-pruned range apart from a
+ * genuinely-quiet line. */
+export interface HistoryRetention {
+  historyRetentionDays: number;
+}
+
 /** A code/name pair from the `/public/stations` and `/public/tocs`
  * type-ahead endpoints — CRS codes for stations, ATOC codes for
  * operators. */

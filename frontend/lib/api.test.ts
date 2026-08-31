@@ -10,6 +10,7 @@ import {
   getCustomLine,
   getLineDefinition,
   getDataFreshness,
+  getHistoryRetention,
   getStationName,
   getTrackedTrainById,
   getTrackedTrainByUidAndDate,
@@ -234,6 +235,14 @@ describe('api client', () => {
     await getDataFreshness();
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/freshness',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getHistoryRetention fetches the correct URL with no caching', async () => {
+    await getHistoryRetention();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/history-retention',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });

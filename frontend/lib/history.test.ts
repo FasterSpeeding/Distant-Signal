@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { groupHistoryByDay, resolveRange } from './history';
+import { groupHistoryByDay, resolveRange, retentionShortfallDays } from './history';
 import type { LineStatusHistoryEntry } from './types';
 
 function entry(computedAt: string, statuses: Array<[number, string]>): LineStatusHistoryEntry {
@@ -151,5 +151,46 @@ describe('resolveRange', () => {
 
   it('ignores a half-specified custom range', () => {
     expect(resolveRange({ from: '2026-08-01T00:00:00Z' }, NOW).preset).toBe('7d');
+  });
+});
+
+describe('retentionShortfallDays', () => {
+  const NOW = Date.parse('2026-08-21T12:00:00Z');
+
+  it('is null when retentionDays is unknown (fetch failed)', () => {
+    const range = resolveRange({ range: '30d' }, NOW);
+    expect(retentionShortfallDays(range, null, NOW)).toBeNull();
+  });
+
+  it('is null when the requested range fits entirely within retention', () => {
+    const range = resolveRange({ range: '7d' }, NOW);
+    expect(retentionShortfallDays(range, 7, NOW)).toBeNull();
+    // A generous retention window covers the wider preset too.
+    const wide = resolveRange({ range: '30d' }, NOW);
+    expect(retentionShortfallDays(wide, 30, NOW)).toBeNull();
+  });
+
+  it('reports the exact shortfall for the 30-day preset against 7-day retention', () => {
+    const range = resolveRange({ range: '30d' }, NOW);
+    // 30 requested - 7 retained = 23 days that can never come back, matching
+    // the "23 of the 30 requested days" framing this fix exists for.
+    expect(retentionShortfallDays(range, 7, NOW)).toBe(23);
+  });
+
+  it('reports zero-shortfall (null) right at the retention boundary', () => {
+    const range = resolveRange({ from: new Date(NOW - 7 * 86400000).toISOString(), to: new Date(NOW).toISOString() }, NOW);
+    expect(retentionShortfallDays(range, 7, NOW)).toBeNull();
+  });
+
+  it('handles a custom range that starts before retention allows', () => {
+    const range = resolveRange(
+      { from: new Date(NOW - 14 * 86400000).toISOString(), to: new Date(NOW).toISOString() },
+      NOW,
+    );
+    expect(retentionShortfallDays(range, 7, NOW)).toBe(7);
+  });
+
+  it('is null for an unparseable from value rather than throwing', () => {
+    expect(retentionShortfallDays({ from: 'nonsense' }, 7, NOW)).toBeNull();
   });
 });

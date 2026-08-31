@@ -1,9 +1,9 @@
 import { Suspense } from 'react';
-import { Divider, Skeleton, Stack, Text, Title } from '@mantine/core';
-import { getLineStatus, getLineStatusHistory } from '@/lib/api';
+import { Alert, Divider, Skeleton, Stack, Text, Title } from '@mantine/core';
+import { getHistoryRetention, getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TextLink } from '@/components/TextLink';
-import { groupHistoryByDay, resolveRange } from '@/lib/history';
+import { groupHistoryByDay, resolveRange, retentionShortfallDays } from '@/lib/history';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { HistoryRangePicker } from './HistoryRangePicker';
 
@@ -32,6 +32,21 @@ async function resolveLineName(id: string): Promise<string> {
   }
 }
 
+/** The real `line_status_history` retention ceiling, or `null` if it
+ * couldn't be fetched. `null` means "unknown" — `retentionShortfallDays`
+ * treats that as "nothing to warn about" rather than guessing a number,
+ * same fallback posture as `resolveLineName` above (degrade quietly rather
+ * than take the whole page down over a non-essential value). */
+async function resolveHistoryRetentionDays(): Promise<number | null> {
+  try {
+    const { historyRetentionDays } = await getHistoryRetention();
+    return historyRetentionDays;
+  } catch (err) {
+    console.warn('Could not resolve the history retention window; hiding the retention notice.', err);
+    return null;
+  }
+}
+
 export default async function LineHistoryPage({
   params,
   searchParams,
@@ -42,8 +57,13 @@ export default async function LineHistoryPage({
   const { id } = await params;
   const query = await searchParams;
 
-  const name = await resolveLineName(id);
-  const range = resolveRange(query, Date.now());
+  const now = Date.now();
+  const [name, retentionDays] = await Promise.all([
+    resolveLineName(id),
+    resolveHistoryRetentionDays(),
+  ]);
+  const range = resolveRange(query, now);
+  const shortfallDays = retentionShortfallDays(range, retentionDays, now);
 
   return (
     <Stack p="lg" gap="md">
@@ -52,6 +72,21 @@ export default async function LineHistoryPage({
       </TextLink>
       <Title order={1}>History: {name}</Title>
       <HistoryRangePicker lineId={id} preset={range.preset} from={range.from} to={range.to} />
+      {/* Distinguishes "nothing happened in this window" from "the window
+          reaches further back than this server keeps history" — without
+          this, a mostly-empty "Last 30 days" result and three genuinely
+          quiet weeks look identical. `shortfallDays` (and therefore this
+          banner) is only non-null when the real, server-reported retention
+          ceiling is known AND the requested range exceeds it — never a
+          guess. See `lib/history.ts`'s `retentionShortfallDays`. */}
+      {shortfallDays !== null && (
+        <Alert color="yellow" variant="light" title="Some of this range isn't available">
+          This server only keeps {retentionDays} {retentionDays === 1 ? 'day' : 'days'} of line
+          history. The oldest {shortfallDays} {shortfallDays === 1 ? 'day' : 'days'} of the range you
+          picked has already been removed — if this range looks empty or short, that may be why,
+          not because nothing happened.
+        </Alert>
+      )}
       {/* The results are always rendered now, so without a Suspense
           boundary the whole page — picker included — would block on the
           history fetch, which is the slowest call in the app for a 30-day
