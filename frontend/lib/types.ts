@@ -159,3 +159,84 @@ export interface TrackPinResponse {
   trackingId: number;
   resolutionStatus: 'pending';
 }
+
+export type TicketSource = 'manual' | 'pkpass-semantics' | 'pkpass-heuristic' | 'pdf-heuristic';
+
+/** `GET /Train/{trackingId}/tickets`'s per-item response shape
+ * (`crates/api/src/data/train_tracking.rs`'s `TrackedTrainTicket`,
+ * camelCase). Never includes `userId` -- same posture as
+ * `TrackedTrainState`. Nothing caps a tracked train at one ticket; multiple
+ * tickets per tracked train are a real, supported case (see
+ * `components/TicketPanel.tsx`). */
+export interface TrackedTrainTicket {
+  id: number;
+  trackedTrainId: number;
+  operator: string | null;
+  ticketType: string | null;
+  originCrs: string | null;
+  destinationCrs: string | null;
+  source: TicketSource;
+  createdAt: string; // RFC3339
+}
+
+/** `POST /Train/{trackingId}/tickets`'s request body
+ * (`common::TicketEntryRequest`) -- snake_case, matching `TrackPinRequest`'s
+ * own internal-wire-type convention (unlike every other type in this file,
+ * which mirrors `crates/api`'s camelCase public JSON). `source` is not
+ * optional on this type even though the backend defaults it to `'manual'`
+ * -- `components/TicketEntryForm.tsx` always sends it explicitly, since it
+ * needs to track the current provenance of the fields it's submitting
+ * regardless of which tab produced them. */
+export interface TicketEntryRequest {
+  operator?: string;
+  ticket_type?: string;
+  origin_crs?: string;
+  destination_crs?: string;
+  source: TicketSource;
+}
+
+export interface TicketCreatedResponse {
+  ticketId: number;
+}
+
+/** `POST .../tickets/pkpass` and `POST .../tickets/pdf`'s shared response
+ * shape -- every field independently nullable; "not found in this file" is
+ * expected, not an error. Never persisted to the database by either upload
+ * route -- this is only ever a preview
+ * (`components/TicketEntryForm.tsx` pre-fills the manual-entry fields from
+ * it and requires a second, separate submit to actually save anything). */
+export interface PartialTicket {
+  operator: string | null;
+  ticketType: string | null;
+  originCrs: string | null;
+  destinationCrs: string | null;
+  source: TicketSource;
+}
+
+/** Present only inside a non-null `DelayRepayEstimateResponse.estimate`.
+ * `disclaimer` here is a DIFFERENT string from
+ * `DelayRepayEstimateResponse.disclaimer` (the top-level field) -- see
+ * `components/DelayRepayEstimate.tsx`, which renders only the top-level
+ * one. */
+export interface DelayRepayEstimate {
+  scheme: 'DR15' | 'DR30';
+  bandMinutes: number;
+  percentage: number;
+  disclaimer: string;
+}
+
+/** `GET .../tickets/{ticketId}/delay-repay`'s response. `claimUrl` and the
+ * top-level `disclaimer` are ALWAYS populated, independent of `estimate` --
+ * this route never returns a bare percentage with no caveat and no link.
+ * `estimate` is `null` whenever any of three things is true (no operator on
+ * the ticket, no delay data on the train yet, or a real delay that just
+ * didn't clear the matched scheme's lowest band) -- the response gives no
+ * signal which of the three applied; see
+ * `components/DelayRepayEstimate.tsx` for how this is rendered honestly
+ * without inventing a reason the API doesn't give. */
+export interface DelayRepayEstimateResponse {
+  delayMinutes: number | null;
+  estimate: DelayRepayEstimate | null;
+  claimUrl: string;
+  disclaimer: string;
+}

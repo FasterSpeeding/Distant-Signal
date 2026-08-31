@@ -31,4 +31,22 @@ describe('TextLink', () => {
 
     expect(screen.getByRole('link', { name: 'Back to line' })).toHaveAttribute('data-text-link', 'always');
   });
+
+  it('renders no target/rel by default (regression: every existing call site omits them)', () => {
+    renderWithMantine(<TextLink href="/lines">All Lines</TextLink>);
+    const link = screen.getByRole('link', { name: 'All Lines' });
+    expect(link).not.toHaveAttribute('target');
+    expect(link).not.toHaveAttribute('rel');
+  });
+
+  it('can opt into target/rel for an external link', () => {
+    renderWithMantine(
+      <TextLink href="https://example.com" target="_blank" rel="noopener noreferrer">
+        External
+      </TextLink>,
+    );
+    const link = screen.getByRole('link', { name: 'External' });
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
 });

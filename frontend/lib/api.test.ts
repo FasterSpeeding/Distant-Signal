@@ -13,6 +13,8 @@ import {
   getStationName,
   getTrackedTrainById,
   getTrackedTrainByUidAndDate,
+  getTicketsForTrackedTrain,
+  getDelayRepayEstimate,
   ApiNotFoundError,
 } from './api';
 
@@ -299,5 +301,55 @@ describe('api client', () => {
   it('getTrackedTrainById throws ApiNotFoundError on a 404', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
     await expect(getTrackedTrainById(999)).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('getTicketsForTrackedTrain fetches the correct URL, forwarding cookies, with no caching', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    await getTicketsForTrackedTrain(1);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Train/1/tickets',
+      expect.objectContaining({
+        cache: 'no-store',
+        headers: { Cookie: 'distant_signal_session=abc123' },
+      }),
+    );
+  });
+
+  it('getTicketsForTrackedTrain returns null on a 401 (not logged in)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('no session', { status: 401 })));
+    await expect(getTicketsForTrackedTrain(1)).resolves.toBeNull();
+  });
+
+  it('getTicketsForTrackedTrain returns null on a 404 (logged in, not the owner)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    await expect(getTicketsForTrackedTrain(1)).resolves.toBeNull();
+  });
+
+  it('getTicketsForTrackedTrain resolves an empty array as owner-with-no-tickets, not null', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    await expect(getTicketsForTrackedTrain(1)).resolves.toEqual([]);
+  });
+
+  it('getTicketsForTrackedTrain still throws on a non-401/404 failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    await expect(getTicketsForTrackedTrain(1)).rejects.toThrow(/500/);
+  });
+
+  it('getDelayRepayEstimate fetches the correct URL with no caching', async () => {
+    const sample = { delayMinutes: 45, estimate: null, claimUrl: 'https://example.com', disclaimer: 'x' };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(sample), { status: 200 })));
+    await getDelayRepayEstimate(1, 7);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Train/1/tickets/7/delay-repay',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getDelayRepayEstimate returns null on a 401 or 404', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('no session', { status: 401 })));
+    await expect(getDelayRepayEstimate(1, 7)).resolves.toBeNull();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    await expect(getDelayRepayEstimate(1, 7)).resolves.toBeNull();
   });
 });

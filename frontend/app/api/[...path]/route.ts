@@ -57,7 +57,22 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     return new NextResponse('invalid path', { status: 400 });
   }
 
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  // Forward the incoming Content-Type verbatim rather than hardcoding
+  // 'application/json' -- a browser's fetch(url, { body: formData }) sets
+  // its own 'multipart/form-data; boundary=...' header, and axum's
+  // Multipart extractor needs that exact boundary value to parse an
+  // uploaded file field at all (the ticket-upload routes this proxy must
+  // now support --
+  // docs/superpowers/specs/2026-08-29-journey-ticket-tracking-frontend-design.md
+  // Correction 2). Every existing JSON caller (PinToggle, TrackTrainForm,
+  // preferences, the OIDC flow) already sets its own
+  // 'Content-Type': 'application/json' header on the request it sends to
+  // this proxy, so this is inert for them -- the fallback below only
+  // matters for a request that somehow reaches this proxy with no
+  // Content-Type header at all.
+  const headers: Record<string, string> = {
+    'Content-Type': req.headers.get('content-type') ?? 'application/json',
+  };
   const cookie = req.headers.get('cookie');
   if (cookie) {
     headers.Cookie = cookie;
@@ -76,7 +91,17 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     redirect: 'manual',
   };
   if (req.method !== 'GET' && req.method !== 'DELETE') {
-    init.body = await req.text();
+    // arrayBuffer(), not text(): .text() decodes the incoming body as
+    // UTF-8 before this function ever sees it, which is LOSSY for
+    // non-UTF-8 bytes -- a .pkpass (zip) or PDF's raw bytes are binary and
+    // not valid UTF-8 in general, so any invalid byte sequence becomes a
+    // U+FFFD replacement character on the way through, silently
+    // corrupting the file before it reaches the backend. arrayBuffer()
+    // forwards the exact bytes the browser sent, with no decode/re-encode
+    // step -- a JSON body round-trips identically (JSON is always valid
+    // UTF-8, so this is inert for PinToggle/TrackTrainForm/preferences/
+    // auth) and a binary multipart body survives byte-for-byte.
+    init.body = await req.arrayBuffer();
   }
 
   const response = await fetch(target, init);

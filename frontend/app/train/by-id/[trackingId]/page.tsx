@@ -2,6 +2,7 @@ import { Stack, Title } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import { getTrackedTrainById, ApiNotFoundError } from '@/lib/api';
 import { TrainJourney } from '@/components/TrainJourney';
+import { TicketPanel } from '@/components/TicketPanel';
 import { TextLink } from '@/components/TextLink';
 
 export default async function TrackedTrainByIdPage({
@@ -33,6 +34,7 @@ export default async function TrackedTrainByIdPage({
     <Stack p="lg" gap="md">
       <Title order={1}>Tracking Train {trackingId}</Title>
       <TrainJourney state={state} />
+      <TicketPanel trackingId={state.id} />
       {/* A same-page nudge, not an automatic redirect -- Decision 2's
           explicit reasoning: a redirect would silently break "I
           bookmarked the URL right after tracking, before it resolved"
