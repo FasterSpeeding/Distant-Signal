@@ -54,4 +54,23 @@ describe('DeleteLineButton', () => {
     });
     expect(pushMock).not.toHaveBeenCalled();
   });
+
+  // `/lines/[id]/page.tsx` only renders this button for the line's owner,
+  // so a 401 here can only come from a session that lapses between page
+  // load and this click. Same `needsLogin` treatment as `PinToggle`: a
+  // login prompt, never the raw backend rejection text.
+  it('a 401 shows a login prompt instead of the raw backend error text', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
+
+    renderWithMantine(<DeleteLineButton id="custom-my-commute" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+
+    const loginLink = await screen.findByRole('link', { name: 'Log in to delete a line' });
+    expect(loginLink).toHaveAttribute('href', '/api/auth/login');
+    expect(screen.queryByText('no session')).not.toBeInTheDocument();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
 });

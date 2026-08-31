@@ -39,10 +39,17 @@ export default async function LineDetailPage({
   // `getCustomLine` 404s for a catalogue-line id (the endpoint only ever
   // reads the `custom_lines` table) — that expected 404 is how this page
   // tells a custom line apart from a catalogue one, without needing a
-  // second "is this custom" field on the status endpoint itself.
+  // second "is this custom" field on the status endpoint itself. Its
+  // response also carries `isOwner` (see `CustomLineDetail` in
+  // `lib/types.ts`), which is what actually gates Edit/Delete below —
+  // `isCustom` alone used to be treated as "safe to render these
+  // controls," but every viewer, owner or not, sees the same `isCustom`
+  // value.
   let isCustom = true;
+  let isOwner = false;
   try {
-    await getCustomLine(id);
+    const custom = await getCustomLine(id);
+    isOwner = custom.isOwner;
   } catch (err) {
     if (err instanceof ApiNotFoundError) {
       isCustom = false;
@@ -77,7 +84,15 @@ export default async function LineDetailPage({
           {definition && <LineDefinitionTooltip stations={definition.stations} operators={definition.operators} />}
         </Group>
         <Group gap="sm">
-          {isCustom && (
+          {/* Gated on `isOwner`, not just `isCustom` — the backend's
+              ownership check is the real gate (anonymous and non-owner
+              writes both 404/401), but rendering live-looking controls for
+              a viewer who can never use them just invites a click that
+              fails with a raw error. See
+              docs/superpowers/specs/2026-08-31-anonymous-user-ux-design.md's
+              Policy, Tier 3: hidden entirely for both cases, not shown and
+              then failed. */}
+          {isCustom && isOwner && (
             <>
               {/* Plain `<Link>` wrapping `Button`, not `component={Link}`
                   on a Mantine polymorphic prop — this page is a Server
