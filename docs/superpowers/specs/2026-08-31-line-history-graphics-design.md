@@ -298,13 +298,18 @@ pub async fn record_daily_stats(
 The two tables serve different purposes — `line_status_history` is a
 debugging/audit log deliberately kept short; this rollup exists
 specifically to answer "how has this line trended over weeks/months," so a
-7-day ceiling would defeat the point. Proposed:
-`daily_stats_retention_days` (aggregator CLI/env flag, default
-**unset/no pruning for v1** — see Open questions — or a generous default
-like `400` if a number is required at ship time), enforced by a new
-`prune_daily_stats` mirroring `prune_history`'s shape. Storage cost is
-trivial either way: one row per `(line_id, day)` — at the catalogue's
-current ~105 lines, a full year is ~38,325 rows total, not per line.
+7-day ceiling would defeat the point. `daily_stats_retention_days`
+(aggregator CLI/env flag) is enforced by a new `prune_daily_stats`
+mirroring `prune_history`'s shape. Storage cost is trivial either way: one
+row per `(line_id, day)` — at the catalogue's current ~105 lines, a full
+year is ~38,325 rows total, not per line.
+**Superseded:** this paragraph originally proposed shipping the knob
+**unset/no pruning for v1**, or a generous default like `400` if a number
+were required. `docs/superpowers/plans/2026-09-01-ldbws-data-retention.md`
+found that "unset" left a real licence-compliance gap in production (the
+table is LDBWS-derived, and RDM's Live Departure Board licence requires
+deletion within 1 year) — so it now ships with a real, sub-365-day default
+(300) from day one; see Open question 1, below, for the resolution.
 
 ### 2. The rate this rollup produces is "share of sampled poll cycles," not "share of trains" — an explicit, named limitation
 
@@ -750,13 +755,23 @@ Following this repo's existing convention:
 
 ## Open questions / risks
 
-1. **`daily_stats_retention_days`'s actual default value is a real,
-   unresolved product decision**, not something the code or existing
-   config precedent settles. Storage is cheap at daily granularity either
-   way (~38k rows/year for the whole current catalogue), so the ceiling is
-   really about "how far back should the Trends tab ever be able to show,"
-   not a technical constraint — needs a real answer before implementation,
-   not a default picked arbitrarily by this spec.
+1. **Resolved, with a constraint, by
+   `docs/superpowers/plans/2026-09-01-ldbws-data-retention.md`:**
+   `line_status_daily_stats` is fed by Live-Departure-Board-derived
+   `StationSample` data, and RDM's Live Departure Board licence (Schedule
+   1 §9) requires deleting all data received within 1 year — so whatever
+   `daily_stats_retention_days` default is picked, it must sit strictly
+   under 365 days. That plan's Task 2 landed a 300-day default
+   (`crates/aggregator/src/config.rs`), wired through the Helm chart
+   (`aggregator.dailyStatsRetentionDays`) so production actually prunes.
+   **The "how far back should the Trends tab ever be able to show" product
+   question this item originally raised is still open** — 300 is a
+   licence-driven ceiling, not a UX answer — but it can no longer resolve
+   to "unset, i.e. forever"; any future product-driven value must stay at
+   or under this ceiling (or the ceiling itself would need fresh legal
+   sign-off to raise). Storage is cheap at daily granularity either way
+   (~38k rows/year for the whole current catalogue), so this was always a
+   policy constraint, not a technical one.
 2. **`sample_stations` coverage across the catalogue's 105 line TOML files
    was not individually audited in this research pass.** Decision 3's
    sparse-data handling is designed to degrade honestly regardless, but
