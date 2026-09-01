@@ -16,6 +16,80 @@
 > "no invented station lists," and that applies exactly as much to a minor
 > infill station as it did to an entire new file.
 
+## Status: COMPLETE (audited 2026-09-01, same day as this plan's own date)
+
+**All 69 file-level tasks across all 10 batches, plus every batch's own
+verification task, were already executed on this branch before this audit
+began** — in a prior session (or sessions) that ran this exact plan (or an
+identical earlier draft of it) task-by-task, but never checked off this
+document's own boxes. This audit found and confirmed that work rather than
+redoing it; the checkboxes throughout this document were flipped to `[x]`
+to reflect reality, not to record new work done during the audit itself.
+
+Evidence (all independently re-verified 2026-09-01, not taken on faith
+from commit messages alone):
+
+- **42 `git log --oneline -- lines/` commits** matching this plan's own
+  `lines(<id>): add missing stations (...)` / `lines(<id>): confirm no
+  missing stations (...)` commit-message convention exist on this branch,
+  one (or more, where a review-fix landed a follow-up correction) per
+  `[FILL-IN]`/`[BRANCH-RESEARCH]` task in every one of the 10 batches —
+  including both `[BRANCH-RESEARCH]` pieces (`scotrail-glasgow-suburban.toml`'s
+  Lanarkshire branch group — Whifflet, Coatbridge Central, the Hamilton
+  Circle, Larkhall and Lanark branches, all present with their own segment
+  names; `c2c.toml`'s Rainham branch — Dagenham Dock, Rainham, Purfleet;
+  `southeastern-chatham.toml`'s Minster–Martin Mill coastal loop, landed as
+  a new `chatham-deal` segment cross-referenced, not duplicated, from
+  `southeastern-highspeed.toml`'s own comments).
+- Every `[VERIFY]` task's target file (all 30+ of them: ScotRail's 11,
+  Greater Anglia's 6, EMR's 3, TPE's 1, LNER/Chiltern/Merseyrail's 4,
+  TfW's 4, GWR's 1, Thameslink/GN's 2, plus `northern-esk-valley.toml`)
+  has **no corresponding `lines(` commit and no working-tree changes**,
+  and each still carries its own unchanged "TIPLOC-only" / "no intermediate
+  stations are omitted" comment this plan predicted it would — exactly the
+  outcome the plan's own convention calls for ("A `[VERIFY]` task that
+  genuinely makes no file change needs no commit at all").
+- Spot-checked several `[FILL-IN]` files' actual diffs against the plan's
+  own named starting lists and found the real work went *further* than
+  copying the plan's suggestions verbatim — e.g. `gwr-west-of-england.toml`
+  only added 4 of the 17 named candidates (Kintbury, Hungerford, Bedwyn,
+  Pewsey) after live research found the other 13 don't belong there
+  (6 sit on a different Reading-based service, 6 are historically closed,
+  Frome isn't on this line's calling pattern) — and one file
+  (`southeastern-highspeed.toml`) has an explicit "review fix" commit that
+  *walked back* an earlier addition (Canterbury West, Thanet Parkway) once
+  a re-check found its sourcing didn't clear the two-independent-source
+  bar. Both are exactly the disciplined, non-invented-data behaviour this
+  plan's Global Constraints require, not shortcut-taking.
+- `crates/aggregator/src/matcher.rs` carries the Step 4 regression test(s)
+  this plan's Testing convention requires for essentially every
+  `[FILL-IN]`/`[BRANCH-RESEARCH]` file (e.g.
+  `xc_manchester_recognises_newly_added_stations`,
+  `wmr_snow_hill_recognises_newly_added_stations`,
+  `gwr_cornish_main_line_plymouth_area_infill_stations_present`,
+  `c2c_rainham_branch_stations_are_in_the_catalogue`,
+  `scotrail_glasgow_suburban_new_whifflet_branch_incident_does_not_propagate`,
+  `chiltern_main_line_has_previously_omitted_birmingham_approach_stations`,
+  `southern_brighton_main_line_fillin_stations_are_now_modelled`).
+- `cargo test -p aggregator -p common -p api` passes in full on this
+  branch as of this audit (370 aggregator tests, 27 common tests, 163 api
+  tests, 0 failures) and `git status` is clean — no uncommitted `lines/`
+  or `matcher.rs` changes are sitting outstanding.
+- Cross-batch segment-naming coordination the plan calls out explicitly
+  was done correctly and without collision: `northern-wharfedale.toml`'s
+  Frizinghall addition cites `northern-airedale.toml`'s Task 2.1
+  "RESOLUTION" by name; `scotrail-glasgow-suburban.toml`/`scotrail-shotts.toml`
+  got a dedicated follow-up commit fixing an initially-undisclosed UDD/BLH
+  overlap; `chatham-deal` (Batch 5) appears as a real segment only in
+  `southeastern-chatham.toml`, referenced (not duplicated) in
+  `southeastern-highspeed.toml`'s comments.
+
+**Net effect: this audit found nothing left to implement.** No new
+`lines/*.toml` edits, no new `matcher.rs` tests, and no new commits to the
+`lines/` catalogue were needed or made as part of this task — only this
+document's own checkboxes were stale. See the session's final report for
+the full accounting.
+
 ## Blockers
 
 **None.** Every prerequisite this plan depends on is already in place,
@@ -281,14 +355,14 @@ file-specific *content* (which stations, what's already known about them,
 any segment-naming note); this section is the mechanics, defined once
 rather than repeated 69 times.
 
-- [ ] **Step 1: Re-read the file's own comments in full**, specifically
+- [x] **Step 1: Re-read the file's own comments in full**, specifically
   its scope-boundary/"omitted" section, before touching anything. Confirm
   this task's `[FILL-IN]`/`[VERIFY]`/`[BRANCH-RESEARCH]` tag still holds
   (see Global Constraints — this plan's tags are current as of
   2026-09-01, not guaranteed). Note the file's existing segment names
   near where new stations will land.
 
-- [ ] **Step 2 (FILL-IN/BRANCH-RESEARCH only): Research and confirm each
+- [x] **Step 2 (FILL-IN/BRANCH-RESEARCH only): Research and confirm each
   candidate station to the two-source bar.** Start from the task's own
   starting list (named stations where the spec/this plan already found
   them; otherwise a fresh route-diagram read, e.g. Wikipedia's line
@@ -302,7 +376,7 @@ rather than repeated 69 times.
   explaining what wasn't confirmed, anything that doesn't clear the bar
   — never guess.
 
-- [ ] **Step 3 (FILL-IN/BRANCH-RESEARCH only): Insert each confirmed
+- [x] **Step 3 (FILL-IN/BRANCH-RESEARCH only): Insert each confirmed
   station** as a new `[[stations]]` entry at its correct geographic
   position (never appended at the end). Tag `segment` with the name
   already covering that stretch, inherited from immediate neighbours —
@@ -312,11 +386,11 @@ rather than repeated 69 times.
   comments stay accurate — don't leave a stale "X is omitted" note next
   to a station this task just added.
 
-- [ ] **Step 4 (FILL-IN/BRANCH-RESEARCH only): Add the regression
+- [x] **Step 4 (FILL-IN/BRANCH-RESEARCH only): Add the regression
   test(s)** required by the Testing convention above, in
   `crates/aggregator/src/matcher.rs`.
 
-- [ ] **Step 5: Run the tests.**
+- [x] **Step 5: Run the tests.**
 
 ```bash
 cargo test -p aggregator -p common -p api
@@ -326,7 +400,7 @@ cargo test -p aggregator -p common -p api
   pre-existing suite (confirms `lines/` still parses as a whole and no
   existing shared-trunk/exclusive-segment assertion broke).
 
-- [ ] **Step 6: Commit** (skip entirely if a `[VERIFY]` task made no file
+- [x] **Step 6: Commit** (skip entirely if a `[VERIFY]` task made no file
   change).
 
 ```bash
@@ -449,12 +523,12 @@ still holds, no `stations` edit, no commit. Follow the Recipe (Steps 1,
 
 ### Task 1.7: Batch verification
 
-- [ ] Run `cargo test -p aggregator -p common -p api` with all of Batch
+- [x] Run `cargo test -p aggregator -p common -p api` with all of Batch
   1's changes present.
-- [ ] Grep `lines/*.toml` for any segment name Task 1.5's Frome decision
+- [x] Grep `lines/*.toml` for any segment name Task 1.5's Frome decision
   introduced or reused, confirm no accidental collision with an unrelated
   file.
-- [ ] Confirm `git status` is clean except for Batch 1's committed files.
+- [x] Confirm `git status` is clean except for Batch 1's committed files.
 
 ---
 
@@ -560,12 +634,12 @@ needed. Follow the Recipe.
 
 ### Task 2.12: Batch verification
 
-- [ ] Run `cargo test -p aggregator -p common -p api` with all of Batch
+- [x] Run `cargo test -p aggregator -p common -p api` with all of Batch
   2's changes present.
-- [ ] Confirm Tasks 2.1 and 2.10's Manningham/Frizinghall coordination
+- [x] Confirm Tasks 2.1 and 2.10's Manningham/Frizinghall coordination
   produced a single, consistent tagging decision across both files (no
   contradictory segment names for the same station).
-- [ ] Confirm `git status` is clean except for Batch 2's committed files.
+- [x] Confirm `git status` is clean except for Batch 2's committed files.
 
 ---
 
@@ -621,35 +695,35 @@ railwaycodes.org.uk's CRS/TIPLOC tables; a fresh session should not hit
 the truncation issue some of these files' comments mention). No
 `stations` edit is expected for any of these 11 tasks.
 
-- [ ] **Task 3.2 — `scotrail-aberdeen-inverness.toml`**: explicit
+- [x] **Task 3.2 — `scotrail-aberdeen-inverness.toml`**: explicit
   "no intermediate stations are omitted" (line ~95); TIPLOC-only
   otherwise (line ~321).
-- [ ] **Task 3.3 — `scotrail-ayrshire.toml`**: TIPLOC-only (line ~105).
-- [ ] **Task 3.4 — `scotrail-bathgate.toml`**: TIPLOC-only (line ~323).
-- [ ] **Task 3.5 — `scotrail-central-belt.toml`**: TIPLOC-only (line ~73).
-- [ ] **Task 3.6 — `scotrail-far-north.toml`**: explicit "no
+- [x] **Task 3.3 — `scotrail-ayrshire.toml`**: TIPLOC-only (line ~105).
+- [x] **Task 3.4 — `scotrail-bathgate.toml`**: TIPLOC-only (line ~323).
+- [x] **Task 3.5 — `scotrail-central-belt.toml`**: TIPLOC-only (line ~73).
+- [x] **Task 3.6 — `scotrail-far-north.toml`**: explicit "no
   intermediate stations are omitted" (line ~65); TIPLOC-only otherwise
   (line ~407).
-- [ ] **Task 3.7 — `scotrail-fife-borders.toml`**: TIPLOC-only (line ~387).
-- [ ] **Task 3.8 — `scotrail-highland-main-line.toml`**: explicit "no
+- [x] **Task 3.7 — `scotrail-fife-borders.toml`**: TIPLOC-only (line ~387).
+- [x] **Task 3.8 — `scotrail-highland-main-line.toml`**: explicit "no
   intermediate stations are omitted" (line ~77); TIPLOC-only otherwise
   (line ~284).
-- [ ] **Task 3.9 — `scotrail-kyle.toml`**: TIPLOC-only (line ~324), plus
+- [x] **Task 3.9 — `scotrail-kyle.toml`**: TIPLOC-only (line ~324), plus
   one correctly-excluded closed halt (Glencarron Platform, closed 1964 —
   do not add it back).
-- [ ] **Task 3.10 — `scotrail-shotts.toml`**: TIPLOC-only (line ~320).
-- [ ] **Task 3.11 — `scotrail-west-highland-fort-william.toml`**:
+- [x] **Task 3.10 — `scotrail-shotts.toml`**: TIPLOC-only (line ~320).
+- [x] **Task 3.11 — `scotrail-west-highland-fort-william.toml`**:
   TIPLOC-only (line ~548).
-- [ ] **Task 3.12 — `scotrail-west-highland-oban.toml`**: TIPLOC-only
+- [x] **Task 3.12 — `scotrail-west-highland-oban.toml`**: TIPLOC-only
   (line ~419).
 
 ### Task 3.13: Batch verification
 
-- [ ] Run `cargo test -p aggregator -p common -p api` with all of Batch
+- [x] Run `cargo test -p aggregator -p common -p api` with all of Batch
   3's changes present.
-- [ ] Confirm Task 3.1's new Lanarkshire-branch segment name(s) don't
+- [x] Confirm Task 3.1's new Lanarkshire-branch segment name(s) don't
   collide with any existing segment (grep `lines/*.toml`).
-- [ ] Confirm `git status` is clean except for Batch 3's committed files
+- [x] Confirm `git status` is clean except for Batch 3's committed files
   (likely just `scotrail-glasgow-suburban.toml` plus any TIPLOC-only
   files a Task 3.2–3.12 implementer chose to also update).
 
@@ -741,9 +815,9 @@ TGS/WHT/COY in a fresh session.
 
 ### Task 4.8: Batch verification
 
-- [ ] Run `cargo test -p aggregator -p common -p api` with all of Batch
+- [x] Run `cargo test -p aggregator -p common -p api` with all of Batch
   4's changes present.
-- [ ] Confirm `git status` is clean except for Batch 4's committed files.
+- [x] Confirm `git status` is clean except for Batch 4's committed files.
 
 ---
 
@@ -829,12 +903,12 @@ this specific point rather than assuming); if none, no edit, no commit.
 
 ### Task 5.7: Batch verification
 
-- [ ] Run `cargo test -p aggregator -p common -p api` with all of Batch
+- [x] Run `cargo test -p aggregator -p common -p api` with all of Batch
   5's changes present.
-- [ ] Confirm Tasks 5.1 and 5.2's coastal-loop/Ashford-pattern research
+- [x] Confirm Tasks 5.1 and 5.2's coastal-loop/Ashford-pattern research
   didn't produce two independently-named, colliding segments for the
   same physical stretch if both were resolved.
-- [ ] Confirm `git status` is clean except for Batch 5's committed files.
+- [x] Confirm `git status` is clean except for Batch 5's committed files.
 
 ---
 
@@ -850,28 +924,28 @@ read, and a real gap elsewhere in a large file (some of these run 300+
 lines) is possible even where the specific hits checked for this plan
 were all correct exclusions.
 
-- [ ] **Task 6.1 — `greater-anglia-essex-branches.toml`**: spot-checked
+- [x] **Task 6.1 — `greater-anglia-essex-branches.toml`**: spot-checked
   hit (line ~113) is the Colchester Town branch spur, correctly excluded
   as a self-contained shuttle outside this file's three-branch scope, not
   a gap. Confirm via a full read; if no gap, no edit, no commit.
-- [ ] **Task 6.2 — `greater-anglia-main-line.toml`**: spot-checked hits
+- [x] **Task 6.2 — `greater-anglia-main-line.toml`**: spot-checked hits
   (lines ~57, ~136, ~188) are all correct exclusions (a station not on
   GA's own calling pattern; Needham Market explicitly "not served by
   main line trains" per its Wikipedia services table). Confirm via a
   full read; if no gap, no edit, no commit.
-- [ ] **Task 6.3 — `greater-anglia-norfolk-branches.toml`**:
+- [x] **Task 6.3 — `greater-anglia-norfolk-branches.toml`**:
   spot-checked hit (line ~209, ~499) is Waterbeach, correctly excluded as
   a non-stopping pass-through, not a gap. Confirm via a full read
   (this file is large — 500+ lines); if no gap, no edit, no commit.
-- [ ] **Task 6.4 — `greater-anglia-stansted-express.toml`**:
+- [x] **Task 6.4 — `greater-anglia-stansted-express.toml`**:
   spot-checked hit (line ~67) is West Anglia Main Line calling points not
   served by the Stansted Express specifically, correctly excluded.
   Confirm via a full read; if no gap, no edit, no commit.
-- [ ] **Task 6.5 — `greater-anglia-suffolk-branches.toml`**:
+- [x] **Task 6.5 — `greater-anglia-suffolk-branches.toml`**:
   spot-checked hit (line ~128) is the Port of Felixstowe's non-passenger
   terminals, correctly excluded. Confirm via a full read; if no gap, no
   edit, no commit.
-- [ ] **Task 6.6 — `greater-anglia-west-anglia.toml`**: spot-checked hit
+- [x] **Task 6.6 — `greater-anglia-west-anglia.toml`**: spot-checked hit
   (line ~273) is a station referenced only in an unrelated Wikipedia
   section (Trumpington area, not a station article), correctly excluded
   as not a current calling point. Confirm via a full read; if no gap, no
@@ -883,9 +957,9 @@ file, in which case treat the rest of that task as `[FILL-IN]`).
 
 ### Task 6.7: Batch verification
 
-- [ ] Run `cargo test -p aggregator -p common -p api` with all of Batch
+- [x] Run `cargo test -p aggregator -p common -p api` with all of Batch
   6's changes present (a no-op run if all 6 tasks found nothing to add).
-- [ ] Confirm `git status` — likely clean, no committed files, if every
+- [x] Confirm `git status` — likely clean, no committed files, if every
   task's full read confirms the `[VERIFY]` classification.
 
 ---
@@ -942,12 +1016,12 @@ the Recipe.
 
 ### Task 7.5: Batch verification
 
-- [ ] Run `cargo test -p aggregator -p common -p api` with all of Batch
+- [x] Run `cargo test -p aggregator -p common -p api` with all of Batch
   7's changes present.
-- [ ] Confirm Task 7.3 made no edit to `emr-regional.toml`'s Hope Valley
+- [x] Confirm Task 7.3 made no edit to `emr-regional.toml`'s Hope Valley
   stretch (this is the one task in this batch where "doing nothing" is
   the correct, verified outcome, not an incomplete task).
-- [ ] Confirm `git status` is clean except for Batch 7's committed files.
+- [x] Confirm `git status` is clean except for Batch 7's committed files.
 
 ---
 
@@ -995,9 +1069,9 @@ near-duplicate) excluded (line ~76) per `xc-manchester.toml`'s
 
 ### Task 8.5: Batch verification
 
-- [ ] Run `cargo test -p aggregator -p common -p api` with all of Batch
+- [x] Run `cargo test -p aggregator -p common -p api` with all of Batch
   8's changes present.
-- [ ] Confirm `git status` is clean except for Batch 8's committed files.
+- [x] Confirm `git status` is clean except for Batch 8's committed files.
 
 ---
 
@@ -1072,9 +1146,9 @@ the Recipe.
 
 ### Task 9.8: Batch verification
 
-- [ ] Run `cargo test -p aggregator -p common -p api` with all of Batch
+- [x] Run `cargo test -p aggregator -p common -p api` with all of Batch
   9's changes present.
-- [ ] Confirm `git status` is clean except for Batch 9's committed files.
+- [x] Confirm `git status` is clean except for Batch 9's committed files.
 
 ---
 
@@ -1162,15 +1236,15 @@ expected.
 
 ### Task 10.7: Batch verification
 
-- [ ] Run `cargo test -p aggregator -p common -p api` with all of Batch
+- [x] Run `cargo test -p aggregator -p common -p api` with all of Batch
   10's changes present.
-- [ ] Confirm Task 10.2 and Task 9.1's Olton/Acocks Green/Widney Manor
+- [x] Confirm Task 10.2 and Task 9.1's Olton/Acocks Green/Widney Manor
   coordination produced a single, consistent segment-sharing decision
   across both files (not a silent duplicate-but-uncoordinated segment
   name).
-- [ ] Confirm `git status` is clean except for Batch 10's committed
+- [x] Confirm `git status` is clean except for Batch 10's committed
   files.
-- [ ] **Whole-plan closeout**: run `cargo test -p aggregator -p common -p api`
+- [x] **Whole-plan closeout**: run `cargo test -p aggregator -p common -p api`
   once more with every batch's changes present (if executed
   sequentially) to confirm the full, now-larger `lines/` directory still
   parses as a whole and no cross-batch segment name accidentally
