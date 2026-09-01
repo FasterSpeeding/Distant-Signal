@@ -71,18 +71,6 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// The Europe/London calendar day `now` falls on -- the dedup ledger's
-/// period boundary. Deliberately the plain calendar day, not the
-/// aggregator's own rail-day-02:00 convention (`aggregation::
-/// next_rail_day_boundary`): this matches the convention the
-/// line-history-graphics design doc's daily rollup already settled on
-/// (Decision 1, for consistency with the adjacent Timeline tab's own
-/// grouping), so a future rollup consumer can use this same period value
-/// directly as its own `day` key with no conversion.
-fn london_calendar_day(now: chrono::DateTime<chrono::Utc>) -> chrono::NaiveDate {
-    now.with_timezone(&chrono_tz::Europe::London).date_naive()
-}
-
 async fn run_cycle(
     pool: &sqlx::PgPool,
     static_lines: &HashMap<String, LineDefinition>,
@@ -117,7 +105,7 @@ async fn run_cycle(
     // daily-rollup write path to consume instead of raw per-cycle counts.
     // Bounded to an aggregate count (not per-line) to avoid per-line metric
     // cardinality, matching this loop's existing aggregate-only gauges.
-    let period = london_calendar_day(chrono::Utc::now());
+    let period = queries::london_calendar_day(chrono::Utc::now());
     let mut new_services_this_cycle: u64 = 0;
     for line in lines.values() {
         if let Some(stats) = dedup::dedup_new_sample_stats(dedup_ledger, &line.id, period, line, &samples, defaults) {

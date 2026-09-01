@@ -20,12 +20,14 @@
 -- (crates/api/src/data/queries.rs's daily_stats_for_range), never stored
 -- pre-divided.
 --
--- The rate this produces is a share of SAMPLED POLL CYCLES, not a share of
--- distinct trains -- SampleStats.total counts departures currently visible
--- in a poll's LDBWS response window, and the same physical service is
--- likely counted across many consecutive polls (Decision 2). This is an
--- accepted, explicitly-labelled v1 limitation -- true per-service
--- deduplication is separate, later work, not designed or built here.
+-- Every sum here is per-DISTINCT-TRAIN, not per-poll-cycle: record_daily_stats
+-- is fed the deduped output of crates/aggregator/src/dedup.rs's
+-- dedup_new_sample_stats (this cycle's genuinely NEW Darwin service_ids
+-- only), not the raw, undeduped SampleStats attached to a line's report --
+-- see dedup.rs's module doc and Decision 2. sample_cycles keeps its
+-- original meaning unchanged: how many poll cycles had ANY raw sample
+-- coverage for this line, regardless of whether that cycle contributed any
+-- new distinct trains.
 -- -------------------------------------------------------------------------
 
 CREATE TABLE line_status_daily_stats (
