@@ -228,7 +228,17 @@ const PRIMARY_PROMPT: &str = "You extract structured facts from UK National Rail
     date range and/or a distinct scope/impact -- if the entire text describes one continuous fact with no \
     clearly distinct sub-periods, return a single-element `periods` array with `date_range: null`. Err \
     toward fewer periods when in doubt: do NOT split for stylistic variation, repeated wording, or several \
-    stations/lines listed under one shared date range -- that is still one period. `periods` must always \
+    stations/lines listed under one shared date range -- that is still one period. When a shared date \
+    range covers multiple named route legs, keep them in one period only if every leg is treated \
+    identically -- same substitute service or lack of one, same `apparent_severity`, same \
+    `resolution_status` -- and describe every affected leg together in `scope_description`. Split into a \
+    separate period per leg (or per leg-and-day-of-week combination) whenever the text states a genuinely \
+    different treatment for one leg or for specific days within the range -- e.g. one leg gets a rail \
+    replacement bus while another has no scheduled service at all, or a leg's rule only applies on certain \
+    days of the week and a different rule applies on the rest. A no-scheduled-service statement is never \
+    the same fact as a rail-replacement-bus statement, even when both fall inside the same date range and \
+    even when the text presents them as neighboring clauses -- do not merge them, and do not let the shared \
+    date range alone suggest they are one period. `periods` must always \
     contain at least one element. \
     For each period: `scope_description` is short, display-only text distinguishing what's different about \
     that period from the incident's other periods (e.g. \"platform 2 closed, calls at platform 1\"), or \
@@ -271,7 +281,26 @@ const PRIMARY_PROMPT: &str = "You extract structured facts from UK National Rail
     `scope_description` \"platform 5 closed, calls at platform 6\", `date_range` `{\"from_date\": \
     \"2026-05-16T00:00:00Z\", \"to_date\": \"2026-06-15T00:00:00Z\"}`, `resolution_status: \"ongoing\"`. Note \
     both periods got real `date_range` values -- never null when dates are stated -- and neither was marked \
-    `resolved` just because the text is matter-of-fact.";
+    `resolved` just because the text is matter-of-fact. \
+    Second worked example, reference date 2026-08-01T00:00:00Z: input \"From Saturday 29 August to Friday \
+    11 September, buses replace trains between Barrhead and Kilmarnock / Dumfries. Monday to Saturday \
+    during this period, buses operate between Kilmarnock and Troon, where passengers can connect with \
+    trains to / from Ayr. No scheduled services operate between Kilmarnock and Ayr / Stranraer on \
+    Sundays.\" segments into exactly three periods, all sharing the same overall date range but none \
+    merged into one, because each names a different leg and/or a different treatment: period 1 -- \
+    `scope_description` \"buses replace trains, Barrhead to Kilmarnock / Dumfries\", `date_range` \
+    `{\"from_date\": \"2026-08-29T00:00:00Z\", \"to_date\": \"2026-09-12T00:00:00Z\"}`, `schedule_window: \
+    null` (applies every day of the range), `apparent_severity: \"severe_disruption\"`; period 2 -- \
+    `scope_description` \"buses operate Kilmarnock to Troon, connecting to Ayr trains\", same `date_range`, \
+    `schedule_window` `{\"days_of_week\": [1,2,3,4,5,6], \"start_time\": \"00:00\", \"end_time\": \"23:59\"}` \
+    (Monday-Saturday only), `apparent_severity: \"severe_disruption\"`; period 3 -- `scope_description` \"no \
+    scheduled service, Kilmarnock to Ayr / Stranraer\", same `date_range`, `schedule_window` \
+    `{\"days_of_week\": [7], \"start_time\": \"00:00\", \"end_time\": \"23:59\"}` (Sunday only), \
+    `apparent_severity: \"blocked_or_suspended\"` (a full withdrawal is more severe than a bus substitute, \
+    not the same fact restated). Note periods 2 and 3 are NOT merged despite sharing both the date range \
+    and the same underlying Kilmarnock-Ayr/Stranraer leg -- the text states two different treatments for \
+    different days, which is exactly the case that must still split even though 'several things under one \
+    shared date range' would otherwise argue for merging.";
 
 const ADVERSARIAL_SCHEMA_NAME: &str = "adversarial_resolution_check";
 
