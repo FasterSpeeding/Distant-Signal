@@ -60,6 +60,94 @@ describe('CustomLineForm', () => {
     expect(input).toHaveValue('WOK');
   });
 
+  // Mirrors `StationSearchForm`'s own name-vs-code resolution test: typing
+  // a full station name and selecting the dropdown suggestion for it adds
+  // the CRS code the suggestion carries, not the raw typed text.
+  it('typing a station name and selecting a suggestion adds the resolved CRS code as a pill', async () => {
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'Woking' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    const option = await screen.findByRole('option', { name: 'WOK — Woking', hidden: true });
+    fireEvent.click(option);
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(screen.getByText('WOK')).toBeInTheDocument();
+    expect(input).toHaveValue('');
+  });
+
+  // Clicking Add after typing a station name -- without picking the
+  // dropdown option first -- must still resolve to the right CRS code,
+  // the same "Look up" resolution `StationSearchForm` uses: exact code
+  // match, then exact name match, then best substring match, then raw
+  // text as a last resort.
+  it('clicking Add after typing a station name (without picking the dropdown option) resolves to its CRS code', async () => {
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'Woking' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(screen.getByText('WOK')).toBeInTheDocument();
+    expect(input).toHaveValue('');
+  });
+
+  it('typing a raw CRS code directly still works, without any dropdown suggestion selected', async () => {
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+
+    fireEvent.change(input, { target: { value: 'wok' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(screen.getByText('WOK')).toBeInTheDocument();
+    expect(input).toHaveValue('');
+  });
+
+  // The existing dedup/length validation is the actual gate, applied to
+  // whatever the autocomplete resolved -- it must still reject a duplicate
+  // even when the duplicate was reached by typing a station name rather
+  // than its raw code.
+  it('does not add a duplicate station resolved from a station name', async () => {
+    renderWithProvider({ existingLine });
+    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'Woking' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    // `existingLine.stations` already contains 'WOK' -- still exactly one
+    // WOK badge, not two.
+    expect(screen.getAllByText('WOK')).toHaveLength(1);
+  });
+
+  // Typed text that resolves (via the raw-text fallback) to something
+  // other than a 3-letter code must still be rejected -- the autocomplete
+  // doesn't bypass the length gate.
+  it('does not add a station when the resolved text is not a valid 3-letter code', async () => {
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+
+    fireEvent.change(input, { target: { value: 'Nonexistent Station' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(screen.queryByText('NONEXISTENT STATION')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Create line' })).toBeInTheDocument();
+  });
+
   it('selecting an operator suggestion adds just the ATOC code as a tag', async () => {
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Operators' });
