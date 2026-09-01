@@ -266,6 +266,13 @@ describe('AllLinesTable responsive columns', () => {
     expect(text.some((t) => t?.includes('Cancelled'))).toBe(true);
   });
 
+  it('hides the Pin column below the sm breakpoint too', () => {
+    const { container } = renderMobileTable();
+    const hidden = Array.from(container.querySelectorAll('.mantine-visible-from-sm'));
+    const text = hidden.map((el) => el.textContent);
+    expect(text.some((t) => t?.includes('Pin'))).toBe(true);
+  });
+
   it('re-surfaces the numbers under the line name for the widths that lose the columns', () => {
     const { container } = renderMobileTable();
     const mobileOnly = container.querySelector('.mantine-hidden-from-sm');
