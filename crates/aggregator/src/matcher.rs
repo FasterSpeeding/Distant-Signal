@@ -2845,6 +2845,63 @@ mod tests {
         assert!(xc_cardiff.has_station("CDT"), "xc-cardiff should now recognise Caldicot (CDT)");
     }
 
+    // Task 9.5 (2026-09-01) fresh route-diagram pass on `xc-manchester.toml`
+    // added the real, currently-open, currently-served intermediate stations
+    // this file's own "minor intermediate calls are omitted" boilerplate had
+    // left out end-to-end: Levenshulme/Heaton Chapel (Manchester-Stockport),
+    // Cheadle Hulme/Handforth (Stockport-Wilmslow), Alderley Edge/Chelford/
+    // Goostrey/Holmes Chapel/Sandbach (Wilmslow-Crewe), Penkridge
+    // (Stafford-Wolverhampton), and Coseley/Tipton/Dudley Port/Sandwell &
+    // Dudley/Smethwick Galton Bridge/Smethwick Rolfe Street
+    // (Wolverhampton-Birmingham New Street). All sixteen inherit this file's
+    // own exclusive `xc-manchester` segment (no sibling line shares that
+    // segment name -- grepped `lines/*.toml`), so per the testing convention
+    // only the has_station assertion applies for most of them; see the
+    // separate overlap test below for Smethwick Galton Bridge specifically,
+    // which is also a station (not segment) overlap with
+    // `wmr-snow-hill.toml`.
+    #[test]
+    fn xc_manchester_recognises_newly_added_stations() {
+        let lines = load_line("xc-manchester");
+        let line = lines.get("xc-manchester").expect("xc-manchester should load");
+        for crs in [
+            "LVM", "HTC", "CHU", "HTH", "ALD", "CEL", "GTR", "HCH", "SDB", "PKG", "CSY", "TIP",
+            "DDP", "SAD", "SGB", "SMR",
+        ] {
+            assert!(line.has_station(crs), "{crs} should now be recognised on xc-manchester");
+        }
+    }
+
+    // Smethwick Galton Bridge (SGB) is a genuine split-level interchange:
+    // its high-level platforms carry `wmr-snow-hill.toml`'s Snow Hill route
+    // (segment `wmr-snow-hill-trunk`), its low-level platforms carry this
+    // file's Stour Valley stretch (segment `xc-manchester`) -- station-level
+    // overlap only, the two segment names are genuinely distinct strings, so
+    // an incident there should stay ExclusiveSegment on both lines rather
+    // than propagate as a shared trunk. Mirrors
+    // `gwr_south_wales_station_overlap_with_xc_cardiff_stays_exclusive_each_line`.
+    #[test]
+    fn xc_manchester_station_overlap_with_wmr_snow_hill_stays_exclusive_each_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "XC-SGB-1",
+            "Signalling fault at Smethwick Galton Bridge",
+            "Signalling fault causing delays at Smethwick Galton Bridge.",
+            &["XC"],
+            &["SGB"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["xc-manchester".to_string(), "wmr-snow-hill".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} scope mismatch", m.line.id);
+        }
+    }
+
     // Task 4.4 split `gwr-west-of-england` (Reading-Taunton line) into its own
     // file. Originally its exclusive segment (`gwr-west-of-england`) covered
     // Newbury through Castle Cary with no *cross-file segment-name* sharing
