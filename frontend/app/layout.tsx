@@ -53,6 +53,33 @@ async function AuthNavItem() {
   return <AuthStatus session={session} />;
 }
 
+// Same rationale as AuthNavItem/DataFreshnessNavItem: a separate async
+// Server Component so <Suspense> can stream the session check in without
+// blocking the rest of the shell. Unlike those two, this one renders
+// nothing at all when logged out (Decision 4 of
+// docs/superpowers/specs/2026-08-31-tracked-trains-list-design.md) --
+// this is a full nav-bar entry point to a page whose entire content is
+// private to the viewer, not a section of an already-public page (the
+// TicketPanel pattern), so showing it to every visitor and having it
+// always resolve to a login nudge would be dead weight for the common
+// case of an anonymous visitor. Guarded with the same .catch() shape as
+// AuthNavItem/DataFreshnessNavItem: a root layout has no route-level
+// error.tsx, so an unguarded getSession() here could take down every
+// page's nav bar on an auth glitch -- the same historical bug class
+// already fixed in TicketPanel.tsx, not repeated here.
+export async function TrackedTrainsNavItem() {
+  const session = await getSession().catch(() => ({
+    authenticated: false,
+    id: null,
+    email: null,
+    name: null,
+  }));
+  if (!session.authenticated) {
+    return null;
+  }
+  return <TextLink href="/track/mine">My Tracked Trains</TextLink>;
+}
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" {...mantineHtmlProps}>
@@ -98,6 +125,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <TextLink href="/lines">All Lines</TextLink>
                   <TextLink href="/stations">Station Lookup</TextLink>
                   <TextLink href="/track">Track a Train</TextLink>
+                  <Suspense fallback={null}>
+                    <TrackedTrainsNavItem />
+                  </Suspense>
                   <Suspense fallback={<ActionIcon variant="subtle" aria-label="Data freshness" disabled loading />}>
                     <DataFreshnessNavItem />
                   </Suspense>
