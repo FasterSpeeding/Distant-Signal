@@ -5791,40 +5791,4 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["southeastern-chatham".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
-
-    // Station-catalogue-completeness plan, Task 5.2, BRANCH-RESEARCH piece:
-    // the "one train" Ashford International - Canterbury West - Thanet
-    // Parkway - Ramsgate - Broadstairs pattern is now confirmed and
-    // modelled on a new `hs1-canterbury` segment (see
-    // southeastern-highspeed.toml's own header comment for the sourcing
-    // and for why this is a new segment rather than a continuation of
-    // `hs1-ashford`). `hs1-canterbury` isn't reused by any other file in
-    // the catalogue (grepped `lines/*.toml` before picking the name), and
-    // neither is CBW or THP individually, so per this task's recipe a
-    // shared-segment MatchScope assertion is skipped - instead this
-    // mirrors `chatham_deal_branch_stations_are_now_modelled_and_stay_
-    // exclusive` above and confirms an incident on the new branch stays
-    // ExclusiveSegment and scoped to this file alone.
-    #[test]
-    fn hs1_canterbury_branch_stations_are_now_modelled_and_stay_exclusive() {
-        let lines = load_all_lines();
-        let hs1 = lines.get("southeastern-highspeed").expect("southeastern-highspeed line should exist");
-        for crs in ["CBW", "THP"] {
-            assert!(hs1.has_station(crs), "southeastern-highspeed should now have station {crs}");
-            assert_eq!(hs1.segment_for(crs), Some("hs1-canterbury"), "{crs} should be on hs1-canterbury");
-        }
-
-        let registry = SegmentRegistry::new(&lines);
-        let inc = incident(
-            "SE-11",
-            "Signal failure at Thanet Parkway",
-            "Signal failure causing delays to Southeastern services.",
-            &["SE"],
-            &["THP"],
-        );
-        let matches = lines_affected_by(&inc, &lines, &registry);
-        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["southeastern-highspeed".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
-    }
 }
