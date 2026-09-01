@@ -350,6 +350,14 @@ services:
     volumes:
       - schedule_feed_data:/data/schedule-feed
       - ./schedule-sftp-host-keys:/srv/sftpgo/host_keys:ro
+      - ./docker/schedule-sftp-entrypoint.sh:/docker-entrypoint.d/schedule-sftp-entrypoint.sh:ro
+    # Overrides the image's own `CMD ["sftpgo", "serve"]` (no ENTRYPOINT is
+    # set, so `command:` replaces it outright, matching Compose's default
+    # override semantics). The script provisions the real SFTP-login
+    # account via SFTPGo's own --loaddata-from mechanism, then execs
+    # `sftpgo serve` itself -- see the script for the full mechanism and
+    # citations against SFTPGo's real source.
+    command: ["/bin/sh", "/docker-entrypoint.d/schedule-sftp-entrypoint.sh"]
     environment:
       SFTPGO_SFTPD__BINDINGS__0__PORT: "2022"
       # This app mints this account, not DTD -- CORRECTED 2026-09-01 from
@@ -366,19 +374,23 @@ services:
       # below instead -- change it before actually giving these details to
       # DTD for a real delivery.
       #
-      # SFTPGO_DEFAULT_ADMIN_USERNAME/PASSWORD (the actual container env
-      # vars, matching charts/distant-signal/templates/schedulefeed-
-      # deployment.yaml's naming so local dev and the Helm chart agree) name
-      # SFTPGo's documented *admin* bootstrap vars as a placeholder shape
-      # only -- NOT confirmed to be how a scoped DTD virtual user is
-      # actually created; do not treat this pair as correct without
-      # checking against a real deployed image. SCHEDULE_SFTP_USERNAME/
-      # PASSWORD are this repo's own *.env.example-facing names, kept
-      # separate from the SFTPGo-specific ones above so a future real
-      # provisioning mechanism can change without renaming what operators
-      # actually fill in.
-      SFTPGO_DEFAULT_ADMIN_USERNAME: ${SCHEDULE_SFTP_USERNAME:-dtd-push}
-      SFTPGO_DEFAULT_ADMIN_PASSWORD: ${SCHEDULE_SFTP_PASSWORD:-changeme-local-dev-password}
+      # CORRECTED 2026-09-01 (this task): SFTPGO_DEFAULT_ADMIN_USERNAME/
+      # PASSWORD -- this comment's own earlier guess -- were proven wrong
+      # by a real running container's log ("error authenticating user...
+      # not found: sql: no rows in result set"): those env vars bootstrap
+      # SFTPGo's web-UI/REST-API *admin* account, never an SFTP-login
+      # *user* (confirmed against SFTPGo's own Go source -- see
+      # docker/schedule-sftp-entrypoint.sh's header comment for the exact
+      # source references). SCHEDULE_SFTP_USERNAME/PASSWORD below now feed
+      # that script directly (via SFTPGo's real --loaddata-from mechanism)
+      # instead of a nonfunctional SFTPGO_DEFAULT_ADMIN_* pair.
+      # SCHEDULE_FEED_DESTINATION_PATH (already used by the schedule-ingest
+      # service below for WATCH_DIR) is read by the same script to compute
+      # this account's home_dir/chroot root, so both sides agree on where
+      # files land without a separate variable.
+      SCHEDULE_SFTP_USERNAME: ${SCHEDULE_SFTP_USERNAME:-dtd-push}
+      SCHEDULE_SFTP_PASSWORD: ${SCHEDULE_SFTP_PASSWORD:-changeme-local-dev-password}
+      SCHEDULE_FEED_DESTINATION_PATH: ${SCHEDULE_FEED_DESTINATION_PATH:-incoming}
 
   schedule-ingest:
     build:
@@ -395,10 +407,15 @@ services:
     environment:
       # crates/schedule-ingest/src/config.rs: Config
       #
-      # WATCH_DIR must resolve to DTD's account's landing folder --
-      # SCHEDULE_FEED_DESTINATION_PATH, relative to that account's SFTP
-      # home directory (e.g. "incoming", or "incoming/2026" if a subfolder
-      # is needed) -- the same concept as the Helm chart's
+      # WATCH_DIR must resolve to DTD's account's landing folder.
+      # CORRECTED 2026-09-01 (this task): SCHEDULE_FEED_DESTINATION_PATH is
+      # no longer "relative to that account's SFTP home directory" -- the
+      # schedule-sftp service's account now has this exact path
+      # (/data/schedule-feed/${SCHEDULE_FEED_DESTINATION_PATH}) AS its
+      # home_dir/chroot root (see docker/schedule-sftp-entrypoint.sh), so
+      # DTD's push client sees itself uploading to "/" once connected, and
+      # those uploads land here, at WATCH_DIR, directly -- the same
+      # concept as the Helm chart's
       # scheduleFeed.sftp.destinationFolder/folderPath (see
       # charts/distant-signal/templates/_helpers.tpl's
       # distant-signal.scheduleFeedDestinationPath), but collapsed to one
