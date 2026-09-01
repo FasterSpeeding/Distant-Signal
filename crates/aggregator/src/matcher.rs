@@ -2273,6 +2273,35 @@ mod tests {
     }
 
     #[test]
+    fn wcml_birmingham_has_station_marston_green() {
+        // Task 9.3: eight West Midlands Trains local stops (Canley, Tile
+        // Hill, Berkswell, Hampton-in-Arden, Marston Green, Lea Hall,
+        // Stechford, Adderley Park) were added to `lines/wcml-birmingham.toml`
+        // as real, currently-open, currently-served stations between
+        // Coventry and Birmingham New Street -- previously omitted on the
+        // (rejected, per this plan's full-coverage mandate) reasoning that
+        // Avanti's own service doesn't call there. Marston Green (MGN) here
+        // stands in for all eight as the `has_station` regression this
+        // task's testing convention requires; each was independently
+        // two-source verified (Wikipedia's own station article
+        // cross-checked against nationalrail.co.uk's live
+        // /stations/<crs>/details.html page) per the file's own header
+        // comment.
+        //
+        // All eight sit on `wcml-birmingham-branch`, which -- per a grep of
+        // every `lines/*.toml` file -- remains exclusive to this file: no
+        // sibling line reuses that segment name. (`lnwr-birmingham-crewe.toml`
+        // covers the same physical Coventry-Birmingham track under its own,
+        // differently-named `lnwr-birmingham` segment, and doesn't itself
+        // model Marston Green/Lea Hall/Stechford/Adderley Park at all -- see
+        // that file's Task 9.2 note.) So per this task's testing convention,
+        // there's no sibling `MatchScope` assertion to add here; skipped.
+        let lines = load_line("wcml-birmingham");
+        let line = lines.get("wcml-birmingham").expect("wcml-birmingham line should exist");
+        assert!(line.has_station("MGN"), "wcml-birmingham should now include Marston Green (MGN)");
+    }
+
+    #[test]
     fn wcml_birmingham_shared_trunk_incident_propagates_to_wcml_spine() {
         // Rugby is the diverging junction: `wcml-birmingham.toml` reuses
         // `west-coast-main-line.toml`'s own `wcml-midlands` segment tag there
@@ -2583,8 +2612,19 @@ mod tests {
     fn lnwr_birmingham_crewe_exclusive_segment_incident_does_not_propagate() {
         // Canley is on the exclusive `lnwr-birmingham` segment (the
         // Birmingham branch, beyond the Rugby reconvergence point) -- not
-        // shared with any other catalogued line's segment tag, and not
-        // otherwise a station on any other line in the catalogue.
+        // shared with any other catalogued line's segment tag.
+        //
+        // `wcml-birmingham.toml` (Task 9.3, added after this test was first
+        // written) now also calls at Canley -- previously omitted there as
+        // "not called at by Avanti", but per this plan's full-coverage
+        // mandate a real, currently-served station belongs in `stations`
+        // regardless of which of this file's own operators calls there. It's
+        // a real second line affected by this incident, on its own exclusive
+        // `wcml-birmingham-branch` segment -- station-level overlap only,
+        // same "overlap is fine, segment-sharing is a deliberate choice"
+        // precedent this file already exercises elsewhere in this test
+        // module (e.g. `wcml_birmingham_exclusive_segment_incident_does_not_propagate`
+        // at Birmingham International), so still ExclusiveSegment for both.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -2596,8 +2636,13 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["lnwr-birmingham-crewe".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["lnwr-birmingham-crewe".to_string(), "wcml-birmingham".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment", m.line.id);
+        }
     }
 
     // `gwr-main-line`'s Bristol-bound exclusive segment starts at Chippenham
