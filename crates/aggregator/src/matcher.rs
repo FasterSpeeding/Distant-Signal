@@ -5984,4 +5984,33 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["northern-lakes".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 2.9: `northern-tyne-valley.toml`'s previously-missing intermediate
+    // halts. Prudhoe (PRU) sits between Stocksfield and Wylam on this file's
+    // sole segment, `northern-tyne-valley`, which (per a grep of `lines/
+    // *.toml` while writing this test) is not shared by any sibling line -
+    // so there is no SharedSegment assertion to make here, only that
+    // `has_station` picks up the new station and that an incident there
+    // stays exclusive.
+    #[test]
+    fn tyne_valley_prudhoe_has_station_and_stays_exclusive() {
+        let lines = load_line("northern-tyne-valley");
+        let tyne_valley = lines.get("northern-tyne-valley").expect("northern-tyne-valley should load");
+        assert!(tyne_valley.has_station("PRU"), "northern-tyne-valley should now list Prudhoe (PRU)");
+        assert_eq!(tyne_valley.segment_for("PRU"), Some("northern-tyne-valley"));
+
+        let all_lines = load_all_lines();
+        let registry = SegmentRegistry::new(&all_lines);
+        let inc = incident(
+            "NT-15",
+            "Signal failure at Prudhoe",
+            "Signal failure causing delays on the Tyne Valley Line at Prudhoe.",
+            &["NT"],
+            &["PRU"],
+        );
+        let matches = lines_affected_by(&inc, &all_lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-tyne-valley".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
