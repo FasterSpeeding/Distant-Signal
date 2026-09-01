@@ -146,6 +146,7 @@ fn map_status(
         // LDBWS-derived delay/cancellation counts. There is no TfL
         // equivalent and v1 does not sample TfL arrivals.
         sample_stats: None,
+        sample_availability: common::SampleAvailability::NoCoverage,
     }
 }
 
