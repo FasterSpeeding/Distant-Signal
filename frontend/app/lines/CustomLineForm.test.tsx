@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, act } from '@testing-library/react';
+import { screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { CustomLineForm } from './CustomLineForm';
 import type { CustomLineDetail } from '@/lib/types';
@@ -259,6 +259,40 @@ describe('CustomLineForm', () => {
 
     const loginLink = await screen.findByRole('link', { name: 'Log in to create a line' });
     expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Flines');
+  });
+
+  // Reproduces the "Create line gets stuck loading" bug: creating a line
+  // navigates back to `/lines`, the very route this form is already
+  // rendered on (`app/lines/page.tsx`). A same-route `router.push` doesn't
+  // remount this Client Component -- React reconciles it in place since its
+  // type/position in the tree don't change -- so unlike the edit flow
+  // (which always navigates to the different `/lines/{id}` route and gets
+  // a fresh mount for free), nothing here ever reset `submitting` back to
+  // `false` on the success path. Confirmed live against a running
+  // dev stack: the new line appeared in the table immediately, but the
+  // button below it kept its loading spinner forever. `useRouter().push`
+  // is a no-op `vi.fn()` in this test file (see the top-of-file mock), the
+  // same stand-in for "navigated to a route that doesn't remount me" a real
+  // same-route push would produce.
+  it('a successful create resets the submit button out of its loading state and clears the form', async () => {
+    renderWithProvider();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My Commute' } });
+    const stationInput = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    fireEvent.change(stationInput, { target: { value: 'WOK' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    fireEvent.change(stationInput, { target: { value: 'CLJ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    const submit = screen.getByRole('button', { name: 'Create line' });
+    fireEvent.click(submit);
+
+    // Still submitting until the (mocked) fetch resolves.
+    expect(submit).toHaveAttribute('data-loading', 'true');
+
+    await waitFor(() => expect(submit).not.toHaveAttribute('data-loading', 'true'));
+    expect(screen.getByLabelText('Name')).toHaveValue('');
+    expect(screen.queryByText('WOK')).not.toBeInTheDocument();
+    expect(screen.queryByText('CLJ')).not.toBeInTheDocument();
   });
 
   // Every other non-ok status keeps the old behaviour -- only a 401 is
