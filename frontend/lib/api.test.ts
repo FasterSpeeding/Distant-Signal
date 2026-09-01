@@ -70,6 +70,21 @@ describe('api client', () => {
     );
   });
 
+  it('getLineStatusForMode forwards the incoming request cookies to the backend', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    await getLineStatusForMode('national-rail');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Line/Mode/national-rail/Status',
+      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
+    );
+  });
+
+  it('getLineStatusForMode sends no Cookie header when the visitor has no cookies at all', async () => {
+    await getLineStatusForMode('national-rail');
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(init.headers).toBeUndefined();
+  });
+
   it('getLineStatus joins multiple ids with commas and passes detail=true', async () => {
     await getLineStatus(['wcml', 'swr-alton'], true);
     expect(fetch).toHaveBeenCalledWith(
@@ -84,6 +99,21 @@ describe('api client', () => {
       'http://test-api:8080/Line/wcml/Status',
       expect.objectContaining({ cache: 'no-store' }),
     );
+  });
+
+  it('getLineStatus forwards the incoming request cookies to the backend', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    await getLineStatus(['wcml'], false);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Line/wcml/Status',
+      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
+    );
+  });
+
+  it('getLineStatus sends no Cookie header when the visitor has no cookies at all', async () => {
+    await getLineStatus(['wcml'], false);
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(init.headers).toBeUndefined();
   });
 
   it('getStopPointDisruption fetches the correct URL with no caching', async () => {
@@ -188,6 +218,29 @@ describe('api client', () => {
     );
   });
 
+  it('getAllLines forwards the incoming request cookies to the backend', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+    await getAllLines();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/lines',
+      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
+    );
+  });
+
+  it('getAllLines sends no Cookie header when the visitor has no cookies at all', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+    await getAllLines();
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(init.headers).toBeUndefined();
+  });
+
   it('getAllTocs fetches the correct URL, cached for an hour', async () => {
     vi.stubGlobal(
       'fetch',
@@ -220,6 +273,60 @@ describe('api client', () => {
     );
   });
 
+  it('getCustomLine forwards the incoming request cookies to the backend', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    const sampleLine = {
+      id: 'custom-my-commute',
+      name: 'My Commute',
+      operators: ['SW'],
+      stations: ['WOK', 'WAT'],
+      headcodePrefixes: [],
+      destinationCrsFilter: [],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(sampleLine), { status: 200 })),
+    );
+    await getCustomLine('custom-my-commute');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/lines/custom-my-commute',
+      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
+    );
+  });
+
+  it('getCustomLine sends no Cookie header when the visitor has no cookies at all', async () => {
+    const sampleLine = {
+      id: 'custom-my-commute',
+      name: 'My Commute',
+      operators: ['SW'],
+      stations: ['WOK', 'WAT'],
+      headcodePrefixes: [],
+      destinationCrsFilter: [],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(sampleLine), { status: 200 })),
+    );
+    await getCustomLine('custom-my-commute');
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(init.headers).toBeUndefined();
+  });
+
+  // Decision 8 in the design spec: on /lines/[id], "not logged in" and
+  // "logged in but not the owner" must render identically, so both a bare
+  // 401 and a genuine 404 collapse into the same ApiNotFoundError -- unlike
+  // getTrackedTrainById/getTrackedTrainByUidAndDate below, which keep them
+  // distinct.
+  it('getCustomLine collapses a 401 into ApiNotFoundError', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('unauthorized', { status: 401 })));
+    await expect(getCustomLine('custom-my-commute')).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('getCustomLine collapses a 404 into ApiNotFoundError', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    await expect(getCustomLine('custom-my-commute')).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+
   it('getLineDefinition fetches the correct URL with no caching', async () => {
     vi.stubGlobal(
       'fetch',
@@ -230,6 +337,29 @@ describe('api client', () => {
       'http://test-api:8080/public/lines/swr-alton/definition',
       expect.objectContaining({ cache: 'no-store' }),
     );
+  });
+
+  it('getLineDefinition forwards the incoming request cookies to the backend', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ stations: ['WOK', 'WAT'], operators: ['SW'] }), { status: 200 })),
+    );
+    await getLineDefinition('swr-alton');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/lines/swr-alton/definition',
+      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
+    );
+  });
+
+  it('getLineDefinition sends no Cookie header when the visitor has no cookies at all', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ stations: ['WOK', 'WAT'], operators: ['SW'] }), { status: 200 })),
+    );
+    await getLineDefinition('swr-alton');
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(init.headers).toBeUndefined();
   });
 
   it('getDataFreshness fetches the correct URL with no caching', async () => {
@@ -332,6 +462,21 @@ describe('api client', () => {
     );
   });
 
+  it('getTrackedTrainById forwards the incoming request cookies to the backend', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    await getTrackedTrainById(42);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Train/42',
+      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
+    );
+  });
+
+  it('getTrackedTrainById sends no Cookie header when the visitor has no cookies at all', async () => {
+    await getTrackedTrainById(42);
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(init.headers).toBeUndefined();
+  });
+
   it('getTrackedTrainByUidAndDate fetches the correct URL with no caching', async () => {
     await getTrackedTrainByUidAndDate('C21373', '2026-08-28');
     expect(fetch).toHaveBeenCalledWith(
@@ -340,9 +485,39 @@ describe('api client', () => {
     );
   });
 
+  it('getTrackedTrainByUidAndDate forwards the incoming request cookies to the backend', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    await getTrackedTrainByUidAndDate('C21373', '2026-08-28');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Train/by-uid/C21373/2026-08-28',
+      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
+    );
+  });
+
+  it('getTrackedTrainByUidAndDate sends no Cookie header when the visitor has no cookies at all', async () => {
+    await getTrackedTrainByUidAndDate('C21373', '2026-08-28');
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(init.headers).toBeUndefined();
+  });
+
   it('getTrackedTrainById throws ApiNotFoundError on a 404', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
     await expect(getTrackedTrainById(999)).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('getTrackedTrainById throws ApiUnauthorizedError specifically on a 401', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('unauthorized', { status: 401 })));
+    await expect(getTrackedTrainById(999)).rejects.toBeInstanceOf(ApiUnauthorizedError);
+  });
+
+  it('getTrackedTrainByUidAndDate throws ApiNotFoundError on a 404', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    await expect(getTrackedTrainByUidAndDate('C21373', '2026-08-28')).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('getTrackedTrainByUidAndDate throws ApiUnauthorizedError specifically on a 401', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('unauthorized', { status: 401 })));
+    await expect(getTrackedTrainByUidAndDate('C21373', '2026-08-28')).rejects.toBeInstanceOf(ApiUnauthorizedError);
   });
 
   it('getTicketsForTrackedTrain fetches the correct URL, forwarding cookies, with no caching', async () => {

@@ -54,16 +54,22 @@ async function fetchJson<T>(url: string, init: RequestInit): Promise<T> {
 }
 
 export async function getLineStatusForMode(mode: string): Promise<LineStatusReport[]> {
-  return fetchJson<LineStatusReport[]>(`${baseUrl()}/Line/Mode/${mode}/Status`, {
+  const url = `${baseUrl()}/Line/Mode/${mode}/Status`;
+  const cookieHeader = (await cookies()).toString();
+  return fetchJson<LineStatusReport[]>(url, {
     cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
   });
 }
 
 export async function getLineStatus(ids: string[], detail: boolean): Promise<LineStatusReport[]> {
   const idsParam = ids.join(',');
   const query = detail ? '?detail=true' : '';
-  return fetchJson<LineStatusReport[]>(`${baseUrl()}/Line/${idsParam}/Status${query}`, {
+  const url = `${baseUrl()}/Line/${idsParam}/Status${query}`;
+  const cookieHeader = (await cookies()).toString();
+  return fetchJson<LineStatusReport[]>(url, {
     cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
   });
 }
 
@@ -159,7 +165,12 @@ export async function getSession(): Promise<SessionInfo> {
 }
 
 export async function getAllLines(): Promise<LineSummary[]> {
-  return fetchJson<LineSummary[]>(`${baseUrl()}/public/lines`, { cache: 'no-store' });
+  const url = `${baseUrl()}/public/lines`;
+  const cookieHeader = (await cookies()).toString();
+  return fetchJson<LineSummary[]>(url, {
+    cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+  });
 }
 
 /** Every TOC (code + name), for resolving a fixed known set of operator
@@ -172,12 +183,35 @@ export async function getAllTocs(): Promise<Suggestion[]> {
   });
 }
 
+/** Deliberately collapses a `401` into `ApiNotFoundError` alongside the
+ * genuine `404`, unlike `getTrackedTrainById`/`getTrackedTrainByUidAndDate`
+ * below -- Decision 8 in the design spec. On `/lines/[id]`, "not logged in"
+ * and "logged in but not the owner" should render identically (both just a
+ * 404): this is a public catalogue page most visitors have no reason to
+ * think they own, unlike the single-purpose tracked-train page, so there's
+ * no case here worth a distinct "please log in, this might be yours"
+ * prompt. */
 export async function getCustomLine(id: string): Promise<CustomLineDetail> {
-  return fetchJson<CustomLineDetail>(`${baseUrl()}/public/lines/${id}`, { cache: 'no-store' });
+  const url = `${baseUrl()}/public/lines/${id}`;
+  const cookieHeader = (await cookies()).toString();
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+  });
+  if (response.status === 401 || response.status === 404) {
+    throw new ApiNotFoundError(`API request to ${url} failed: ${response.status}`);
+  }
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<CustomLineDetail>;
 }
 
 export async function getLineDefinition(id: string): Promise<LineDefinitionSummary> {
-  return fetchJson<LineDefinitionSummary>(`${baseUrl()}/public/lines/${id}/definition`, { cache: 'no-store' });
+  const url = `${baseUrl()}/public/lines/${id}/definition`;
+  const cookieHeader = (await cookies()).toString();
+  return fetchJson<LineDefinitionSummary>(url, {
+    cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+  });
 }
 
 export async function getDataFreshness(): Promise<DataFreshness> {
@@ -197,14 +231,25 @@ export async function getHistoryRetention(): Promise<HistoryRetention> {
 }
 
 export async function getTrackedTrainById(id: number): Promise<TrackedTrainState> {
-  return fetchJson<TrackedTrainState>(`${baseUrl()}/Train/${id}`, { cache: 'no-store' });
+  const url = `${baseUrl()}/Train/${id}`;
+  const cookieHeader = (await cookies()).toString();
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+  });
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<TrackedTrainState>;
 }
 
 export async function getTrackedTrainByUidAndDate(uid: string, date: string): Promise<TrackedTrainState> {
-  return fetchJson<TrackedTrainState>(
-    `${baseUrl()}/Train/by-uid/${encodeURIComponent(uid)}/${encodeURIComponent(date)}`,
-    { cache: 'no-store' },
-  );
+  const url = `${baseUrl()}/Train/by-uid/${encodeURIComponent(uid)}/${encodeURIComponent(date)}`;
+  const cookieHeader = (await cookies()).toString();
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+  });
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<TrackedTrainState>;
 }
 
 /** Per-user, session-gated ticket list for one tracked train
