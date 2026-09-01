@@ -157,7 +157,16 @@ async fn callback(State(app): State<App>, headers: axum::http::HeaderMap, Query(
     }
 
     let max_age = app.config.session_ttl_days * 24 * 60 * 60;
-    let mut response = Redirect::temporary(&app.config.sso_post_login_redirect_url).into_response();
+    // Re-validate stored.return_to again here (defense in depth -- cheap,
+    // and guards against any future code path that might write to that
+    // column without going through login()'s own validation), not just
+    // trust that it was already validated once at insert time.
+    let target = stored
+        .return_to
+        .as_deref()
+        .and_then(auth::validate_return_to)
+        .unwrap_or_else(|| app.config.sso_post_login_redirect_url.clone());
+    let mut response = Redirect::temporary(&target).into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
         HeaderValue::from_str(&auth::set_cookie_header(auth::SESSION_COOKIE_NAME, &session_token, max_age, cookie_secure(&app)))
@@ -232,5 +241,41 @@ mod tests {
     fn login_treats_no_return_to_the_same_as_an_invalid_one() {
         let return_to: Option<String> = None;
         assert_eq!(return_to.as_deref().and_then(auth::validate_return_to), None);
+    }
+
+    #[test]
+    fn callback_uses_the_stored_return_to_when_valid() {
+        let stored_return_to = Some("/lines/some-line?tab=history".to_string());
+        let fallback = "https://rail.example.com/".to_string();
+        let target = stored_return_to
+            .as_deref()
+            .and_then(auth::validate_return_to)
+            .unwrap_or_else(|| fallback.clone());
+        assert_eq!(target, "/lines/some-line?tab=history");
+    }
+
+    #[test]
+    fn callback_falls_back_when_return_to_is_none() {
+        let stored_return_to: Option<String> = None;
+        let fallback = "https://rail.example.com/".to_string();
+        let target = stored_return_to
+            .as_deref()
+            .and_then(auth::validate_return_to)
+            .unwrap_or_else(|| fallback.clone());
+        assert_eq!(target, fallback);
+    }
+
+    #[test]
+    fn callback_falls_back_when_the_stored_return_to_fails_revalidation() {
+        // Defense-in-depth case: a stored value that, hypothetically, didn't
+        // go through login()'s own validation (e.g. a future code path with a
+        // bug) must still be caught here, not trusted blindly.
+        let stored_return_to = Some("https://evil.com".to_string());
+        let fallback = "https://rail.example.com/".to_string();
+        let target = stored_return_to
+            .as_deref()
+            .and_then(auth::validate_return_to)
+            .unwrap_or_else(|| fallback.clone());
+        assert_eq!(target, fallback);
     }
 }
