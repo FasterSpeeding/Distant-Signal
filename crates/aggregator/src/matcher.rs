@@ -2863,6 +2863,40 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
+    // Station Catalogue Completeness Task 1.1: fills in seven previously
+    // missing Plymouth-area suburban stations on gwr-cornish-main-line.toml
+    // (Devonport, Dockyard, Keyham, St Budeaux Ferry Road, Saltash, St
+    // Germans, Menheniot), two-source confirmed and inserted at their true
+    // geographic position between PLY and LSK. See that file's own
+    // segment-naming comment for the full sourcing/rationale.
+    #[test]
+    fn gwr_cornish_main_line_plymouth_area_infill_stations_present() {
+        let lines = load_line("gwr-cornish-main-line");
+        let line = lines.get("gwr-cornish-main-line").expect("gwr-cornish-main-line line should exist");
+        for crs in ["DPT", "DOC", "KEY", "SBF", "STS", "SGM", "MEN"] {
+            assert!(line.has_station(crs), "gwr-cornish-main-line should now list {crs}");
+        }
+    }
+
+    // Same task: an incident at one of the newly-added stations (Saltash)
+    // should behave exactly like the pre-existing Truro exclusive-segment
+    // case above -- `gwr-cornish-main-line` is not shared with any sibling
+    // line's segment (confirmed by grepping the catalogue: the segment name
+    // is exclusive to this one file), so this stays a clean ExclusiveSegment
+    // match with no shared-segment propagation to assert, mirroring
+    // `emr_rural_branches_bottesford_incident_stays_on_its_own_branch`'s
+    // identical judgment call for that file's own infill task.
+    #[test]
+    fn gwr_cornish_main_line_saltash_incident_stays_on_its_own_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-10", "Points failure at Saltash", "Points failure causing delays at Saltash.", &["GW"], &["STS"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-cornish-main-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
     // Task 4.4's research found a genuine multi-station shared trunk with
     // cross-country.toml's own `xc-south-west` segment (Taunton-Exeter St
     // Davids-Newton Abbot-Plymouth, on the Bristol to Exeter line / South
