@@ -5924,4 +5924,36 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["northern-furness".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 2.7: `northern-hope-valley.toml`'s previously-missing intermediate
+    // halts. Bamford (BAM) sits between Hope and Hathersage on this file's
+    // sole segment, `northern-hope-valley`, which (per a grep of `lines/
+    // *.toml` for the literal `segment = "northern-hope-valley"` value while
+    // writing this test) is not shared by any sibling line - so there is no
+    // SharedSegment assertion to make here, only that `has_station` picks up
+    // the new station and that an incident there stays exclusive. This is
+    // deliberately distinct from `emr-regional.toml`, which correctly
+    // excludes these same physical stations for EMR's own fast service - see
+    // this file's own comment and Task 7.3.
+    #[test]
+    fn hope_valley_bamford_has_station_and_stays_exclusive() {
+        let lines = load_line("northern-hope-valley");
+        let hope_valley = lines.get("northern-hope-valley").expect("northern-hope-valley should load");
+        assert!(hope_valley.has_station("BAM"), "northern-hope-valley should now list Bamford (BAM)");
+        assert_eq!(hope_valley.segment_for("BAM"), Some("northern-hope-valley"));
+
+        let all_lines = load_all_lines();
+        let registry = SegmentRegistry::new(&all_lines);
+        let inc = incident(
+            "NT-13",
+            "Signal failure at Bamford",
+            "Signal failure causing delays on the Hope Valley Line at Bamford.",
+            &["NT"],
+            &["BAM"],
+        );
+        let matches = lines_affected_by(&inc, &all_lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-hope-valley".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
