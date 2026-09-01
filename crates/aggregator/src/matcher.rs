@@ -3948,6 +3948,15 @@ mod tests {
     // calling pattern diverges from senk's before Lewisham). Confirms an
     // incident there matches both lines independently, each still scoped
     // ExclusiveSegment, never SharedSegment.
+    //
+    // Updated by Task 5.3 (southeastern-main-line.toml, station-catalogue-
+    // completeness plan): that file's own research confirmed New Cross, St
+    // Johns, Lewisham and Hither Green all sit on the South Eastern Main
+    // Line's own physical alignment toward Orpington (not just on the
+    // Dartford Loop/Bexleyheath corridor's distinct tracks), so it now adds
+    // Lewisham too, on its own `seml-london` segment - a third independent
+    // exclusive-segment station overlap here, same treatment as every other
+    // line in this set.
     #[test]
     fn lew_station_overlap_matches_hayes_line_and_senk_as_independent_exclusive_segments() {
         let lines = load_all_lines();
@@ -3963,7 +3972,11 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["southeastern-hayes-line".to_string(), "southeastern-metro-north-kent".to_string()])
+            HashSet::from([
+                "southeastern-hayes-line".to_string(),
+                "southeastern-metro-north-kent".to_string(),
+                "southeastern-main-line".to_string(),
+            ])
         );
         for m in &matches {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
@@ -3993,6 +4006,12 @@ mod tests {
     // line that shares no station with the excluding file) - only the
     // specific data entries that misapplied it to station-sharing siblings
     // were removed.
+    //
+    // Updated by Task 5.3 (southeastern-main-line.toml): that file now also
+    // lists LEW (see the lew_station_overlap... update above) and its own
+    // `excluded_keywords` is just ["Hastings line"], which this incident's
+    // text doesn't contain, so it joins this set as a third match with no
+    // veto risk.
     #[test]
     fn sibling_line_names_no_longer_veto_a_shared_station_hit() {
         let lines = load_all_lines();
@@ -4008,7 +4027,11 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["southeastern-hayes-line".to_string(), "southeastern-metro-north-kent".to_string()]),
+            HashSet::from([
+                "southeastern-hayes-line".to_string(),
+                "southeastern-metro-north-kent".to_string(),
+                "southeastern-main-line".to_string(),
+            ]),
             "both named lines list LEW and must both match; before the fix each vetoed the other and this was empty"
         );
         for m in &matches {
@@ -5790,5 +5813,117 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(matched_ids, HashSet::from(["southeastern-chatham".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Station-catalogue-completeness plan, Task 5.3:
+    // southeastern-main-line.toml previously omitted the suburban
+    // stopping-pattern stations between London Bridge and Orpington (New
+    // Cross, St Johns, Lewisham, Hither Green, Grove Park, Chislehurst,
+    // Petts Wood) pending route-diagram confirmation. They're now
+    // confirmed and inserted on the existing `seml-london` segment - a
+    // regression guard that `has_station`/`segment_for` pick them up via
+    // `LineDefinition::from_dir` (i.e. the TOML actually parses and the
+    // stations aren't silently dropped or misspelled).
+    #[test]
+    fn seml_fillin_suburban_stations_are_now_modelled() {
+        let lines = load_line("southeastern-main-line");
+        let seml = lines.get("southeastern-main-line").expect("southeastern-main-line should exist");
+        for crs in ["NWX", "SAJ", "LEW", "HGR", "GRP", "CIT", "PET"] {
+            assert!(seml.has_station(crs), "southeastern-main-line should now have station {crs}");
+            assert_eq!(seml.segment_for(crs), Some("seml-london"), "{crs} should be on seml-london");
+        }
+    }
+
+    // New Cross (NWX) is now a three-way station overlap: this file's own
+    // `seml-london`, southeastern-metro-north-kent.toml's
+    // `southeastern-lewisham-corridor`, and overground-windrush.toml's own
+    // `overground-windrush-new-cross` (a different route entirely, the
+    // London Overground Windrush line's own New Cross terminus branch).
+    // Three different segment names for the same physical station -
+    // confirms an incident there matches all three lines independently,
+    // each still scoped ExclusiveSegment, never SharedSegment. Mirrors
+    // lbg_station_overlap_matches_senk_thameslink_core_seml_and_hayes_as_independent_exclusive_segments
+    // above.
+    #[test]
+    fn nwx_station_overlap_matches_seml_senk_and_windrush_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-14",
+            "Signal failure at New Cross",
+            "Signal failure causing delays to Southeastern services.",
+            &["SE"],
+            &["NWX"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "southeastern-main-line".to_string(),
+                "southeastern-metro-north-kent".to_string(),
+                "overground-windrush".to_string(),
+            ])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    // Hither Green (HGR) is a station overlap between this file's own
+    // `seml-london` and southeastern-metro-north-kent.toml's own
+    // `senk-dartford-loop` (the Dartford Loop line's own exclusive tracks
+    // diverge AT Hither Green, per southeastern-main-line.toml's own header
+    // comment - the station itself is shared, the tracks beyond it are
+    // not). Confirms an incident there matches both lines independently,
+    // each still scoped ExclusiveSegment, never SharedSegment.
+    #[test]
+    fn hgr_station_overlap_matches_seml_and_senk_dartford_loop_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-15",
+            "Signal failure at Hither Green",
+            "Signal failure causing delays to Southeastern services.",
+            &["SE"],
+            &["HGR"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["southeastern-main-line".to_string(), "southeastern-metro-north-kent".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    // Grove Park, Chislehurst and Petts Wood are new to the catalogue - no
+    // other file models them, so an incident there should stay exclusive
+    // to southeastern-main-line alone. Mirrors
+    // chatham_deal_branch_stations_are_now_modelled_and_stay_exclusive
+    // above.
+    #[test]
+    fn seml_grove_park_chislehurst_petts_wood_are_exclusive_to_seml() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        for crs in ["GRP", "CIT", "PET"] {
+            let inc = incident(
+                "SE-16",
+                "Signal failure",
+                "Signal failure causing delays to Southeastern services.",
+                &["SE"],
+                &[crs],
+            );
+            let matches = lines_affected_by(&inc, &lines, &registry);
+            let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+            assert_eq!(
+                matched_ids,
+                HashSet::from(["southeastern-main-line".to_string()]),
+                "{crs} should match only southeastern-main-line"
+            );
+            assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        }
     }
 }
