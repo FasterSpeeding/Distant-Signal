@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import { Alert, Divider, Skeleton, Stack, Tabs, Text, Title } from '@mantine/core';
+import { Alert, Divider, Skeleton, Stack, Tabs, TabsList, TabsPanel, TabsTab, Text, Title } from '@mantine/core';
 import { getHistoryRetention, getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TextLink } from '@/components/TextLink';
@@ -78,13 +78,26 @@ export default async function LineHistoryPage({
           views over data with different retention windows — the 7-day
           shortfall notice below is specific to `line_status_history` and
           would be misleading if shown while looking at Trends, so it lives
-          inside the Timeline panel rather than above the Tabs. */}
+          inside the Timeline panel rather than above the Tabs.
+
+          `TabsList`/`TabsTab`/`TabsPanel` -- the flat named exports, not
+          the `Tabs.List`/`Tabs.Tab`/`Tabs.Panel` dot-notation compound API
+          -- for the same reason `AllLinesTable.tsx` uses `TableThead`/
+          `TableTr`/etc instead of `Table.Thead`: this page is a Server
+          Component (`Tabs` itself carries a `"use client"` directive), and
+          a dot-notation sub-component accessed off a Client Component's
+          reference the RSC boundary hands to a Server Component resolves
+          to `undefined` at render time -- confirmed live against a running
+          dev server: this route 500'd with "Element type is invalid ...
+          got: undefined" until this was switched to the flat imports. Not
+          merely a lint nit; this was the actual "history page doesn't
+          work" bug. */}
       <Tabs defaultValue="timeline">
-        <Tabs.List>
-          <Tabs.Tab value="timeline">Timeline</Tabs.Tab>
-          <Tabs.Tab value="trends">Trends</Tabs.Tab>
-        </Tabs.List>
-        <Tabs.Panel value="timeline">
+        <TabsList>
+          <TabsTab value="timeline">Timeline</TabsTab>
+          <TabsTab value="trends">Trends</TabsTab>
+        </TabsList>
+        <TabsPanel value="timeline">
           <Stack gap="md" pt="md">
             {/* Distinguishes "nothing happened in this window" from "the window
                 reaches further back than this server keeps history" — without
@@ -119,14 +132,14 @@ export default async function LineHistoryPage({
               <HistoryResults id={id} from={range.from} to={range.to} />
             </Suspense>
           </Stack>
-        </Tabs.Panel>
-        <Tabs.Panel value="trends">
+        </TabsPanel>
+        <TabsPanel value="trends">
           <Stack gap="md" pt="md">
             <Suspense key={range.preset ?? `${range.from}-${range.to}`} fallback={<Skeleton height={320} />}>
               <TrendsResults id={id} from={range.from} to={range.to} />
             </Suspense>
           </Stack>
-        </Tabs.Panel>
+        </TabsPanel>
       </Tabs>
     </Stack>
   );

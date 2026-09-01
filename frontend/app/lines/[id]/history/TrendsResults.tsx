@@ -1,8 +1,9 @@
-import { LineChart } from '@mantine/charts';
 import { Stack, Text, Title } from '@mantine/core';
 import { getLineDailyStats } from '@/lib/api';
 import { londonDayKey } from '@/lib/dateFormat';
 import type { LineDailyStats } from '@/lib/types';
+import { TrendsCharts } from './TrendsCharts';
+import type { ChartPoint } from './chartPoint';
 
 // Placeholder, not a validated number -- see this plan's own "Open
 // judgment calls" section and
@@ -10,15 +11,6 @@ import type { LineDailyStats } from '@/lib/types';
 // question 3. Revisit against real sample_cycles distributions once this
 // has been running in production for a while.
 const SPARSE_DATA_FLOOR_CYCLES = 20;
-
-interface ChartPoint {
-  day: string;
-  delayRate: number | null;
-  cancellationRate: number | null;
-  skipRate: number | null;
-  avgDelayMinutes: number | null;
-  sampleCycles: number;
-}
 
 // Turns a day with too little poll coverage into a gap rather than a
 // misleading flat/zero line -- Decision 3 of
@@ -70,39 +62,11 @@ export async function TrendsResults({ id, from, to }: { id: string; from: string
         still in view will still show here as on time. Days with too little coverage show as a gap rather than a
         misleading flat line.
       </Text>
-      <Stack gap={4}>
-        <Title order={4} size="h6">
-          Delay / cancellation / skip rate
-        </Title>
-        {/* The three rate metrics are 0-1 proportions and share one chart/axis.
-            Average delay minutes is a different unit and is deliberately never
-            combined onto this chart or its axis -- see the second LineChart
-            below, and the plan's Global Constraints. */}
-        <LineChart
-          h={280}
-          data={points}
-          dataKey="day"
-          series={[
-            { name: 'delayRate', label: 'Delay rate', color: 'blue.6' },
-            { name: 'cancellationRate', label: 'Cancellation rate', color: 'red.6' },
-            { name: 'skipRate', label: 'Skip rate', color: 'yellow.6' },
-          ]}
-          valueFormatter={(value) => `${(value * 100).toFixed(1)}%`}
-          connectNulls={false}
-        />
-      </Stack>
-      <Stack gap={4}>
-        <Title order={4} size="h6">
-          Average delay (minutes)
-        </Title>
-        <LineChart
-          h={220}
-          data={points}
-          dataKey="day"
-          series={[{ name: 'avgDelayMinutes', label: 'Avg delay (minutes)', color: 'grape.6' }]}
-          connectNulls={false}
-        />
-      </Stack>
+      {/* Both charts (including their `valueFormatter`) live in this
+          Client Component -- see its own doc comment for why: a plain
+          function prop like `valueFormatter` can't cross the Server-to-
+          Client boundary straight out of this `async` Server Component. */}
+      <TrendsCharts points={points} />
     </Stack>
   );
 }

@@ -1,5 +1,6 @@
+import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
-import { Stack, Title, Text, Group, Button } from '@mantine/core';
+import { Stack, Title, Text, Group, Button, Skeleton } from '@mantine/core';
 import Link from 'next/link';
 import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition, getAllLines } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -9,6 +10,13 @@ import { DeleteLineButton } from '@/components/DeleteLineButton';
 import { LineDefinitionTooltip } from '@/components/LineDefinitionTooltip';
 import { TextLink } from '@/components/TextLink';
 import { worstStatus } from '@/lib/severity';
+import { resolveRange } from '@/lib/history';
+import { TrendsResults } from './history/TrendsResults';
+
+// Same `revalidate = 0` rationale as `/lines/[id]/history` -- this page now
+// also computes a range off `Date.now()` (`resolveRange` below), so it must
+// stay dynamic rather than be eligible for build-time prerendering.
+export const revalidate = 0;
 
 export default async function LineDetailPage({
   params,
@@ -88,6 +96,13 @@ export default async function LineDetailPage({
   // every request (this route is dynamic) and re-stamped by AutoRefresh.
   const now = Date.now();
 
+  // The default (no query params) 7-day window `/lines/[id]/history` itself
+  // falls back to -- same `resolveRange` call, so this embedded preview and
+  // "View history"'s own default page land on identical numbers rather than
+  // two independently-computed "last 7 days". Passing `{}` (this page has
+  // no range-picker query params of its own) always resolves the 7d preset.
+  const trendsRange = resolveRange({}, now);
+
   return (
     <Stack p="lg" gap="md">
       <Group justify="space-between">
@@ -143,6 +158,30 @@ export default async function LineDetailPage({
           <IssueList items={report.tflStatus.map((status) => ({ status }))} now={now} />
         </Stack>
       )}
+      <Stack gap="xs">
+        <Title order={2} size="h4">
+          Recent trends (last 7 days)
+        </Title>
+        {/* Reuses `/lines/[id]/history`'s own Trends-tab component wholesale
+            -- same fetch, same sparse-data-floor gap handling, same honesty
+            copy about what the rates actually mean -- rather than
+            re-deriving any of that here. `View history` above remains the
+            way to reach the full range picker, the Timeline tab, and
+            ranges longer than this fixed 7-day preview.
+
+            Wrapped in its own Suspense boundary, same rationale as the
+            history page's: `getLineDailyStats` is comparatively slow, and
+            without this boundary it would block the whole page -- status,
+            issues, everything above -- behind a chart a visitor may not
+            even scroll down to see. A brand-new line with no daily-stats
+            rows yet (Task 1's "stuck loading" fix made that reachable
+            moments after creation) still resolves fast: `TrendsResults`
+            renders its own "Not enough sampled data yet" text rather than
+            leaving this section hanging. */}
+        <Suspense fallback={<Skeleton height={280} />}>
+          <TrendsResults id={id} from={trendsRange.from} to={trendsRange.to} />
+        </Suspense>
+      </Stack>
     </Stack>
   );
 }
