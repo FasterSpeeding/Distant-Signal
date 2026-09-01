@@ -17,6 +17,7 @@ import {
   getTicketsForTrackedTrain,
   getMyTrackedTrains,
   getDelayRepayEstimate,
+  getIncident,
   ApiNotFoundError,
 } from './api';
 
@@ -389,5 +390,21 @@ describe('api client', () => {
     await expect(getDelayRepayEstimate(1, 7)).resolves.toBeNull();
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
     await expect(getDelayRepayEstimate(1, 7)).resolves.toBeNull();
+  });
+
+  it('getIncident fetches the correct URL with no caching', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ incidentId: '123' }), { status: 200 })));
+    await getIncident('123');
+    expect(fetch).toHaveBeenCalledWith('http://test-api:8080/public/incidents/123', expect.objectContaining({ cache: 'no-store' }));
+  });
+
+  it('getIncident throws ApiNotFoundError on a 404', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    await expect(getIncident('does-not-exist')).rejects.toThrow(ApiNotFoundError);
+  });
+
+  it('getIncident still throws on a non-404 failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    await expect(getIncident('123')).rejects.toThrow(/500/);
   });
 });

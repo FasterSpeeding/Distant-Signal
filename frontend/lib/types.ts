@@ -17,6 +17,45 @@ export interface Disruption {
   source: string | null;
 }
 
+export interface IncidentLineRef {
+  id: string;
+  name: string;
+}
+
+export interface IncidentHistoryEntry {
+  summary: string;
+  description: string;
+  operators: string[];
+  affectedStations: string[];
+  priority: number;
+  validityPeriods: ValidityPeriod[];
+  isPlanned: boolean;
+  isCleared: boolean;
+  recordedAt: string; // RFC3339
+}
+
+/** `GET /public/incidents/{incidentId}`'s response
+ * (`crates/api/src/routes/incidents.rs`). `description` is raw HTML —
+ * sanitize with `sanitizeDescription` (`frontend/lib/sanitizeHtml.ts`)
+ * before rendering, same as `DisruptionDetail`. `currentlyAffectsLines`
+ * is computed fresh per request — can be empty for a cleared or
+ * no-longer-matched incident, which is a normal outcome, not an error. */
+export interface IncidentDetail {
+  incidentId: string;
+  summary: string;
+  description: string;
+  operators: string[];
+  affectedStations: string[];
+  priority: number;
+  validityPeriods: ValidityPeriod[];
+  isPlanned: boolean;
+  isCleared: boolean;
+  firstSeenAt: string; // RFC3339
+  fetchedAt: string; // RFC3339
+  currentlyAffectsLines: IncidentLineRef[];
+  history: IncidentHistoryEntry[];
+}
+
 export interface SampleStats {
   total: number;
   delayed: number;
