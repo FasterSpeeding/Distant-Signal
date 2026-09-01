@@ -17,7 +17,7 @@ use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::StatusCode;
 use chrono::{NaiveDate, Utc};
 use common::{TicketEntryRequest, TrackPinRequest};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
@@ -27,7 +27,24 @@ pub fn router() -> Router {
     Router::new()
         .route("/Train/track", axum::routing::post(post_track))
         .route("/Train/mine", axum::routing::get(get_my_tracked_trains))
+        // Literal segments under `/Train/tickets/...`, coexisting with the
+        // dynamic `/Train/{tracking_id}/tickets/...` family below by the
+        // same literal-beats-same-position-dynamic precedent already
+        // established for `/Train/mine` vs `/Train/{tracking_id}` (see
+        // `literal_route_wins_over_same_position_dynamic_route`, this
+        // file's own test module). `/Train/tickets` (no ownership check
+        // needed, unlike `/Train/{tracking_id}/tickets` -- there's no
+        // tracking id to own yet) creates a STANDALONE ticket, per this
+        // plan's upload-first flow; `/Train/tickets/pkpass`/`/pdf` are the
+        // same preview-only parse as their `{tracking_id}`-scoped
+        // siblings, just reachable before a tracked train exists;
+        // `/Train/tickets/{ticket_id}/attach` is how a standalone ticket
+        // later gets a `tracked_train_id`.
+        .route("/Train/tickets", axum::routing::post(post_standalone_ticket))
         .route("/Train/tickets/mine", axum::routing::get(get_my_tickets))
+        .route("/Train/tickets/pkpass", axum::routing::post(post_pkpass_upload_standalone))
+        .route("/Train/tickets/pdf", axum::routing::post(post_pdf_upload_standalone))
+        .route("/Train/tickets/{ticket_id}/attach", axum::routing::post(post_attach_ticket))
         .route("/Train/{tracking_id}", axum::routing::get(get_by_tracking_id))
         .route("/Train/by-uid/{train_uid}/{date}", axum::routing::get(get_by_uid_and_date))
         .route("/Train/{tracking_id}/tickets", axum::routing::post(post_ticket).get(get_tickets))
@@ -83,11 +100,90 @@ async fn post_ticket(
         _ => return Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string())),
     }
 
-    let ticket_id = train_tracking::create_ticket(&app.database, tracking_id, &entry, &user.id)
+    let ticket_id = train_tracking::create_ticket(&app.database, Some(tracking_id), &entry, &user.id)
         .await
         .map_err(internal_error("create ticket"))?;
 
     Ok(Json(TicketCreatedResponse { ticket_id }))
+}
+
+/// Creates a STANDALONE ticket -- no `tracked_train_id` at all, the
+/// upload-first flow this plan adds. No ownership check needed (unlike
+/// `post_ticket` above): there's no existing tracking id to own yet, the
+/// caller just needs to be logged in (`AuthenticatedUser`, same as every
+/// other write in this file). Attach it to a tracked train later via
+/// `post_attach_ticket`, once the caller has found or created the one this
+/// ticket is actually for.
+async fn post_standalone_ticket(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Json(entry): Json<TicketEntryRequest>,
+) -> Result<Json<TicketCreatedResponse>, (StatusCode, String)> {
+    train_tracking::validate_ticket_entry(&entry).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
+    let ticket_id = train_tracking::create_ticket(&app.database, None, &entry, &user.id)
+        .await
+        .map_err(internal_error("create ticket"))?;
+
+    Ok(Json(TicketCreatedResponse { ticket_id }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachTicketRequest {
+    tracking_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachTicketResponse {
+    ticket_id: i64,
+    tracked_train_id: i64,
+}
+
+/// Attaches an existing standalone ticket (`post_standalone_ticket`,
+/// above) to a tracked train the caller owns -- the step that closes the
+/// upload-first loop: upload/enter a ticket, then find or create the
+/// tracked train it's actually for, then attach. Ownership-scoped on BOTH
+/// sides (the ticket and the tracked train must belong to the same caller)
+/// -- never `403`, matching this file's universal "exists but not yours ->
+/// 404" convention. `409 Conflict` is the one new status this route
+/// introduces: a ticket that's already attached to a (possibly different)
+/// tracked train is a real, distinguishable state, not an ownership
+/// failure, so it gets its own status rather than folding into the `404`
+/// family.
+async fn post_attach_ticket(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(ticket_id): Path<i64>,
+    Json(body): Json<AttachTicketRequest>,
+) -> Result<Json<AttachTicketResponse>, (StatusCode, String)> {
+    match train_tracking::tracked_train_owner(&app.database, body.tracking_id).await.map_err(internal_error("check tracked train ownership"))? {
+        Some(owner) if owner == user.id => {}
+        _ => return Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string())),
+    }
+
+    let ticket = train_tracking::get_ticket_owned(&app.database, ticket_id, &user.id)
+        .await
+        .map_err(internal_error("read ticket"))?
+        .ok_or((StatusCode::NOT_FOUND, "no ticket with that id".to_string()))?;
+
+    if ticket.tracked_train_id.is_some() {
+        return Err((StatusCode::CONFLICT, "ticket is already attached to a tracked train".to_string()));
+    }
+
+    let attached = train_tracking::attach_ticket_to_tracked_train(&app.database, ticket_id, body.tracking_id, &user.id)
+        .await
+        .map_err(internal_error("attach ticket"))?;
+    if !attached {
+        // Lost a race against a concurrent attach/re-check between the
+        // reads above and this write -- treat it the same as the
+        // already-attached case above rather than a 500, since that's
+        // exactly what it now is.
+        return Err((StatusCode::CONFLICT, "ticket is already attached to a tracked train".to_string()));
+    }
+
+    Ok(Json(AttachTicketResponse { ticket_id, tracked_train_id: body.tracking_id }))
 }
 
 async fn get_tickets(
@@ -114,7 +210,7 @@ async fn get_delay_repay_estimate(
     let ticket = train_tracking::get_ticket_owned(&app.database, ticket_id, &user.id)
         .await
         .map_err(internal_error("read ticket"))?
-        .filter(|t| t.tracked_train_id == tracking_id)
+        .filter(|t| t.tracked_train_id == Some(tracking_id))
         .ok_or((StatusCode::NOT_FOUND, "no ticket with that id for that tracked train".to_string()))?;
 
     let state = train_tracking::get_by_tracking_id(&app.database, tracking_id)
@@ -278,8 +374,29 @@ async fn blend_darwin_eta(app: &App, mut state: train_tracking::TrackedTrainStat
 async fn post_pkpass_upload(
     _user: AuthenticatedUser,
     Path(_tracking_id): Path<i64>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
+    handle_pkpass_upload(multipart).await
+}
+
+/// The standalone counterpart of `post_pkpass_upload` above, reachable
+/// before a tracked train exists at all (`POST /Train/tickets/pkpass`) --
+/// same handler logic (`handle_pkpass_upload`), just with no `tracking_id`
+/// path segment to ignore, since `post_pkpass_upload`'s own `_tracking_id`
+/// was already unused for routing-symmetry reasons only (see that
+/// function's doc comment) -- this route simply doesn't have one.
+async fn post_pkpass_upload_standalone(
+    _user: AuthenticatedUser,
+    multipart: Multipart,
+) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
+    handle_pkpass_upload(multipart).await
+}
+
+/// REVIEW-BEFORE-SAVE, structurally: this function contains no
+/// `sqlx::query` call and touches no database handle -- there is nothing
+/// in this file that could accidentally persist an unreviewed upload. See
+/// this plan's Global Constraints.
+async fn handle_pkpass_upload(mut multipart: Multipart) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
     let bytes = read_single_file_field(&mut multipart, "file").await?;
     ticket_extraction::parse_pkpass(&bytes)
         .map(Json)
@@ -302,8 +419,22 @@ async fn post_pkpass_upload(
 async fn post_pdf_upload(
     _user: AuthenticatedUser,
     Path(_tracking_id): Path<i64>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
+    handle_pdf_upload(multipart).await
+}
+
+/// The standalone counterpart of `post_pdf_upload` above, reachable before
+/// a tracked train exists at all (`POST /Train/tickets/pdf`) -- same
+/// reasoning as `post_pkpass_upload_standalone`.
+async fn post_pdf_upload_standalone(
+    _user: AuthenticatedUser,
+    multipart: Multipart,
+) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
+    handle_pdf_upload(multipart).await
+}
+
+async fn handle_pdf_upload(mut multipart: Multipart) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
     let bytes = read_single_file_field(&mut multipart, "file").await?;
 
     let parsed = tokio::time::timeout(PDF_PARSE_TIMEOUT, tokio::task::spawn_blocking(move || ticket_extraction::parse_pdf(&bytes))).await;
@@ -368,7 +499,7 @@ mod tests {
     fn ticket(operator: Option<&str>) -> train_tracking::TrackedTrainTicket {
         train_tracking::TrackedTrainTicket {
             id: 1,
-            tracked_train_id: 1,
+            tracked_train_id: Some(1),
             operator: operator.map(str::to_string),
             ticket_type: Some("Off-Peak Day Single".to_string()),
             origin_crs: Some("KGX".to_string()),
@@ -580,7 +711,19 @@ mod db_tests {
     /// all `ON DELETE CASCADE` from `tracked_trains`), then `sessions`
     /// (`ON DELETE CASCADE` from `users`, so implicit via the final delete),
     /// then the user itself.
+    /// Deletes `tracked_train_tickets` rows directly first (Part A: a
+    /// STANDALONE ticket, per `20260901140000_standalone_tickets.sql`, has
+    /// `tracked_train_id IS NULL` and so is NOT reachable via the
+    /// `tracked_trains` cascade below at all -- `tracked_train_tickets.user_id
+    /// REFERENCES users(id)` has no `ON DELETE CASCADE` of its own, so
+    /// leaving an orphaned standalone-ticket fixture behind would make the
+    /// final `DELETE FROM users` fail on a foreign-key violation).
     async fn cleanup_user(pool: &PgPool, user_id: &str) {
+        sqlx::query("DELETE FROM tracked_train_tickets WHERE user_id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture tracked_train_tickets rows");
         sqlx::query("DELETE FROM tracked_trains WHERE user_id = $1")
             .bind(user_id)
             .execute(pool)
@@ -689,6 +832,186 @@ mod db_tests {
             Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
         });
         (status, value)
+    }
+
+    /// Issues a `POST` with a JSON body against `router`, optionally with a
+    /// session cookie -- the write-path counterpart to `request` above
+    /// (which only ever issues an empty-body `GET`). Same shared
+    /// `(status, parsed body)` return shape, same plain-text-becomes-`Value::String`
+    /// handling for a `(StatusCode, String)` error response.
+    async fn post_json(router: axum::Router, uri: String, raw_token: Option<&str>, body: serde_json::Value) -> (StatusCode, Value) {
+        let mut builder = Request::builder().uri(uri).method("POST").header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = raw_token {
+            builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
+        }
+        let req = builder.body(Body::from(serde_json::to_vec(&body).expect("serialize request body"))).expect("build request");
+        let response = router.oneshot(req).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+        let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+        });
+        (status, value)
+    }
+
+    // --- post_standalone_ticket / post_attach_ticket (Part A: upload-first tickets) ----
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                standalone_ticket -- --ignored --test-threads=1`"]
+    async fn post_standalone_ticket_no_session_is_401() {
+        let pool = connect().await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (status, body) =
+            post_json(router, "/Train/tickets".to_string(), None, serde_json::json!({ "source": "manual" })).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body, Value::String("no session".to_string()));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                standalone_ticket -- --ignored --test-threads=1`"]
+    async fn post_standalone_ticket_creates_an_unattached_ticket_visible_on_the_mine_list() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-STANDALONE-TICKET").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (status, body) = post_json(
+            router.clone(),
+            "/Train/tickets".to_string(),
+            Some(&token),
+            serde_json::json!({ "operator": "LNER", "source": "pkpass-semantics" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let ticket_id = body.get("ticketId").and_then(Value::as_i64).expect("ticketId present");
+
+        // No tracked_train_id at all yet -- must still show up on the
+        // cross-train "mine" list (Decision: list_tickets_for_user's LEFT
+        // JOIN), not be silently dropped.
+        let (status, tickets) = request(router, "/Train/tickets/mine".to_string(), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = tickets.as_array().expect("array body");
+        let row = rows.iter().find(|r| r.get("id").and_then(Value::as_i64) == Some(ticket_id)).expect("ticket present in mine list");
+        assert_eq!(row.get("trackedTrainId"), Some(&Value::Null));
+        assert_eq!(row.get("operator").and_then(Value::as_str), Some("LNER"));
+        assert!(row.get("claimUrl").and_then(Value::as_str).is_some_and(|u| !u.is_empty()), "claimUrl must still be populated: {row:?}");
+        assert!(row.get("disclaimer").and_then(Value::as_str).is_some_and(|d| !d.is_empty()), "disclaimer must still be populated: {row:?}");
+
+        cleanup_user(&pool, "TEST-STANDALONE-TICKET").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                attach_ticket -- --ignored --test-threads=1`"]
+    async fn post_attach_ticket_the_owner_can_attach_their_own_standalone_ticket_to_their_own_train() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ATTACH-OWNER").await;
+        let router = test_router(test_app(pool.clone()));
+        let tracking_id = seed_tracked_train(&pool, "TEST-ATTACH-OWNER", None, "2026-09-01".parse().unwrap()).await;
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Train/tickets".to_string(),
+            Some(&token),
+            serde_json::json!({ "operator": "LNER", "source": "manual" }),
+        )
+        .await;
+        let ticket_id = created.get("ticketId").and_then(Value::as_i64).expect("ticketId present");
+
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Train/tickets/{ticket_id}/attach"),
+            Some(&token),
+            serde_json::json!({ "trackingId": tracking_id }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "attach response: {body:?}");
+        assert_eq!(body.get("ticketId").and_then(Value::as_i64), Some(ticket_id));
+        assert_eq!(body.get("trackedTrainId").and_then(Value::as_i64), Some(tracking_id));
+
+        // Now visible under the tracked train's own scoped ticket list too.
+        let (status, tickets) = request(router, format!("/Train/{tracking_id}/tickets"), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = tickets.as_array().expect("array body");
+        assert!(rows.iter().any(|r| r.get("id").and_then(Value::as_i64) == Some(ticket_id)), "attached ticket should now be listed under its tracked train: {rows:?}");
+
+        cleanup_user(&pool, "TEST-ATTACH-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                attach_ticket -- --ignored --test-threads=1`"]
+    async fn post_attach_ticket_a_tracked_train_owned_by_someone_else_is_404_not_403() {
+        let pool = connect().await;
+        let ticket_owner_token = seed_session(&pool, "TEST-ATTACH-TICKET-OWNER").await;
+        seed_session(&pool, "TEST-ATTACH-TRAIN-OWNER").await;
+        let router = test_router(test_app(pool.clone()));
+        let other_users_train = seed_tracked_train(&pool, "TEST-ATTACH-TRAIN-OWNER", None, "2026-09-01".parse().unwrap()).await;
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Train/tickets".to_string(),
+            Some(&ticket_owner_token),
+            serde_json::json!({ "source": "manual" }),
+        )
+        .await;
+        let ticket_id = created.get("ticketId").and_then(Value::as_i64).expect("ticketId present");
+
+        let (status, body) = post_json(
+            router,
+            format!("/Train/tickets/{ticket_id}/attach"),
+            Some(&ticket_owner_token),
+            serde_json::json!({ "trackingId": other_users_train }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("no tracked train with that id".to_string()));
+
+        cleanup_user(&pool, "TEST-ATTACH-TICKET-OWNER").await;
+        cleanup_user(&pool, "TEST-ATTACH-TRAIN-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                attach_ticket -- --ignored --test-threads=1`"]
+    async fn post_attach_ticket_an_already_attached_ticket_is_409() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ATTACH-CONFLICT").await;
+        let router = test_router(test_app(pool.clone()));
+        let tracking_id = seed_tracked_train(&pool, "TEST-ATTACH-CONFLICT", None, "2026-09-01".parse().unwrap()).await;
+
+        let (_, created) =
+            post_json(router.clone(), "/Train/tickets".to_string(), Some(&token), serde_json::json!({ "source": "manual" })).await;
+        let ticket_id = created.get("ticketId").and_then(Value::as_i64).expect("ticketId present");
+
+        let (first_status, _) = post_json(
+            router.clone(),
+            format!("/Train/tickets/{ticket_id}/attach"),
+            Some(&token),
+            serde_json::json!({ "trackingId": tracking_id }),
+        )
+        .await;
+        assert_eq!(first_status, StatusCode::OK);
+
+        let (second_status, body) = post_json(
+            router,
+            format!("/Train/tickets/{ticket_id}/attach"),
+            Some(&token),
+            serde_json::json!({ "trackingId": tracking_id }),
+        )
+        .await;
+        assert_eq!(second_status, StatusCode::CONFLICT);
+        assert_eq!(body, Value::String("ticket is already attached to a tracked train".to_string()));
+
+        cleanup_user(&pool, "TEST-ATTACH-CONFLICT").await;
     }
 
     // --- get_by_tracking_id -------------------------------------------------
