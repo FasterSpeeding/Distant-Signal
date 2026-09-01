@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { TrackedTrainsNavItem } from './layout';
+import { TrackedTrainsNavItem, viewport, metadata } from './layout';
 import * as api from '@/lib/api';
 
 vi.mock('@/lib/api');
@@ -31,5 +31,33 @@ describe('TrackedTrainsNavItem', () => {
     vi.mocked(api.getSession).mockRejectedValue(new Error('auth service unreachable'));
     renderWithMantine(await TrackedTrainsNavItem());
     expect(screen.queryByRole('link', { name: 'My Trains & Tickets' })).not.toBeInTheDocument();
+  });
+});
+
+describe('viewport.themeColor', () => {
+  it('pairs the light-scheme white background with the dark-scheme #242424 body colour', () => {
+    // Only asserts the themeColor field specifically -- not a full-object
+    // equality check on `viewport` -- so this test doesn't break if a
+    // sibling feature (docs/superpowers/plans/2026-09-01-dynamic-color-scheme-meta.md)
+    // has also added a `colorScheme` field to the same object.
+    expect(viewport.themeColor).toEqual([
+      { media: '(prefers-color-scheme: light)', color: '#ffffff' },
+      { media: '(prefers-color-scheme: dark)', color: '#242424' },
+    ]);
+  });
+});
+
+describe('metadata.appleWebApp', () => {
+  it('sets statusBarStyle to black-translucent and explicitly disables capable -- no title', () => {
+    // Exact-shape check, not just a `.statusBarStyle` field check: this is
+    // the one place this plan's Global Constraints must hold structurally
+    // -- `title` must never be added alongside this, and `capable` must be
+    // explicitly `false` (not omitted): Next's own `resolveAppleWebApp`
+    // defaults `capable` to `true` whenever `appleWebApp` is set at all
+    // and no `capable` key is present, which would silently emit the
+    // discouraged `mobile-web-app-capable` tag this plan's Global
+    // Constraints reject -- omitting the key is not equivalent to
+    // rejecting the tag here.
+    expect(metadata.appleWebApp).toEqual({ capable: false, statusBarStyle: 'black-translucent' });
   });
 });
