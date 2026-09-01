@@ -1528,6 +1528,26 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
+    // Task 8.4 (Batch 8): fills the 9 genuinely missing, currently-open,
+    // currently-served intermediate calls on this route's Liverpool leg
+    // (Liverpool South Parkway, Warrington West, Warrington Central,
+    // Birchwood, Irlam, Urmston) and Manchester Piccadilly-Cleethorpes leg
+    // (Manchester Oxford Road, Meadowhall, Barnetby, Habrough), confirmed
+    // via Wikipedia's TransPennine Express route table. See the updated
+    // comments in lines/tpe-south.toml for full sourcing. All nine sit on
+    // the file's own single `tpe-south` segment, which (per
+    // tpe_south_exclusive_segment_incident_does_not_propagate above) has no
+    // shared-segment overlap with any sibling line, so no second,
+    // MatchScope-asserting test is added for this task.
+    #[test]
+    fn tpe_south_batch8_infill_stations_present() {
+        let lines = load_line("tpe-south");
+        let line = lines.get("tpe-south").expect("tpe-south line should exist");
+        for crs in ["LPY", "WAW", "WAC", "BWD", "IRL", "URM", "MCO", "MHS", "BTB", "HAB"] {
+            assert!(line.has_station(crs), "tpe-south should now list {crs}");
+        }
+    }
+
     // No shared-SEGMENT-propagation test for tpe-borders: per this task's
     // own pre-flight scan its own segment name `tpe-borders` has no real
     // overlap with anything else in the catalogue, including this batch's
