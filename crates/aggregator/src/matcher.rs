@@ -5865,4 +5865,34 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["northern-calder-valley".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 2.4: `northern-cumbrian-coast.toml`'s previously-missing
+    // intermediate halts. Sellafield (SEL) sits between St Bees/Corkickle
+    // and Whitehaven on this file's sole non-junction segment,
+    // `northern-cumbrian-coast`, which (per a fresh grep of `lines/*.toml`
+    // while writing this test) is not shared by any sibling line in this
+    // catalogue - so there is no SharedSegment assertion to make here, only
+    // that `has_station` picks up the new station and that an incident
+    // there stays exclusive to this line.
+    #[test]
+    fn cumbrian_coast_sellafield_has_station_and_stays_exclusive() {
+        let lines = load_line("northern-cumbrian-coast");
+        let cumbrian_coast = lines.get("northern-cumbrian-coast").expect("northern-cumbrian-coast should load");
+        assert!(cumbrian_coast.has_station("SEL"), "northern-cumbrian-coast should now list Sellafield (SEL)");
+        assert_eq!(cumbrian_coast.segment_for("SEL"), Some("northern-cumbrian-coast"));
+
+        let all_lines = load_all_lines();
+        let registry = SegmentRegistry::new(&all_lines);
+        let inc = incident(
+            "NT-11",
+            "Trespass incident at Sellafield",
+            "Trespass incident causing delays on the Cumbrian Coast Line at Sellafield.",
+            &["NT"],
+            &["SEL"],
+        );
+        let matches = lines_affected_by(&inc, &all_lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-cumbrian-coast".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
