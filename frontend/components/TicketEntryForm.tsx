@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, FileInput, Group, Stack, Tabs, TextInput } from '@mantine/core';
+import { Alert, Button, FileInput, Group, Stack, Tabs, TextInput, Text } from '@mantine/core';
 import { LoginLink } from './LoginLink';
+import { TextLink } from './TextLink';
 import type { PartialTicket, TicketCreatedResponse, TicketEntryRequest, TicketSource } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
@@ -11,13 +12,15 @@ type Tab = 'manual' | 'pkpass' | 'pdf';
 
 /** The upload/manual-entry flow for one journey, per
  * docs/superpowers/specs/2026-08-29-journey-ticket-tracking-frontend-design.md
- * Decision 2. Collapsed by default -- `label` (either "Add a ticket for
- * this journey" or "Add another ticket", set by the caller) is the entry
- * point that expands this into the real form, matching Decision 1's
- * "entry point that opens TicketEntryForm" -- the exact collapse mechanism
- * is this plan's own choice, since the spec doesn't detail it further,
- * kept self-contained here so `TicketPanel` (Task 5) stays a plain,
- * server-renderable async function with no interactive state of its own.
+ * Decision 2, extended by Part A of the upload-first plan to also work with
+ * NO tracked train yet. Collapsed by default -- `label` (e.g. "Add a ticket
+ * for this journey", "Add another ticket", or "Add a ticket" when no
+ * `trackingId` is given) is the entry point that expands this into the real
+ * form, matching Decision 1's "entry point that opens TicketEntryForm" --
+ * the exact collapse mechanism is this plan's own choice, since the spec
+ * doesn't detail it further, kept self-contained here so `TicketPanel`
+ * stays a plain, server-renderable async function with no interactive
+ * state of its own.
  *
  * Three ways to arrive at the same underlying field set and the same final
  * submit: manual entry (default, always available, every field optional),
@@ -28,14 +31,30 @@ type Tab = 'manual' | 'pkpass' | 'pdf';
  * starting point and is NOT reset to 'manual' by a later manual edit --
  * only a user who never touched an upload keeps `source: 'manual'`.
  *
+ * `trackingId` is now OPTIONAL. When given, every request targets the
+ * `/Train/{trackingId}/tickets...` family, unchanged from before, and a
+ * successful save just closes the form and refreshes the page (there's
+ * already a tracked train to see the new ticket under). When omitted, every
+ * request targets the flat `/Train/tickets...` family instead (a
+ * STANDALONE ticket, per `20260901140000_standalone_tickets.sql` -- no
+ * tracked train exists for it yet), and a successful save does NOT just
+ * close the form: since extraction can never recover a date/time (see
+ * `crates/api/src/data/ticket_extraction.rs`'s module doc), this app has no
+ * way to guess which tracked train the ticket is for, so the form instead
+ * shows a concrete next step -- find or create that tracked train, with
+ * this ticket's own extracted origin pre-filled as a starting point and its
+ * id carried forward so `/track`'s own form can attach it automatically
+ * once a pin is created (see `TrackTrainForm`'s `attachTicketId` prop).
+ *
  * Every request here goes through the same-origin `/api/Train/...` proxy
  * (Client Components can't read the server-only `API_BASE_URL` env var
  * `lib/api.ts` relies on -- same reasoning as `PinToggle`/`TrackTrainForm`),
  * fixed for binary uploads by this plan's own Task 1. */
-export function TicketEntryForm({ trackingId, label }: { trackingId: number; label: string }) {
+export function TicketEntryForm({ trackingId, label }: { trackingId?: number; label: string }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('manual');
+  const [savedStandaloneTicket, setSavedStandaloneTicket] = useState<{ id: number; originCrs: string } | null>(null);
 
   const [operator, setOperator] = useState('');
   const [ticketType, setTicketType] = useState('');
@@ -53,6 +72,14 @@ export function TicketEntryForm({ trackingId, label }: { trackingId: number; lab
 
   const originValid = originCrs.trim() === '' || CRS_PATTERN.test(originCrs.trim());
   const destinationValid = destinationCrs.trim() === '' || CRS_PATTERN.test(destinationCrs.trim());
+
+  // The flat `Train/tickets...` family when there's no tracked train yet
+  // (a STANDALONE ticket), the existing `Train/{trackingId}/tickets...`
+  // family otherwise -- every upload/submit request below is built from
+  // this one base path (no leading slash -- always used as
+  // `/api/${ticketsBasePath}/...`), so the two modes never drift apart on
+  // URL shape.
+  const ticketsBasePath = trackingId !== undefined ? `Train/${trackingId}/tickets` : 'Train/tickets';
 
   function resetFields() {
     setOperator('');
@@ -109,7 +136,7 @@ export function TicketEntryForm({ trackingId, label }: { trackingId: number; lab
       // 'multipart/form-data; boundary=...' value itself for a FormData
       // body, and Task 1's proxy fix is what lets that boundary survive to
       // the backend.
-      const response = await fetch(`/api/Train/${trackingId}/tickets/${kind}`, {
+      const response = await fetch(`/api/${ticketsBasePath}/${kind}`, {
         method: 'POST',
         body: formData,
       });
@@ -161,18 +188,27 @@ export function TicketEntryForm({ trackingId, label }: { trackingId: number; lab
         ...(originCrs.trim() ? { origin_crs: originCrs.trim().toUpperCase() } : {}),
         ...(destinationCrs.trim() ? { destination_crs: destinationCrs.trim().toUpperCase() } : {}),
       };
-      const response = await fetch(`/api/Train/${trackingId}/tickets`, {
+      const response = await fetch(`/api/${ticketsBasePath}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
 
       if (response.ok) {
-        // `{ ticketId }` -- not needed beyond confirming a 200 came back
-        // with the documented shape (there's no per-ticket detail view to
-        // route to yet), but typed here rather than the body being read as
-        // untyped `any` or left unparsed.
         const created: TicketCreatedResponse = await response.json();
+        if (trackingId === undefined) {
+          // No tracked train exists for this ticket yet -- extraction can
+          // never recover a date/time (see `ticket_extraction.rs`'s module
+          // doc), so this app has no way to guess which one it's for. Show
+          // the concrete next step instead of just closing: find or create
+          // that tracked train, with this ticket's own origin (if any)
+          // carried forward as a starting point and its id carried forward
+          // so it can be attached automatically once a pin exists.
+          setSavedStandaloneTicket({ id: created.ticketId, originCrs: originCrs.trim().toUpperCase() });
+          resetFields();
+          router.refresh();
+          return;
+        }
         setOpen(false);
         resetFields();
         router.refresh();
@@ -192,6 +228,48 @@ export function TicketEntryForm({ trackingId, label }: { trackingId: number; lab
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (savedStandaloneTicket) {
+    // The concrete next step for a standalone ticket, per this
+    // component's own doc comment: extraction never recovers a date/time,
+    // so this app can't guess which tracked train the ticket is for --
+    // hand the user straight to `/track`'s own form instead, with the
+    // ticket's origin (if any) pre-filled as a starting point (the same
+    // `initialOrigin` mechanism `/stations/[crs]`'s "Track a train from
+    // here" shortcut already uses) and this ticket's id carried forward so
+    // `TrackTrainForm` can attach it automatically once a pin is created.
+    const trackParams = new URLSearchParams();
+    if (savedStandaloneTicket.originCrs) {
+      trackParams.set('origin', savedStandaloneTicket.originCrs);
+    }
+    trackParams.set('ticketId', String(savedStandaloneTicket.id));
+    return (
+      <Alert color="blue" title="Ticket saved">
+        <Stack gap="sm">
+          <Text size="sm">
+            This ticket isn&apos;t attached to a tracked train yet — extraction can&apos;t tell us exactly which
+            service you mean. Find or create the tracked train it&apos;s for, and it&apos;ll be attached
+            automatically.
+          </Text>
+          <Group>
+            <TextLink href={`/track?${trackParams.toString()}`} underline="always">
+              Find or track the train this ticket is for
+            </TextLink>
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={() => {
+                setSavedStandaloneTicket(null);
+                setOpen(false);
+              }}
+            >
+              Done for now
+            </Button>
+          </Group>
+        </Stack>
+      </Alert>
+    );
   }
 
   if (!open) {

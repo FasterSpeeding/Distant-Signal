@@ -204,4 +204,65 @@ describe('TicketEntryForm', () => {
     fireEvent.change(getPkpassFileInput(), { target: { files: [file] } });
     expect(await screen.findByRole('link', { name: 'Log in to save this ticket' })).toBeInTheDocument();
   });
+
+  // Part A of the upload-first plan: no `trackingId` prop at all -- a
+  // STANDALONE ticket, uploaded/entered before a tracked train exists.
+  describe('with no trackingId (standalone ticket)', () => {
+    function openStandaloneForm() {
+      renderWithMantine(<TicketEntryForm label="Add a ticket" />);
+      fireEvent.click(screen.getByRole('button', { name: 'Add a ticket' }));
+    }
+
+    it('manual submit: POSTs to the flat /api/Train/tickets route, not a trackingId-scoped one', async () => {
+      vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ ticketId: 5 }), { status: 200 }));
+      openStandaloneForm();
+      fireEvent.change(screen.getByLabelText('Operator'), { target: { value: 'LNER' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save ticket' }));
+
+      await waitFor(() => {
+        expect(fetch).toHaveBeenCalledWith('/api/Train/tickets', expect.objectContaining({ method: 'POST' }));
+      });
+    });
+
+    it('pkpass upload: POSTs to the flat /api/Train/tickets/pkpass route', async () => {
+      vi.mocked(fetch).mockResolvedValue(
+        new Response(
+          JSON.stringify({ operator: 'LNER', ticketType: null, originCrs: 'KGX', destinationCrs: null, source: 'pkpass-semantics' }),
+          { status: 200 },
+        ),
+      );
+      openStandaloneForm();
+      fireEvent.click(screen.getByRole('tab', { name: 'Upload .pkpass' }));
+      const file = new File(['fake'], 'ticket.pkpass', { type: 'application/octet-stream' });
+      fireEvent.change(getPkpassFileInput(), { target: { files: [file] } });
+
+      await waitFor(() => {
+        expect(fetch).toHaveBeenCalledWith('/api/Train/tickets/pkpass', expect.objectContaining({ method: 'POST' }));
+      });
+    });
+
+    it('on a successful save, shows the "find or track the train" next step instead of just closing', async () => {
+      vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ ticketId: 5 }), { status: 200 }));
+      openStandaloneForm();
+      fireEvent.change(screen.getByLabelText('Origin CRS code'), { target: { value: 'kgx' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save ticket' }));
+
+      const link = await screen.findByRole('link', { name: 'Find or track the train this ticket is for' });
+      // The extracted/typed origin (uppercased) and the new ticket's id are
+      // both carried forward, so `/track`'s own form can pre-fill the
+      // origin and attach this ticket automatically once a pin is created.
+      expect(link).toHaveAttribute('href', '/track?origin=KGX&ticketId=5');
+      // The manual-entry form itself is gone -- replaced by this next step.
+      expect(screen.queryByLabelText('Operator')).not.toBeInTheDocument();
+    });
+
+    it('the "find or track" link omits origin when none was entered', async () => {
+      vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ ticketId: 6 }), { status: 200 }));
+      openStandaloneForm();
+      fireEvent.click(screen.getByRole('button', { name: 'Save ticket' }));
+
+      const link = await screen.findByRole('link', { name: 'Find or track the train this ticket is for' });
+      expect(link).toHaveAttribute('href', '/track?ticketId=6');
+    });
+  });
 });

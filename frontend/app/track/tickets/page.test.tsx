@@ -6,6 +6,15 @@ import * as api from '@/lib/api';
 import type { TicketListItem } from '@/lib/types';
 
 vi.mock('@/lib/api');
+// This page now renders TicketEntryForm (Part A's "Add a ticket" entry
+// point), which calls useRouter() from next/navigation -- same workaround
+// TicketPanel.test.tsx/TicketEntryForm.test.tsx use for the same reason
+// (useRouter() throws outside an app router context).
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
+  usePathname: () => '/track/tickets',
+  useSearchParams: () => new URLSearchParams(''),
+}));
 
 function item(overrides: Partial<TicketListItem> = {}): TicketListItem {
   return {
@@ -83,5 +92,35 @@ describe('MyTicketsPage', () => {
     ]);
     renderWithMantine(await MyTicketsPage());
     expect(screen.getAllByRole('link', { name: /See how to claim from the operator/ })).toHaveLength(2);
+  });
+
+  // Part A: a standalone ticket (no tracked train attached yet) --
+  // trackedTrainId and every train-context field come back null.
+  it('a standalone ticket (no tracked train yet) renders with no link and no crash', async () => {
+    vi.mocked(api.getMyTickets).mockResolvedValue([
+      item({
+        trackedTrainId: null,
+        serviceDate: null,
+        pinOriginCrs: null,
+        pinDestinationCrs: null,
+        pinScheduledDeparture: null,
+        resolutionStatus: null,
+        trainUid: null,
+        status: null,
+        delayMinutes: null,
+        estimate: null,
+      }),
+    ]);
+    renderWithMantine(await MyTicketsPage());
+    expect(screen.getByText('Not yet attached to a tracked train')).toBeInTheDocument();
+    // Still gets its Delay Repay block (claimUrl/disclaimer stay
+    // unconditionally populated even with no train data at all).
+    expect(screen.getByRole('link', { name: /See how to claim from the operator/ })).toBeInTheDocument();
+  });
+
+  it('renders the "Add a ticket" entry point (Part A\'s standalone-upload entry point)', async () => {
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
+    renderWithMantine(await MyTicketsPage());
+    expect(screen.getByRole('button', { name: 'Add a ticket' })).toBeInTheDocument();
   });
 });
