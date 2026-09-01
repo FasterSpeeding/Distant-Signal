@@ -9,6 +9,7 @@ import { TextLink } from '@/components/TextLink';
 import { DataFreshnessInfo } from '@/components/DataFreshnessInfo';
 import { AuthStatus } from '@/components/AuthStatus';
 import { AutoRefresh } from '@/components/AutoRefresh';
+import { ColorSchemeMeta } from '@/components/ColorSchemeMeta';
 import { OpenDataAttribution } from '@/components/OpenDataAttribution';
 import { getDataFreshness, getSession } from '@/lib/api';
 import { theme } from '@/lib/theme';
@@ -33,7 +34,16 @@ export const metadata: Metadata = {
   },
 };
 
+// `colorScheme`'s 'light' is the same deterministic pre-mount fallback
+// ThemeToggle.tsx's own useComputedColorScheme('light') call already uses —
+// the server can't know a visitor's stored preference (see ThemeToggle.tsx's
+// own comment on this), so this agrees with the one opinion the rest of the
+// page already commits to rather than inventing a second one. ColorSchemeMeta
+// (mounted in RootLayout below) keeps the resulting <meta name="color-scheme">
+// tag's content in sync with the actually-resolved theme after mount. See
+// docs/superpowers/specs/2026-09-01-dynamic-color-scheme-meta-design.md.
 export const viewport: Viewport = {
+  colorScheme: 'light',
   themeColor: [
     { media: '(prefers-color-scheme: light)', color: '#ffffff' },
     { media: '(prefers-color-scheme: dark)', color: '#242424' },
@@ -117,6 +127,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <MantineProvider theme={theme} defaultColorScheme="auto">
           <AutoRefresh />
+          <ColorSchemeMeta />
           {/* No max-width anywhere meant a 1920px viewport put a line's
               name at x≈30, its status badge at x≈870 and its pin at
               x≈1780 — the row stopped being scannable as a row. `lg` is

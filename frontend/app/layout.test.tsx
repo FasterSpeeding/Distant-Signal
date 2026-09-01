@@ -47,6 +47,18 @@ describe('viewport.themeColor', () => {
   });
 });
 
+describe('viewport.colorScheme', () => {
+  it('defaults to light for the pre-hydration SSR render', () => {
+    // No route in this app defines its own viewport/metadata export
+    // (confirmed by grep against frontend/app/ — this worktree's plan doc
+    // for this feature cites the same check), so this root-level default
+    // is the value Next actually renders for every page. 'light' matches
+    // ThemeToggle's own pre-mount fallback (useComputedColorScheme('light')),
+    // not a new, third opinion about what "unknown" means.
+    expect(viewport.colorScheme).toBe('light');
+  });
+});
+
 describe('metadata.appleWebApp', () => {
   it('sets statusBarStyle to black-translucent and explicitly disables capable -- no title', () => {
     // Exact-shape check, not just a `.statusBarStyle` field check: this is
