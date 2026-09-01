@@ -622,6 +622,61 @@ pub async fn line_status_history_for_range(
         .collect()
 }
 
+pub struct DailyStatsRow {
+    pub day: chrono::NaiveDate,
+    pub sample_cycles: i64,
+    pub total: i64,
+    pub delayed: i64,
+    pub cancelled: i64,
+    pub skipped: i64,
+    pub running_count: i64,
+    pub delay_minutes_sum: f64,
+}
+
+/// Reads the `line_status_daily_stats` rollup for one line over
+/// `[from, to]` (inclusive both ends, matching the DATE column's own
+/// semantics -- unlike the sibling `line_status_history_for_range`'s
+/// timestamp `BETWEEN`, there is no time-of-day component to reason
+/// about). Returns an empty vec for an unknown `line_id` -- no error, no
+/// special-casing -- matching `line_status_history_for_range`'s existing
+/// behavior for the same case (see
+/// docs/superpowers/specs/2026-08-31-line-history-graphics-design.md,
+/// Error handling).
+pub async fn daily_stats_for_range(
+    pool: &PgPool,
+    line_id: &str,
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+) -> Result<Vec<DailyStatsRow>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT day, sample_cycles, total, delayed, cancelled, skipped, running_count, delay_minutes_sum
+         FROM line_status_daily_stats
+         WHERE line_id = $1 AND day BETWEEN $2 AND $3
+         ORDER BY day",
+    )
+    .bind(line_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(DailyStatsRow {
+                day: row.try_get("day")?,
+                sample_cycles: row.try_get("sample_cycles")?,
+                total: row.try_get("total")?,
+                delayed: row.try_get("delayed")?,
+                cancelled: row.try_get("cancelled")?,
+                skipped: row.try_get("skipped")?,
+                running_count: row.try_get("running_count")?,
+                delay_minutes_sum: row.try_get("delay_minutes_sum")?,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,5 +893,59 @@ mod tests {
         let tfl = summaries.iter().find(|row| row.id == "TEST-TFL").unwrap();
         assert_eq!(tfl.mode_name, "tube");
         assert_eq!(tfl.name, "test tfl line");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                daily_stats_for_range -- --ignored`"]
+    async fn daily_stats_for_range_filters_orders_and_handles_unknown_lines() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+
+        sqlx::query(
+            "INSERT INTO line_status_daily_stats \
+                (line_id, day, sample_cycles, total, delayed, cancelled, skipped, running_count, delay_minutes_sum) \
+             VALUES \
+                ('TEST-STATS', '2026-08-01', 10, 100, 5, 1, 2, 97, 120.0), \
+                ('TEST-STATS', '2026-08-03', 12, 110, 6, 0, 1, 109, 90.0), \
+                ('TEST-STATS', '2026-08-02', 8, 90, 4, 2, 0, 88, 60.0), \
+                ('TEST-STATS', '2026-07-31', 5, 50, 1, 0, 0, 50, 10.0) \
+             ON CONFLICT (line_id, day) DO UPDATE SET total = EXCLUDED.total",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture rows");
+
+        let from = chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let to = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        let rows = daily_stats_for_range(&pool, "TEST-STATS", from, to)
+            .await
+            .expect("daily_stats_for_range");
+
+        sqlx::query("DELETE FROM line_status_daily_stats WHERE line_id = 'TEST-STATS'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture rows");
+
+        // 2026-07-31 falls outside [from, to] and must be excluded.
+        assert_eq!(rows.len(), 3, "row outside the range should be excluded");
+        let days: Vec<chrono::NaiveDate> = rows.iter().map(|r| r.day).collect();
+        assert_eq!(
+            days,
+            vec![
+                chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 8, 2).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap(),
+            ],
+            "rows should be ordered ascending by day"
+        );
+
+        let unknown = daily_stats_for_range(&pool, "TEST-STATS-UNKNOWN", from, to)
+            .await
+            .expect("daily_stats_for_range for an unknown line_id");
+        assert!(unknown.is_empty(), "unknown line_id should return an empty vec, not an error");
     }
 }

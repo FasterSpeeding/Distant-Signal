@@ -159,7 +159,7 @@ describe('CustomLineForm', () => {
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Operators' });
 
-    fireEvent.focus(input);
+    input.focus();
     fireEvent.change(input, { target: { value: 'sw' } });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(250);
@@ -176,7 +176,7 @@ describe('CustomLineForm', () => {
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Operators' });
 
-    fireEvent.focus(input);
+    input.focus();
     fireEvent.change(input, { target: { value: 'sw' } });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(250);

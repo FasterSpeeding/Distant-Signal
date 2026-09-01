@@ -54,6 +54,31 @@ export interface LineStatusReport {
 
 export type LineStatusHistoryEntry = LineStatusReport;
 
+/** `GET /Line/{id}/Stats/{from}/to/{to}`'s per-day response shape.
+ * `delayRate`/`cancellationRate`/`skipRate` are fractions (0-1) computed
+ * server-side from stored sums over DISTINCT trains, deduped by Darwin
+ * `service_id` via the aggregator's `dedup::dedup_new_sample_stats` -- see
+ * `crates/aggregator/src/queries.rs`'s `record_daily_stats` doc comment --
+ * not a share of poll cycles. Each train is counted once per day, using its
+ * status the FIRST time it was observed that day; if it's still dwelling in
+ * view and its status changes later (e.g. on-time becomes delayed), that
+ * later state is never recorded, so these rates can under-report delays
+ * that develop mid-visit. `sampleCycles` is the coverage signal the
+ * sparse-data gap-rendering in `TrendsResults.tsx` depends on -- render it,
+ * don't discard it. */
+export interface LineDailyStats {
+  day: string; // "YYYY-MM-DD", Europe/London calendar day
+  sampleCycles: number;
+  total: number;
+  delayed: number;
+  cancelled: number;
+  skipped: number;
+  avgDelayMinutes: number;
+  delayRate: number;
+  cancellationRate: number;
+  skipRate: number;
+}
+
 export interface Preferences {
   pinnedLines: string[];
   pinnedStations: string[];

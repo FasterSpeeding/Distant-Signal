@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 import type {
   LineStatusReport,
   LineStatusHistoryEntry,
+  LineDailyStats,
   Preferences,
   LineSummary,
   CustomLineDetail,
@@ -91,6 +92,22 @@ export async function getLineStatusHistory(
 ): Promise<LineStatusHistoryEntry[]> {
   return fetchJson<LineStatusHistoryEntry[]>(
     `${baseUrl()}/Line/${id}/Status/${from}/to/${to}`,
+    { cache: 'no-store' },
+  );
+}
+
+/** `GET /Line/{id}/Stats/{from}/to/{to}` -- the new daily rollup route.
+ * `from`/`to` are `YYYY-MM-DD` calendar days (the route's own path segments
+ * are `NaiveDate`, not RFC3339 instants -- see the backend plan's Task 4).
+ * Same public, no-store, no-cookie-forwarding shape as
+ * `getLineStatusHistory`. */
+export async function getLineDailyStats(
+  id: string,
+  from: string,
+  to: string,
+): Promise<LineDailyStats[]> {
+  return fetchJson<LineDailyStats[]>(
+    `${baseUrl()}/Line/${id}/Stats/${from}/to/${to}`,
     { cache: 'no-store' },
   );
 }
