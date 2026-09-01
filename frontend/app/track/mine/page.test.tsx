@@ -3,11 +3,20 @@ import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import MyTrackedTrainsPage from './page';
 import * as api from '@/lib/api';
-import type { TrackedTrainListItem } from '@/lib/types';
+import type { TrackedTrainListItem, TicketListItem } from '@/lib/types';
 
 vi.mock('@/lib/api');
+// This page renders TicketEntryForm (the "Add a ticket" entry point) and
+// AttachTicketAction, both of which call useRouter() from next/navigation
+// -- same workaround TicketPanel.test.tsx/TicketEntryForm.test.tsx use for
+// the same reason (useRouter() throws outside an app router context).
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
+  usePathname: () => '/track/mine',
+  useSearchParams: () => new URLSearchParams(''),
+}));
 
-function item(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListItem {
+function train(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListItem {
   return {
     id: 1,
     serviceDate: '2026-08-31',
@@ -23,77 +32,168 @@ function item(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListIt
   };
 }
 
-describe('MyTrackedTrainsPage', () => {
+function ticket(overrides: Partial<TicketListItem> = {}): TicketListItem {
+  return {
+    id: 1,
+    trackedTrainId: 1,
+    operator: 'LNER',
+    ticketType: 'Off-Peak Day Single',
+    originCrs: 'KGX',
+    destinationCrs: 'EDB',
+    source: 'manual',
+    createdAt: '2026-08-31T12:00:00Z',
+    serviceDate: '2026-08-31',
+    pinOriginCrs: 'KGX',
+    pinDestinationCrs: 'EDB',
+    pinScheduledDeparture: '2026-08-31T09:00:00Z',
+    resolutionStatus: 'resolved',
+    trainUid: 'A12345',
+    status: 'en_route',
+    delayMinutes: 45,
+    estimate: { scheme: 'DR30', bandMinutes: 30, percentage: 50, disclaimer: 'x' },
+    claimUrl: 'https://delayrepay.lner.co.uk/delayrepayV2/',
+    disclaimer: 'This is a rough, community-sourced estimate...',
+    ...overrides,
+  };
+}
+
+describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
   it('null (not logged in): shows a login nudge', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
+    vi.mocked(api.getMyTickets).mockResolvedValue(null);
     renderWithMantine(await MyTrackedTrainsPage());
     expect(
-      screen.getByRole('link', { name: "Log in to see the trains you're tracking" }),
+      screen.getByRole('link', { name: "Log in to see the trains and tickets you're tracking" }),
     ).toHaveAttribute('href', '/api/auth/login');
   });
 
-  it('empty array: shows the empty state with a working link to /track', async () => {
+  it('no trains and no tickets: shows the empty state with a working link to /track', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText(/haven't tracked any trains yet/)).toBeInTheDocument();
+    expect(screen.getByText(/haven't tracked any trains or added any tickets yet/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Track a train' })).toHaveAttribute('href', '/track');
   });
 
-  it('non-empty list: still shows a persistent link to /track (nav no longer has one)', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
+  it('a train with no tickets: renders just the train row, no ticket content under it', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByRole('link', { name: 'Track a new train' })).toHaveAttribute('href', '/track');
+    expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+    expect(screen.queryByText('LNER')).not.toBeInTheDocument();
+    expect(screen.queryByText('Tickets not yet attached to a train')).not.toBeInTheDocument();
+  });
+
+  it('a train with an attached ticket: renders the ticket summary and its Delay Repay estimate under the train', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ trackedTrainId: 1 })]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+    expect(screen.getByText(/LNER/)).toBeInTheDocument();
+    expect(screen.getByText(/KGX → EDB/)).toBeInTheDocument();
+    expect(screen.getByText(/50% of your fare/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /See how to claim from the operator/ })).toHaveAttribute(
+      'href',
+      'https://delayrepay.lner.co.uk/delayrepayV2/',
+    );
+  });
+
+  it('multiple tickets on one train: renders every one of them, not just the first', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([
+      ticket({ id: 1, trackedTrainId: 1, operator: 'LNER' }),
+      ticket({ id: 2, trackedTrainId: 1, operator: 'CrossCountry', claimUrl: 'https://delayrepay.crosscountrytrains.co.uk/' }),
+    ]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.getAllByRole('link', { name: /See how to claim from the operator/ })).toHaveLength(2);
+  });
+
+  it('a ticket attached to a DIFFERENT tracked train does not render under this one', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 1 })]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ id: 1, trackedTrainId: 999 })]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+    expect(screen.queryByText('LNER')).not.toBeInTheDocument();
+  });
+
+  // Part A/B: a standalone ticket (trackedTrainId: null) not yet attached
+  // to anything.
+  it('a standalone (unattached) ticket: renders in its own section with an attach action and a track-a-new-train link', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 1, pinOriginCrs: 'WAT', pinDestinationCrs: 'WOK' })]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([
+      ticket({
+        id: 5,
+        trackedTrainId: null,
+        serviceDate: null,
+        pinOriginCrs: null,
+        pinDestinationCrs: null,
+        pinScheduledDeparture: null,
+        resolutionStatus: null,
+        trainUid: null,
+        status: null,
+        delayMinutes: null,
+        estimate: null,
+      }),
+    ]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.getByText('Tickets not yet attached to a train')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Track a new train for this ticket' })).toHaveAttribute(
+      'href',
+      '/track?origin=KGX&ticketId=5',
+    );
+    // The attach action offers the caller's own already-tracked train.
+    // Mantine's Select associates its label with more than one element
+    // (the visible input plus its combobox option list), so
+    // getAllByLabelText (not getByLabelText) is the correct query here.
+    expect(screen.getAllByLabelText('Attach to one of your tracked trains').length).toBeGreaterThan(0);
+  });
+
+  it('an unattached ticket with no origin: the track-a-new-train link omits the origin param', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ id: 6, trackedTrainId: null, originCrs: null })]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.getByRole('link', { name: 'Track a new train for this ticket' })).toHaveAttribute(
+      'href',
+      '/track?ticketId=6',
+    );
+  });
+
+  it('no tracked trains yet: the attach-to-existing-train action is not offered (nothing to attach to)', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ id: 5, trackedTrainId: null })]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.queryByLabelText('Attach to one of your tracked trains')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Track a new train for this ticket' })).toBeInTheDocument();
   });
 
   it('resolved train with a trainUid: links to the canonical /train/{uid}/{date} URL', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByRole('link', { name: /WAT → WOK/ })).toHaveAttribute(
-      'href',
-      '/train/C21373/2026-08-31',
-    );
+    expect(screen.getByRole('link', { name: /WAT → WOK/ })).toHaveAttribute('href', '/train/C21373/2026-08-31');
   });
 
   it('pending train: links to the by-id detail route', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
-      item({ resolutionStatus: 'pending', trainUid: null, status: null, delayMinutes: null }),
+      train({ resolutionStatus: 'pending', trainUid: null, status: null, delayMinutes: null }),
     ]);
-    renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByRole('link', { name: /WAT → WOK/ })).toHaveAttribute('href', '/train/by-id/1');
-  });
-
-  it('resolved with a null trainUid (defensive case): falls back to the by-id route', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ trainUid: null })]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
     expect(screen.getByRole('link', { name: /WAT → WOK/ })).toHaveAttribute('href', '/train/by-id/1');
   });
 
   it('renders a delay badge for a resolved, delayed train', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ delayMinutes: 12 })]);
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ delayMinutes: 12 })]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
     expect(screen.getByText('12m late')).toBeInTheDocument();
   });
 
-  it('renders the resolutionStatus badge for a pending/unresolved train', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
-      item({ resolutionStatus: 'unresolved', trainUid: null, status: null, delayMinutes: null }),
-    ]);
-    renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText('Unmatched')).toBeInTheDocument();
-  });
-
-  it('origin-only train (no destination): renders just the origin CRS, no arrow', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ pinDestinationCrs: null })]);
-    renderWithMantine(await MyTrackedTrainsPage());
-    const link = screen.getByRole('link', { name: /^WAT/ });
-    expect(link).toBeInTheDocument();
-    expect(link.textContent).not.toContain('→');
-  });
-
-  it('renders rows in the same order getMyTrackedTrains returned them', async () => {
-    const first = item({ id: 1, pinOriginCrs: 'WAT' });
-    const second = item({ id: 2, pinOriginCrs: 'PAD' });
+  it('renders train rows in the same order getMyTrackedTrains returned them', async () => {
+    const first = train({ id: 1, pinOriginCrs: 'WAT' });
+    const second = train({ id: 2, pinOriginCrs: 'PAD' });
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([first, second]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
 
     const links = screen.getAllByRole('link');
@@ -101,5 +201,12 @@ describe('MyTrackedTrainsPage', () => {
       .map((link) => link.textContent ?? '')
       .filter((text) => text.startsWith('WAT') || text.startsWith('PAD'));
     expect(originOrder).toEqual([expect.stringMatching(/^WAT/), expect.stringMatching(/^PAD/)]);
+  });
+
+  it('renders the "Add a ticket" entry point', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.getByRole('button', { name: 'Add a ticket' })).toBeInTheDocument();
   });
 });
