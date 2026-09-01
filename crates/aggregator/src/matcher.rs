@@ -5736,4 +5736,56 @@ mod tests {
             assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
         }
     }
+
+    // Task 4.1 (station-catalogue completeness): `tfw-cambrian.toml`
+    // previously omitted every coast-branch request-stop halt for brevity.
+    // A dozen of those (Penhelig, Tonfanau, Llwyngwril, Llanaber, Talybont,
+    // Dyffryn Ardudwy, Llanbedr, Pensarn, Llandanwg, Tygwyn, Talsarnau,
+    // Llandecwyn, Penychain) are confirmed currently-open stations and are
+    // now individually listed. Before this fix, `has_station` returned
+    // false for all of them, so `/stations/<crs>` would have silently
+    // returned an empty disruption list instead of resolving to this line.
+    // Llangelynin, by contrast, is confirmed closed (disused since 1991)
+    // and is deliberately still absent -- asserted here too as a guard
+    // against it being mistakenly re-added later.
+    #[test]
+    fn tfw_cambrian_has_station_includes_newly_added_coast_request_stops() {
+        let lines = load_line("tfw-cambrian");
+        let cambrian = lines.get("tfw-cambrian").expect("tfw-cambrian line should exist");
+        for crs in [
+            "PHG", "TNF", "LLW", "LLA", "TLB", "DYF", "LBR", "PES", "LDN", "TYG", "TAL", "LLC", "PNC",
+        ] {
+            assert!(cambrian.has_station(crs), "tfw-cambrian should now list {crs}");
+        }
+        assert!(
+            !cambrian.has_station("LGY"),
+            "Llangelynin is closed (disused since 1991) and should not be listed"
+        );
+    }
+
+    // `tfw-cambrian-coast` is not (yet) a cross-file shared segment -- no
+    // other line in the catalogue reaches the Cambrian Coast branch (see
+    // `lines/tfw-cambrian.toml`'s own bundled-file comment) -- so unlike
+    // `swr_shared_trunk_incident_propagates`, there is no sibling line to
+    // assert a `MatchScope::SharedSegment` against for a newly-added
+    // station here. This test instead confirms an incident at one of the
+    // newly-added stations (Tonfanau) resolves to `tfw-cambrian` alone,
+    // with `MatchScope::ExclusiveSegment`, exactly like the rest of the
+    // coast branch already did before this fix.
+    #[test]
+    fn tfw_cambrian_new_coast_station_incident_resolves_exclusive_segment() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TFW-CAM-1",
+            "Points failure at Tonfanau",
+            "Points failure causing delays to Transport for Wales services at Tonfanau.",
+            &["AW"],
+            &["TNF"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tfw-cambrian".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
