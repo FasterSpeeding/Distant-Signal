@@ -6,6 +6,13 @@ import * as api from '@/lib/api';
 import type { TicketListItem } from '@/lib/types';
 
 vi.mock('@/lib/api');
+// The not-logged-in login nudge is now LoginLink (Task 1), which calls
+// usePathname()/useSearchParams() -- same stub AuthStatus.test.tsx and
+// TicketPanel.test.tsx use for the same reason.
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/track/tickets',
+  useSearchParams: () => new URLSearchParams(''),
+}));
 
 function item(overrides: Partial<TicketListItem> = {}): TicketListItem {
   return {
@@ -38,7 +45,7 @@ describe('MyTicketsPage', () => {
     renderWithMantine(await MyTicketsPage());
     expect(screen.getByRole('link', { name: 'Log in to see your tickets' })).toHaveAttribute(
       'href',
-      '/api/auth/login',
+      '/api/auth/login?return_to=%2Ftrack%2Ftickets',
     );
   });
 

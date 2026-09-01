@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation';
 import { getTrackedTrainByUidAndDate, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { TrainJourney } from '@/components/TrainJourney';
 import { TicketPanel } from '@/components/TicketPanel';
-import { TextLink } from '@/components/TextLink';
+import { LoginLink } from '@/components/LoginLink';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -38,9 +38,9 @@ export default async function TrackedTrainByUidPage({
       return (
         <Stack p="lg" gap="md">
           <Title order={1}>Train {uid}</Title>
-          <TextLink href="/api/auth/login" underline="always">
+          <LoginLink underline="always">
             Log in to view this tracked train
-          </TextLink>
+          </LoginLink>
         </Stack>
       );
     }

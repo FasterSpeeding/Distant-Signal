@@ -6,6 +6,13 @@ import * as api from '@/lib/api';
 import type { TrackedTrainListItem } from '@/lib/types';
 
 vi.mock('@/lib/api');
+// The not-logged-in login nudge is now LoginLink (Task 1), which calls
+// usePathname()/useSearchParams() -- same stub AuthStatus.test.tsx and
+// TicketPanel.test.tsx use for the same reason.
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/track/mine',
+  useSearchParams: () => new URLSearchParams(''),
+}));
 
 function item(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListItem {
   return {
@@ -29,7 +36,7 @@ describe('MyTrackedTrainsPage', () => {
     renderWithMantine(await MyTrackedTrainsPage());
     expect(
       screen.getByRole('link', { name: "Log in to see the trains you're tracking" }),
-    ).toHaveAttribute('href', '/api/auth/login');
+    ).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrack%2Fmine');
   });
 
   it('empty array: shows the empty state with a working link to /track', async () => {

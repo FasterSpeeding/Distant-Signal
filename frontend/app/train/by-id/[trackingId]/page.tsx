@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { getTrackedTrainById, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { TrainJourney } from '@/components/TrainJourney';
 import { TicketPanel } from '@/components/TicketPanel';
+import { LoginLink } from '@/components/LoginLink';
 import { TextLink } from '@/components/TextLink';
 
 export default async function TrackedTrainByIdPage({
@@ -36,9 +37,9 @@ export default async function TrackedTrainByIdPage({
       return (
         <Stack p="lg" gap="md">
           <Title order={1}>Tracking Train {trackingId}</Title>
-          <TextLink href="/api/auth/login" underline="always">
+          <LoginLink underline="always">
             Log in to view this tracked train
-          </TextLink>
+          </LoginLink>
         </Stack>
       );
     }
