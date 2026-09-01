@@ -22,6 +22,7 @@ use crate::data::{eta_blend, ticket_extraction, train_tracking, delay_repay_rule
 pub fn router() -> Router {
     Router::new()
         .route("/Train/track", axum::routing::post(post_track))
+        .route("/Train/tickets/mine", axum::routing::get(get_my_tickets))
         .route("/Train/{tracking_id}", axum::routing::get(get_by_tracking_id))
         .route("/Train/by-uid/{train_uid}/{date}", axum::routing::get(get_by_uid_and_date))
         .route("/Train/{tracking_id}/tickets", axum::routing::post(post_ticket).get(get_tickets))
@@ -154,6 +155,24 @@ async fn post_track(
         .map_err(internal_error("create tracking pin"))?;
 
     Ok(Json(TrackPinResponse { tracking_id, resolution_status: "pending" }))
+}
+
+/// Always `200` with a (possibly empty) array for any authenticated
+/// caller -- never `404`, matching `GET /Train/mine`'s own two-outcome
+/// shape (if that route has landed by the time this is implemented) more
+/// closely than the per-ticket routes' three-outcome ("exists but not
+/// yours" -> 404) shape. There's no id in this route's path to be wrong
+/// about: the only two real outcomes are "logged in, here's your list" and
+/// "not logged in, bare 401" (handled by the `AuthenticatedUser` extractor
+/// itself, before this function runs).
+async fn get_my_tickets(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+) -> Result<Json<Vec<train_tracking::TicketListItem>>, (StatusCode, String)> {
+    let tickets = train_tracking::list_tickets_for_user(&app.database, &user.id)
+        .await
+        .map_err(internal_error("list tickets"))?;
+    Ok(Json(tickets))
 }
 
 async fn get_by_tracking_id(
