@@ -275,6 +275,7 @@ mod tests {
         assert!(status.validity.is_now);
         assert!(matches!(status.data_quality, DataQuality::Tfl));
         assert!(status.sample_stats.is_none());
+        assert!(matches!(status.sample_availability, common::SampleAvailability::NoCoverage));
 
         let disruption = status.disruption.as_ref().expect("disruption should be carried through");
         assert_eq!(disruption.category, "RealTime");
