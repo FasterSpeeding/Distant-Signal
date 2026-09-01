@@ -53,12 +53,21 @@ async function fetchJson<T>(url: string, init: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/** Builds the `fetch`/`fetchJson` `init` fragment that forwards the
+ * incoming request's session cookie to the backend -- a Server
+ * Component's own `fetch` never inherits it automatically. Returns `{}`
+ * (no `Cookie` header at all) when the visitor has no cookies, matching
+ * every existing cookie-forwarding call site's own conditional shape. */
+async function cookieForwardInit(): Promise<RequestInit> {
+  const cookieHeader = (await cookies()).toString();
+  return cookieHeader ? { headers: { Cookie: cookieHeader } } : {};
+}
+
 export async function getLineStatusForMode(mode: string): Promise<LineStatusReport[]> {
   const url = `${baseUrl()}/Line/Mode/${mode}/Status`;
-  const cookieHeader = (await cookies()).toString();
   return fetchJson<LineStatusReport[]>(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
 }
 
@@ -66,10 +75,9 @@ export async function getLineStatus(ids: string[], detail: boolean): Promise<Lin
   const idsParam = ids.join(',');
   const query = detail ? '?detail=true' : '';
   const url = `${baseUrl()}/Line/${idsParam}/Status${query}`;
-  const cookieHeader = (await cookies()).toString();
   return fetchJson<LineStatusReport[]>(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
 }
 
@@ -102,10 +110,11 @@ export async function getLineStatusHistory(
   from: string,
   to: string,
 ): Promise<LineStatusHistoryEntry[]> {
-  return fetchJson<LineStatusHistoryEntry[]>(
-    `${baseUrl()}/Line/${id}/Status/${from}/to/${to}`,
-    { cache: 'no-store' },
-  );
+  const url = `${baseUrl()}/Line/${id}/Status/${from}/to/${to}`;
+  return fetchJson<LineStatusHistoryEntry[]>(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
 }
 
 /** The only endpoint in this file that is *per-user* rather than shared,
@@ -166,10 +175,9 @@ export async function getSession(): Promise<SessionInfo> {
 
 export async function getAllLines(): Promise<LineSummary[]> {
   const url = `${baseUrl()}/public/lines`;
-  const cookieHeader = (await cookies()).toString();
   return fetchJson<LineSummary[]>(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
 }
 
@@ -193,10 +201,9 @@ export async function getAllTocs(): Promise<Suggestion[]> {
  * prompt. */
 export async function getCustomLine(id: string): Promise<CustomLineDetail> {
   const url = `${baseUrl()}/public/lines/${id}`;
-  const cookieHeader = (await cookies()).toString();
   const response = await fetch(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
   if (response.status === 401 || response.status === 404) {
     throw new ApiNotFoundError(`API request to ${url} failed: ${response.status}`);
@@ -207,10 +214,9 @@ export async function getCustomLine(id: string): Promise<CustomLineDetail> {
 
 export async function getLineDefinition(id: string): Promise<LineDefinitionSummary> {
   const url = `${baseUrl()}/public/lines/${id}/definition`;
-  const cookieHeader = (await cookies()).toString();
   return fetchJson<LineDefinitionSummary>(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
 }
 
@@ -232,10 +238,9 @@ export async function getHistoryRetention(): Promise<HistoryRetention> {
 
 export async function getTrackedTrainById(id: number): Promise<TrackedTrainState> {
   const url = `${baseUrl()}/Train/${id}`;
-  const cookieHeader = (await cookies()).toString();
   const response = await fetch(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<TrackedTrainState>;
@@ -243,10 +248,9 @@ export async function getTrackedTrainById(id: number): Promise<TrackedTrainState
 
 export async function getTrackedTrainByUidAndDate(uid: string, date: string): Promise<TrackedTrainState> {
   const url = `${baseUrl()}/Train/by-uid/${encodeURIComponent(uid)}/${encodeURIComponent(date)}`;
-  const cookieHeader = (await cookies()).toString();
   const response = await fetch(url, {
     cache: 'no-store',
-    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+    ...(await cookieForwardInit()),
   });
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<TrackedTrainState>;

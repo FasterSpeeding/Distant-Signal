@@ -132,6 +132,21 @@ describe('api client', () => {
     );
   });
 
+  it('getLineStatusHistory forwards the incoming request cookies to the backend', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    await getLineStatusHistory('wcml', '2026-07-01T00:00:00Z', '2026-07-07T00:00:00Z');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Line/wcml/Status/2026-07-01T00:00:00Z/to/2026-07-07T00:00:00Z',
+      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
+    );
+  });
+
+  it('getLineStatusHistory sends no Cookie header when the visitor has no cookies at all', async () => {
+    await getLineStatusHistory('wcml', '2026-07-01T00:00:00Z', '2026-07-07T00:00:00Z');
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(init.headers).toBeUndefined();
+  });
+
   it('getPreferences fetches the correct URL with no caching', async () => {
     vi.stubGlobal(
       'fetch',
