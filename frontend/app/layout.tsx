@@ -9,6 +9,7 @@ import { TextLink } from '@/components/TextLink';
 import { DataFreshnessInfo } from '@/components/DataFreshnessInfo';
 import { AuthStatus } from '@/components/AuthStatus';
 import { AutoRefresh } from '@/components/AutoRefresh';
+import { ColorSchemeMeta } from '@/components/ColorSchemeMeta';
 import { OpenDataAttribution } from '@/components/OpenDataAttribution';
 import { getDataFreshness, getSession } from '@/lib/api';
 import { theme } from '@/lib/theme';
@@ -109,6 +110,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <MantineProvider theme={theme} defaultColorScheme="auto">
           <AutoRefresh />
+          <ColorSchemeMeta />
           {/* No max-width anywhere meant a 1920px viewport put a line's
               name at x≈30, its status badge at x≈870 and its pin at
               x≈1780 — the row stopped being scannable as a row. `lg` is
