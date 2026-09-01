@@ -1,0 +1,79 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+
+  // Piped-derived: extends the same shared base preset
+  // FasterSpeeding/Aurora-Fauxy's own renovate.json5 extends
+  // (github>FasterSpeeding/Piped//config/renovate.json5), rather than
+  // duplicating it inline. That preset already turns on, repo-agnostically:
+  //   - config:best-practices + weekly lockfile maintenance
+  //   - github-actions updates checked "at any time" (not just weekly) --
+  //     the main practical win here, since it's what keeps the SHA pins in
+  //     .github/workflows/ci.yml and containers.yml current: actions/
+  //     checkout, dtolnay/rust-toolchain, Swatinem/rust-cache,
+  //     actions/setup-node, azure/setup-helm, the docker/* actions,
+  //     sigstore/cosign-installer, AND the two job-level `uses:
+  //     FasterSpeeding/Piped/.github/workflows/{clippy,lint-actions}.yml@<sha>`
+  //     reusable-workflow references -- Renovate's github-actions manager
+  //     treats a reusable-workflow `uses:` the same as a marketplace
+  //     action's, so those get tracked too.
+  //   - pinDigests: true (Docker base images get digest-pinned, same
+  //     supply-chain posture as this repo's hand SHA-pinned Actions)
+  //   - osvVulnerabilityAlerts + vulnerabilityAlerts
+  //   - git-submodules updates "at any time" (a no-op here: this repo has
+  //     no submodules and, per the CI work this file follows up on,
+  //     deliberately does not vendor the `piped` submodule)
+  "extends": ["github>FasterSpeeding/Piped//config/renovate.json5"],
+
+  // --- What did NOT get carried over from Aurora-Fauxy, and why --------
+  // Aurora-Fauxy (github.com/FasterSpeeding/Aurora-Fauxy) is a Python
+  // project (confirmed via the GitHub API: language "Python"). Its own
+  // renovate.json5 adds exactly one thing on top of the shared preset: a
+  // `mise.managerFilePatterns` override so Renovate also watches
+  // `artifacts/skel/.config/mise/config.yaml` -- a path specific to
+  // that repo's own project-skeleton tooling. This repo has no mise.toml,
+  // no `piped` submodule, and no Python code at all, so that block is
+  // dropped rather than adapted -- there is nothing in this repo for a
+  // mise-file override to point at.
+
+  // --- Why nothing else needed adding for THIS repo's real surface -----
+  // Checked this repo's actual dependency-bearing files against Renovate's
+  // *documented default* managerFilePatterns for each relevant manager
+  // (not assumed) before deciding no repo-specific packageRules/
+  // matchManagers overrides were needed:
+  //
+  //   cargo         - Cargo.toml / Cargo.lock (workspace root + all 10
+  //                   crates/*) are auto-detected; `crates/common` (a
+  //                   path-only dependency, no publishable version) is
+  //                   correctly left alone by the manager.
+  //   npm           - frontend/package.json + frontend/package-lock.json
+  //                   are auto-detected anywhere in the repo tree.
+  //   dockerfile    - default pattern is
+  //                   `/(^|/|\.)([Dd]ocker|[Cc]ontainer)file$/` -- the
+  //                   `\.` alternative before `[Dd]ocker` means it matches
+  //                   a file *ending* in ".Dockerfile" just as much as one
+  //                   *named* "Dockerfile", so docker/api.Dockerfile,
+  //                   docker/trust-consumer.Dockerfile, etc. (all 9
+  //                   service Dockerfiles) match already, alongside
+  //                   frontend/Dockerfile. Covers every `FROM` in this
+  //                   repo (rust:1.88-bookworm, debian:bookworm-slim,
+  //                   node:22-bookworm-slim) plus the
+  //                   `# syntax=docker/dockerfile:1` pragma.
+  //   helm-values   - default pattern `/(^|/)values\.ya?ml$/` matches
+  //                   charts/distant-signal/values.yaml (any subdirectory
+  //                   counts), which covers every upstream image this repo
+  //                   does not build itself: postgres:16 (both the
+  //                   bundled postgresql and devAuthentik's dedicated
+  //                   one), redis:7, ghcr.io/goauthentik/server:2026.8.0.
+  //                   charts/distant-signal/values-example.yaml is NOT
+  //                   matched (it isn't named values.yaml) -- correctly
+  //                   so, its image refs are illustrative placeholders
+  //                   ("registry.example.com/...") the file's own header
+  //                   comment says to replace before real use, not real
+  //                   pinned versions to track.
+  //   (helmv3)      - charts/distant-signal/Chart.yaml deliberately has no
+  //                   `dependencies:` block (bundles its own Postgres
+  //                   instead of a subchart, see the chart's own top-of-
+  //                   file comment) -- nothing for this manager to do.
+  //   github-actions - see above; both new workflow files are picked up
+  //                   with no extra config.
+}
