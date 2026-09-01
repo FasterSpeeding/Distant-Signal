@@ -19,7 +19,6 @@ const existingLine: CustomLineDetail = {
   stations: ['WOK', 'CLJ'],
   headcodePrefixes: [],
   destinationCrsFilter: [],
-  isOwner: true,
 };
 
 describe('CustomLineForm', () => {

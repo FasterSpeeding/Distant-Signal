@@ -42,7 +42,6 @@ function customLine(overrides: Partial<CustomLineDetail> = {}): CustomLineDetail
     stations: ['WOK', 'CLJ'],
     headcodePrefixes: [],
     destinationCrsFilter: [],
-    isOwner: false,
     ...overrides,
   };
 }
@@ -66,15 +65,8 @@ describe('LineDetailPage Edit/Delete visibility', () => {
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
   });
 
-  it('a custom line the viewer does not own (isOwner: false) does not show Edit/Delete', async () => {
-    vi.mocked(api.getCustomLine).mockResolvedValue(customLine({ isOwner: false }));
-    await renderPage();
-    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
-  });
-
-  it('a custom line the viewer owns (isOwner: true) shows Edit/Delete', async () => {
-    vi.mocked(api.getCustomLine).mockResolvedValue(customLine({ isOwner: true }));
+  it('a custom line (getCustomLine resolves) shows Edit/Delete -- ownership is already enforced by getCustomLine 404ing for anyone else', async () => {
+    vi.mocked(api.getCustomLine).mockResolvedValue(customLine());
     await renderPage();
     expect(screen.getByRole('link', { name: 'Edit' })).toHaveAttribute('href', '/lines/custom-my-commute/edit');
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();

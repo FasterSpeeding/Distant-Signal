@@ -67,13 +67,6 @@ export interface LineSummary {
   source: 'catalogue' | 'custom' | 'tfl';
 }
 
-/** `isOwner` is computed server-side via `OptionalAuthenticatedUser` against
- * the stored `user_id` — `false` for an anonymous visitor, a logged-in
- * non-owner, and a legacy line with no owner at all; `true` only for the
- * real owner. This is the ownership signal `/lines/[id]` uses to hide
- * Edit/Delete for everyone else — see
- * docs/superpowers/specs/2026-08-31-anonymous-user-ux-design.md's Policy,
- * Tier 3. */
 export interface CustomLineDetail {
   id: string;
   name: string;
@@ -81,7 +74,6 @@ export interface CustomLineDetail {
   stations: string[];
   headcodePrefixes: string[];
   destinationCrsFilter: string[];
-  isOwner: boolean;
 }
 
 export interface LineDefinitionSummary {
