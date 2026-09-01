@@ -12,14 +12,30 @@ describe('OpenDataAttribution', () => {
     expect(screen.getByText('Powered by TfL Open Data')).toBeInTheDocument();
   });
 
-  it("carries National Rail Enquiries' required attribution verbatim, linked to their site", () => {
-    // Same posture as the TfL line above: NRE Developer Guidelines v06.01
-    // §4 fixes this exact wording for all four RDM feeds this app consumes
-    // (Incidents, LDBWS/Darwin, Stations, TOCs).
+  it("carries the Darwin (LDBWS) feed's required attribution verbatim, linked to nationalrail.co.uk", () => {
+    // Not decoration: the Darwin Real Time Train Information (Push)
+    // Data Sharing Agreement's Schedule 1 §8 fixes this exact string --
+    // lowercase "powered", one word "NationalRail" -- see
+    // docs/superpowers/plans/2026-09-01-rdm-attribution-wording.md.
+    // This wording is specific to the Darwin/LDBWS feed, not an umbrella
+    // NRE claim covering every RDM feed this app consumes.
     renderWithMantine(<OpenDataAttribution />);
-    const link = screen.getByText('Powered by National Rail Enquiries');
+    const link = screen.getByText('powered by NationalRail');
     expect(link).toBeInTheDocument();
     expect(link).toHaveAttribute('href', 'https://www.nationalrail.co.uk');
+  });
+
+  it("carries the Knowledgebase Stations feed's required attribution verbatim", () => {
+    // NationalRail Knowledgebase Stations (JSON)'s Schedule 1 §8 fixes
+    // this exact string, distinct from and not merged with the Darwin
+    // line above -- see the plan doc's "Design" section for why a single
+    // combined line isn't used. Conditional: the audit did not confirm
+    // this is the actual product this app's Stations subscription is
+    // provisioned under (vs. the differently-scoped, blank-attribution
+    // "Stations Reference Data" product) -- see the plan doc's Task 1,
+    // Step 2.
+    renderWithMantine(<OpenDataAttribution />);
+    expect(screen.getByText('NationalRail (Train Information Services Ltd)')).toBeInTheDocument();
   });
 
   it('is a landmark, so it is reachable rather than just visible', () => {
