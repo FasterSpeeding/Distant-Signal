@@ -7,6 +7,7 @@
 //! docs/superpowers/specs/2026-09-01-schedule-ingest-stanox-crs-table-design.md.
 
 mod config;
+mod parser;
 mod sequence;
 
 use std::time::Duration;
