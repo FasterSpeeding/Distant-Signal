@@ -1455,6 +1455,54 @@ mod tests {
         }
     }
 
+    // Task 8.1 (Batch 8): fills genuinely missing intermediate stations
+    // that TPE's own May-2026 Anglo-Scottish timetable PDF confirms this
+    // route calls at but which the file's prior "principal stations only"
+    // listing omitted - St Helens Central (SNH) and Wigan North Western
+    // (WGN) on the Liverpool leg, Manchester Oxford Road (MCO) and Bolton
+    // (BON) on the Manchester leg, and Carstairs (CRS, literally that
+    // three-letter code) - the route's actual Glasgow/Edinburgh split
+    // point, previously misattributed to Lockerbie. See the updated
+    // comments in lines/tpe-anglo-scottish.toml for full sourcing.
+    #[test]
+    fn tpe_anglo_scottish_batch8_infill_stations_present() {
+        let lines = load_line("tpe-anglo-scottish");
+        let line = lines.get("tpe-anglo-scottish").expect("tpe-anglo-scottish line should exist");
+        for crs in ["SNH", "WGN", "MCO", "BON", "CRS"] {
+            assert!(line.has_station(crs), "tpe-anglo-scottish should now list {crs}");
+        }
+    }
+
+    // Same task: St Helens Central sits on the newly-filled
+    // `tpe-anglo-scottish-nw` segment, which (per this batch's own
+    // pre-flight scan, confirmed unchanged by this task's research) is not
+    // shared with any sibling line - an incident here should match only
+    // tpe-anglo-scottish, as ExclusiveSegment, same shape as
+    // emr_rural_branches_bottesford_incident_stays_on_its_own_branch
+    // above. St Helens Central was chosen over Wigan North Western /
+    // Manchester Oxford Road / Bolton because those three also appear
+    // (station-level only, via wcml / emr-regional / northern-clitheroe /
+    // northern-blackpool) in other line files, which would otherwise
+    // widen this assertion's matched-line set without adding anything
+    // tpe_anglo_scottish_exclusive_segment_incident_does_not_propagate
+    // above doesn't already cover.
+    #[test]
+    fn tpe_anglo_scottish_st_helens_central_incident_stays_exclusive() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TPE-3",
+            "Signal failure at St Helens Central",
+            "Signal failure causing delays to TransPennine Express services at St Helens Central.",
+            &["TP"],
+            &["SNH"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tpe-anglo-scottish".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
     // No shared-segment-propagation test for tpe-south either: per this
     // task's own pre-flight scan it only overlaps sibling TPE lines at
     // station level (Liverpool Lime Street / Manchester Piccadilly with
