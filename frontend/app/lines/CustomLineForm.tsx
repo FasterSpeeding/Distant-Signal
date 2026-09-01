@@ -68,7 +68,22 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
   }, [operatorSuggestions, stationSuggestions, destinationSuggestions]);
 
   function addStation() {
-    const crs = stationInput.trim().toUpperCase();
+    const trimmed = stationInput.trim();
+    if (!trimmed) return;
+    // Resolve the typed text the same way selecting a dropdown suggestion
+    // would: an exact code or name match first, then the best (first)
+    // substring match already returned by the server, and only fall back
+    // to the raw text uppercased if nothing matched at all (e.g. a network
+    // hiccup) -- mirrors `StationSearchForm`'s "Look up" resolution, so
+    // clicking Add after typing a station name (without picking the
+    // dropdown option) still resolves to the right CRS code.
+    const exactCode = stationSuggestions.find((s) => s.code.toLowerCase() === trimmed.toLowerCase());
+    const exactName = stationSuggestions.find((s) => s.name.toLowerCase() === trimmed.toLowerCase());
+    const crs = exactCode?.code ?? exactName?.code ?? stationSuggestions[0]?.code ?? trimmed.toUpperCase();
+    // The usual dedup/length gate still applies to whatever the above
+    // resolved to, whether that came from a suggestion or the raw
+    // fallback -- the autocomplete only changes how `crs` is derived, not
+    // what counts as a valid one.
     if (crs.length !== 3 || stations.includes(crs)) return;
     setStations([...stations, crs]);
     setStationInput('');
@@ -138,7 +153,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
       <Group align="end">
         <Autocomplete
           label="Add station (CRS code)"
-          placeholder="e.g. WOK"
+          placeholder="e.g. Woking or WOK"
           value={stationInput}
           onChange={setStationInput}
           // `data`'s `label` — not `value` — is what Mantine's Autocomplete
@@ -149,12 +164,24 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           // dropdown-only via `renderOption`, which doesn't affect what
           // gets written into the field.
           data={stationSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+          // `stationSuggestions` is already server-side filtered (the API
+          // matches the search term against both CRS code and station
+          // name), so Mantine's default client-side re-filtering -- which
+          // only checks `label` (the code) -- would hide correct matches
+          // when the user searched by station name instead of code.
+          // Disable it: show whatever `stationSuggestions` already
+          // contains, unfiltered further. Same fix as `StationSearchForm`.
+          filter={({ options }) => options}
           renderOption={({ option }) => {
             const match = stationSuggestions.find((s) => s.code === option.value);
             return match ? `${match.code} — ${match.name}` : option.value;
           }}
         />
-        <Button variant="outline" onClick={addStation} disabled={stationInput.trim().length !== 3}>
+        {/* Not gated on `.length === 3` any more -- a typed station name
+         * (e.g. "Woking") is longer than 3 characters but still resolves
+         * to a valid code inside `addStation`, which remains the actual
+         * validation gate. */}
+        <Button variant="outline" onClick={addStation} disabled={stationInput.trim().length === 0}>
           Add
         </Button>
       </Group>
