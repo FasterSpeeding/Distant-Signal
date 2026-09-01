@@ -98,10 +98,16 @@ match_keywords = ["Airedale Line"]
 #     cross-checked against two independent sources: Wikipedia's own station
 #     article/infobox, and National Rail Enquiries'
 #     nationalrail.co.uk/stations/<crs>/details.html page (which also
-#     confirms current Northern operation); FZH, SAE and BIY additionally
-#     cross-checked against railwaycodes.org.uk's CRS/TIPLOC listing, which
-#     also supplied FZH=FRIZINHAL, SAE=SALTAIRE and BIY=BINGLEY as TIPLOCs.
-#     Fetched 2026-09-01.
+#     confirms current Northern operation); BIY additionally cross-checked
+#     against railwaycodes.org.uk's CRS/TIPLOC listing, which supplied
+#     BIY=BINGLEY as a TIPLOC (a real 7-character code). FZH and SAE do NOT
+#     carry a `tiploc` here: an initial pass entered FRIZINHAL/SALTAIRE, but
+#     those are 9/8 characters - too long for a real TIPLOC (a fixed
+#     7-character Network Rail CIF/TOPS field) - so they were station-name
+#     guesses, not looked-up codes, and were removed rather than left in
+#     place or replaced with another guess. CFL, SON and CEY likewise carry
+#     no `tiploc` - not confirmed against a second source this session.
+#     Fetched 2026-09-01 (TIPLOC correction 2026-09-01).
 #
 #   - Manningham is CLOSED, not open: Wikipedia's own Manningham railway
 #     station article states it "was closed following the Beeching Axe on 20
@@ -136,10 +142,12 @@ match_keywords = ["Airedale Line"]
 #
 # --- RESOLUTION for Task 2.10 (`northern-wharfedale.toml`) ---
 # Frizinghall (FZH) sits strictly between BDQ and SHY, which are both
-# already tagged `northern-shipley-trunk` in this file - per SCHEMA.md's
-# segment-inheritance rule (a station strictly between two already-modelled
-# stations on the same stretch inherits its neighbours' segment, no new name
-# needed) it is tagged `northern-shipley-trunk` below, not a new segment.
+# already tagged `northern-shipley-trunk` in this file - extending SCHEMA.md's
+# shared-trunk rule of thumb (a junction belongs to the shared segment, the
+# exclusive segment starts after it) to its natural corollary, a station
+# strictly between two already-shared-segment stations on the same stretch
+# inherits that segment too, no new name needed - it is tagged
+# `northern-shipley-trunk` below, not a new segment.
 # This is also independently confirmed as correct rather than merely
 # defaulted: Frizinghall's own Wikipedia article states trains call there
 # "to Leeds, Skipton, and Ilkley" - i.e. both Airedale-family (Leeds/Skipton)
@@ -174,13 +182,13 @@ segment = "northern-shipley-trunk"
 
 [[stations]]
 crs = "FZH"
-tiploc = "FRIZINHAL"
 role = "minor"
 segment = "northern-shipley-trunk"
 # Frizinghall - between Bradford Forster Square and Shipley on the shared
-# approach; inherits `northern-shipley-trunk` from its neighbours BDQ/SHY
-# per SCHEMA.md's segment-inheritance rule. See the RESOLUTION comment above
-# for the full sourcing and the note for Task 2.10.
+# approach; inherits `northern-shipley-trunk` from its neighbours BDQ/SHY -
+# see the RESOLUTION comment above for the full sourcing and the note for
+# Task 2.10. No `tiploc`: not confirmed to the two-source bar this session
+# (see the top-of-file note on the FRIZINHAL/SALTAIRE correction).
 
 [[stations]]
 crs = "SHY"
@@ -192,22 +200,24 @@ segment = "northern-shipley-trunk"
 
 [[stations]]
 crs = "SAE"
-tiploc = "SALTAIRE"
 role = "minor"
 segment = "northern-airedale"
 # Saltaire - first station after the Shipley junction on the exclusive
-# Airedale segment, per SCHEMA.md's shared-trunk rule of thumb.
+# Airedale segment, per SCHEMA.md's shared-trunk rule of thumb. No `tiploc`:
+# see the top-of-file note on the FRIZINHAL/SALTAIRE correction.
 
 [[stations]]
 crs = "BIY"
 tiploc = "BINGLEY"
 role = "minor"
 segment = "northern-airedale"
+# Bingley.
 
 [[stations]]
 crs = "CFL"
 role = "minor"
 segment = "northern-airedale"
+# Crossflatts.
 
 [[stations]]
 crs = "KEI"
