@@ -15,19 +15,38 @@ import { Box, Text } from '@mantine/core';
  * stop-level TfL data is ever added, those two lines have to be added here
  * with it.
  *
- * National Rail Enquiries is the same kind of condition, covering all four
- * RDM feeds this app consumes (Knowledgebase Incidents, LDBWS/Darwin live
- * departure boards, Stations, TOCs — one NRE licence family covers all
- * four, so one line suffices here the same way one TfL line covers TfL's
- * feed). Per NRE Terms & Conditions v3.0's Requirements clause and NRE
- * Developer Guidelines v06.01 §4 "Attribution": acknowledge NRE as the
- * source, with a link to the NRE website where possible, by displaying
- * "Powered by National Rail Enquiries" — fixed wording, same rule as TfL's.
- * Since this feed isn't the standalone/predominant information on the page
- * (it's combined with TfL data in this shared footer), the Guidelines'
- * "combined feeds" case applies: an attribution-page mention is sufficient,
- * rather than needing to sit directly alongside every individual piece of
- * NRE-derived content.
+ * The four RDM feeds this app consumes are NOT one shared licence family --
+ * a Data Sharing Agreement audit (docs/superpowers/plans/2026-09-01-rdm-attribution-wording.md
+ * has the full record; the source PDFs no longer exist in this repo) found
+ * each agreement's own Schedule 1 Section 8 "ATTRIBUTION" field independently
+ * either names a specific required wording or is blank (general "give
+ * appropriate credit... in any reasonable manner" clause only). Per feed:
+ *   - Darwin Real Time Train Information (Push), the LDBWS/live-departure-
+ *     boards source: Schedule 1 requires "powered by NationalRail" verbatim
+ *     (lowercase "powered", one word "NationalRail") -- rendered below,
+ *     linked to nationalrail.co.uk as a courtesy (not itself required by
+ *     Schedule 1's short field, but consistent with linking to the source
+ *     where possible).
+ *   - NationalRail Knowledgebase Stations (JSON): Schedule 1 requires
+ *     "NationalRail (Train Information Services Ltd)" verbatim -- rendered
+ *     below as plain text (no link required or added). [NOTE: confirm this
+ *     is the actual product this app's Stations subscription is
+ *     provisioned under before shipping -- the audit also found a
+ *     differently-scoped "Stations Reference Data" product (v1/v1.2) whose
+ *     Schedule 1 is blank; see the plan doc above, Task 1, Step 2.]
+ *   - Knowledgebase Incidents: Schedule 1 blank; Data Publisher is Rail
+ *     Delivery Group, NOT National Rail Enquiries. No line of its own here
+ *     -- resting on the general "any reasonable manner" clause, which is a
+ *     judgment call this plan's own sign-off task left open, not a settled
+ *     conclusion (see the plan doc above, Task 1, Step 1).
+ *   - Knowledgebase TOC data: Schedule 1 blank. Same "any reasonable
+ *     manner" reasoning as Incidents applies; no line of its own here.
+ * Two required strings that both name a National Rail entity are NOT
+ * merged/paraphrased into one combined line -- see the plan doc's "Design"
+ * section for why: they're independently negotiated Schedule 1 fields with
+ * no textual overlap, and this file's own TfL precedent above ("wording is
+ * fixed -- do not paraphrase it") already rules out inventing a hybrid
+ * string that's verbatim to neither.
  *
  * Network Rail Infrastructure Limited's own open-data feeds (the TRUST
  * movement feed powering individual train tracking) are a THIRD, distinct
@@ -63,8 +82,11 @@ export function OpenDataAttribution() {
           rel="noopener noreferrer"
           style={{ color: 'inherit' }}
         >
-          Powered by National Rail Enquiries
+          powered by NationalRail
         </a>
+      </Text>
+      <Text size="xs" c="dimmed">
+        NationalRail (Train Information Services Ltd)
       </Text>
       <Text size="xs" c="dimmed">
         Live train movement data from Network Rail&apos;s open data feeds
