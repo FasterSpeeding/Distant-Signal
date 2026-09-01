@@ -48,10 +48,16 @@ describe('viewport.themeColor', () => {
 });
 
 describe('metadata.appleWebApp', () => {
-  it('sets only statusBarStyle to black-translucent -- no capable, no title', () => {
+  it('sets statusBarStyle to black-translucent and explicitly disables capable -- no title', () => {
     // Exact-shape check, not just a `.statusBarStyle` field check: this is
     // the one place this plan's Global Constraints must hold structurally
-    // -- `capable`/`title` must never be added alongside this.
-    expect(metadata.appleWebApp).toEqual({ statusBarStyle: 'black-translucent' });
+    // -- `title` must never be added alongside this, and `capable` must be
+    // explicitly `false` (not omitted): Next's own `resolveAppleWebApp`
+    // defaults `capable` to `true` whenever `appleWebApp` is set at all
+    // and no `capable` key is present, which would silently emit the
+    // discouraged `mobile-web-app-capable` tag this plan's Global
+    // Constraints reject -- omitting the key is not equivalent to
+    // rejecting the tag here.
+    expect(metadata.appleWebApp).toEqual({ capable: false, statusBarStyle: 'black-translucent' });
   });
 });

@@ -17,7 +17,18 @@ export const metadata: Metadata = {
   title: 'Distant Signal',
   description:
     'A personal UK rail companion: TfL-style line status, live train tracking, and ticket/Delay-Repay support — with first-class handling of operators whose routes share trunk track, so an incident is only ever flagged on the lines it actually affects.',
+  // `capable: false` is required, not redundant: Next's own
+  // `resolveAppleWebApp` (node_modules/next/dist/lib/metadata/resolvers/
+  // resolve-basics.js) defaults `capable` to `true` whenever `appleWebApp`
+  // is set at all and the caller doesn't include a `capable` key -- so
+  // omitting it here would *still* emit a `mobile-web-app-capable` meta
+  // tag, the exact discouraged/rejected tag this plan's Global Constraints
+  // say to never add. Verified empirically against a running `next start`
+  // server this session: without this line, `mobile-web-app-capable`
+  // appeared in the rendered <head> even though only `statusBarStyle` was
+  // set.
   appleWebApp: {
+    capable: false,
     statusBarStyle: 'black-translucent',
   },
 };
