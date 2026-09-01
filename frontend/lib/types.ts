@@ -155,6 +155,26 @@ export interface TrackedTrainState {
   etaSource: EtaSource | null;
 }
 
+/** `GET /Train/mine`'s per-item response shape
+ * (`crates/api/src/data/train_tracking.rs`'s `TrackedTrainListItem`,
+ * camelCase). A deliberately lighter shape than `TrackedTrainState` --
+ * excludes live movement detail (train id, last reported location, next
+ * calling point, ETA), appropriate for one train's detail page, not a
+ * multi-row list. `pinScheduledDeparture` is new: neither
+ * `TrackedTrainState` nor any other existing route exposes it. */
+export interface TrackedTrainListItem {
+  id: number;
+  serviceDate: string; // "YYYY-MM-DD"
+  pinOriginCrs: string;
+  pinDestinationCrs: string | null;
+  pinScheduledDeparture: string; // RFC3339
+  resolutionStatus: ResolutionStatus;
+  trainUid: string | null;
+  status: JourneyStatus | null;
+  delayMinutes: number | null;
+  trackedAt: string; // RFC3339 -- list ordering key
+}
+
 /** `POST /Train/track`'s request body (`common::TrackPinRequest`). Plain
  * snake_case on the wire -- unlike every other type in this file, which
  * mirrors `crates/api`'s camelCase public JSON, this one matches

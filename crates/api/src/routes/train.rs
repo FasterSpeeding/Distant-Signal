@@ -22,6 +22,7 @@ use crate::data::{eta_blend, ticket_extraction, train_tracking, delay_repay_rule
 pub fn router() -> Router {
     Router::new()
         .route("/Train/track", axum::routing::post(post_track))
+        .route("/Train/mine", axum::routing::get(get_my_tracked_trains))
         .route("/Train/{tracking_id}", axum::routing::get(get_by_tracking_id))
         .route("/Train/by-uid/{train_uid}/{date}", axum::routing::get(get_by_uid_and_date))
         .route("/Train/{tracking_id}/tickets", axum::routing::post(post_ticket).get(get_tickets))
@@ -158,6 +159,24 @@ async fn post_track(
         .map_err(internal_error("create tracking pin"))?;
 
     Ok(Json(TrackPinResponse { tracking_id, resolution_status: "pending" }))
+}
+
+/// Always `200` with a (possibly empty) array for any authenticated
+/// caller -- never `404`, unlike the ticket routes' "exists but not
+/// yours -> 404" convention (Decision 1 of the design spec). There's no
+/// id in the URL to be wrong about: the only two real outcomes are
+/// "logged in, here's your list" and "not logged in, bare 401" (handled
+/// by the `AuthenticatedUser` extractor itself, before this function
+/// runs) -- matching `post_track`'s own two-outcome shape more closely
+/// than the ticket routes' three-outcome one.
+async fn get_my_tracked_trains(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+) -> Result<Json<Vec<train_tracking::TrackedTrainListItem>>, (StatusCode, String)> {
+    let trains = train_tracking::list_tracked_trains_for_user(&app.database, &user.id)
+        .await
+        .map_err(internal_error("list tracked trains"))?;
+    Ok(Json(trains))
 }
 
 async fn get_by_tracking_id(
@@ -354,6 +373,40 @@ mod tests {
     #[test]
     fn router_builds_without_panicking() {
         let _ = router();
+    }
+
+    /// `router_builds_without_panicking` above only proves matchit sees no
+    /// *conflict* between `/Train/mine` (literal) and `/Train/{tracking_id}`
+    /// (dynamic, same segment position) at construction time -- it says
+    /// nothing about which handler an actual `GET /Train/mine` request gets
+    /// dispatched to. This test closes that gap: a minimal, state-free
+    /// two-route reproduction of the same shape (literal vs. dynamic GET at
+    /// the same position), proving matchit's real request-time precedence
+    /// sends the literal route to the literal handler rather than letting
+    /// `Path<i64>` on the dynamic sibling capture it. Deliberately does not
+    /// build a real `AppState`/`App` or call this file's own `router()` --
+    /// the crate has no existing `oneshot()`-style router-test
+    /// infrastructure, and standing that up just to exercise this one
+    /// mechanism would be disproportionate; a throwaway `Router::new()`
+    /// with matching route shapes isolates the exact risk without it.
+    #[tokio::test]
+    async fn literal_route_wins_over_same_position_dynamic_route() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = axum::Router::new()
+            .route("/Train/mine", axum::routing::get(|| async { "literal" }))
+            .route("/Train/{id}", axum::routing::get(|| async { "dynamic" }));
+
+        let response = app
+            .oneshot(Request::builder().uri("/Train/mine").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"literal");
     }
 
     #[test]
