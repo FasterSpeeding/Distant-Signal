@@ -169,6 +169,75 @@ describe('TrackTrainForm', () => {
     expect(await screen.findByText("Couldn't create the tracking pin. Try again.")).toBeInTheDocument();
   });
 
+  // Part A of the upload-first plan: `attachTicketId`, set when arriving
+  // from a standalone ticket's own "find or track the train this ticket is
+  // for" link.
+  it('with attachTicketId: attaches the ticket to the new pin before redirecting', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/Train/track') {
+        return Promise.resolve(new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ ticketId: 99, trackedTrainId: 42 }), { status: 200 }));
+    });
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" attachTicketId={99} />);
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-28 18:32:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/Train/tickets/99/attach',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ trackingId: 42 }) }),
+      );
+    });
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith('/train/by-id/42');
+    });
+  });
+
+  it('with attachTicketId: a failed attach still redirects (tracking the train already succeeded)', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/Train/track') {
+        return Promise.resolve(new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }));
+      }
+      return Promise.resolve(new Response('ticket is already attached to a tracked train', { status: 409 }));
+    });
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" attachTicketId={99} />);
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-28 18:32:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith('/train/by-id/42');
+    });
+  });
+
+  it('without attachTicketId: never calls the attach route', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }),
+    );
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-28 18:32:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith('/train/by-id/42');
+    });
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/attach'), expect.anything());
+  });
+
   it('derives service_date from the picker\'s local wall-clock date, not the UTC date', async () => {
     // A local time just after midnight, near a UTC day boundary (e.g.
     // during BST, UTC+1): the naive `new Date(...).toISOString().slice(0,

@@ -68,6 +68,12 @@ async function AuthNavItem() {
 // error.tsx, so an unguarded getSession() here could take down every
 // page's nav bar on an auth glitch -- the same historical bug class
 // already fixed in TicketPanel.tsx, not repeated here.
+//
+// Labelled "My Trains & Tickets," not "My Tracked Trains," now that
+// `/track/mine` is the single merged page for both (Part B of the
+// upload-first ticket-tracking plan) -- the separate `MyTicketsNavItem`
+// this file used to also render (pointing at the now-redirected
+// `/track/tickets`) is gone; one nav entry for one merged page.
 export async function TrackedTrainsNavItem() {
   const session = await getSession().catch(() => ({
     authenticated: false,
@@ -78,25 +84,7 @@ export async function TrackedTrainsNavItem() {
   if (!session.authenticated) {
     return null;
   }
-  return <TextLink href="/track/mine">My Tracked Trains</TextLink>;
-}
-
-// Same rationale as TrackedTrainsNavItem immediately above -- renders
-// nothing at all when logged out (Decision 5 of
-// docs/superpowers/specs/2026-08-31-tickets-list-design.md), same
-// full-nav-bar-entry-point-to-private-content reasoning, same guarded
-// getSession() shape.
-export async function MyTicketsNavItem() {
-  const session = await getSession().catch(() => ({
-    authenticated: false,
-    id: null,
-    email: null,
-    name: null,
-  }));
-  if (!session.authenticated) {
-    return null;
-  }
-  return <TextLink href="/track/tickets">My Tickets</TextLink>;
+  return <TextLink href="/track/mine">My Trains &amp; Tickets</TextLink>;
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -145,9 +133,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <TextLink href="/stations">Station Lookup</TextLink>
                   <Suspense fallback={null}>
                     <TrackedTrainsNavItem />
-                  </Suspense>
-                  <Suspense fallback={null}>
-                    <MyTicketsNavItem />
                   </Suspense>
                   <Suspense fallback={<ActionIcon variant="subtle" aria-label="Data freshness" disabled loading />}>
                     <DataFreshnessNavItem />

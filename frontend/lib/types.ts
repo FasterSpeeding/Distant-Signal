@@ -261,10 +261,18 @@ export type TicketSource = 'manual' | 'pkpass-semantics' | 'pkpass-heuristic' | 
  * camelCase). Never includes `userId` -- same posture as
  * `TrackedTrainState`. Nothing caps a tracked train at one ticket; multiple
  * tickets per tracked train are a real, supported case (see
- * `components/TicketPanel.tsx`). */
+ * `components/TicketPanel.tsx`). `trackedTrainId` is `number | null` --
+ * `null` for a STANDALONE ticket (uploaded/entered before a tracked train
+ * exists for it, per the upload-first flow) that hasn't been attached to
+ * one yet. Every row `GET /Train/{trackingId}/tickets` itself returns is
+ * always attached (that route is scoped BY a `tracked_train_id`), so this
+ * only ever reads `null` when the same wire shape is reused for a ticket
+ * fetched a different way (e.g. `get_ticket_owned`, used internally by the
+ * attach flow) -- callers of THIS route can treat it as always non-null in
+ * practice, but the type stays honest about the shape. */
 export interface TrackedTrainTicket {
   id: number;
-  trackedTrainId: number;
+  trackedTrainId: number | null;
   operator: string | null;
   ticketType: string | null;
   originCrs: string | null;
@@ -280,7 +288,11 @@ export interface TrackedTrainTicket {
  * optional on this type even though the backend defaults it to `'manual'`
  * -- `components/TicketEntryForm.tsx` always sends it explicitly, since it
  * needs to track the current provenance of the fields it's submitting
- * regardless of which tab produced them. */
+ * regardless of which tab produced them. Also the request body for
+ * `POST /Train/tickets` (no `trackingId` in the path at all) -- the
+ * upload-first, standalone-ticket-creation route; the body shape is
+ * identical, only the URL and the resulting ticket's `trackedTrainId`
+ * differ. */
 export interface TicketEntryRequest {
   operator?: string;
   ticket_type?: string;
@@ -291,6 +303,23 @@ export interface TicketEntryRequest {
 
 export interface TicketCreatedResponse {
   ticketId: number;
+}
+
+/** `POST /Train/tickets/{ticketId}/attach`'s request/response shapes --
+ * attaches an existing standalone ticket (one created via
+ * `POST /Train/tickets`, still `trackedTrainId: null`) to a tracked train
+ * the caller owns, once they've found or created the one it's actually
+ * for. `404` (ticket or tracked train doesn't exist / isn't the caller's --
+ * this app's universal "never 403" convention) and `409` (the ticket is
+ * already attached to something) are both real, distinct outcomes a caller
+ * needs to handle -- see `components/AttachTicketAction.tsx`. */
+export interface AttachTicketRequest {
+  trackingId: number;
+}
+
+export interface AttachTicketResponse {
+  ticketId: number;
+  trackedTrainId: number;
 }
 
 /** `POST .../tickets/pkpass` and `POST .../tickets/pdf`'s shared response
@@ -341,21 +370,31 @@ export interface DelayRepayEstimateResponse {
  * `DelayRepayEstimateResponse` so a `TicketListItem` can be passed
  * straight into `<DelayRepayEstimate>` with no adapter -- see
  * docs/superpowers/specs/2026-08-31-tickets-list-design.md's Finding 7 /
- * Decision 1. */
+ * Decision 1.
+ *
+ * `trackedTrainId` and every train-context field (`serviceDate`,
+ * `pinOriginCrs`, `pinDestinationCrs`, `pinScheduledDeparture`,
+ * `resolutionStatus`, `trainUid`, `status`) are now nullable -- all `null`
+ * together for a STANDALONE ticket (uploaded/entered before a tracked
+ * train exists for it) that hasn't been attached to one yet. `estimate`/
+ * `delayMinutes` are already nullable and stay `null` for the same row, by
+ * construction (no train means no delay data to estimate against) --
+ * `claimUrl`/`disclaimer` stay unconditionally populated regardless, same
+ * invariant as an attached ticket whose train hasn't reported a delay yet. */
 export interface TicketListItem {
   id: number;
-  trackedTrainId: number;
+  trackedTrainId: number | null;
   operator: string | null;
   ticketType: string | null;
   originCrs: string | null;
   destinationCrs: string | null;
   source: TicketSource;
   createdAt: string; // RFC3339 -- list ordering key
-  serviceDate: string; // "YYYY-MM-DD"
-  pinOriginCrs: string;
+  serviceDate: string | null; // "YYYY-MM-DD"
+  pinOriginCrs: string | null;
   pinDestinationCrs: string | null;
-  pinScheduledDeparture: string; // RFC3339
-  resolutionStatus: ResolutionStatus;
+  pinScheduledDeparture: string | null; // RFC3339
+  resolutionStatus: ResolutionStatus | null;
   trainUid: string | null;
   status: JourneyStatus | null;
   delayMinutes: number | null;

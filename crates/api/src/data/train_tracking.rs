@@ -481,9 +481,19 @@ pub async fn tracked_train_owner(pool: &PgPool, tracking_id: i64) -> anyhow::Res
     Ok(row.map(|(id,)| id))
 }
 
+/// `tracked_train_id: None` creates a STANDALONE ticket -- one uploaded/
+/// entered before the user has found or created the tracked train it's
+/// for (see `docs/superpowers/specs/2026-08-29-journey-ticket-tracking-design.md`'s
+/// extraction limits: no date/time is ever recovered from a `.pkpass`/PDF,
+/// so extraction alone can never uniquely identify a specific tracked
+/// train). The route layer decides which: `post_ticket`
+/// (`/Train/{trackingId}/tickets`) always passes `Some(tracking_id)` after
+/// its own ownership check; `post_standalone_ticket` (`/Train/tickets`)
+/// always passes `None`. See `attach_ticket_to_tracked_train` below for how
+/// a standalone ticket later gets a `tracked_train_id`.
 pub async fn create_ticket(
     pool: &PgPool,
-    tracked_train_id: i64,
+    tracked_train_id: Option<i64>,
     entry: &TicketEntryRequest,
     user_id: &str,
 ) -> anyhow::Result<i64> {
@@ -505,14 +515,54 @@ pub async fn create_ticket(
     Ok(row.0)
 }
 
+/// Attaches a standalone ticket (`create_ticket`'s `tracked_train_id: None`
+/// case) to a tracked train, once the caller has found or created the one
+/// this ticket is actually for. The route layer (`post_attach_ticket`) is
+/// responsible for verifying the tracked train belongs to `user_id` and
+/// that the ticket isn't already attached before calling this -- this
+/// function still filters on `user_id` and `tracked_train_id IS NULL`
+/// itself as defense in depth (never trust a caller-supplied id alone,
+/// same posture every other write in this file takes), so it's also safe
+/// to call on its own. Returns `true` if a row was actually updated (i.e.
+/// the ticket existed, belonged to `user_id`, and was still unattached);
+/// `false` covers every other case (no such ticket, not this caller's, or
+/// already attached to something) without needing to distinguish them here
+/// -- the route layer already knows which applies from its own prior
+/// reads.
+pub async fn attach_ticket_to_tracked_train(
+    pool: &PgPool,
+    ticket_id: i64,
+    tracking_id: i64,
+    user_id: &str,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE tracked_train_tickets \
+         SET tracked_train_id = $1 \
+         WHERE id = $2 AND user_id = $3 AND tracked_train_id IS NULL",
+    )
+    .bind(tracking_id)
+    .bind(ticket_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// The public read-model for a ticket, returned directly as JSON by
 /// `GET /Train/{trackingId}/tickets` (Task 3). Never leaks `user_id` --
-/// same posture as `TrackedTrainState`.
+/// same posture as `TrackedTrainState`. `tracked_train_id` is `Option<i64>`
+/// -- `None` for a standalone ticket that hasn't been attached to a tracked
+/// train yet (see `create_ticket`'s doc comment); every row this struct's
+/// own `list_tickets_for_tracked_train` returns is guaranteed non-null by
+/// that query's own `WHERE tracked_train_id = $1` filter (a NULL column
+/// value can never equal a bound `i64`), but `get_ticket_owned` (used by
+/// the Delay Repay route and the attach route) has no such filter and can
+/// legitimately return `None` here.
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackedTrainTicket {
     pub id: i64,
-    pub tracked_train_id: i64,
+    pub tracked_train_id: Option<i64>,
     pub operator: Option<String>,
     pub ticket_type: Option<String>,
     pub origin_crs: Option<String>,
@@ -574,22 +624,26 @@ const MINE_TICKETS_LIMIT: i64 = 100;
 /// exists only to satisfy `sqlx::FromRow`. `TicketListItem` (below) is the
 /// public shape, built from this plus a pure computation -- same
 /// two-struct pattern this file already uses for `TrackedTrainRow` /
-/// `TrackedTrainRef`.
+/// `TrackedTrainRef`. `tracked_train_id` and every `tracked_trains`/
+/// `train_current_state`-sourced column are `Option` -- a standalone
+/// ticket (`create_ticket`'s `tracked_train_id: None` case) has no owning
+/// tracked train yet, so this query's `LEFT JOIN` (not `JOIN`) to
+/// `tracked_trains` can leave every one of them `NULL` for that row.
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct TicketListRow {
     id: i64,
-    tracked_train_id: i64,
+    tracked_train_id: Option<i64>,
     operator: Option<String>,
     ticket_type: Option<String>,
     origin_crs: Option<String>,
     destination_crs: Option<String>,
     source: String,
     created_at: DateTime<Utc>,
-    service_date: chrono::NaiveDate,
-    pin_origin_crs: String,
+    service_date: Option<chrono::NaiveDate>,
+    pin_origin_crs: Option<String>,
     pin_destination_crs: Option<String>,
-    pin_scheduled_departure: DateTime<Utc>,
-    resolution_status: String,
+    pin_scheduled_departure: Option<DateTime<Utc>>,
+    resolution_status: Option<String>,
     train_uid: Option<String>,
     status: Option<String>,
     delay_minutes: Option<i32>,
@@ -606,22 +660,36 @@ struct TicketListRow {
 /// shaped to match `DelayRepayEstimateResponse` exactly, field-for-field,
 /// so the frontend can pass a `TicketListItem` straight into the
 /// already-reviewed `<DelayRepayEstimate>` component with no adapter.
+///
+/// `tracked_train_id` and every train-context field
+/// (`serviceDate`/`pinOriginCrs`/.../`status`) are `Option` -- all `None`
+/// together for a standalone ticket with no tracked train attached yet
+/// (see `create_ticket`'s doc comment). `estimate`/`delayMinutes` are
+/// already `None` in that case too, by construction: `build_ticket_list_item`
+/// only ever computes a real estimate from a `(operator, delay_minutes)`
+/// pair, and a standalone row has no `delay_minutes` to pair with. This is
+/// the same "graceful `None`, never a crash" behavior
+/// `get_delay_repay_estimate`'s route already guarantees for an attached
+/// ticket whose train hasn't resolved/reported a delay yet -- a standalone
+/// ticket is just the same case with `None` for one more reason. `claimUrl`
+/// and `disclaimer` are still always populated, per that same route's
+/// invariant.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TicketListItem {
     pub id: i64,
-    pub tracked_train_id: i64,
+    pub tracked_train_id: Option<i64>,
     pub operator: Option<String>,
     pub ticket_type: Option<String>,
     pub origin_crs: Option<String>,
     pub destination_crs: Option<String>,
     pub source: String,
     pub created_at: DateTime<Utc>,
-    pub service_date: chrono::NaiveDate,
-    pub pin_origin_crs: String,
+    pub service_date: Option<chrono::NaiveDate>,
+    pub pin_origin_crs: Option<String>,
     pub pin_destination_crs: Option<String>,
-    pub pin_scheduled_departure: DateTime<Utc>,
-    pub resolution_status: String,
+    pub pin_scheduled_departure: Option<DateTime<Utc>>,
+    pub resolution_status: Option<String>,
     pub train_uid: Option<String>,
     pub status: Option<String>,
     pub delay_minutes: Option<i32>,
@@ -673,13 +741,15 @@ fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
 /// let `build_ticket_list_item` compute each row's Delay Repay estimate
 /// inline, with no per-ticket follow-up query.
 ///
-/// `JOIN` (not `LEFT JOIN`) to `tracked_trains`: every
-/// `tracked_train_tickets` row has a `NOT NULL tracked_train_id REFERENCES
-/// tracked_trains(id) ON DELETE CASCADE`, so a ticket can never outlive
-/// (or predate) its parent row -- an inner join can't silently drop a
-/// ticket here. `LEFT JOIN` to `train_current_state` matches every other
-/// query in this file that reads it: a `pending`/just-resolved tracked
-/// train legitimately has no `train_current_state` row yet.
+/// `LEFT JOIN` (not `JOIN`) to `tracked_trains`: `tracked_train_id` is now
+/// nullable (`20260901140000_standalone_tickets.sql`) -- a standalone
+/// ticket with no owning tracked train yet must still appear in this list
+/// (that's the whole point of surfacing it, so a user can find/attach one),
+/// so an inner join here would silently drop exactly the rows this
+/// upload-first flow exists to show. `LEFT JOIN` to `train_current_state`
+/// matches every other query in this file that reads it: a `pending`/
+/// just-resolved tracked train legitimately has no `train_current_state`
+/// row yet, same as before.
 pub async fn list_tickets_for_user(pool: &PgPool, user_id: &str) -> anyhow::Result<Vec<TicketListItem>> {
     let rows = sqlx::query_as::<_, TicketListRow>(
         "SELECT t.id, t.tracked_train_id, t.operator, t.ticket_type, t.origin_crs, t.destination_crs, \
@@ -688,7 +758,7 @@ pub async fn list_tickets_for_user(pool: &PgPool, user_id: &str) -> anyhow::Resu
                 tt.resolution_status, tt.train_uid, \
                 cs.status, cs.delay_minutes \
          FROM tracked_train_tickets t \
-         JOIN tracked_trains tt ON tt.id = t.tracked_train_id \
+         LEFT JOIN tracked_trains tt ON tt.id = t.tracked_train_id \
          LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
          WHERE t.user_id = $1 \
          ORDER BY t.created_at DESC \
@@ -708,21 +778,47 @@ mod ticket_list_tests {
     fn row(operator: Option<&str>, delay_minutes: Option<i32>) -> TicketListRow {
         TicketListRow {
             id: 1,
-            tracked_train_id: 1,
+            tracked_train_id: Some(1),
             operator: operator.map(str::to_string),
             ticket_type: Some("Off-Peak Day Single".to_string()),
             origin_crs: Some("KGX".to_string()),
             destination_crs: Some("EDB".to_string()),
             source: "manual".to_string(),
             created_at: "2026-08-29T12:00:00Z".parse().unwrap(),
-            service_date: "2026-08-29".parse().unwrap(),
-            pin_origin_crs: "KGX".to_string(),
+            service_date: Some("2026-08-29".parse().unwrap()),
+            pin_origin_crs: Some("KGX".to_string()),
             pin_destination_crs: Some("EDB".to_string()),
-            pin_scheduled_departure: "2026-08-29T09:00:00Z".parse().unwrap(),
-            resolution_status: "resolved".to_string(),
+            pin_scheduled_departure: Some("2026-08-29T09:00:00Z".parse().unwrap()),
+            resolution_status: Some("resolved".to_string()),
             train_uid: Some("A12345".to_string()),
             status: Some("late".to_string()),
             delay_minutes,
+        }
+    }
+
+    /// A standalone ticket (never attached to a tracked train, per
+    /// `20260901140000_standalone_tickets.sql`) -- every `tracked_trains`/
+    /// `train_current_state`-sourced column is `None`, the way
+    /// `list_tickets_for_user`'s `LEFT JOIN` actually leaves them for such
+    /// a row.
+    fn standalone_row(operator: Option<&str>) -> TicketListRow {
+        TicketListRow {
+            id: 2,
+            tracked_train_id: None,
+            operator: operator.map(str::to_string),
+            ticket_type: Some("Off-Peak Day Single".to_string()),
+            origin_crs: Some("KGX".to_string()),
+            destination_crs: Some("EDB".to_string()),
+            source: "pkpass-semantics".to_string(),
+            created_at: "2026-08-29T12:00:00Z".parse().unwrap(),
+            service_date: None,
+            pin_origin_crs: None,
+            pin_destination_crs: None,
+            pin_scheduled_departure: None,
+            resolution_status: None,
+            train_uid: None,
+            status: None,
+            delay_minutes: None,
         }
     }
 
@@ -757,6 +853,35 @@ mod ticket_list_tests {
         assert_eq!(item.estimate, None);
         assert_eq!(item.delay_minutes, None);
         assert_eq!(item.claim_url, "https://delayrepay.lner.co.uk/delayrepayV2/");
+        assert_eq!(item.disclaimer, delay_repay_rules::ROUTE_DISCLAIMER);
+    }
+
+    // A standalone ticket (Part A of this plan) must degrade gracefully,
+    // not crash -- this is the direct regression check that
+    // `list_tickets_for_user`'s `LEFT JOIN` and this function's `Option`
+    // fields actually compose safely for a row with no owning tracked
+    // train at all, not just no delay data yet.
+    #[test]
+    fn a_standalone_ticket_with_no_tracked_train_has_no_estimate_but_still_a_real_claim_link_and_disclaimer() {
+        let item = build_ticket_list_item(standalone_row(Some("LNER")));
+
+        assert_eq!(item.tracked_train_id, None);
+        assert_eq!(item.service_date, None);
+        assert_eq!(item.pin_origin_crs, None);
+        assert_eq!(item.resolution_status, None);
+        assert_eq!(item.status, None);
+        assert_eq!(item.delay_minutes, None);
+        assert_eq!(item.estimate, None);
+        assert_eq!(item.claim_url, "https://delayrepay.lner.co.uk/delayrepayV2/");
+        assert_eq!(item.disclaimer, delay_repay_rules::ROUTE_DISCLAIMER);
+    }
+
+    #[test]
+    fn a_standalone_ticket_with_no_operator_still_gets_the_generic_claim_url() {
+        let item = build_ticket_list_item(standalone_row(None));
+
+        assert_eq!(item.estimate, None);
+        assert_eq!(item.claim_url, delay_repay_rules::GENERIC_CLAIM_URL);
         assert_eq!(item.disclaimer, delay_repay_rules::ROUTE_DISCLAIMER);
     }
 }

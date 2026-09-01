@@ -16,7 +16,20 @@ const CRS_PATTERN = /^[A-Za-z]{3}$/;
  * Decision 1 (no public API exposes individual departures today, so a
  * departure-row action can't be built). `initialOrigin` is set by
  * `/track`'s page when arriving via the "Track a train from here" link on
- * `/stations/[crs]` (Decision 1's honest station-page shortcut).
+ * `/stations/[crs]` (Decision 1's honest station-page shortcut), OR from
+ * `TicketEntryForm`'s own standalone-ticket "next step" link (Part A of the
+ * upload-first plan) -- same mechanism, different origin.
+ *
+ * `attachTicketId`, when given, is a standalone ticket (created via
+ * `POST /Train/tickets`, no tracked train yet) the caller is looking for/
+ * creating a tracked train for. Once `POST /Train/track` succeeds, this
+ * form makes one best-effort follow-up call,
+ * `POST /Train/tickets/{attachTicketId}/attach`, before navigating to the
+ * new pin's detail page -- if that call fails for any reason (network
+ * blip, the ticket having since been attached elsewhere), tracking the
+ * train has ALREADY succeeded and this form still navigates on; the ticket
+ * just stays standalone and attachable later from the merged trains/tickets
+ * list, rather than the whole flow failing over a non-essential follow-up.
  *
  * Submits through the same-origin `/api/Train/track` proxy (Client
  * Components can't read the server-only `API_BASE_URL` env var
@@ -27,7 +40,13 @@ const CRS_PATTERN = /^[A-Za-z]{3}$/;
  * input worth protecting, so all four fields stay exactly as typed while
  * the login prompt renders alongside them (Decision 4, "no navigation
  * away"). */
-export function TrackTrainForm({ initialOrigin = '' }: { initialOrigin?: string }) {
+export function TrackTrainForm({
+  initialOrigin = '',
+  attachTicketId,
+}: {
+  initialOrigin?: string;
+  attachTicketId?: number;
+}) {
   const router = useRouter();
   const [originCrs, setOriginCrs] = useState(initialOrigin);
   const [destinationCrs, setDestinationCrs] = useState('');
@@ -77,6 +96,21 @@ export function TrackTrainForm({ initialOrigin = '' }: { initialOrigin?: string 
 
       if (response.ok) {
         const result: TrackPinResponse = await response.json();
+        if (attachTicketId !== undefined) {
+          // Best-effort: tracking the train has already succeeded above --
+          // don't let a failure here (network blip, the ticket having
+          // since been attached elsewhere) block navigating to the new
+          // pin. The ticket just stays attachable later if this fails.
+          try {
+            await fetch(`/api/Train/tickets/${attachTicketId}/attach`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ trackingId: result.trackingId }),
+            });
+          } catch {
+            // Deliberately swallowed -- see this block's own comment.
+          }
+        }
         router.push(`/train/by-id/${result.trackingId}`);
         return;
       }
