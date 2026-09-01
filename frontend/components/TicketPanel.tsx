@@ -4,7 +4,6 @@ import { TextLink } from './TextLink';
 import { TicketEntryForm } from './TicketEntryForm';
 import { DelayRepayEstimate } from './DelayRepayEstimate';
 import { TicketSummary } from './TicketSummary';
-import type { TrackedTrainTicket } from '@/lib/types';
 
 /** Renders on both `/train/by-id/[trackingId]` and `/train/[uid]/[date]`,
  * directly below `<TrainJourney>`. This is a real, session-gated feature

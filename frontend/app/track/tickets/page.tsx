@@ -1,5 +1,4 @@
 import { Divider, Group, Stack, Text, Title } from '@mantine/core';
-import Link from 'next/link';
 import { getMyTickets } from '@/lib/api';
 import { TextLink } from '@/components/TextLink';
 import { TicketSummary } from '@/components/TicketSummary';
@@ -48,9 +47,9 @@ export default async function MyTicketsPage() {
     <Stack p="lg" gap="md">
       <Title order={1}>My Tickets</Title>
       {tickets.length === 0 ? (
-        <Text c="dimmed">
+        <Text c="dimmed" component="div">
           You haven&apos;t added any tickets yet. Track a train, then attach a ticket to it from that
-          train&apos;s own page. <Link href="/track">Track a train</Link> to get started.
+          train&apos;s own page. <TextLink href="/track" underline="always">Track a train</TextLink> to get started.
         </Text>
       ) : (
         <Stack gap="lg">
@@ -82,9 +81,9 @@ function TicketListRow({ ticket }: { ticket: TicketListItem }) {
     <Stack gap="xs">
       <Group justify="space-between" wrap="nowrap">
         <TicketSummary ticket={ticket} />
-        <Link href={href}>
+        <TextLink href={href}>
           {formatDate(ticket.serviceDate)} · {formatTime(ticket.pinScheduledDeparture)}
-        </Link>
+        </TextLink>
       </Group>
       {/* Imported and used exactly as-is, no new props, no wrapper -- this
           is the literal reuse the design spec's Finding 7 identifies, and
