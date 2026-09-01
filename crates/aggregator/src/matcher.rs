@@ -1780,6 +1780,15 @@ mod tests {
         // incident there now correctly escalates to SharedSegment and
         // matches both lines, so it's no longer a valid "stays exclusive"
         // example.
+        //
+        // UPDATED (Task 9.7, 2026-09-01): `xc-stansted.toml`'s own fresh
+        // route-diagram pass reused NWE verbatim too (its own
+        // Cambridge-Stansted Mountfitchet stretch runs over this same
+        // physical West Anglia Main Line trunk, per that file's own
+        // comment) on its own exclusive `xc-stansted` segment — a second
+        // genuine station overlap, so "no other file touches this station"
+        // no longer holds. Updated rather than left stale, mirroring Task
+        // 9.3's own precedent.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -1791,8 +1800,13 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["greater-anglia-west-anglia".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["greater-anglia-west-anglia".to_string(), "xc-stansted".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should stay ExclusiveSegment", m.line.id);
+        }
     }
 
     #[test]
@@ -1897,6 +1911,55 @@ mod tests {
         );
         for m in &matches {
             assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should be ExclusiveSegment, not shared", m.line.id);
+        }
+    }
+
+    // Task 9.7 (2026-09-01) fresh route-diagram pass on `xc-stansted.toml`
+    // added 20 real, currently-open, currently-served intermediate stations
+    // across the whole Birmingham-Stansted Airport corridor's five named
+    // CRS-pending stations plus several more this task's own research
+    // found. All inherit the existing exclusive `xc-stansted` segment.
+    // Regression guard that `has_station` now recognises a representative
+    // spread across every leg researched (see
+    // `west_anglia_exclusive_segment_incident_does_not_propagate` above for
+    // the updated Newport overlap case, and the new Audley End overlap test
+    // below for another West Anglia Main Line station-overlap case).
+    #[test]
+    fn xc_stansted_recognises_newly_added_stations() {
+        let lines = load_line("xc-stansted");
+        let line = lines.get("xc-stansted").expect("xc-stansted should load");
+        for crs in [
+            "WTO", "CEH", "HNK", "NBR", "SWS", "MMO", "OKM", "SMD", "WLE", "MCH", "MNE", "CMS",
+            "SED", "WLF", "GRC", "AUD", "NWE", "ESM", "SST",
+        ] {
+            assert!(line.has_station(crs), "{crs} should now be recognised on xc-stansted");
+        }
+    }
+
+    // Audley End (AUD) is a second genuine West Anglia Main Line station
+    // overlap this task's own research found with
+    // `greater-anglia-west-anglia.toml` (beyond the Newport case already
+    // updated above), reusing its CRS verbatim. Station-level overlap only,
+    // no segment shared, so both lines should stay ExclusiveSegment.
+    #[test]
+    fn xc_stansted_station_overlap_with_west_anglia_at_audley_end_stays_exclusive_each_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "XC-AUD-1",
+            "Signal failure at Audley End",
+            "Signal failure causing delays at Audley End.",
+            &["LE"],
+            &["AUD"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["greater-anglia-west-anglia".to_string(), "xc-stansted".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should stay ExclusiveSegment", m.line.id);
         }
     }
 
