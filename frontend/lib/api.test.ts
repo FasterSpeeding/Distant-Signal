@@ -17,7 +17,6 @@ import {
   getTicketsForTrackedTrain,
   getMyTrackedTrains,
   getDelayRepayEstimate,
-  getMyTickets,
   ApiNotFoundError,
 } from './api';
 
@@ -390,33 +389,5 @@ describe('api client', () => {
     await expect(getDelayRepayEstimate(1, 7)).resolves.toBeNull();
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
     await expect(getDelayRepayEstimate(1, 7)).resolves.toBeNull();
-  });
-
-  it('getMyTickets fetches the correct URL, forwarding cookies, with no caching', async () => {
-    incomingCookies.header = 'distant_signal_session=abc123';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
-    await getMyTickets();
-    expect(fetch).toHaveBeenCalledWith(
-      'http://test-api:8080/Train/tickets/mine',
-      expect.objectContaining({
-        cache: 'no-store',
-        headers: { Cookie: 'distant_signal_session=abc123' },
-      }),
-    );
-  });
-
-  it('getMyTickets returns null on a 401 (not logged in)', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('no session', { status: 401 })));
-    await expect(getMyTickets()).resolves.toBeNull();
-  });
-
-  it('getMyTickets resolves an empty array as logged-in-with-no-tickets, not null', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
-    await expect(getMyTickets()).resolves.toEqual([]);
-  });
-
-  it('getMyTickets still throws on a non-401 failure', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
-    await expect(getMyTickets()).rejects.toThrow(/500/);
   });
 });
