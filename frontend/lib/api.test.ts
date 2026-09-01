@@ -4,6 +4,7 @@ import {
   getLineStatus,
   getStopPointDisruption,
   getLineStatusHistory,
+  getLineDailyStats,
   getPreferences,
   getAllLines,
   getAllTocs,
@@ -99,6 +100,54 @@ describe('api client', () => {
       'http://test-api:8080/Line/wcml/Status/2026-07-01T00:00:00Z/to/2026-07-07T00:00:00Z',
       expect.objectContaining({ cache: 'no-store' }),
     );
+  });
+
+  it('getLineDailyStats builds the correct range URL', async () => {
+    const sampleStats = [
+      {
+        day: '2026-07-01',
+        sampleCycles: 100,
+        total: 150,
+        delayed: 30,
+        cancelled: 5,
+        skipped: 2,
+        avgDelayMinutes: 12.5,
+        delayRate: 0.2,
+        cancellationRate: 0.033,
+        skipRate: 0.013,
+      },
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(sampleStats), { status: 200 })),
+    );
+    await getLineDailyStats('wcml', '2026-07-01', '2026-07-07');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Line/wcml/Stats/2026-07-01/to/2026-07-07',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getLineDailyStats resolves a 200 with an array as-is', async () => {
+    const sampleStats = [
+      {
+        day: '2026-07-01',
+        sampleCycles: 100,
+        total: 150,
+        delayed: 30,
+        cancelled: 5,
+        skipped: 2,
+        avgDelayMinutes: 12.5,
+        delayRate: 0.2,
+        cancellationRate: 0.033,
+        skipRate: 0.013,
+      },
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(sampleStats), { status: 200 })),
+    );
+    await expect(getLineDailyStats('wcml', '2026-07-01', '2026-07-07')).resolves.toEqual(sampleStats);
   });
 
   it('getPreferences fetches the correct URL with no caching', async () => {

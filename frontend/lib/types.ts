@@ -54,6 +54,26 @@ export interface LineStatusReport {
 
 export type LineStatusHistoryEntry = LineStatusReport;
 
+/** `GET /Line/{id}/Stats/{from}/to/{to}`'s per-day response shape.
+ * `delayRate`/`cancellationRate`/`skipRate` are fractions (0-1), computed
+ * server-side from stored sums -- never "% of trains", see
+ * docs/superpowers/specs/2026-08-31-line-history-graphics-design.md
+ * Decision 2. `sampleCycles` is the coverage signal the sparse-data
+ * gap-rendering in `TrendsResults.tsx` depends on -- render it, don't
+ * discard it. */
+export interface LineDailyStats {
+  day: string; // "YYYY-MM-DD", Europe/London calendar day
+  sampleCycles: number;
+  total: number;
+  delayed: number;
+  cancelled: number;
+  skipped: number;
+  avgDelayMinutes: number;
+  delayRate: number;
+  cancellationRate: number;
+  skipRate: number;
+}
+
 export interface Preferences {
   pinnedLines: string[];
   pinnedStations: string[];
