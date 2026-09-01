@@ -7,7 +7,7 @@ import { PinToggle } from '@/components/PinToggle';
 import { TextLink } from '@/components/TextLink';
 import { worstStatus, severityRank } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
-import { firstSampleStats, formatSampleSummary } from '@/lib/sampleStats';
+import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
 
 /** Three outcomes, not two. The previous version collapsed "there is no
  * such station" and "the name lookup failed" into a single `null`, so the
@@ -89,13 +89,13 @@ export default async function StationDisruptionPage({
               plain `Text` headings weren't. */}
           <Stack gap="xs">
             {orderedReports.map((report) => {
-              const stats = firstSampleStats(report.lineStatuses);
+              const representative = representativeStatus(report.lineStatuses);
               return (
                 <Group key={report.id} justify="space-between" wrap="nowrap" gap="sm">
                   <Stack gap={0} style={{ minWidth: 0 }}>
                     <TextLink href={`/lines/${report.id}`}>{report.name}</TextLink>
                     <Text size="xs" c="dimmed">
-                      {formatSampleSummary(stats)}
+                      {formatSampleSummary(representative)}
                     </Text>
                   </Stack>
                   <StatusBadge severity={worstStatus(report).statusSeverity} />
