@@ -3141,6 +3141,81 @@ mod tests {
         }
     }
 
+    // Station Catalogue Completeness Task 1.4: fills in the previously
+    // missing Paddington-area inner-suburban stations on
+    // gwr-thames-valley.toml (Southall, Hayes & Harlington, West Drayton,
+    // Iver, Langley, Burnham, Taplow), two-source confirmed and inserted at
+    // their true geographic position between PAD and MAI. Ealing Broadway,
+    // the eighth station in that task's starting candidate list, is
+    // deliberately NOT added — its own Wikipedia "Services" section and
+    // nationalrail.co.uk's own details page both show no current GWR
+    // calling service there (Elizabeth line/Underground only) — see that
+    // file's own segment-naming comment for the full sourcing/rationale.
+    #[test]
+    fn gwr_thames_valley_paddington_area_infill_stations_present() {
+        let lines = load_line("gwr-thames-valley");
+        let line = lines.get("gwr-thames-valley").expect("gwr-thames-valley line should exist");
+        for crs in ["STL", "HAY", "WDT", "IVR", "LNY", "BNM", "TAP"] {
+            assert!(line.has_station(crs), "gwr-thames-valley should now list {crs}");
+        }
+        assert!(
+            !line.has_station("EAL"),
+            "gwr-thames-valley should NOT list EAL (Ealing Broadway) — GWR does not currently call there, see the file's own Task 1.4 comment"
+        );
+    }
+
+    // Same task: Southall (STL) is a real, additional station overlap with
+    // elizabeth-line.toml's own `elizabeth-trunk-west` segment. Unlike the
+    // `elizabeth-west` overlap at MAI/SLO/TWY/WDT, `elizabeth-trunk-west` is
+    // itself a genuine shared trunk between elizabeth-line.toml and
+    // elizabeth-heathrow.toml (both list HAY/STL/EAL on that exact segment
+    // name — checked directly), so an incident at Southall propagates as
+    // SharedSegment between those two Elizabeth-line arms, while
+    // gwr-thames-valley — on its own unrelated `gwr-thames-valley` segment —
+    // still only sees a station-level hit and stays ExclusiveSegment,
+    // mirroring the MAI/SLO/TWY station-overlap precedent for this line's
+    // own segment even though the *other* two lines here happen to share a
+    // trunk with each other.
+    #[test]
+    fn gwr_thames_valley_station_overlap_with_elizabeth_trunk_west_stays_exclusive_each_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-20", "Signal failure at Southall", "Signal failure causing delays at Southall.", &["GW"], &["STL"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let by_id: HashMap<String, MatchScope> = matches.iter().map(|m| (m.line.id.clone(), m.scope)).collect();
+        assert_eq!(
+            by_id.keys().cloned().collect::<HashSet<_>>(),
+            HashSet::from(["gwr-thames-valley".to_string(), "elizabeth-line".to_string(), "elizabeth-heathrow".to_string()])
+        );
+        assert_eq!(
+            by_id.get("gwr-thames-valley"),
+            Some(&MatchScope::ExclusiveSegment),
+            "gwr-thames-valley should stay ExclusiveSegment (station overlap only, not a shared segment, for its own segment)"
+        );
+        assert_eq!(by_id.get("elizabeth-line"), Some(&MatchScope::SharedSegment), "elizabeth-line should be SharedSegment (elizabeth-trunk-west)");
+        assert_eq!(
+            by_id.get("elizabeth-heathrow"),
+            Some(&MatchScope::SharedSegment),
+            "elizabeth-heathrow should be SharedSegment (elizabeth-trunk-west)"
+        );
+    }
+
+    // Same task: Iver (IVR) is not currently in elizabeth-line.toml's own
+    // station list at all, so an incident there has no sibling segment to
+    // stay off of — a clean ExclusiveSegment case, mirroring
+    // `gwr_cornish_main_line_saltash_incident_stays_on_its_own_line`'s
+    // identical judgment call for that file's own infill task.
+    #[test]
+    fn gwr_thames_valley_iver_incident_stays_on_its_own_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-21", "Points failure at Iver", "Points failure causing delays at Iver.", &["GW"], &["IVR"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-thames-valley".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
     // Task 4.6's own exclusive segment (`gwr-severn-beach`) covers the whole
     // Severn Beach branch — Severn Beach itself (SVB) is not shared with any
     // other catalogued line, so this should stay a clean ExclusiveSegment
