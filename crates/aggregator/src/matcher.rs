@@ -5736,4 +5736,43 @@ mod tests {
             assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
         }
     }
+
+    // Task 10.2 (chiltern-main-line.toml catalogue-completeness pass).
+    // Sudbury & Harrow Road, Princes Risborough and a full run of other
+    // Marylebone-approach stations were previously omitted from this file
+    // as "minor intermediate calls" per its own stale header comment.
+    // Princes Risborough needed particular care: confirmed (see that
+    // station's own comment in lines/chiltern-main-line.toml) to be
+    // genuinely on this line's Marylebone-Bicester North-Banbury route,
+    // not only the separate Oxford or Aylesbury routes.
+    #[test]
+    fn chiltern_main_line_has_previously_omitted_marylebone_approach_stations() {
+        let lines = load_line("chiltern-main-line");
+        let line = lines.get("chiltern-main-line").expect("chiltern-main-line should exist");
+        assert!(line.has_station("SUD"), "chiltern-main-line should now include Sudbury & Harrow Road (SUD)");
+        assert!(line.has_station("PRR"), "chiltern-main-line should now include Princes Risborough (PRR)");
+    }
+
+    // Task 10.2, continued: Lapworth, Widney Manor, Olton, Acocks Green,
+    // Tyseley, Small Heath and Bordesley were previously omitted on the
+    // Hatton -> Birmingham approach (see that stretch's own comments in
+    // lines/chiltern-main-line.toml). Widney Manor, Olton and Acocks Green
+    // also appear in `wmr-snow-hill.toml`'s own independently-worked
+    // "omitted" list (Batch 9, a separate isolated worktree this task
+    // couldn't see or coordinate with live), but per the Task 10.2
+    // controller ruling this file deliberately keeps them on its own
+    // existing `chiltern-birmingham-approach` segment rather than
+    // guessing at whatever segment name that concurrent agent picks -- so,
+    // as this catalogue is loaded in this worktree today, no sibling line
+    // shares that segment name yet. Skip the second (shared-segment)
+    // assertion, and say so here, per the Testing convention: "Skip this
+    // second assertion... when the new station's segment has no sibling."
+    #[test]
+    fn chiltern_main_line_has_previously_omitted_birmingham_approach_stations() {
+        let lines = load_line("chiltern-main-line");
+        let line = lines.get("chiltern-main-line").expect("chiltern-main-line should exist");
+        for crs in ["LPW", "WMR", "OLT", "ACG", "TYS", "SMA", "BBS"] {
+            assert!(line.has_station(crs), "chiltern-main-line should now include {crs}");
+        }
+    }
 }
