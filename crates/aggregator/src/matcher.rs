@@ -5663,6 +5663,46 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
+    // Task 3.1 (station-catalogue-completeness plan), fix round 1
+    // post-review: `scotrail-glasgow-suburban.toml`'s Task 3.1 FILL-IN
+    // piece added Uddingston (UDD) and Bellshill (BLH), both of which were
+    // already `[[stations]]` entries in this file (`scotrail-shotts.toml`)
+    // -- an undisclosed cross-file collision the review caught, since this
+    // file's own pre-existing CBL comment had explicitly pre-flagged this
+    // exact scenario. Verified as genuine physical track sharing, not
+    // coincidental station-name overlap: Wikipedia's "Shotts line" article
+    // states "Until Holytown Junction the line [is] used by Argyle Line
+    // services", i.e. Argyle Line services (this file's own sibling)
+    // physically run over the same Uddingston-Bellshill stretch this
+    // file's Shotts-branded services use. Both files' UDD/BLH entries were
+    // retagged onto a new shared segment, `scotrail-uddingston-bellshill-
+    // trunk` -- see both files' own UDD/BLH comments for the full sourcing.
+    // An incident at Bellshill should therefore match both
+    // `scotrail-shotts` and `scotrail-glasgow-suburban` with
+    // `MatchScope::SharedSegment`, mirroring
+    // `scotrail_shared_inverness_dingwall_trunk_incident_propagates`.
+    #[test]
+    fn scotrail_uddingston_bellshill_trunk_shares_glasgow_suburban_incident_propagates() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-21",
+            "Signal failure at Bellshill",
+            "Signal failure causing delays to ScotRail services at Bellshill.",
+            &["SR"],
+            &["BLH"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["scotrail-shotts".to_string(), "scotrail-glasgow-suburban".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
+        }
+    }
+
     // `scotrail-bathgate.toml`'s own middle section (Drumgelloch through
     // Edinburgh Park) is genuinely exclusive to that file today -- no other
     // `lines/*.toml` file has a station entry there. An incident at

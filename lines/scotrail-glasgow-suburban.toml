@@ -711,7 +711,7 @@ segment = "scotrail-glasgow-suburban-coatbridge-spur"
 [[stations]]
 crs = "UDD"
 role = "minor"
-segment = "scotrail-glasgow-suburban-argyle-east"
+segment = "scotrail-uddingston-bellshill-trunk"
 # Uddingston: on the existing Rutherglen-Motherwell route, past the
 # Whifflet spur's Rutherglen fork and the (unmodelled) Cambuslang
 # (Wikipedia succession box: previous Bellshill, next Cambuslang; CRS
@@ -720,13 +720,47 @@ segment = "scotrail-glasgow-suburban-argyle-east"
 # verified within this pass, so it is left out -- its absence does not
 # break `stations_between()` ordering since Rutherglen and Uddingston
 # remain correctly ordered relative to each other.
+#
+# RESOLUTION (Task 3.1, fix round 1, post-review): `scotrail-shotts.toml`
+# also lists this station -- its own pre-existing CBL comment had already
+# flagged this exact scenario as a future coordination point. Verified
+# (not assumed) this is genuine physical track sharing, not mere
+# station-name overlap like GLC: Wikipedia's own "Shotts line" article
+# states outright "The line follows the ... West Coast Main Line as far as
+# Uddingston Junction where it branches off to the east. Until Holytown
+# Junction the line [is] used by Argyle Line services" -- independently
+# corroborated by Uddingston's own succession box (identical Bellshill/
+# Cambuslang neighbours listed under BOTH a "Shotts Line" and an "Argyle
+# Line" route label) and by Bellshill's own Services section, which lists
+# current "additional peak trains to Anderston via Central L.L." alongside
+# the Shotts-branded Edinburgh service (the December 2014 timetable change
+# ended *regular daytime* through running to Partick, not peak running, so
+# the physical sharing is still live today). Retagged from the exclusive
+# `scotrail-glasgow-suburban-argyle-east` segment onto a new, neutral
+# shared segment name, `scotrail-uddingston-bellshill-trunk` (mirroring
+# `scotrail-inverness-dingwall-trunk`'s precedent for a segment owned by
+# neither sibling file specifically), reused verbatim by
+# `scotrail-shotts.toml`'s own UDD entry. Rutherglen and Motherwell
+# themselves stay on `argyle-east` -- neither is a `[[stations]]` entry in
+# `scotrail-shotts.toml`, so no sharing claim applies to them.
 
 [[stations]]
 crs = "BLH"
 role = "minor"
-segment = "scotrail-glasgow-suburban-argyle-east"
+segment = "scotrail-uddingston-bellshill-trunk"
 # Bellshill: between Uddingston and Motherwell (Wikipedia succession box:
 # previous Motherwell, next Uddingston).
+#
+# RESOLUTION (Task 3.1, fix round 1, post-review): same shared-trunk fix
+# as UDD above -- see that entry's comment for the sourcing. The Shotts
+# line's own "Until Holytown Junction the line [is] used by Argyle Line
+# services" quote covers Bellshill too (it sits between Uddingston and
+# Holytown), so this station is also retagged onto
+# `scotrail-uddingston-bellshill-trunk`. Holytown (HLY) itself, the next
+# station past Bellshill on `scotrail-shotts.toml`'s own line, is not a
+# `[[stations]]` entry here, so the shared segment does not extend past
+# Bellshill in this file today -- a note for whoever eventually verifies
+# Holytown for this file, mirroring the CBL/UDD note this fix resolves.
 
 [[stations]]
 crs = "MTH"
