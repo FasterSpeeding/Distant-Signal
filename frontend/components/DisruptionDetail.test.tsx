@@ -66,4 +66,16 @@ describe('DisruptionDetail', () => {
     renderWithMantine(<DisruptionDetail disruption={{ ...sample, source: null }} />);
     expect(screen.queryByRole('link', { name: 'View full incident details' })).not.toBeInTheDocument();
   });
+
+  // `disruption.source` ultimately comes from external feed data, so a
+  // path-like incident id (e.g. containing `/`) must be percent-encoded in
+  // the link href rather than interpolated raw -- otherwise it could
+  // resolve to an unrelated route.
+  it('percent-encodes a path-like incident id in the link href', () => {
+    renderWithMantine(
+      <DisruptionDetail disruption={{ ...sample, source: 'knowledgebase-incident-123/456' }} />,
+    );
+    const link = screen.getByRole('link', { name: 'View full incident details' });
+    expect(link).toHaveAttribute('href', '/incidents/123%2F456');
+  });
 });

@@ -31,7 +31,7 @@ export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
         </Text>
       )}
       {incidentId && (
-        <TextLink href={`/incidents/${incidentId}`} underline="always">
+        <TextLink href={`/incidents/${encodeURIComponent(incidentId)}`} underline="always">
           View full incident details
         </TextLink>
       )}

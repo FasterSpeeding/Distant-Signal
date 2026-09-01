@@ -97,11 +97,18 @@ fn to_incident_detail_json(
 /// `incident_history_for_id` as raw `serde_json::Value` (the column's own
 /// stored JSONB, snake-case field names -- `from_date`/`to_date`/`is_now`,
 /// since `common::ValidityPeriod` has no `rename_all`). Deserializes into
-/// the real Rust type first so a malformed row fails loudly via
-/// `unwrap_or_default` -> empty array, rather than this function
-/// re-implementing JSONB field access by hand.
+/// the real Rust type first, rather than this function re-implementing
+/// JSONB field access by hand. A malformed row does NOT fail loudly: it
+/// degrades silently to an empty validity-periods array, with a
+/// `tracing::warn!` as the only signal.
 fn render_validity_periods(raw: &Value) -> Value {
-    let periods: Vec<common::ValidityPeriod> = serde_json::from_value(raw.clone()).unwrap_or_default();
+    let periods: Vec<common::ValidityPeriod> = match serde_json::from_value(raw.clone()) {
+        Ok(periods) => periods,
+        Err(err) => {
+            tracing::warn!(error = ?err, "failed to deserialize validity_periods JSONB, rendering as empty");
+            Vec::new()
+        }
+    };
     Value::Array(
         periods
             .into_iter()

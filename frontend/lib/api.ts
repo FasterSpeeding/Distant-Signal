@@ -288,7 +288,7 @@ export async function getDelayRepayEstimate(
  * `app/incidents/[id]/page.tsx` catches it and calls `notFound()`,
  * identical to `/lines/[id]`'s existing pattern. */
 export async function getIncident(incidentId: string): Promise<IncidentDetail> {
-  return fetchJson<IncidentDetail>(`${baseUrl()}/public/incidents/${incidentId}`, {
+  return fetchJson<IncidentDetail>(`${baseUrl()}/public/incidents/${encodeURIComponent(incidentId)}`, {
     cache: 'no-store',
   });
 }
