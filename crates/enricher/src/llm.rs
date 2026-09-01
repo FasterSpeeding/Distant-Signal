@@ -971,6 +971,34 @@ mod tests {
         will open at 08:00 instead of 06:00 and close at 18:00 instead of 20:00 for the duration of this \
         period.";
 
+    // Day-of-week-across-legs stress test (design doc Decision 1): two
+    // date ranges, each containing three co-existing legs with genuinely
+    // different treatments -- the exact shape the new PRIMARY_PROMPT
+    // guidance (Task 1) targets. Built only from fragments confirmed
+    // quoted in docs/superpowers/specs/2026-09-01-disruption-type-extraction-research.md
+    // (lines 325-334), not invented prose.
+    const BARRHEAD_DUMFRIES_SUMMARY: &str = "Buses replace trains between Barrhead and Dumfries";
+    const BARRHEAD_DUMFRIES_DESCRIPTION: &str = "From Saturday 29 August to Friday 11 September, buses \
+        replace trains between Barrhead and Kilmarnock / Dumfries. Monday to Saturday during this period, \
+        buses operate between Kilmarnock and Troon, where passengers can connect with trains to / from Ayr. \
+        No scheduled services operate between Kilmarnock and Ayr / Stranraer on Sundays. \
+        From Saturday 12 September to Sunday 13 September, buses replace trains between Barrhead and \
+        Kilmarnock / Carlisle. On Saturday during this period, buses operate between Kilmarnock and Troon, \
+        where passengers can connect with trains to / from Ayr. No scheduled services operate between \
+        Kilmarnock and Ayr / Stranraer on Sunday.";
+
+    // Undated-aside observational fixture (design doc Decision 1): a
+    // dated bus-replacement clause plus a separate, undated, vaguely-scoped
+    // clause. Deliberately has NO dedicated hard-count expectation -- the
+    // sibling research doc explicitly left "does this get its own period,
+    // or fold into scope_description" unresolved; this fixture's job is to
+    // observe what the improved prompt actually does, not assert a
+    // pre-decided right answer.
+    const NORWOOD_JUNCTION_SUMMARY: &str = "Buses replace trains via Norwood Junction";
+    const NORWOOD_JUNCTION_DESCRIPTION: &str = "Monday to Thursday overnight, buses will replace trains \
+        between the affected stations via Norwood Junction. Some trains will be diverted via an alternative \
+        route.";
+
     fn eval_reference_date() -> DateTime<Utc> {
         "2026-04-01T00:00:00Z".parse().unwrap()
     }
@@ -1022,6 +1050,12 @@ mod tests {
         for attempt in 1..=repeats.min(2) {
             run_battery_attempt(&client, "trap", attempt, TRAP_SUMMARY, TRAP_DESCRIPTION).await;
         }
+        for attempt in 1..=repeats {
+            run_battery_attempt(&client, "dow_legs", attempt, BARRHEAD_DUMFRIES_SUMMARY, BARRHEAD_DUMFRIES_DESCRIPTION).await;
+        }
+        for attempt in 1..=repeats.min(2) {
+            run_battery_attempt(&client, "undated_aside", attempt, NORWOOD_JUNCTION_SUMMARY, NORWOOD_JUNCTION_DESCRIPTION).await;
+        }
     }
 
     #[tokio::test]
@@ -1067,6 +1101,41 @@ mod tests {
             eprintln!(
                 "NOTE: expected 2 periods for the Wandsworth Town fixture (two sequential platform \
                  closures), model produced {} -- see design doc risk #1 (segmentation reliability)",
+                primary.periods.len()
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires network access to a real LLM_BASE_URL; run explicitly, see comment above"]
+    async fn live_eval_barrhead_dumfries_segments_into_six_periods() {
+        let client = live_client_from_env();
+        let reference_date = "2026-08-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+        let start = std::time::Instant::now();
+        let primary = client
+            .extract_primary(BARRHEAD_DUMFRIES_SUMMARY, BARRHEAD_DUMFRIES_DESCRIPTION, reference_date)
+            .await
+            .expect("primary extraction should succeed against a real endpoint");
+        eprintln!("primary call took {:?}, category={:?}, periods={}", start.elapsed(), primary.category, primary.periods.len());
+        for (i, p) in primary.periods.iter().enumerate() {
+            eprintln!(
+                "  period[{i}]: scope={:?} date_range={:?} schedule_window={:?} resolution_status={:?} apparent_severity={:?}",
+                p.scope_description, p.date_range, p.schedule_window, p.resolution_status, p.apparent_severity
+            );
+        }
+        assert!(!primary.periods.is_empty(), "periods must never be empty on a successful parse");
+
+        // Soft signal, not a hard assertion -- exactly like
+        // live_eval_wandsworth_town_segments_into_two_periods above. The
+        // expected count of 6 (three legs x two date ranges) is this
+        // plan's own reasoned prediction, not an observed result; it has
+        // not been run against a live model.
+        if primary.periods.len() != 6 {
+            eprintln!(
+                "NOTE: expected 6 periods for the Barrhead-Dumfries fixture (three co-existing legs per \
+                 date range, two date ranges), model produced {} -- see design doc Decision 1 and its Open \
+                 Questions section (counts not yet validated against a live model)",
                 primary.periods.len()
             );
         }
