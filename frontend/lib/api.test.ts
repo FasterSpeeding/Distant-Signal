@@ -18,6 +18,7 @@ import {
   getMyTrackedTrains,
   getDelayRepayEstimate,
   ApiNotFoundError,
+  ApiUnauthorizedError,
 } from './api';
 
 // `getPreferences` reads the incoming request's cookies through
@@ -268,6 +269,38 @@ describe('api client', () => {
     );
     await expect(getLineStatus(['wcml'], false)).rejects.toThrow(/500/);
     await expect(getLineStatus(['wcml'], false)).rejects.not.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('throws an ApiUnauthorizedError on a 401 response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('unauthorized', { status: 401 })),
+    );
+    // Load-bearing for Task 10/11: when checking authentication status,
+    // the caller needs to distinguish "not logged in at all" (401) from
+    // "doesn't exist / isn't yours" (404), so it's not enough to just match
+    // the message, the type must be pinned too.
+    await expect(getLineStatus(['wcml'], false)).rejects.toThrow(/401/);
+    await expect(getLineStatus(['wcml'], false)).rejects.toBeInstanceOf(ApiUnauthorizedError);
+  });
+
+  it('a 404 still throws ApiNotFoundError, unchanged', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 })),
+    );
+    await expect(getLineStatus(['wcml'], false)).rejects.toThrow(/404/);
+    await expect(getLineStatus(['wcml'], false)).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('a 500 still throws a bare Error, unchanged', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('server error', { status: 500 })),
+    );
+    await expect(getLineStatus(['wcml'], false)).rejects.toThrow(/500/);
+    await expect(getLineStatus(['wcml'], false)).rejects.not.toBeInstanceOf(ApiNotFoundError);
+    await expect(getLineStatus(['wcml'], false)).rejects.not.toBeInstanceOf(ApiUnauthorizedError);
   });
 
   it('getStationName caches the CRS lookup rather than refetching per render', async () => {
