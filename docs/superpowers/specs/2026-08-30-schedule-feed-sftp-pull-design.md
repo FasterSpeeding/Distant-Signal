@@ -1,5 +1,38 @@
 # Schedule-Feed Ingestion via SFTP Pull — Design
 
+> **Superseded 2026-09-01 — this document's core "pull" recommendation is
+> not buildable and should not be implemented.** The repo owner confirmed
+> (2026-09-01, not independently re-verified via `WebFetch`/`WebSearch` in
+> that pass — stated as given, per this document's own citation discipline)
+> that **SFTP Pull access via the DTD portal is staff-only**: gated behind
+> an RDG/RSP staff account or equivalent internal access this app's
+> operator does not have and cannot get, not something a normal registered
+> Data Recipient can self-serve. This is a permanent structural blocker,
+> not the "pending" state this document's own "Open questions — blocked on
+> DTD portal access" section (below) and its item 7 in particular
+> ("Whether SFTP pull is actually enabled on this app's specific RDM/DTD
+> subscription") anticipated might resolve unfavourably without being able
+> to confirm it either way. It is now confirmed, unfavourably. This
+> document's entire architecture — an **outbound** `schedule-ingest` SFTP
+> client, no inbound daemon, no new Kubernetes `Service`, no SSH host-key
+> Secret material — depends on pull being reachable at all. It isn't, so
+> none of it is buildable as written.
+>
+> **See `docs/superpowers/specs/2026-09-01-schedule-feed-push-design.md`
+> for the push-based design that replaces this one's recommendation.** This
+> document is kept in full — not deleted or rewritten — because most of its
+> research is mechanism-agnostic and carries over directly: the real
+> RSPS5046 manifest format and file-size anchors (Research recap, above the
+> Design section), the storage/retention math, the sequence-gap detection
+> policy, and the `api`-freshness-contract database-bookkeeping approach
+> are all reused, largely unchanged, by the push design. What does **not**
+> carry over: everything specific to *this app initiating the connection*
+> — the SFTP client library choice, the check-times-vs-`dtd.atocrsp.org`
+> scheduling design, the "verify DTD's host key" host-key-verification
+> section, and the credential/auth-method sketches below, all of which
+> assume this app is the outbound party. The new document states plainly,
+> section by section, what it reuses from here versus what it replaces.
+
 **Status: design/proposal, not an approved implementation plan.** Written to
 the same rigor and structure as
 `docs/superpowers/specs/2026-08-29-dev-oidc-server-design.md` (this repo's

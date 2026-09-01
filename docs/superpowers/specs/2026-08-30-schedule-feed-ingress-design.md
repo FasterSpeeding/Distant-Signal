@@ -1,5 +1,21 @@
 # Schedule-Feed Ingress: How Would This App Actually Receive RDM's Pushed Files? — Research Addendum
 
+> **Read `docs/superpowers/specs/2026-09-01-schedule-feed-push-design.md`
+> first if you want this app's current settled direction.** The
+> "Addendum (2026-08-30)" section immediately below concluded SFTP *pull*
+> was viable and became the new leading option; a 2026-09-01 finding (see
+> this document's own "Addendum (2026-09-01)" section, appended after
+> Addendum (2026-08-30)'s §7, before the `---` that starts the original
+> pre-addendum body) ruled pull out entirely for this app. **Push is once
+> again the settled mechanism** — meaning this document's *original*,
+> pre-addendum sections (everything from "## What already exists in this
+> codebase" onward) are the currently-correct premise, not the
+> Addendum (2026-08-30) sections that follow this notice. This document is
+> kept in full, in its original written order, for its research value
+> (RSPS5046 citations, the real licence PDF findings, the real sample-data
+> findings) — not as a table of contents for the currently-recommended
+> path. The new document is the one place that reconciles all of this.
+
 **Status: research/infrastructure-options only, not an approved design, and
 not application code.** This document follows up specifically on Open
 Question #2 of
@@ -621,6 +637,70 @@ reachable by this app's owner today substitutes for that. This does not
 change the "proceed with caveats, not yet" verdict, and does not add any
 new caveat beyond confirming, more thoroughly than the first pass could,
 that the gap is real rather than an artifact of an incomplete fetch.
+
+## Addendum (2026-09-01): pull ruled out by the repo owner — push is the settled mechanism again
+
+**Source: the repo owner, 2026-09-01.** Stated directly, not independently
+discovered via `WebFetch`/`WebSearch` in this pass — per this document's own
+citation discipline, this is attributed to its source rather than presented
+as something this research verified itself: **SFTP Pull access via the DTD
+portal (`dtdportal.atocrsp.org`) is staff-only** — gated behind an RDG/RSP
+staff account or equivalent internal access this app's operator does not
+have and cannot get, not something a normal registered Data Recipient can
+self-serve. This is a *permanent* structural blocker, not the "application
+pending" state Addendum (2026-08-30) §6 and the sibling pull-design
+document's "Open questions" section both left open.
+
+**What this resolves, from Addendum (2026-08-30) §6's own three buckets:**
+
+- **"Genuinely still unresolved" item 1** ("whether pull is actually
+  offered/enabled for *this* specific licensed product... this pass has no
+  way to confirm") is now resolved, negatively: it doesn't matter whether
+  DTD-the-service offers pull in the abstract (RSPS5046 §7.1.2 still
+  documents it as a real, general DTD capability) — this app's operator has
+  no path to the portal access pull requires, regardless.
+- **Addendum (2026-08-30) §5's "Revised architecture recommendation: SFTP
+  pull is the new leading option" no longer holds.** Every advantage that
+  section credited to pull (no new Kubernetes `Service`, no SSH host-key
+  Secret material, no inbound-facing daemon) was contingent on pull being
+  reachable at all. It isn't.
+- **The pre-addendum sections of this document (Sections 1-5 below,
+  originally written under a push-only assumption, before either addendum
+  existed) are the correct premise again.** They were never wrong about
+  push's mechanics — only incomplete about pull existing as an alternative,
+  and that alternative has now been closed off.
+
+**One correction this pass adds, from re-reading RSPS5046's full text
+directly** (the same local PDF Addendum (2026-08-30) fetched, re-read in
+full again in this pass, specifically keyword-searched for
+`bucket`/`S3`/`Amazon`/`Azure`/`AWS`/`cloud`/`Google`, all with zero
+matches): **RSPS5046 — the interface spec for the exact "Timetable - Full
+Refresh - Daily" product this app has a real, signed licence for — documents
+exactly two delivery methods, SFTP Pull and SFTP Push (§7.1.2), and does not
+mention a cloud-storage-bucket option anywhere in its 39 pages.** Section 2
+below's "cloud storage bucket push — the alternative RDM explicitly
+supports" framing is sourced from the Open Rail Data Wiki's *generic*
+description of RDM file feeds broadly ("File feeds can be transferred via
+'push' options to major cloud providers... or via SFTP," quoted in the base
+spec) — not from this specific product's own authoritative interface spec.
+**This narrows, for this specific licensed product, "SFTP vs. cloud bucket"
+down to "SFTP push, confirmed by a primary source; cloud bucket,
+unconfirmed for this product specifically, plausible only by inference from
+a more general wiki description of RDM file feeds as a category."** Treat
+Section 2 below as still-useful general reasoning (the operational-burden
+comparison, the self-hostability argument), not as evidence this app's
+actual DTD-delivered feed supports it.
+
+**This document's SFTP-push sections (1, 4, and the SFTP-path halves of 3
+and the architecture sketch) are the ones that now matter.** See
+`docs/superpowers/specs/2026-09-01-schedule-feed-push-design.md` for the
+concrete design that reconciles this finding against everything both
+addenda and the (now-superseded-for-its-core-premise)
+`2026-08-30-schedule-feed-sftp-pull-design.md` learned in the meantime —
+the real manifest format, file-size anchors, retention math, gap-detection
+logic, and database-bookkeeping approach that document worked out for pull
+carry over to push almost unchanged, since all of that is mechanism-
+agnostic (it's about what arrives, not how it arrives).
 
 ---
 
