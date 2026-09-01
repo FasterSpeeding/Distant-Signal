@@ -5895,4 +5895,33 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["northern-cumbrian-coast".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 2.6: `northern-furness.toml`'s previously-missing intermediate
+    // halts. Grange-over-Sands (GOS) sits between Carnforth and Ulverston on
+    // this file's exclusive `northern-furness-branch` segment, which (per a
+    // fresh grep of `lines/*.toml` while writing this test) is not shared by
+    // any sibling line in this catalogue - so there is no SharedSegment
+    // assertion to make here, only that `has_station` picks up the new
+    // station and that an incident there stays exclusive to this line.
+    #[test]
+    fn furness_grange_over_sands_has_station_and_stays_exclusive() {
+        let lines = load_line("northern-furness");
+        let furness = lines.get("northern-furness").expect("northern-furness should load");
+        assert!(furness.has_station("GOS"), "northern-furness should now list Grange-over-Sands (GOS)");
+        assert_eq!(furness.segment_for("GOS"), Some("northern-furness-branch"));
+
+        let all_lines = load_all_lines();
+        let registry = SegmentRegistry::new(&all_lines);
+        let inc = incident(
+            "NT-12",
+            "Signal failure at Grange-over-Sands",
+            "Signal failure causing delays on the Furness Line at Grange-over-Sands.",
+            &["NT"],
+            &["GOS"],
+        );
+        let matches = lines_affected_by(&inc, &all_lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-furness".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
