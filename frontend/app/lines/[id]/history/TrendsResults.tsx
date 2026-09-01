@@ -1,6 +1,7 @@
 import { LineChart } from '@mantine/charts';
 import { Stack, Text, Title } from '@mantine/core';
 import { getLineDailyStats } from '@/lib/api';
+import { londonDayKey } from '@/lib/dateFormat';
 import type { LineDailyStats } from '@/lib/types';
 
 // Placeholder, not a validated number -- see this plan's own "Open
@@ -42,7 +43,7 @@ export function toChartPoints(stats: LineDailyStats[]): ChartPoint[] {
 }
 
 export async function TrendsResults({ id, from, to }: { id: string; from: string; to: string }) {
-  const stats = await getLineDailyStats(id, from.slice(0, 10), to.slice(0, 10));
+  const stats = await getLineDailyStats(id, londonDayKey(from), londonDayKey(to));
 
   if (stats.length === 0) {
     return <Text c="dimmed">Not enough sampled data yet for this line.</Text>;
@@ -52,13 +53,22 @@ export async function TrendsResults({ id, from, to }: { id: string; from: string
 
   return (
     <Stack gap="lg">
-      {/* Decision 7's honesty copy: rates are a share of sampled poll
-          cycles, not a share of individual trains (Decision 2's
-          cycle-weighted sampling) -- must not be softened or dropped. */}
+      {/* Honesty copy for the dedup-driven daily rollup (Ruling A,
+          .superpowers/sdd/2026-08-31-line-history-graphics/progress.md):
+          record_daily_stats now sums dedup::dedup_new_sample_stats's DEDUPED
+          output, so each distinct train (by Darwin service_id) is counted
+          once per day, not once per poll cycle it stayed visible. But
+          SeenServiceLedger.mark_seen classifies a train by whichever cycle
+          FIRST observed it -- a train seen on-time first and delayed later
+          in the same visit is never re-classified. This is a deliberate
+          accuracy tradeoff against a persisted "last known state" ledger,
+          which would need a bigger redesign than this rollup -- not
+          something to build here. Must not be softened or dropped. */}
       <Text size="sm" c="dimmed">
-        Rates shown are the share of sampled poll cycles that looked delayed, cancelled, or skipping a stop --
-        not a share of individual trains. Each point is based on that day&apos;s sample_cycles poll samples;
-        days with too little coverage show as a gap rather than a misleading flat line.
+        Rates shown count each distinct train once per day, based on its status the first time it was seen that
+        day -- not a share of poll cycles. A train that starts on time and only becomes delayed later while
+        still in view will still show here as on time. Days with too little coverage show as a gap rather than a
+        misleading flat line.
       </Text>
       <Stack gap={4}>
         <Title order={4} size="h6">

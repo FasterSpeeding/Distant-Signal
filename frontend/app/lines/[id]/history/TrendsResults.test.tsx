@@ -109,7 +109,7 @@ describe('TrendsResults', () => {
 
     expect(
       screen.getByText(
-        /Rates shown are the share of sampled poll cycles that looked delayed, cancelled, or skipping a stop -- not a share of individual trains\./,
+        /Rates shown count each distinct train once per day, based on its status the first time it was seen that day -- not a share of poll cycles\./,
       ),
     ).toBeInTheDocument();
     expect(screen.getAllByTestId('line-chart')).toHaveLength(2);
