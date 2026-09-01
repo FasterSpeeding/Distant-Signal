@@ -341,10 +341,47 @@ services:
   # has no native "two containers, one Pod" primitive, so two services
   # sharing one named volume (schedule_feed_data below) is the closest
   # local-dev approximation, not a literal reproduction of that shape.
+  # One-shot init step, Compose's closest equivalent to the Helm chart's
+  # `fsGroup: 1000` pod-level fix (charts/distant-signal/values.yaml's
+  # scheduleFeed.podSecurityContext) -- Compose has no fsGroup mechanism at
+  # all, so an explicit chown/chmod step is the only option here.
+  # LOAD-BEARING, not optional: drakkan/sftpgo's official image runs as a
+  # fixed non-root `USER 1000:1000` (its own Dockerfile) and does NOT chown
+  # a freshly created empty named volume for you -- reproduced for real
+  # against this exact setup: sftpgo's own attempt to create the DTD
+  # account's home_dir on first login failed with a plain OS-level "error
+  # creating root directory ... mkdir ...: permission denied", because a
+  # fresh Docker named volume is root-owned by default and UID 1000 cannot
+  # mkdir under it. `busybox` is used only because it's tiny and does one
+  # chown/chmod then exits -- no relation to any other service in this file.
+  #
+  # `chmod -R g+rwX` (not just `chown`) plus schedule-ingest's own
+  # `group_add: ["1000"]` below matters for a second, distinct reason:
+  # schedule-ingest's own container runs as its Dockerfile's `poller` user
+  # (a `useradd --system`-assigned uid, NOT 1000 -- confirmed different
+  # from sftpgo's fixed 1000 by checking docker/schedule-ingest.Dockerfile),
+  # and it also needs write access to this same volume (moving files
+  # between WATCH_DIR/STORAGE_DIR). Owner-only permissions for uid 1000
+  # would fix sftpgo's mkdir but leave schedule-ingest hitting the identical
+  # permission-denied error the moment a real delivery arrives -- group-
+  # writable plus schedule-ingest joining group 1000 covers both
+  # containers, mirroring what Kubernetes' fsGroup does automatically for
+  # every container in a Pod (the Helm chart needs no equivalent extra
+  # step, since fsGroup already covers `ingest` there too).
+  schedule-feed-volume-permissions:
+    image: busybox:latest
+    command: ["sh", "-c", "chown -R 1000:1000 /data/schedule-feed && chmod -R g+rwX /data/schedule-feed"]
+    volumes:
+      - schedule_feed_data:/data/schedule-feed
+    restart: "no"
+
   schedule-sftp:
     image: drakkan/sftpgo:latest   # tag pinning is an implementation-time
                                     # decision, not sketched further here
     restart: unless-stopped
+    depends_on:
+      schedule-feed-volume-permissions:
+        condition: service_completed_successfully
     ports:
       - "${SCHEDULE_SFTP_PORT:-2222}:2022"
     volumes:
@@ -404,6 +441,15 @@ services:
         condition: service_healthy
       schedule-sftp:
         condition: service_started
+      schedule-feed-volume-permissions:
+        condition: service_completed_successfully
+    # Joins group 1000 (this volume's group ownership, set by
+    # schedule-feed-volume-permissions above) as a supplementary group,
+    # without changing this container's own uid (still Dockerfile's
+    # `poller`) -- see that service's comment for why this is needed in
+    # addition to the chown/chmod step, not instead of it.
+    group_add:
+      - "1000"
     environment:
       # crates/schedule-ingest/src/config.rs: Config
       #
