@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Modal, Text, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import { TextLink } from './TextLink';
+import { useNeedsLogin } from './useNeedsLogin';
+import { LoginPrompt } from './LoginPrompt';
 
 /** Deletes via the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * — this is a Client Component and cannot reach the `api` service directly.
@@ -28,14 +29,12 @@ export function DeleteLineButton({ id }: { id: string }) {
   const [opened, { open, close }] = useDisclosure(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Set on a 401 from the delete request, cleared at the start of every
-  // fresh attempt — same shape as `PinToggle`'s `needsLogin`.
-  const [needsLogin, setNeedsLogin] = useState(false);
+  const needsLoginState = useNeedsLogin();
 
   async function handleDelete() {
     setDeleting(true);
     setError(null);
-    setNeedsLogin(false);
+    needsLoginState.reset();
     try {
       const response = await fetch(`/api/lines/${id}`, { method: 'DELETE' });
       if (!response.ok) {
@@ -44,7 +43,7 @@ export function DeleteLineButton({ id }: { id: string }) {
         // Every other non-ok status still falls through to the generic
         // error text, unchanged from before.
         if (response.status === 401) {
-          setNeedsLogin(true);
+          needsLoginState.markNeedsLogin();
         } else {
           const message = await response.text();
           setError(message || `Request failed: ${response.status}`);
@@ -67,11 +66,7 @@ export function DeleteLineButton({ id }: { id: string }) {
       <Modal opened={opened} onClose={close} title="Delete this line?">
         <Text>This cannot be undone.</Text>
         {error && <Text c="red">{error}</Text>}
-        {needsLogin && (
-          <TextLink href="/api/auth/login" underline="always">
-            Log in to delete a line
-          </TextLink>
-        )}
+        {needsLoginState.needsLogin && <LoginPrompt verb="delete a line" />}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={deleting}>
             Cancel

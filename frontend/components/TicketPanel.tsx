@@ -20,9 +20,14 @@ import type { TrackedTrainTicket } from '@/lib/types';
  * separately calls the already-established `getSession()` first to tell
  * "not logged in at all" apart from "logged in, but not the owner of this
  * pin" -- the two cases Decision 1 requires rendering completely
- * differently (a login nudge vs. nothing at all). This composition, not a
- * change to `getTicketsForTrackedTrain`'s own spec-pinned signature, is how
- * this plan resolves that gap -- see this plan's own top-level note on it. */
+ * differently (a login nudge vs. nothing at all). This three-way branch is
+ * "the ownership-probe pattern" (see
+ * docs/superpowers/specs/2026-08-31-anonymous-user-ux-design.md
+ * §Reusable pattern) -- the reference shape for any future page/component
+ * that needs to show owner-scoped content on an otherwise-public route. This
+ * composition, not a change to `getTicketsForTrackedTrain`'s own
+ * spec-pinned signature, is how this plan resolves that gap -- see this
+ * plan's own top-level note on it. */
 export async function TicketPanel({ trackingId }: { trackingId: number }) {
   // Same defensive fallback as app/layout.tsx: an auth-status glitch should
   // degrade to the login nudge, not break this whole page for every
