@@ -50,6 +50,10 @@ pub fn router() -> Router {
             "/schedule-feed-ingests",
             axum::routing::get(get_schedule_feed_last_fetched).post(post_schedule_feed_ingest),
         )
+        .route(
+            "/stanox-crs",
+            axum::routing::get(get_stanox_crs).post(post_stanox_crs),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -221,6 +225,27 @@ async fn post_schedule_feed_ingest(
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted: 1 }))
+}
+
+/// `crates/schedule-reference`'s per-sequence batch of resolved
+/// STANOX/CRS rows -- see `queries::upsert_stanox_crs`.
+async fn post_stanox_crs(
+    State(app): State<App>,
+    Json(records): Json<Vec<common::StanoxCrsRecord>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = queries::upsert_stanox_crs(&app.database, &records)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+/// `trust-consumer`'s periodic live-table reload -- returns the full
+/// current table, not a freshness timestamp (see `queries::list_stanox_crs`'s
+/// own doc comment for why this route differs from every `last_*_fetch`
+/// GET elsewhere in this file).
+async fn get_stanox_crs(State(app): State<App>) -> Result<Json<Vec<common::StanoxCrsRecord>>, (StatusCode, String)> {
+    let rows = queries::list_stanox_crs(&app.database).await.map_err(internal_error)?;
+    Ok(Json(rows))
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
