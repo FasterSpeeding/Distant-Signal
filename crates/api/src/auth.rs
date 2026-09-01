@@ -96,6 +96,57 @@ pub fn clear_cookie_header(name: &str, secure: bool) -> String {
     format!("{name}=; Path=/; HttpOnly; {secure}SameSite=Lax; Max-Age=0")
 }
 
+/// Accepts only a same-origin, absolute-path, relative URL reference --
+/// rejects anything that could make `Redirect::temporary` send a
+/// just-authenticated, trusting browser somewhere off-site (open
+/// redirect / post-login phishing). Called twice per login: once in
+/// `routes::auth::login` (validate before persisting to
+/// `oidc_login_state`) and once in `routes::auth::callback` (validate
+/// again before using the persisted value) -- see that module for both
+/// call sites.
+pub fn validate_return_to(raw: &str) -> Option<String> {
+    const MAX_LEN: usize = 2048;
+    if raw.is_empty() || raw.len() > MAX_LEN {
+        return None;
+    }
+    // Header-injection guard, and a defense against browsers that strip
+    // or reinterpret stray control characters (tabs, NULs) during URL
+    // normalization in ways this function shouldn't have to model.
+    if raw.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    // Some browsers normalize a leading `/\` (or backslashes generally)
+    // into `//` during navigation -- i.e. into a protocol-relative URL.
+    // Rejecting `\` anywhere sidesteps needing to reason about exactly
+    // which browsers do this and how.
+    if raw.contains('\\') {
+        return None;
+    }
+    // Must be an absolute-path reference: exactly one leading '/', not
+    // '//...' (protocol-relative -- a browser resolves this to
+    // `https://<attacker-controlled-host>/...`) and not a scheme
+    // (`javascript:`, `https:`, etc., which `starts_with('/')` already
+    // excludes on its own, but is worth stating as intent).
+    if !raw.starts_with('/') || raw.starts_with("//") {
+        return None;
+    }
+    // Authoritative check, not just belt-and-braces: resolve `raw`
+    // against a fixed, arbitrary dummy origin using the same URL parser
+    // this crate already depends on (`openidconnect::url`, i.e. the
+    // `url` crate -- a WHATWG URL Standard implementation, the same
+    // parsing algorithm real browsers use). If the parsed result's
+    // scheme/host ever differ from the dummy origin, `raw` smuggled a
+    // scheme or host past the prefix checks above through some
+    // normalization quirk those checks didn't anticipate -- reject
+    // rather than trust the prefix checks alone.
+    let base = openidconnect::url::Url::parse("http://return-to.invalid").ok()?;
+    let joined = base.join(raw).ok()?;
+    if joined.scheme() != "http" || joined.host_str() != Some("return-to.invalid") {
+        return None;
+    }
+    Some(raw.to_string())
+}
+
 /// A fresh, high-entropy opaque session/login-state token: 256 bits of OS
 /// randomness, base64url-encoded (no padding) for a clean cookie value.
 /// This is the value actually sent to the browser -- never stored
@@ -267,5 +318,98 @@ mod tests {
         // generate_session_token is broken (e.g. always returning a fixed
         // value), not bad luck.
         assert_ne!(generate_session_token(), generate_session_token());
+    }
+
+    #[test]
+    fn validate_return_to_accepts_a_plain_relative_path() {
+        assert_eq!(validate_return_to("/lines/some-line"), Some("/lines/some-line".to_string()));
+    }
+
+    #[test]
+    fn validate_return_to_accepts_a_relative_path_with_a_query_string_unchanged() {
+        // Returns the ORIGINAL string, not a re-serialization -- Url's own
+        // serialization can reorder/re-encode a query string in ways a
+        // caller wouldn't expect.
+        let raw = "/lines/some-line?tab=history&x=1";
+        assert_eq!(validate_return_to(raw), Some(raw.to_string()));
+    }
+
+    #[test]
+    fn validate_return_to_rejects_empty_string() {
+        assert_eq!(validate_return_to(""), None);
+    }
+
+    #[test]
+    fn validate_return_to_rejects_oversized_input() {
+        let raw = format!("/{}", "a".repeat(2048));
+        assert_eq!(validate_return_to(&raw), None);
+    }
+
+    #[test]
+    fn validate_return_to_accepts_input_at_exactly_the_length_cap() {
+        let raw = format!("/{}", "a".repeat(2047)); // total length 2048
+        assert!(validate_return_to(&raw).is_some());
+    }
+
+    #[test]
+    fn validate_return_to_rejects_control_characters() {
+        assert_eq!(validate_return_to("/foo\tbar"), None);
+        assert_eq!(validate_return_to("/foo\r\nbar"), None);
+        assert_eq!(validate_return_to("/foo\0bar"), None);
+    }
+
+    #[test]
+    fn validate_return_to_rejects_backslash_tricks() {
+        // Some browsers normalize a leading /\ into // (protocol-relative)
+        // during navigation.
+        assert_eq!(validate_return_to("/\\evil.com"), None);
+        assert_eq!(validate_return_to("/foo\\bar"), None);
+    }
+
+    #[test]
+    fn validate_return_to_rejects_protocol_relative_urls() {
+        assert_eq!(validate_return_to("//evil.com"), None);
+        assert_eq!(validate_return_to("//evil.com/path"), None);
+    }
+
+    #[test]
+    fn validate_return_to_rejects_absolute_urls_with_a_scheme_and_host() {
+        assert_eq!(validate_return_to("https://evil.com/phish"), None);
+        assert_eq!(validate_return_to("http://evil.com"), None);
+    }
+
+    #[test]
+    fn validate_return_to_rejects_a_javascript_scheme() {
+        assert_eq!(validate_return_to("javascript:alert(1)"), None);
+    }
+
+    #[test]
+    fn validate_return_to_rejects_fragment_only_input() {
+        // A fragment is never sent to the server on any HTTP request -- this
+        // isn't a bypass, it's this function correctly rejecting a value that
+        // was never a valid absolute-path reference to begin with (no leading
+        // '/'). Documents the known, accepted limitation from the spec's Open
+        // Questions: LoginLink has no mechanism to round-trip a URL fragment
+        // through this flow at all.
+        assert_eq!(validate_return_to("#section"), None);
+    }
+
+    #[test]
+    fn validate_return_to_rejects_a_bare_double_slash_with_no_path() {
+        assert_eq!(validate_return_to("//"), None);
+    }
+
+    #[test]
+    fn validate_return_to_currently_accepts_a_return_path_back_into_the_auth_flow_itself() {
+        // NOT a security hole -- these are same-origin absolute-path
+        // references, which is all this function verifies -- but a plausible
+        // dead-end/confusing-loop edge case the design spec's Open Questions
+        // section explicitly flags and does NOT resolve in this pass (no
+        // redirect-loop guard is implemented -- see this plan's Global
+        // Constraints). This test pins today's actual behavior so that
+        // whoever eventually adds the guard gets a failing test forcing them
+        // to update it, rather than a silent behavior change.
+        assert!(validate_return_to("/api/auth/login").is_some());
+        assert!(validate_return_to("/api/auth/callback").is_some());
     }
 }
