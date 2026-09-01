@@ -142,7 +142,6 @@ pub struct LoginState {
     pub pkce_verifier: String,
     pub nonce: String,
     pub csrf_state: String,
-    pub return_to: Option<String>,
 }
 
 pub async fn insert_login_state(
@@ -151,7 +150,6 @@ pub async fn insert_login_state(
     pkce_verifier: &str,
     nonce: &str,
     csrf_state: &str,
-    return_to: Option<&str>,
 ) -> Result<()> {
     // Opportunistic cleanup -- no cron needed for a table this small and
     // self-limiting; every login attempt takes out its own trash.
@@ -159,14 +157,13 @@ pub async fn insert_login_state(
         .execute(pool)
         .await?;
     sqlx::query(
-        "INSERT INTO oidc_login_state (id, pkce_verifier, nonce, csrf_state, return_to, created_at) \
-         VALUES ($1, $2, $3, $4, $5, NOW())",
+        "INSERT INTO oidc_login_state (id, pkce_verifier, nonce, csrf_state, created_at) \
+         VALUES ($1, $2, $3, $4, NOW())",
     )
     .bind(id)
     .bind(pkce_verifier)
     .bind(nonce)
     .bind(csrf_state)
-    .bind(return_to)
     .execute(pool)
     .await?;
     Ok(())
@@ -180,7 +177,7 @@ pub async fn consume_login_state(pool: &PgPool, id: &str) -> Result<Option<Login
     let row = sqlx::query_as::<_, LoginState>(
         "DELETE FROM oidc_login_state \
          WHERE id = $1 AND created_at > NOW() - INTERVAL '15 minutes' \
-         RETURNING pkce_verifier, nonce, csrf_state, return_to",
+         RETURNING pkce_verifier, nonce, csrf_state",
     )
     .bind(id)
     .fetch_optional(pool)
