@@ -392,6 +392,33 @@ pub async fn get_by_uid_and_date(
     Ok(row)
 }
 
+/// Deletes a tracked train by id, scoped to the caller's ownership -- the
+/// check is folded directly into the `WHERE` clause
+/// (`WHERE id = $1 AND user_id = $2`), the same shape
+/// `custom_lines::delete_custom_line` uses, rather than a separate
+/// `tracked_train_owner` lookup followed by an unscoped delete. Unlike
+/// `delete_custom_line` (which also has to clean up a `pinned_lines` row
+/// with no FK of its own), nothing else needs deleting here: every other
+/// row that references a `tracked_trains` id --
+/// `train_movement_events`, `train_current_state` (both
+/// `crates/api/migrations/20260828120000_train_tracking.sql`), and
+/// `tracked_train_tickets` (`crates/api/migrations/20260829090000_journey_ticket_tracking.sql`)
+/// -- is declared `ON DELETE CASCADE`, so a single `DELETE FROM
+/// tracked_trains` here is sufficient; Postgres does the rest inside the
+/// same statement's transaction. Returns `true` if a row was deleted,
+/// `false` if no tracked train with that id belongs to this caller
+/// (doesn't exist, or belongs to someone else -- indistinguishable at this
+/// layer, same as every other ownership check in this file; the route
+/// handler maps `false` to `404`, never `403`).
+pub async fn delete_tracked_train(pool: &PgPool, id: i64, user_id: &str) -> anyhow::Result<bool> {
+    let result = sqlx::query("DELETE FROM tracked_trains WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

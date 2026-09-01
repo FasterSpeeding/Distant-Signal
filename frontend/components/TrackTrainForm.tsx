@@ -4,6 +4,7 @@ import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button, Group, Stack, TextInput } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
+import dayjs from 'dayjs';
 import { LoginLink } from './LoginLink';
 import type { TrackPinRequest, TrackPinResponse } from '@/lib/types';
 
@@ -106,18 +107,35 @@ export function TrackTrainForm({ initialOrigin = '' }: { initialOrigin?: string 
         error={originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
         required
       />
-      <DateTimePicker
-        label="Scheduled departure"
-        placeholder="Pick date and time"
-        value={scheduledDeparture}
-        onChange={setScheduledDeparture}
-        // The backend rejects a departure more than 6 hours in the past
-        // (`crates/api/src/data/train_tracking.rs`'s `MAX_PIN_AGE`) --
-        // this hint is here so a rejection is rare rather than the
-        // user's first encounter with the rule, per Decision 1.
-        description="Must be within the last 6 hours, or any time in the future"
-        required
-      />
+      <Group align="flex-end" gap="xs">
+        <DateTimePicker
+          label="Scheduled departure"
+          placeholder="Pick date and time"
+          value={scheduledDeparture}
+          onChange={setScheduledDeparture}
+          // The backend rejects a departure more than 6 hours in the past
+          // (`crates/api/src/data/train_tracking.rs`'s `MAX_PIN_AGE`) --
+          // this hint is here so a rejection is rare rather than the
+          // user's first encounter with the rule, per Decision 1.
+          description="Must be within the last 6 hours, or any time in the future"
+          required
+          style={{ flexGrow: 1 }}
+        />
+        {/* `@mantine/dates`' own `presets` prop (9.5.2) only ever assigns a
+            *date* (`DatePickerPreset['value']` is a bare `DateStringValue`,
+            like `DatePicker`'s "Today"/"Yesterday" presets) -- it has no
+            way to also fill in a time-of-day, so it can't produce "right
+            now" on its own; a plain Button next to the picker is the clean
+            fit here instead. `dayjs().format('YYYY-MM-DD HH:mm:ss')`
+            deliberately matches the exact local-wall-clock string shape
+            the picker itself produces (`assign-time.mjs`'s own
+            `date.format('YYYY-MM-DD HH:mm:ss')`) -- see this file's own
+            `handleSubmit` comment on why that shape, not an ISO string,
+            is required to avoid an around-local-midnight day-off-by-one. */}
+        <Button variant="default" onClick={() => setScheduledDeparture(dayjs().format('YYYY-MM-DD HH:mm:ss'))}>
+          Now
+        </Button>
+      </Group>
       <TextInput
         label="Destination CRS code (optional)"
         placeholder="e.g. WOK"

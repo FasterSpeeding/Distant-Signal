@@ -192,4 +192,39 @@ describe('TrackTrainForm', () => {
     const body = JSON.parse(init!.body as string);
     expect(body.service_date).toBe('2026-08-29');
   });
+
+  it('the Now button fills the picker with a well-formed local wall-clock value and enables submit', () => {
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Now' }));
+
+    const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+    // 'YYYY-MM-DD HH:mm:ss', not an ISO string -- matching the exact shape
+    // the real DateTimePicker produces (see this component's own
+    // handleSubmit comment on why that distinction matters).
+    expect(picker.value).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(screen.getByRole('button', { name: /Track this train/ })).not.toBeDisabled();
+  });
+
+  it('submits successfully after clicking Now, sending a well-formed ISO scheduled_departure', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ trackingId: 99, resolutionStatus: 'pending' }), { status: 200 }),
+    );
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Now' }));
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+    });
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init!.body as string);
+    expect(body.service_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(() => new Date(body.scheduled_departure).toISOString()).not.toThrow();
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith('/train/by-id/99');
+    });
+  });
 });

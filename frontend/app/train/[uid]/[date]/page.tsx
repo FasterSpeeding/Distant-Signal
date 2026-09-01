@@ -1,9 +1,10 @@
-import { Stack, Title } from '@mantine/core';
+import { Stack, Title, Group } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import { getTrackedTrainByUidAndDate, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { TrainJourney } from '@/components/TrainJourney';
 import { TicketPanel } from '@/components/TicketPanel';
 import { TextLink } from '@/components/TextLink';
+import { DeleteTrainButton } from '@/components/DeleteTrainButton';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -49,7 +50,10 @@ export default async function TrackedTrainByUidPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Train {uid}</Title>
+      <Group justify="space-between">
+        <Title order={1}>Train {uid}</Title>
+        <DeleteTrainButton trackingId={state.id} />
+      </Group>
       <TrainJourney state={state} />
       <TicketPanel trackingId={state.id} />
     </Stack>
