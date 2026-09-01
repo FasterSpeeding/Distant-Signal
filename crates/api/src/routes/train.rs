@@ -64,10 +64,6 @@ struct DelayRepayEstimateResponse {
     disclaimer: &'static str,
 }
 
-const DELAY_REPAY_ROUTE_DISCLAIMER: &str = "This is a rough, community-sourced estimate, not a \
-    guarantee of compensation and not proof you travelled. This app never submits a claim on your \
-    behalf -- verify eligibility and claim directly from the operator using the link above.";
-
 async fn post_ticket(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -142,7 +138,7 @@ fn build_delay_repay_response(
         delay_minutes: state.delay_minutes,
         estimate,
         claim_url: claim_url.to_string(),
-        disclaimer: DELAY_REPAY_ROUTE_DISCLAIMER,
+        disclaimer: delay_repay_rules::ROUTE_DISCLAIMER,
     }
 }
 

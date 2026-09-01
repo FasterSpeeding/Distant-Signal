@@ -34,6 +34,23 @@ const DISCLAIMER: &str = "This is a rough, community-sourced estimate, not a gua
     compensation and not proof you travelled. Always verify eligibility and submit any claim \
     directly with the operator -- this app never submits a claim on your behalf.";
 
+/// The route-level disclaimer rendered by every HTTP response that carries
+/// a Delay Repay estimate -- textually DIFFERENT from `DISCLAIMER` above
+/// (that one lives inside a non-null `DelayRepayEstimate.disclaimer`; this
+/// one is the always-populated, top-level field on the response, present
+/// even when `estimate` is `None`). Hoisted here (rather than staying
+/// private to `routes/train.rs`) so both call sites that need it --
+/// `routes/train.rs`'s `build_delay_repay_response` and
+/// `train_tracking.rs`'s `build_ticket_list_item` -- read the exact same
+/// string, closing a drift risk for a safety-critical, verbatim-required
+/// piece of text (see `components/DelayRepayEstimate.tsx`'s own doc
+/// comment: this string must render "in full, every time," never
+/// paraphrased or shortened). Byte-identical to the const this replaced --
+/// a mechanical move, not a wording change.
+pub const ROUTE_DISCLAIMER: &str = "This is a rough, community-sourced estimate, not a \
+    guarantee of compensation and not proof you travelled. This app never submits a claim on your \
+    behalf -- verify eligibility and claim directly from the operator using the link above.";
+
 /// Operators verified (in this plan's own research pass, cross-checking
 /// docs/superpowers/specs/2026-08-29-journey-ticket-tracking-design.md's
 /// citation) to still run the older Delay Repay 30 scheme, which has no
@@ -160,5 +177,15 @@ mod tests {
     #[test]
     fn an_unlisted_operator_still_gets_a_real_link_never_none() {
         assert_eq!(claim_url_for("Some Operator Not In Our Table"), GENERIC_CLAIM_URL);
+    }
+
+    #[test]
+    fn route_disclaimer_is_distinct_from_the_per_estimate_disclaimer_and_non_empty() {
+        // Two different strings by design -- see ROUTE_DISCLAIMER's own doc
+        // comment and components/DelayRepayEstimate.tsx's doc comment for
+        // why rendering both at once would read as inconsistent, not
+        // doubly cautious.
+        assert_ne!(ROUTE_DISCLAIMER, DISCLAIMER);
+        assert!(!ROUTE_DISCLAIMER.is_empty());
     }
 }
