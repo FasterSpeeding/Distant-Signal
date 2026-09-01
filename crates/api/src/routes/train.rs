@@ -375,6 +375,40 @@ mod tests {
         let _ = router();
     }
 
+    /// `router_builds_without_panicking` above only proves matchit sees no
+    /// *conflict* between `/Train/mine` (literal) and `/Train/{tracking_id}`
+    /// (dynamic, same segment position) at construction time -- it says
+    /// nothing about which handler an actual `GET /Train/mine` request gets
+    /// dispatched to. This test closes that gap: a minimal, state-free
+    /// two-route reproduction of the same shape (literal vs. dynamic GET at
+    /// the same position), proving matchit's real request-time precedence
+    /// sends the literal route to the literal handler rather than letting
+    /// `Path<i64>` on the dynamic sibling capture it. Deliberately does not
+    /// build a real `AppState`/`App` or call this file's own `router()` --
+    /// the crate has no existing `oneshot()`-style router-test
+    /// infrastructure, and standing that up just to exercise this one
+    /// mechanism would be disproportionate; a throwaway `Router::new()`
+    /// with matching route shapes isolates the exact risk without it.
+    #[tokio::test]
+    async fn literal_route_wins_over_same_position_dynamic_route() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = axum::Router::new()
+            .route("/Train/mine", axum::routing::get(|| async { "literal" }))
+            .route("/Train/{id}", axum::routing::get(|| async { "dynamic" }));
+
+        let response = app
+            .oneshot(Request::builder().uri("/Train/mine").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"literal");
+    }
+
     #[test]
     fn dr30_operator_with_a_qualifying_delay_gets_a_specific_estimate_and_claim_url() {
         let response = build_delay_repay_response(&ticket(Some("LNER")), &state(Some(45)));

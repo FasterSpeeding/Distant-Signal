@@ -85,6 +85,23 @@ function TrackedTrainListRow({ train }: { train: TrackedTrainListItem }) {
   );
 }
 
+// Short, human badge words for the raw enum tokens this page can receive --
+// `resolutionStatus` (`pending`/`unresolved`) and journey `status`
+// (`awaiting_activation`/`en_route`/`completed`/`cancelled`). Kept local to
+// this file rather than reused from `TrainJourney.tsx`: that component's
+// equivalent branching renders full sentences for a detail page's
+// `Alert`/prose, not a short word for a list-row `Badge`. Falls back to the
+// raw token itself for anything unlisted, so an unexpected value never
+// disappears from the badge.
+const STATUS_LABELS: Record<string, string> = {
+  pending: 'Pending match',
+  unresolved: 'Unmatched',
+  awaiting_activation: 'Not yet started',
+  en_route: 'En route',
+  completed: 'Completed',
+  cancelled: 'Cancelled',
+};
+
 function RowStatusBadge({ train }: { train: TrackedTrainListItem }) {
   // `pending`/`unresolved` show the resolution status itself -- no
   // journey status exists yet for either. Once `resolved`, the journey
@@ -97,15 +114,20 @@ function RowStatusBadge({ train }: { train: TrackedTrainListItem }) {
   if (train.resolutionStatus !== 'resolved') {
     return (
       <Badge color={train.resolutionStatus === 'unresolved' ? 'red' : 'gray'} variant="light">
-        {train.resolutionStatus}
+        {STATUS_LABELS[train.resolutionStatus] ?? train.resolutionStatus}
       </Badge>
     );
   }
   return (
     <Group gap={6} wrap="nowrap">
       {train.status && (
-        <Badge color="gray" variant="light">
-          {train.status}
+        // Cancelled is the one state this at-a-glance triage page must
+        // make visually distinct -- everything else (en route, completed,
+        // awaiting activation) stays the neutral gray a running/finished
+        // train shares, matching the single-train detail page's red
+        // `Alert` treatment of the same status (`TrainJourney.tsx`).
+        <Badge color={train.status === 'cancelled' ? 'red' : 'gray'} variant="light">
+          {STATUS_LABELS[train.status] ?? train.status}
         </Badge>
       )}
       {train.delayMinutes !== null && (

@@ -73,6 +73,27 @@ describe('MyTrackedTrainsPage', () => {
       item({ resolutionStatus: 'unresolved', trainUid: null, status: null, delayMinutes: null }),
     ]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText('unresolved')).toBeInTheDocument();
+    expect(screen.getByText('Unmatched')).toBeInTheDocument();
+  });
+
+  it('origin-only train (no destination): renders just the origin CRS, no arrow', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ pinDestinationCrs: null })]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    const link = screen.getByRole('link', { name: /^WAT/ });
+    expect(link).toBeInTheDocument();
+    expect(link.textContent).not.toContain('→');
+  });
+
+  it('renders rows in the same order getMyTrackedTrains returned them', async () => {
+    const first = item({ id: 1, pinOriginCrs: 'WAT' });
+    const second = item({ id: 2, pinOriginCrs: 'PAD' });
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([first, second]);
+    renderWithMantine(await MyTrackedTrainsPage());
+
+    const links = screen.getAllByRole('link');
+    const originOrder = links
+      .map((link) => link.textContent ?? '')
+      .filter((text) => text.startsWith('WAT') || text.startsWith('PAD'));
+    expect(originOrder).toEqual([expect.stringMatching(/^WAT/), expect.stringMatching(/^PAD/)]);
   });
 });
