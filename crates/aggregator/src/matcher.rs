@@ -2764,6 +2764,50 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
+    // Station Catalogue Completeness Task 1.3: fills in three previously
+    // missing intermediate stations on gwr-south-wales.toml (Patchway,
+    // Pilning, Severn Tunnel Junction), two-source confirmed and inserted at
+    // their true geographic position between BPW and NWP. See that file's
+    // own segment-naming comment for the full sourcing/rationale.
+    #[test]
+    fn gwr_south_wales_infill_stations_present() {
+        let lines = load_line("gwr-south-wales");
+        let line = lines.get("gwr-south-wales").expect("gwr-south-wales line should exist");
+        for crs in ["PWY", "PIL", "STJ"] {
+            assert!(line.has_station(crs), "gwr-south-wales should now list {crs}");
+        }
+    }
+
+    // Same task: an incident at one of the newly-added stations (Severn
+    // Tunnel Junction) should behave exactly like the pre-existing Bridgend
+    // exclusive-segment case above -- `gwr-south-wales` is not shared with
+    // any sibling line's own segment at this station (grepping the
+    // catalogue confirms no other line file lists PWY/PIL/STJ as a station
+    // at all, let alone shares the `gwr-south-wales` segment name -- see
+    // that file's own research comment on the deliberate decision not to
+    // reuse `xc-cardiff`'s segment name despite the genuine physical track
+    // convergence there), so this stays a clean ExclusiveSegment match with
+    // no shared-segment propagation to assert, mirroring
+    // `gwr_cornish_main_line_saltash_incident_stays_on_its_own_line`'s /
+    // `gwr_cotswold_hanborough_incident_stays_on_its_own_line`'s identical
+    // judgment call for those files' own infill tasks.
+    #[test]
+    fn gwr_south_wales_severn_tunnel_junction_incident_stays_on_its_own_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "GW-19",
+            "Flooding at Severn Tunnel Junction",
+            "Flooding causing delays at Severn Tunnel Junction.",
+            &["GW"],
+            &["STJ"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-south-wales".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
     // `gwr-main-line`, `gwr-cotswold` and `gwr-south-wales` all share the
     // `gwr-trunk-paddington` segment, but only at the stations each file
     // actually lists on it: gwr-cotswold.toml stops at DID (Cotswold
