@@ -88,12 +88,26 @@ excluded_keywords = ["Hastings line"]
 # "between ... and Dover Priory" slicing would silently include the
 # other branch's stations. Rather than risk that silent corruption, this
 # file keeps a single DVP entry (unchanged, still `chatham-dover`) and
-# ends `chatham-deal` at Martin Mill, the last new station confirmed;
-# DVP itself was already `has_station() == true` for this file before
-# this task via the existing `chatham-dover` entry, so no station
-# genuinely goes unrepresented - only the specific MTM<->DVP index-range
-# slice is left unmodelled, and it is now disclosed here rather than
-# guessed at.
+# ends `chatham-deal` at Martin Mill, the last new station confirmed.
+# This is the right call between two imperfect options - it preserves
+# correctness for the pre-existing, more important `chatham-dover`
+# CBE-to-DVP resolution - but it does NOT make the MTM-to-DVP pair
+# safe: with the single DVP entry positioned at the very end of the
+# file (after the whole `chatham-dover` branch), a hypothetical
+# `stations_between("MTM", "DVP")` call would not return nothing, it
+# would silently return MTM plus the entire unrelated `chatham-dover`
+# branch (CBE, BKS, ADM, AYH, SWO, SPH, KSN) plus DVP - the same
+# "silently wrong branch" failure mode described above, just landing on
+# the pair that was deliberately left broken rather than the pair that
+# was deliberately kept correct. DVP itself was already
+# `has_station() == true` for this file before this task via the
+# existing `chatham-dover` entry, so no station goes unrepresented -
+# only `stations_between` queries naming both MTM (or any `chatham-deal`
+# station) and DVP together are unsafe, and that risk is disclosed here
+# rather than left for a future reader to discover the hard way. (This
+# flat-array/branching-index limitation isn't new to this task - the
+# same ambiguity already existed pre-task at the FAV divergence point
+# between `chatham-coastal` and `chatham-dover`.)
 #
 # southeastern-highspeed.toml's own header comment (around lines 70-79)
 # says it deliberately left this same stretch out too, "for consistency"
