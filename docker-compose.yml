@@ -335,6 +335,83 @@ services:
       retries: 5
       start_period: 15s
 
+  # schedule-sftp + schedule-ingest: the local-dev equivalent of the Helm
+  # chart's single Pod with two containers sharing one PVC (see
+  # charts/distant-signal/templates/schedulefeed-deployment.yaml). Compose
+  # has no native "two containers, one Pod" primitive, so two services
+  # sharing one named volume (schedule_feed_data below) is the closest
+  # local-dev approximation, not a literal reproduction of that shape.
+  schedule-sftp:
+    image: drakkan/sftpgo:latest   # tag pinning is an implementation-time
+                                    # decision, not sketched further here
+    restart: unless-stopped
+    ports:
+      - "${SCHEDULE_SFTP_PORT:-2222}:2022"
+    volumes:
+      - schedule_feed_data:/data/schedule-feed
+      - ./schedule-sftp-host-keys:/srv/sftpgo/host_keys:ro
+    environment:
+      SFTPGO_SFTPD__BINDINGS__0__PORT: "2022"
+      # Real credentials for DTD's push client -- placeholder here, matching
+      # this repo's *.env.example convention for feeds with no confirmed
+      # endpoint yet (see docs/superpowers/plans/2026-09-01-schedule-feed-push-ingestion.md
+      # Task 1). Never auto-generated -- see Credentials in the push design
+      # doc.
+      #
+      # SFTPGO_DEFAULT_ADMIN_USERNAME/PASSWORD (the actual container env
+      # vars, matching charts/distant-signal/templates/schedulefeed-
+      # deployment.yaml's naming so local dev and the Helm chart agree) name
+      # SFTPGo's documented *admin* bootstrap vars as a placeholder shape
+      # only -- NOT confirmed to be how a scoped DTD virtual user is
+      # actually created; do not treat this pair as correct without
+      # checking against a real deployed image. SCHEDULE_SFTP_USERNAME/
+      # PASSWORD are this repo's own *.env.example-facing names, kept
+      # separate from the SFTPGo-specific ones above so a future real
+      # provisioning mechanism can change without renaming what operators
+      # actually fill in.
+      SFTPGO_DEFAULT_ADMIN_USERNAME: ${SCHEDULE_SFTP_USERNAME:?SCHEDULE_SFTP_USERNAME must be set once DTD's push account details are known -- see docs/superpowers/plans/2026-09-01-schedule-feed-push-ingestion.md Task 1}
+      SFTPGO_DEFAULT_ADMIN_PASSWORD: ${SCHEDULE_SFTP_PASSWORD:?SCHEDULE_SFTP_PASSWORD must be set once DTD's push account details are known -- see docs/superpowers/plans/2026-09-01-schedule-feed-push-ingestion.md Task 1}
+
+  schedule-ingest:
+    build:
+      context: .
+      dockerfile: docker/schedule-ingest.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      schedule-sftp:
+        condition: service_started
+    environment:
+      # crates/schedule-ingest/src/config.rs: Config
+      #
+      # WATCH_DIR must resolve to DTD's account's landing folder --
+      # SCHEDULE_FEED_DESTINATION_PATH, relative to that account's SFTP
+      # home directory (e.g. "incoming", or "incoming/2026" if a subfolder
+      # is needed) -- the same concept as the Helm chart's
+      # scheduleFeed.sftp.destinationFolder/folderPath (see
+      # charts/distant-signal/templates/_helpers.tpl's
+      # distant-signal.scheduleFeedDestinationPath), but collapsed to one
+      # value here: Compose's variable interpolation is a single-pass
+      # substitution (docker-compose.yml has no template-helper
+      # equivalent), and nesting a `${FOLDER_PATH:+/${FOLDER_PATH}}`-style
+      # expression inside another substitution is not something this repo
+      # can verify works without a real `docker compose config` run in
+      # this sandbox -- so the two path segments are combined into one
+      # operator-filled value instead of risking that.
+      WATCH_DIR: /data/schedule-feed/${SCHEDULE_FEED_DESTINATION_PATH:-incoming}
+      STORAGE_DIR: /data/schedule-feed
+      CHECK_TIMES: ${SCHEDULE_FEED_CHECK_TIMES:-22:00,22:30,23:00,23:30,00:00,00:30,01:00,01:30,16:00}
+      RETENTION_KEEP_SEQUENCES: ${RETENTION_KEEP_SEQUENCES:-2}
+      STABILITY_CYCLES: ${SCHEDULE_FEED_STABILITY_CYCLES:-2}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      RUST_LOG: ${RUST_LOG:-info}
+      API_INGEST_URL: http://api:8080/private/schedule-feed-ingests
+    volumes:
+      - schedule_feed_data:/data/schedule-feed
+
   frontend:
     build:
       context: .
@@ -353,3 +430,4 @@ services:
 
 volumes:
   postgres_data:
+  schedule_feed_data:

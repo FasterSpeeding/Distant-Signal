@@ -349,6 +349,25 @@ this distinction explicitly, do not let it become implicit:
   Task 10's live verification explicitly does not attempt a real DTD
   connection either way, so it is unaffected by this gate.
 
+**2026-09-01 status: unresolved, blocked-pending-repo-owner-action — not
+skipped, not defaulted to "yes."** This is a real-world outreach to RDG/DTD
+support, which no agent running in this sandbox has any channel to perform
+(no email/support-portal access, no prior correspondence to continue, and
+per the design doc itself, the DTD portal — the one channel that does
+exist — is exactly the thing in question for pull access and unconfirmed
+for push). Per this task's own framing and the identical precedent set by
+`docs/superpowers/plans/2026-08-31-private-custom-lines-and-tracked-trains.md`'s
+Task 1, this is recorded here as genuinely open rather than fabricated,
+guessed, or silently treated as resolved. Tasks 2–9 were implemented
+regardless, per this task's own "not gated" list below — none of them
+required this outcome. **Genuinely gated and still not started as of this
+status note**: filling in a real `scheduleFeed.sftp.username`/`authMethod`/
+`password`/`publicKey` value, requesting DTD register this app's actual
+host-key fingerprint or destination address, and exposing the real Service
+to the actual internet. Whoever next has an actual channel to RDG/DTD
+support should perform Step 1 below and update this status note with the
+real outcome before any of those gated actions are taken.
+
 - [ ] **Step 1: Send the outreach**
 
 Via whatever channel is available to whoever executes this plan (repo
@@ -382,12 +401,12 @@ verification into anything DTD-facing.
 
 Not gated by Task 1 (see Task 1's "not gated" list).
 
-- [ ] **Step 1: Add the crate to the workspace**
+- [x] **Step 1: Add the crate to the workspace**
 
 Add `crates/schedule-ingest` to the root `Cargo.toml`'s `[workspace]
 members`, following the existing list's ordering/style.
 
-- [ ] **Step 2: `Config`, following `crates/poller-ldbws/src/config.rs`'s
+- [x] **Step 2: `Config`, following `crates/poller-ldbws/src/config.rs`'s
   exact convention**, adapted for a directory-scanning watcher instead of a
   remote SFTP client per the push design doc's own compose/Helm sketches
   (`WATCH_DIR`/`STORAGE_DIR`/`CHECK_TIMES`/`RETENTION_KEEP_SEQUENCES`):
@@ -449,7 +468,7 @@ pub struct Config {
 }
 ```
 
-- [ ] **Step 3: `main.rs` skeleton** — `tracing-subscriber` init,
+- [x] **Step 3: `main.rs` skeleton** — `tracing-subscriber` init,
   `common::metrics::install` (matching every other poller's `main.rs`
   opener), `Config::parse()`, and a `tokio::main` entry point that Task 5
   fills in with the real scheduling loop. Leave the loop body as a `todo!()`
@@ -457,20 +476,20 @@ pub struct Config {
   to get the crate compiling and matching this repo's existing `main.rs`
   shape, not to implement the loop (Task 5's job).
 
-- [ ] **Step 4: `docker/schedule-ingest.Dockerfile`**, copying
+- [x] **Step 4: `docker/schedule-ingest.Dockerfile`**, copying
   `docker/poller-ldbws.Dockerfile` byte-for-byte except for the crate name
   and binary path (same `rust:1.88-bookworm` pin, same BuildKit cache-mount
   shape, same multi-stage builder/runtime split — no C-toolchain
   requirement exists for this crate, unlike `trust-consumer`, so the
   runtime stage needs nothing `poller-ldbws`'s doesn't already have).
 
-- [ ] **Step 5: Compile-check**
+- [x] **Step 5: Compile-check**
 
 Run: `cargo check -p schedule-ingest` (and `cargo check --workspace` to
 confirm the new workspace member doesn't break anything else).
 Expected: PASS (a `main.rs` with a `todo!()` loop body still compiles).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Cargo.toml crates/schedule-ingest docker/schedule-ingest.Dockerfile
@@ -500,7 +519,7 @@ Not gated by Task 1 — this logic is entirely testable against
 hand-written fixtures matching the real manifest's confirmed format,
 independent of whether DTD can ever push here.
 
-- [ ] **Step 1: `manifest::parse`**
+- [x] **Step 1: `manifest::parse`**
 
 The real `RJTTF942DAT.txt` (read directly from the untracked
 `timetable_full.zip` while writing this plan — **not committed to this
@@ -536,7 +555,7 @@ from its own listing (per RSPS5046 §5.2.2, already confirmed by prior
 research — a `.DAT` file lists every other file in the delivery except
 itself).
 
-- [ ] **Step 2: `classify_sequence`**, reused directly from the pull design
+- [x] **Step 2: `classify_sequence`**, reused directly from the pull design
   doc's Pull procedure step 4 (the push design doc states this "all applies
   here unchanged"):
 
@@ -565,7 +584,7 @@ non-contiguous sequence number is documented, expected behaviour after an
 design doc, which the push design doc states applies "irrespective of
 delivery direction").
 
-- [ ] **Step 3: `scan::scan_incoming` and `StabilityTracker`**
+- [x] **Step 3: `scan::scan_incoming` and `StabilityTracker`**
 
 ```rust
 // sketch -- adapt to this crate's actual error-handling conventions
@@ -608,7 +627,7 @@ as candidates for completeness checking at all") — the orchestration loop
 attempting to parse it, then checks stability of every file the parsed
 manifest names before considering the whole delivery complete.
 
-- [ ] **Step 4: Unit tests**
+- [x] **Step 4: Unit tests**
 
 Using small, hand-written fixture strings reproducing the real manifest's
 confirmed format (not the real 76MB delivery — see Global Constraints):
@@ -628,12 +647,12 @@ confirmed format (not the real 76MB delivery — see Global Constraints):
   seeded with a few files of known sizes; an empty directory returns an
   empty snapshot, not an error.
 
-- [ ] **Step 5: Run the crate's test suite**
+- [x] **Step 5: Run the crate's test suite**
 
 Run: `cargo test -p schedule-ingest`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/schedule-ingest/src/manifest.rs crates/schedule-ingest/src/scan.rs crates/schedule-ingest/Cargo.toml
@@ -662,7 +681,7 @@ git commit -m "Add manifest parsing, sequence-gap classification, and directory-
 
 Not gated by Task 1 — this is entirely this app's own database/API surface.
 
-- [ ] **Step 1: Migration**
+- [x] **Step 1: Migration**
 
 ```sql
 -- -------------------------------------------------------------------------
@@ -682,7 +701,7 @@ CREATE TABLE schedule_feed_ingests (
 );
 ```
 
-- [ ] **Step 2: `queries.rs` additions**
+- [x] **Step 2: `queries.rs` additions**
 
 ```rust
 pub async fn last_schedule_feed_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
@@ -719,7 +738,7 @@ error, matching this route's own idempotency needs — `schedule-ingest`
 itself doesn't track "have I already POSTed this" locally (state lives in
 `api`, per the pull design doc's own reasoning, reused unchanged).
 
-- [ ] **Step 3: `routes/ingest.rs` route**
+- [x] **Step 3: `routes/ingest.rs` route**
 
 ```rust
 #[derive(Debug, Deserialize)]
@@ -766,7 +785,7 @@ This route is reached only via `private_router()`, already gated by
 `require_internal_token` for the whole router — no new auth wiring needed,
 matching every sibling route in this file.
 
-- [ ] **Step 4: `freshness.rs` field**
+- [x] **Step 4: `freshness.rs` field**
 
 Add `schedule_feed: Option<DateTime<Utc>>` to `DataFreshness`, populate it
 in `get_freshness` via a fifth `tokio::try_join!` arm calling
@@ -774,7 +793,7 @@ in `get_freshness` via a fifth `tokio::try_join!` arm calling
 of "four data sources" to five, and its "Station-samples is deliberately
 omitted" note stays as-is (unrelated).
 
-- [ ] **Step 5: Tests**
+- [x] **Step 5: Tests**
 
 Route-level `#[ignore]`d `db_tests` (real `PgPool`, matching this file's
 existing convention): a `POST` followed by a `GET` returns the just-posted
@@ -786,14 +805,14 @@ existing convention): a `POST` followed by a `GET` returns the just-posted
 cover the new `schedule_feed` field the same way its four siblings are
 already covered.
 
-- [ ] **Step 6: Run the crate's test suite**
+- [x] **Step 6: Run the crate's test suite**
 
 Run: `cargo test -p api`
 Expected: PASS (the new `db_tests` will show as `ignored` without a live
 database, matching this repo's existing baseline — e.g. the private-custom-
 lines plan's own "157 passed, 0 failed, 41 ignored" result).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/api/migrations crates/api/src/data/queries.rs crates/api/src/routes/ingest.rs crates/api/src/routes/freshness.rs
@@ -821,7 +840,7 @@ Not gated by Task 1 — this wires together logic that runs identically
 whether or not DTD can ever reach the receiver; the loop itself has no
 DTD-facing code at all (that's entirely `schedule-sftp`'s job).
 
-- [ ] **Step 1: Check-times scheduling**
+- [x] **Step 1: Check-times scheduling**
 
 Reused directly from the pull design doc's Scheduling section (the push
 design doc states this "reuses the ingress research doc's own Section 3(a)
@@ -834,7 +853,7 @@ the pull design doc's `time_until_next_poll` "no prior fetch → poll now"
 precedent, itself matching RSPS5046 §7.6.1's "new recipients get a full
 refresh regardless of when they start."
 
-- [ ] **Step 2: One scan cycle**
+- [x] **Step 2: One scan cycle**
 
 1. `scan::scan_incoming(watch_dir)`.
 2. If a `RJTTFnnn.DAT` is present and stable for `stability_cycles`
@@ -864,7 +883,7 @@ refresh regardless of when they start."
 7. Prune: list `storage_dir`'s immediate numeric subdirectories, keep the
    `retention_keep_sequences` highest, delete the rest (`std::fs::remove_dir_all`).
 
-- [ ] **Step 3: Metrics**
+- [x] **Step 3: Metrics**
 
 `distant_signal_schedule_feed_sequence_gap_total` (Step 2's `Gap` branch),
 `distant_signal_schedule_feed_last_ingest_sequence` (gauge, set on every
@@ -874,7 +893,7 @@ crate's existing metric-naming convention (`distant_signal_<crate>_*`, check
 an existing poller's `main.rs` for the exact prefix macro/helper before
 inventing a new one).
 
-- [ ] **Step 4: Integration-shaped tests**
+- [x] **Step 4: Integration-shaped tests**
 
 Since the full loop needs both a real filesystem and a real (or mocked)
 `api`, keep true end-to-end coverage to Task 10's live verification. Here,
@@ -891,12 +910,12 @@ an outbound HTTP call in a poller crate (check first), it is acceptable to
 leave the full request/response round-trip to Task 10's live check only —
 state which approach was actually taken.
 
-- [ ] **Step 5: Run the crate's test suite**
+- [x] **Step 5: Run the crate's test suite**
 
 Run: `cargo test -p schedule-ingest`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/schedule-ingest/src/main.rs
@@ -926,7 +945,7 @@ value when `scheduleFeed.sftp.password`/`publicKey` are unset — same
 "rendered but never generated" posture as `pollers.*.apiKey` — so this task
 is not gated either, but a *real* credential value is (per Task 1).
 
-- [ ] **Step 1: Naming helpers**, following `devAuthentikFullname`'s exact
+- [x] **Step 1: Naming helpers**, following `devAuthentikFullname`'s exact
   pattern in `_helpers.tpl`:
 
 ```
@@ -939,7 +958,7 @@ is not gated either, but a *real* credential value is (per Task 1).
 {{- end }}
 ```
 
-- [ ] **Step 2: `schedulefeed-secret.yaml`**
+- [x] **Step 2: `schedulefeed-secret.yaml`**
 
 ```yaml
 {{- if .Values.scheduleFeed.enabled }}
@@ -986,7 +1005,7 @@ run through `helm template`/`helm lint` for real; if it errors, fix the
 Sprig call shape (the goal — generate once, preserve across upgrades — is
 fixed, the exact function chain is not) and record what changed.
 
-- [ ] **Step 3: Verify the lookup-preserve mechanism actually renders**
+- [x] **Step 3: Verify the lookup-preserve mechanism actually renders**
 
 ```bash
 helm lint charts/distant-signal --set scheduleFeed.enabled=true
@@ -1000,7 +1019,7 @@ the push design doc's Open question 6 being hit for real; fix it and note
 the working form here, do not silently paper over a failure by hand-waving
 the template.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add charts/distant-signal/templates/_helpers.tpl charts/distant-signal/templates/schedulefeed-secret.yaml
@@ -1023,7 +1042,7 @@ Not gated by Task 1 for the block's *shape*; `sftp.username`/`authMethod`/
 `password`/`publicKey` stay at their empty/no-default placeholders until
 Task 1 resolves what a real value should be.
 
-- [ ] **Step 1: Add the block**, following the push design doc's own sketch,
+- [x] **Step 1: Add the block**, following the push design doc's own sketch,
   reconciled with this chart's actual conventions confirmed above
   (`postgresql.persistence`'s exact field names for the PVC block,
   `pollers.*.existingSecret`/`existingSecretApiKeyKey` shape for the
@@ -1105,7 +1124,7 @@ scheduleFeed:
   podSecurityContext: {}
 ```
 
-- [ ] **Step 2: Confirm the chart still renders unaffected with the new
+- [x] **Step 2: Confirm the chart still renders unaffected with the new
   block off**
 
 ```bash
@@ -1115,7 +1134,7 @@ helm template charts/distant-signal >/dev/null
 Expected: both succeed — `scheduleFeed.enabled` defaults `false` and
 nothing reads it yet (Task 8 wires the actual templates).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add charts/distant-signal/values.yaml
@@ -1145,7 +1164,7 @@ other opt-in subsystem in this chart (every RDM poller, `devAuthentik`)
 ships fully render-able while its own external endpoint is still
 unconfirmed, and this follows the same posture.
 
-- [ ] **Step 1: `schedulefeed-pvc.yaml`** — standalone PVC (not a
+- [x] **Step 1: `schedulefeed-pvc.yaml`** — standalone PVC (not a
   `volumeClaimTemplate`, matching the pull design doc's own reasoning,
   reused: "this crate is a Deployment-shaped singleton... there is no
   per-replica identity to preserve"), `ReadWriteOnce`, mounted by both
@@ -1171,7 +1190,7 @@ spec:
 {{- end }}
 ```
 
-- [ ] **Step 2: `schedulefeed-deployment.yaml`** — **one Deployment,
+- [x] **Step 2: `schedulefeed-deployment.yaml`** — **one Deployment,
   `replicas: 1` fixed, `strategy: Recreate`, two containers.** This is the
   first multi-container Deployment in this chart — say so in a comment,
   matching the push design doc's own framing ("a genuine departure... worth
@@ -1268,7 +1287,7 @@ spec:
 {{- end }}
 ```
 
-- [ ] **Step 3: `schedulefeed-service.yaml`** — sibling to `ingress.yaml`,
+- [x] **Step 3: `schedulefeed-service.yaml`** — sibling to `ingress.yaml`,
   not an extension of it:
 
 ```yaml
@@ -1294,7 +1313,7 @@ spec:
 {{- end }}
 ```
 
-- [ ] **Step 4: `networkpolicy.yaml` addition** — only the **in-cluster**
+- [x] **Step 4: `networkpolicy.yaml` addition** — only the **in-cluster**
   metrics-scrape allow, matching every poller's existing block; per the
   design doc, inbound SFTP-from-the-internet is entirely outside what
   `NetworkPolicy` can express (cloud LB/security-group layer, a manual
@@ -1328,13 +1347,13 @@ spec:
 monitoring-namespace-scoped selector those blocks use once read directly,
 rather than inventing a broader one.)
 
-- [ ] **Step 5: `podmonitor.yaml` addition** — add `schedulefeed` to the
+- [x] **Step 5: `podmonitor.yaml` addition** — add `schedulefeed` to the
   `matchExpressions` `values:` list alongside `api`/`aggregator`/
   `enricher`/the per-poller entries, gated the same way (`if
   .Values.scheduleFeed.enabled`, following the existing `range
   .Values.pollers` conditional pattern for the per-poller entries).
 
-- [ ] **Step 6: `NOTES.txt` addition** — surfaces this app's own generated
+- [x] **Step 6: `NOTES.txt` addition** — surfaces this app's own generated
   host-key fingerprint at install time, inverted from the pull design's
   equivalent (which would have surfaced DTD's), per the push design doc's
   own "`NOTES.txt` / documentation touch" section:
@@ -1350,7 +1369,7 @@ so DTD's push client can trust it:
 {{- end }}
 ```
 
-- [ ] **Step 7: Verify rendering**
+- [x] **Step 7: Verify rendering**
 
 ```bash
 helm lint charts/distant-signal --set scheduleFeed.enabled=true --set scheduleFeed.sftp.authMethod=password --set scheduleFeed.sftp.password=x --set scheduleFeed.sftp.username=x
@@ -1364,7 +1383,7 @@ and the fail-guard check prints "fail-guard OK" when it's left unset. If
 also run the rendered manifests through it (Prerequisite 3) — otherwise
 state plainly that only the static YAML-shape check ran.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add charts/distant-signal/templates/schedulefeed-pvc.yaml charts/distant-signal/templates/schedulefeed-deployment.yaml charts/distant-signal/templates/schedulefeed-service.yaml charts/distant-signal/templates/networkpolicy.yaml charts/distant-signal/templates/podmonitor.yaml charts/distant-signal/templates/NOTES.txt
@@ -1392,7 +1411,7 @@ whether a real DTD connection will ever exist, exactly like every
 `RDM_*_BASE_URL=*.example.invalid` placeholder already lets the four RDM
 pollers run against nothing real.
 
-- [ ] **Step 1: Add the two services**, adapted from the push design doc's
+- [x] **Step 1: Add the two services**, adapted from the push design doc's
   own sketch (marked there "sketch — not final") reconciled with this
   file's real conventions (`restart: unless-stopped`, `depends_on` with
   `condition: service_healthy` where a healthcheck exists, the `:?`-guard
@@ -1448,7 +1467,7 @@ push design doc's own caveat, reused here: **compose has no native
 volume is the closest local-dev equivalent, not a literal reproduction of
 the Helm shape's single Pod.
 
-- [ ] **Step 2: Local dev host-key generation**
+- [x] **Step 2: Local dev host-key generation**
 
 Since `schedule-sftp` bind-mounts a host-key directory from the host
 filesystem (unlike the Helm path's chart-generated Secret), document a
@@ -1462,7 +1481,7 @@ and confirm `schedule-sftp-host-keys/` is covered by `.gitignore` (add an
 entry if it is not already covered by an existing broad pattern) — a
 developer's local dev host key must never be committed.
 
-- [ ] **Step 3: `*.env.example` placeholders**
+- [x] **Step 3: `*.env.example` placeholders**
 
 Add a commented section to both `local.env.example` and `dev.env.example`,
 following the existing `RDM_*_BASE_URL`/`TFL_APP_KEY` placeholder-with-
@@ -1477,7 +1496,7 @@ explanation convention:
 SCHEDULE_SFTP_USERNAME=changeme-once-dtd-account-details-are-known
 ```
 
-- [ ] **Step 4: Static config-resolution check**
+- [x] **Step 4: Static config-resolution check**
 
 ```bash
 docker compose --env-file local.env config --quiet
@@ -1488,7 +1507,7 @@ example files' resulting env (copy each `*.env.example` to a scratch
 `*.env` for this check, matching this repo's existing verification
 convention — never commit the scratch copy).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docker-compose.yml local.env.example dev.env.example .gitignore
@@ -1512,7 +1531,43 @@ precedent for this exact situation.
 the receiving/verifying pipeline this app fully controls, using a small
 synthetic delivery (not `timetable_full.zip` — see Global Constraints).
 
-- [ ] **Step 1: Build a synthetic sample delivery**
+**2026-09-01 status: Steps 2-5 (live compose) NOT RUN — no Docker in this
+environment.** Confirmed via `which docker podman docker-compose` (all
+absent) and `docker version` (`command not found`) — this sandbox has
+`helm` but no container runtime at all, not even a daemon-less one, so
+Task 9's compose services can't actually be built/started here. Per this
+task's own instruction and the dev-oidc-server plan's Task 4 precedent,
+this is reported as **not run**, not assumed to pass.
+
+**Step 1 (build a synthetic sample delivery) was performed**, in a scratch
+directory outside the repo (`/tmp/...`, deleted immediately after, never
+committed): 9 files named `RJTTF999{DAT,ZTR,REJ,SET,FLF,MCA,MSN,ALF,TSI}.txt`,
+the `.DAT` file containing a hand-written manifest reproducing the real
+format exactly (header/footer `/!!` lines, `Sequence: 999`, the 8 sibling
+filenames), the other 8 with trivial placeholder content. This is
+substantively the same shape Task 5's own unit tests already build inside a
+`tempfile::tempdir()` (real `std::fs` I/O against a real directory on disk,
+not a mock) — `complete_stable_nine_file_delivery_is_ready_to_move` and
+`delivery_missing_one_listed_file_is_not_ready` in
+`crates/schedule-ingest/src/main.rs` already exercise exactly this
+scenario end-to-end through `scan_incoming`/`StabilityTracker`/
+`missing_listed_files`, so the scratch-directory build here added no
+additional logic coverage beyond confirming the manifest content template
+is byte-correct — it was deleted rather than kept as a redundant fixture.
+
+**Steps 2-5, concretely not run**: bringing up `docker compose ... schedule-sftp
+schedule-ingest api postgres`, copying the synthetic delivery into the SFTP
+container's `incoming/`, observing a logged ingest and a `GET
+/private/schedule-feed-ingests` response reflecting sequence 999, repeating
+with sequences 1000/1001 to confirm retention pruning leaves only the two
+newest directories, and tearing the stack down. **None of this has been
+exercised in any session** — the pipeline's real HTTP POST/GET round-trip
+against a live `api`, and the SFTPGo container's actual behavior, remain
+unverified beyond the static `helm template`/`docker compose config`-style
+checks Tasks 8-9 already ran. Whoever next has Docker access should run
+these steps for real before treating this pipeline as proven end-to-end.
+
+- [x] **Step 1: Build a synthetic sample delivery**
 
 Create 9 small files reproducing the real filenames
 (`RJTTF999DAT.txt`...`RJTTF999MSN.txt`, an arbitrary unused sequence

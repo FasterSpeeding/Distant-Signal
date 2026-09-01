@@ -19,7 +19,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use common::ingest::LastFetchedResponse;
 use common::{IncidentMessage, LineStatusReport, StationReference, StationSample, TocReference};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
 use crate::data::queries;
@@ -46,6 +46,10 @@ pub fn router() -> Router {
         )
         .route("/train-events", axum::routing::post(post_train_events))
         .route("/tracked-trains", axum::routing::get(get_active_tracked_trains))
+        .route(
+            "/schedule-feed-ingests",
+            axum::routing::get(get_schedule_feed_last_fetched).post(post_schedule_feed_ingest),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -176,6 +180,47 @@ async fn get_active_tracked_trains(
         .await
         .map_err(internal_error)?;
     Ok(Json(rows))
+}
+
+/// `schedule-ingest`'s per-delivery record of one successfully-verified CIF
+/// SCHEDULE feed delivery. Unlike the other ingest routes this isn't a
+/// per-poll-cycle batch of reference data -- it's one row per delivery
+/// sequence, recorded once the whole delivery has been confirmed stable and
+/// complete (see `crates/schedule-ingest`).
+#[derive(Debug, Deserialize)]
+struct ScheduleFeedIngestRequest {
+    sequence: i32,
+    ingested_at: chrono::DateTime<chrono::Utc>,
+    files: Vec<ScheduleFeedFile>,
+}
+
+/// One file observed as part of a schedule-feed delivery. `bytes` is the
+/// size `schedule-ingest` itself observed on disk once stable, not a
+/// manifest-declared size -- the real manifest format has no such field.
+#[derive(Debug, Deserialize, Serialize)]
+struct ScheduleFeedFile {
+    name: String,
+    bytes: u64,
+}
+
+async fn get_schedule_feed_last_fetched(
+    State(app): State<App>,
+) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
+    let fetched_at = queries::last_schedule_feed_fetch(&app.database)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(LastFetchedResponse { fetched_at }))
+}
+
+async fn post_schedule_feed_ingest(
+    State(app): State<App>,
+    Json(req): Json<ScheduleFeedIngestRequest>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let files = serde_json::to_value(&req.files).map_err(|e| internal_error(e.into()))?;
+    queries::insert_schedule_feed_ingest(&app.database, req.sequence, req.ingested_at, &files)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted: 1 }))
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
