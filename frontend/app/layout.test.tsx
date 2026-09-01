@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { TrackedTrainsNavItem } from './layout';
+import { TrackedTrainsNavItem, viewport } from './layout';
 import * as api from '@/lib/api';
 
 vi.mock('@/lib/api');
@@ -31,5 +31,17 @@ describe('TrackedTrainsNavItem', () => {
     vi.mocked(api.getSession).mockRejectedValue(new Error('auth service unreachable'));
     renderWithMantine(await TrackedTrainsNavItem());
     expect(screen.queryByRole('link', { name: 'My Trains & Tickets' })).not.toBeInTheDocument();
+  });
+});
+
+describe('viewport', () => {
+  it('defaults color-scheme to light for the pre-hydration SSR render', () => {
+    // No route in this app defines its own viewport/metadata export
+    // (confirmed by grep against frontend/app/ — this worktree's plan doc
+    // for this feature cites the same check), so this root-level default
+    // is the value Next actually renders for every page. 'light' matches
+    // ThemeToggle's own pre-mount fallback (useComputedColorScheme('light')),
+    // not a new, third opinion about what "unknown" means.
+    expect(viewport.colorScheme).toBe('light');
   });
 });

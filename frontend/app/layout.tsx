@@ -2,7 +2,7 @@ import '@/app/globals.css';
 import { Suspense } from 'react';
 import { ActionIcon, MantineProvider, ColorSchemeScript, mantineHtmlProps, Group, Text, Box, Container } from '@mantine/core';
 import Link from 'next/link';
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { PrideToggle } from '@/components/PrideToggle';
 import { TextLink } from '@/components/TextLink';
@@ -17,6 +17,19 @@ export const metadata: Metadata = {
   title: 'Distant Signal',
   description:
     'A personal UK rail companion: TfL-style line status, live train tracking, and ticket/Delay-Repay support — with first-class handling of operators whose routes share trunk track, so an incident is only ever flagged on the lines it actually affects.',
+};
+
+// SSR-time default for the <meta name="color-scheme"> tag Next's metadata
+// pipeline renders from this export. 'light' is the same deterministic
+// pre-mount fallback ThemeToggle.tsx's own useComputedColorScheme('light')
+// call already uses — the server can't know a visitor's stored preference
+// (see ThemeToggle.tsx's own comment on this), so this agrees with the one
+// opinion the rest of the page already commits to rather than inventing a
+// second one. ColorSchemeMeta (mounted in RootLayout below) keeps this tag's
+// content in sync with the actually-resolved theme after mount. See
+// docs/superpowers/specs/2026-09-01-dynamic-color-scheme-meta-design.md.
+export const viewport: Viewport = {
+  colorScheme: 'light',
 };
 
 // A separate async Server Component (rather than awaiting inline in
