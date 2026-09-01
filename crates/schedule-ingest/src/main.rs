@@ -11,6 +11,8 @@
 //! `config.rs`).
 
 mod config;
+mod manifest;
+mod scan;
 
 use clap::Parser;
 use config::Config;
