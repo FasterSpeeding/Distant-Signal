@@ -20,13 +20,6 @@ import type {
  * not found" from other failures (network errors, 500s, etc.). */
 export class ApiNotFoundError extends Error {}
 
-/** Thrown when the API responds 401 -- lets callers distinguish "not logged
- * in at all" from `ApiNotFoundError`'s "doesn't exist / isn't yours"
- * (which stays deliberately indistinguishable from each other, per this
- * app's 401-vs-404 convention -- see
- * docs/superpowers/specs/2026-08-31-private-custom-lines-and-tracked-trains-design.md). */
-export class ApiUnauthorizedError extends Error {}
-
 function baseUrl(): string {
   const url = process.env.API_BASE_URL;
   if (!url) {
@@ -41,9 +34,7 @@ function baseUrl(): string {
  * paths can't drift on which statuses map to `ApiNotFoundError`. */
 function errorForResponse(url: string, response: Response): Error {
   const message = `API request to ${url} failed: ${response.status} ${response.statusText}`;
-  if (response.status === 404) return new ApiNotFoundError(message);
-  if (response.status === 401) return new ApiUnauthorizedError(message);
-  return new Error(message);
+  return response.status === 404 ? new ApiNotFoundError(message) : new Error(message);
 }
 
 async function fetchJson<T>(url: string, init: RequestInit): Promise<T> {
