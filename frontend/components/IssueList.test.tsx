@@ -253,6 +253,7 @@ describe('IssueList', () => {
         affectedStops: [],
         affectedRoutes: [],
         source: null,
+        impactType: null,
       },
     };
     renderWithMantine(<IssueList items={toItems([withDisruption])} now={NOW} />);
@@ -270,6 +271,7 @@ describe('IssueList', () => {
         affectedStops: [],
         affectedRoutes: [],
         source: 'knowledgebase-incident-123',
+        impactType: null,
       },
     };
     renderWithMantine(<IssueList items={toItems([withKnowledgebaseSource])} now={NOW} />);
@@ -369,6 +371,49 @@ describe('IssueList', () => {
     const badge = within(control).getByText('Knowledgebase').closest('.mantine-Badge-root') as HTMLElement;
     expect(badge.getAttribute('style')).toContain('--mantine-color-gray-outline');
     expect(badge.getAttribute('style')).not.toContain('--mantine-color-grape-outline');
+  });
+
+  it('renders the impact-type badge on the collapsed row when set', () => {
+    const withImpactType: LineStatus = {
+      ...minorNow,
+      disruption: {
+        category: 'RealTime',
+        description: 'Full details here',
+        affectedStops: [],
+        affectedRoutes: [],
+        source: null,
+        impactType: 'rail_replacement_bus',
+      },
+    };
+    renderWithMantine(<IssueList items={toItems([withImpactType])} now={NOW} />);
+    expect(screen.getByText('Rail Replacement Bus')).toBeInTheDocument();
+  });
+
+  it('renders no impact-type badge on the collapsed row for the common null case', () => {
+    renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
+    expect(screen.queryByText('Rail Replacement Bus')).not.toBeInTheDocument();
+    expect(screen.queryByText('No Scheduled Service')).not.toBeInTheDocument();
+    expect(screen.queryByText('Diversion')).not.toBeInTheDocument();
+  });
+
+  it('places the impact-type badge before the data-quality badge in the meta group', () => {
+    const withImpactType: LineStatus = {
+      ...minorNow,
+      disruption: {
+        category: 'RealTime',
+        description: 'Full details here',
+        affectedStops: [],
+        affectedRoutes: [],
+        source: null,
+        impactType: 'no_scheduled_service',
+      },
+    };
+    renderWithMantine(<IssueList items={toItems([withImpactType])} now={NOW} />);
+    const description = screen.getByText('Signal failure');
+    const control = description.closest('button') as HTMLElement;
+    const meta = control.querySelector('.issueRow__meta') as HTMLElement;
+    const badgeTexts = Array.from(meta.querySelectorAll('.mantine-Badge-root')).map((el) => el.textContent);
+    expect(badgeTexts.indexOf('No Scheduled Service')).toBeLessThan(badgeTexts.indexOf('Knowledgebase'));
   });
 
   it('marks up the collapsed row so it can stack on narrow viewports', () => {
