@@ -12,12 +12,13 @@ import {
   Text,
   MultiSelect,
   UnstyledButton,
+  Tooltip,
 } from '@mantine/core';
 import { PinToggle } from '@/components/PinToggle';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
 import { worstStatus, severityRank } from '@/lib/severity';
-import { firstSampleStats, cancelledPercent, formatSampleSummary } from '@/lib/sampleStats';
+import { firstSampleStats, cancelledPercent, formatSampleSummary, representativeStatus, sampleUnavailableReason } from '@/lib/sampleStats';
 import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
 type SortField = 'name' | 'status' | 'avgDelay' | 'cancelled';
@@ -102,7 +103,8 @@ export function AllLinesTable({
         const worst = report ? worstStatus(report) : undefined;
         const stats = firstSampleStats(report?.lineStatuses ?? []);
         const cancelledPct = cancelledPercent(stats);
-        return { line, worst, stats, cancelledPct };
+        const representative = representativeStatus(report?.lineStatuses ?? []);
+        return { line, worst, stats, cancelledPct, representative };
       }),
     [lines, reportsById],
   );
@@ -209,7 +211,7 @@ export function AllLinesTable({
           </TableTr>
         </TableThead>
         <TableTbody>
-          {sortedRows.map(({ line, worst, stats, cancelledPct }) => (
+          {sortedRows.map(({ line, worst, stats, cancelledPct, representative }) => (
             <TableTr key={line.id}>
               <TableTd>
                 <TextLink href={`/lines/${line.id}`}>{line.name}</TextLink>
@@ -221,13 +223,19 @@ export function AllLinesTable({
                     emitted by MantineProvider on server and client alike,
                     so this is SSR-safe (unlike `useMediaQuery`). */}
                 <Text size="xs" c="dimmed" hiddenFrom="sm">
-                  {formatSampleSummary(stats)}
+                  {formatSampleSummary(representative)}
                 </Text>
               </TableTd>
               <TableTd>{worst ? <StatusBadge severity={worst.statusSeverity} /> : null}</TableTd>
               <TableTd visibleFrom="sm">
                 {stats ? (
                   <Text size="sm">{stats.avgDelayMinutes.toFixed(1)} min</Text>
+                ) : representative ? (
+                  <Tooltip label={sampleUnavailableReason(representative)}>
+                    <Text size="sm" c="dimmed">
+                      —
+                    </Text>
+                  </Tooltip>
                 ) : (
                   <Text size="sm" c="dimmed">
                     —
@@ -237,6 +245,12 @@ export function AllLinesTable({
               <TableTd visibleFrom="sm">
                 {cancelledPct !== null ? (
                   <Text size="sm">{cancelledPct}%</Text>
+                ) : representative ? (
+                  <Tooltip label={sampleUnavailableReason(representative)}>
+                    <Text size="sm" c="dimmed">
+                      —
+                    </Text>
+                  </Tooltip>
                 ) : (
                   <Text size="sm" c="dimmed">
                     —

@@ -35,6 +35,7 @@ const reports: LineStatusReport[] = [
         statusSeverityDescription: 'Minor Delays',
         reason: '',
         dataQuality: 'knowledgebase',
+        sampleAvailability: { state: 'no-coverage' },
         validityPeriods: [],
         sampleStats: { total: 10, delayed: 2, cancelled: 1, skipped: 0, avgDelayMinutes: 5 },
       },
@@ -49,6 +50,7 @@ const reports: LineStatusReport[] = [
         statusSeverityDescription: 'Suspended',
         reason: '',
         dataQuality: 'knowledgebase',
+        sampleAvailability: { state: 'no-coverage' },
         validityPeriods: [],
         sampleStats: { total: 10, delayed: 5, cancelled: 3, skipped: 0, avgDelayMinutes: 20 },
       },
@@ -221,6 +223,77 @@ describe('AllLinesTable', () => {
   });
 });
 
+describe('AllLinesTable dash tooltip', () => {
+  const dashLines: LineSummary[] = [
+    { id: 'no-coverage-line', name: 'No Coverage Line', category: 'Regional', operators: ['SW'], source: 'catalogue' },
+    { id: 'below-threshold-line', name: 'Below Threshold Line', category: 'Regional', operators: ['SW'], source: 'catalogue' },
+    { id: 'tube-line', name: 'Tube Line', category: 'operator', operators: ['TfL'], source: 'catalogue' },
+  ];
+
+  function dashReport(id: string, name: string, status: Partial<LineStatusReport['lineStatuses'][number]>): LineStatusReport {
+    return report({
+      id,
+      name,
+      lineStatuses: [
+        {
+          statusSeverity: 10,
+          statusSeverityDescription: 'Good Service',
+          reason: '',
+          dataQuality: 'knowledgebase',
+          sampleAvailability: { state: 'no-coverage' },
+          validityPeriods: [],
+          ...status,
+        },
+      ],
+    });
+  }
+
+  const dashReports: LineStatusReport[] = [
+    dashReport('no-coverage-line', 'No Coverage Line', { sampleAvailability: { state: 'no-coverage' } }),
+    dashReport('below-threshold-line', 'Below Threshold Line', {
+      sampleAvailability: { state: 'below-threshold', observed: 2, required: 3 },
+    }),
+    dashReport('tube-line', 'Tube Line', { dataQuality: 'tfl', sampleAvailability: { state: 'below-threshold', observed: 0, required: 1 } }),
+  ];
+
+  function renderDashTable() {
+    return renderWithMantine(
+      <AllLinesTable lines={dashLines} reports={dashReports} pinnedLineIds={[]} tocs={[]} />,
+    );
+  }
+
+  it('renders a plain dash glyph for every state, no new visual vocabulary', () => {
+    renderDashTable();
+    const dashes = screen.getAllByText('—');
+    // Two numeric columns (Avg Delay, Cancelled) per row, times three rows.
+    expect(dashes.length).toBe(6);
+  });
+
+  it('shows the no-coverage reason on hover for a line with zero StationSample rows', async () => {
+    renderDashTable();
+    const row = screen.getByText('No Coverage Line').closest('tr')!;
+    const [avgDelayDash] = within(row).getAllByText('—');
+    fireEvent.mouseEnter(avgDelayDash);
+    expect(await screen.findByText('No live departure data received for this line yet.')).toBeInTheDocument();
+  });
+
+  it('shows the below-threshold reason on hover for a line with thin coverage', async () => {
+    renderDashTable();
+    const row = screen.getByText('Below Threshold Line').closest('tr')!;
+    const [avgDelayDash] = within(row).getAllByText('—');
+    fireEvent.mouseEnter(avgDelayDash);
+    expect(await screen.findByText('Too few live departures sampled to report a rate right now.')).toBeInTheDocument();
+  });
+
+  it('shows the TfL copy on hover, not the below-threshold copy, even though sampleAvailability says below-threshold', async () => {
+    renderDashTable();
+    const row = screen.getByText('Tube Line').closest('tr')!;
+    const [avgDelayDash] = within(row).getAllByText('—');
+    fireEvent.mouseEnter(avgDelayDash);
+    expect(await screen.findByText("Not measured by this app — status is TfL's own.")).toBeInTheDocument();
+  });
+});
+
 describe('AllLinesTable responsive columns', () => {
   const mobileLines: LineSummary[] = [
     { id: 'northern', name: 'Northern', category: 'operator', operators: ['NT'], source: 'catalogue' },
@@ -240,6 +313,7 @@ describe('AllLinesTable responsive columns', () => {
           statusSeverityDescription: 'Severe Delays',
           reason: 'Signalling failure',
           dataQuality: 'ldbws-inferred',
+          sampleAvailability: { state: 'no-coverage' },
           validityPeriods: [{ fromDate: '2026-08-21T09:00:00Z', toDate: null, isNow: true }],
           sampleStats: { total: 10, delayed: 4, cancelled: 2, skipped: 0, avgDelayMinutes: 7.5 },
         },
@@ -299,6 +373,7 @@ describe('AllLinesTable responsive columns', () => {
             statusSeverityDescription: 'Good Service',
             reason: '',
             dataQuality: 'ldbws-inferred',
+            sampleAvailability: { state: 'no-coverage' },
             validityPeriods: [],
             sampleStats: { total: 0, delayed: 0, cancelled: 0, skipped: 0, avgDelayMinutes: 0 },
           },
