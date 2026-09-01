@@ -3216,6 +3216,62 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
+    // Station Catalogue Completeness Task 1.5: fills in four previously
+    // missing stations on gwr-west-of-england.toml's own exclusive stretch
+    // west of Newbury — Kintbury (KIT), Hungerford (HGD), Bedwyn (BDW) and
+    // Pewsey (PEW), two-source confirmed (Wikipedia + nationalrail.co.uk,
+    // TIPLOCs additionally cross-checked against railwaycodes.org.uk) and
+    // inserted at their true geographic position between NBY and WSB, all
+    // tagged this line's own exclusive `gwr-west-of-england` segment (not
+    // `gwr-westbury-castle-cary`, which starts at the next station, WSB, per
+    // the shared-trunk rule of thumb). Six other named candidates from this
+    // task's starting list are deliberately NOT added here: Reading West,
+    // Theale, Aldermaston, Midgham, Thatcham and Newbury Racecourse already
+    // live on gwr-thames-valley.toml's own "Branch 2: Reading-Newbury"
+    // section (a different, Reading-based local service, not this file's
+    // Reading-Taunton express) and Frome already lives on
+    // gwr-bristol-suburban.toml (reached only via a branch off this line's
+    // direct route) — both untouched by this task. A further five named
+    // candidates — Savernake (Low Level), Woodborough, Patney and Chirton,
+    // Lavington, and Edington and Bratton — were checked to the same
+    // two-source bar and found closed (all closed to passengers between
+    // 1952 and 1966; railwaycodes.org.uk shows no CRS code for any of them)
+    // so they stay out too. See that file's own segment-naming comment for
+    // the full sourcing/rationale.
+    #[test]
+    fn gwr_west_of_england_berks_and_hants_infill_stations_present() {
+        let lines = load_line("gwr-west-of-england");
+        let line = lines.get("gwr-west-of-england").expect("gwr-west-of-england line should exist");
+        for crs in ["KIT", "HGD", "BDW", "PEW"] {
+            assert!(line.has_station(crs), "gwr-west-of-england should now list {crs}");
+        }
+        for crs in ["RDW", "THE", "AMT", "MDG", "THA", "NRC", "FRO"] {
+            assert!(
+                !line.has_station(crs),
+                "gwr-west-of-england should NOT list {crs} — it belongs to a sibling file, see the file's own Task 1.5 comment"
+            );
+        }
+    }
+
+    // Same task: none of the four newly-added stations sit on a segment name
+    // shared with any other catalogued line (`gwr-west-of-england` is this
+    // line's own exclusive segment throughout, confirmed by grepping the
+    // catalogue), so an incident at one of them — Kintbury, picked as a
+    // representative example — should stay a clean ExclusiveSegment case,
+    // mirroring `gwr_thames_valley_iver_incident_stays_on_its_own_line`'s /
+    // `gwr_cornish_main_line_saltash_incident_stays_on_its_own_line`'s
+    // identical judgment call for their own infill tasks.
+    #[test]
+    fn gwr_west_of_england_kintbury_incident_stays_on_its_own_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-22", "Signal failure at Kintbury", "Signal failure causing delays at Kintbury.", &["GW"], &["KIT"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-west-of-england".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
     // Task 4.6's own exclusive segment (`gwr-severn-beach`) covers the whole
     // Severn Beach branch — Severn Beach itself (SVB) is not shared with any
     // other catalogued line, so this should stay a clean ExclusiveSegment
