@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Distant Signal favicon: a stylised railway distant signal -- a
+       fishtail-notched semaphore arm (the swallow-tail notch is the real
+       signalling detail that distinguishes a "distant" signal, historically
+       painted yellow, from a plain-ended "home"/stop signal) raised on its
+       post, on the app's own grape brand colour. Deliberately not a literal
+       train or track -- see globals.css's background-theming comment for
+       why this app already rejected over-literal railway imagery in favour
+       of things that "read as railway" through a specific, real detail
+       instead. Flat shapes, no fine linework, so it still reads at 16px. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <!-- Mantine grape-6 -> grape-8 (verified against
+           @mantine/core's default-colors.mjs), echoing the same grape wash
+           `globals.css` already paints behind the page. -->
+      <stop offset="0" stop-color="#be4bdb" />
+      <stop offset="1" stop-color="#9c36b5" />
+    </linearGradient>
+  </defs>
+
+  <rect x="1" y="1" width="30" height="30" rx="8" fill="url(#bg)" />
+
+  <!-- Signal post -->
+  <rect x="14.6" y="9" width="1.8" height="17" rx="0.9" fill="#f8f0fc" />
+
+  <!-- Fishtail-notched arm, raised to a "proceed" angle. Mantine yellow-4
+       (#ffd43b) -- distant signal arms were historically painted yellow. -->
+  <polygon
+    fill="#ffd43b"
+    points="0,-2.1 7.5,-2.1 10.5,-3.5 8.3,0 10.5,3.5 7.5,2.1 0,2.1"
+    transform="translate(16.4,12) rotate(-32)"
+  />
+</svg>
