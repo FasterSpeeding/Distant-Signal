@@ -256,6 +256,23 @@ describe('IssueList', () => {
     fireEvent.click(screen.getByText('Signal failure'));
     expect(await screen.findByText('Full details here')).toBeInTheDocument();
   });
+
+  it('surfaces the "View full incident details" link when a status disruption is knowledgebase-sourced', async () => {
+    const withKnowledgebaseSource: LineStatus = {
+      ...minorNow,
+      disruption: {
+        category: 'RealTime',
+        description: 'Full details here',
+        affectedStops: [],
+        affectedRoutes: [],
+        source: 'knowledgebase-incident-123',
+      },
+    };
+    renderWithMantine(<IssueList items={toItems([withKnowledgebaseSource])} now={NOW} />);
+    fireEvent.click(screen.getByText('Signal failure'));
+    expect(await screen.findByRole('link', { name: 'View full incident details' })).toBeInTheDocument();
+  });
+
   it('lands on the All tab when no issue is active', () => {
     // severePlanned is upcoming and endedRange has already finished (both
     // dates in the past), so Active reads (0) while All reads (2): landing

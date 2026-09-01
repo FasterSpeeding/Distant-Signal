@@ -19,6 +19,7 @@ import {
   getMyTrackedTrains,
   getDelayRepayEstimate,
   getMyTickets,
+  getIncident,
   ApiNotFoundError,
 } from './api';
 
@@ -467,5 +468,34 @@ describe('api client', () => {
   it('getMyTickets still throws on a non-401 failure', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
     await expect(getMyTickets()).rejects.toThrow(/500/);
+  });
+
+  it('getIncident fetches the correct URL with no caching', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ incidentId: '123' }), { status: 200 })));
+    await getIncident('123');
+    expect(fetch).toHaveBeenCalledWith('http://test-api:8080/public/incidents/123', expect.objectContaining({ cache: 'no-store' }));
+  });
+
+  it('getIncident throws ApiNotFoundError on a 404', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    await expect(getIncident('does-not-exist')).rejects.toThrow(ApiNotFoundError);
+  });
+
+  it('getIncident still throws on a non-404 failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    await expect(getIncident('123')).rejects.toThrow(/500/);
+  });
+
+  // `incidentId` ultimately originates from external feed data (see
+  // `incidentIdFromSource`), so it must be percent-encoded before being
+  // interpolated into the URL -- otherwise a path-like value (e.g.
+  // containing `/` or `..`) could resolve to an unrelated route.
+  it('getIncident percent-encodes the incident id in the URL', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ incidentId: '123/../lines' }), { status: 200 })));
+    await getIncident('123/../lines');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/incidents/123%2F..%2Flines',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
   });
 });

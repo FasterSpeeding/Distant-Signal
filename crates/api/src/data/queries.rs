@@ -677,6 +677,112 @@ pub async fn daily_stats_for_range(
         .collect()
 }
 
+/// One row from `incidents`, by primary key. `validity_periods` is kept as
+/// raw `serde_json::Value` here (not deserialized into
+/// `Vec<common::ValidityPeriod>`) because the route layer needs to
+/// re-render each period as camelCase JSON by hand anyway (see
+/// `routes/incidents.rs`'s `to_incident_detail_json` and this plan's
+/// Global Constraints) -- deserializing into the Rust struct and then
+/// re-serializing through `serde_json::json!()` field-by-field would just
+/// add a round trip with no benefit.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct IncidentRow {
+    pub incident_id: String,
+    pub summary: String,
+    pub description: String,
+    pub operators: Vec<String>,
+    pub affected_stations: Vec<String>,
+    pub priority: i32,
+    pub validity_periods: serde_json::Value,
+    pub is_planned: bool,
+    pub is_cleared: bool,
+    pub first_seen_at: chrono::DateTime<chrono::Utc>,
+    pub fetched_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// `incident_id` is this table's primary key (see `upsert_incidents`'s own
+/// `INSERT ... ON CONFLICT (incident_id)`), so this is a direct index
+/// lookup -- no new index needed. Deliberately does not filter on
+/// `is_cleared`: a cleared incident is still a real, fully valid detail
+/// page (Decision 2 of the design spec).
+pub async fn incident_by_id(pool: &PgPool, incident_id: &str) -> Result<Option<IncidentRow>> {
+    let row = sqlx::query_as::<_, IncidentRow>(
+        "SELECT incident_id, summary, description, operators, affected_stations, priority, \
+                validity_periods, is_planned, is_cleared, first_seen_at, fetched_at \
+         FROM incidents WHERE incident_id = $1",
+    )
+    .bind(incident_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+/// One append-only snapshot from `incident_history`, per the same
+/// raw-JSONB rationale as `IncidentRow` above.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct IncidentHistoryRow {
+    pub summary: String,
+    pub description: String,
+    pub operators: Vec<String>,
+    pub affected_stations: Vec<String>,
+    pub priority: i32,
+    pub validity_periods: serde_json::Value,
+    pub is_planned: bool,
+    pub is_cleared: bool,
+    pub recorded_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Newest-first, matching the `incident_history_id_time` index
+/// (`(incident_id, recorded_at DESC)`, created in the initial migration)
+/// exactly -- no new index needed.
+pub async fn incident_history_for_id(pool: &PgPool, incident_id: &str) -> Result<Vec<IncidentHistoryRow>> {
+    let rows = sqlx::query_as::<_, IncidentHistoryRow>(
+        "SELECT summary, description, operators, affected_stations, priority, validity_periods, \
+                is_planned, is_cleared, recorded_at \
+         FROM incident_history WHERE incident_id = $1 ORDER BY recorded_at DESC",
+    )
+    .bind(incident_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct IncidentLineRefRow {
+    pub line_id: String,
+    pub name: String,
+}
+
+/// Which lines currently carry a status whose `disruption.source` equals
+/// `source` exactly (the full `knowledgebase-incident-{id}` string, not
+/// the bare id -- that's the literal value stored in the JSONB, see
+/// Decision 3 of the design spec). `jsonb_array_elements` unnests
+/// `line_status.statuses` (one row per line, one array element per
+/// simultaneous status) so each element's `disruption.source` can be
+/// compared with a plain path expression. Deliberately NOT JSONB
+/// containment (`s @> '{"disruption": {"source": "..."}}'`): Postgres
+/// array/object containment requires a full structural match of every
+/// key in the compared object, and a real stored status object also
+/// carries `severity`/`reason`/`validity`/`dataQuality`, so `@>` would
+/// silently match nothing -- see the design spec's Correction 2. Also NOT
+/// `line_status.source` (a same-named, unrelated top-level column:
+/// `'aggregator' | 'tfl'`, which *service* wrote the row -- added by
+/// `20260822120000_line_status_source.sql`). No new index: this table is
+/// tens of rows total, matching this repo's own stated rationale for
+/// leaving `line_status.source` itself unindexed.
+pub async fn lines_currently_reporting_incident(pool: &PgPool, source: &str) -> Result<Vec<IncidentLineRefRow>> {
+    let rows = sqlx::query_as::<_, IncidentLineRefRow>(
+        "SELECT DISTINCT line_status.line_id, line_status.name \
+         FROM line_status, jsonb_array_elements(statuses) AS s \
+         WHERE s -> 'disruption' ->> 'source' = $1 \
+         ORDER BY line_status.name",
+    )
+    .bind(source)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -947,5 +1053,112 @@ mod tests {
             .await
             .expect("daily_stats_for_range for an unknown line_id");
         assert!(unknown.is_empty(), "unknown line_id should return an empty vec, not an error");
+    }
+}
+
+#[cfg(test)]
+mod incident_query_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> PgPool {
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api incident_by_id -- --ignored`"]
+    async fn incident_by_id_finds_a_seeded_row_and_none_for_an_unknown_id() {
+        let pool = test_pool().await;
+        sqlx::query(
+            "INSERT INTO incidents (incident_id, summary, description, operators, affected_stations, priority) \
+             VALUES ('TEST-INC-1', 'Signal failure', 'Delays expected', '{VT}', '{WOK}', 3) \
+             ON CONFLICT (incident_id) DO UPDATE SET summary = EXCLUDED.summary",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture row");
+
+        let found = incident_by_id(&pool, "TEST-INC-1").await.expect("query").expect("row should exist");
+        assert_eq!(found.summary, "Signal failure");
+        assert_eq!(found.affected_stations, vec!["WOK".to_string()]);
+
+        let missing = incident_by_id(&pool, "TEST-INC-DOES-NOT-EXIST").await.expect("query");
+        assert!(missing.is_none());
+
+        sqlx::query("DELETE FROM incidents WHERE incident_id = 'TEST-INC-1'").execute(&pool).await.expect("cleanup");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api incident_history_for_id -- --ignored`"]
+    async fn incident_history_for_id_is_ordered_newest_first_and_empty_for_an_unknown_id() {
+        let pool = test_pool().await;
+        sqlx::query(
+            "INSERT INTO incident_history (incident_id, summary, description, operators, affected_stations, \
+                                             priority, is_planned, recorded_at) \
+             VALUES \
+                ('TEST-INC-2', 'v1', 'd', '{}', '{}', 1, false, NOW() - INTERVAL '1 hour'), \
+                ('TEST-INC-2', 'v2', 'd', '{}', '{}', 2, false, NOW())",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture rows");
+
+        let history = incident_history_for_id(&pool, "TEST-INC-2").await.expect("query");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].summary, "v2", "newest snapshot should be first");
+        assert_eq!(history[1].summary, "v1");
+
+        let empty = incident_history_for_id(&pool, "TEST-INC-DOES-NOT-EXIST").await.expect("query");
+        assert!(empty.is_empty());
+
+        sqlx::query("DELETE FROM incident_history WHERE incident_id = 'TEST-INC-2'").execute(&pool).await.expect("cleanup");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api lines_currently_reporting_incident -- --ignored`"]
+    async fn lines_currently_reporting_incident_matches_only_the_exact_jsonb_source_string() {
+        // The concrete regression test for Correction 2: this must match a
+        // real `knowledgebase-incident-*` source and must NOT false-positive
+        // against an `ldbws-sampling`/`tfl-line-status-*` row, nor against
+        // the unrelated `line_status.source` COLUMN (set to 'tfl' on the
+        // second fixture row here, deliberately, to prove the query reaches
+        // into the JSONB and not that column).
+        let pool = test_pool().await;
+        sqlx::query(
+            "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, source) VALUES \
+                ('TEST-LINE-A', 'Test Line A', 'national-rail', '{VT}', \
+                 '[{\"severity\":9,\"reason\":\"x\",\"validity\":{\"from_date\":\"2026-01-01T00:00:00Z\",\"to_date\":null,\"is_now\":true}, \
+                    \"data_quality\":\"knowledgebase\",\"disruption\":{\"category\":\"RealTime\",\"description\":\"x\", \
+                    \"affected_stops\":[],\"affected_routes\":[],\"source\":\"knowledgebase-incident-TEST-INC-3\"}}]', \
+                 'aggregator'), \
+                ('TEST-LINE-B', 'Test Line B', 'tube', '{TfL}', \
+                 '[{\"severity\":9,\"reason\":\"x\",\"validity\":{\"from_date\":\"2026-01-01T00:00:00Z\",\"to_date\":null,\"is_now\":true}, \
+                    \"data_quality\":\"tfl\",\"disruption\":{\"category\":\"RealTime\",\"description\":\"x\", \
+                    \"affected_stops\":[],\"affected_routes\":[],\"source\":\"tfl-line-status-TEST-LINE-B\"}}]', \
+                 'tfl') \
+             ON CONFLICT (line_id) DO UPDATE SET statuses = EXCLUDED.statuses, source = EXCLUDED.source",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture rows");
+
+        let matches = lines_currently_reporting_incident(&pool, "knowledgebase-incident-TEST-INC-3")
+            .await
+            .expect("query");
+        let ids: Vec<&str> = matches.iter().map(|r| r.line_id.as_str()).collect();
+        assert!(ids.contains(&"TEST-LINE-A"));
+        assert!(!ids.contains(&"TEST-LINE-B"), "must not match the unrelated tfl-line-status-* source");
+
+        let no_match = lines_currently_reporting_incident(&pool, "ldbws-sampling").await.expect("query");
+        assert!(
+            no_match.iter().all(|r| r.line_id != "TEST-LINE-A" && r.line_id != "TEST-LINE-B"),
+            "the shared 'ldbws-sampling' literal must never match a real incident lookup"
+        );
+
+        sqlx::query("DELETE FROM line_status WHERE line_id IN ('TEST-LINE-A', 'TEST-LINE-B')")
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 }

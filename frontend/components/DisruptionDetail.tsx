@@ -1,31 +1,13 @@
 'use client';
 
-import DOMPurify from 'isomorphic-dompurify';
 import { Stack, Text, Badge, Group } from '@mantine/core';
 import type { Disruption } from '@/lib/types';
-
-// Registered once at module load. `disruption.description` comes from the
-// Darwin/Knowledgebase feed already fully HTML-entity-decoded by the time
-// it reaches the frontend (see poller-incidents' quick_xml parsing) — it's
-// real markup, not escaped/serialized XML needing re-parsing. DOMPurify's
-// ALLOWED_ATTR strips `target`/`rel` by default since they're not in the
-// allowlist below; this hook adds them back on every surviving `<a>` so
-// external links don't inherit this page's window/referrer.
-DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-  if (node.tagName === 'A') {
-    node.setAttribute('target', '_blank');
-    node.setAttribute('rel', 'noopener');
-  }
-});
-
-const ALLOWED_TAGS = ['p', 'br', 'strong', 'b', 'em', 'i', 'ul', 'ol', 'li', 'a'];
-const ALLOWED_ATTR = ['href'];
-
-function sanitizeDescription(html: string): string {
-  return DOMPurify.sanitize(html, { ALLOWED_TAGS, ALLOWED_ATTR });
-}
+import { sanitizeDescription } from '@/lib/sanitizeHtml';
+import { incidentIdFromSource } from '@/lib/incidents';
+import { TextLink } from './TextLink';
 
 export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
+  const incidentId = incidentIdFromSource(disruption.source);
   return (
     <Stack gap="xs">
       <div dangerouslySetInnerHTML={{ __html: sanitizeDescription(disruption.description) }} />
@@ -47,6 +29,11 @@ export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
         <Text size="xs" c="dimmed">
           Source: {disruption.source}
         </Text>
+      )}
+      {incidentId && (
+        <TextLink href={`/incidents/${encodeURIComponent(incidentId)}`} underline="always">
+          View full incident details
+        </TextLink>
       )}
     </Stack>
   );

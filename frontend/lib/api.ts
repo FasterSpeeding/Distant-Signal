@@ -16,6 +16,7 @@ import type {
   TrackedTrainTicket,
   DelayRepayEstimateResponse,
   TicketListItem,
+  IncidentDetail,
 } from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
@@ -321,4 +322,16 @@ export async function getMyTickets(): Promise<TicketListItem[] | null> {
     throw errorForResponse(url, response);
   }
   return response.json() as Promise<TicketListItem[]>;
+}
+
+/** `GET /public/incidents/{incidentId}`. Public, unauthenticated read — no
+ * cookie forwarding needed, same plain `fetchJson` pattern as
+ * `getLineDefinition`/`getCustomLine`. Throws `ApiNotFoundError` on a 404
+ * (via `errorForResponse`, same as every other `fetchJson` caller) —
+ * `app/incidents/[id]/page.tsx` catches it and calls `notFound()`,
+ * identical to `/lines/[id]`'s existing pattern. */
+export async function getIncident(incidentId: string): Promise<IncidentDetail> {
+  return fetchJson<IncidentDetail>(`${baseUrl()}/public/incidents/${encodeURIComponent(incidentId)}`, {
+    cache: 'no-store',
+  });
 }

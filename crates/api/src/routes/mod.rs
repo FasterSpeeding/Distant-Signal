@@ -8,6 +8,7 @@ pub mod auth;
 pub mod freshness;
 pub mod health;
 pub mod history_retention;
+pub mod incidents;
 pub mod ingest;
 pub mod line_status;
 pub mod lines;
@@ -42,6 +43,7 @@ pub fn public_router() -> Router {
         .merge(health::router())
         .merge(freshness::router())
         .merge(history_retention::router())
+        .merge(incidents::router())
         .merge(lines::router())
         .merge(preferences::router())
         .merge(reference::router())

@@ -46,25 +46,36 @@ describe('DisruptionDetail', () => {
     expect(screen.queryByText(/^Source:/)).not.toBeInTheDocument();
   });
 
-  it('renders safe HTML tags as actual elements, not escaped text', () => {
-    const withHtml = { ...sample, description: '<p>Signal failure</p><br/><strong>at Woking</strong>' };
-    renderWithMantine(<DisruptionDetail disruption={withHtml} />);
-    expect(screen.getByText('Signal failure').tagName).toBe('P');
-    expect(screen.getByText('at Woking').tagName).toBe('STRONG');
+  it('renders a link to the incident detail page when source names a real incident', () => {
+    renderWithMantine(<DisruptionDetail disruption={sample} />);
+    const link = screen.getByRole('link', { name: 'View full incident details' });
+    expect(link).toHaveAttribute('href', '/incidents/123');
   });
 
-  it('strips script tags and event handler attributes', () => {
-    const malicious = { ...sample, description: '<p onclick="alert(1)">Safe text</p><script>alert(2)</script>' };
-    const { container } = renderWithMantine(<DisruptionDetail disruption={malicious} />);
-    expect(container.querySelector('script')).not.toBeInTheDocument();
-    expect(screen.getByText('Safe text')).not.toHaveAttribute('onclick');
+  it('renders no incident-detail link when source is the LDBWS-inferred literal', () => {
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, source: 'ldbws-sampling' }} />);
+    expect(screen.queryByRole('link', { name: 'View full incident details' })).not.toBeInTheDocument();
   });
 
-  it('forces target=_blank and rel=noopener on links', () => {
-    const withLink = { ...sample, description: '<a href="https://example.com">More info</a>' };
-    renderWithMantine(<DisruptionDetail disruption={withLink} />);
-    const link = screen.getByText('More info');
-    expect(link).toHaveAttribute('target', '_blank');
-    expect(link).toHaveAttribute('rel', 'noopener');
+  it('renders no incident-detail link when source is a TfL line-keyed value', () => {
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, source: 'tfl-line-status-northern' }} />);
+    expect(screen.queryByRole('link', { name: 'View full incident details' })).not.toBeInTheDocument();
+  });
+
+  it('renders no incident-detail link when source is null', () => {
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, source: null }} />);
+    expect(screen.queryByRole('link', { name: 'View full incident details' })).not.toBeInTheDocument();
+  });
+
+  // `disruption.source` ultimately comes from external feed data, so a
+  // path-like incident id (e.g. containing `/`) must be percent-encoded in
+  // the link href rather than interpolated raw -- otherwise it could
+  // resolve to an unrelated route.
+  it('percent-encodes a path-like incident id in the link href', () => {
+    renderWithMantine(
+      <DisruptionDetail disruption={{ ...sample, source: 'knowledgebase-incident-123/456' }} />,
+    );
+    const link = screen.getByRole('link', { name: 'View full incident details' });
+    expect(link).toHaveAttribute('href', '/incidents/123%2F456');
   });
 });
