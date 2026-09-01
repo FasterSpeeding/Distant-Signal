@@ -2677,6 +2677,44 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
+    // Station Catalogue Completeness Task 1.2: fills in five previously
+    // missing minor Cotswold Line halts on gwr-cotswold.toml (Hanborough,
+    // Combe, Finstock, Ascott-under-Wychwood, Shipton), two-source confirmed
+    // and inserted at their true geographic position between OXF and KGM.
+    // Hanborough was not in the task's original starting list (Combe,
+    // Finstock, Ascott-under-Wychwood, Shipton) but was surfaced by a fresh
+    // route-diagram read required by that task. See that file's own
+    // "Ordered London to Worcester" comment for the full sourcing/rationale.
+    #[test]
+    fn gwr_cotswold_minor_halts_infill_stations_present() {
+        let lines = load_line("gwr-cotswold");
+        let line = lines.get("gwr-cotswold").expect("gwr-cotswold line should exist");
+        for crs in ["HND", "CME", "FIN", "AUW", "SIP"] {
+            assert!(line.has_station(crs), "gwr-cotswold should now list {crs}");
+        }
+    }
+
+    // Same task: an incident at one of the newly-added stations (Hanborough)
+    // should behave exactly like the pre-existing Moreton-in-Marsh
+    // exclusive-segment case above -- `gwr-cotswold` is not shared with any
+    // sibling line's segment (confirmed by grepping the catalogue: only
+    // comments in gwr-thames-valley.toml reference the name, no other file's
+    // `[[stations]]` entries actually set `segment = "gwr-cotswold"`), so
+    // this stays a clean ExclusiveSegment match with no shared-segment
+    // propagation to assert, mirroring
+    // `gwr_cornish_main_line_saltash_incident_stays_on_its_own_line`'s
+    // identical judgment call for that file's own infill task.
+    #[test]
+    fn gwr_cotswold_hanborough_incident_stays_on_its_own_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("GW-18", "Signal failure at Hanborough", "Signal failure causing delays at Hanborough.", &["GW"], &["HND"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["gwr-cotswold".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
     // `gwr-main-line` and `gwr-cotswold` both share the `gwr-trunk-paddington`
     // segment (PAD/RDG/DID) established by Task 4.1 and reused verbatim by
     // Task 4.2. An incident at Didcot (a station on that shared segment)
