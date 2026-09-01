@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ActionIcon, Group, Tooltip } from '@mantine/core';
-import { TextLink } from './TextLink';
+import { LoginLink } from './LoginLink';
 import type { Preferences } from '@/lib/types';
 
 type PinKind = 'line' | 'station';
@@ -122,7 +122,7 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
           <StarIcon filled={pinned} />
         </ActionIcon>
       </Tooltip>
-      {needsLogin && <TextLink href="/api/auth/login" underline="always">Log in to pin</TextLink>}
+      {needsLogin && <LoginLink underline="always">Log in to pin</LoginLink>}
     </Group>
   );
 }

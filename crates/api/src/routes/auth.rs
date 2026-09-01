@@ -36,7 +36,30 @@ fn cookie_secure(app: &App) -> bool {
     app.config.sso_redirect_url.starts_with("https://")
 }
 
-async fn login(State(app): State<App>) -> Response {
+#[derive(Deserialize)]
+struct LoginParams {
+    return_to: Option<String>,
+}
+
+/// The `return_to` to persist for this login attempt: the captured value
+/// if it validates, else `None` -- silently discarded, never a reason to
+/// fail the attempt (see this plan's Global Constraints: fallback is
+/// always silent).
+fn captured_return_to(raw: Option<&str>) -> Option<String> {
+    raw.and_then(auth::validate_return_to)
+}
+
+async fn login(
+    State(app): State<App>,
+    // A hard `Query<LoginParams>` extractor would reject the whole request
+    // with a user-visible 400 on a malformed query string (e.g. a
+    // duplicate `return_to`), which would abort the OIDC flow before this
+    // body even runs -- a genuine regression, and a violation of "fallback
+    // is always silent". Extracting as a `Result` instead means axum
+    // always calls this handler; a malformed query string just becomes
+    // `Err`, handled below identically to "no return_to was sent".
+    params: Result<Query<LoginParams>, axum::extract::rejection::QueryRejection>,
+) -> Response {
     let (url, pkce_verifier, csrf_state, nonce) = match app.oidc.authorize_url().await {
         Ok(v) => v,
         Err(err) => {
@@ -45,6 +68,12 @@ async fn login(State(app): State<App>) -> Response {
         }
     };
 
+    // An invalid or malicious return_to -- including a query string that
+    // failed to deserialize at all -- is discarded at the door and never
+    // persisted: insert_login_state receives None for it, exactly as if
+    // the parameter had never been sent.
+    let return_to = captured_return_to(params.ok().and_then(|Query(p)| p.return_to).as_deref());
+
     let login_state_id = auth::generate_session_token();
     if let Err(err) = users::insert_login_state(
         &app.database,
@@ -52,6 +81,7 @@ async fn login(State(app): State<App>) -> Response {
         pkce_verifier.secret(),
         nonce.secret(),
         csrf_state.secret(),
+        return_to.as_deref(),
     )
     .await
     {
@@ -73,6 +103,13 @@ struct CallbackParams {
     code: Option<String>,
     state: Option<String>,
     error: Option<String>,
+}
+
+/// The post-login redirect target: the stored `return_to` if it still
+/// validates (re-checked here, defense in depth), else the operator's
+/// static fallback.
+fn post_login_target(stored_return_to: Option<&str>, fallback: &str) -> String {
+    stored_return_to.and_then(auth::validate_return_to).unwrap_or_else(|| fallback.to_string())
 }
 
 async fn callback(State(app): State<App>, headers: axum::http::HeaderMap, Query(params): Query<CallbackParams>) -> Response {
@@ -143,7 +180,12 @@ async fn callback(State(app): State<App>, headers: axum::http::HeaderMap, Query(
     }
 
     let max_age = app.config.session_ttl_days * 24 * 60 * 60;
-    let mut response = Redirect::temporary(&app.config.sso_post_login_redirect_url).into_response();
+    // Re-validate stored.return_to again here (defense in depth -- cheap,
+    // and guards against any future code path that might write to that
+    // column without going through login()'s own validation), not just
+    // trust that it was already validated once at insert time.
+    let target = post_login_target(stored.return_to.as_deref(), &app.config.sso_post_login_redirect_url);
+    let mut response = Redirect::temporary(&target).into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
         HeaderValue::from_str(&auth::set_cookie_header(auth::SESSION_COOKIE_NAME, &session_token, max_age, cookie_secure(&app)))
@@ -189,5 +231,46 @@ async fn session(OptionalAuthenticatedUser(user): OptionalAuthenticatedUser) -> 
     match user {
         Some(u) => Json(SessionResponse { authenticated: true, id: Some(u.id), email: u.email, name: u.name }),
         None => Json(SessionResponse { authenticated: false, id: None, email: None, name: None }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn captured_return_to_discards_an_invalid_return_to_rather_than_erroring() {
+        assert_eq!(captured_return_to(Some("https://evil.com")), None);
+    }
+
+    #[test]
+    fn captured_return_to_keeps_a_valid_return_to() {
+        assert_eq!(captured_return_to(Some("/lines/some-line")), Some("/lines/some-line".to_string()));
+    }
+
+    #[test]
+    fn captured_return_to_treats_no_return_to_the_same_as_an_invalid_one() {
+        assert_eq!(captured_return_to(None), None);
+    }
+
+    #[test]
+    fn post_login_target_uses_the_stored_return_to_when_valid() {
+        let target = post_login_target(Some("/lines/some-line?tab=history"), "https://rail.example.com/");
+        assert_eq!(target, "/lines/some-line?tab=history");
+    }
+
+    #[test]
+    fn post_login_target_falls_back_when_return_to_is_none() {
+        let fallback = "https://rail.example.com/";
+        assert_eq!(post_login_target(None, fallback), fallback);
+    }
+
+    #[test]
+    fn post_login_target_falls_back_when_the_stored_return_to_fails_revalidation() {
+        // Defense-in-depth case: a stored value that, hypothetically, didn't
+        // go through login()'s own validation (e.g. a future code path with a
+        // bug) must still be caught here, not trusted blindly.
+        let fallback = "https://rail.example.com/";
+        assert_eq!(post_login_target(Some("https://evil.com"), fallback), fallback);
     }
 }

@@ -6,6 +6,8 @@ import { DeleteLineButton } from './DeleteLineButton';
 const pushMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock }),
+  usePathname: () => '/lines/custom-my-commute',
+  useSearchParams: () => new URLSearchParams(''),
 }));
 
 describe('DeleteLineButton', () => {
@@ -69,7 +71,7 @@ describe('DeleteLineButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
 
     const loginLink = await screen.findByRole('link', { name: 'Log in to delete a line' });
-    expect(loginLink).toHaveAttribute('href', '/api/auth/login');
+    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Flines%2Fcustom-my-commute');
     expect(screen.queryByText('no session')).not.toBeInTheDocument();
     expect(pushMock).not.toHaveBeenCalled();
   });

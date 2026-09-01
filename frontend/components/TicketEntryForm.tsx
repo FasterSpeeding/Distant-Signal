@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button, FileInput, Group, Stack, Tabs, TextInput } from '@mantine/core';
-import { TextLink } from './TextLink';
+import { LoginLink } from './LoginLink';
 import type { PartialTicket, TicketCreatedResponse, TicketEntryRequest, TicketSource } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
@@ -295,9 +295,9 @@ export function TicketEntryForm({ trackingId, label }: { trackingId: number; lab
           Cancel
         </Button>
         {needsLogin && (
-          <TextLink href="/api/auth/login" underline="always">
+          <LoginLink underline="always">
             Log in to save this ticket
-          </TextLink>
+          </LoginLink>
         )}
       </Group>
     </Stack>

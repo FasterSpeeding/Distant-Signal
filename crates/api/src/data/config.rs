@@ -98,10 +98,12 @@ pub struct ServiceArguments {
     pub sso_redirect_url: String,
 
     /// Where `/auth/callback` and `/auth/logout` send the browser once
-    /// they're done -- the frontend's own root URL (e.g.
-    /// `https://rail.example.com/`). One fixed target, not a round-tripped
-    /// "return to this page" value -- a v1 scope simplification (see this
-    /// plan's Global Constraints).
+    /// they're done, WHEN no per-attempt return path was captured or the
+    /// one captured failed validation -- the frontend's own root URL (e.g.
+    /// `https://rail.example.com/`). No longer the sole destination for
+    /// every successful login: see routes::auth::callback and
+    /// auth::validate_return_to for the per-login-attempt `return_to`
+    /// this now falls back from. docs/superpowers/specs/2026-08-31-dynamic-post-login-redirect-design.md.
     #[arg(long, env)]
     pub sso_post_login_redirect_url: String,
 

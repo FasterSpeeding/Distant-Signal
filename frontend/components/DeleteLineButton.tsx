@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Button, Modal, Text, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginPrompt } from './LoginPrompt';
+import { LoginLink } from './LoginLink';
 
 /** Deletes via the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * — this is a Client Component and cannot reach the `api` service directly.
@@ -66,7 +66,11 @@ export function DeleteLineButton({ id }: { id: string }) {
       <Modal opened={opened} onClose={close} title="Delete this line?">
         <Text>This cannot be undone.</Text>
         {error && <Text c="red">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginPrompt verb="delete a line" />}
+        {needsLoginState.needsLogin && (
+          <LoginLink underline="always">
+            Log in to delete a line
+          </LoginLink>
+        )}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={deleting}>
             Cancel

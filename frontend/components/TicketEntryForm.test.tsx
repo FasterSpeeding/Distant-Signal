@@ -6,6 +6,8 @@ import { TicketEntryForm } from './TicketEntryForm';
 const refreshMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: refreshMock }),
+  usePathname: () => '/train/by-id/1',
+  useSearchParams: () => new URLSearchParams(''),
 }));
 
 describe('TicketEntryForm', () => {
@@ -84,7 +86,7 @@ describe('TicketEntryForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save ticket' }));
 
     const loginLink = await screen.findByRole('link', { name: 'Log in to save this ticket' });
-    expect(loginLink).toHaveAttribute('href', '/api/auth/login');
+    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrain%2Fby-id%2F1');
     expect(screen.getByLabelText('Operator')).toHaveValue('LNER');
   });
 
