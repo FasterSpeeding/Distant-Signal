@@ -41,7 +41,25 @@ struct LoginParams {
     return_to: Option<String>,
 }
 
-async fn login(State(app): State<App>, Query(params): Query<LoginParams>) -> Response {
+/// The `return_to` to persist for this login attempt: the captured value
+/// if it validates, else `None` -- silently discarded, never a reason to
+/// fail the attempt (see this plan's Global Constraints: fallback is
+/// always silent).
+fn captured_return_to(raw: Option<&str>) -> Option<String> {
+    raw.and_then(auth::validate_return_to)
+}
+
+async fn login(
+    State(app): State<App>,
+    // A hard `Query<LoginParams>` extractor would reject the whole request
+    // with a user-visible 400 on a malformed query string (e.g. a
+    // duplicate `return_to`), which would abort the OIDC flow before this
+    // body even runs -- a genuine regression, and a violation of "fallback
+    // is always silent". Extracting as a `Result` instead means axum
+    // always calls this handler; a malformed query string just becomes
+    // `Err`, handled below identically to "no return_to was sent".
+    params: Result<Query<LoginParams>, axum::extract::rejection::QueryRejection>,
+) -> Response {
     let (url, pkce_verifier, csrf_state, nonce) = match app.oidc.authorize_url().await {
         Ok(v) => v,
         Err(err) => {
@@ -50,13 +68,11 @@ async fn login(State(app): State<App>, Query(params): Query<LoginParams>) -> Res
         }
     };
 
-    // An invalid or malicious return_to is discarded at the door and
-    // never persisted at all -- insert_login_state receives None for it,
-    // exactly as if the parameter had never been sent. A bad return_to
-    // must never fail the login attempt itself, only silently lose the
-    // "return to this page" behavior for this one attempt (see this
-    // plan's Global Constraints: fallback is always silent).
-    let return_to = params.return_to.as_deref().and_then(auth::validate_return_to);
+    // An invalid or malicious return_to -- including a query string that
+    // failed to deserialize at all -- is discarded at the door and never
+    // persisted: insert_login_state receives None for it, exactly as if
+    // the parameter had never been sent.
+    let return_to = captured_return_to(params.ok().and_then(|Query(p)| p.return_to).as_deref());
 
     let login_state_id = auth::generate_session_token();
     if let Err(err) = users::insert_login_state(
@@ -87,6 +103,13 @@ struct CallbackParams {
     code: Option<String>,
     state: Option<String>,
     error: Option<String>,
+}
+
+/// The post-login redirect target: the stored `return_to` if it still
+/// validates (re-checked here, defense in depth), else the operator's
+/// static fallback.
+fn post_login_target(stored_return_to: Option<&str>, fallback: &str) -> String {
+    stored_return_to.and_then(auth::validate_return_to).unwrap_or_else(|| fallback.to_string())
 }
 
 async fn callback(State(app): State<App>, headers: axum::http::HeaderMap, Query(params): Query<CallbackParams>) -> Response {
@@ -161,11 +184,7 @@ async fn callback(State(app): State<App>, headers: axum::http::HeaderMap, Query(
     // and guards against any future code path that might write to that
     // column without going through login()'s own validation), not just
     // trust that it was already validated once at insert time.
-    let target = stored
-        .return_to
-        .as_deref()
-        .and_then(auth::validate_return_to)
-        .unwrap_or_else(|| app.config.sso_post_login_redirect_url.clone());
+    let target = post_login_target(stored.return_to.as_deref(), &app.config.sso_post_login_redirect_url);
     let mut response = Redirect::temporary(&target).into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
@@ -220,62 +239,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn login_discards_an_invalid_return_to_rather_than_erroring() {
-        // Mirrors the exact expression added to login() in Step 2, without
-        // needing a live App/database to exercise it.
-        let return_to = Some("https://evil.com".to_string())
-            .as_deref()
-            .and_then(auth::validate_return_to);
-        assert_eq!(return_to, None);
+    fn captured_return_to_discards_an_invalid_return_to_rather_than_erroring() {
+        assert_eq!(captured_return_to(Some("https://evil.com")), None);
     }
 
     #[test]
-    fn login_keeps_a_valid_return_to() {
-        let return_to = Some("/lines/some-line".to_string())
-            .as_deref()
-            .and_then(auth::validate_return_to);
-        assert_eq!(return_to, Some("/lines/some-line".to_string()));
+    fn captured_return_to_keeps_a_valid_return_to() {
+        assert_eq!(captured_return_to(Some("/lines/some-line")), Some("/lines/some-line".to_string()));
     }
 
     #[test]
-    fn login_treats_no_return_to_the_same_as_an_invalid_one() {
-        let return_to: Option<String> = None;
-        assert_eq!(return_to.as_deref().and_then(auth::validate_return_to), None);
+    fn captured_return_to_treats_no_return_to_the_same_as_an_invalid_one() {
+        assert_eq!(captured_return_to(None), None);
     }
 
     #[test]
-    fn callback_uses_the_stored_return_to_when_valid() {
-        let stored_return_to = Some("/lines/some-line?tab=history".to_string());
-        let fallback = "https://rail.example.com/".to_string();
-        let target = stored_return_to
-            .as_deref()
-            .and_then(auth::validate_return_to)
-            .unwrap_or_else(|| fallback.clone());
+    fn post_login_target_uses_the_stored_return_to_when_valid() {
+        let target = post_login_target(Some("/lines/some-line?tab=history"), "https://rail.example.com/");
         assert_eq!(target, "/lines/some-line?tab=history");
     }
 
     #[test]
-    fn callback_falls_back_when_return_to_is_none() {
-        let stored_return_to: Option<String> = None;
-        let fallback = "https://rail.example.com/".to_string();
-        let target = stored_return_to
-            .as_deref()
-            .and_then(auth::validate_return_to)
-            .unwrap_or_else(|| fallback.clone());
-        assert_eq!(target, fallback);
+    fn post_login_target_falls_back_when_return_to_is_none() {
+        let fallback = "https://rail.example.com/";
+        assert_eq!(post_login_target(None, fallback), fallback);
     }
 
     #[test]
-    fn callback_falls_back_when_the_stored_return_to_fails_revalidation() {
+    fn post_login_target_falls_back_when_the_stored_return_to_fails_revalidation() {
         // Defense-in-depth case: a stored value that, hypothetically, didn't
         // go through login()'s own validation (e.g. a future code path with a
         // bug) must still be caught here, not trusted blindly.
-        let stored_return_to = Some("https://evil.com".to_string());
-        let fallback = "https://rail.example.com/".to_string();
-        let target = stored_return_to
-            .as_deref()
-            .and_then(auth::validate_return_to)
-            .unwrap_or_else(|| fallback.clone());
-        assert_eq!(target, fallback);
+        let fallback = "https://rail.example.com/";
+        assert_eq!(post_login_target(Some("https://evil.com"), fallback), fallback);
     }
 }
