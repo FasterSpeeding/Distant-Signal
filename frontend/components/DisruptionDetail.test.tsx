@@ -79,4 +79,37 @@ describe('DisruptionDetail', () => {
     const link = screen.getByRole('link', { name: 'View full incident details' });
     expect(link).toHaveAttribute('href', '/incidents/123%2F456');
   });
+
+  it('renders the badge with the correct label for a rail-replacement-bus impact type', () => {
+    renderWithMantine(
+      <DisruptionDetail disruption={{ ...sample, impactType: 'rail_replacement_bus' }} />,
+    );
+    expect(screen.getByText('Rail Replacement Bus')).toBeInTheDocument();
+  });
+
+  it('renders the badge with the correct label for a no-scheduled-service impact type', () => {
+    renderWithMantine(
+      <DisruptionDetail disruption={{ ...sample, impactType: 'no_scheduled_service' }} />,
+    );
+    expect(screen.getByText('No Scheduled Service')).toBeInTheDocument();
+  });
+
+  it('renders the badge with the correct label for a diversion impact type', () => {
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, impactType: 'diversion' }} />);
+    expect(screen.getByText('Diversion')).toBeInTheDocument();
+  });
+
+  it('renders no badge when impactType is null', () => {
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, impactType: null }} />);
+    expect(screen.queryByText('Rail Replacement Bus')).not.toBeInTheDocument();
+    expect(screen.queryByText('No Scheduled Service')).not.toBeInTheDocument();
+    expect(screen.queryByText('Diversion')).not.toBeInTheDocument();
+  });
+
+  it('renders no badge for an unrecognized impactType value, not the raw string', () => {
+    renderWithMantine(
+      <DisruptionDetail disruption={{ ...sample, impactType: 'some_future_taxonomy_value' }} />,
+    );
+    expect(screen.queryByText('some_future_taxonomy_value')).not.toBeInTheDocument();
+  });
 });

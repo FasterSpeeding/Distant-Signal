@@ -4,12 +4,19 @@ import { Stack, Text, Badge, Group } from '@mantine/core';
 import type { Disruption } from '@/lib/types';
 import { sanitizeDescription } from '@/lib/sanitizeHtml';
 import { incidentIdFromSource } from '@/lib/incidents';
+import { impactTypeLabel } from '@/lib/impactType';
 import { TextLink } from './TextLink';
 
 export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
   const incidentId = incidentIdFromSource(disruption.source);
+  const impactLabel = impactTypeLabel(disruption.impactType);
   return (
     <Stack gap="xs">
+      {impactLabel && (
+        <Badge variant="light" color="orange" w="fit-content">
+          {impactLabel}
+        </Badge>
+      )}
       <div dangerouslySetInnerHTML={{ __html: sanitizeDescription(disruption.description) }} />
       {disruption.affectedStops.length > 0 && (
         <Group gap="xs">
