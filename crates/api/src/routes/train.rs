@@ -28,7 +28,7 @@ pub fn router() -> Router {
         .route("/Train/track", axum::routing::post(post_track))
         .route("/Train/mine", axum::routing::get(get_my_tracked_trains))
         .route("/Train/tickets/mine", axum::routing::get(get_my_tickets))
-        .route("/Train/{tracking_id}", axum::routing::get(get_by_tracking_id))
+        .route("/Train/{tracking_id}", axum::routing::get(get_by_tracking_id).delete(delete_tracked_train))
         .route("/Train/by-uid/{train_uid}/{date}", axum::routing::get(get_by_uid_and_date))
         .route("/Train/{tracking_id}/tickets", axum::routing::post(post_ticket).get(get_tickets))
         .route("/Train/{tracking_id}/tickets/{ticket_id}/delay-repay", axum::routing::get(get_delay_repay_estimate))
@@ -214,6 +214,30 @@ async fn get_by_tracking_id(
         Some(state) => Ok(Json(blend_darwin_eta(&app, state).await)),
         None => Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string())),
     }
+}
+
+/// `DELETE /Train/{trackingId}` -- mirrors `lines.rs`'s `delete_line`
+/// (same `AuthenticatedUser` + 404-for-unknown-or-not-yours shape, same
+/// `204 No Content` on success), on the same path shape `GET
+/// /Train/{trackingId}` (`get_by_tracking_id`, above) already uses. The
+/// ownership check is folded into `train_tracking::delete_tracked_train`'s
+/// own `WHERE id = $1 AND user_id = $2`, rather than a separate
+/// `tracked_train_owner` lookup followed by an unscoped delete -- see that
+/// function's doc comment for why nothing else needs deleting here
+/// (`train_movement_events`/`train_current_state`/`tracked_train_tickets`
+/// all cascade).
+async fn delete_tracked_train(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(tracking_id): Path<i64>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let deleted = train_tracking::delete_tracked_train(&app.database, tracking_id, &user.id)
+        .await
+        .map_err(internal_error("delete tracked train"))?;
+    if !deleted {
+        return Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string()));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn get_by_uid_and_date(
@@ -775,6 +799,113 @@ mod db_tests {
 
         cleanup_station_sample(&pool, "KGX").await;
         cleanup_user(&pool, "TEST-TRACKID-REAL-OWNER").await;
+    }
+
+    // --- delete_tracked_train -------------------------------------------------
+
+    /// Issues `DELETE /Train/{trackingId}`, optionally with a session
+    /// cookie. Mirrors `request` above -- a success here is `204 No
+    /// Content` with an empty body, so an empty body is treated as
+    /// `Value::Null` rather than fed to `serde_json::from_slice` (which
+    /// would otherwise fail to parse it and mask a real body on any other
+    /// status).
+    async fn delete_request(router: axum::Router, tracking_id: i64, raw_token: Option<&str>) -> (StatusCode, Value) {
+        let mut builder = Request::builder().method("DELETE").uri(format!("/Train/{tracking_id}"));
+        if let Some(token) = raw_token {
+            builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
+        }
+        let req = builder.body(Body::empty()).expect("build request");
+        let response = router.oneshot(req).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+        let value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+            })
+        };
+        (status, value)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_tracked_train -- --ignored --test-threads=1`"]
+    async fn delete_tracked_train_no_session_is_401() {
+        let pool = connect().await;
+        seed_session(&pool, "TEST-DELETE-401-OWNER").await;
+        let tracking_id = seed_tracked_train(&pool, "TEST-DELETE-401-OWNER", Some("D11111"), "2026-08-29".parse().unwrap()).await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = delete_request(router, tracking_id, None).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body, Value::String("no session".to_string()));
+
+        cleanup_user(&pool, "TEST-DELETE-401-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_tracked_train -- --ignored --test-threads=1`"]
+    async fn delete_tracked_train_a_non_owner_session_gets_the_same_404_as_unknown_and_the_row_survives() {
+        let pool = connect().await;
+        seed_session(&pool, "TEST-DELETE-OWNER").await;
+        let other_token = seed_session(&pool, "TEST-DELETE-OTHER").await;
+        let tracking_id = seed_tracked_train(&pool, "TEST-DELETE-OWNER", Some("D22222"), "2026-08-29".parse().unwrap()).await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = delete_request(router, tracking_id, Some(&other_token)).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("no tracked train with that id".to_string()));
+
+        // Confirms the delete was a genuine no-op for a non-owner, not just
+        // a 404 with the row quietly gone anyway.
+        let still_there = crate::data::train_tracking::get_by_tracking_id(&pool, tracking_id).await.expect("read tracked train state");
+        assert!(still_there.is_some(), "row should survive a non-owner's delete attempt");
+
+        cleanup_user(&pool, "TEST-DELETE-OWNER").await;
+        cleanup_user(&pool, "TEST-DELETE-OTHER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_tracked_train -- --ignored --test-threads=1`"]
+    async fn delete_tracked_train_a_nonexistent_id_is_404_with_the_unchanged_message() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-DELETE-NOTFOUND").await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = delete_request(router, 99999999, Some(&token)).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("no tracked train with that id".to_string()));
+
+        cleanup_user(&pool, "TEST-DELETE-NOTFOUND").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_tracked_train -- --ignored --test-threads=1`"]
+    async fn delete_tracked_train_the_owner_can_delete_it() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-DELETE-REAL-OWNER").await;
+        let tracking_id = seed_tracked_train(&pool, "TEST-DELETE-REAL-OWNER", Some("D33333"), "2026-08-29".parse().unwrap()).await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, _body) = delete_request(router, tracking_id, Some(&owner_token)).await;
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let gone = crate::data::train_tracking::get_by_tracking_id(&pool, tracking_id).await.expect("read tracked train state");
+        assert!(gone.is_none(), "row should be gone after the owner deletes it");
+
+        cleanup_user(&pool, "TEST-DELETE-REAL-OWNER").await;
     }
 
     // --- get_by_uid_and_date -------------------------------------------------
