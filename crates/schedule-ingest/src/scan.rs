@@ -26,12 +26,25 @@ pub struct DirSnapshot(pub HashMap<String, (SystemTime, u64)>);
 
 /// Lists `watch_dir` and stats every regular file in it.
 ///
-/// Subdirectories are skipped. An empty (or not-yet-existing-but-readable)
-/// directory yields an empty [`DirSnapshot`], not an error.
+/// Subdirectories are skipped. An empty, or not-yet-existing, directory
+/// yields an empty [`DirSnapshot`], not an error — `watch_dir` is nested
+/// inside whatever home/virtual-folder directory the sibling SFTPGo
+/// container's DTD account is (eventually) provisioned with, and nothing
+/// guarantees that path exists before the first real delivery lands (or
+/// before that provisioning is even wired up) -- see this module's own doc
+/// comment. A genuinely unreadable existing directory (wrong permissions,
+/// not a directory at all) still surfaces as `Err`, since that is not the
+/// same "nothing has arrived yet" case.
 pub fn scan_incoming(watch_dir: &Path) -> anyhow::Result<DirSnapshot> {
     let mut entries = HashMap::new();
 
-    for entry in std::fs::read_dir(watch_dir)? {
+    let read_dir = match std::fs::read_dir(watch_dir) {
+        Ok(read_dir) => read_dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(DirSnapshot(entries)),
+        Err(err) => return Err(err.into()),
+    };
+
+    for entry in read_dir {
         let entry = entry?;
         let metadata = entry.metadata()?;
 
@@ -217,5 +230,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let snapshot = scan_incoming(dir.path()).unwrap();
         assert!(snapshot.0.is_empty());
+    }
+
+    /// Regression test: `watch_dir` not existing at all (e.g. a fresh
+    /// deployment where nothing has created it yet, or SFTPGo's account
+    /// provisioning hasn't run) must not error every cycle -- confirmed
+    /// against a real crash loop this exact gap caused
+    /// ("ERROR schedule_ingest: scan cycle failed unexpectedly ... error=No
+    /// such file or directory (os error 2)").
+    #[test]
+    fn scan_incoming_on_nonexistent_directory_returns_empty_snapshot_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist-yet");
+        let snapshot = scan_incoming(&missing).unwrap();
+        assert!(snapshot.0.is_empty());
+    }
+
+    #[test]
+    fn scan_incoming_on_a_path_that_is_a_file_not_a_directory_still_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("not-a-directory");
+        std::fs::write(&file_path, b"oops").unwrap();
+        assert!(scan_incoming(&file_path).is_err());
     }
 }

@@ -445,7 +445,18 @@ fn missing_listed_files(files: &[String], snapshot: &DirSnapshot, known_stable: 
 fn prune_old_sequences(storage_dir: &std::path::Path, keep: u32) -> anyhow::Result<()> {
     let mut sequences: Vec<(u32, PathBuf)> = Vec::new();
 
-    for entry in std::fs::read_dir(storage_dir)? {
+    // Same "not-yet-existing is empty, not an error" reasoning as
+    // `scan::scan_incoming` -- storage_dir defaults to the raw volume mount
+    // point, which normally exists once mounted, but nothing guarantees
+    // that in every deployment shape, and there is genuinely nothing to
+    // prune if it doesn't.
+    let read_dir = match std::fs::read_dir(storage_dir) {
+        Ok(read_dir) => read_dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+
+    for entry in read_dir {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
             continue;
@@ -608,6 +619,17 @@ mod tests {
         remaining.sort();
 
         assert_eq!(remaining, vec!["04a".to_string(), "3".to_string(), "4".to_string(), "not-a-number".to_string(), "stray.txt".to_string()]);
+    }
+
+    /// Regression test, same shape as `scan::scan_incoming_on_nonexistent_
+    /// directory_returns_empty_snapshot_not_an_error`: a not-yet-existing
+    /// storage_dir must not error, since there is genuinely nothing to
+    /// prune.
+    #[test]
+    fn prune_on_nonexistent_storage_dir_is_a_noop_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist-yet");
+        prune_old_sequences(&missing, 2).unwrap();
     }
 
     #[test]
