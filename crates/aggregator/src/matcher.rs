@@ -2825,6 +2825,26 @@ mod tests {
         }
     }
 
+    // Task 9.4's fresh route-diagram pass on xc-cardiff.toml added two
+    // previously-missing, real, currently-open, currently-served stations to
+    // its exclusive `xc-cardiff` segment between Chepstow and Newport:
+    // Caldicot (CDT) and Severn Tunnel Junction (STJ). Regression guard that
+    // `has_station` now recognises one of them. `xc-cardiff` is not shared
+    // with any other line file (grepped `lines/*.toml` for
+    // `segment = "xc-cardiff"`: only this file uses it, and neither CDT nor
+    // STJ appears on any other file's station list -- gwr-south-wales.toml's
+    // own comment documents the genuine physical track sharing near Severn
+    // Tunnel Junction but deliberately doesn't model it as a shared segment),
+    // so per the testing convention only the has_station assertion applies
+    // here -- no sibling-line MatchScope assertion to add.
+    #[test]
+    fn xc_cardiff_has_station_severn_tunnel_junction() {
+        let lines = load_line("xc-cardiff");
+        let xc_cardiff = lines.get("xc-cardiff").expect("xc-cardiff line should exist");
+        assert!(xc_cardiff.has_station("STJ"), "xc-cardiff should now recognise Severn Tunnel Junction (STJ)");
+        assert!(xc_cardiff.has_station("CDT"), "xc-cardiff should now recognise Caldicot (CDT)");
+    }
+
     // Task 4.4 split `gwr-west-of-england` (Reading-Taunton line) into its own
     // file. Originally its exclusive segment (`gwr-west-of-england`) covered
     // Newbury through Castle Cary with no *cross-file segment-name* sharing
