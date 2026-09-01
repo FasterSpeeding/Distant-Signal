@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { getLineStatusForMode, getPreferences, getSession, getStationName, getStopPointDisruption } from '@/lib/api';
 import { DISPLAYED_MODES_PARAM, MERGED_TFL_LINE_IDS } from '@/lib/modes';
 import { LineStatusCard } from '@/components/LineStatusCard';
+import { LoginPrompt } from '@/components/LoginPrompt';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank, worstStatus } from '@/lib/severity';
@@ -81,7 +82,7 @@ export default async function DashboardPage() {
         <Stack gap="xs">
           <Title order={1}>Distant Signal</Title>
           <Text c="dimmed">
-            Live UK rail line status, train tracking, and Delay Repay support -- pin the lines and
+            Live UK rail line status, train tracking, and Delay Repay support — pin the lines and
             stations you care about once you&apos;re logged in.
           </Text>
         </Stack>
@@ -119,9 +120,7 @@ export default async function DashboardPage() {
               wait for a failed pin click the way PinToggle does elsewhere.
               §Policy's Tier-2 "proactive where session is already fetched"
               refinement. */}
-          <TextLink href="/api/auth/login" underline="always">
-            Log in to pin your lines and stations
-          </TextLink>
+          <LoginPrompt verb="pin your lines and stations" />
         </Group>
       </Stack>
     );
