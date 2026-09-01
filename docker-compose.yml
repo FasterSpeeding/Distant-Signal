@@ -352,11 +352,19 @@ services:
       - ./schedule-sftp-host-keys:/srv/sftpgo/host_keys:ro
     environment:
       SFTPGO_SFTPD__BINDINGS__0__PORT: "2022"
-      # Real credentials for DTD's push client -- placeholder here, matching
-      # this repo's *.env.example convention for feeds with no confirmed
-      # endpoint yet (see docs/superpowers/plans/2026-09-01-schedule-feed-push-ingestion.md
-      # Task 1). Never auto-generated -- see Credentials in the push design
-      # doc.
+      # This app mints this account, not DTD -- CORRECTED 2026-09-01 from
+      # this comment's earlier "never auto-generated, placeholder until
+      # DTD's push account details are known" framing, which wrongly
+      # treated this like a credential an external system assigns (see
+      # charts/distant-signal/templates/schedulefeed-secret.yaml's own
+      # corrected comment for the full reasoning, and values.yaml's
+      # scheduleFeed.sftp.username/password there for the Helm-side
+      # equivalent: a fixed default username, an auto-generated password).
+      # Compose has no template-engine equivalent of the Helm chart's
+      # randAlphaNum-and-preserve generation, so SCHEDULE_SFTP_PASSWORD
+      # just gets a real (arbitrary, low-stakes for local dev) default
+      # below instead -- change it before actually giving these details to
+      # DTD for a real delivery.
       #
       # SFTPGO_DEFAULT_ADMIN_USERNAME/PASSWORD (the actual container env
       # vars, matching charts/distant-signal/templates/schedulefeed-
@@ -369,8 +377,8 @@ services:
       # separate from the SFTPGo-specific ones above so a future real
       # provisioning mechanism can change without renaming what operators
       # actually fill in.
-      SFTPGO_DEFAULT_ADMIN_USERNAME: ${SCHEDULE_SFTP_USERNAME:?SCHEDULE_SFTP_USERNAME must be set once DTD's push account details are known -- see docs/superpowers/plans/2026-09-01-schedule-feed-push-ingestion.md Task 1}
-      SFTPGO_DEFAULT_ADMIN_PASSWORD: ${SCHEDULE_SFTP_PASSWORD:?SCHEDULE_SFTP_PASSWORD must be set once DTD's push account details are known -- see docs/superpowers/plans/2026-09-01-schedule-feed-push-ingestion.md Task 1}
+      SFTPGO_DEFAULT_ADMIN_USERNAME: ${SCHEDULE_SFTP_USERNAME:-dtd-push}
+      SFTPGO_DEFAULT_ADMIN_PASSWORD: ${SCHEDULE_SFTP_PASSWORD:-changeme-local-dev-password}
 
   schedule-ingest:
     build:
