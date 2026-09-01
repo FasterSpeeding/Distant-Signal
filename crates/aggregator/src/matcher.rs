@@ -5956,4 +5956,32 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["northern-hope-valley".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 2.8: `northern-lakes.toml`'s previously-missing intermediate
+    // halts. Burneside (BUD) sits between Kendal and Staveley on this file's
+    // sole segment, `northern-lakes`, which (per a grep of `lines/*.toml`
+    // while writing this test) is not shared by any sibling line - so there
+    // is no SharedSegment assertion to make here, only that `has_station`
+    // picks up the new station and that an incident there stays exclusive.
+    #[test]
+    fn lakes_burneside_has_station_and_stays_exclusive() {
+        let lines = load_line("northern-lakes");
+        let lakes = lines.get("northern-lakes").expect("northern-lakes should load");
+        assert!(lakes.has_station("BUD"), "northern-lakes should now list Burneside (BUD)");
+        assert_eq!(lakes.segment_for("BUD"), Some("northern-lakes"));
+
+        let all_lines = load_all_lines();
+        let registry = SegmentRegistry::new(&all_lines);
+        let inc = incident(
+            "NT-14",
+            "Signal failure at Burneside",
+            "Signal failure causing delays on the Lakes Line at Burneside.",
+            &["NT"],
+            &["BUD"],
+        );
+        let matches = lines_affected_by(&inc, &all_lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-lakes".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
