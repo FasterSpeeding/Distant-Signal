@@ -5736,4 +5736,59 @@ mod tests {
             assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
         }
     }
+
+    // Station-catalogue-completeness plan, Task 5.1, FILL-IN piece:
+    // southeastern-chatham.toml previously omitted the four suburban/
+    // slow-line stations between Herne Hill and Bromley South (West
+    // Dulwich, Sydenham Hill, Penge East, Kent House) for unconfirmed
+    // fast/slow calling pattern reasons. They're now confirmed and
+    // inserted on the existing `chatham-london` segment - this is a
+    // regression guard that `has_station` picks them up via
+    // `LineDefinition::from_dir` (i.e. the TOML actually parses and the
+    // stations aren't silently dropped or misspelled).
+    #[test]
+    fn chatham_fillin_suburban_stations_are_now_modelled() {
+        let lines = load_line("southeastern-chatham");
+        let chatham = lines.get("southeastern-chatham").expect("southeastern-chatham line should exist");
+        for crs in ["WDU", "SYH", "PNE", "KTH"] {
+            assert!(chatham.has_station(crs), "southeastern-chatham should now have station {crs}");
+            assert_eq!(chatham.segment_for(crs), Some("chatham-london"), "{crs} should be on chatham-london");
+        }
+    }
+
+    // Station-catalogue-completeness plan, Task 5.1, BRANCH-RESEARCH
+    // piece: the Ramsgate-onward coastal-loop continuation (Minster,
+    // Sandwich, Deal, Walmer, Martin Mill) is now confirmed and modelled
+    // on a new `chatham-deal` segment (see southeastern-chatham.toml's
+    // own header comment for why this is a new segment rather than a
+    // continuation of `chatham-coastal`). `chatham-deal` isn't reused by
+    // any other file in the catalogue (grepped `lines/*.toml` before
+    // picking the name), so per this task's recipe a shared-segment
+    // MatchScope assertion is skipped - instead this mirrors
+    // `chatham_exclusive_segment_incident_does_not_propagate` above and
+    // confirms an incident on the new branch stays ExclusiveSegment and
+    // scoped to this file alone, same as the rest of this file's
+    // segments.
+    #[test]
+    fn chatham_deal_branch_stations_are_now_modelled_and_stay_exclusive() {
+        let lines = load_all_lines();
+        let chatham = lines.get("southeastern-chatham").expect("southeastern-chatham line should exist");
+        for crs in ["MSR", "SDW", "DEA", "WAM", "MTM"] {
+            assert!(chatham.has_station(crs), "southeastern-chatham should now have station {crs}");
+            assert_eq!(chatham.segment_for(crs), Some("chatham-deal"), "{crs} should be on chatham-deal");
+        }
+
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-8",
+            "Signal failure at Deal",
+            "Signal failure causing delays to Southeastern services.",
+            &["SE"],
+            &["DEA"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["southeastern-chatham".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
