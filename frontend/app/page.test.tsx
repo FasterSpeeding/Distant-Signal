@@ -90,8 +90,17 @@ describe('DashboardPage', () => {
 // throwing. Scoped to this describe block only (not global): the
 // `DashboardPage` describe block above sets its own explicit mocks per
 // test and doesn't need these defaults.
+//
+// `getSession` is explicitly re-mocked to a logged-in user here too --
+// without this, the last test in the `DashboardPage` describe block above
+// leaves `getSession` mocked to a *rejected* promise (its own
+// auth-glitch-degrades-to-anonymous test), and since Vitest doesn't reset
+// mocks between tests by default, that rejection would otherwise leak into
+// every test below and force the anonymous branch, which never renders the
+// Your Tracked Trains section this whole describe block exists to test.
 describe('DashboardPage -- Your Tracked Trains section', () => {
   beforeEach(() => {
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
   });
