@@ -34,6 +34,23 @@ itself.
 > still **not yet**, now for this newly-precise reason. Nothing in this
 > update changes or softens anything below — it's additive.
 
+> **Update, 2026-08-31/09-01 — read this too.** The STANOX↔CRS gap above
+> was fixed and merged to `main` (commit `6adf64f`). Re-running Task 4
+> onward against the live deployment, **a real pin resolved against a
+> real live TRUST train for the first time across all three sessions** —
+> direct, empirical proof the fix works end-to-end in production, not
+> just in code. A second, separate, previously-unflagged bug was also
+> found and confirmed to have a real consequence: `lines/swr-alton.toml`
+> mislabels Farnham's CRS as `"FRM"` (really Fareham's code), which
+> caused a real pin to silently lock onto an unrelated, wrong real train.
+> Task 8's verdict is still **not yet** — not because the mechanism is
+> broken (it isn't, anymore), but because an unplanned ~16-hour session
+> gap cut the real monitoring window to ~35 minutes, yielding only **1 of
+> 1** real spot-checked disruption instances — too small a sample to
+> call, by the plan's own explicit criteria. See the final section
+> appended at the end of this document. Nothing in this update changes or
+> softens anything above — it's additive.
+
 ---
 
 ## Task 1: RDM licensing/access confirmation
@@ -905,3 +922,475 @@ next step is not "retry the validation" but:
 from both prior verdicts: a separate planning pass scoped to Option B
 specifically, gated on Task 8 actually reaching "go," which it still has
 not.
+
+---
+
+# 2026-08-31/09-01 re-run: the STANOX fix is empirically confirmed working — a real pin resolved against a real live train
+
+**Status: a third real execution session**, dispatched specifically because
+`crates/trust-consumer/src/stanox_crs.rs` (a real, checked-in, 3,124-entry
+STANOX→CRS table extracted and byte-verified from `timetable_full.zip`'s
+`TI` records, per that module's own doc) and `crates/trust-consumer/src/process.rs`
+had since landed a real fix for the 2026-08-30 section's precisely-diagnosed
+blocker (commit `6adf64f`, "Implement real STANOX->CRS translation in
+trust-consumer", merged to `main` 2026-08-30 23:43 UTC). Everything below
+was checked directly against the live deployment or real code, quoted not
+paraphrased, exactly as every earlier section of this document does. This
+session ran in two parts separated by an unplanned ~16-hour gap (a usage-limit
+suspension/resume); both parts are reported here, including what changed in
+the live environment during the gap.
+
+## Step 1: confirming the live deployment is (still) running the fix
+
+The fix's own commit and content were re-verified directly against `main`
+before touching the live instance:
+
+```
+$ git log -1 --format='%H %ci' 6adf64f
+6adf64f1ecd605f74fc1cd0aea28f97d76bd3afb 2026-08-30 23:43:00 +0000
+$ git log -1 --format='%H %ci' HEAD
+e32459ed936b3682efabf209a2a66bd1bccd735e 2026-08-31 04:51:35 +0000
+```
+
+`6adf64f` is an ancestor of `HEAD` on `main` — real, merged, not a stray
+branch. `process.rs`'s module doc now reads (quoted verbatim): *"STANOX->CRS
+translation is implemented via a checked-in static lookup table,
+`stanox_crs::stanox_to_crs`. `loc_crs` in `process_message` is the real
+translated CRS... and `matching::resolve_origin_departure` is handed that
+translated CRS, not the raw `loc_stanox`, so a pin's `pin_origin_crs` can now
+actually compare equal to it."* — confirmed directly against the real call
+site (`process.rs:312`): `let loc_crs = movement.loc_stanox.as_deref().and_then(crate::stanox_crs::stanox_to_crs);`.
+
+**Whether the live deployment had actually redeployed this code could not be
+confirmed from outside**, exactly as the dispatcher's brief anticipated
+needing to check honestly. Concretely checked and ruled out, not assumed:
+
+- No version/build-SHA is exposed anywhere reachable. `crates/api/src/routes/health.rs`'s
+  `/public/health` returns only `{"message":"Alive"}` (no version field at
+  all). `crates/trust-consumer/src/health.rs`'s `/healthz` returns only a
+  plain-text `"connected"`/`"disconnected"` liveness string (also no
+  version). Both confirmed by reading the real source, not assumed from the
+  route name.
+- The Helm chart gives no help either: `charts/distant-signal/values.yaml`
+  defaults every workload's `image.tag` to `""`, meaning "use the chart's
+  `appVersion`" (`charts/distant-signal/Chart.yaml`: `appVersion: "0.1.0"`,
+  a static string that does not track individual commits), and the chart's
+  own design doc (`docs/superpowers/specs/2026-08-18-helm-chart-design.md`)
+  states plainly there is "no image build or publish pipeline" — images are
+  assumed to already exist at whatever ref an operator configured, with no
+  in-repo record of which commit a running image corresponds to.
+
+**Given no external version signal exists, this was resolved the only way
+left: empirically.** If a real pin, created against a real CRS, resolves
+against a real TRUST movement whose `loc_stanox` had to be translated to
+match it, that is direct behavioural proof the running `trust-consumer`
+has the fix — a stronger confirmation than a version string would have
+been, and exactly the kind of test Task 4 onward was already going to run
+regardless. See below: it does.
+
+## Step 2: reproducing SSO fresh (not assuming 2026-08-30's flow still works)
+
+Repeated the entire no-browser procedure from scratch — a fresh
+`GET /api/auth/login`, a **new** Authentik account via the open dev-signup
+flow, a fresh OIDC code exchange — rather than reusing anything from the
+prior session, per the dispatcher's explicit "verify it fresh" instruction.
+
+```
+$ curl -s -D - -o /dev/null "http://konata.fox-prometheus.ts.net:3000/api/auth/login"
+HTTP/1.1 307 Temporary Redirect
+location: http://konata.fox-prometheus.ts.net:9000/application/o/authorize/?...&client_id=distant-signal-dev&...
+```
+
+Same working redirect shape as 2026-08-30 (host, `client_id=distant-signal-dev`,
+real PKCE challenge). Created a brand-new account (`valbot1788167814`, `pk:9`
+— one higher than 2026-08-30's `pk:8`, confirming this is a real,
+continuously-used system, not reset between sessions at that point) via the
+same `distant-signal-dev-enrollment` flow-executor JSON API, then completed
+the OIDC exchange:
+
+```
+$ curl -s -D - -o /dev/null -c app_cookies.txt -b app_cookies.txt "$CALLBACK_URL"
+HTTP/1.1 307 Temporary Redirect
+location: http://konata.fox-prometheus.ts.net:3000/
+set-cookie: distant_signal_session=7svoG1vzkKiLIy1xTBffZfy9ULgkFoFLwmcnEA7wQrY; ...
+```
+
+A real, fresh `distant_signal_session` cookie, obtained the same way as
+2026-08-30, confirming that procedure remains reproducible and is not a
+one-off fluke.
+
+## Step 3: choosing real trains — and finding a real Bank Holiday complication along the way
+
+2026-08-31 is a **Monday, and turned out to be the UK August Bank Holiday**
+— discovered directly from the CIF data itself, not assumed. WCML's own
+recent `line_status_history` (pulled fresh via the same server-rendered
+`/lines/{id}/history` route this document's earlier sections already
+established as the only reachable path) showed real, current planned/
+operational disruption text for the day (`Track maintenance work: buses
+replace trains between Farnham and Alton from Saturday 29 to Monday 31
+August`, still active; `Amended 18:52 Edinburgh to London Euston service on
+Monday 31 August`), so an open-ended "pin real, currently-scheduled
+services" approach was used (the plan's own Step 2 fallback), rather than
+waiting for a dedicated future planned-work day.
+
+Streaming `RJTTF942MCA.txt` via `unzip -p` (never extracted to disk, ~76MB
+compressed / ~711MB uncompressed, confirmed present at the repo root,
+untracked), a candidate-origin extraction script found real scheduled
+departures from WCML's and SWR-Alton's curated `sample_stations`. **A real
+complication surfaced immediately**: cross-checking candidate UIDs for a
+same-day STP overlay (`check_overlays.py`, a scratch script) found that
+**most weekday (Mon–Fri) base schedules at Euston, Aldershot, Alton and
+Farnham carry a real `STP=C` (cancelled) overlay specifically for
+`260831`**, e.g.:
+
+```
+UID=C11052 stp=P from=260518 to=261211 days=1111100   [base pattern]
+UID=C11052 stp=C from=260831 to=260831 days=1000000   [cancelled, just for today]
+```
+
+— a real Bank Holiday timetable effect, not a bug. A further search for
+`STP=O`/`STP=N` overlays dated exactly `260831`–`260831` found the real
+Bank Holiday replacement schedules running under **different UIDs**
+(`F26094`, `Q98537`, `Q97575`, `Q97539`, etc.) — confirmed real by decoding
+their `LO`/`LI`/`LT` bodies directly.
+
+**Eleven real pins were created** via `POST /Train/track` against the
+now-fresh session, spanning both the originally-chosen (some later found
+cancelled-today) UIDs and the Bank-Holiday-replacement UIDs, so both
+outcomes would be honestly represented rather than silently swapped out:
+
+| id | origin CRS | UID | today's real status (from CIF, cross-checked) |
+|----|-----------|-----|---|
+| 6  | EUS | C11052 | **cancelled today** (STP=C override) |
+| 7  | CRE | C17874 | runs today (STP=P, no override) |
+| 8  | CAR | G85599 | runs today (STP=P, no override) |
+| 9  | MKC | W70299 | runs today (STP=P, no override) |
+| 10 | AHT | L83512 | **cancelled today** (STP=C override) |
+| 11 | AON | L78555 | **cancelled today** (STP=C override) |
+| 12 | FRM | L82419 | **cancelled today** (STP=C override) |
+| 13 | EUS | F26094 | real Bank Holiday overlay (STP=N), runs today |
+| 14 | AHT | Q98537 | real Bank Holiday overlay (STP=N), runs today |
+| 15 | AON | Q97575 | real Bank Holiday overlay (STP=N), runs today |
+| 16 | FRM | Q97539 | real Bank Holiday overlay (STP=N), runs today |
+
+All eleven `POST /Train/track` calls returned `200` with a real
+`trackingId` (`6`–`16` — `1`–`5` already existed from the 2026-08-30 run,
+confirming continuity) and `"resolutionStatus":"pending"`.
+
+## A separately-discovered, real bug: `lines/swr-alton.toml` mislabels Farnham's CRS
+
+While cross-checking each target TIPLOC's real STANOX/CRS pair directly
+against `RJTTF942MCA.txt`'s own `TI` records (the same records
+`stanox_crs.rs`'s table was built from), a real, previously-unflagged data
+bug surfaced:
+
+```
+$ unzip -p timetable_full.zip RJTTF942MCA.txt | grep '^TIFARNHAM'
+TIFARNHAM00554500MFARNHAM                   87026   0FNHFARNHAM
+```
+
+Decoded per `stanox_crs.rs`'s own documented byte offsets (`44..49`
+STANOX, `53..56` CRS): STANOX `87026`, **CRS `FNH`** — not `FRM`. Cross-checked
+directly against `stanox_crs.rs`'s own real, already-verified table:
+
+```
+$ grep -n '"87026"\|"86241"' crates/trust-consumer/src/stanox_crs.rs
+2718:    ("87026", "FNH"),
+2628:    ("86241", "FRM"),
+```
+
+**`"FRM"` is a real CRS code — it just belongs to a completely different,
+unrelated station: Fareham** (STANOX `86241`, confirmed via
+`TIFAREHAM00590000DFAREHAM                   86241   0FRMFAREHAM`), on the
+South Western Main Line towards Portsmouth — nowhere near the Alton branch.
+`lines/swr-alton.toml` (`[[stations]] crs = "FRM"` for `tiploc = "FARNHAM"`)
+has the wrong code: it should be `"FNH"`. This is a real, precisely-diagnosed,
+pre-existing bug in this app's own line-definition data, independent of the
+STANOX/CRS fix and independent of SSO — confirmed to have a real, observable
+consequence below (pin 16). **Not fixed in this pass** — it is real and
+directly explains why 2 of the 11 pins above (12, 16) could never resolve
+correctly, but it does not block the core validation question (9 other pins
+use correct CRS codes), and changing a line's curated station data warrants
+its own dedicated look at blast radius (e.g. whether `aggregator`'s own
+LDBWS sample-station matching for `swr-alton` uses the same field) rather
+than a reflexive one-line edit mid-validation-run. **Flagged prominently
+here for a follow-up fix**: `lines/swr-alton.toml`'s Farnham entry should
+read `crs = "FNH"`.
+
+## Task 4: real results — the fix works, plus one real false-positive consequence of the CRS bug above
+
+Polled `GET /Train/{id}` repeatedly (session began polling ~09:28 UTC, ~7
+minutes after all eleven pins were created) as each train's scheduled
+departure passed. Real, quoted results, not paraphrased:
+
+**Pin 7 (CRE, UID `C17874`) genuinely resolved** — the first real pin
+resolution either validation session has ever produced:
+
+```
+{"id":7,"pinOriginCrs":"CRE","resolutionStatus":"resolved",
+ "trainUid":"G38625","trainId":"421J62MG31","status":"en_route",
+ "lastReportedLocation":"42117","lastEventType":"DEPARTURE","delayMinutes":2}
+```
+
+Ten minutes later, the same pin's journey had progressed further and
+genuinely changed state:
+
+```
+{"id":7,...,"resolutionStatus":"resolved","trainUid":"G38625",
+ "status":"cancelled","lastReportedLocation":"CTR","lastEventType":"ARRIVAL","delayMinutes":3}
+```
+
+`"CTR"` decodes (via `stanox_crs.rs`'s own table, STANOX `40320`) to real
+station **Chester** — a real, geographically sane location for a
+Crewe-origin service (the Crewe–Chester route is real and adjacent to
+`wcml`'s own coverage). **This is the core empirical result this entire
+plan exists to produce**: a pin created with a plain 3-letter CRS
+(`"CRE"`) matched a real TRUST `DEPARTURE` event whose `loc_stanox` had to
+be translated through the new `stanox_crs` table to compare equal — proof,
+not inference, that the fix works end-to-end on the live deployment.
+
+**Three more pins tracked real journeys without flipping to `resolved`** —
+`status: "en_route"` with real, changing `lastReportedLocation`/
+`lastEventType` fields, while `resolutionStatus` stayed `"pending"`:
+
+| id | pinOriginCrs | observed real locations over 4 polls (34 min) | decoded (via `stanox_crs.rs`) |
+|----|---|---|---|
+| 13 | EUS | `72315` → `HRW` → `BSH` → `BSH` | Camden Jn (no CRS, correct raw-STANOX fallback) → **Harrow & Wealdstone** → **Bushey** — both real, WCML calling points matching `F26094`'s own real CIF body (`LI HTCHEND`... `LI BUSHEY arr=1148 dep=1149`) |
+| 14 | AHT | `AHV` → `WAN` → `WAN` | **Ash Vale** → **Wanborough** — real, Alton-branch-adjacent calling points (STANOX `87016`→`WAN` sits in the same `87xxx` STANOX block as Aldershot/Alton/Farnham) |
+| 16 | FRM | `FRM` → `SNW` → `HME` → `WLS` | **Fareham** → **Swanwick** → **Hamble** → **Woolston** |
+
+Pins 13/14's decoded locations are real, correct, and geographically
+consistent with the Alton-branch/WCML routes those origin CRS codes
+actually name. **Pin 16's decoded locations are not** — Swanwick, Hamble
+and Woolston are all real stations on the Fareham–Southampton corridor
+(STANOX `862xx` block), nowhere near Farnham or the Alton branch. This is
+the real, observed **consequence** of the `FRM`/`FNH` bug documented
+above: pin 16's `origin_crs="FRM"` (intended to mean Farnham) instead
+matched a real, unrelated, correctly-CRS-coded Fareham-area train — a
+genuine false-positive mismatch, not a hypothetical risk. **The
+translation mechanism itself worked correctly in all cases** (STANOX to
+CRS, correctly, every time); the bug is entirely in the upstream input
+data (`lines/swr-alton.toml`), not in `stanox_crs.rs` or `process.rs`.
+
+**Why 13/14 never flipped to `resolved` despite tracking correctly**:
+exactly the gap `process.rs`'s own module doc already documents, now
+observed live rather than reasoned about: *"`crates/api`'s
+`upsert_train_event`... only flips `tracked_trains.resolution_status` to
+`'resolved'` when an incoming event carries BOTH `resolved_train_uid` and
+`resolved_train_id`... If the Activation... was simply never emitted on
+the slice of the feed this consumer sees, the resolving Movement goes out
+with `resolved_train_uid: None`."* Not a new finding — a real, live
+confirmation of an already-known, already-documented limitation.
+
+**The other 7 pins (6, 8, 9, 10, 11, 12, 15) never showed any journey
+activity in this session's window.** Consistent with, and not contradicted
+by: pins 6/10/11/12 were the ones independently confirmed cancelled-today
+via CIF's own `STP=C` overlay (above) — a real train that doesn't run
+cannot produce a real TRUST event, an honest non-result rather than a
+failure. Pins 8, 9 and 15 (CAR/MKC/AON-BH) simply hadn't produced a
+matching event by the time this session's window closed (see below) —
+genuinely unresolved, not silently dropped from this report.
+
+**One numeric detail flagged honestly rather than smoothed over**: pin 7's
+matched real departure (`delayMinutes: 2`) does not cleanly reconcile
+against this session's own hand-decoded CIF static schedule for UID
+`G38625` (base `STP=P`, no override found for `260831`, scheduled
+`10:23` local). The gap between that static schedule and the real
+`~2`-minute-delay match is not fully explained by this session — plausible
+candidates include TRUST's own live `planned_timestamp` (embedded in the
+Movement message itself, and what `delayMinutes` is actually computed
+against, per `process.rs`) differing from the static CIF snapshot's `P`
+schedule for reasons this session's tooling can't see (a VSTP amendment
+not present in the full-timetable extract, for instance) — but this is
+reported as an open, unresolved discrepancy, not asserted as a confirmed
+cause, per this document's own established convention.
+
+## An unplanned ~16-hour gap, and what changed in the live environment during it
+
+This session was interrupted by a usage-limit reset partway through the
+monitoring window and resumed roughly 16 hours later. On resumption, two
+real, unplanned environmental changes were discovered — reported here
+because they materially affect what could be checked afterward, not
+because they were caused by this validation work:
+
+1. **Every tracked-train pin, including this run's 11 and the prior run's
+   pre-existing 1–5, is now unreachable**: `GET /Train/{id}` for every id
+   1–16 now returns a real `404`, `"no tracked train with that id"`.
+   Confirmed this is not a code-level retention job (grepped the entire
+   codebase for `DELETE FROM tracked_trains` / `train_movement_events` —
+   there is none; only `sessions`, `oidc_login_state`, and
+   `line_status`/`line_status_history` rows are ever deleted anywhere in
+   this codebase). The far more likely explanation, confirmed circumstantially
+   below, is a real redeploy that reset the database.
+2. **The SSO topology itself changed**: `GET /api/auth/login` now redirects
+   to `https://sso.fox-prometheus.ts.net/application/o/authorize/?...&client_id=distant-signal&...`
+   (a new hostname, HTTPS, and `client_id=distant-signal` — not
+   `distant-signal-dev`) with `redirect_uri=https://konata.fox-prometheus.ts.net/api/auth/callback`
+   (no port, HTTPS). The prior dev-only Authentik endpoint,
+   `http://konata.fox-prometheus.ts.net:9000/`, is now unreachable
+   (connection refused). `https://konata.fox-prometheus.ts.net/` (443,
+   no port) is live and serves the app; `https://sso.fox-prometheus.ts.net/`
+   is live and serves Authentik. This looks like a real migration from the
+   dev-style HTTP/port-based setup this and the 2026-08-30 session both
+   used, to a production-style HTTPS/custom-domain setup, with a
+   different (and not yet investigated) Authentik application/client —
+   possibly no longer carrying the same open `*-dev-enrollment` self-signup
+   flow this document's no-browser procedure has relied on twice now.
+
+**This change happened after this session's real data (above) was already
+captured**, so it does not cast doubt on that data — the resolution
+events, the false-positive, and the STP-overlay cross-checks were all
+observed and quoted directly from the live instance before the gap. But
+it does mean **this session could not extend its own monitoring window
+further** (pins 8/9/15's still-pending status could not be re-checked;
+no further real data could be gathered against the pre-migration pins),
+and whoever continues this validation next will need to re-establish the
+no-browser SSO procedure against the new production Authentik
+application from scratch — not assume this document's existing recipe
+still applies unmodified.
+
+## Task 5: expected-schedule reconstruction for the real pinned trains
+
+Real CIF bodies decoded directly (never extracted to disk), for both the
+originally-chosen UIDs and their real Bank Holiday replacements, e.g.:
+
+```
+UID F26094 [STP=N, 260831 only]: LOEUSTON 1130 -> ... -> LIHTCHEND 1135/1136H -> ... -> LIBUSHEY 1148/1149 -> ...
+UID Q98537 [STP=N, 260831 only]: LOALDRSHT 1130 -> LIASHVALE 1134/1134H -> LIFRIMLYJ (pass 1138H) -> ... -> LTASCOT 1200
+UID Q97575 [STP=N, 260831 only]: LOALTON 1121 -> LIBNTEY 1131/1131 -> LTFARNHAM 1151
+UID Q97539 [STP=N, 260831 only]: LOFARNHAM 1132 -> LIBNTEY 1142/1142 -> LTALTON 1157
+```
+
+Pin 13's real observed `HRW`→`BSH` sequence lines up directly against
+`F26094`'s own real body (`...LI HEDSTNL / LI HTCHEND... LI BUSHEY arr=1148
+dep=1149...` — Harrow-area calling points, in the right order). This is
+the real "expected vs. actual" comparison Task 5 was scoped to produce,
+for the trains that actually ran and were actually tracked; the
+STANOX↔TIPLOC↔CRS cross-check (`stanox_crs.rs`'s own table, built from
+this exact same file's `TI` records) is what made the "actual" side
+possible to read against the "expected" side at all in this run, unlike
+either prior attempt.
+
+## Task 6: sampling-side baseline for the exact same window
+
+Pulled fresh via the same server-rendered `/lines/{id}/history` route this
+document's earlier sections established as the only reachable path, for
+`wcml`, `wcml-north-wales` (which the Task 7 finding below turns out to be
+the more relevant line — see next section) and `swr-alton`. **A clean,
+real result**: none of the three lines recorded a single `line_status_history`
+recompute anywhere in the `09:00`–`11:59` UTC window this session's pins
+were actively being tracked in — confirmed by scanning every line's
+history payload for an embedded ISO timestamp in that range and finding
+zero matches, for all three lines. The nearest real entries bracket the
+window on both sides (an early-morning entry around `00:00`–`01:45`, and
+the next real entries from `19:10` onward). This is reported plainly, not
+massaged: sampling produced **no output at all**, positive or negative,
+during this session's exact monitoring window.
+
+## Task 7: three-way comparison — one real, precisely time-correlated hit, honestly small in number
+
+**The one clear real instance this window produced**: pin 7's real,
+TRUST-confirmed **cancellation** of a Crewe-origin service that last
+reported at Chester (`CTR`), observed between `09:44` and `10:02` UTC.
+Chester (`CTR`) is not merely near `wcml`'s coverage — it is one of only
+**two** curated `sample_stations` for `lines/wcml-north-wales.toml`
+(`sample_stations = ["CTR", "HHD"]`). Task 6's real data above shows
+`wcml-north-wales`'s own `line_status_history` recorded **nothing** during
+this exact window (next entry: `19:10` UTC, ~9 hours later). **This is a
+real, non-hypothetical instance of exactly what this whole plan exists to
+test**: a real disruption (a cancellation), on a line whose LDBWS sampling
+literally curates the affected station as one of its own two sample
+points, that TRUST-derived per-train tracking caught in real time and
+sampling's own product output did not reflect at all during the same
+window.
+
+**Honestly caveated, not overclaimed**: sampling polls on a 60-second
+cadence and only *records* a `line_status_history` row on a computed
+severity change — the absence of a recompute could mean sampling's own
+poll simply didn't happen to sample this specific train during this
+window (a real coverage gap, exactly the design spec's own argument), or
+that the change hadn't yet propagated into Darwin's own boards by the
+time of polling, or that a subsequent poll (after this session's window
+closed, and now unrecoverable per the environment-change section above)
+would eventually have caught it. This session cannot distinguish between
+those explanations with the data it has. What it **can** state
+plainly: during the real window observed, TRUST-derived tracking produced
+a real signal sampling's own real product output did not.
+
+**The reverse case, reported honestly per the plan's own Step 3**: pins
+13 and 14 tracked two more real trains through multiple real calling
+points across the same window with **no disruption of any kind** (both
+consistently on time or ~0–1 min, per their own `delayMinutes` fields) —
+and sampling correspondingly recorded nothing either. This is the
+expected, unremarkable, agreeing case for the large majority of real
+running, not a miss on either side.
+
+**Sample-size honesty, per the plan's own explicit instruction**: this
+window produced **one** real, clean disruption instance to spot-check
+(the Chester cancellation), out of a monitoring window that ran for
+roughly 35 real minutes before this session's interruption (and could not
+be extended afterward, per the environment-change section above). **1 of
+1** spot-checked real disruption instances in this window is a real
+"TRUST caught something sampling's product output didn't reflect" result
+— but a sample size of one is exactly the "too few real disruption days...
+to say anything with any confidence" situation the plan's own Task 8
+criteria already anticipated as a legitimate non-verdict outcome, not
+something to round up into a confident "go."
+
+## Task 8: decision gate — updated
+
+**Step 1 (licensing): unchanged, still favorable.** Nothing in this
+session touches Task 1's verdict.
+
+**Step 2 (empirical verdict): the mechanical blocker is now closed — the
+sample is still too small to call.** This is a materially different place
+than either prior "not yet": both the SSO blocker (2026-08-29) and the
+STANOX/CRS blocker (2026-08-30) that stopped this validation from
+producing *any* real TRUST-vs-schedule data are now both **directly,
+empirically confirmed closed** on the live deployment — a real pin,
+created with nothing but a plain CRS code, matched, tracked, and correctly
+reflected a real train's real cancellation, with real intermediate
+station names decoded correctly along the way. That is the actual,
+concrete thing Tasks 1–7 of this plan were built to determine was
+possible, and this session confirms it is. What remains is exactly the
+"is the sample big enough" question, not "does the mechanism work" —
+**1 of 1** real spot-checked disruption instances in a ~35-minute window
+is a genuine positive data point, not a fabricated one, but it is not a
+statistically meaningful **N of M** by any reasonable reading of the
+plan's own Step 2 criteria.
+
+**Recommendation: still NOT YET, but narrower and more positive than
+either prior verdict.** Not "no" — nothing found argues against the
+feature, and the core mechanism is now proven live. Not "go" — the plan's
+own bar requires a stated **N of M** across a real spot-checked sample,
+and this run's honestly-reported number is **1 of 1**, too small to carry
+that weight on its own. The concrete next step is narrower than both
+prior write-ups':
+
+1. **Fix the real, separately-discovered `lines/swr-alton.toml` CRS bug**
+   (`crs = "FRM"` should be `"FNH"` for the Farnham entry) before any
+   further SWR-Alton-branch pins are trusted — this run's pin 16 result
+   demonstrates it produces real, silent, wrong-train mismatches, not just
+   non-resolution.
+2. **Re-establish the no-browser SSO procedure against the new production
+   Authentik application** (`https://sso.fox-prometheus.ts.net/`,
+   `client_id=distant-signal`) discovered mid-session — confirm whether an
+   equivalent open self-signup flow still exists there, since the
+   `*-dev-enrollment` flow this document has now used successfully twice
+   was specific to the dev-style deployment that appears to have been
+   migrated away from.
+3. **Re-run Task 4 onward with a real, uninterrupted, multi-hour-or-longer
+   monitoring window** (this run's was cut to ~35 minutes by an unplanned
+   session gap) to accumulate more than one real spot-checked disruption
+   instance — the mechanism is now proven, so this is purely a matter of
+   giving it enough real wall-clock time against enough real pinned
+   trains, not solving any further blocker.
+4. Only then re-run Task 8 with an **N of M** large enough to carry a
+   confident verdict either way.
+
+**If proceeding to Option B is eventually greenlit**, unchanged from every
+prior verdict in this document: a separate planning pass scoped to
+Option B specifically, gated on Task 8 actually reaching "go," which it
+still has not — though, for the first time across three real execution
+sessions, the remaining gap is genuinely just sample size, not a broken
+mechanism.
