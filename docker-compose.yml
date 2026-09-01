@@ -320,6 +320,10 @@ services:
       API_INGEST_URL: http://api:8080/private/train-events
       API_TRACKED_TRAINS_URL: http://api:8080/private/tracked-trains
       INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      # Matches docker/trust-consumer.Dockerfile's COPY of reference-data/
+      # into the image, same pattern as aggregator's/api's own explicit
+      # LINES_DIR: /app/lines above.
+      STANOX_CRS_FILE: /app/reference-data/stanox-crs.csv
       REFERENCE_RELOAD_SECS: ${REFERENCE_RELOAD_SECS:-60}
       RETENTION_DAYS: ${RETENTION_DAYS_TRAIN_EVENTS:-90}
       HEALTH_BIND_URL: 0.0.0.0:8081
