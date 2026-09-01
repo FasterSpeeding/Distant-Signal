@@ -4,7 +4,7 @@ import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button, Group, Stack, TextInput } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
-import { TextLink } from './TextLink';
+import { LoginLink } from './LoginLink';
 import type { TrackPinRequest, TrackPinResponse } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
@@ -140,9 +140,9 @@ export function TrackTrainForm({ initialOrigin = '' }: { initialOrigin?: string 
           {submitting ? 'Tracking…' : 'Track this train'}
         </Button>
         {needsLogin && (
-          <TextLink href="/api/auth/login" underline="always">
+          <LoginLink underline="always">
             Log in to track this train
-          </TextLink>
+          </LoginLink>
         )}
       </Group>
     </Stack>

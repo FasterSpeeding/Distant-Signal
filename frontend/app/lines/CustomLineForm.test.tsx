@@ -4,8 +4,15 @@ import { renderWithMantine } from '@/test/render';
 import { CustomLineForm } from './CustomLineForm';
 import type { CustomLineDetail } from '@/lib/types';
 
+// The two 401 tests below render at two different real routes (`/lines`
+// for creating, `/lines/[id]/edit` for editing, per app/lines/page.tsx and
+// app/lines/[id]/edit/page.tsx) -- usePathname is a vi.fn() so each test can
+// set its own value, rather than one static pathname standing in for both.
+const mockUsePathname = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
+  usePathname: () => mockUsePathname(),
+  useSearchParams: () => new URLSearchParams(''),
 }));
 
 function renderWithProvider(props: { cancelHref?: string; existingLine?: CustomLineDetail } = {}) {
@@ -224,11 +231,12 @@ describe('CustomLineForm', () => {
       return new Response('[]', { status: 200 });
     });
 
+    mockUsePathname.mockReturnValue('/lines/my-line/edit');
     renderWithProvider({ existingLine });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     const loginLink = await screen.findByRole('link', { name: 'Log in to edit a line' });
-    expect(loginLink).toHaveAttribute('href', '/api/auth/login');
+    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Flines%2Fmy-line%2Fedit');
     expect(screen.queryByText('no session')).not.toBeInTheDocument();
   });
 
@@ -240,6 +248,7 @@ describe('CustomLineForm', () => {
       return new Response('[]', { status: 200 });
     });
 
+    mockUsePathname.mockReturnValue('/lines');
     renderWithProvider();
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My Commute' } });
     const stationInput = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
@@ -250,7 +259,7 @@ describe('CustomLineForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create line' }));
 
     const loginLink = await screen.findByRole('link', { name: 'Log in to create a line' });
-    expect(loginLink).toHaveAttribute('href', '/api/auth/login');
+    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Flines');
   });
 
   // Every other non-ok status keeps the old behaviour -- only a 401 is

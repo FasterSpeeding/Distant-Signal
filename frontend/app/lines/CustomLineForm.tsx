@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse, Pill } from '@mantine/core';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
-import { TextLink } from '@/components/TextLink';
+import { LoginLink } from '@/components/LoginLink';
 import type { CustomLineDetail } from '@/lib/types';
 
 /** Posts to the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
@@ -215,9 +215,9 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
       </Collapse>
       {error && <Text c="red">{error}</Text>}
       {needsLogin && (
-        <TextLink href="/api/auth/login" underline="always">
+        <LoginLink underline="always">
           Log in to {existingLine ? 'edit' : 'create'} a line
-        </TextLink>
+        </LoginLink>
       )}
       {cancelHref ? (
         // Paired actions sit on one right-aligned row so the secondary

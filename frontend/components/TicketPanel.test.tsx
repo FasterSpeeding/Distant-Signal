@@ -11,6 +11,8 @@ vi.mock('@/lib/api');
 // the same reason (useRouter() throws outside an app router context).
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
+  usePathname: () => '/train/by-id/1',
+  useSearchParams: () => new URLSearchParams(''),
 }));
 
 function session(authenticated: boolean) {
@@ -27,7 +29,7 @@ describe('TicketPanel', () => {
     renderWithMantine(await TicketPanel({ trackingId: 1 }));
     expect(screen.getByRole('link', { name: 'Log in to attach a ticket to this journey' })).toHaveAttribute(
       'href',
-      '/api/auth/login',
+      '/api/auth/login?return_to=%2Ftrain%2Fby-id%2F1',
     );
   });
 

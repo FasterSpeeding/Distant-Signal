@@ -6,6 +6,8 @@ import { TrackTrainForm } from './TrackTrainForm';
 const pushMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock }),
+  usePathname: () => '/track',
+  useSearchParams: () => new URLSearchParams(''),
 }));
 
 // `DateTimePicker`'s labelled control is a `<button>` that opens a popover
@@ -103,7 +105,7 @@ describe('TrackTrainForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     const loginLink = await screen.findByRole('link', { name: 'Log in to track this train' });
-    expect(loginLink).toHaveAttribute('href', '/api/auth/login');
+    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrack');
     // Unlike PinToggle's toggle-and-forget click, the form's own input
     // must survive a 401 -- Decision 4's explicit "preserve typed values"
     // call.

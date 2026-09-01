@@ -1,5 +1,5 @@
 import { Group, Text } from '@mantine/core';
-import { TextLink } from './TextLink';
+import { LoginLink } from './LoginLink';
 import { LogoutButton } from './LogoutButton';
 import type { SessionInfo } from '@/lib/types';
 
@@ -18,7 +18,7 @@ import type { SessionInfo } from '@/lib/types';
  * both to be `null` even when `authenticated` is `true`. */
 export function AuthStatus({ session }: { session: SessionInfo }) {
   if (!session.authenticated) {
-    return <TextLink href="/api/auth/login">Log in</TextLink>;
+    return <LoginLink>Log in</LoginLink>;
   }
 
   const label = session.name ?? session.email ?? 'Signed in';

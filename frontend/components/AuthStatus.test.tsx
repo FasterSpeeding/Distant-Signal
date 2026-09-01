@@ -10,6 +10,8 @@ import type { SessionInfo } from '@/lib/types';
 const refresh = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh }),
+  usePathname: () => '/',
+  useSearchParams: () => new URLSearchParams(''),
 }));
 
 const loggedOut: SessionInfo = { authenticated: false, id: null, email: null, name: null };
@@ -28,7 +30,7 @@ describe('AuthStatus', () => {
     renderWithMantine(<AuthStatus session={loggedOut} />);
     const link = screen.getByRole('link', { name: 'Log in' });
     expect(link).toBeInTheDocument();
-    expect(link).toHaveAttribute('href', '/api/auth/login');
+    expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2F');
   });
 
   it('does not show a log out button when logged out', () => {

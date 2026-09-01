@@ -9,6 +9,8 @@ import { PinToggle } from './PinToggle';
 // component can render; router.refresh() itself isn't under test here.
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
+  usePathname: () => '/lines',
+  useSearchParams: () => new URLSearchParams(''),
 }));
 
 describe('PinToggle', () => {
@@ -141,7 +143,7 @@ describe('PinToggle', () => {
     fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
 
     const loginLink = await screen.findByRole('link', { name: 'Log in to pin' });
-    expect(loginLink).toHaveAttribute('href', '/api/auth/login');
+    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Flines');
   });
 
   // A 401 on the PUT (read succeeded, write didn't) must surface the same
