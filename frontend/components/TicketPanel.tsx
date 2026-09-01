@@ -3,7 +3,7 @@ import { getSession, getTicketsForTrackedTrain, getDelayRepayEstimate } from '@/
 import { LoginLink } from './LoginLink';
 import { TicketEntryForm } from './TicketEntryForm';
 import { DelayRepayEstimate } from './DelayRepayEstimate';
-import type { TrackedTrainTicket } from '@/lib/types';
+import { TicketSummary } from './TicketSummary';
 
 /** Renders on both `/train/by-id/[trackingId]` and `/train/[uid]/[date]`,
  * directly below `<TrainJourney>`. This is a real, session-gated feature
@@ -96,20 +96,6 @@ export async function TicketPanel({ trackingId }: { trackingId: number }) {
         </Stack>
       ))}
       <TicketEntryForm trackingId={trackingId} label="Add another ticket" />
-    </Stack>
-  );
-}
-
-function TicketSummary({ ticket }: { ticket: TrackedTrainTicket }) {
-  const route =
-    ticket.originCrs || ticket.destinationCrs ? `${ticket.originCrs ?? '?'} → ${ticket.destinationCrs ?? '?'}` : null;
-  return (
-    <Stack gap={2}>
-      <Text fw={500}>
-        {ticket.operator ?? 'Ticket'}
-        {ticket.ticketType ? ` — ${ticket.ticketType}` : ''}
-      </Text>
-      {route && <Text size="sm">{route}</Text>}
     </Stack>
   );
 }

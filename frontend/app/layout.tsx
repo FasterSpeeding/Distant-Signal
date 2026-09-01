@@ -81,6 +81,24 @@ export async function TrackedTrainsNavItem() {
   return <TextLink href="/track/mine">My Tracked Trains</TextLink>;
 }
 
+// Same rationale as TrackedTrainsNavItem immediately above -- renders
+// nothing at all when logged out (Decision 5 of
+// docs/superpowers/specs/2026-08-31-tickets-list-design.md), same
+// full-nav-bar-entry-point-to-private-content reasoning, same guarded
+// getSession() shape.
+export async function MyTicketsNavItem() {
+  const session = await getSession().catch(() => ({
+    authenticated: false,
+    id: null,
+    email: null,
+    name: null,
+  }));
+  if (!session.authenticated) {
+    return null;
+  }
+  return <TextLink href="/track/tickets">My Tickets</TextLink>;
+}
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" {...mantineHtmlProps}>
@@ -127,6 +145,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <TextLink href="/stations">Station Lookup</TextLink>
                   <Suspense fallback={null}>
                     <TrackedTrainsNavItem />
+                  </Suspense>
+                  <Suspense fallback={null}>
+                    <MyTicketsNavItem />
                   </Suspense>
                   <Suspense fallback={<ActionIcon variant="subtle" aria-label="Data freshness" disabled loading />}>
                     <DataFreshnessNavItem />

@@ -14,6 +14,7 @@ import type {
   TrackedTrainListItem,
   TrackedTrainTicket,
   DelayRepayEstimateResponse,
+  TicketListItem,
 } from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
@@ -278,4 +279,29 @@ export async function getDelayRepayEstimate(
     throw errorForResponse(url, response);
   }
   return response.json() as Promise<DelayRepayEstimateResponse>;
+}
+
+/** `GET /Train/tickets/mine`. Returns `null` on `401` (not logged in) --
+ * deliberately not `ApiNotFoundError`, matching `getTicketsForTrackedTrain`'s
+ * precedent of treating "no session" as an expected, first-class outcome.
+ * Unlike that function, there is no second, distinct 404-shaped outcome to
+ * also collapse into `null` here -- no id in this route's path to be
+ * wrong about, so a 401 from this one call is the complete signal (same
+ * reasoning as `getTrackedTrainById`'s sibling list route, `getMyTrackedTrains`,
+ * if that has landed). `app/track/tickets/page.tsx` does NOT need a
+ * separate `getSession()` call the way `TicketPanel` does. */
+export async function getMyTickets(): Promise<TicketListItem[] | null> {
+  const url = `${baseUrl()}/Train/tickets/mine`;
+  const cookieHeader = (await cookies()).toString();
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
+  });
+  if (response.status === 401) {
+    return null;
+  }
+  if (!response.ok) {
+    throw errorForResponse(url, response);
+  }
+  return response.json() as Promise<TicketListItem[]>;
 }

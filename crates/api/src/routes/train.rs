@@ -23,6 +23,7 @@ pub fn router() -> Router {
     Router::new()
         .route("/Train/track", axum::routing::post(post_track))
         .route("/Train/mine", axum::routing::get(get_my_tracked_trains))
+        .route("/Train/tickets/mine", axum::routing::get(get_my_tickets))
         .route("/Train/{tracking_id}", axum::routing::get(get_by_tracking_id))
         .route("/Train/by-uid/{train_uid}/{date}", axum::routing::get(get_by_uid_and_date))
         .route("/Train/{tracking_id}/tickets", axum::routing::post(post_ticket).get(get_tickets))
@@ -64,10 +65,6 @@ struct DelayRepayEstimateResponse {
     claim_url: String,
     disclaimer: &'static str,
 }
-
-const DELAY_REPAY_ROUTE_DISCLAIMER: &str = "This is a rough, community-sourced estimate, not a \
-    guarantee of compensation and not proof you travelled. This app never submits a claim on your \
-    behalf -- verify eligibility and claim directly from the operator using the link above.";
 
 async fn post_ticket(
     State(app): State<App>,
@@ -143,7 +140,7 @@ fn build_delay_repay_response(
         delay_minutes: state.delay_minutes,
         estimate,
         claim_url: claim_url.to_string(),
-        disclaimer: DELAY_REPAY_ROUTE_DISCLAIMER,
+        disclaimer: delay_repay_rules::ROUTE_DISCLAIMER,
     }
 }
 
@@ -177,6 +174,23 @@ async fn get_my_tracked_trains(
         .await
         .map_err(internal_error("list tracked trains"))?;
     Ok(Json(trains))
+}
+
+/// Always `200` with a (possibly empty) array for any authenticated
+/// caller -- never `404`, matching `GET /Train/mine`'s own two-outcome
+/// shape more closely than the per-ticket routes' three-outcome ("exists
+/// but not yours" -> 404) shape. There's no id in this route's path to be
+/// wrong about: the only two real outcomes are "logged in, here's your
+/// list" and "not logged in, bare 401" (handled by the `AuthenticatedUser`
+/// extractor itself, before this function runs).
+async fn get_my_tickets(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+) -> Result<Json<Vec<train_tracking::TicketListItem>>, (StatusCode, String)> {
+    let tickets = train_tracking::list_tickets_for_user(&app.database, &user.id)
+        .await
+        .map_err(internal_error("list tickets"))?;
+    Ok(Json(tickets))
 }
 
 async fn get_by_tracking_id(
