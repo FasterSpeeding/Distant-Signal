@@ -638,48 +638,18 @@ mod db_tests {
         cleanup_user(&pool, "TEST-GET-LINE-NON-OWNER").await;
     }
 
-    #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
-                a_legacy_null_owner_row_gets_404_for_a_real_caller -- --ignored`"]
-    async fn a_legacy_null_owner_row_gets_404_for_a_real_caller() {
-        let pool = connect().await;
-
-        let caller_token = seed_session(&pool, "TEST-GET-LINE-CALLER").await;
-
-        // A row that predates the ownership retrofit (see
-        // `crates/api/migrations/20260828100000_add_ownership.sql`) has a
-        // NULL `user_id` -- inserted directly, since `insert_custom_line`
-        // always attributes an owner now and has no way to produce this
-        // shape itself. NOTE: this asserts today's (pre-Task-2-migration)
-        // behavior, where `get_custom_line` reports `None` for such a row
-        // -- see this task's brief and `data::custom_lines::db_tests`'s
-        // `owners_for_ids_returns_real_owner_none_for_legacy_omits_missing`
-        // for the same caveat. If Task 2's migration (reassigning legacy
-        // rows to a `'legacy-unclaimed'` owner) lands first, this row's
-        // `user_id` should be seeded as `'legacy-unclaimed'` instead, and
-        // the assertion below is unaffected either way -- no real caller's
-        // id can ever equal NULL or `'legacy-unclaimed'`.
-        sqlx::query(
-            "INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id, created_at) \
-             VALUES ('custom-test-legacy-get-line', 'Test Legacy Get Line', '{}', '{WOK,CLJ}', '{}', '{}', NULL, NOW())",
-        )
-        .execute(&pool)
-        .await
-        .expect("seed legacy fixture line");
-
-        let router = test_router(test_app(pool.clone(), vec![]));
-        let (status, body) = get_line(router, "custom-test-legacy-get-line", Some(&caller_token)).await;
-
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, Value::String("custom line not found".to_string()));
-
-        sqlx::query("DELETE FROM custom_lines WHERE id = 'custom-test-legacy-get-line'")
-            .execute(&pool)
-            .await
-            .expect("cleanup legacy fixture line");
-        cleanup_user(&pool, "TEST-GET-LINE-CALLER").await;
-    }
+    // A prior version of this test, `a_legacy_null_owner_row_gets_404_for_a_
+    // real_caller`, seeded a NULL-`user_id` `custom_lines` row directly to
+    // confirm a real caller still gets 404 against it. Migration
+    // 20260901120000_custom_lines_owner_not_null.sql deleted every
+    // surviving NULL-owner row and made the column NOT NULL (the repo
+    // owner's explicit choice -- see that migration's header comment), so
+    // that seed insert now fails at the database level before the route
+    // under test ever runs -- the scenario is no longer constructible, and
+    // `custom_lines::db_tests::custom_lines_user_id_column_rejects_null`
+    // covers the constraint itself. `a_non_owner_session_gets_404_not_403`
+    // above already exercises the same "exists but not this caller's" 404
+    // path this test would otherwise duplicate.
 
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
@@ -933,48 +903,20 @@ mod db_tests {
         cleanup_user(&pool, "TEST-GET-LINE-DEF-NON-OWNER").await;
     }
 
-    #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
-                get_line_definition_a_legacy_null_owner_row_gets_404_for_a_real_caller -- --ignored`"]
-    async fn get_line_definition_a_legacy_null_owner_row_gets_404_for_a_real_caller() {
-        let pool = connect().await;
-
-        let caller_token = seed_session(&pool, "TEST-GET-LINE-DEF-CALLER").await;
-
-        // A row that predates the ownership retrofit (see
-        // `crates/api/migrations/20260828100000_add_ownership.sql`) has a
-        // NULL `user_id` -- inserted directly, since `insert_custom_line`
-        // always attributes an owner now and has no way to produce this
-        // shape itself. NOTE: this asserts today's (pre-Task-2-migration)
-        // behavior, where `get_custom_line` reports `None` for such a row
-        // -- see this task's brief and `data::custom_lines::db_tests`'s
-        // `owners_for_ids_returns_real_owner_none_for_legacy_omits_missing`
-        // for the same caveat. If Task 2's migration (reassigning legacy
-        // rows to a `'legacy-unclaimed'` owner) lands first, this row's
-        // `user_id` should be seeded as `'legacy-unclaimed'` instead, and
-        // the assertion below is unaffected either way -- no real caller's
-        // id can ever equal NULL or `'legacy-unclaimed'`.
-        sqlx::query(
-            "INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id, created_at) \
-             VALUES ('custom-test-legacy-get-line-def', 'Test Legacy Get Line Definition', '{}', '{WOK,CLJ}', '{}', '{}', NULL, NOW())",
-        )
-        .execute(&pool)
-        .await
-        .expect("seed legacy fixture line");
-
-        let router = test_router(test_app(pool.clone(), vec![]));
-        let (status, body) = get_line_definition(router, "custom-test-legacy-get-line-def", Some(&caller_token)).await;
-
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, Value::String("line not found".to_string()));
-
-        sqlx::query("DELETE FROM custom_lines WHERE id = 'custom-test-legacy-get-line-def'")
-            .execute(&pool)
-            .await
-            .expect("cleanup legacy fixture line");
-        cleanup_user(&pool, "TEST-GET-LINE-DEF-CALLER").await;
-    }
+    // A prior version of this test, `get_line_definition_a_legacy_null_
+    // owner_row_gets_404_for_a_real_caller`, seeded a NULL-`user_id`
+    // `custom_lines` row directly to confirm a real caller still gets 404
+    // against it. Migration 20260901120000_custom_lines_owner_not_null.sql
+    // deleted every surviving NULL-owner row and made the column NOT NULL
+    // (the repo owner's explicit choice -- see that migration's header
+    // comment), so that seed insert now fails at the database level before
+    // the route under test ever runs -- the scenario is no longer
+    // constructible, and
+    // `custom_lines::db_tests::custom_lines_user_id_column_rejects_null`
+    // covers the constraint itself.
+    // `get_line_definition_a_non_owner_session_gets_404_not_403` above
+    // already exercises the same "exists but not this caller's" 404 path
+    // this test would otherwise duplicate.
 
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \

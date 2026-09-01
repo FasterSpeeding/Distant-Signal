@@ -58,13 +58,14 @@ pub async fn list_custom_lines(pool: &PgPool) -> Result<Vec<CustomLine>> {
 }
 
 /// Fetches one custom line by id, or `None` if no custom line has that id
-/// (including catalogue-line ids, which are never rows in this table).
-/// The second element of the tuple is the row's `user_id` (`None` for a
-/// legacy pre-ownership-retrofit row -- see
-/// `crates/api/migrations/20260828100000_add_ownership.sql` -- not just
-/// "anonymous author," since custom lines have never had an anonymous
-/// *write* path). `get_line` (the only caller that needs it) uses this to
-/// compute `CustomLineDetail.isOwner`; `get_line_definition` ignores it.
+/// (including catalogue-line ids, which are never rows in this table). The
+/// second element of the tuple is the row's `user_id`. It's still typed
+/// `Option<String>` at the Rust level, but since migration
+/// 20260901120000_custom_lines_owner_not_null.sql the database itself
+/// guarantees it's always `Some` -- the transient NULL-owner window opened
+/// by `20260828100000_add_ownership.sql` is closed. `get_line` (the only
+/// caller that needs it) uses this to gate ownership; `get_line_definition`
+/// ignores it.
 pub async fn get_custom_line(pool: &PgPool, id: &str) -> Result<Option<(CustomLine, Option<String>)>> {
     let row = sqlx::query(
         "SELECT id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id \
@@ -308,9 +309,9 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                get_custom_line_reports_the_owning_user_id_or_none_for_a_legacy_row \
+                get_custom_line_reports_the_owning_user_id \
                 -- --ignored`"]
-    async fn get_custom_line_reports_the_owning_user_id_or_none_for_a_legacy_row() {
+    async fn get_custom_line_reports_the_owning_user_id() {
         use sqlx::postgres::PgPoolOptions;
 
         let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -345,34 +346,11 @@ mod db_tests {
             .expect("line should exist");
         assert_eq!(owner, Some("TEST-CUSTOM-LINE-OWNER".to_string()));
 
-        // A legacy row that predates the ownership retrofit (see
-        // `crates/api/migrations/20260828100000_add_ownership.sql`) has a
-        // NULL `user_id` -- inserted directly, since `insert_custom_line`
-        // always attributes an owner now and has no way to produce this
-        // shape itself.
-        sqlx::query(
-            "INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id, created_at) \
-             VALUES ('custom-test-legacy-line', 'Test Legacy Line', '{}', '{WOK,CLJ}', '{}', '{}', NULL, NOW())",
-        )
-        .execute(&pool)
-        .await
-        .expect("seed legacy fixture line");
-
-        let (_, legacy_owner) = get_custom_line(&pool, "custom-test-legacy-line")
-            .await
-            .expect("get custom line")
-            .expect("line should exist");
-        assert_eq!(legacy_owner, None);
-
         sqlx::query("DELETE FROM custom_lines WHERE id = $1")
             .bind(&owned.id)
             .execute(&pool)
             .await
             .expect("cleanup owned fixture line");
-        sqlx::query("DELETE FROM custom_lines WHERE id = 'custom-test-legacy-line'")
-            .execute(&pool)
-            .await
-            .expect("cleanup legacy fixture line");
         sqlx::query("DELETE FROM pinned_lines WHERE user_id = 'TEST-CUSTOM-LINE-OWNER'")
             .execute(&pool)
             .await
@@ -386,8 +364,56 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
+                custom_lines_user_id_column_rejects_null -- --ignored`"]
+    async fn custom_lines_user_id_column_rejects_null() {
+        // Migration 20260901120000_custom_lines_owner_not_null.sql deleted
+        // every surviving NULL-owner row (the repo owner's explicit choice,
+        // a deviation from the plan's own reassign-to-placeholder default --
+        // see that migration's header comment) and added a NOT NULL
+        // constraint to `custom_lines.user_id`. A legacy NULL-owner row can
+        // therefore no longer exist: this asserts the constraint is real at
+        // the database level, not just assumed, by attempting the exact
+        // insert shape the old fixture used to seed a "legacy row" and
+        // confirming Postgres now rejects it.
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+
+        let result = sqlx::query(
+            "INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id, created_at) \
+             VALUES ('custom-test-null-owner-rejected', 'Test Null Owner Rejected', '{}', '{WOK,CLJ}', '{}', '{}', NULL, NOW())",
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(
+            result.is_err(),
+            "inserting a custom_lines row with an explicit NULL user_id should fail after the NOT NULL migration"
+        );
+
+        // Defensive cleanup in case the assertion above is ever run against
+        // a database that predates the migration and the insert actually
+        // succeeded -- don't leave a stray row behind.
+        sqlx::query("DELETE FROM custom_lines WHERE id = 'custom-test-null-owner-rejected'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture row if the insert unexpectedly succeeded");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
                 owners_for_ids -- --ignored`"]
-    async fn owners_for_ids_returns_real_owner_none_for_legacy_omits_missing() {
+    async fn owners_for_ids_returns_real_owner_and_omits_missing() {
+        // Prior to migration 20260901120000_custom_lines_owner_not_null.sql
+        // this also seeded a legacy NULL-owner row and asserted
+        // `owners_for_ids` reported `Some(None)` for it. That migration
+        // deleted every surviving NULL-owner row and made the column
+        // NOT NULL (the repo owner's explicit choice -- see that
+        // migration's header comment), so a legacy row can no longer exist
+        // to seed; `custom_lines_user_id_column_rejects_null` above covers
+        // the constraint itself instead.
         use sqlx::postgres::PgPoolOptions;
 
         let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
@@ -416,22 +442,8 @@ mod db_tests {
         .await
         .expect("insert owned line");
 
-        // A legacy row that predates the ownership retrofit has a NULL `user_id`.
-        // NOTE: This test asserts that the legacy row returns None, which is the
-        // current behavior (pre-Task-2-migration). If Task 2's migration that
-        // reassigns legacy rows to 'legacy-unclaimed' lands before this test runs,
-        // the assertion should be updated to expect Some("legacy-unclaimed").
-        sqlx::query(
-            "INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id, created_at) \
-             VALUES ('custom-test-legacy-for-owners', 'Test Legacy Line for Owners', '{}', '{WOK,CLJ}', '{}', '{}', NULL, NOW())",
-        )
-        .execute(&pool)
-        .await
-        .expect("seed legacy fixture line");
-
         let ids = vec![
             owned.id.clone(),
-            "custom-test-legacy-for-owners".to_string(),
             "catalogue-line-not-in-custom-table".to_string(), // A catalogue/TfL id not in the table
         ];
 
@@ -446,13 +458,6 @@ mod db_tests {
             "owned line should have real owner"
         );
 
-        // The legacy line should return None (pre-migration state)
-        assert_eq!(
-            owners_map.get("custom-test-legacy-for-owners"),
-            Some(&None),
-            "legacy line should have None owner"
-        );
-
         // The catalogue id should not be in the map at all (no entry, not Some(None))
         assert!(
             !owners_map.contains_key("catalogue-line-not-in-custom-table"),
@@ -465,10 +470,6 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup owned fixture line");
-        sqlx::query("DELETE FROM custom_lines WHERE id = 'custom-test-legacy-for-owners'")
-            .execute(&pool)
-            .await
-            .expect("cleanup legacy fixture line");
         sqlx::query("DELETE FROM pinned_lines WHERE user_id = 'TEST-OWNERS-FOR-IDS-OWNER'")
             .execute(&pool)
             .await

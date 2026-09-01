@@ -84,35 +84,37 @@ Per the spec's Decision 2 and its Open Question 2, there are two real mechanics 
 
 **This plan defaults to the non-destructive reassignment path (Task 2 is written for it) but does not treat that as decided.** Per this codebase's own "stop for destructive/irreversible operations" posture, an implementer must not silently pick either path — the delete alternative is only "equally valid" (the spec's own words) if the repo owner has verified, out-of-band, that no live deployment has NULL-owner rows worth keeping.
 
-**2026-09-01 status: still blocked, not skipped.** Tasks 3–12 (all backend
-route gating, the frontend cookie-forwarding fixes, and the `isOwner`
-cleanup) are complete and merged into this branch. This task is the one
-remaining gap. The implementing sandbox for that session had no
-`DATABASE_URL`/live Postgres and no `docker`/`docker compose` available, so
-Step 1's fact-finding query could not be run, and per this task's own
-explicit instruction ("do not proceed past this task on the plan-writer's
-or implementer's own judgment alone"), Task 2's migration file was
-deliberately *not* written on the implementer's own initiative. Whoever
-picks this up next needs: (1) real access to the target database to run
-the Step 1 count, and (2) the repo owner's explicit go/no-go between the
-reassign-vs-delete mechanics above, before writing `Task 2`'s migration
-file.
+**2026-09-01 status: resolved.** Tasks 3–12 (all backend route gating, the
+frontend cookie-forwarding fixes, and the `isOwner` cleanup) were already
+complete and merged. This task was the one remaining gap. A later session
+on the same day still had no `DATABASE_URL`/live Postgres and no
+`docker`/`docker compose` available, so Step 1's fact-finding query could
+not be run against a real database — that was disclosed to the repo owner
+directly rather than skipped or assumed. The repo owner was then asked
+explicitly (not inferred from silence) to choose between the
+reassign-vs-delete mechanics with that gap disclosed, and chose **delete**.
+Task 2 is now written and committed for that choice — see
+`crates/api/migrations/20260901120000_custom_lines_owner_not_null.sql`'s
+own header comment, which documents the deviation from this plan's
+reassign-by-default text. Task 2's Step 2 (apply against a real database)
+still needs a session with actual Postgres access before this ships to a
+live deployment; everything else is done.
 
-- [ ] **Step 1: Run the fact-finding query against the real target database**
+- [x] **Step 1: Run the fact-finding query against the real target database**
 
 ```sql
 SELECT count(*) FROM custom_lines WHERE user_id IS NULL;
 ```
 
-Record the result. Per the spec's own reasoning about this app's "single trusted personal instance"-sized deployment posture, the realistic expectation is a small number (very plausibly zero) — but the number itself, not an assumption, is what this step exists to establish.
+**Not run** — no live database was reachable from either implementing session. Disclosed to the repo owner as a real gap, not silently assumed to be zero; they chose to proceed anyway (see Step 2/3).
 
-- [ ] **Step 2: Get an explicit go/no-go from the repo owner before Task 2 runs**
+- [x] **Step 2: Get an explicit go/no-go from the repo owner before Task 2 runs**
 
-Present both mechanics above (reassign-and-migrate vs. delete-and-migrate) and the Step 1 count, and get an explicit choice — do not infer one from silence, and do not proceed past this task on the plan-writer's or implementer's own judgment alone. If the count is genuinely `0`, both mechanics are behaviorally identical (the `UPDATE` becomes a no-op either way) — even so, get the explicit choice recorded, since a `0` today doesn't retroactively justify skipping the check on a different target database later.
+Presented both mechanics, plus the fact that the live count from Step 1 could not be obtained, directly to the repo owner via `AskUserQuestion` on 2026-09-01. They explicitly chose **delete**, and separately confirmed no live DB access was available in this session either (so Task 2's Step 2 apply-and-verify remains outstanding, not skipped).
 
-- [ ] **Step 3: Record the decision**
+- [x] **Step 3: Record the decision**
 
-Write down which path was chosen and why (e.g. "reassign: default per spec, no reason to deviate" or "delete: repo owner confirmed count=0 and prefers no placeholder account"). This record is what Task 2 implements — Task 2's steps below assume the reassignment path was chosen; if delete was chosen instead, adapt Task 2's SQL accordingly and note the deviation from this plan explicitly in the migration file's own header comment.
+**Decision: delete.** `DELETE FROM custom_lines WHERE user_id IS NULL` before adding the `NOT NULL` constraint — the repo owner's explicit choice, made without a live Step-1 count (none was obtainable from this session), understanding the destructive/irreversible tradeoff described above. This deviates from this plan's own reassign-by-default text; Task 2 below is written for the delete path, not the reassignment SQL originally drafted.
 
 ---
 
@@ -126,7 +128,9 @@ Write down which path was chosen and why (e.g. "reassign: default per spec, no r
 **Interfaces:**
 - Produces: a schema migration, picked up automatically by this crate's existing migration-runner startup path (no code change needed to run it — confirmed by how every prior `.sql` file in this directory is already picked up).
 
-- [ ] **Step 1: Write the migration (assuming Task 1 chose reassignment — the default)**
+- [x] **Step 1: Write the migration (assuming Task 1 chose reassignment — the default)**
+
+**Task 1 actually chose delete, not reassignment** — see `crates/api/migrations/20260901120000_custom_lines_owner_not_null.sql`, which replaces the `INSERT INTO users` / `UPDATE ... SET user_id = 'legacy-unclaimed'` statements below with a single `DELETE FROM custom_lines WHERE user_id IS NULL;`, per this step's own escape hatch two paragraphs down. The reassignment SQL below is left as-drafted for reference/history, not as what actually shipped.
 
 ```sql
 -- -------------------------------------------------------------------------
@@ -163,25 +167,26 @@ If Task 1 instead recorded the destructive path, replace the middle statement wi
 
 - [ ] **Step 2: Apply the migration against a local/dev database and verify**
 
-Run this crate's normal migration path (however `crates/api` already runs its own migrations at startup/test time — check `crates/api`'s existing test setup or `main.rs` for the exact invocation before assuming a command). Confirm:
+**Still outstanding — no live database was reachable from either implementing session.** A future session with real Postgres access must run this crate's normal migration path and confirm:
 - `ALTER TABLE ... SET NOT NULL` succeeds (no leftover NULL rows).
-- If Task 1's Step 1 count was nonzero, confirm those specific rows now show `user_id = 'legacy-unclaimed'` (reassignment path) — not silently dropped.
-- A fresh `INSERT INTO custom_lines (...)` with no explicit `user_id` now fails at the database level (proves the constraint is real, not just assumed).
+- The delete path actually removed any pre-existing NULL-owner rows (`SELECT count(*) FROM custom_lines WHERE user_id IS NULL` returns `0` both before the `DELETE` runs against real data, if checkable, and after).
+- A fresh `INSERT INTO custom_lines (...)` with no explicit `user_id` now fails at the database level (proves the constraint is real, not just assumed) — mirrored already by `custom_lines::db_tests::custom_lines_user_id_column_rejects_null` below, but worth re-confirming against the real target database too.
 
-- [ ] **Step 3: Add a live-database migration test**
+- [x] **Step 3: Add a live-database migration test**
 
-Per the spec's Testing section: a real, applied-and-verified test against a fixture database containing at least one legacy NULL-owner row, confirming it survives as `'legacy-unclaimed'`-owned (or is genuinely absent, if the delete path was chosen) rather than silently disappearing, and that the `NOT NULL` constraint then holds. Follow `custom_lines.rs`'s existing `#[ignore]`d `db_tests` pattern (seed a NULL-owner row via a raw `sqlx::query` INSERT exactly as that file's existing `get_custom_line_reports_the_owning_user_id_or_none_for_a_legacy_row` test already does, run migrations, assert the row's `user_id` is now `'legacy-unclaimed'`, clean up). Place it in `crates/api/src/data/custom_lines.rs`'s `mod db_tests`, or a new colocated test module if this repo's migration-testing convention lives elsewhere — check for an existing migration-test pattern in `crates/api` before assuming one doesn't exist.
+Since Task 1 chose delete, not reassignment, there's no `'legacy-unclaimed'`-owned survivor to assert on — the meaningful regression is that the `NOT NULL` constraint itself holds. Added `custom_lines::db_tests::custom_lines_user_id_column_rejects_null` (`crates/api/src/data/custom_lines.rs`), which attempts the exact NULL-`user_id` insert shape the old legacy-row fixtures used and asserts Postgres now rejects it. The two pre-existing tests that used to seed a legacy NULL-owner row directly (`get_custom_line_reports_the_owning_user_id_or_none_for_a_legacy_row` in `custom_lines.rs`, and `a_legacy_null_owner_row_gets_404_for_a_real_caller` / `get_line_definition_a_legacy_null_owner_row_gets_404_for_a_real_caller` in `crates/api/src/routes/lines.rs`) were updated/removed accordingly, since that seed insert would now fail before the route under test ever ran — see each file's own comment at the removal site for the detail.
 
-- [ ] **Step 4: Run the backend test suite**
+- [x] **Step 4: Run the backend test suite**
 
 Run (from repo root): `cargo test -p api`
-Expected: PASS, including the new ignored test run explicitly (`cargo test -p api <test name> -- --ignored`, per this repo's existing convention for DB-dependent tests) against a real database.
+Result: **157 passed, 0 failed, 41 ignored** (ignored = the DB-dependent tests, unrunnable without a live database in this session — including the new `custom_lines_user_id_column_rejects_null` test, which still needs a real-database run before this ships).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git add crates/api/migrations/<timestamp>_custom_lines_owner_not_null.sql
-git commit -m "Migrate custom_lines.user_id to NOT NULL, reassigning legacy NULL rows to a placeholder owner"
+git add crates/api/migrations/20260901120000_custom_lines_owner_not_null.sql \
+        crates/api/src/data/custom_lines.rs crates/api/src/routes/lines.rs
+git commit -m "Migrate custom_lines.user_id to NOT NULL, deleting legacy NULL-owner rows per the repo owner's explicit choice"
 ```
 
 ---
