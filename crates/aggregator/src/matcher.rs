@@ -822,6 +822,75 @@ mod tests {
         }
     }
 
+    // Task 2.1: `lines/northern-airedale.toml` gained several previously-
+    // omitted intermediate stations. FZH (Frizinghall) sits between BDQ and
+    // SHY on the shared `northern-shipley-trunk` segment (see that file's
+    // "RESOLUTION for Task 2.10" comment) - confirms `has_station` picks it
+    // up and that an incident there resolves as SharedSegment for
+    // northern-airedale, because `northern-shipley-trunk` is already a
+    // multi-line segment (shared with `northern-wharfedale.toml`'s own
+    // BDQ/SHY entries) per `SegmentRegistry::is_shared`, which keys off the
+    // segment name across all lines rather than requiring the specific
+    // incident station to be duplicated in both files.
+    //
+    // This deliberately does NOT assert that `northern-wharfedale` itself
+    // appears in `matched_ids`: as of this commit that file does not yet
+    // list FZH (that is Task 2.10's job, per the RESOLUTION comment in
+    // `lines/northern-airedale.toml`), so `northern-wharfedale.has_station
+    // ("FZH")` is false and it can't produce a station-hit match at FZH
+    // specifically - unlike the existing SHY-based shared-trunk test above,
+    // where both files already list SHY.
+    #[test]
+    fn airedale_frizinghall_has_station_and_is_shared_trunk() {
+        let lines = load_line("northern-airedale");
+        let airedale = lines.get("northern-airedale").expect("northern-airedale should load");
+        assert!(airedale.has_station("FZH"), "northern-airedale should now list Frizinghall (FZH)");
+        assert_eq!(airedale.segment_for("FZH"), Some("northern-shipley-trunk"));
+
+        let all_lines = load_all_lines();
+        let registry = SegmentRegistry::new(&all_lines);
+        assert!(
+            registry.is_shared("northern-shipley-trunk"),
+            "northern-shipley-trunk should still be a shared segment"
+        );
+        let inc = incident(
+            "NT-8",
+            "Signal failure at Frizinghall",
+            "Signal failure causing delays to Northern services at Frizinghall.",
+            &["NT"],
+            &["FZH"],
+        );
+        let matches = lines_affected_by(&inc, &all_lines, &registry);
+        let by_id: HashMap<String, MatchScope> = matches.iter().map(|m| (m.line.id.clone(), m.scope)).collect();
+        assert_eq!(by_id.get("northern-airedale"), Some(&MatchScope::SharedSegment));
+    }
+
+    // Task 2.1: SAE (Saltaire), by contrast, is the first station on this
+    // file's own exclusive `northern-airedale` segment after the Shipley
+    // junction - confirms it doesn't propagate to Wharfedale, mirroring
+    // `airedale_exclusive_segment_incident_does_not_propagate` above.
+    #[test]
+    fn airedale_saltaire_has_station_and_stays_exclusive() {
+        let lines = load_line("northern-airedale");
+        let airedale = lines.get("northern-airedale").expect("northern-airedale should load");
+        assert!(airedale.has_station("SAE"), "northern-airedale should now list Saltaire (SAE)");
+        assert_eq!(airedale.segment_for("SAE"), Some("northern-airedale"));
+
+        let all_lines = load_all_lines();
+        let registry = SegmentRegistry::new(&all_lines);
+        let inc = incident(
+            "NT-9",
+            "Signal failure at Saltaire",
+            "Signal failure causing delays on the Airedale Line at Saltaire.",
+            &["NT"],
+            &["SAE"],
+        );
+        let matches = lines_affected_by(&inc, &all_lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-airedale".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
     // `lines/northern-esk-valley.toml` (Task 8.5) is a genuinely standalone
     // line per the gap analysis ("entirely separate from anything currently
     // modelled") - no other line in this catalogue shares any track with
