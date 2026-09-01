@@ -1564,6 +1564,25 @@ mod tests {
         }
     }
 
+    // Task 8.2 (Batch 8): fills two genuinely missing, currently-served,
+    // very-low-frequency intermediate stations Cramlington (CRM, one train
+    // per day, between Newcastle and Morpeth) and East Linton (ELT, reopened
+    // 13 December 2023, between Dunbar and Edinburgh Waverley) - both
+    // confirmed via Wikipedia and nationalrail.co.uk. See the updated
+    // comments in lines/tpe-borders.toml for full sourcing. Both stations
+    // sit on the file's own single `tpe-borders` segment, which (per
+    // tpe_borders_exclusive_segment_incident_does_not_propagate above) has
+    // no shared-segment overlap with any sibling line, so no second,
+    // MatchScope-asserting test is added for this task.
+    #[test]
+    fn tpe_borders_batch8_infill_stations_present() {
+        let lines = load_line("tpe-borders");
+        let line = lines.get("tpe-borders").expect("tpe-borders line should exist");
+        for crs in ["CRM", "ELT"] {
+            assert!(line.has_station(crs), "tpe-borders should now list {crs}");
+        }
+    }
+
     // No shared-segment-propagation test for tpe-north: no segment name it
     // uses is shared with any other line, including this batch's own
     // tpe-borders (the Newcastle boundary between them is a
