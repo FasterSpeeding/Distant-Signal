@@ -37,6 +37,7 @@ pub fn router() -> Router {
         .route("/Line/{ids}/Status", axum::routing::get(get_line_status))
         .route("/StopPoint/{crs}/Disruption", axum::routing::get(get_stop_point_disruption))
         .route("/Line/{id}/Status/{from}/to/{to}", axum::routing::get(get_line_status_history))
+        .route("/Line/{id}/Stats/{from}/to/{to}", axum::routing::get(get_line_daily_stats))
 }
 
 #[derive(Debug, Deserialize)]
@@ -251,6 +252,44 @@ async fn get_line_status_history(
     ))
 }
 
+/// Derives the four rate/average fields from one stored rollup row,
+/// guarding every division against a zero denominator -- a day CAN have
+/// total: 0 if every contributing cycle itself had total: 0 (rare given
+/// min_sample_size, not impossible). Pure so it's unit-testable without a
+/// database.
+fn daily_stats_to_json(row: queries::DailyStatsRow) -> Value {
+    let avg_delay_minutes = if row.running_count > 0 {
+        row.delay_minutes_sum / row.running_count as f64
+    } else {
+        0.0
+    };
+    let rate = |numerator: i64| if row.total > 0 { numerator as f64 / row.total as f64 } else { 0.0 };
+
+    serde_json::json!({
+        "day": row.day,
+        "sampleCycles": row.sample_cycles,
+        "total": row.total,
+        "delayed": row.delayed,
+        "cancelled": row.cancelled,
+        "skipped": row.skipped,
+        "avgDelayMinutes": avg_delay_minutes,
+        "delayRate": rate(row.delayed),
+        "cancellationRate": rate(row.cancelled),
+        "skipRate": rate(row.skipped),
+    })
+}
+
+async fn get_line_daily_stats(
+    State(app): State<App>,
+    Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>,
+) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let rows = queries::daily_stats_for_range(&app.database, &id, from, to)
+        .await
+        .map_err(internal_error)?;
+
+    Ok(Json(rows.into_iter().map(daily_stats_to_json).collect()))
+}
+
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "line status query failed");
     (StatusCode::INTERNAL_SERVER_ERROR, "query failed".to_string())
@@ -364,5 +403,92 @@ mod tests {
         // degradation, not an error.
         let nr_row = row("elizabeth-line", vec![]);
         assert!(overlay_for(&nr_row, &[]).is_none());
+    }
+
+    fn daily_stats_row(
+        total: i64,
+        delayed: i64,
+        cancelled: i64,
+        skipped: i64,
+        running_count: i64,
+        delay_minutes_sum: f64,
+    ) -> queries::DailyStatsRow {
+        queries::DailyStatsRow {
+            day: chrono::NaiveDate::from_ymd_opt(2026, 8, 15).unwrap(),
+            sample_cycles: 12,
+            total,
+            delayed,
+            cancelled,
+            skipped,
+            running_count,
+            delay_minutes_sum,
+        }
+    }
+
+    #[test]
+    fn daily_stats_to_json_computes_rates_for_a_normal_row() {
+        let row = daily_stats_row(100, 10, 5, 2, 95, 190.0);
+        let json = daily_stats_to_json(row);
+
+        assert_eq!(json["day"], serde_json::json!("2026-08-15"));
+        assert_eq!(json["sampleCycles"], serde_json::json!(12));
+        assert_eq!(json["total"], serde_json::json!(100));
+        assert_eq!(json["delayed"], serde_json::json!(10));
+        assert_eq!(json["cancelled"], serde_json::json!(5));
+        assert_eq!(json["skipped"], serde_json::json!(2));
+        assert_eq!(json["avgDelayMinutes"], serde_json::json!(2.0)); // 190.0 / 95
+        assert_eq!(json["delayRate"], serde_json::json!(0.1)); // 10 / 100
+        assert_eq!(json["cancellationRate"], serde_json::json!(0.05)); // 5 / 100
+        assert_eq!(json["skipRate"], serde_json::json!(0.02)); // 2 / 100
+    }
+
+    #[test]
+    fn daily_stats_to_json_zero_total_and_running_count_never_produces_nan_or_infinity() {
+        let row = daily_stats_row(0, 0, 0, 0, 0, 0.0);
+        let json = daily_stats_to_json(row);
+
+        for field in ["avgDelayMinutes", "delayRate", "cancellationRate", "skipRate"] {
+            let value = json[field].as_f64().unwrap_or_else(|| panic!("{field} should be a JSON number"));
+            assert!(value.is_finite(), "{field} should be finite, got {value}");
+            assert_eq!(value, 0.0, "{field} should be exactly 0.0 for a zero-denominator row");
+        }
+    }
+
+    #[tokio::test]
+    async fn get_line_daily_stats_route_mounts_and_parses_naive_date_path_segments() {
+        // Mirrors this file's module doc comment: the sibling
+        // `/Line/{id}/Status/{from}/to/{to}` route needed a throwaway-router
+        // probe to confirm a multi-segment `Path` extraction with a
+        // non-primitive type actually parses from the URL. This route swaps
+        // `DateTime<Utc>` for `chrono::NaiveDate` (Open judgment call #4),
+        // so the same risk applies and is checked the same way -- except
+        // this probe is kept, using the exact route string `router()`
+        // registers, rather than discarded.
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        async fn probe(Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>) -> String {
+            format!("{id}|{from}|{to}")
+        }
+
+        let app: axum::Router = axum::Router::new()
+            .route("/Line/{id}/Stats/{from}/to/{to}", axum::routing::get(probe));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/Line/northern/Stats/2026-08-01/to/2026-08-31")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert_eq!(body, "northern|2026-08-01|2026-08-31");
     }
 }
