@@ -5,12 +5,12 @@ import Link from 'next/link';
 import { StatusBadge } from './StatusBadge';
 import { LastUpdated } from './LastUpdated';
 import { worstStatus } from '@/lib/severity';
-import { firstSampleStats, formatSampleSummary } from '@/lib/sampleStats';
+import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport } from '@/lib/types';
 
 export function LineStatusCard({ report }: { report: LineStatusReport }) {
   const worst = worstStatus(report);
-  const stats = firstSampleStats(report.lineStatuses);
+  const representative = representativeStatus(report.lineStatuses);
   return (
     <Card withBorder shadow="sm" padding="lg" component={Link} href={`/lines/${report.id}`}>
       <Stack gap="xs">
@@ -44,11 +44,9 @@ export function LineStatusCard({ report }: { report: LineStatusReport }) {
         >
           {worst.reason}
         </Text>
-        {stats && (
-          <Text size="xs" c="dimmed">
-            {formatSampleSummary(stats)}
-          </Text>
-        )}
+        <Text size="xs" c="dimmed">
+          {formatSampleSummary(representative)}
+        </Text>
         <LastUpdated timestamp={report.computedAt} />
       </Stack>
     </Card>

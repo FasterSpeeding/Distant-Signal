@@ -14,9 +14,9 @@ import { LoginPrompt } from '@/components/LoginPrompt';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank, worstStatus } from '@/lib/severity';
-import { firstSampleStats, formatSampleSummary } from '@/lib/sampleStats';
+import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { formatDate, formatTime } from '@/lib/dateFormat';
-import type { LineStatusReport, TrackedTrainListItem } from '@/lib/types';
+import type { LineStatus, LineStatusReport, TrackedTrainListItem } from '@/lib/types';
 
 // See app/lines/[id]/page.tsx-adjacent history page and this repo's other
 // dynamic routes for the same `revalidate = 0` rationale: without it,
@@ -37,11 +37,14 @@ function worstSeverityAcrossReports(reports: LineStatusReport[]): number {
   return worst;
 }
 
-/** First `sampleStats` found across every status on every report — mirrors
- * `RepresentativeInfo`'s "first one found is representative" rationale,
- * extended across a station's several affected lines. */
-function sampleStatsAcrossReports(reports: LineStatusReport[]) {
-  return reports.map((r) => firstSampleStats(r.lineStatuses)).find(Boolean);
+/** The first status carrying real stats across every affected line's
+ * report, if any does, else the first status overall — mirrors
+ * `representativeStatus`'s own fallback, extended across a station's
+ * several affected lines the same way `sampleStatsAcrossReports` extended
+ * `firstSampleStats`. */
+function representativeStatusAcrossReports(reports: LineStatusReport[]): LineStatus | undefined {
+  const withStats = reports.map((r) => representativeStatus(r.lineStatuses)).find((s) => s?.sampleStats);
+  return withStats ?? reports[0]?.lineStatuses[0];
 }
 
 /** Anonymous-visitor "right now" widget data (§Home page redesign). Built
@@ -213,7 +216,7 @@ export default async function DashboardPage() {
         ) : (
           <Stack gap="xs">
             {pinnedStationEntries.map(({ crs, name, reports }) => {
-              const stats = sampleStatsAcrossReports(reports);
+              const representative = representativeStatusAcrossReports(reports);
               return (
                 <Link key={crs} href={`/stations/${crs}`} style={{ textDecoration: 'none', color: 'inherit' }}>
                   <Card withBorder>
@@ -222,9 +225,9 @@ export default async function DashboardPage() {
                         <Text fw={600}>{name ? `${name} (${crs})` : crs}</Text>
                         <StatusBadge severity={worstSeverityAcrossReports(reports)} />
                       </Group>
-                      {stats && (
+                      {representative && (
                         <Text size="xs" c="dimmed">
-                          {formatSampleSummary(stats)}
+                          {formatSampleSummary(representative)}
                         </Text>
                       )}
                     </Stack>
