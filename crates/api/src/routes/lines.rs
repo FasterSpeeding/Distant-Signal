@@ -19,7 +19,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
-use crate::auth::AuthenticatedUser;
+use crate::auth::{AuthenticatedUser, OptionalAuthenticatedUser};
 use crate::data::{custom_lines::{self, NewCustomLine}, queries};
 
 pub fn router() -> Router {
@@ -106,6 +106,7 @@ async fn get_line_definition(
 
 async fn list_lines(
     State(app): State<App>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<LineSummary>>, (StatusCode, String)> {
     let mut out: Vec<LineSummary> = app
         .config
@@ -120,16 +121,23 @@ async fn list_lines(
         })
         .collect();
 
-    let custom = custom_lines::list_custom_lines(&app.database)
-        .await
-        .map_err(internal_error)?;
-    out.extend(custom.into_iter().map(|c| LineSummary {
-        id: c.id,
-        name: c.name,
-        category: "custom".to_string(),
-        operators: c.operators,
-        source: "custom",
-    }));
+    // Custom lines are now private (see get_line, Task 4) -- an
+    // authenticated caller sees only their own; an anonymous visitor sees
+    // none at all, same shape as today's default but now also true for a
+    // logged-in non-owner. Catalogue and TfL entries here are completely
+    // unaffected -- no filtering, no auth requirement change.
+    if let Some(user) = &user {
+        let custom = custom_lines::list_custom_lines_for_user(&app.database, &user.id)
+            .await
+            .map_err(internal_error)?;
+        out.extend(custom.into_iter().map(|c| LineSummary {
+            id: c.id,
+            name: c.name,
+            category: "custom".to_string(),
+            operators: c.operators,
+            source: "custom",
+        }));
+    }
 
     // TfL lines, from the rows crates/poller-tfl wrote — see
     // `queries::tfl_line_summaries` for why they are not catalogue TOML
@@ -756,5 +764,243 @@ mod db_tests {
         assert_eq!(body, Value::String("custom line not found".to_string()));
 
         cleanup_user(&pool, "TEST-GET-LINE-CATALOGUE-CALLER").await;
+    }
+
+    /// A minimal but valid catalogue line fixture, for tests that need to
+    /// confirm catalogue entries survive `list_lines`'s custom-line
+    /// scoping untouched -- see `a_catalogue_id_still_404s_the_same_way_it_always_has`
+    /// above for the one prior inline literal this factors out (that test
+    /// doesn't reuse this helper itself, since it's the sole earlier
+    /// occurrence; the tests below need the same shape more than once).
+    fn test_catalogue_line(id: &str, name: &str) -> common::LineDefinition {
+        common::LineDefinition {
+            id: id.to_string(),
+            name: name.to_string(),
+            mode: "rail".to_string(),
+            category: "main-line".to_string(),
+            operators: vec!["SW".to_string()],
+            stations: vec![
+                common::Station { crs: "WOK".to_string(), tiploc: None, role: "major".to_string(), segment: None },
+                common::Station { crs: "CLJ".to_string(), tiploc: None, role: "major".to_string(), segment: None },
+            ],
+            sample_stations: vec![],
+            match_keywords: vec![],
+            excluded_keywords: vec![],
+            severity_overrides: Default::default(),
+            exclusive_segments: vec![],
+            destination_crs_filter: vec![],
+            headcode_prefixes: vec![],
+        }
+    }
+
+    /// Seeds a fixture TfL-sourced `line_status` row (`queries::tfl_line_summaries`
+    /// only ever reads rows with `source = 'tfl'`) with an id that has no
+    /// NR/Darwin counterpart in `common::TFL_TO_NR_LINE_ID`, so
+    /// `is_merged_into_nr_line` never suppresses it from `/public/lines`.
+    async fn seed_tfl_line(pool: &PgPool, line_id: &str) {
+        sqlx::query(
+            "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, source) \
+             VALUES ($1, $2, 'tube', '{TfL}', '[]', 'tfl') \
+             ON CONFLICT (line_id) DO UPDATE SET source = EXCLUDED.source",
+        )
+        .bind(line_id)
+        .bind(format!("Test {line_id}"))
+        .execute(pool)
+        .await
+        .expect("seed fixture tfl line_status row");
+    }
+
+    async fn cleanup_tfl_line(pool: &PgPool, line_id: &str) {
+        sqlx::query("DELETE FROM line_status WHERE line_id = $1")
+            .bind(line_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture tfl line_status row");
+    }
+
+    /// Issues `GET /public/lines`, optionally with a session cookie, and
+    /// returns the parsed JSON array of `LineSummary` entries.
+    async fn list_lines_request(router: axum::Router, raw_token: Option<&str>) -> (StatusCode, Vec<Value>) {
+        let mut builder = Request::builder().uri("/public/lines");
+        if let Some(token) = raw_token {
+            builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
+        }
+        let request = builder.body(Body::empty()).expect("build request");
+        let response = router.oneshot(request).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+        let value: Value = serde_json::from_slice(&bytes).expect("list_lines response body is valid JSON");
+        let array = value.as_array().cloned().expect("list_lines response body is a JSON array");
+        (status, array)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                an_anonymous_caller_sees_catalogue_and_tfl_entries_but_no_custom_lines -- --ignored`"]
+    async fn an_anonymous_caller_sees_catalogue_and_tfl_entries_but_no_custom_lines() {
+        let pool = connect().await;
+
+        seed_tfl_line(&pool, "test-list-lines-anon-tfl").await;
+        // A custom line owned by someone else exists in the database, to
+        // prove an anonymous caller sees zero custom-line entries -- not
+        // just "none owned by them" -- even when the table is non-empty.
+        seed_session(&pool, "TEST-LIST-LINES-ANON-BYSTANDER").await;
+        custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Anon Bystander Line".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-LIST-LINES-ANON-BYSTANDER",
+        )
+        .await
+        .expect("insert fixture custom line");
+
+        let catalogue_line = test_catalogue_line("test-list-lines-anon-catalogue", "Test List Lines Anon Catalogue");
+        let router = test_router(test_app(pool.clone(), vec![catalogue_line]));
+        let (status, body) = list_lines_request(router, None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some("test-list-lines-anon-catalogue")
+                && entry.get("source").and_then(Value::as_str) == Some("catalogue")),
+            "catalogue entry missing from anonymous response: {body:?}"
+        );
+        assert!(
+            body.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some("test-list-lines-anon-tfl")
+                && entry.get("source").and_then(Value::as_str) == Some("tfl")),
+            "tfl entry missing from anonymous response: {body:?}"
+        );
+        assert_eq!(
+            body.iter().filter(|entry| entry.get("source").and_then(Value::as_str) == Some("custom")).count(),
+            0,
+            "anonymous caller should see zero custom-line entries: {body:?}"
+        );
+
+        cleanup_tfl_line(&pool, "test-list-lines-anon-tfl").await;
+        cleanup_user(&pool, "TEST-LIST-LINES-ANON-BYSTANDER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                a_logged_in_caller_sees_only_their_own_custom_line_in_the_list -- --ignored`"]
+    async fn a_logged_in_caller_sees_only_their_own_custom_line_in_the_list() {
+        let pool = connect().await;
+
+        let owner_token = seed_session(&pool, "TEST-LIST-LINES-OWNER").await;
+        seed_session(&pool, "TEST-LIST-LINES-OTHER-OWNER").await;
+
+        let own_line = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test List Lines Own Line".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-LIST-LINES-OWNER",
+        )
+        .await
+        .expect("insert fixture owned line");
+
+        let other_line = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test List Lines Other User's Line".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-LIST-LINES-OTHER-OWNER",
+        )
+        .await
+        .expect("insert fixture other-owner line");
+
+        let catalogue_line = test_catalogue_line("test-list-lines-owner-catalogue", "Test List Lines Owner Catalogue");
+        let router = test_router(test_app(pool.clone(), vec![catalogue_line]));
+        let (status, body) = list_lines_request(router, Some(&owner_token)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some("test-list-lines-owner-catalogue")
+                && entry.get("source").and_then(Value::as_str) == Some("catalogue")),
+            "catalogue entry missing from authenticated response: {body:?}"
+        );
+        assert!(
+            body.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some(own_line.id.as_str())
+                && entry.get("source").and_then(Value::as_str) == Some("custom")),
+            "caller's own custom line missing from response: {body:?}"
+        );
+        assert!(
+            !body.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some(other_line.id.as_str())),
+            "another user's custom line leaked into the response: {body:?}"
+        );
+
+        cleanup_user(&pool, "TEST-LIST-LINES-OWNER").await;
+        cleanup_user(&pool, "TEST-LIST-LINES-OTHER-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                catalogue_and_tfl_entries_are_identical_regardless_of_session_state -- --ignored`"]
+    async fn catalogue_and_tfl_entries_are_identical_regardless_of_session_state() {
+        let pool = connect().await;
+
+        seed_tfl_line(&pool, "test-list-lines-session-tfl").await;
+        let caller_token = seed_session(&pool, "TEST-LIST-LINES-SESSION-STATE").await;
+        // Owns a custom line too, so the comparison below has to actively
+        // exclude the "custom" source to hold -- proving the non-custom
+        // sections, specifically, are what's unaffected by session state.
+        custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Session State Own Line".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-LIST-LINES-SESSION-STATE",
+        )
+        .await
+        .expect("insert fixture owned line");
+
+        let catalogue_line = test_catalogue_line("test-list-lines-session-catalogue", "Test List Lines Session Catalogue");
+
+        let anon_router = test_router(test_app(pool.clone(), vec![catalogue_line.clone()]));
+        let (anon_status, anon_body) = list_lines_request(anon_router, None).await;
+
+        let auth_router = test_router(test_app(pool.clone(), vec![catalogue_line]));
+        let (auth_status, auth_body) = list_lines_request(auth_router, Some(&caller_token)).await;
+
+        assert_eq!(anon_status, StatusCode::OK);
+        assert_eq!(auth_status, StatusCode::OK);
+
+        let non_custom = |body: &[Value]| -> Vec<Value> {
+            body.iter()
+                .filter(|entry| entry.get("source").and_then(Value::as_str) != Some("custom"))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            non_custom(&anon_body),
+            non_custom(&auth_body),
+            "catalogue/tfl entries differed between anonymous and authenticated callers"
+        );
+        // Sanity: the authenticated caller's custom line is in fact present
+        // (so the equality above isn't vacuously true because both sides
+        // happened to have no custom entries at all).
+        assert!(auth_body.iter().any(|entry| entry.get("source").and_then(Value::as_str) == Some("custom")));
+
+        cleanup_tfl_line(&pool, "test-list-lines-session-tfl").await;
+        cleanup_user(&pool, "TEST-LIST-LINES-SESSION-STATE").await;
     }
 }
