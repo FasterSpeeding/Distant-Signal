@@ -278,3 +278,32 @@ export interface DelayRepayEstimateResponse {
   claimUrl: string;
   disclaimer: string;
 }
+
+/** `GET /Train/tickets/mine`'s per-item response shape
+ * (`crates/api/src/data/train_tracking.rs`'s `TicketListItem`, camelCase).
+ * The last four fields are deliberately shaped identically to
+ * `DelayRepayEstimateResponse` so a `TicketListItem` can be passed
+ * straight into `<DelayRepayEstimate>` with no adapter -- see
+ * docs/superpowers/specs/2026-08-31-tickets-list-design.md's Finding 7 /
+ * Decision 1. */
+export interface TicketListItem {
+  id: number;
+  trackedTrainId: number;
+  operator: string | null;
+  ticketType: string | null;
+  originCrs: string | null;
+  destinationCrs: string | null;
+  source: TicketSource;
+  createdAt: string; // RFC3339 -- list ordering key
+  serviceDate: string; // "YYYY-MM-DD"
+  pinOriginCrs: string;
+  pinDestinationCrs: string | null;
+  pinScheduledDeparture: string; // RFC3339
+  resolutionStatus: ResolutionStatus;
+  trainUid: string | null;
+  status: JourneyStatus | null;
+  delayMinutes: number | null;
+  estimate: DelayRepayEstimate | null;
+  claimUrl: string;
+  disclaimer: string;
+}
