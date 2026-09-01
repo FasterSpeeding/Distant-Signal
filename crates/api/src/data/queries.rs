@@ -522,6 +522,43 @@ pub async fn last_station_samples_fetch(pool: &PgPool) -> Result<Option<chrono::
     Ok(polled_at)
 }
 
+/// Timestamp of the most recent recorded schedule-feed ingest, or `None` if
+/// `schedule_feed_ingests` has never been populated. Backs both
+/// `GET /private/schedule-feed-ingests` (the `schedule-ingest` crate's
+/// startup check, once it exists) and the public `/public/freshness`
+/// endpoint's `schedule_feed` field.
+pub async fn last_schedule_feed_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let (ingested_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT MAX(ingested_at) FROM schedule_feed_ingests")
+            .fetch_one(pool)
+            .await?;
+    Ok(ingested_at)
+}
+
+/// Records one verified schedule-feed delivery. `ON CONFLICT (sequence) DO
+/// NOTHING`, not an upsert -- a re-POST of an already-recorded sequence
+/// (e.g. after `schedule-ingest` restarts mid-cycle and re-observes a
+/// delivery it already recorded) is a harmless no-op, not an error,
+/// matching this route's own idempotency needs -- `schedule-ingest` itself
+/// doesn't track "have I already POSTed this" locally (state lives here).
+pub async fn insert_schedule_feed_ingest(
+    pool: &PgPool,
+    sequence: i32,
+    ingested_at: chrono::DateTime<chrono::Utc>,
+    files: &serde_json::Value,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO schedule_feed_ingests (sequence, ingested_at, files) VALUES ($1, $2, $3) \
+         ON CONFLICT (sequence) DO NOTHING",
+    )
+    .bind(sequence)
+    .bind(ingested_at)
+    .bind(files)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// The latest `StationSample` polled for a single station, or `None` if
 /// `station_samples` has no row for that CRS yet. `station_samples` is
 /// wholesale-replaced per poll (one row per station, no history -- see
@@ -1160,5 +1197,112 @@ mod incident_query_tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+    }
+}
+
+// Tested at the query level rather than through a full route/router
+// harness: `routes/ingest.rs` has no existing route-level `db_tests`
+// precedent to mirror (unlike, say, a hypothetical prior ingest route with
+// its own axum test setup), and exercising `insert_schedule_feed_ingest`/
+// `last_schedule_feed_fetch` directly against a live database already
+// covers the real SQL and `ON CONFLICT DO NOTHING` idempotency behavior
+// that matters here -- the route handlers themselves are thin
+// serialize/deserialize wrappers around these two functions.
+#[cfg(test)]
+mod schedule_feed_ingest_query_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> PgPool {
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_feed_insert_then_last_fetch_returns_the_ingested_at \
+                -- --ignored`"]
+    async fn schedule_feed_insert_then_last_fetch_returns_the_ingested_at() {
+        let pool = test_pool().await;
+        let ingested_at = chrono::Utc::now();
+        let files = serde_json::json!([{"name": "TEST.DAT", "bytes": 123}]);
+
+        insert_schedule_feed_ingest(&pool, 900001, ingested_at, &files)
+            .await
+            .expect("insert schedule feed ingest");
+
+        let last = last_schedule_feed_fetch(&pool).await.expect("last_schedule_feed_fetch");
+        assert_eq!(last, Some(ingested_at));
+
+        sqlx::query("DELETE FROM schedule_feed_ingests WHERE sequence = 900001")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture row");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_feed_reinserting_the_same_sequence_does_not_change_the_row \
+                -- --ignored`"]
+    async fn schedule_feed_reinserting_the_same_sequence_does_not_change_the_row() {
+        let pool = test_pool().await;
+        let first_ingested_at = chrono::Utc::now();
+        let first_files = serde_json::json!([{"name": "TEST-A.DAT", "bytes": 111}]);
+
+        insert_schedule_feed_ingest(&pool, 900002, first_ingested_at, &first_files)
+            .await
+            .expect("insert schedule feed ingest");
+
+        // A different ingested_at and files -- ON CONFLICT DO NOTHING means
+        // this second insert must be a harmless no-op, not an upsert.
+        let second_ingested_at = first_ingested_at + chrono::Duration::hours(1);
+        let second_files = serde_json::json!([{"name": "TEST-B.DAT", "bytes": 222}]);
+        insert_schedule_feed_ingest(&pool, 900002, second_ingested_at, &second_files)
+            .await
+            .expect("re-insert schedule feed ingest with the same sequence");
+
+        let last = last_schedule_feed_fetch(&pool).await.expect("last_schedule_feed_fetch");
+        assert_eq!(last, Some(first_ingested_at), "the original row must survive unchanged");
+
+        let (stored_files,): (serde_json::Value,) =
+            sqlx::query_as("SELECT files FROM schedule_feed_ingests WHERE sequence = 900002")
+                .fetch_one(&pool)
+                .await
+                .expect("fetch stored row");
+        assert_eq!(stored_files, first_files, "the original files payload must survive unchanged");
+
+        sqlx::query("DELETE FROM schedule_feed_ingests WHERE sequence = 900002")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture row");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_feed_last_fetch_against_an_empty_table_returns_none \
+                -- --ignored`"]
+    async fn schedule_feed_last_fetch_against_an_empty_table_returns_none() {
+        let pool = test_pool().await;
+
+        // No fixture row inserted/deleted here for this sequence -- this
+        // asserts the zero-rows-for-this-value case, matching
+        // `last_stations_fetch`'s own doc comment about `MAX(...)` over zero
+        // rows returning one row with a NULL column.
+        sqlx::query("DELETE FROM schedule_feed_ingests WHERE sequence = 900003")
+            .execute(&pool)
+            .await
+            .expect("ensure fixture sequence is absent");
+
+        let last = last_schedule_feed_fetch(&pool).await.expect("last_schedule_feed_fetch");
+        // Note: this only proves `None` when the whole table is empty (the
+        // realistic case for a fresh environment); if other rows already
+        // exist this assertion is skipped rather than false-failing.
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM schedule_feed_ingests")
+            .fetch_one(&pool)
+            .await
+            .expect("count rows");
+        if count == 0 {
+            assert_eq!(last, None);
+        }
     }
 }
