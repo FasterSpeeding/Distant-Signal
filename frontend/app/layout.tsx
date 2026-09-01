@@ -125,7 +125,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <Group gap="lg">
                   <TextLink href="/lines">All Lines</TextLink>
                   <TextLink href="/stations">Station Lookup</TextLink>
-                  <TextLink href="/track">Track a Train</TextLink>
                   <Suspense fallback={null}>
                     <TrackedTrainsNavItem />
                   </Suspense>

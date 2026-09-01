@@ -39,6 +39,12 @@ describe('MyTrackedTrainsPage', () => {
     expect(screen.getByRole('link', { name: 'Track a train' })).toHaveAttribute('href', '/track');
   });
 
+  it('non-empty list: still shows a persistent link to /track (nav no longer has one)', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.getByRole('link', { name: 'Track a new train' })).toHaveAttribute('href', '/track');
+  });
+
   it('resolved train with a trainUid: links to the canonical /train/{uid}/{date} URL', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
     renderWithMantine(await MyTrackedTrainsPage());

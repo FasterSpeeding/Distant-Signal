@@ -36,7 +36,10 @@ export default async function MyTrackedTrainsPage() {
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>My Tracked Trains</Title>
+      <Group justify="space-between" align="baseline">
+        <Title order={1}>My Tracked Trains</Title>
+        <TextLink href="/track">Track a new train</TextLink>
+      </Group>
       {trains.length === 0 ? (
         <Text c="dimmed">
           You haven&apos;t tracked any trains yet. <Link href="/track">Track a train</Link> to get started.
