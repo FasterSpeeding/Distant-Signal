@@ -83,6 +83,7 @@ struct LineDefinitionSummary {
 async fn get_line_definition(
     State(app): State<App>,
     Path(id): Path<String>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<LineDefinitionSummary>, (StatusCode, String)> {
     if let Some(catalogue_line) = app.config.lines.iter().find(|l| l.id == id) {
         return Ok(Json(LineDefinitionSummary {
@@ -91,12 +92,24 @@ async fn get_line_definition(
         }));
     }
 
+    // Custom lines are private (see get_line, Task 4) -- this endpoint uses
+    // `OptionalAuthenticatedUser` rather than `AuthenticatedUser`, since
+    // (unlike get_line) a catalogue id is a completely valid, sessionless
+    // request above; a custom id, though, still only ever resolves for its
+    // real owner -- doesn't exist, exists but owned by someone else, exists
+    // but is a legacy NULL-owner row, and "no session at all" all collapse
+    // to the same 404, reusing this route's own existing not-found message.
+    // Never 403 -- see this crate's Global Constraints.
     let custom = custom_lines::get_custom_line(&app.database, &id)
         .await
         .map_err(internal_error)?;
-    let Some((custom, _owner)) = custom else {
+    let Some((custom, owner)) = custom else {
         return Err((StatusCode::NOT_FOUND, "line not found".to_string()));
     };
+    let caller_owns_it = matches!((&user, &owner), (Some(u), Some(o)) if &u.id == o);
+    if !caller_owns_it {
+        return Err((StatusCode::NOT_FOUND, "line not found".to_string()));
+    }
 
     Ok(Json(LineDefinitionSummary {
         stations: custom.stations,
@@ -832,6 +845,221 @@ mod db_tests {
         let value: Value = serde_json::from_slice(&bytes).expect("list_lines response body is valid JSON");
         let array = value.as_array().cloned().expect("list_lines response body is a JSON array");
         (status, array)
+    }
+
+    /// Issues `GET /public/lines/{id}/definition`, optionally with a session
+    /// cookie. Mirrors `get_line` above -- same request-building/body-shape
+    /// handling, since `get_line_definition`'s error bodies are the same
+    /// plain-text `(StatusCode, String)` shape.
+    async fn get_line_definition(router: axum::Router, id: &str, raw_token: Option<&str>) -> (StatusCode, Value) {
+        let mut builder = Request::builder().uri(format!("/public/lines/{id}/definition"));
+        if let Some(token) = raw_token {
+            builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
+        }
+        let request = builder.body(Body::empty()).expect("build request");
+        let response = router.oneshot(request).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+        let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+        });
+        (status, value)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_definition_an_anonymous_caller_gets_404_for_a_custom_id -- --ignored`"]
+    async fn get_line_definition_an_anonymous_caller_gets_404_for_a_custom_id() {
+        let pool = connect().await;
+
+        seed_session(&pool, "TEST-GET-LINE-DEF-OWNER").await;
+        let line = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Get Line Definition Anon Target".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-GET-LINE-DEF-OWNER",
+        )
+        .await
+        .expect("insert fixture line");
+
+        // No session cookie at all -- unlike `get_line`, this route uses
+        // `OptionalAuthenticatedUser`, so there is no 401 case; an anonymous
+        // caller simply never owns any custom line, so this still 404s.
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = get_line_definition(router, &line.id, None).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("line not found".to_string()));
+
+        cleanup_user(&pool, "TEST-GET-LINE-DEF-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_definition_a_non_owner_session_gets_404_not_403 -- --ignored`"]
+    async fn get_line_definition_a_non_owner_session_gets_404_not_403() {
+        let pool = connect().await;
+
+        seed_session(&pool, "TEST-GET-LINE-DEF-OWNER-2").await;
+        let non_owner_token = seed_session(&pool, "TEST-GET-LINE-DEF-NON-OWNER").await;
+        let line = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Get Line Definition Non Owner Target".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-GET-LINE-DEF-OWNER-2",
+        )
+        .await
+        .expect("insert fixture line");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = get_line_definition(router, &line.id, Some(&non_owner_token)).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("line not found".to_string()));
+
+        cleanup_user(&pool, "TEST-GET-LINE-DEF-OWNER-2").await;
+        cleanup_user(&pool, "TEST-GET-LINE-DEF-NON-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_definition_a_legacy_null_owner_row_gets_404_for_a_real_caller -- --ignored`"]
+    async fn get_line_definition_a_legacy_null_owner_row_gets_404_for_a_real_caller() {
+        let pool = connect().await;
+
+        let caller_token = seed_session(&pool, "TEST-GET-LINE-DEF-CALLER").await;
+
+        // A row that predates the ownership retrofit (see
+        // `crates/api/migrations/20260828100000_add_ownership.sql`) has a
+        // NULL `user_id` -- inserted directly, since `insert_custom_line`
+        // always attributes an owner now and has no way to produce this
+        // shape itself. NOTE: this asserts today's (pre-Task-2-migration)
+        // behavior, where `get_custom_line` reports `None` for such a row
+        // -- see this task's brief and `data::custom_lines::db_tests`'s
+        // `owners_for_ids_returns_real_owner_none_for_legacy_omits_missing`
+        // for the same caveat. If Task 2's migration (reassigning legacy
+        // rows to a `'legacy-unclaimed'` owner) lands first, this row's
+        // `user_id` should be seeded as `'legacy-unclaimed'` instead, and
+        // the assertion below is unaffected either way -- no real caller's
+        // id can ever equal NULL or `'legacy-unclaimed'`.
+        sqlx::query(
+            "INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id, created_at) \
+             VALUES ('custom-test-legacy-get-line-def', 'Test Legacy Get Line Definition', '{}', '{WOK,CLJ}', '{}', '{}', NULL, NOW())",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed legacy fixture line");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = get_line_definition(router, "custom-test-legacy-get-line-def", Some(&caller_token)).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("line not found".to_string()));
+
+        sqlx::query("DELETE FROM custom_lines WHERE id = 'custom-test-legacy-get-line-def'")
+            .execute(&pool)
+            .await
+            .expect("cleanup legacy fixture line");
+        cleanup_user(&pool, "TEST-GET-LINE-DEF-CALLER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_definition_a_nonexistent_id_gets_404 -- --ignored`"]
+    async fn get_line_definition_a_nonexistent_id_gets_404() {
+        let pool = connect().await;
+
+        let caller_token = seed_session(&pool, "TEST-GET-LINE-DEF-CALLER-2").await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = get_line_definition(router, "custom-totally-does-not-exist-def", Some(&caller_token)).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("line not found".to_string()));
+
+        cleanup_user(&pool, "TEST-GET-LINE-DEF-CALLER-2").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_definition_the_real_owner_gets_200 -- --ignored`"]
+    async fn get_line_definition_the_real_owner_gets_200() {
+        let pool = connect().await;
+
+        let owner_token = seed_session(&pool, "TEST-GET-LINE-DEF-REAL-OWNER").await;
+        let line = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Get Line Definition Owned Line".to_string(),
+                operators: vec!["SW".to_string(), "TW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec!["1A".to_string()],
+                destination_crs_filter: vec!["WAT".to_string()],
+            },
+            "TEST-GET-LINE-DEF-REAL-OWNER",
+        )
+        .await
+        .expect("insert fixture line");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = get_line_definition(router, &line.id, Some(&owner_token)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let object = body.as_object().expect("200 body should be a JSON object");
+        assert_eq!(object.get("stations").and_then(Value::as_array).map(Vec::len), Some(2));
+        assert_eq!(object.get("operators").and_then(Value::as_array).map(Vec::len), Some(2));
+
+        cleanup_user(&pool, "TEST-GET-LINE-DEF-REAL-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_definition_a_catalogue_id_returns_regardless_of_session -- --ignored`"]
+    async fn get_line_definition_a_catalogue_id_returns_regardless_of_session() {
+        let pool = connect().await;
+
+        let catalogue_line = test_catalogue_line(
+            "test-get-line-def-catalogue",
+            "Test Get Line Definition Catalogue",
+        );
+
+        // Anonymous caller.
+        let anon_router = test_router(test_app(pool.clone(), vec![catalogue_line.clone()]));
+        let (anon_status, anon_body) = get_line_definition(anon_router, "test-get-line-def-catalogue", None).await;
+
+        assert_eq!(anon_status, StatusCode::OK);
+        let anon_object = anon_body.as_object().expect("200 body should be a JSON object");
+        assert_eq!(anon_object.get("stations").and_then(Value::as_array).map(Vec::len), Some(2));
+        assert_eq!(anon_object.get("operators").and_then(Value::as_array).map(Vec::len), Some(1));
+
+        // Authenticated caller, who owns nothing related to this id -- the
+        // catalogue-first branch returns before ever touching
+        // `custom_lines`, so this is unaffected by session state or
+        // ownership either way.
+        let caller_token = seed_session(&pool, "TEST-GET-LINE-DEF-CATALOGUE-CALLER").await;
+        let auth_router = test_router(test_app(pool.clone(), vec![catalogue_line]));
+        let (auth_status, auth_body) = get_line_definition(auth_router, "test-get-line-def-catalogue", Some(&caller_token)).await;
+
+        assert_eq!(auth_status, StatusCode::OK);
+        assert_eq!(anon_body, auth_body);
+
+        cleanup_user(&pool, "TEST-GET-LINE-DEF-CATALOGUE-CALLER").await;
     }
 
     #[tokio::test]
