@@ -387,7 +387,7 @@ mod tests {
     }
 
     use chrono::Utc;
-    use common::{DataQuality, Severity, ValidityPeriod};
+    use common::{DataQuality, SampleAvailability, Severity, ValidityPeriod};
 
     fn row(id: &str, statuses: Vec<LineStatus>) -> queries::LineStatusRow {
         queries::LineStatusRow {
@@ -408,6 +408,7 @@ mod tests {
             disruption: None,
             data_quality: DataQuality::Tfl,
             sample_stats: None,
+            sample_availability: SampleAvailability::NoCoverage,
         }
     }
 
