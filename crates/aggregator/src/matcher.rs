@@ -5788,4 +5788,57 @@ mod tests {
         assert_eq!(matched_ids, HashSet::from(["tfw-cambrian".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
+
+    // Task 4.5 (station-catalogue completeness): `tfw-north-wales-coast.toml`
+    // previously omitted 9 minor intermediate calls -- Shotton, Conwy,
+    // Penmaenmawr, Llanfairfechan, and (on Anglesey, after Bangor)
+    // Llanfairpwll, Bodorgan, Tŷ Croes, Rhosneigr and Valley -- for brevity.
+    // All 9 are confirmed currently-open stations and are now individually
+    // listed. Before this fix, `has_station` returned false for all of
+    // them, so `/stations/<crs>` would have silently returned an empty
+    // disruption list instead of resolving to this line. Llandudno (a
+    // different line's branch territory) and the file's own closed-station
+    // exclusions (e.g. Menai Bridge, Gaerwen) are deliberately still
+    // absent -- asserted here too as a guard against them being mistakenly
+    // added later.
+    #[test]
+    fn tfw_north_wales_coast_has_station_includes_newly_added_minor_calls() {
+        let lines = load_line("tfw-north-wales-coast");
+        let nwc = lines
+            .get("tfw-north-wales-coast")
+            .expect("tfw-north-wales-coast line should exist");
+        for crs in ["SHT", "CNW", "PMW", "LLF", "LPG", "BOR", "TYC", "RHO", "VAL"] {
+            assert!(nwc.has_station(crs), "tfw-north-wales-coast should now list {crs}");
+        }
+        assert!(
+            !nwc.has_station("LLD"),
+            "Llandudno itself is a different line's branch territory and should not be listed"
+        );
+    }
+
+    // `tfw-north-wales-coast` is not a cross-file shared segment: this file's
+    // own comments confirm both its Chester overlap with
+    // `wcml-north-wales.toml` and its Llandudno Junction overlap with
+    // `tfw-conwy-valley.toml` are station-overlap-only, not shared trunks.
+    // So, like `tfw_cambrian_new_coast_station_incident_resolves_exclusive_segment`,
+    // there is no sibling line to assert a `MatchScope::SharedSegment`
+    // against for a newly-added station here. This test instead confirms an
+    // incident at one of the newly-added stations (Conwy) resolves to
+    // `tfw-north-wales-coast` alone, with `MatchScope::ExclusiveSegment`.
+    #[test]
+    fn tfw_north_wales_coast_new_station_incident_resolves_exclusive_segment() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "TFW-NWC-1",
+            "Signalling fault at Conwy",
+            "Signalling fault causing delays to Transport for Wales services at Conwy.",
+            &["AW"],
+            &["CNW"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tfw-north-wales-coast".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
