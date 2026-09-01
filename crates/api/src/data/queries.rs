@@ -287,15 +287,15 @@ pub async fn upsert_station_samples(pool: &PgPool, samples: &[StationSample]) ->
 /// Pure diff check, factored out of `upsert_tfl_line_status` so it's
 /// testable without a database: a TfL line's statuses are "changed" if the
 /// line is new to us, or if the incoming `statuses` JSON differs from what
-/// is stored, ignoring `sample_stats` — mirroring the aggregator's own
-/// `normalize_for_diff` (`crates/aggregator/src/queries.rs`), which strips
-/// the same field for the same reason: a live delay/cancellation count
-/// rolls over almost every poll cycle even when nothing about the
-/// underlying disruption has changed, and must not participate in change
-/// detection or `line_status_history` grows a row every poll cycle. This
-/// guard exists ahead of any TfL-sourced line actually populating
-/// `sample_stats` (see `crates/poller-tfl/src/dlr`), so it's already in
-/// place once one does.
+/// is stored, ignoring `sample_stats`/`sample_availability` — mirroring the
+/// aggregator's own `normalize_for_diff` (`crates/aggregator/src/queries.rs`),
+/// which strips the same fields for the same reason: a live delay/
+/// cancellation count (and its accompanying availability state) rolls over
+/// almost every poll cycle even when nothing about the underlying
+/// disruption has changed, and must not participate in change detection or
+/// `line_status_history` grows a row every poll cycle. This guard exists
+/// ahead of any TfL-sourced line actually populating `sample_stats` (see
+/// `crates/poller-tfl/src/dlr`), so it's already in place once one does.
 fn tfl_statuses_changed(existing: Option<&serde_json::Value>, incoming: &serde_json::Value) -> bool {
     match existing {
         None => true,
@@ -303,14 +303,15 @@ fn tfl_statuses_changed(existing: Option<&serde_json::Value>, incoming: &serde_j
     }
 }
 
-/// Strips `sample_stats` from every status entry before comparison. See
-/// `tfl_statuses_changed`.
+/// Strips `sample_stats`/`sample_availability` from every status entry
+/// before comparison. See `tfl_statuses_changed`.
 fn normalize_for_diff(statuses: &serde_json::Value) -> serde_json::Value {
     let mut statuses = statuses.clone();
     if let Some(entries) = statuses.as_array_mut() {
         for entry in entries {
             if let Some(obj) = entry.as_object_mut() {
                 obj.remove("sample_stats");
+                obj.remove("sample_availability");
             }
         }
     }
@@ -978,6 +979,25 @@ mod tests {
             "validity": { "from_date": "2026-08-22T02:00:00Z", "to_date": null, "is_now": true },
             "data_quality": "tfl",
             "sample_stats": { "total": 41, "delayed": 5, "cancelled": 1, "skipped": 0, "avg_delay_minutes": 2.4 }
+        }]);
+        assert!(!tfl_statuses_changed(Some(&existing), &incoming));
+    }
+
+    #[test]
+    fn tfl_statuses_changed_ignores_sample_availability_only_differences() {
+        let existing = serde_json::json!([{
+            "severity": "GoodService",
+            "reason": "Good Service",
+            "validity": { "from_date": "2026-08-22T02:00:00Z", "to_date": null, "is_now": true },
+            "data_quality": "tfl",
+            "sample_availability": { "state": "no-coverage" }
+        }]);
+        let incoming = serde_json::json!([{
+            "severity": "GoodService",
+            "reason": "Good Service",
+            "validity": { "from_date": "2026-08-22T02:00:00Z", "to_date": null, "is_now": true },
+            "data_quality": "tfl",
+            "sample_availability": { "state": "below-threshold", "observed": 0, "required": 1 }
         }]);
         assert!(!tfl_statuses_changed(Some(&existing), &incoming));
     }

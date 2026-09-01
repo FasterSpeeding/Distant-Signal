@@ -16,6 +16,7 @@ function entry(computedAt: string, statuses: Array<[number, string]>): LineStatu
       reason,
       dataQuality: 'ldbws-inferred' as const,
       validityPeriods: [],
+      sampleAvailability: { state: 'no-coverage' as const },
     })),
   };
 }

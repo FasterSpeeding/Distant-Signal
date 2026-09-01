@@ -11,6 +11,7 @@ function baseStatus(overrides: Partial<LineStatus> = {}): LineStatus {
     reason: 'Signal failure',
     dataQuality: 'knowledgebase',
     validityPeriods: [],
+    sampleAvailability: { state: 'no-coverage' },
     ...overrides,
   };
 }

@@ -69,6 +69,14 @@ fn status_to_json(status: &LineStatus, detail: bool) -> Value {
         });
     }
 
+    out["sampleAvailability"] = match &status.sample_availability {
+        common::SampleAvailability::NoCoverage => json!({ "state": "no-coverage" }),
+        common::SampleAvailability::BelowThreshold { observed, required } => {
+            json!({ "state": "below-threshold", "observed": observed, "required": required })
+        }
+        common::SampleAvailability::Available(_) => json!({ "state": "available" }),
+    };
+
     if detail
         && let Some(disruption) = &status.disruption
     {
@@ -95,7 +103,7 @@ fn severity_description(severity: Severity) -> &'static str {
 mod tests {
     use super::*;
     use chrono::{DateTime, TimeZone, Utc};
-    use common::{DataQuality, Disruption, SampleStats, ValidityPeriod};
+    use common::{DataQuality, Disruption, SampleAvailability, SampleStats, ValidityPeriod};
 
     fn sample_report(disruption: Option<Disruption>) -> LineStatusReport {
         LineStatusReport {
@@ -110,6 +118,7 @@ mod tests {
                 disruption,
                 data_quality: DataQuality::Knowledgebase,
                 sample_stats: None,
+                sample_availability: SampleAvailability::NoCoverage,
             }],
         }
     }
@@ -216,6 +225,35 @@ mod tests {
         assert!(json["lineStatuses"][0].get("sampleStats").is_none());
     }
 
+    #[test]
+    fn sample_availability_is_always_present_unlike_sample_stats() {
+        let report = sample_report(None); // sample_stats is None
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
+        assert_eq!(json["lineStatuses"][0]["sampleAvailability"], serde_json::json!({"state": "no-coverage"}));
+    }
+
+    #[test]
+    fn sample_availability_below_threshold_shape() {
+        let mut report = sample_report(None);
+        report.statuses[0].sample_availability = SampleAvailability::BelowThreshold { observed: 2, required: 3 };
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
+        assert_eq!(
+            json["lineStatuses"][0]["sampleAvailability"],
+            serde_json::json!({"state": "below-threshold", "observed": 2, "required": 3})
+        );
+    }
+
+    #[test]
+    fn sample_availability_available_case_does_not_duplicate_sample_stats_fields() {
+        let mut report = sample_report(None);
+        let stats = SampleStats { total: 10, delayed: 4, cancelled: 1, skipped: 2, avg_delay_minutes: 6.5 };
+        report.statuses[0].sample_stats = Some(stats.clone());
+        report.statuses[0].sample_availability = SampleAvailability::Available(stats);
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
+        assert_eq!(json["lineStatuses"][0]["sampleAvailability"], serde_json::json!({"state": "available"}));
+        assert!(json["lineStatuses"][0]["sampleAvailability"].get("total").is_none(), "Available must not re-embed SampleStats fields");
+    }
+
     fn overlay_status(reason: &str) -> LineStatus {
         LineStatus {
             severity: Severity::MinorDelays,
@@ -224,6 +262,7 @@ mod tests {
             disruption: None,
             data_quality: DataQuality::Tfl,
             sample_stats: None,
+            sample_availability: SampleAvailability::NoCoverage,
         }
     }
 

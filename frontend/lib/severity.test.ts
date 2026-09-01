@@ -71,8 +71,22 @@ describe('worstStatus', () => {
     const report: LineStatusReport = {
       ...baseReport,
       lineStatuses: [
-        { statusSeverity: 10, statusSeverityDescription: 'Good Service', reason: '', dataQuality: 'knowledgebase', validityPeriods: [] },
-        { statusSeverity: 21, statusSeverityDescription: 'Diverted', reason: 'Diverted', dataQuality: 'knowledgebase', validityPeriods: [] },
+        {
+          statusSeverity: 10,
+          statusSeverityDescription: 'Good Service',
+          reason: '',
+          dataQuality: 'knowledgebase',
+          validityPeriods: [],
+          sampleAvailability: { state: 'no-coverage' },
+        },
+        {
+          statusSeverity: 21,
+          statusSeverityDescription: 'Diverted',
+          reason: 'Diverted',
+          dataQuality: 'knowledgebase',
+          validityPeriods: [],
+          sampleAvailability: { state: 'no-coverage' },
+        },
       ],
     };
     const worst = worstStatus(report);

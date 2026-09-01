@@ -16,6 +16,7 @@ function status(periods: ValidityPeriod[]): LineStatus {
     reason: 'Engineering works',
     dataQuality: 'planned',
     validityPeriods: periods,
+    sampleAvailability: { state: 'no-coverage' },
   };
 }
 

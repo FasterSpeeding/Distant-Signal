@@ -18,6 +18,7 @@ const report: LineStatusReport = {
       reason: 'Signal failure',
       dataQuality: 'knowledgebase',
       validityPeriods: [{ fromDate: '2026-07-07T10:00:00Z', toDate: null, isNow: true }],
+      sampleAvailability: { state: 'no-coverage' },
     },
   ],
 };
@@ -56,6 +57,7 @@ describe('LineStatusCard', () => {
           reason: '',
           dataQuality: 'knowledgebase',
           validityPeriods: [],
+          sampleAvailability: { state: 'no-coverage' },
         },
         {
           statusSeverity: 21,
@@ -63,6 +65,7 @@ describe('LineStatusCard', () => {
           reason: 'Line diverted due to engineering works',
           dataQuality: 'knowledgebase',
           validityPeriods: [{ fromDate: '2026-07-07T10:00:00Z', toDate: null, isNow: true }],
+          sampleAvailability: { state: 'no-coverage' },
         },
       ],
     };
@@ -92,9 +95,9 @@ describe('LineStatusCard', () => {
     expect(screen.getByText(/10% cancelled/)).toBeInTheDocument();
   });
 
-  it('omits the sample stats line entirely when no status carries sample stats', () => {
+  it('renders the reason instead of omitting the block when no status carries sample stats', () => {
     renderWithMantine(<LineStatusCard report={report} />);
-    expect(screen.queryByText(/Avg delay/)).not.toBeInTheDocument();
+    expect(screen.getByText('No live departure data received for this line yet.')).toBeInTheDocument();
   });
 
   it('clamps a long reason rather than letting it fill the card', () => {

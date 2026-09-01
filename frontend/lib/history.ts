@@ -26,6 +26,7 @@ const NO_ACTIVE_STATUS: LineStatus = {
   reason: '',
   dataQuality: 'knowledgebase',
   validityPeriods: [],
+  sampleAvailability: { state: 'no-coverage' },
 };
 
 export interface SeverityFlip {
