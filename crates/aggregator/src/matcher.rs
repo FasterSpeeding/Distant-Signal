@@ -5403,6 +5403,80 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
+    // Task 3.1 (station-catalogue-completeness plan), FILL-IN piece:
+    // Kilpatrick (KPT) is one of the 19 previously-missing minor stations
+    // added to `lines/scotrail-glasgow-suburban.toml` by this task. It sits
+    // on the Dalmuir-Dumbarton Central stretch itself, so (per that file's
+    // own KPT comment) it inherits the genuinely-shared
+    // `scotrail-glasgow-suburban-west-trunk` segment rather than the
+    // exclusive `west-approach` segment most of the other 18 new stations
+    // use. Before this task, `has_station("KPT")` returned false for this
+    // line and an incident there was invisible to the matcher entirely.
+    // Neither West Highland sibling file lists KPT itself (their own
+    // stations skip straight from DMR to DBC, per their own Sources
+    // comments: "WHL trains run non-stop" over this stretch), so unlike
+    // `scotrail_west_highland_shares_glasgow_suburban_west_trunk_incident_propagates`
+    // (which uses the pre-existing, all-three-files DBC station) this
+    // incident only station-matches `scotrail-glasgow-suburban` itself --
+    // but its scope is still correctly `SharedSegment`, because
+    // `SegmentRegistry::is_shared` keys on the `west-trunk` segment NAME,
+    // which the West Highland files do reuse, not on which specific
+    // stations carry it. This proves the segment-name inheritance is
+    // correct for a station that didn't exist in the catalogue at all
+    // until this task.
+    #[test]
+    fn scotrail_glasgow_suburban_new_kilpatrick_station_on_shared_west_trunk_segment() {
+        let lines = load_line("scotrail-glasgow-suburban");
+        let suburban = lines.get("scotrail-glasgow-suburban").expect("scotrail-glasgow-suburban line should exist");
+        assert!(suburban.has_station("KPT"), "Kilpatrick (KPT) should now be a station on scotrail-glasgow-suburban");
+
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-17",
+            "Signal failure at Kilpatrick",
+            "Signal failure causing delays to ScotRail services at Kilpatrick.",
+            &["SR"],
+            &["KPT"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-glasgow-suburban".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::SharedSegment);
+    }
+
+    // Task 3.1, BRANCH-RESEARCH piece: the previously-unmodelled Lanarkshire
+    // branch group (Whifflet spur, Hamilton Circle, Larkhall branch, Lanark
+    // branch) added to `lines/scotrail-glasgow-suburban.toml` by this task.
+    // Whifflet (WFF) itself is a real junction (the Coatbridge Central
+    // terminus spur diverges there), on the new exclusive
+    // `scotrail-glasgow-suburban-whifflet-branch` segment -- not shared with
+    // any sibling `lines/*.toml` file (grepped clean before this task, see
+    // that file's own Task 3.1 BRANCH-RESEARCH comment). Mirrors
+    // `scotrail_glasgow_suburban_exclusive_segment_incident_does_not_propagate`
+    // but for a station that didn't exist in the catalogue at all until this
+    // task.
+    #[test]
+    fn scotrail_glasgow_suburban_new_whifflet_branch_incident_does_not_propagate() {
+        let lines = load_line("scotrail-glasgow-suburban");
+        let suburban = lines.get("scotrail-glasgow-suburban").expect("scotrail-glasgow-suburban line should exist");
+        assert!(suburban.has_station("WFF"), "Whifflet (WFF) should now be a station on scotrail-glasgow-suburban");
+
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SR-18",
+            "Signal failure at Whifflet",
+            "Signal failure causing delays to ScotRail services at Whifflet.",
+            &["SR"],
+            &["WFF"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["scotrail-glasgow-suburban".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
     // Task 10.9 (ScotRail West Highland Line, Oban arm): this line's own
     // exclusive track beyond Crianlarich (tagged
     // `scotrail-west-highland-oban-exclusive`, used only by this one file)
