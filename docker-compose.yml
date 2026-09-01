@@ -483,6 +483,44 @@ services:
     volumes:
       - schedule_feed_data:/data/schedule-feed
 
+  rail-mcp:
+    # Externally-built image -- this repo's own CI does not build the
+    # derived MCP service's source (a fork of train-mcp living in its own
+    # repository, per
+    # docs/superpowers/specs/2026-09-01-train-mcp-integration-design.md
+    # Decision 1) -- same shape as schedule-sftp's drakkan/sftpgo entry
+    # above, not a `build:` context into this repo. Tag pinning is an
+    # implementation-time decision, not sketched further here (same
+    # posture schedule-sftp's own comment takes).
+    image: ${RAIL_MCP_IMAGE:-ghcr.io/CHANGE-ME/distant-signal-mcp:latest}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${RAIL_MCP_PORT:-3100}:3000"
+    environment:
+      # The fork's own src/config.ts: Config.
+      PORT: "3000"
+      PUBLIC_URL: ${RAIL_MCP_PUBLIC_URL:-http://localhost:3100}
+      # In-network hostname every other compose service already uses to
+      # reach `api` (see api:'s own BIND_URL / frontend's API_BASE_URL
+      # above) -- no new DS-side route or auth needed (Decision 4: every
+      # DS call this service makes is anonymous).
+      DS_API_BASE_URL: http://api:8080
+      DS_LINE_CATALOGUE_TTL_MS: ${DS_LINE_CATALOGUE_TTL_MS:-900000}
+      DISCORD_CLIENT_ID: ${RAIL_MCP_DISCORD_CLIENT_ID}
+      DISCORD_ALLOWED_USER_IDS: ${RAIL_MCP_DISCORD_ALLOWED_USER_IDS}
+      # LDBWS/Rail Data Marketplace credentials the fork's board/service-
+      # detail tools still call directly (Decision 5 -- unchanged by this
+      # integration, board tools are not routed through DS).
+      LDBWS_DEPARTURES_URL: ${LDBWS_DEPARTURES_URL}
+      LDBWS_DEPARTURES_KEY: ${LDBWS_DEPARTURES_KEY}
+      LDBWS_ARRIVALS_URL: ${LDBWS_ARRIVALS_URL}
+      LDBWS_ARRIVALS_KEY: ${LDBWS_ARRIVALS_KEY}
+      LDBWS_SERVICE_URL: ${LDBWS_SERVICE_URL}
+      LDBWS_SERVICE_KEY: ${LDBWS_SERVICE_KEY}
+
   frontend:
     build:
       context: .
