@@ -42,6 +42,25 @@ function ariaSort(field: SortField, sort: SortState | null): 'ascending' | 'desc
   return sort.direction === 'asc' ? 'ascending' : 'descending';
 }
 
+/** Real NR-side operator codes for TfL-branded railways that a `line`'s own
+ * `operators` array tags with their own code rather than `"TfL"` -- London
+ * Overground is `"LO"`, the Elizabeth line is `"XR"` (see
+ * `TFL_TO_NR_LINE_ID` in `crates/common/src/lib.rs`). To a passenger both
+ * are TfL services, so filtering by "TfL" should surface them too even
+ * though nothing in the data literally says "TfL" on those rows. */
+const TFL_ADJACENT_OPERATORS = ['LO', 'XR'];
+
+/** Widens one selected operator filter value into every code it should
+ * match against a row's `operators` array. One-directional: selecting
+ * "TfL" also matches "LO"/"XR" rows, but selecting "LO" or "XR" directly
+ * still matches only that code -- Overground/Elizabeth line riders can
+ * filter to just their own line without pulling in the Tube. This is
+ * filter-matching only; it must not change what `operatorOptions` lists or
+ * what code a line's own badge displays. */
+export function expandOperatorForFiltering(operator: string): string[] {
+  return operator === 'TfL' ? [operator, ...TFL_ADJACENT_OPERATORS] : [operator];
+}
+
 export function AllLinesTable({
   lines,
   reports,
@@ -90,7 +109,11 @@ export function AllLinesTable({
 
   const filteredRows = useMemo(() => {
     if (selectedOperators.length === 0) return rows;
-    return rows.filter((row) => row.line.operators.some((op) => selectedOperators.includes(op)));
+    // Expand the selection (e.g. "TfL" -> "TfL"/"LO"/"XR"), not each row's
+    // own `operators` -- the option list and a line's own displayed code
+    // must stay exact, only what a selection matches against widens.
+    const expandedSelection = new Set(selectedOperators.flatMap(expandOperatorForFiltering));
+    return rows.filter((row) => row.line.operators.some((op) => expandedSelection.has(op)));
   }, [rows, selectedOperators]);
 
   // Missing values (no report, no sample stats) always sort to the end,

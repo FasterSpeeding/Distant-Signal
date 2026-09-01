@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, within, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { AllLinesTable } from './AllLinesTable';
+import { AllLinesTable, expandOperatorForFiltering } from './AllLinesTable';
 import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
 vi.mock('next/navigation', () => ({
@@ -311,6 +311,83 @@ describe('AllLinesTable responsive columns', () => {
     const mobileOnly = container.querySelector('.mantine-hidden-from-sm');
     expect(mobileOnly).not.toBeNull();
     expect(mobileOnly!.textContent).not.toContain('null');
+  });
+});
+
+describe('expandOperatorForFiltering', () => {
+  it('expands "TfL" to also include London Overground (LO) and the Elizabeth line (XR)', () => {
+    expect(expandOperatorForFiltering('TfL')).toEqual(['TfL', 'LO', 'XR']);
+  });
+
+  it('leaves non-"TfL" codes, including LO and XR themselves, unexpanded', () => {
+    expect(expandOperatorForFiltering('LO')).toEqual(['LO']);
+    expect(expandOperatorForFiltering('XR')).toEqual(['XR']);
+    expect(expandOperatorForFiltering('GW')).toEqual(['GW']);
+  });
+});
+
+describe('AllLinesTable TfL operator filter', () => {
+  // Real NR-side operator codes, per crates/common/src/lib.rs's
+  // TFL_OPERATOR/TFL_TO_NR_LINE_ID: Tube/DLR/Tram lines are tagged "TfL"
+  // directly, while London Overground and the Elizabeth line keep their
+  // own NR-side codes ("LO"/"XR") in `operators` even though they're TfL
+  // services to a passenger.
+  const tflLines: LineSummary[] = [
+    { id: 'victoria', name: 'Victoria', category: 'TfL', operators: ['TfL'], source: 'catalogue' },
+    { id: 'overground-mildmay', name: 'Mildmay line', category: 'TfL', operators: ['LO'], source: 'catalogue' },
+    { id: 'elizabeth-line', name: 'Elizabeth line', category: 'TfL', operators: ['XR'], source: 'catalogue' },
+    { id: 'wcml', name: 'West Coast Main Line', category: 'Long Distance', operators: ['VT'], source: 'catalogue' },
+  ];
+
+  function renderTflTable() {
+    return renderWithMantine(<AllLinesTable lines={tflLines} reports={[]} pinnedLineIds={[]} tocs={[]} />);
+  }
+
+  it('selecting "TfL" also shows London Overground and Elizabeth line rows', async () => {
+    renderTflTable();
+    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    fireEvent.click(input);
+    const option = await screen.findByRole('option', { name: 'TfL' });
+    fireEvent.click(option);
+
+    expect(screen.getByText('Victoria')).toBeInTheDocument();
+    expect(screen.getByText('Mildmay line')).toBeInTheDocument();
+    expect(screen.getByText('Elizabeth line')).toBeInTheDocument();
+    expect(screen.queryByText('West Coast Main Line')).not.toBeInTheDocument();
+  });
+
+  it('selecting "LO" alone does not also pull in Tube-only ("TfL") or Elizabeth line ("XR") rows', async () => {
+    renderTflTable();
+    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    fireEvent.click(input);
+    const option = await screen.findByRole('option', { name: 'LO' });
+    fireEvent.click(option);
+
+    expect(screen.getByText('Mildmay line')).toBeInTheDocument();
+    expect(screen.queryByText('Victoria')).not.toBeInTheDocument();
+    expect(screen.queryByText('Elizabeth line')).not.toBeInTheDocument();
+    expect(screen.queryByText('West Coast Main Line')).not.toBeInTheDocument();
+  });
+
+  it('selecting "XR" alone does not also pull in Tube-only ("TfL") or Overground ("LO") rows', async () => {
+    renderTflTable();
+    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    fireEvent.click(input);
+    const option = await screen.findByRole('option', { name: 'XR' });
+    fireEvent.click(option);
+
+    expect(screen.getByText('Elizabeth line')).toBeInTheDocument();
+    expect(screen.queryByText('Victoria')).not.toBeInTheDocument();
+    expect(screen.queryByText('Mildmay line')).not.toBeInTheDocument();
+    expect(screen.queryByText('West Coast Main Line')).not.toBeInTheDocument();
+  });
+
+  it('keeps "LO" and "XR" as their own independently-selectable options, not merged into a single "TfL" option', async () => {
+    renderTflTable();
+    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    fireEvent.click(input);
+    const optionText = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(optionText).toEqual(['LO', 'TfL', 'VT', 'XR']);
   });
 });
 
