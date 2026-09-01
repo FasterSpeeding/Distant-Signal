@@ -5736,4 +5736,43 @@ mod tests {
             assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
         }
     }
+
+    // Task 9.1 (2026-09-01) fill-in for `lines/wmr-snow-hill.toml`: verify
+    // newly-added stations (previously omitted as "minor calls") are now
+    // recognised by `has_station`. Bordesley is a good pick since it's the
+    // one whose segment placement (shared `wmr-snow-hill-trunk`, not either
+    // exclusive branch) needed live-source confirmation, not just an
+    // insertion.
+    #[test]
+    fn wmr_snow_hill_recognises_newly_added_stations() {
+        let lines = load_line("wmr-snow-hill");
+        let line = lines.get("wmr-snow-hill").expect("wmr-snow-hill should load");
+        for crs in ["BBS", "SMA", "ACG", "OLT", "WMR", "SRI", "HLG", "YRD", "WYT", "EWD", "WDE", "DZY", "WWW", "WMC", "STY", "BKD", "HAG", "LYE", "CRA", "OHL", "ROW", "LGG", "THW", "JEQ"] {
+            assert!(line.has_station(crs), "{crs} should now be recognised on wmr-snow-hill");
+        }
+        // Fernhill Heath was named in this task's brief but confirmed closed
+        // since 1965 (never reopened) against two independent sources, so it
+        // deliberately stays out.
+        assert!(!line.has_station("FNH"), "Fernhill Heath is closed and must not be added");
+    }
+
+    // None of wmr-snow-hill.toml's three segments (`wmr-snow-hill-trunk`,
+    // `wmr-snow-hill-dorridge`, `wmr-snow-hill-stratford`) are shared with
+    // any other file in the catalogue -- confirmed both by the file's own
+    // header comment (no segment-name collision found by grep) and by the
+    // task controller's own pre-check. So, per the exception class already
+    // used by `overground_liberty_exclusive_segment_incident_does_not_propagate`
+    // above, only an ExclusiveSegment regression is possible/required here
+    // -- there is no sibling line to assert a SharedSegment propagation
+    // against.
+    #[test]
+    fn wmr_snow_hill_bordesley_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident("WMR-1", "Signal failure at Bordesley", "Signal failure causing delays to West Midlands Railway services.", &["LM"], &["BBS"]);
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["wmr-snow-hill".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
