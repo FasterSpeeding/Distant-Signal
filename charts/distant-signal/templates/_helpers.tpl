@@ -444,3 +444,27 @@ distant-signal.postgresSecretName's simpler single-value shape instead).
 {{- print "schedule-sftp-dtd-public-key" }}
 {{- end }}
 {{- end }}
+
+{{/*
+DTD's landing folder, relative to its SFTP account's home directory --
+scheduleFeed.sftp.destinationFolder, plus scheduleFeed.sftp.folderPath if
+set. Takes root. One single place this path is assembled, consumed by both
+schedulefeed-deployment.yaml (the ingest container's WATCH_DIR, which must
+resolve to the same absolute path under /data/schedule-feed) and NOTES.txt
+(the human-readable connection summary) -- so the two can never drift
+apart the way two independently-written printf calls could.
+*/}}
+{{- define "distant-signal.scheduleFeedDestinationPath" -}}
+{{/* toString first: an unquoted numeric-looking value (e.g. folderPath:
+2026 for a year-based subfolder) parses as an int in both plain YAML and
+`--set`, and Sprig's trimAll requires a real string -- confirmed by
+`helm template` erroring on exactly this shape before this guard was
+added. */}}
+{{- $folder := .Values.scheduleFeed.sftp.destinationFolder | toString | trimAll "/" -}}
+{{- $sub := .Values.scheduleFeed.sftp.folderPath | toString | trimAll "/" -}}
+{{- if $sub -}}
+{{- printf "%s/%s" $folder $sub -}}
+{{- else -}}
+{{- $folder -}}
+{{- end -}}
+{{- end }}

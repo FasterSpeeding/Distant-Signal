@@ -117,6 +117,19 @@ Verify the api is serving:
 
 {{- if .Values.scheduleFeed.enabled }}
 
+Connection details to give to DTD for pushing the schedule feed:
+
+  Host:        {{ .Values.scheduleFeed.sftp.publicHostname | default "<not set -- fill in scheduleFeed.sftp.publicHostname once you know the LoadBalancer's public hostname/IP>" }}
+  Port:        {{ .Values.scheduleFeed.sftp.port }}
+  Username:    {{ .Values.scheduleFeed.sftp.username | default "<not set -- scheduleFeed.sftp.username>" }}
+  Auth method: {{ .Values.scheduleFeed.sftp.authMethod | default "<not set -- scheduleFeed.sftp.authMethod>" }}
+  Destination: /{{ include "distant-signal.scheduleFeedDestinationPath" . }}
+
+  (Host is informational only -- this chart cannot set a Service's
+  externally-visible hostname itself; it comes from wherever the
+  LoadBalancer/DNS is provisioned. Destination is relative to DTD's SFTP
+  account's own home directory, not this cluster's filesystem.)
+
 schedule-feed's SFTP server generated a new host key on first install.
 Its fingerprint must be communicated to DTD (via whatever channel push
 configuration turns out to require -- see

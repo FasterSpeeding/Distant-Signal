@@ -636,6 +636,16 @@ scheduleFeed:
     # -- SFTPGo's own default container port -- not independently
     # re-verified against a real deployed instance by this plan.
     port: 2022
+    # -- Purely informational: the public hostname/DNS name an operator has
+    # pointed at this Service's LoadBalancer, i.e. what actually gets
+    # handed to DTD alongside the port/username/destination below. This
+    # chart cannot set a Service's externally-visible hostname itself (that
+    # comes from wherever the LoadBalancer/DNS is provisioned) -- setting
+    # this value only makes it show up in `helm install`'s NOTES.txt output
+    # as a single place to review everything DTD needs, instead of hunting
+    # it down separately. Leave empty to have NOTES.txt tell you to fill it
+    # in once known.
+    publicHostname: ""
     # -- DTD's push account username on THIS app's server. Required when
     # enabled; no default possible. See Task 1 -- unconfirmed whether DTD's
     # push client even needs a value here at all until push-side
@@ -659,6 +669,24 @@ scheduleFeed:
     # the (superseded) pull design's dtd_sftp_host_key_fingerprint. Leave
     # empty to have the chart generate and preserve one (Task 6).
     existingSecretHostKey: ""
+    # -- The folder DTD's account lands files in, relative to its SFTP
+    # home directory -- e.g. "incoming" means DTD sees itself uploading to
+    # "/incoming" once connected. Rendered into both the ingest container's
+    # WATCH_DIR (schedulefeed-deployment.yaml) and NOTES.txt's connection
+    # summary, so the two stay in sync -- there's exactly one place this is
+    # set. SFTPGo's own home-directory/virtual-folder provisioning for a
+    # single chrooted account remains UNVERIFIED against a real deployed
+    # instance (same caveat as the account env vars below); this value is
+    # what gets threaded through once that's confirmed, not a guarantee
+    # SFTPGo already honors it.
+    destinationFolder: incoming
+    # -- Optional deeper subfolder within destinationFolder, e.g. "2026"
+    # for DTD to land files in "/incoming/2026". Empty by default: RSPS5046
+    # does not call for one, and neither push design doc's own manifest
+    # research found any need for date/version subfolders -- this exists
+    # only in case the real end-to-end test in an internet-exposed
+    # environment finds DTD's push client wants one.
+    folderPath: ""
   ingest:
     image:
       repository: distant-signal/schedule-ingest

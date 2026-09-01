@@ -116,6 +116,19 @@ spec:
                   name: {{ include "distant-signal.scheduleFeedDtdPasswordSecretName" . }}
                   key: {{ include "distant-signal.scheduleFeedDtdPasswordSecretKey" . }}
             {{- end }}
+          # STILL UNWIRED (same "confirm against a real deployed instance"
+          # caveat as the account env vars above): DTD's files should land
+          # under {{ include "distant-signal.scheduleFeedDestinationPath" . }}
+          # relative to its account's home directory (values.yaml's
+          # scheduleFeed.sftp.destinationFolder/folderPath, assembled by
+          # the distant-signal.scheduleFeedDestinationPath helper -- see
+          # WATCH_DIR on the ingest container below, which the ingest side
+          # already resolves consistently with this value). Whatever
+          # SFTPGo's real provisioning mechanism turns out to be (env var,
+          # loaded JSON dump, REST API call), it needs to set that account's
+          # home/virtual-folder to this path -- deliberately left as a
+          # pointer rather than a guessed SFTPGO_* env var name, since
+          # inventing one here would look more confirmed than it is.
           volumeMounts:
             - name: data
               mountPath: /data/schedule-feed
@@ -145,7 +158,7 @@ spec:
           # api_ingest_url, internal_token, metrics_port, metrics_enabled.
           env:
             - name: WATCH_DIR
-              value: /data/schedule-feed/incoming
+              value: {{ printf "/data/schedule-feed/%s" (include "distant-signal.scheduleFeedDestinationPath" .) | quote }}
             - name: STORAGE_DIR
               value: /data/schedule-feed
             - name: CHECK_TIMES
