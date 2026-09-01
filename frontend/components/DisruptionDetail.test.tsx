@@ -10,6 +10,7 @@ const sample: Disruption = {
   affectedStops: ['WOK', 'WAT'],
   affectedRoutes: [{ from: 'WAT', to: 'WOK' }],
   source: 'knowledgebase-incident-123',
+  impactType: null,
 };
 
 describe('DisruptionDetail', () => {
