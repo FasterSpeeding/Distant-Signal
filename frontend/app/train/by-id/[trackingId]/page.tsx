@@ -1,9 +1,10 @@
-import { Stack, Title } from '@mantine/core';
+import { Stack, Title, Group } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import { getTrackedTrainById, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { TrainJourney } from '@/components/TrainJourney';
 import { TicketPanel } from '@/components/TicketPanel';
 import { TextLink } from '@/components/TextLink';
+import { DeleteTrainButton } from '@/components/DeleteTrainButton';
 
 export default async function TrackedTrainByIdPage({
   params,
@@ -47,7 +48,10 @@ export default async function TrackedTrainByIdPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Tracking Train {trackingId}</Title>
+      <Group justify="space-between">
+        <Title order={1}>Tracking Train {trackingId}</Title>
+        <DeleteTrainButton trackingId={state.id} />
+      </Group>
       <TrainJourney state={state} />
       <TicketPanel trackingId={state.id} />
       {/* A same-page nudge, not an automatic redirect -- Decision 2's
