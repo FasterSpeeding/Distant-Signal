@@ -45,4 +45,25 @@ describe('DisruptionDetail', () => {
     renderWithMantine(<DisruptionDetail disruption={{ ...sample, source: null }} />);
     expect(screen.queryByText(/^Source:/)).not.toBeInTheDocument();
   });
+
+  it('renders a link to the incident detail page when source names a real incident', () => {
+    renderWithMantine(<DisruptionDetail disruption={sample} />);
+    const link = screen.getByRole('link', { name: 'View full incident details' });
+    expect(link).toHaveAttribute('href', '/incidents/123');
+  });
+
+  it('renders no incident-detail link when source is the LDBWS-inferred literal', () => {
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, source: 'ldbws-sampling' }} />);
+    expect(screen.queryByRole('link', { name: 'View full incident details' })).not.toBeInTheDocument();
+  });
+
+  it('renders no incident-detail link when source is a TfL line-keyed value', () => {
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, source: 'tfl-line-status-northern' }} />);
+    expect(screen.queryByRole('link', { name: 'View full incident details' })).not.toBeInTheDocument();
+  });
+
+  it('renders no incident-detail link when source is null', () => {
+    renderWithMantine(<DisruptionDetail disruption={{ ...sample, source: null }} />);
+    expect(screen.queryByRole('link', { name: 'View full incident details' })).not.toBeInTheDocument();
+  });
 });
