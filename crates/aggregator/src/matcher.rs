@@ -2750,6 +2750,16 @@ mod tests {
     // `gwr-trunk-paddington` — see that file's own segment-naming comment),
     // so it's included in the matched set (a real station overlap) but stays
     // ExclusiveSegment rather than SharedSegment.
+    //
+    // UPDATED (Task 9.6, 2026-09-01): `xc-south-coast.toml`'s own fresh
+    // route-diagram pass added DID too (its own OXF-RDG stretch runs via
+    // Didcot Parkway, the only physical route), on its own exclusive
+    // `xc-south-coast` segment — a fifth genuine station overlap, same
+    // ExclusiveSegment treatment as gwr-thames-valley above. This assertion
+    // is updated (not left to silently go stale) because the previous
+    // four-line exact-set assertion is now factually false with DID added
+    // to a fifth file, mirroring Task 9.3's own precedent for updating a
+    // pre-existing test a new station addition invalidates.
     #[test]
     fn gwr_trunk_paddington_incident_propagates_to_south_wales() {
         let lines = load_all_lines();
@@ -2764,11 +2774,12 @@ mod tests {
                 "gwr-cotswold".to_string(),
                 "gwr-south-wales".to_string(),
                 "gwr-thames-valley".to_string(),
+                "xc-south-coast".to_string(),
             ])
         );
         for m in &matches {
-            if m.line.id == "gwr-thames-valley" {
-                assert_eq!(m.scope, MatchScope::ExclusiveSegment, "gwr-thames-valley should stay ExclusiveSegment");
+            if m.line.id == "gwr-thames-valley" || m.line.id == "xc-south-coast" {
+                assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should stay ExclusiveSegment", m.line.id);
             } else {
                 assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
             }
@@ -2988,6 +2999,14 @@ mod tests {
     // (CUM), on the Oxford branch, is a clean ExclusiveSegment case, mirroring
     // `swr_exclusive_segment_incident_does_not_propagate` /
     // `gwr_cotswold_exclusive_segment_incident_does_not_propagate`.
+    //
+    // UPDATED (Task 9.6, 2026-09-01): `xc-south-coast.toml`'s own fresh
+    // route-diagram pass reused CUM verbatim (its own Oxford-Reading
+    // stretch runs via Didcot Parkway, the same physical Oxford branch this
+    // file curates) on its own exclusive `xc-south-coast` segment — a
+    // genuine second station overlap, so this incident now also matches
+    // xc-south-coast, staying ExclusiveSegment there too. Updated rather
+    // than left stale, mirroring Task 9.3's own precedent.
     #[test]
     fn gwr_thames_valley_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -2995,8 +3014,62 @@ mod tests {
         let inc = incident("GW-10", "Signal failure at Culham", "Signal failure causing delays at Culham.", &["GW"], &["CUM"]);
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["gwr-thames-valley".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["gwr-thames-valley".to_string(), "xc-south-coast".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should stay ExclusiveSegment", m.line.id);
+        }
+    }
+
+    // Task 9.6 (2026-09-01) fresh route-diagram pass on `xc-south-coast.toml`
+    // added 30 real, currently-open, currently-served intermediate stations
+    // across this whole Birmingham-Bournemouth corridor's "minor calls
+    // omitted" boilerplate. All inherit the existing exclusive
+    // `xc-south-coast` segment. Regression guard that `has_station` now
+    // recognises a representative spread across every leg researched (see
+    // the overlap-specific tests below for the DID/CUM/RDW station-overlap
+    // cases with `gwr-thames-valley.toml`, already updated above).
+    #[test]
+    fn xc_south_coast_recognises_newly_added_stations() {
+        let lines = load_line("xc-south-coast");
+        let line = lines.get("xc-south-coast").expect("xc-south-coast should load");
+        for crs in [
+            "KNW", "KGS", "HYD", "TAC", "RAD", "APF", "CHO", "GOR", "PAN", "TLH", "RDW", "RGP",
+            "MOR", "BMY", "MIC", "SHW", "ESL", "SOA", "SWG", "SDN", "MBK", "RDB", "TTN", "ANF",
+            "BEU", "BCU", "SWY", "NWM", "HNA", "CHR", "POK",
+        ] {
+            assert!(line.has_station(crs), "{crs} should now be recognised on xc-south-coast");
+        }
+    }
+
+    // Reading West (RDW) is a genuine second overlap this task's own
+    // research found with `gwr-thames-valley.toml`: both files reach it via
+    // shared trackage as far as Southcote Junction (that file's own
+    // Reading-Newbury branch, this file's Reading-Basingstoke stretch),
+    // reusing RDW's CRS/TIPLOC verbatim. Station-level overlap only, no
+    // segment shared, so both lines should stay ExclusiveSegment.
+    #[test]
+    fn xc_south_coast_station_overlap_with_gwr_thames_valley_at_reading_west_stays_exclusive_each_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "XC-RDW-1",
+            "Points failure at Reading West",
+            "Points failure causing delays at Reading West.",
+            &["GW"],
+            &["RDW"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["gwr-thames-valley".to_string(), "xc-south-coast".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::ExclusiveSegment, "{} should stay ExclusiveSegment", m.line.id);
+        }
     }
 
     // task-4.5-brief.md's plan-mandated regression guard: Maidenhead (MAI) is
