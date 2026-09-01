@@ -9,6 +9,7 @@ function status(reason: string, severity = 9): LineStatus {
     reason,
     dataQuality: 'planned',
     validityPeriods: [{ fromDate: '2026-05-10T00:00:00Z', toDate: '2026-10-11T00:00:00Z', isNow: false }],
+    sampleAvailability: { state: 'no-coverage' },
   };
 }
 
@@ -25,6 +26,7 @@ function ldbwsInferredStatus(reason: string, fromDate: string): LineStatus {
     reason,
     dataQuality: 'ldbws-inferred',
     validityPeriods: [{ fromDate, toDate: null, isNow: true }],
+    sampleAvailability: { state: 'no-coverage' },
   };
 }
 

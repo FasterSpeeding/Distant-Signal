@@ -64,6 +64,19 @@ export interface SampleStats {
   avgDelayMinutes: number;
 }
 
+/** Why `sampleStats` is (or isn't) populated on a given `LineStatus` this
+ * cycle -- see `common::SampleAvailability`
+ * (`crates/common/src/lib.rs`) and
+ * docs/superpowers/specs/2026-09-01-line-status-sample-coverage-design.md
+ * Decision 2. Always present, unlike `sampleStats` itself. Read this only
+ * through `sampleUnavailableReason`/`formatSampleSummary`
+ * (`lib/sampleStats.ts`) -- it is not a meaningful signal on its own for a
+ * TfL-quality status (see that module's precedence-order doc comment). */
+export type SampleAvailability =
+  | { state: 'no-coverage' }
+  | { state: 'below-threshold'; observed: number; required: number }
+  | { state: 'available' };
+
 export interface LineStatus {
   statusSeverity: number;
   statusSeverityDescription: string;
@@ -72,6 +85,7 @@ export interface LineStatus {
   validityPeriods: ValidityPeriod[];
   disruption?: Disruption;
   sampleStats?: SampleStats;
+  sampleAvailability: SampleAvailability;
 }
 
 export interface LineStatusReport {

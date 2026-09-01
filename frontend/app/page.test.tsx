@@ -10,7 +10,7 @@ vi.mock('@/lib/api');
 function report(overrides: Partial<LineStatusReport> = {}): LineStatusReport {
   return {
     $type: 'x', id: 'bakerloo', name: 'Bakerloo', modeName: 'tube', operators: [],
-    lineStatuses: [{ statusSeverity: 10, statusSeverityDescription: 'Good Service', reason: '' } as never],
+    lineStatuses: [{ statusSeverity: 10, statusSeverityDescription: 'Good Service', reason: '', sampleAvailability: { state: 'no-coverage' } } as never],
     computedAt: '2026-09-01T00:00:00Z',
     ...overrides,
   };
@@ -48,7 +48,7 @@ describe('DashboardPage', () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
-      report({ id: 'central', name: 'Central', lineStatuses: [{ statusSeverity: 6, statusSeverityDescription: 'Severe Delays', reason: '' } as never] }),
+      report({ id: 'central', name: 'Central', lineStatuses: [{ statusSeverity: 6, statusSeverityDescription: 'Severe Delays', reason: '', sampleAvailability: { state: 'no-coverage' } } as never] }),
       report(),
     ]);
     renderWithMantine(await DashboardPage());
@@ -60,7 +60,7 @@ describe('DashboardPage', () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
-      report({ id: 'tfl-elizabeth', name: 'Elizabeth line', lineStatuses: [{ statusSeverity: 6, statusSeverityDescription: 'Severe Delays', reason: '' } as never] }),
+      report({ id: 'tfl-elizabeth', name: 'Elizabeth line', lineStatuses: [{ statusSeverity: 6, statusSeverityDescription: 'Severe Delays', reason: '', sampleAvailability: { state: 'no-coverage' } } as never] }),
     ]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByText(/Every line is running a Good Service/)).toBeInTheDocument();
