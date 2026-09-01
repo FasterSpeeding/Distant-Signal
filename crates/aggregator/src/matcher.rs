@@ -5835,4 +5835,34 @@ mod tests {
             assert_eq!(m.scope, MatchScope::SharedSegment, "{} should be SharedSegment", m.line.id);
         }
     }
+
+    // Task 2.3: `northern-calder-valley.toml`'s previously-missing
+    // intermediate halts. Mytholmroyd (MYT) sits between Sowerby Bridge and
+    // Hebden Bridge on this file's sole segment, `northern-calder-valley`,
+    // which per that file's own top-of-file comment has no shared-trunk
+    // sibling anywhere in this catalogue - so there is no SharedSegment
+    // assertion to make here, only that `has_station` picks up the new
+    // station and that an incident there stays exclusive, mirroring
+    // `calder_valley_exclusive_segment_incident_does_not_propagate` above.
+    #[test]
+    fn calder_valley_mytholmroyd_has_station_and_stays_exclusive() {
+        let lines = load_line("northern-calder-valley");
+        let calder_valley = lines.get("northern-calder-valley").expect("northern-calder-valley should load");
+        assert!(calder_valley.has_station("MYT"), "northern-calder-valley should now list Mytholmroyd (MYT)");
+        assert_eq!(calder_valley.segment_for("MYT"), Some("northern-calder-valley"));
+
+        let all_lines = load_all_lines();
+        let registry = SegmentRegistry::new(&all_lines);
+        let inc = incident(
+            "NT-10",
+            "Signal failure at Mytholmroyd",
+            "Signal failure causing delays on the Calder Valley Line at Mytholmroyd.",
+            &["NT"],
+            &["MYT"],
+        );
+        let matches = lines_affected_by(&inc, &all_lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-calder-valley".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
 }
