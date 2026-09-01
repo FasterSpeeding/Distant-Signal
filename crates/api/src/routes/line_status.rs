@@ -28,6 +28,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::app::{App, Router};
+use crate::auth::OptionalAuthenticatedUser;
+use crate::data::custom_lines;
 use crate::data::queries;
 use crate::render::to_tfl_shape;
 
@@ -86,6 +88,35 @@ fn rows_to_json(rows: Vec<queries::LineStatusRow>, detail: bool) -> Vec<Value> {
         .collect()
 }
 
+/// Drops any row whose id is a private custom line the caller doesn't own.
+/// Catalogue/TfL rows (no `custom-` prefix) are always kept untouched.
+/// `user` is `None` for an anonymous caller -- every custom-line row is
+/// dropped for them, since an anonymous caller can never be the owner of
+/// anything.
+async fn filter_private_custom_rows(
+    pool: &sqlx::PgPool,
+    rows: Vec<queries::LineStatusRow>,
+    user: &Option<crate::auth::AuthenticatedUser>,
+) -> anyhow::Result<Vec<queries::LineStatusRow>> {
+    let custom_ids: Vec<String> = rows.iter().filter(|r| r.id.starts_with("custom-")).map(|r| r.id.clone()).collect();
+    if custom_ids.is_empty() {
+        return Ok(rows);
+    }
+    let owners = custom_lines::owners_for_ids(pool, &custom_ids).await?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            let Some(owner) = owners.get(&row.id) else {
+                return true; // not a custom-line row after all (shouldn't happen given the prefix check, but never drop on a lookup miss)
+            };
+            match (user, owner) {
+                (Some(caller), Some(owner_id)) => &caller.id == owner_id,
+                _ => false,
+            }
+        })
+        .collect())
+}
+
 /// Every mode this deployment has data for. `national-rail` is written by
 /// the aggregator from Knowledgebase incidents and LDBWS samples; the other
 /// five are written by `crates/poller-tfl` via `/private/tfl-line-status`.
@@ -128,10 +159,14 @@ async fn get_mode_status(
     State(app): State<App>,
     Path(modes): Path<String>,
     Query(query): Query<DetailQuery>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
     let modes = parse_modes(&modes).map_err(|message| (StatusCode::BAD_REQUEST, message))?;
 
     let rows = queries::line_status_for_modes(&app.database, &modes)
+        .await
+        .map_err(internal_error)?;
+    let rows = filter_private_custom_rows(&app.database, rows, &user)
         .await
         .map_err(internal_error)?;
 
@@ -142,10 +177,14 @@ async fn get_line_status(
     State(app): State<App>,
     Path(ids): Path<String>,
     Query(query): Query<DetailQuery>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
     let ids: Vec<String> = ids.split(',').map(|s| s.to_string()).collect();
 
     let rows = queries::line_status_for_ids(&app.database, &ids)
+        .await
+        .map_err(internal_error)?;
+    let rows = filter_private_custom_rows(&app.database, rows, &user)
         .await
         .map_err(internal_error)?;
 
@@ -230,7 +269,21 @@ async fn get_stop_point_disruption(
 async fn get_line_status_history(
     State(app): State<App>,
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    if id.starts_with("custom-") {
+        let owners = custom_lines::owners_for_ids(&app.database, std::slice::from_ref(&id))
+            .await
+            .map_err(internal_error)?;
+        let owned_by_caller = match (&user, owners.get(&id)) {
+            (Some(caller), Some(Some(owner_id))) => &caller.id == owner_id,
+            _ => false,
+        };
+        if !owned_by_caller {
+            return Ok(Json(vec![])); // identical shape to a genuinely unknown id -- this route has never distinguished the two.
+        }
+    }
+
     let history = queries::line_status_history_for_range(&app.database, &id, from, to)
         .await
         .map_err(internal_error)?;
@@ -490,5 +543,555 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert_eq!(body, "northern|2026-08-01|2026-08-31");
+    }
+}
+
+/// HTTP-layer tests for this task's three ownership-filtered routes
+/// (`get_mode_status`, `get_line_status`, `get_line_status_history`), plus
+/// one regression test for `get_stop_point_disruption` confirming it's
+/// genuinely untouched. Follows the `db_tests` convention Task 4
+/// established in `crate::routes::lines::db_tests` (`test_app`/
+/// `test_router`/`seed_session` built by hand against a real `App`,
+/// exercised through the real `axum::Router` via `tower::ServiceExt::oneshot`)
+/// -- kept as this file's own colocated copy rather than importing
+/// `lines.rs`'s private helpers, per that module's own doc comment ("promote
+/// only once a second file actually duplicates this setup" -- this is that
+/// second file, but the helpers stay `pub(self)` to each file until/unless a
+/// third file needs them too).
+#[cfg(test)]
+mod db_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use serde_json::Value;
+    use sqlx::PgPool;
+    use tower::ServiceExt;
+
+    use crate::app::{App, AppState};
+    use crate::auth::hash_session_token;
+    use crate::auth::oidc::{OidcClient, OidcConfig};
+    use crate::data::config::{LineCatalogue, ServiceArguments};
+    use crate::data::custom_lines::{self, NewCustomLine};
+    use crate::data::users::insert_session;
+
+    /// Every `ServiceArguments` field filled with an inert placeholder
+    /// except `lines`, which the caller supplies -- the one field a
+    /// catalogue-id test actually needs to vary. Copied from
+    /// `crate::routes::lines::db_tests::test_app` -- see this module's own
+    /// doc comment for why it's not shared cross-file.
+    fn test_app(pool: PgPool, lines: Vec<common::LineDefinition>) -> App {
+        let config = ServiceArguments {
+            bind_url: "0.0.0.0:0".to_string(),
+            database_url: String::new(),
+            redis_url: "redis://127.0.0.1:0".to_string(),
+            internal_token: "test-internal-token".to_string(),
+            sso_issuer_url: "https://example.invalid".to_string(),
+            sso_client_id: "test-client".to_string(),
+            sso_client_secret: "test-secret".to_string(),
+            sso_redirect_url: "https://example.invalid/callback".to_string(),
+            sso_post_login_redirect_url: "https://example.invalid/".to_string(),
+            session_ttl_days: 14,
+            history_retention_days: 7,
+            metrics_enabled: false,
+            defaults_file: None,
+            lines: LineCatalogue(lines),
+        };
+
+        std::sync::Arc::new(AppState {
+            config,
+            database: pool,
+            // `Client::open` only parses the URL, never opens a socket --
+            // see `AppState::redis`'s doc comment. None of this file's
+            // routes touch Redis at all.
+            redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
+            oidc: OidcClient::new(OidcConfig {
+                issuer_url: "https://example.invalid".to_string(),
+                client_id: "test-client".to_string(),
+                client_secret: "test-secret".to_string(),
+                redirect_url: "https://example.invalid/callback".to_string(),
+            })
+            .expect("construct placeholder oidc client"),
+        })
+    }
+
+    /// The real `line_status::router()`, merged unprefixed exactly as
+    /// `main.rs` does (see this file's module doc comment for why these
+    /// four routes are deliberately not nested under `/public`), turned
+    /// into a `tower::Service` a test can drive with `.oneshot(..)`.
+    fn test_router(app: App) -> axum::Router {
+        crate::app::Router::new().merge(super::router()).with_state(app)
+    }
+
+    /// Seeds a real, resolvable session for `user_id` (creating the user
+    /// if it doesn't already exist) and returns the *raw* token -- send it
+    /// as `Cookie: distant_signal_session=<raw>`, never the hash `sessions`
+    /// actually stores.
+    async fn seed_session(pool: &PgPool, user_id: &str) -> String {
+        sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING")
+            .bind(user_id)
+            .bind(format!("{user_id}@example.com"))
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("seed fixture user");
+
+        let raw_token = format!("test-raw-session-token-for-{user_id}");
+        insert_session(pool, &hash_session_token(&raw_token), user_id, 14)
+            .await
+            .expect("seed fixture session");
+        raw_token
+    }
+
+    /// Deletes a fixture user and everything that cascades from it
+    /// (`sessions`, owned `custom_lines`, `pinned_lines`).
+    async fn cleanup_user(pool: &PgPool, user_id: &str) {
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture user");
+    }
+
+    async fn connect() -> PgPool {
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        sqlx::postgres::PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres")
+    }
+
+    /// Seeds (or updates) one `line_status` row directly -- this file's
+    /// routes read straight from that table, so tests don't need a real
+    /// aggregator/poller run to populate it. `statuses_json` is raw JSONB
+    /// text; fields `common::LineStatus` marks `#[serde(default)]`
+    /// (`data_quality`, `disruption`, `sample_stats`) can be omitted.
+    async fn seed_line_status(pool: &PgPool, id: &str, mode_name: &str, statuses_json: &str) {
+        sqlx::query(
+            "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, computed_at) \
+             VALUES ($1, $2, $3, '{}', $4::jsonb, NOW()) \
+             ON CONFLICT (line_id) DO UPDATE SET \
+                mode_name = EXCLUDED.mode_name, statuses = EXCLUDED.statuses, computed_at = EXCLUDED.computed_at",
+        )
+        .bind(id)
+        .bind(format!("Test {id}"))
+        .bind(mode_name)
+        .bind(statuses_json)
+        .execute(pool)
+        .await
+        .expect("seed fixture line_status row");
+    }
+
+    async fn cleanup_line_status(pool: &PgPool, id: &str) {
+        sqlx::query("DELETE FROM line_status WHERE line_id = $1")
+            .bind(id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture line_status row");
+    }
+
+    /// Seeds one `line_status_history` row -- `get_line_status_history`
+    /// reads from this table, never `line_status` itself.
+    async fn seed_line_status_history(pool: &PgPool, id: &str, statuses_json: &str) {
+        sqlx::query(
+            "INSERT INTO line_status_history (line_id, statuses, computed_at) VALUES ($1, $2::jsonb, NOW())",
+        )
+        .bind(id)
+        .bind(statuses_json)
+        .execute(pool)
+        .await
+        .expect("seed fixture line_status_history row");
+    }
+
+    async fn cleanup_line_status_history(pool: &PgPool, id: &str) {
+        sqlx::query("DELETE FROM line_status_history WHERE line_id = $1")
+            .bind(id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture line_status_history row");
+    }
+
+    /// A minimal but valid catalogue line fixture -- same shape
+    /// `lines::db_tests::test_catalogue_line` uses.
+    fn test_catalogue_line(id: &str, name: &str) -> common::LineDefinition {
+        common::LineDefinition {
+            id: id.to_string(),
+            name: name.to_string(),
+            mode: "national-rail".to_string(),
+            category: "main-line".to_string(),
+            operators: vec!["SW".to_string()],
+            stations: vec![
+                common::Station { crs: "WOK".to_string(), tiploc: None, role: "major".to_string(), segment: None },
+                common::Station { crs: "CLJ".to_string(), tiploc: None, role: "major".to_string(), segment: None },
+            ],
+            sample_stations: vec![],
+            match_keywords: vec![],
+            excluded_keywords: vec![],
+            severity_overrides: Default::default(),
+            exclusive_segments: vec![],
+            destination_crs_filter: vec![],
+            headcode_prefixes: vec![],
+        }
+    }
+
+    /// One `LineStatus` with an active (non-`GoodService`) severity, as
+    /// literal JSONB text for `seed_line_status`/`seed_line_status_history`.
+    fn active_status_json() -> &'static str {
+        r#"[{"severity":9,"reason":"Test disruption","validity":{"from_date":"2024-01-01T00:00:00Z","to_date":null,"is_now":true}}]"#
+    }
+
+    /// Issues a request against `router`, optionally with a session
+    /// cookie, and returns `(status, parsed JSON body)`. Shared by every
+    /// request helper below -- all four routes in this file return either
+    /// a JSON array/object body or a plain-text `(StatusCode, String)`
+    /// error body, so wrapping the latter as a JSON string lets every case
+    /// share one return shape.
+    async fn request(router: axum::Router, uri: String, raw_token: Option<&str>) -> (StatusCode, Value) {
+        let mut builder = Request::builder().uri(uri);
+        if let Some(token) = raw_token {
+            builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
+        }
+        let req = builder.body(Body::empty()).expect("build request");
+        let response = router.oneshot(req).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+        let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+        });
+        (status, value)
+    }
+
+    fn ids_in(body: &Value) -> Vec<String> {
+        body.as_array()
+            .expect("response body should be a JSON array")
+            .iter()
+            .filter_map(|entry| entry.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect()
+    }
+
+    // --- get_mode_status -----------------------------------------------
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_mode_status_catalogue_rows_always_show_custom_row_only_when_owned -- --ignored`"]
+    async fn get_mode_status_catalogue_rows_always_show_custom_row_only_when_owned() {
+        let pool = connect().await;
+
+        let owner_token = seed_session(&pool, "TEST-MODE-STATUS-OWNER").await;
+        let other_token = seed_session(&pool, "TEST-MODE-STATUS-OTHER").await;
+
+        seed_line_status(&pool, "test-mode-status-catalogue", "national-rail", "[]").await;
+
+        let custom = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Mode Status Custom Line".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-MODE-STATUS-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+        seed_line_status(&pool, &custom.id, "national-rail", "[]").await;
+
+        let catalogue_line = test_catalogue_line("test-mode-status-catalogue", "Test Mode Status Catalogue");
+
+        // Anonymous: catalogue row present, custom row absent.
+        let anon_router = test_router(test_app(pool.clone(), vec![catalogue_line.clone()]));
+        let (anon_status, anon_body) = request(anon_router, "/Line/Mode/national-rail/Status".to_string(), None).await;
+        assert_eq!(anon_status, StatusCode::OK);
+        let anon_ids = ids_in(&anon_body);
+        assert!(anon_ids.contains(&"test-mode-status-catalogue".to_string()));
+        assert!(!anon_ids.contains(&custom.id));
+
+        // Non-owner: catalogue row present, custom row still absent.
+        let other_router = test_router(test_app(pool.clone(), vec![catalogue_line.clone()]));
+        let (other_status, other_body) =
+            request(other_router, "/Line/Mode/national-rail/Status".to_string(), Some(&other_token)).await;
+        assert_eq!(other_status, StatusCode::OK);
+        let other_ids = ids_in(&other_body);
+        assert!(other_ids.contains(&"test-mode-status-catalogue".to_string()));
+        assert!(!other_ids.contains(&custom.id));
+
+        // Owner: catalogue row present, custom row present too.
+        let owner_router = test_router(test_app(pool.clone(), vec![catalogue_line]));
+        let (owner_status, owner_body) =
+            request(owner_router, "/Line/Mode/national-rail/Status".to_string(), Some(&owner_token)).await;
+        assert_eq!(owner_status, StatusCode::OK);
+        let owner_ids = ids_in(&owner_body);
+        assert!(owner_ids.contains(&"test-mode-status-catalogue".to_string()));
+        assert!(owner_ids.contains(&custom.id));
+
+        cleanup_line_status(&pool, "test-mode-status-catalogue").await;
+        cleanup_line_status(&pool, &custom.id).await;
+        cleanup_user(&pool, "TEST-MODE-STATUS-OWNER").await;
+        cleanup_user(&pool, "TEST-MODE-STATUS-OTHER").await;
+    }
+
+    // --- get_line_status --------------------------------------------------
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_status_drops_a_not_owned_custom_row_but_keeps_the_catalogue_row -- --ignored`"]
+    async fn get_line_status_drops_a_not_owned_custom_row_but_keeps_the_catalogue_row() {
+        let pool = connect().await;
+
+        seed_session(&pool, "TEST-LINE-STATUS-OWNER").await;
+        seed_line_status(&pool, "test-line-status-catalogue", "national-rail", "[]").await;
+        let custom = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Line Status Not Owned".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-LINE-STATUS-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+        seed_line_status(&pool, &custom.id, "national-rail", "[]").await;
+
+        let catalogue_line = test_catalogue_line("test-line-status-catalogue", "Test Line Status Catalogue");
+        let router = test_router(test_app(pool.clone(), vec![catalogue_line]));
+        let uri = format!("/Line/test-line-status-catalogue,{}/Status", custom.id);
+        let (status, body) = request(router, uri, None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let ids = ids_in(&body);
+        assert_eq!(ids, vec!["test-line-status-catalogue".to_string()]);
+
+        cleanup_line_status(&pool, "test-line-status-catalogue").await;
+        cleanup_line_status(&pool, &custom.id).await;
+        cleanup_user(&pool, "TEST-LINE-STATUS-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_status_a_lone_not_owned_custom_id_404s_like_an_unknown_id -- --ignored`"]
+    async fn get_line_status_a_lone_not_owned_custom_id_404s_like_an_unknown_id() {
+        let pool = connect().await;
+
+        seed_session(&pool, "TEST-LINE-STATUS-LONE-OWNER").await;
+        let custom = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Line Status Lone Not Owned".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-LINE-STATUS-LONE-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+        seed_line_status(&pool, &custom.id, "national-rail", "[]").await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let uri = format!("/Line/{}/Status", custom.id);
+        let (status, body) = request(router, uri, None).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // The exact same message an unknown id already produces -- no new
+        // branch, no new status code (this task's brief, Step 3).
+        assert_eq!(body, Value::String(format!("no matching line(s): {}", custom.id)));
+
+        cleanup_line_status(&pool, &custom.id).await;
+        cleanup_user(&pool, "TEST-LINE-STATUS-LONE-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_status_the_owner_gets_their_own_custom_row -- --ignored`"]
+    async fn get_line_status_the_owner_gets_their_own_custom_row() {
+        let pool = connect().await;
+
+        let owner_token = seed_session(&pool, "TEST-LINE-STATUS-REAL-OWNER").await;
+        let custom = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Line Status Owned".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-LINE-STATUS-REAL-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+        seed_line_status(&pool, &custom.id, "national-rail", "[]").await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let uri = format!("/Line/{}/Status", custom.id);
+        let (status, body) = request(router, uri, Some(&owner_token)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ids_in(&body), vec![custom.id.clone()]);
+
+        cleanup_line_status(&pool, &custom.id).await;
+        cleanup_user(&pool, "TEST-LINE-STATUS-REAL-OWNER").await;
+    }
+
+    // --- get_line_status_history -------------------------------------------
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_status_history_an_owned_custom_id_returns_real_history -- --ignored`"]
+    async fn get_line_status_history_an_owned_custom_id_returns_real_history() {
+        let pool = connect().await;
+
+        let owner_token = seed_session(&pool, "TEST-HISTORY-OWNER").await;
+        let custom = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test History Owned".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-HISTORY-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+        seed_line_status_history(&pool, &custom.id, active_status_json()).await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let uri = format!("/Line/{}/Status/2000-01-01T00:00:00Z/to/2100-01-01T00:00:00Z", custom.id);
+        let (status, body) = request(router, uri, Some(&owner_token)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().map(Vec::len), Some(1));
+
+        cleanup_line_status_history(&pool, &custom.id).await;
+        cleanup_user(&pool, "TEST-HISTORY-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_status_history_a_not_owned_custom_id_returns_empty -- --ignored`"]
+    async fn get_line_status_history_a_not_owned_custom_id_returns_empty() {
+        let pool = connect().await;
+
+        seed_session(&pool, "TEST-HISTORY-NOT-OWNER").await;
+        let custom = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test History Not Owned".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-HISTORY-NOT-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+        seed_line_status_history(&pool, &custom.id, active_status_json()).await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let uri = format!("/Line/{}/Status/2000-01-01T00:00:00Z/to/2100-01-01T00:00:00Z", custom.id);
+        // No session cookie -- an anonymous caller can never own anything.
+        let (status, body) = request(router, uri, None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, Value::Array(vec![]));
+
+        cleanup_line_status_history(&pool, &custom.id).await;
+        cleanup_user(&pool, "TEST-HISTORY-NOT-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_status_history_an_unknown_id_still_returns_empty_unchanged -- --ignored`"]
+    async fn get_line_status_history_an_unknown_id_still_returns_empty_unchanged() {
+        let pool = connect().await;
+
+        // Regression: this route has never distinguished "unknown id" from
+        // "empty history" -- confirms this task didn't change that for a
+        // genuinely-unknown, non-custom-prefixed id.
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let uri = "/Line/totally-unknown-line/Status/2000-01-01T00:00:00Z/to/2100-01-01T00:00:00Z".to_string();
+        let (status, body) = request(router, uri, None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, Value::Array(vec![]));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_status_history_a_catalogue_id_is_unaffected -- --ignored`"]
+    async fn get_line_status_history_a_catalogue_id_is_unaffected() {
+        let pool = connect().await;
+
+        seed_line_status_history(&pool, "test-history-catalogue", active_status_json()).await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let uri = "/Line/test-history-catalogue/Status/2000-01-01T00:00:00Z/to/2100-01-01T00:00:00Z".to_string();
+        // No session at all -- a catalogue id was never gated by ownership
+        // and still isn't.
+        let (status, body) = request(router, uri, None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().map(Vec::len), Some(1));
+
+        cleanup_line_status_history(&pool, "test-history-catalogue").await;
+    }
+
+    // --- get_stop_point_disruption -----------------------------------------
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_stop_point_disruption_never_returns_a_custom_line -- --ignored`"]
+    async fn get_stop_point_disruption_never_returns_a_custom_line() {
+        let pool = connect().await;
+
+        // No prior test in this crate covers "never returns a custom line"
+        // for this route (checked before adding this one -- see this
+        // task's brief). `get_stop_point_disruption` is untouched by this
+        // task: its candidate line ids come from `app.config.lines` only,
+        // never from `custom_lines`/`owners_for_ids` -- this proves that
+        // invariant holds even when a private custom line's `line_status`
+        // row shares a station (WOK) with, and has an active disruption
+        // alongside, a real catalogue line.
+        seed_session(&pool, "TEST-STOP-POINT-OWNER").await;
+        seed_line_status(&pool, "test-stop-point-catalogue", "national-rail", active_status_json()).await;
+        let custom = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Stop Point Custom Line".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-STOP-POINT-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+        seed_line_status(&pool, &custom.id, "national-rail", active_status_json()).await;
+
+        let catalogue_line = test_catalogue_line("test-stop-point-catalogue", "Test Stop Point Catalogue");
+        let router = test_router(test_app(pool.clone(), vec![catalogue_line]));
+        let (status, body) = request(router, "/StopPoint/WOK/Disruption".to_string(), None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let ids = ids_in(&body);
+        assert!(ids.contains(&"test-stop-point-catalogue".to_string()));
+        assert!(!ids.contains(&custom.id), "a custom line must never appear in a StopPoint/Disruption response: {ids:?}");
+
+        cleanup_line_status(&pool, "test-stop-point-catalogue").await;
+        cleanup_line_status(&pool, &custom.id).await;
+        cleanup_user(&pool, "TEST-STOP-POINT-OWNER").await;
     }
 }

@@ -233,6 +233,54 @@ pub async fn delete_custom_line(pool: &PgPool, id: &str, user_id: &str) -> Resul
     Ok(deleted)
 }
 
+/// Owners for every custom-prefixed id in `ids`, for filtering a bulk
+/// status response by ownership without an N+1 query per row (see
+/// `crate::routes::line_status`'s three affected handlers). Catalogue/TfL
+/// ids in `ids` simply won't match anything here -- callers should look
+/// them up unconditionally in the returned map and treat "no entry" as
+/// "not a custom line, leave it alone," never as "unowned."
+pub async fn owners_for_ids(pool: &PgPool, ids: &[String]) -> Result<std::collections::HashMap<String, Option<String>>> {
+    let rows = sqlx::query("SELECT id, user_id FROM custom_lines WHERE id = ANY($1)")
+        .bind(ids)
+        .fetch_all(pool)
+        .await?;
+
+    rows.into_iter()
+        .map(|row| Ok((row.try_get::<String, _>("id")?, row.try_get::<Option<String>, _>("user_id")?)))
+        .collect()
+}
+
+/// Caller-scoped variant of [`list_custom_lines`] -- used by `list_lines`
+/// (`GET /public/lines`) once custom lines become private, so an
+/// authenticated caller sees only their own custom lines in the bulk list,
+/// never anyone else's. Deliberately a separate function rather than an
+/// `Option<&str>` parameter on `list_custom_lines` itself: the anonymous
+/// case (Decision 8) skips the custom-line query entirely rather than
+/// calling this with some sentinel, so the two call shapes never need to
+/// share a signature.
+pub async fn list_custom_lines_for_user(pool: &PgPool, user_id: &str) -> Result<Vec<CustomLine>> {
+    let rows = sqlx::query(
+        "SELECT id, name, operators, stations, headcode_prefixes, destination_crs_filter \
+         FROM custom_lines WHERE user_id = $1 ORDER BY created_at",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(CustomLine {
+                id: row.try_get("id")?,
+                name: row.try_get("name")?,
+                operators: row.try_get("operators")?,
+                stations: row.try_get("stations")?,
+                headcode_prefixes: row.try_get("headcode_prefixes")?,
+                destination_crs_filter: row.try_get("destination_crs_filter")?,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +381,236 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup fixture user");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                owners_for_ids -- --ignored`"]
+    async fn owners_for_ids_returns_real_owner_none_for_legacy_omits_missing() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ('TEST-OWNERS-FOR-IDS-OWNER', 'owner@example.com', 'Owner') \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture user");
+
+        // The real write path: insert an owned line
+        let owned = insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Owned Line for Owners".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-OWNERS-FOR-IDS-OWNER",
+        )
+        .await
+        .expect("insert owned line");
+
+        // A legacy row that predates the ownership retrofit has a NULL `user_id`.
+        // NOTE: This test asserts that the legacy row returns None, which is the
+        // current behavior (pre-Task-2-migration). If Task 2's migration that
+        // reassigns legacy rows to 'legacy-unclaimed' lands before this test runs,
+        // the assertion should be updated to expect Some("legacy-unclaimed").
+        sqlx::query(
+            "INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id, created_at) \
+             VALUES ('custom-test-legacy-for-owners', 'Test Legacy Line for Owners', '{}', '{WOK,CLJ}', '{}', '{}', NULL, NOW())",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed legacy fixture line");
+
+        let ids = vec![
+            owned.id.clone(),
+            "custom-test-legacy-for-owners".to_string(),
+            "catalogue-line-not-in-custom-table".to_string(), // A catalogue/TfL id not in the table
+        ];
+
+        let owners_map = owners_for_ids(&pool, &ids)
+            .await
+            .expect("call owners_for_ids");
+
+        // The owned line should have its real owner
+        assert_eq!(
+            owners_map.get(&owned.id),
+            Some(&Some("TEST-OWNERS-FOR-IDS-OWNER".to_string())),
+            "owned line should have real owner"
+        );
+
+        // The legacy line should return None (pre-migration state)
+        assert_eq!(
+            owners_map.get("custom-test-legacy-for-owners"),
+            Some(&None),
+            "legacy line should have None owner"
+        );
+
+        // The catalogue id should not be in the map at all (no entry, not Some(None))
+        assert!(
+            !owners_map.contains_key("catalogue-line-not-in-custom-table"),
+            "catalogue/TfL id not in custom_lines should be completely absent from map"
+        );
+
+        // Cleanup
+        sqlx::query("DELETE FROM custom_lines WHERE id = $1")
+            .bind(&owned.id)
+            .execute(&pool)
+            .await
+            .expect("cleanup owned fixture line");
+        sqlx::query("DELETE FROM custom_lines WHERE id = 'custom-test-legacy-for-owners'")
+            .execute(&pool)
+            .await
+            .expect("cleanup legacy fixture line");
+        sqlx::query("DELETE FROM pinned_lines WHERE user_id = 'TEST-OWNERS-FOR-IDS-OWNER'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture pins");
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-OWNERS-FOR-IDS-OWNER'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture user");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_custom_lines_for_user -- --ignored`"]
+    async fn list_custom_lines_for_user_returns_only_calling_users_rows() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+
+        // Create two test users
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ('TEST-LIST-USER-1', 'user1@example.com', 'User 1') \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture user 1");
+
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ('TEST-LIST-USER-2', 'user2@example.com', 'User 2') \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture user 2");
+
+        // User 1 creates a custom line
+        let user1_line = insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "User 1 Line".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-LIST-USER-1",
+        )
+        .await
+        .expect("insert user 1 line");
+
+        // User 2 creates a different custom line
+        let user2_line = insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "User 2 Line".to_string(),
+                operators: vec!["TW".to_string()],
+                stations: vec!["CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-LIST-USER-2",
+        )
+        .await
+        .expect("insert user 2 line");
+
+        // Query for user 1's lines -- should only get user 1's line
+        let user1_lines = list_custom_lines_for_user(&pool, "TEST-LIST-USER-1")
+            .await
+            .expect("list user 1 lines");
+
+        assert_eq!(
+            user1_lines.len(),
+            1,
+            "user 1 should have exactly 1 line"
+        );
+        assert_eq!(
+            user1_lines[0].id, user1_line.id,
+            "user 1's line should be their created line"
+        );
+        assert_eq!(
+            user1_lines[0].name, "User 1 Line",
+            "user 1's line should have correct name"
+        );
+
+        // Query for user 2's lines -- should only get user 2's line
+        let user2_lines = list_custom_lines_for_user(&pool, "TEST-LIST-USER-2")
+            .await
+            .expect("list user 2 lines");
+
+        assert_eq!(
+            user2_lines.len(),
+            1,
+            "user 2 should have exactly 1 line"
+        );
+        assert_eq!(
+            user2_lines[0].id, user2_line.id,
+            "user 2's line should be their created line"
+        );
+        assert_eq!(
+            user2_lines[0].name, "User 2 Line",
+            "user 2's line should have correct name"
+        );
+
+        // Query for a user with no lines
+        let empty_lines = list_custom_lines_for_user(&pool, "TEST-LIST-USER-NONEXISTENT")
+            .await
+            .expect("list nonexistent user lines");
+
+        assert_eq!(
+            empty_lines.len(),
+            0,
+            "nonexistent user should have no lines"
+        );
+
+        // Cleanup
+        sqlx::query("DELETE FROM custom_lines WHERE id = $1")
+            .bind(&user1_line.id)
+            .execute(&pool)
+            .await
+            .expect("cleanup user 1 line");
+        sqlx::query("DELETE FROM custom_lines WHERE id = $1")
+            .bind(&user2_line.id)
+            .execute(&pool)
+            .await
+            .expect("cleanup user 2 line");
+        sqlx::query("DELETE FROM pinned_lines WHERE user_id = 'TEST-LIST-USER-1'")
+            .execute(&pool)
+            .await
+            .expect("cleanup user 1 pins");
+        sqlx::query("DELETE FROM pinned_lines WHERE user_id = 'TEST-LIST-USER-2'")
+            .execute(&pool)
+            .await
+            .expect("cleanup user 2 pins");
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-LIST-USER-1'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture user 1");
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-LIST-USER-2'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture user 2");
     }
 }

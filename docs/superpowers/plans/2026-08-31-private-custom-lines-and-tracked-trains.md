@@ -84,6 +84,20 @@ Per the spec's Decision 2 and its Open Question 2, there are two real mechanics 
 
 **This plan defaults to the non-destructive reassignment path (Task 2 is written for it) but does not treat that as decided.** Per this codebase's own "stop for destructive/irreversible operations" posture, an implementer must not silently pick either path — the delete alternative is only "equally valid" (the spec's own words) if the repo owner has verified, out-of-band, that no live deployment has NULL-owner rows worth keeping.
 
+**2026-09-01 status: still blocked, not skipped.** Tasks 3–12 (all backend
+route gating, the frontend cookie-forwarding fixes, and the `isOwner`
+cleanup) are complete and merged into this branch. This task is the one
+remaining gap. The implementing sandbox for that session had no
+`DATABASE_URL`/live Postgres and no `docker`/`docker compose` available, so
+Step 1's fact-finding query could not be run, and per this task's own
+explicit instruction ("do not proceed past this task on the plan-writer's
+or implementer's own judgment alone"), Task 2's migration file was
+deliberately *not* written on the implementer's own initiative. Whoever
+picks this up next needs: (1) real access to the target database to run
+the Step 1 count, and (2) the repo owner's explicit go/no-go between the
+reassign-vs-delete mechanics above, before writing `Task 2`'s migration
+file.
+
 - [ ] **Step 1: Run the fact-finding query against the real target database**
 
 ```sql
@@ -183,7 +197,7 @@ git commit -m "Migrate custom_lines.user_id to NOT NULL, reassigning legacy NULL
 
 This task does not itself depend on Task 1/2 — both new functions operate correctly whether or not the `NOT NULL` constraint has landed yet (a NULL `user_id` simply never matches any real caller's id, exactly like today).
 
-- [ ] **Step 1: Add `owners_for_ids`**
+- [x] **Step 1: Add `owners_for_ids`**
 
 ```rust
 /// Owners for every custom-prefixed id in `ids`, for filtering a bulk
@@ -204,7 +218,7 @@ pub async fn owners_for_ids(pool: &PgPool, ids: &[String]) -> Result<std::collec
 }
 ```
 
-- [ ] **Step 2: Add `list_custom_lines_for_user`**
+- [x] **Step 2: Add `list_custom_lines_for_user`**
 
 ```rust
 /// Caller-scoped variant of [`list_custom_lines`] -- used by `list_lines`
@@ -239,18 +253,18 @@ pub async fn list_custom_lines_for_user(pool: &PgPool, user_id: &str) -> Result<
 }
 ```
 
-- [ ] **Step 3: Add tests**
+- [x] **Step 3: Add tests**
 
 Pure-logic unit test for `owners_for_ids`' *shape* is not meaningful without a database (it's a plain bulk SELECT), so per this file's existing convention, add an `#[ignore]`d `db_tests` test mirroring `get_custom_line_reports_the_owning_user_id_or_none_for_a_legacy_row`'s exact fixture/cleanup pattern:
 - `owners_for_ids` returns the real owner for an owned row, `None` for a legacy NULL-owner row (pre-Task-2-migration behavior, or `Some("legacy-unclaimed")` post-migration if Task 2 already landed — write the assertion to match whichever state Task 2 is in when this test runs, and note the dependency in the test's own comment), and simply omits any id in `ids` that has no `custom_lines` row at all (a catalogue/TfL id) — assert the returned map has no entry for that id, not a `None` entry.
 - `list_custom_lines_for_user` returns only the calling user's own rows, not another user's, when both have custom lines.
 
-- [ ] **Step 4: Compile-check and run the crate's test suite**
+- [x] **Step 4: Compile-check and run the crate's test suite**
 
 Run (from repo root): `cargo check -p api` then `cargo test -p api`.
 Expected: PASS. Both new functions will show `dead_code` warnings until Tasks 5/7 consume them — acceptable if this task is done immediately before those, otherwise expect a transient warning.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/api/src/data/custom_lines.rs
@@ -269,7 +283,7 @@ git commit -m "Add owners_for_ids bulk lookup and list_custom_lines_for_user"
 
 Depends on nothing else in this plan (uses the existing `get_custom_line`, which already returns the owner alongside the row).
 
-- [ ] **Step 1: Switch the extractor and collapse the three "not visible to this caller" cases into one 404**
+- [x] **Step 1: Switch the extractor and collapse the three "not visible to this caller" cases into one 404**
 
 ```rust
 async fn get_line(
@@ -306,11 +320,11 @@ async fn get_line(
 }
 ```
 
-- [ ] **Step 2: Remove `CustomLineDetail.is_owner`, the `is_owner()` function, and its 5 tests**
+- [x] **Step 2: Remove `CustomLineDetail.is_owner`, the `is_owner()` function, and its 5 tests**
 
 Delete the `is_owner: bool` field from the `CustomLineDetail` struct (and its doc comment's explanation of the field, which no longer applies), delete the `is_owner()` function, and delete its 5 tests (`the_real_owner_is_reported_as_owner`, `a_logged_in_non_owner_is_not_reported_as_owner`, `an_anonymous_visitor_is_never_reported_as_owner`, `a_legacy_ownerless_line_is_never_reported_as_owner_even_when_logged_in`, `an_anonymous_visitor_against_a_legacy_ownerless_line_is_not_owner`). Update the module doc comment at the top of the file (currently states `GET /lines/{id}` is unauthenticated and describes `isOwner`'s purpose) to reflect the new behavior.
 
-- [ ] **Step 3: Add route-level tests covering the full 401/404/200 matrix**
+- [x] **Step 3: Add route-level tests covering the full 401/404/200 matrix**
 
 Per the spec's own flagged Open Question 3: there is no existing precedent in this codebase for an `AuthenticatedUser`-gated *read* route with test coverage at the HTTP layer — check `crates/api`'s existing integration-test setup (if any; grep for `tower::ServiceExt::oneshot` or similar test-request patterns across `crates/api/src`) before assuming a shape. If none exists, this establishes the pattern — a `#[ignore]`d live-database test that builds the router, seeds a real session + user + custom line, and issues real requests via `tower::ServiceExt::oneshot`, is a reasonable default matching this file's existing `db_tests` fixture/cleanup conventions. Cover:
   - No session cookie at all → `401`.
@@ -320,12 +334,12 @@ Per the spec's own flagged Open Question 3: there is no existing precedent in th
   - The real owner's own session → `200`, full `CustomLineDetail`, no `isOwner` field in the JSON body.
   - A catalogue-id request (any `id` in `app.config.lines`) still 404s the same way it always has — confirm this path is untouched.
 
-- [ ] **Step 4: Run the crate's test suite**
+- [x] **Step 4: Run the crate's test suite**
 
 Run (from repo root): `cargo test -p api`
 Expected: PASS, no leftover references to the removed `is_owner` tests/function.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/api/src/routes/lines.rs
@@ -344,7 +358,7 @@ git commit -m "Require ownership on GET /public/lines/{id}, drop the now-vestigi
 
 Depends on Task 3 (`list_custom_lines_for_user`).
 
-- [ ] **Step 1: Branch the custom-line section on the caller's session**
+- [x] **Step 1: Branch the custom-line section on the caller's session**
 
 ```rust
 async fn list_lines(
@@ -373,19 +387,19 @@ async fn list_lines(
 
 (Keep the existing catalogue and TfL blocks byte-for-byte identical — only the custom-line block changes.)
 
-- [ ] **Step 2: Add tests**
+- [x] **Step 2: Add tests**
 
 Extend the route-level test suite established in Task 4 Step 3 (or start it here if Task 4 hasn't landed yet in the actual implementation order — check):
   - Anonymous request: response contains catalogue and TfL entries, zero custom-line entries, even if custom lines exist in the database.
   - Logged-in caller with one owned custom line and one other user's custom line in the database: response contains their own custom line, not the other user's.
   - Catalogue/TfL entries present and identical regardless of session state.
 
-- [ ] **Step 3: Run the crate's test suite**
+- [x] **Step 3: Run the crate's test suite**
 
 Run (from repo root): `cargo test -p api`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/api/src/routes/lines.rs
@@ -404,7 +418,7 @@ git commit -m "Scope list_lines' custom-line section to the authenticated caller
 
 Depends on nothing else in this plan (reuses `get_custom_line`'s existing owner return, same as Task 4).
 
-- [ ] **Step 1: Add the ownership check to the custom-line branch only**
+- [x] **Step 1: Add the ownership check to the custom-line branch only**
 
 ```rust
 async fn get_line_definition(
@@ -431,16 +445,16 @@ async fn get_line_definition(
 }
 ```
 
-- [ ] **Step 2: Add tests**
+- [x] **Step 2: Add tests**
 
 Extend the same route-level suite: anonymous/non-owner/legacy-NULL/nonexistent all 404 for a custom id; real owner gets `200`; any catalogue id returns its definition regardless of session, unchanged.
 
-- [ ] **Step 3: Run the crate's test suite**
+- [x] **Step 3: Run the crate's test suite**
 
 Run (from repo root): `cargo test -p api`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/api/src/routes/lines.rs
@@ -461,7 +475,7 @@ Depends on Task 3 (`owners_for_ids`). This is the one place this plan introduces
 
 All three routes share the same shape of filter: any row whose `id` starts with `custom-` (guaranteed prefix — `custom_lines::slugify` always produces `format!("custom-{slug}")`, no other id shape reaches `line_status`) is dropped unless its `owners_for_ids` entry equals `Some(caller.id)`. A non-`custom-`-prefixed id (catalogue or TfL) is always kept, untouched.
 
-- [ ] **Step 1: Add a shared filter helper**
+- [x] **Step 1: Add a shared filter helper**
 
 ```rust
 /// Drops any row whose id is a private custom line the caller doesn't own.
@@ -496,7 +510,7 @@ async fn filter_private_custom_rows(
 
 Add `use crate::data::custom_lines;` and `use crate::auth::OptionalAuthenticatedUser;` to this file's imports.
 
-- [ ] **Step 2: `get_mode_status` — silently drop, never error the whole request**
+- [x] **Step 2: `get_mode_status` — silently drop, never error the whole request**
 
 ```rust
 async fn get_mode_status(
@@ -514,7 +528,7 @@ async fn get_mode_status(
 
 An anonymous visitor sees zero custom lines in the bulk feed; a logged-in visitor sees only their own. This is list filtering, matching `list_lines`' (Task 5) and every other "browse everything you're allowed to see" surface in this codebase.
 
-- [ ] **Step 3: `get_line_status` — filter before the existing empty-check**
+- [x] **Step 3: `get_line_status` — filter before the existing empty-check**
 
 ```rust
 async fn get_line_status(
@@ -536,7 +550,7 @@ async fn get_line_status(
 
 A request whose only requested id is a custom line the caller doesn't own falls straight into the existing `"no matching line(s): {ids}"` 404 an unknown id already produces — no new branch, no new status code.
 
-- [ ] **Step 4: `get_line_status_history` — same non-distinguishing "empty" treatment this route already gives any unknown id**
+- [x] **Step 4: `get_line_status_history` — same non-distinguishing "empty" treatment this route already gives any unknown id**
 
 ```rust
 async fn get_line_status_history(
@@ -562,7 +576,7 @@ async fn get_line_status_history(
 
 This route has no existence check at all today for *any* id — an unknown id already just returns an empty array. This closes the leak without adding a response shape the route has never had. Per the spec's own flagged Open Question 4, this is worth a second look at implementation time (it falls out of a pre-existing accident, not a deliberate prior design choice) — implement as specified here, but if it turns out to feel wrong in practice, that is a legitimate follow-up, not something to silently "fix" mid-task by inventing a 404 this route has never had for anything else.
 
-- [ ] **Step 5: Add tests**
+- [x] **Step 5: Add tests**
 
 Route-level tests (same DB-test convention as Task 4):
   - `get_mode_status`: a request spanning `national-rail` plus a private custom line returns catalogue/TfL rows always, the custom-line row only when the caller owns it.
@@ -570,12 +584,12 @@ Route-level tests (same DB-test convention as Task 4):
   - `get_line_status_history`: an owned custom id returns real history; a not-owned custom id returns `[]`; an unknown id still returns `[]` (regression check that this pre-existing behavior is unchanged); a catalogue id is completely unaffected.
   - `get_stop_point_disruption`: unchanged, add a regression test only if none already covers "never returns a custom line" — otherwise no new test needed here.
 
-- [ ] **Step 6: Run the crate's test suite**
+- [x] **Step 6: Run the crate's test suite**
 
 Run (from repo root): `cargo test -p api`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/api/src/routes/line_status.rs
@@ -594,7 +608,7 @@ git commit -m "Filter private custom-line rows out of the three line_status.rs b
 
 Depends on nothing else in this plan — `tracked_train_owner` already exists (`crates/api/src/data/train_tracking.rs`), no schema change needed (`tracked_trains.user_id` has been `NOT NULL` since birth).
 
-- [ ] **Step 1: Gate `get_by_tracking_id`**
+- [x] **Step 1: Gate `get_by_tracking_id`**
 
 ```rust
 async fn get_by_tracking_id(
@@ -617,7 +631,7 @@ async fn get_by_tracking_id(
 }
 ```
 
-- [ ] **Step 2: Gate `get_by_uid_and_date`**
+- [x] **Step 2: Gate `get_by_uid_and_date`**
 
 This route resolves by `(train_uid, date)`, not `id` — the ownership check needs the row's `id` first, so fetch state, then check ownership against `state.id`, before returning it:
 
@@ -645,7 +659,7 @@ async fn get_by_uid_and_date(
 
 Each route keeps its own existing not-found message for both "doesn't exist" and "exists but isn't the caller's" — no new message, no way to distinguish the two from the response alone.
 
-- [ ] **Step 3: Add tests**
+- [x] **Step 3: Add tests**
 
 Mirror the ticket routes' own `tracked_train_owner`-based test coverage if it exists (check `crates/api`'s test setup first, per the spec's own Open Question 3 — this may be the first route-level test for either surface). Cover:
   - No session → `401`.
@@ -653,17 +667,17 @@ Mirror the ticket routes' own `tracked_train_owner`-based test coverage if it ex
   - Nonexistent `tracking_id` / unresolved `(uid, date)` pair → `404`, unchanged message.
   - The real owner's own session → `200`, full state, `blend_darwin_eta` overlay still applied.
 
-- [ ] **Step 4: Run the crate's test suite**
+- [x] **Step 4: Run the crate's test suite**
 
 Run (from repo root): `cargo test -p api`
 Expected: PASS, including `router_builds_without_panicking` (unaffected by an extractor change, but still the regression check for the route table itself).
 
-- [ ] **Step 5: Run the full backend build**
+- [x] **Step 5: Run the full backend build**
 
 Run (from repo root): `cargo build --workspace`
 Expected: PASS, no new warnings.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/api/src/routes/train.rs
@@ -683,7 +697,7 @@ git commit -m "Require ownership on GET /Train/{trackingId} and GET /Train/by-ui
 
 This is purely additive to the shared error-mapping path — every other existing caller of `errorForResponse`/`fetchJson` that currently treats a 401 as a bare `Error` will, after this change, get an `ApiUnauthorizedError` instead (still an `Error` subclass, still thrown, still uncaught unless a call site explicitly checks for it) — confirm no existing call site was relying on 401 falling into the generic `Error` branch by name before landing this (grep `frontend/` for `instanceof Error` checks that aren't `instanceof ApiNotFoundError`/narrower, as a sanity check).
 
-- [ ] **Step 1: Add the class and extend `errorForResponse`**
+- [x] **Step 1: Add the class and extend `errorForResponse`**
 
 ```ts
 /** Thrown when the API responds 401 -- lets callers distinguish "not logged
@@ -701,16 +715,16 @@ function errorForResponse(url: string, response: Response): Error {
 }
 ```
 
-- [ ] **Step 2: Add tests**
+- [x] **Step 2: Add tests**
 
 Extend `frontend/lib/api.test.ts`: a call through the shared `fetchJson` path against a mocked `401` response throws `ApiUnauthorizedError`, not a bare `Error`; a `404` still throws `ApiNotFoundError`, unchanged; a `500` still throws a bare `Error`, unchanged.
 
-- [ ] **Step 3: Run the test suite**
+- [x] **Step 3: Run the test suite**
 
 Run (from `frontend/`): `npm test -- api.test.ts`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add frontend/lib/api.ts frontend/lib/api.test.ts
@@ -729,7 +743,7 @@ git commit -m "Add ApiUnauthorizedError, mapped from a 401 response"
 
 Depends on Task 9 (`ApiUnauthorizedError`) for `getTrackedTrainById`/`getTrackedTrainByUidAndDate`'s new error branch. This is a **required precondition**, not an optional cleanup — every backend task above (4–8) gates a route these functions call; without this fix, gating the backend 401s even the legitimate owner, because none of these six functions forward the incoming request's `Cookie` header today, and a Server Component's own `fetch` never inherits it automatically.
 
-- [ ] **Step 1: `getTrackedTrainById` / `getTrackedTrainByUidAndDate` — cookie-forward, map 401 to `ApiUnauthorizedError`**
+- [x] **Step 1: `getTrackedTrainById` / `getTrackedTrainByUidAndDate` — cookie-forward, map 401 to `ApiUnauthorizedError`**
 
 ```ts
 export async function getTrackedTrainById(id: number): Promise<TrackedTrainState> {
@@ -757,7 +771,7 @@ export async function getTrackedTrainByUidAndDate(uid: string, date: string): Pr
 
 Both now throw `ApiUnauthorizedError` for a 401 (via `errorForResponse`, Task 9) and `ApiNotFoundError` for a 404 — two distinct exceptions, consumed by Task 11's two page components to show two different things.
 
-- [ ] **Step 2: `getCustomLine` — cookie-forward, collapse 401 into `ApiNotFoundError`**
+- [x] **Step 2: `getCustomLine` — cookie-forward, collapse 401 into `ApiNotFoundError`**
 
 ```ts
 export async function getCustomLine(id: string): Promise<CustomLineDetail> {
@@ -777,7 +791,7 @@ export async function getCustomLine(id: string): Promise<CustomLineDetail> {
 
 **Deliberately does not use the new `ApiUnauthorizedError` here**, unlike Step 1 — this is not an oversight, it's the spec's own explicit reasoning (Decision 8), and Task 12's page-level code depends on this exact collapse: on `/lines/[id]`, "not logged in" and "logged in but not the owner" already render identically both before and after this change (both just see a 404), and there's no scenario on this page where "please log in, this might be yours" is worth a distinct prompt the way it is on the single-purpose tracked-train page — the default, common case for this page is a public catalogue line most visitors have no reason to think they own.
 
-- [ ] **Step 3: `getAllLines`, `getLineStatus`, `getLineStatusForMode`, `getLineDefinition` — cookie-forward only, no error-shape change**
+- [x] **Step 3: `getAllLines`, `getLineStatus`, `getLineStatusForMode`, `getLineDefinition` — cookie-forward only, no error-shape change**
 
 None of these four need a new error branch — they keep throwing whatever `errorForResponse` already produces (now including the new `ApiUnauthorizedError` for a bare 401, which none of these four should actually ever produce for these particular routes given the `OptionalAuthenticatedUser` gating Tasks 5–7 use, but the mapping is correct and harmless either way). Only the cookie-forwarding is new:
 
@@ -823,7 +837,7 @@ export async function getLineDefinition(id: string): Promise<LineDefinitionSumma
 
 (`fetchJson` itself is unchanged — it already just forwards whatever `init` it's given, so passing a `headers` object through it works with no change to that helper.)
 
-- [ ] **Step 4: Add/extend tests**
+- [x] **Step 4: Add/extend tests**
 
 For each of the seven functions touched in Steps 1–3, following `getTicketsForTrackedTrain`'s existing test shape:
   - Cookie forwarding: mock an incoming `Cookie` header, assert the outgoing `fetch` call includes it.
@@ -831,17 +845,17 @@ For each of the seven functions touched in Steps 1–3, following `getTicketsFor
   - `getTrackedTrainById`/`getTrackedTrainByUidAndDate`: a `401` mock throws `ApiUnauthorizedError` specifically (not just "throws"); a `404` mock still throws `ApiNotFoundError`.
   - `getCustomLine`: both a `401` mock and a `404` mock throw `ApiNotFoundError` — same exception type, not distinguishable from the outside, confirming the collapse.
 
-- [ ] **Step 5: Run the test suite**
+- [x] **Step 5: Run the test suite**
 
 Run (from `frontend/`): `npm test -- api.test.ts`
 Expected: PASS, all new/extended cases included.
 
-- [ ] **Step 6: Run the full frontend test suite and build**
+- [x] **Step 6: Run the full frontend test suite and build**
 
 Run (from `frontend/`): `npm test && npm run build`
 Expected: both PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add frontend/lib/api.ts frontend/lib/api.test.ts
@@ -864,7 +878,7 @@ Depends on Task 9 (`ApiUnauthorizedError`) and Task 10 Step 1 (both `getTrackedT
 
 This is a deliberate departure from Task 12's custom-line page (which collapses 401 into 404) — worth restating in the code comment, not just doing silently: a tracked-train page has no public sibling content one route below it the way a custom line's detail page does (catalogue lines at other ids), so a bare 404 here would be a materially worse experience for a visitor who genuinely owns the train but whose session lapsed — "log in, this might be yours" is the more honest message this single-purpose page can afford.
 
-- [ ] **Step 1: `frontend/app/train/by-id/[trackingId]/page.tsx`**
+- [x] **Step 1: `frontend/app/train/by-id/[trackingId]/page.tsx`**
 
 ```tsx
 import { ApiNotFoundError, ApiUnauthorizedError, getTrackedTrainById } from '@/lib/api';
@@ -896,25 +910,25 @@ import { ApiNotFoundError, ApiUnauthorizedError, getTrackedTrainById } from '@/l
   }
 ```
 
-- [ ] **Step 2: `frontend/app/train/[uid]/[date]/page.tsx`**
+- [x] **Step 2: `frontend/app/train/[uid]/[date]/page.tsx`**
 
 Same shape, adapted to this page's existing `<Title>` text (`Train {uid}`) and imports — this file does not currently import `TextLink`, so add that import alongside `ApiUnauthorizedError`.
 
-- [ ] **Step 3: Add/extend tests**
+- [x] **Step 3: Add/extend tests**
 
 For both pages: mock `getTrackedTrainById`/`getTrackedTrainByUidAndDate` to reject with `ApiUnauthorizedError`, assert the login-prompt renders with a link to `/api/auth/login`; mock a rejection with `ApiNotFoundError`, assert `notFound()` still fires (i.e. the existing behavior is unchanged, not silently swallowed by the new branch); mock a rejection with a bare `Error`, assert it still propagates uncaught (i.e. `throw err` at the bottom of the catch block is still reachable and not accidentally shadowed by the new `if`).
 
-- [ ] **Step 4: Run the test suite**
+- [x] **Step 4: Run the test suite**
 
 Run (from `frontend/`): `npm test`
 Expected: PASS, including both pages' extended/new test files.
 
-- [ ] **Step 5: Run the full build**
+- [x] **Step 5: Run the full build**
 
 Run (from `frontend/`): `npm run build`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add frontend/app/train/by-id/[trackingId]/page.tsx frontend/app/train/[uid]/[date]/page.tsx
@@ -936,11 +950,11 @@ git commit -m "Show a distinct login prompt for a 401 on either tracked-train de
 
 Depends on Task 4 (backend no longer sends `isOwner` in the JSON body — this task is the frontend catching up) and Task 10 Step 2 (`getCustomLine` now collapses any non-owner/anonymous caller's response into `ApiNotFoundError`, which is *why* the gate simplification below is safe: by the time this page's Edit/Delete gate is reached, `getCustomLine` has already thrown and the whole page has already 404d for any caller who isn't the true owner — there is no remaining path where `isCustom` is `true` and the viewer isn't the owner).
 
-- [ ] **Step 1: Drop `isOwner` from `CustomLineDetail` (`frontend/lib/types.ts`)**
+- [x] **Step 1: Drop `isOwner` from `CustomLineDetail` (`frontend/lib/types.ts`)**
 
 Remove the `isOwner: boolean;` field and its doc-comment sentence explaining how it's computed.
 
-- [ ] **Step 2: Simplify the page**
+- [x] **Step 2: Simplify the page**
 
 ```tsx
   let isCustom = true;
@@ -970,16 +984,16 @@ Remove the `isOwner: boolean;` field and its doc-comment sentence explaining how
 
 Update the surrounding comment block (currently explains why `isOwner` is the real gate) to instead explain the new invariant: `getCustomLine` already 404s the whole page for any non-owner before this line is ever reached, so `isCustom` alone is now sufficient — reference Task 10 Step 2 / Decision 8 in the comment rather than re-deriving the reasoning from scratch.
 
-- [ ] **Step 3: Update/add tests**
+- [x] **Step 3: Update/add tests**
 
 If `frontend/app/lines/[id]/page.test.tsx` (or equivalent) exists, remove any test asserting `isOwner`-driven visibility differences (e.g. "owner sees Edit, non-owner logged in doesn't") and replace with: Edit/Delete render whenever `isCustom` is true (i.e. `getCustomLine` resolved), and the whole page 404s (via `getLineStatus`'s own filtering from Task 7, or `getCustomLine`'s 404 collapse from Task 10) for a non-owner before Edit/Delete visibility is even a question. If no such test file exists yet, this is optional — do not create new test surface purely for this simplification unless an existing test needs updating to keep passing.
 
-- [ ] **Step 4: Run the test suite and build**
+- [x] **Step 4: Run the test suite and build**
 
 Run (from `frontend/`): `npm test && npm run build`
 Expected: both PASS, no leftover references to `CustomLineDetail.isOwner` anywhere in `frontend/`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/app/lines/[id]/page.tsx frontend/lib/types.ts

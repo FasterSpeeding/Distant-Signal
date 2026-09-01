@@ -39,17 +39,29 @@ export default async function LineDetailPage({
   // `getCustomLine` 404s for a catalogue-line id (the endpoint only ever
   // reads the `custom_lines` table) — that expected 404 is how this page
   // tells a custom line apart from a catalogue one, without needing a
-  // second "is this custom" field on the status endpoint itself. Its
-  // response also carries `isOwner` (see `CustomLineDetail` in
-  // `lib/types.ts`), which is what actually gates Edit/Delete below —
-  // `isCustom` alone used to be treated as "safe to render these
-  // controls," but every viewer, owner or not, sees the same `isCustom`
-  // value.
+  // second "is this custom" field on the status endpoint itself.
+  //
+  // `isCustom` alone is now also the *ownership* gate below, not just the
+  // catalogue/custom distinction — `getCustomLine` collapses a 401
+  // (not logged in) and a 404 (logged in but not the owner, or truly
+  // unknown id) into the same `ApiNotFoundError` (Task 10 Step 2 /
+  // Decision 8 of docs/superpowers/specs/2026-08-31-private-custom-lines-and-tracked-trains-design.md).
+  // So by the time this catch block finishes, either `isCustom` is `false`
+  // (never render Edit/Delete), or it's `true` *and* the call above
+  // actually succeeded for this specific caller with this specific
+  // cookie — which, given that collapse, only happens for the real owner.
+  // There's deliberately no separate "please log in, this might be yours"
+  // prompt here the way the tracked-train pages have (see
+  // frontend/app/train/[uid]/[date]/page.tsx,
+  // frontend/app/train/by-id/[trackingId]/page.tsx, and their own
+  // comments): unlike a single train someone is tracking, a line id is, by
+  // far, most often a public catalogue line that a random visitor has no
+  // reason to think they own, so folding both "anonymous" and "not the
+  // owner" into one plain 404-shaped "no controls for you" is the better
+  // default here, not an inconsistency to fix.
   let isCustom = true;
-  let isOwner = false;
   try {
-    const custom = await getCustomLine(id);
-    isOwner = custom.isOwner;
+    await getCustomLine(id);
   } catch (err) {
     if (err instanceof ApiNotFoundError) {
       isCustom = false;
@@ -84,15 +96,16 @@ export default async function LineDetailPage({
           {definition && <LineDefinitionTooltip stations={definition.stations} operators={definition.operators} />}
         </Group>
         <Group gap="sm">
-          {/* Gated on `isOwner`, not just `isCustom` — the backend's
-              ownership check is the real gate (anonymous and non-owner
-              writes both 404/401), but rendering live-looking controls for
-              a viewer who can never use them just invites a click that
-              fails with a raw error. See
-              docs/superpowers/specs/2026-08-31-anonymous-user-ux-design.md's
-              Policy, Tier 3: hidden entirely for both cases, not shown and
-              then failed. */}
-          {isCustom && isOwner && (
+          {/* Gated on `isCustom` alone -- no separate `isOwner` check needed
+              here. By the time this line is reached, `getCustomLine` has
+              already either thrown (so `isCustom` is `false`) or succeeded
+              for this exact caller/cookie, and its 401-collapses-into-404
+              behavior (Task 10 Step 2 / Decision 8, see the comment on the
+              `getCustomLine` call above) means the only way it can succeed
+              is for the real owner. There's no remaining path where
+              `isCustom` is `true` and the viewer isn't the owner, so
+              `isCustom` is now the whole gate. */}
+          {isCustom && (
             <>
               {/* Plain `<Link>` wrapping `Button`, not `component={Link}`
                   on a Mantine polymorphic prop — this page is a Server

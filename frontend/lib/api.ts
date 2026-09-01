@@ -23,6 +23,13 @@ import type {
  * not found" from other failures (network errors, 500s, etc.). */
 export class ApiNotFoundError extends Error {}
 
+/** Thrown when the API responds 401 -- lets callers distinguish "not logged
+ * in at all" from `ApiNotFoundError`'s "doesn't exist / isn't yours"
+ * (which stays deliberately indistinguishable from each other, per this
+ * app's 401-vs-404 convention -- see
+ * docs/superpowers/specs/2026-08-31-private-custom-lines-and-tracked-trains-design.md). */
+export class ApiUnauthorizedError extends Error {}
+
 function baseUrl(): string {
   const url = process.env.API_BASE_URL;
   if (!url) {
@@ -37,7 +44,9 @@ function baseUrl(): string {
  * paths can't drift on which statuses map to `ApiNotFoundError`. */
 function errorForResponse(url: string, response: Response): Error {
   const message = `API request to ${url} failed: ${response.status} ${response.statusText}`;
-  return response.status === 404 ? new ApiNotFoundError(message) : new Error(message);
+  if (response.status === 404) return new ApiNotFoundError(message);
+  if (response.status === 401) return new ApiUnauthorizedError(message);
+  return new Error(message);
 }
 
 async function fetchJson<T>(url: string, init: RequestInit): Promise<T> {
@@ -48,17 +57,31 @@ async function fetchJson<T>(url: string, init: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/** Builds the `fetch`/`fetchJson` `init` fragment that forwards the
+ * incoming request's session cookie to the backend -- a Server
+ * Component's own `fetch` never inherits it automatically. Returns `{}`
+ * (no `Cookie` header at all) when the visitor has no cookies, matching
+ * every existing cookie-forwarding call site's own conditional shape. */
+async function cookieForwardInit(): Promise<RequestInit> {
+  const cookieHeader = (await cookies()).toString();
+  return cookieHeader ? { headers: { Cookie: cookieHeader } } : {};
+}
+
 export async function getLineStatusForMode(mode: string): Promise<LineStatusReport[]> {
-  return fetchJson<LineStatusReport[]>(`${baseUrl()}/Line/Mode/${mode}/Status`, {
+  const url = `${baseUrl()}/Line/Mode/${mode}/Status`;
+  return fetchJson<LineStatusReport[]>(url, {
     cache: 'no-store',
+    ...(await cookieForwardInit()),
   });
 }
 
 export async function getLineStatus(ids: string[], detail: boolean): Promise<LineStatusReport[]> {
   const idsParam = ids.join(',');
   const query = detail ? '?detail=true' : '';
-  return fetchJson<LineStatusReport[]>(`${baseUrl()}/Line/${idsParam}/Status${query}`, {
+  const url = `${baseUrl()}/Line/${idsParam}/Status${query}`;
+  return fetchJson<LineStatusReport[]>(url, {
     cache: 'no-store',
+    ...(await cookieForwardInit()),
   });
 }
 
@@ -91,10 +114,11 @@ export async function getLineStatusHistory(
   from: string,
   to: string,
 ): Promise<LineStatusHistoryEntry[]> {
-  return fetchJson<LineStatusHistoryEntry[]>(
-    `${baseUrl()}/Line/${id}/Status/${from}/to/${to}`,
-    { cache: 'no-store' },
-  );
+  const url = `${baseUrl()}/Line/${id}/Status/${from}/to/${to}`;
+  return fetchJson<LineStatusHistoryEntry[]>(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
 }
 
 /** `GET /Line/{id}/Stats/{from}/to/{to}` -- the new daily rollup route.
@@ -170,7 +194,11 @@ export async function getSession(): Promise<SessionInfo> {
 }
 
 export async function getAllLines(): Promise<LineSummary[]> {
-  return fetchJson<LineSummary[]>(`${baseUrl()}/public/lines`, { cache: 'no-store' });
+  const url = `${baseUrl()}/public/lines`;
+  return fetchJson<LineSummary[]>(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
 }
 
 /** Every TOC (code + name), for resolving a fixed known set of operator
@@ -183,12 +211,33 @@ export async function getAllTocs(): Promise<Suggestion[]> {
   });
 }
 
+/** Deliberately collapses a `401` into `ApiNotFoundError` alongside the
+ * genuine `404`, unlike `getTrackedTrainById`/`getTrackedTrainByUidAndDate`
+ * below -- Decision 8 in the design spec. On `/lines/[id]`, "not logged in"
+ * and "logged in but not the owner" should render identically (both just a
+ * 404): this is a public catalogue page most visitors have no reason to
+ * think they own, unlike the single-purpose tracked-train page, so there's
+ * no case here worth a distinct "please log in, this might be yours"
+ * prompt. */
 export async function getCustomLine(id: string): Promise<CustomLineDetail> {
-  return fetchJson<CustomLineDetail>(`${baseUrl()}/public/lines/${id}`, { cache: 'no-store' });
+  const url = `${baseUrl()}/public/lines/${id}`;
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
+  if (response.status === 401 || response.status === 404) {
+    throw new ApiNotFoundError(`API request to ${url} failed: ${response.status}`);
+  }
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<CustomLineDetail>;
 }
 
 export async function getLineDefinition(id: string): Promise<LineDefinitionSummary> {
-  return fetchJson<LineDefinitionSummary>(`${baseUrl()}/public/lines/${id}/definition`, { cache: 'no-store' });
+  const url = `${baseUrl()}/public/lines/${id}/definition`;
+  return fetchJson<LineDefinitionSummary>(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
 }
 
 export async function getDataFreshness(): Promise<DataFreshness> {
@@ -208,14 +257,23 @@ export async function getHistoryRetention(): Promise<HistoryRetention> {
 }
 
 export async function getTrackedTrainById(id: number): Promise<TrackedTrainState> {
-  return fetchJson<TrackedTrainState>(`${baseUrl()}/Train/${id}`, { cache: 'no-store' });
+  const url = `${baseUrl()}/Train/${id}`;
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<TrackedTrainState>;
 }
 
 export async function getTrackedTrainByUidAndDate(uid: string, date: string): Promise<TrackedTrainState> {
-  return fetchJson<TrackedTrainState>(
-    `${baseUrl()}/Train/by-uid/${encodeURIComponent(uid)}/${encodeURIComponent(date)}`,
-    { cache: 'no-store' },
-  );
+  const url = `${baseUrl()}/Train/by-uid/${encodeURIComponent(uid)}/${encodeURIComponent(date)}`;
+  const response = await fetch(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<TrackedTrainState>;
 }
 
 /** `GET /Train/mine`. Returns `null` on `401` (not logged in) --
