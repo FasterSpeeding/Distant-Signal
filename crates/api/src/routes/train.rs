@@ -2,9 +2,13 @@
 //! authenticated session (`AuthenticatedUser`, from
 //! docs/superpowers/plans/2026-08-28-user-accounts-sso.md's Task 6) --
 //! every tracked train has a real owner from birth, per that plan's
-//! coordination fix to this one. State *reads* (Task 5) stay
-//! unauthenticated/unscoped -- see that task's note on why this isn't a
-//! strict "everything private" posture. Mounted directly (not under
+//! coordination fix to this one. State *reads* (`get_by_tracking_id`,
+//! `get_by_uid_and_date`) originally stayed unauthenticated/unscoped per
+//! Task 5's note on why that wasn't a strict "everything private" posture
+//! -- since retrofitted to require the caller own the pin (see the
+//! 2026-08-31 private-custom-lines-and-tracked-trains plan's Task 8; same
+//! 404-for-both-"missing"-and-"not-yours" convention as every other
+//! ownership check in this app, never `403`). Mounted directly (not under
 //! `/public`) to match the design doc's sketched URL shape for the
 //! eventual frontend page.
 
