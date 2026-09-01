@@ -1,11 +1,12 @@
 import { Suspense } from 'react';
-import { Alert, Divider, Skeleton, Stack, Text, Title } from '@mantine/core';
+import { Alert, Divider, Skeleton, Stack, Tabs, Text, Title } from '@mantine/core';
 import { getHistoryRetention, getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TextLink } from '@/components/TextLink';
 import { groupHistoryByDay, resolveRange, retentionShortfallDays } from '@/lib/history';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { HistoryRangePicker } from './HistoryRangePicker';
+import { TrendsResults } from './TrendsResults';
 
 // Same `revalidate = 0` rationale as the other dynamic routes: without it
 // Next.js may treat this route as eligible for static generation and try to
@@ -72,38 +73,61 @@ export default async function LineHistoryPage({
       </TextLink>
       <Title order={1}>History: {name}</Title>
       <HistoryRangePicker lineId={id} preset={range.preset} from={range.from} to={range.to} />
-      {/* Distinguishes "nothing happened in this window" from "the window
-          reaches further back than this server keeps history" — without
-          this, a mostly-empty "Last 30 days" result and three genuinely
-          quiet weeks look identical. `shortfallDays` (and therefore this
-          banner) is only non-null when the real, server-reported retention
-          ceiling is known AND the requested range exceeds it — never a
-          guess. See `lib/history.ts`'s `retentionShortfallDays`. */}
-      {shortfallDays !== null && (
-        <Alert color="yellow" variant="light" title="Some of this range isn't available">
-          This server only keeps {retentionDays} {retentionDays === 1 ? 'day' : 'days'} of line
-          history. The oldest {shortfallDays} {shortfallDays === 1 ? 'day' : 'days'} of the range you
-          picked has already been removed — if this range looks empty or short, that may be why,
-          not because nothing happened.
-        </Alert>
-      )}
-      {/* The results are always rendered now, so without a Suspense
-          boundary the whole page — picker included — would block on the
-          history fetch, which is the slowest call in the app for a 30-day
-          window.
+      {/* Timeline (the existing per-status-change history) and Trends (the
+          Task 9 daily rollup) are split into tabs since they're different
+          views over data with different retention windows — the 7-day
+          shortfall notice below is specific to `line_status_history` and
+          would be misleading if shown while looking at Trends, so it lives
+          inside the Timeline panel rather than above the Tabs. */}
+      <Tabs defaultValue="timeline">
+        <Tabs.List>
+          <Tabs.Tab value="timeline">Timeline</Tabs.Tab>
+          <Tabs.Tab value="trends">Trends</Tabs.Tab>
+        </Tabs.List>
+        <Tabs.Panel value="timeline">
+          <Stack gap="md" pt="md">
+            {/* Distinguishes "nothing happened in this window" from "the window
+                reaches further back than this server keeps history" — without
+                this, a mostly-empty "Last 30 days" result and three genuinely
+                quiet weeks look identical. `shortfallDays` (and therefore this
+                banner) is only non-null when the real, server-reported retention
+                ceiling is known AND the requested range exceeds it — never a
+                guess. See `lib/history.ts`'s `retentionShortfallDays`. */}
+            {shortfallDays !== null && (
+              <Alert color="yellow" variant="light" title="Some of this range isn't available">
+                This server only keeps {retentionDays} {retentionDays === 1 ? 'day' : 'days'} of line
+                history. The oldest {shortfallDays} {shortfallDays === 1 ? 'day' : 'days'} of the range you
+                picked has already been removed — if this range looks empty or short, that may be why,
+                not because nothing happened.
+              </Alert>
+            )}
+            {/* The results are always rendered now, so without a Suspense
+                boundary the whole page — picker included — would block on the
+                history fetch, which is the slowest call in the app for a 30-day
+                window.
 
-          Keyed on the preset name when one is active, not on `from`/`to`:
-          `resolveRange` stamps a preset's `from`/`to` from `Date.now()` at
-          millisecond precision, and `AutoRefresh` re-renders this page every
-          30s, so an `${from}-${to}` key would churn — and remount this whole
-          subtree — on every auto-refresh even though the user is still
-          looking at "the last 7 days". A preset's *identity* is its name,
-          not the instant it happened to be computed at. A genuine custom
-          range has no preset (`range.preset` is `null`), so it still falls
-          back to the from/to-based key and resets exactly as before. */}
-      <Suspense key={range.preset ?? `${range.from}-${range.to}`} fallback={<Skeleton height={240} />}>
-        <HistoryResults id={id} from={range.from} to={range.to} />
-      </Suspense>
+                Keyed on the preset name when one is active, not on `from`/`to`:
+                `resolveRange` stamps a preset's `from`/`to` from `Date.now()` at
+                millisecond precision, and `AutoRefresh` re-renders this page every
+                30s, so an `${from}-${to}` key would churn — and remount this whole
+                subtree — on every auto-refresh even though the user is still
+                looking at "the last 7 days". A preset's *identity* is its name,
+                not the instant it happened to be computed at. A genuine custom
+                range has no preset (`range.preset` is `null`), so it still falls
+                back to the from/to-based key and resets exactly as before. */}
+            <Suspense key={range.preset ?? `${range.from}-${range.to}`} fallback={<Skeleton height={240} />}>
+              <HistoryResults id={id} from={range.from} to={range.to} />
+            </Suspense>
+          </Stack>
+        </Tabs.Panel>
+        <Tabs.Panel value="trends">
+          <Stack gap="md" pt="md">
+            <Suspense key={range.preset ?? `${range.from}-${range.to}`} fallback={<Skeleton height={320} />}>
+              <TrendsResults id={id} from={range.from} to={range.to} />
+            </Suspense>
+          </Stack>
+        </Tabs.Panel>
+      </Tabs>
     </Stack>
   );
 }
