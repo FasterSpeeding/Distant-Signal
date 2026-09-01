@@ -973,6 +973,36 @@ mod tests {
         }
     }
 
+    // Task 2.2: `lines/northern-blackpool.toml` gained the full Bolton to
+    // Preston (via Chorley) local calling pattern, previously omitted. CRL
+    // (Chorley) is strictly between the file's existing BON and PRE entries
+    // and inherits the file's own exclusive `northern-blackpool` segment
+    // (Salford Crescent to Bolton is run non-stop by this service, so no
+    // new station landed on the shared `northern-manchester` segment -
+    // see the file's own top-of-file comment). Mirrors
+    // `airedale_exclusive_segment_incident_does_not_propagate` above.
+    #[test]
+    fn northern_blackpool_chorley_has_station_and_stays_exclusive() {
+        let lines = load_line("northern-blackpool");
+        let blackpool = lines.get("northern-blackpool").expect("northern-blackpool should load");
+        assert!(blackpool.has_station("CRL"), "northern-blackpool should now list Chorley (CRL)");
+        assert_eq!(blackpool.segment_for("CRL"), Some("northern-blackpool"));
+
+        let all_lines = load_all_lines();
+        let registry = SegmentRegistry::new(&all_lines);
+        let inc = incident(
+            "NT-10",
+            "Signal failure at Chorley",
+            "Signal failure causing delays on the Blackpool Line at Chorley.",
+            &["NT"],
+            &["CRL"],
+        );
+        let matches = lines_affected_by(&inc, &all_lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["northern-blackpool".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
     #[test]
     fn lner_ecml_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
