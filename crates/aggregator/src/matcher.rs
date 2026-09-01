@@ -5926,4 +5926,70 @@ mod tests {
             assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
         }
     }
+
+    // Station-catalogue-completeness plan, Task 5.4
+    // (southern-brighton-main-line.toml): a fresh route-diagram pass
+    // confirmed Clapham Junction (CLJ) and Wivelsfield (WVF) as genuinely
+    // missing, currently-Southern-served stations - see each entry's own
+    // comment in the TOML file for sourcing. Regression guard: the TOML
+    // actually parses and both stations are picked up via
+    // `LineDefinition::from_dir` on their expected segment.
+    #[test]
+    fn southern_brighton_main_line_fillin_stations_are_now_modelled() {
+        let lines = load_line("southern-brighton-main-line");
+        let bml = lines.get("southern-brighton-main-line").expect("southern-brighton-main-line should exist");
+        assert!(bml.has_station("CLJ"), "southern-brighton-main-line should now have station CLJ");
+        assert_eq!(bml.segment_for("CLJ"), Some("southern-bml-victoria"), "CLJ should be on southern-bml-victoria");
+        assert!(bml.has_station("WVF"), "southern-brighton-main-line should now have station WVF");
+        assert_eq!(bml.segment_for("WVF"), Some("southern-bml-south"), "WVF should be on southern-bml-south");
+    }
+
+    // Clapham Junction (CLJ) turns out to be a six-way station overlap once
+    // southern-brighton-main-line.toml's own entry is added: three SWR
+    // files (swr-south-west-main.toml, swr-portsmouth-direct.toml,
+    // swr-alton.toml) already share the literal `swr-trunk-waterloo`
+    // segment name there (a genuine shared physical trunk out of Waterloo),
+    // so those three should resolve as SharedSegment together; the two
+    // Overground files each use their own exclusive segment name
+    // (`overground-windrush-clapham-branch`, `overground-mildmay-clapham-
+    // branch`) and this file's own new `southern-bml-victoria` is likewise
+    // unique to it (grepped `lines/*.toml` before picking the name) - all
+    // three of those stay ExclusiveSegment, independent of the SWR trio and
+    // of each other. Mirrors the mixed shared/exclusive pattern already
+    // exercised elsewhere in this file (e.g. the LBG/DVP multi-file
+    // overlaps), just with more lines at once.
+    #[test]
+    fn clj_station_overlap_matches_swr_trunk_shared_and_overground_and_bml_as_mixed_scope() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SN-1",
+            "Signal failure at Clapham Junction",
+            "Signal failure causing delays to services.",
+            &["SN"],
+            &["CLJ"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "swr-south-west-main".to_string(),
+                "swr-portsmouth-direct".to_string(),
+                "swr-alton".to_string(),
+                "overground-windrush".to_string(),
+                "overground-mildmay".to_string(),
+                "southern-brighton-main-line".to_string(),
+            ])
+        );
+        for m in &matches {
+            let expected = if ["swr-south-west-main", "swr-portsmouth-direct", "swr-alton"].contains(&m.line.id.as_str())
+            {
+                MatchScope::SharedSegment
+            } else {
+                MatchScope::ExclusiveSegment
+            };
+            assert_eq!(m.scope, expected, "{} should be {:?}", m.line.id, expected);
+        }
+    }
 }
