@@ -616,6 +616,80 @@ trustConsumer:
   podSecurityContext: {}
 
 # ---------------------------------------------------------------------------
+# scheduleFeed -- OPT-IN CIF SCHEDULE feed SFTP-push receiver
+# (docs/superpowers/specs/2026-09-01-schedule-feed-push-design.md)
+# ---------------------------------------------------------------------------
+# Renders ONE Deployment with TWO containers (an SFTP server and this app's
+# own schedule-ingest verifier) sharing one ReadWriteOnce PVC -- see the
+# design doc's "The reader/writer problem push introduces" for why this is
+# one Pod, not two. Off by default: enabling this without a real DTD push
+# account configured (see docs/superpowers/plans/2026-09-01-schedule-feed-push-ingestion.md
+# Task 1) stands up infrastructure nothing can reach yet, which is a
+# legitimate thing to do ahead of time but not silently assumed to be "done."
+scheduleFeed:
+  enabled: false
+  sftp:
+    image:
+      repository: drakkan/sftpgo
+      tag: ""
+      pullPolicy: IfNotPresent
+    # -- SFTPGo's own default container port -- not independently
+    # re-verified against a real deployed instance by this plan.
+    port: 2022
+    # -- DTD's push account username on THIS app's server. Required when
+    # enabled; no default possible. See Task 1 -- unconfirmed whether DTD's
+    # push client even needs a value here at all until push-side
+    # configuration mechanics are known.
+    username: ""
+    # -- "password" or "public-key". NO DEFAULT: RSPS5046 states neither
+    # mechanism for either delivery direction (design doc's own primary-
+    # source re-check). Enabling without setting this aborts rendering.
+    authMethod: ""
+    # -- Used when authMethod=password. NEVER auto-generated -- same rule as
+    # pollers.*.apiKey. Rendered into the chart Secret when existingSecret
+    # is empty.
+    password: ""
+    # -- DTD's public key, used when authMethod=public-key AND DTD's push
+    # configuration turns out to support supplying one (unconfirmed).
+    publicKey: ""
+    existingSecret: ""
+    existingSecretPasswordKey: schedule-sftp-password
+    existingSecretPublicKeyKey: schedule-sftp-dtd-public-key
+    # -- This app's OWN generated SSH host key, NOT DTD's -- inverted from
+    # the (superseded) pull design's dtd_sftp_host_key_fingerprint. Leave
+    # empty to have the chart generate and preserve one (Task 6).
+    existingSecretHostKey: ""
+  ingest:
+    image:
+      repository: distant-signal/schedule-ingest
+      tag: ""
+      pullPolicy: IfNotPresent
+    checkTimes: "22:00,22:30,23:00,23:30,00:00,00:30,01:00,01:30,16:00"
+    retentionKeepSequences: 2
+    stabilityCycles: 2
+  service:
+    # -- LoadBalancer or NodePort + an operator-managed external LB/DNS --
+    # NOT an Ingress (HTTP(S)-only by spec, cannot carry SFTP). Actually
+    # exposing this to DTD is gated behind Task 1's outcome, per this
+    # plan's own Task 1 -- rendering/lint-checking it is not.
+    type: LoadBalancer
+    annotations: {}
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    existingClaim: ""
+  logLevel: info
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  podSecurityContext: {}
+
+# ---------------------------------------------------------------------------
 # frontend (frontend/lib/api.ts)
 # ---------------------------------------------------------------------------
 frontend:
