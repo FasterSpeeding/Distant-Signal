@@ -340,9 +340,13 @@ retention window."
   "data received" entirely, this plan can be downgraded from "compliance
   fix" to "good practice, do it anyway for the product reason the spec
   already flagged" — worth recording either way in whatever document
-  tracks the audit's resolution.
+  tracks the audit's resolution. **Still open** — not resolved by this
+  implementation pass, per this plan's own note that the underlying
+  legal-sufficiency question is separate from whether the remediation is
+  worth doing. Tasks 2-7 below were implemented regardless, since the
+  plan itself judges this a low-cost, no-regret fix either way.
 
-- [ ] **Task 2: Give `daily_stats_retention_days` a real default,
+- [x] **Task 2: Give `daily_stats_retention_days` a real default,
   strictly under 365.** In `crates/aggregator/src/config.rs:56-66`,
   change the `#[arg(long, env)]` attribute to include
   `default_value_t = <N>` and drop the `Option` wrapper (matching
@@ -353,16 +357,20 @@ retention window."
   it must leave real margin under 365, not sit at 364). Update the doc
   comment to drop the "rows accumulate indefinitely" framing and instead
   note the licence-driven ceiling, citing this document.
+  **Done: `default_value_t = 300`.**
 
-- [ ] **Task 3: Un-gate the prune call in the poll loop.**
+- [x] **Task 3: Un-gate the prune call in the poll loop.**
   `crates/aggregator/src/main.rs:130-134`'s `if let Some(retention) = ...`
   branch becomes unconditional once Task 2 removes the `Option`,
   mirroring `prune_history`'s unconditional call at line 105 exactly.
   Update the metrics/logging around `daily_stats_pruned` (currently
   assumes it can legitimately be a no-op) to match `prune_history`'s
   pattern.
+  **Done.** The metrics/logging (counter increment + `daily_stats_pruned`
+  log field) already matched `prune_history`'s unconditional pattern
+  exactly; only the dead `if let Some`/`else 0` branch needed removing.
 
-- [ ] **Task 4: Wire the Helm chart the same way `historyRetentionDays`
+- [x] **Task 4: Wire the Helm chart the same way `historyRetentionDays`
   already is.** Add `aggregator.dailyStatsRetentionDays` to
   `charts/distant-signal/values.yaml` (near `historyRetentionDays` at
   line ~487, same section), defaulting to the value chosen in Task 2, and
@@ -373,15 +381,23 @@ retention window."
   default, an existing values.yaml override or chart upgrade path could
   still leave it unset in a real deployment unless the chart explicitly
   carries a value.
+  **Done.** Verified with `helm lint` (passes, pre-existing required-value
+  guards unrelated) and `helm template` (renders
+  `DAILY_STATS_RETENTION_DAYS: "300"`).
 
-- [ ] **Task 5: Update the line-history-graphics spec's Open question 1**
+- [x] **Task 5: Update the line-history-graphics spec's Open question 1**
   (`docs/superpowers/specs/2026-08-31-line-history-graphics-design.md:751-759`)
   to note it's now resolved-with-constraint: the "how far back" product
   decision still stands, but must land at or under whatever ceiling Task
   2 sets, for the licence reason this document establishes. Cross-link
   back to this document.
+  **Done.** Also lightly updated Decision 1's retention paragraph, which
+  still described "unset for v1, or a generous default like 400" as live
+  options — both now contradict the sub-365 requirement, so leaving them
+  unedited would have made the spec self-contradictory against the
+  updated Open question 1.
 
-- [ ] **Task 6: Confirm no other consumer of `line_status_daily_stats`
+- [x] **Task 6: Confirm no other consumer of `line_status_daily_stats`
   assumes unbounded retention.** A quick grep of `crates/api` for reads
   of this table (the Trends tab's route, whatever it's called) to check
   it degrades honestly if a user requests a range older than the new
@@ -389,8 +405,36 @@ retention window."
   gap-rendering logic Decision 3 of the design spec describes for
   under-covered ranges, but worth a one-line confirmation rather than
   assuming.
+  **Confirmed, no code change needed.**
+  `crates/api/src/data/queries.rs`'s `daily_stats_for_range` is a plain
+  `WHERE day BETWEEN $2 AND $3` select that returns an empty `Vec` for
+  any day with no row — including a range entirely outside the retention
+  window — matching `line_status_history_for_range`'s existing behavior
+  by its own doc comment, no error path. The route
+  (`crates/api/src/routes/line_status.rs`'s `get_line_daily_stats`) maps
+  whatever comes back straight to JSON. The frontend's
+  `frontend/app/lines/[id]/history/TrendsResults.tsx` already renders a
+  `sampleCycles`-driven gap for sparse days and an explicit "Not enough
+  sampled data yet for this line." message for a fully-empty range
+  (Decision 3's sparse-data floor, `SPARSE_DATA_FLOOR_CYCLES = 20`) — so
+  a range partly or fully pruned by the new retention ceiling degrades
+  the same honest way as any other under-covered range, not a crash or
+  misleading empty state.
 
-- [ ] **Task 7: Do not touch `trustConsumer.retentionDays`**
+- [x] **Task 7: Do not touch `trustConsumer.retentionDays`**
   (`charts/distant-signal/values.yaml:606-607`) or anything under
   `crates/trust-consumer/` as part of this work — confirmed out of scope
   in Step 4 above (different feed, unrestricted licence).
+  **Confirmed untouched.**
+
+---
+
+## Implementation status (2026-09-01)
+
+Tasks 2-7 implemented. Task 1 (human sign-off on whether an aggregated
+daily rollup counts as "data received") remains genuinely open — not
+resolved by this pass, per this document's own framing that the
+remediation is worth doing regardless of how that question resolves.
+Verification: `cargo build --workspace` and `cargo test --workspace`
+both pass (0 failures); `helm lint`/`helm template` confirm the new
+`DAILY_STATS_RETENTION_DAYS` env var renders correctly.
