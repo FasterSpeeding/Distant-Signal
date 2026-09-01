@@ -36,7 +36,12 @@ fn cookie_secure(app: &App) -> bool {
     app.config.sso_redirect_url.starts_with("https://")
 }
 
-async fn login(State(app): State<App>) -> Response {
+#[derive(Deserialize)]
+struct LoginParams {
+    return_to: Option<String>,
+}
+
+async fn login(State(app): State<App>, Query(params): Query<LoginParams>) -> Response {
     let (url, pkce_verifier, csrf_state, nonce) = match app.oidc.authorize_url().await {
         Ok(v) => v,
         Err(err) => {
@@ -45,6 +50,14 @@ async fn login(State(app): State<App>) -> Response {
         }
     };
 
+    // An invalid or malicious return_to is discarded at the door and
+    // never persisted at all -- insert_login_state receives None for it,
+    // exactly as if the parameter had never been sent. A bad return_to
+    // must never fail the login attempt itself, only silently lose the
+    // "return to this page" behavior for this one attempt (see this
+    // plan's Global Constraints: fallback is always silent).
+    let return_to = params.return_to.as_deref().and_then(auth::validate_return_to);
+
     let login_state_id = auth::generate_session_token();
     if let Err(err) = users::insert_login_state(
         &app.database,
@@ -52,6 +65,7 @@ async fn login(State(app): State<App>) -> Response {
         pkce_verifier.secret(),
         nonce.secret(),
         csrf_state.secret(),
+        return_to.as_deref(),
     )
     .await
     {
@@ -189,5 +203,34 @@ async fn session(OptionalAuthenticatedUser(user): OptionalAuthenticatedUser) -> 
     match user {
         Some(u) => Json(SessionResponse { authenticated: true, id: Some(u.id), email: u.email, name: u.name }),
         None => Json(SessionResponse { authenticated: false, id: None, email: None, name: None }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn login_discards_an_invalid_return_to_rather_than_erroring() {
+        // Mirrors the exact expression added to login() in Step 2, without
+        // needing a live App/database to exercise it.
+        let return_to = Some("https://evil.com".to_string())
+            .as_deref()
+            .and_then(auth::validate_return_to);
+        assert_eq!(return_to, None);
+    }
+
+    #[test]
+    fn login_keeps_a_valid_return_to() {
+        let return_to = Some("/lines/some-line".to_string())
+            .as_deref()
+            .and_then(auth::validate_return_to);
+        assert_eq!(return_to, Some("/lines/some-line".to_string()));
+    }
+
+    #[test]
+    fn login_treats_no_return_to_the_same_as_an_invalid_one() {
+        let return_to: Option<String> = None;
+        assert_eq!(return_to.as_deref().and_then(auth::validate_return_to), None);
     }
 }
