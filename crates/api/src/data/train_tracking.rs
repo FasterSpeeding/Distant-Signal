@@ -9,6 +9,8 @@ use common::{TicketEntryRequest, TrackPinRequest, TrackedTrainRef, TrainMovement
 use serde::Serialize;
 use sqlx::PgPool;
 
+use crate::data::delay_repay_rules;
+
 /// A pin more than this far in the past is almost certainly a stale
 /// frontend view (the user was looking at a departure board snapshot from
 /// much earlier) rather than a real tracking request -- reject it rather
@@ -456,4 +458,208 @@ pub async fn get_ticket_owned(pool: &PgPool, ticket_id: i64, user_id: &str) -> a
         .fetch_optional(pool)
         .await?;
     Ok(row)
+}
+
+/// Caps `list_tickets_for_user`'s response size. No retention/pruning job
+/// exists anywhere in this codebase for `tracked_train_tickets` either
+/// (grepped for `prune`/`retention`/`expire`/`DELETE FROM tracked_train_tickets`
+/// -- only `ON DELETE CASCADE` and unrelated matches turned up), so this
+/// table grows without bound for as long as a user keeps adding tickets,
+/// and this cap is the only bound on one HTTP response. `100` matches
+/// `MINE_LIST_LIMIT`'s proposed figure for the sibling tracked-trains list,
+/// for consistency -- not independently researched or load-tested. See
+/// docs/superpowers/specs/2026-08-31-tickets-list-design.md's Open
+/// Question 1 (also: no pagination/"load more" is designed for what falls
+/// past this cap).
+const MINE_TICKETS_LIMIT: i64 = 100;
+
+/// Physical columns selected by `list_tickets_for_user`'s query -- private,
+/// exists only to satisfy `sqlx::FromRow`. `TicketListItem` (below) is the
+/// public shape, built from this plus a pure computation -- same
+/// two-struct pattern this file already uses for `TrackedTrainRow` /
+/// `TrackedTrainRef`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct TicketListRow {
+    id: i64,
+    tracked_train_id: i64,
+    operator: Option<String>,
+    ticket_type: Option<String>,
+    origin_crs: Option<String>,
+    destination_crs: Option<String>,
+    source: String,
+    created_at: DateTime<Utc>,
+    service_date: chrono::NaiveDate,
+    pin_origin_crs: String,
+    pin_destination_crs: Option<String>,
+    pin_scheduled_departure: DateTime<Utc>,
+    resolution_status: String,
+    train_uid: Option<String>,
+    status: Option<String>,
+    delay_minutes: Option<i32>,
+}
+
+/// A user's own tickets, across every tracked train they have -- the
+/// cross-train counterpart to `TrackedTrainTicket` (which is scoped to one
+/// tracked train). Carries the ticket's own six fields (unchanged from
+/// `TrackedTrainTicket`) plus enough of the owning tracked train's context
+/// (route, date, live delay) to make a row useful without clicking
+/// through, plus a Delay Repay estimate computed inline -- see
+/// `build_ticket_list_item` for why that's a pure computation, not a
+/// second query per row. The last four fields are deliberately named and
+/// shaped to match `DelayRepayEstimateResponse` exactly, field-for-field,
+/// so the frontend can pass a `TicketListItem` straight into the
+/// already-reviewed `<DelayRepayEstimate>` component with no adapter.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketListItem {
+    pub id: i64,
+    pub tracked_train_id: i64,
+    pub operator: Option<String>,
+    pub ticket_type: Option<String>,
+    pub origin_crs: Option<String>,
+    pub destination_crs: Option<String>,
+    pub source: String,
+    pub created_at: DateTime<Utc>,
+    pub service_date: chrono::NaiveDate,
+    pub pin_origin_crs: String,
+    pub pin_destination_crs: Option<String>,
+    pub pin_scheduled_departure: DateTime<Utc>,
+    pub resolution_status: String,
+    pub train_uid: Option<String>,
+    pub status: Option<String>,
+    pub delay_minutes: Option<i32>,
+    pub estimate: Option<delay_repay_rules::DelayRepayEstimate>,
+    pub claim_url: String,
+    pub disclaimer: &'static str,
+}
+
+/// Mirrors `routes/train.rs`'s `build_delay_repay_response` exactly (same
+/// `match (operator, delay_minutes)` shape), so the two independently
+/// computed estimates for the same `(ticket, tracked train)` pair can
+/// never disagree.
+fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
+    let estimate = match (row.operator.as_deref(), row.delay_minutes) {
+        (Some(operator), Some(delay_minutes)) => delay_repay_rules::estimate_delay_repay(operator, delay_minutes),
+        _ => None,
+    };
+    let claim_url = row.operator.as_deref().map(delay_repay_rules::claim_url_for).unwrap_or(delay_repay_rules::GENERIC_CLAIM_URL);
+
+    TicketListItem {
+        id: row.id,
+        tracked_train_id: row.tracked_train_id,
+        operator: row.operator,
+        ticket_type: row.ticket_type,
+        origin_crs: row.origin_crs,
+        destination_crs: row.destination_crs,
+        source: row.source,
+        created_at: row.created_at,
+        service_date: row.service_date,
+        pin_origin_crs: row.pin_origin_crs,
+        pin_destination_crs: row.pin_destination_crs,
+        pin_scheduled_departure: row.pin_scheduled_departure,
+        resolution_status: row.resolution_status,
+        train_uid: row.train_uid,
+        status: row.status,
+        delay_minutes: row.delay_minutes,
+        estimate,
+        claim_url: claim_url.to_string(),
+        disclaimer: delay_repay_rules::ROUTE_DISCLAIMER,
+    }
+}
+
+/// A user's own tickets, across every tracked train they have,
+/// most-recently-added first. No join needed for ownership (`WHERE
+/// t.user_id = $1` on `tracked_train_tickets` alone, per this table's own
+/// ownership-redundancy design -- Finding 1 of the design spec) -- the
+/// joins to `tracked_trains`/`train_current_state` exist purely to pull in
+/// enough train context for a useful row (route, date, live delay) and to
+/// let `build_ticket_list_item` compute each row's Delay Repay estimate
+/// inline, with no per-ticket follow-up query.
+///
+/// `JOIN` (not `LEFT JOIN`) to `tracked_trains`: every
+/// `tracked_train_tickets` row has a `NOT NULL tracked_train_id REFERENCES
+/// tracked_trains(id) ON DELETE CASCADE`, so a ticket can never outlive
+/// (or predate) its parent row -- an inner join can't silently drop a
+/// ticket here. `LEFT JOIN` to `train_current_state` matches every other
+/// query in this file that reads it: a `pending`/just-resolved tracked
+/// train legitimately has no `train_current_state` row yet.
+pub async fn list_tickets_for_user(pool: &PgPool, user_id: &str) -> anyhow::Result<Vec<TicketListItem>> {
+    let rows = sqlx::query_as::<_, TicketListRow>(
+        "SELECT t.id, t.tracked_train_id, t.operator, t.ticket_type, t.origin_crs, t.destination_crs, \
+                t.source, t.created_at, \
+                tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, tt.pin_scheduled_departure, \
+                tt.resolution_status, tt.train_uid, \
+                cs.status, cs.delay_minutes \
+         FROM tracked_train_tickets t \
+         JOIN tracked_trains tt ON tt.id = t.tracked_train_id \
+         LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
+         WHERE t.user_id = $1 \
+         ORDER BY t.created_at DESC \
+         LIMIT $2",
+    )
+    .bind(user_id)
+    .bind(MINE_TICKETS_LIMIT)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(build_ticket_list_item).collect())
+}
+
+#[cfg(test)]
+mod ticket_list_tests {
+    use super::*;
+
+    fn row(operator: Option<&str>, delay_minutes: Option<i32>) -> TicketListRow {
+        TicketListRow {
+            id: 1,
+            tracked_train_id: 1,
+            operator: operator.map(str::to_string),
+            ticket_type: Some("Off-Peak Day Single".to_string()),
+            origin_crs: Some("KGX".to_string()),
+            destination_crs: Some("EDB".to_string()),
+            source: "manual".to_string(),
+            created_at: "2026-08-29T12:00:00Z".parse().unwrap(),
+            service_date: "2026-08-29".parse().unwrap(),
+            pin_origin_crs: "KGX".to_string(),
+            pin_destination_crs: Some("EDB".to_string()),
+            pin_scheduled_departure: "2026-08-29T09:00:00Z".parse().unwrap(),
+            resolution_status: "resolved".to_string(),
+            train_uid: Some("A12345".to_string()),
+            status: Some("late".to_string()),
+            delay_minutes,
+        }
+    }
+
+    // Regression check that this mirrored implementation hasn't drifted
+    // from routes/train.rs's build_delay_repay_response for the same
+    // (operator, delay_minutes) pair -- see this function's own doc
+    // comment for why the two must never disagree.
+    #[test]
+    fn matches_build_delay_repay_response_for_a_qualifying_dr30_delay() {
+        let item = build_ticket_list_item(row(Some("LNER"), Some(45)));
+
+        let estimate = item.estimate.expect("LNER + 45 minutes should clear the DR30 30-minute band");
+        assert_eq!(estimate.scheme, "DR30");
+        assert_eq!(estimate.percentage, 50);
+        assert_eq!(item.claim_url, "https://delayrepay.lner.co.uk/delayrepayV2/");
+        assert_eq!(item.delay_minutes, Some(45));
+    }
+
+    #[test]
+    fn no_operator_yields_no_estimate_but_still_a_real_claim_link_and_disclaimer() {
+        let item = build_ticket_list_item(row(None, Some(45)));
+
+        assert_eq!(item.estimate, None);
+        assert_eq!(item.claim_url, delay_repay_rules::GENERIC_CLAIM_URL);
+        assert_eq!(item.disclaimer, delay_repay_rules::ROUTE_DISCLAIMER);
+    }
+
+    #[test]
+    fn no_delay_data_yields_no_estimate_but_claim_url_and_disclaimer_are_still_populated() {
+        let item = build_ticket_list_item(row(Some("LNER"), None));
+
+        assert_eq!(item.estimate, None);
+        assert_eq!(item.delay_minutes, None);
+        assert_eq!(item.claim_url, "https://delayrepay.lner.co.uk/delayrepayV2/");
+        assert_eq!(item.disclaimer, delay_repay_rules::ROUTE_DISCLAIMER);
+    }
 }
