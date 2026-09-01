@@ -1,6 +1,7 @@
 import { Badge, Card, Group, Stack, Text, Title } from '@mantine/core';
 import Link from 'next/link';
 import { getMyTrackedTrains } from '@/lib/api';
+import { LoginLink } from '@/components/LoginLink';
 import { TextLink } from '@/components/TextLink';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import type { TrackedTrainListItem } from '@/lib/types';
@@ -27,9 +28,9 @@ export default async function MyTrackedTrainsPage() {
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>My Tracked Trains</Title>
-        <TextLink href="/api/auth/login" underline="always">
+        <LoginLink underline="always">
           Log in to see the trains you&apos;re tracking
-        </TextLink>
+        </LoginLink>
       </Stack>
     );
   }

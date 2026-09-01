@@ -6,6 +6,13 @@ import * as api from '@/lib/api';
 import type { LineStatusReport, TrackedTrainListItem } from '@/lib/types';
 
 vi.mock('@/lib/api');
+// The anonymous branch's login nudge is now LoginLink (Task 1), which calls
+// usePathname()/useSearchParams() -- same stub AuthStatus.test.tsx and
+// TicketPanel.test.tsx use for the same reason.
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/',
+  useSearchParams: () => new URLSearchParams(''),
+}));
 
 function report(overrides: Partial<LineStatusReport> = {}): LineStatusReport {
   return {
@@ -40,7 +47,7 @@ describe('DashboardPage', () => {
     renderWithMantine(await DashboardPage());
     expect(screen.getByText(/Every line is running a Good Service/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Log in to pin your lines and stations' })).toHaveAttribute(
-      'href', '/api/auth/login',
+      'href', '/api/auth/login?return_to=%2F',
     );
   });
 

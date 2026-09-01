@@ -10,7 +10,7 @@ import {
 } from '@/lib/api';
 import { DISPLAYED_MODES_PARAM, MERGED_TFL_LINE_IDS } from '@/lib/modes';
 import { LineStatusCard } from '@/components/LineStatusCard';
-import { LoginPrompt } from '@/components/LoginPrompt';
+import { LoginLink } from '@/components/LoginLink';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank, worstStatus } from '@/lib/severity';
@@ -141,7 +141,7 @@ export default async function DashboardPage() {
               wait for a failed pin click the way PinToggle does elsewhere.
               §Policy's Tier-2 "proactive where session is already fetched"
               refinement. */}
-          <LoginPrompt verb="pin your lines and stations" />
+          <LoginLink underline="always">Log in to pin your lines and stations</LoginLink>
         </Group>
       </Stack>
     );

@@ -19,9 +19,14 @@ vi.mock('@/lib/api', async () => {
 const notFoundMock = vi.fn(() => {
   throw new Error('NEXT_NOT_FOUND');
 });
+// usePathname()/useSearchParams() stubbed for the same reason as
+// AuthStatus.test.tsx/TicketPanel.test.tsx -- the login-error branch now
+// renders LoginLink (Task 1).
 vi.mock('next/navigation', () => ({
   notFound: () => notFoundMock(),
   useRouter: () => ({ push: vi.fn() }),
+  usePathname: () => '/train/by-id/42',
+  useSearchParams: () => new URLSearchParams(''),
 }));
 // `TicketPanel` is itself an async Server Component (it does its own
 // `getSession()`/ownership-probe fetches) -- React's plain DOM test
@@ -69,7 +74,7 @@ describe('TrackedTrainByIdPage error handling', () => {
     vi.mocked(api.getTrackedTrainById).mockRejectedValue(new ApiUnauthorizedError('unauthorized'));
     await renderPage('42');
     const link = screen.getByRole('link', { name: 'Log in to view this tracked train' });
-    expect(link).toHaveAttribute('href', '/api/auth/login');
+    expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrain%2Fby-id%2F42');
     expect(notFoundMock).not.toHaveBeenCalled();
   });
 

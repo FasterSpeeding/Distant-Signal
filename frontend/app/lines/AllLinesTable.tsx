@@ -205,7 +205,7 @@ export function AllLinesTable({
                 <SortGlyph field="cancelled" sort={sort} />
               </UnstyledButton>
             </TableTh>
-            <TableTh>Pin</TableTh>
+            <TableTh visibleFrom="sm">Pin</TableTh>
           </TableTr>
         </TableThead>
         <TableTbody>
@@ -243,7 +243,7 @@ export function AllLinesTable({
                   </Text>
                 )}
               </TableTd>
-              <TableTd>
+              <TableTd visibleFrom="sm">
                 <PinToggle kind="line" id={line.id} initiallyPinned={pinnedSet.has(line.id)} />
               </TableTd>
             </TableTr>

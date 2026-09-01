@@ -1,5 +1,6 @@
 import { Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { getMyTickets } from '@/lib/api';
+import { LoginLink } from '@/components/LoginLink';
 import { TextLink } from '@/components/TextLink';
 import { TicketSummary } from '@/components/TicketSummary';
 import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
@@ -36,9 +37,9 @@ export default async function MyTicketsPage() {
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>My Tickets</Title>
-        <TextLink href="/api/auth/login" underline="always">
+        <LoginLink underline="always">
           Log in to see your tickets
-        </TextLink>
+        </LoginLink>
       </Stack>
     );
   }
