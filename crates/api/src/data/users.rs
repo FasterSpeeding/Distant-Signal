@@ -29,6 +29,7 @@ mod tests {
             email: Some("rider@example.com".to_string()),
             email_verified,
             name: Some("Ada Rider".to_string()),
+            groups: Vec::new(),
         }
     }
 
@@ -57,21 +58,27 @@ pub struct User {
     pub name: Option<String>,
 }
 
-/// Creates the user on first login, or updates `email`/`name`/
+/// Creates the user on first login, or updates `email`/`name`/`groups`/
 /// `last_login_at` on every return visit -- design doc: "upserted, not
-/// just inserted once."
+/// just inserted once." `groups` is overwritten wholesale, never merged
+/// with what was already stored -- see
+/// docs/superpowers/specs/2026-09-02-mcp-server-oauth-access-groups-design.md's
+/// Global Constraints: a group removed in Authentik is reflected on the
+/// user's very next login.
 pub async fn upsert_user(pool: &PgPool, identity: &OidcIdentity) -> Result<User> {
     let email = verified_email(identity);
     let row = sqlx::query_as::<_, User>(
-        "INSERT INTO users (id, email, name, created_at, last_login_at) \
-         VALUES ($1, $2, $3, NOW(), NOW()) \
+        "INSERT INTO users (id, email, name, groups, created_at, last_login_at) \
+         VALUES ($1, $2, $3, $4, NOW(), NOW()) \
          ON CONFLICT (id) DO UPDATE SET \
-            email = EXCLUDED.email, name = EXCLUDED.name, last_login_at = NOW() \
+            email = EXCLUDED.email, name = EXCLUDED.name, groups = EXCLUDED.groups, \
+            last_login_at = NOW() \
          RETURNING id, email, name",
     )
     .bind(&identity.sub)
     .bind(email)
     .bind(&identity.name)
+    .bind(&identity.groups)
     .fetch_one(pool)
     .await?;
     Ok(row)
@@ -112,6 +119,7 @@ pub struct SessionUser {
     pub id: String,
     pub email: Option<String>,
     pub name: Option<String>,
+    pub groups: Vec<String>,
 }
 
 /// Looks up a session by its *hashed* token and joins the owning user, but
@@ -124,7 +132,7 @@ pub async fn get_session_with_user(
     hashed_token: &str,
 ) -> Result<Option<SessionUser>> {
     let row = sqlx::query_as::<_, SessionUser>(
-        "SELECT u.id, u.email, u.name \
+        "SELECT u.id, u.email, u.name, u.groups \
          FROM sessions s JOIN users u ON u.id = s.user_id \
          WHERE s.id = $1 AND s.expires_at > NOW()",
     )
@@ -225,6 +233,7 @@ mod db_tests {
             email: Some("test@example.com".to_string()),
             email_verified: true,
             name: Some("Test Rider".to_string()),
+            groups: Vec::new(),
         };
         let user = upsert_user(&pool, &identity).await.expect("upsert user");
         assert_eq!(user.id, "TEST-USER-ROUND-TRIP");
@@ -253,5 +262,59 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup test user");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                groups_are_overwritten_not_merged_on_repeat_login -- --ignored`"]
+    async fn groups_are_overwritten_not_merged_on_repeat_login() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        let mut identity = OidcIdentity {
+            sub: "TEST-USER-GROUPS-OVERWRITE".to_string(),
+            email: Some("test@example.com".to_string()),
+            email_verified: true,
+            name: Some("Test Rider".to_string()),
+            groups: vec!["mcp-users".to_string(), "mcp-live-boards".to_string()],
+        };
+        let user = upsert_user(&pool, &identity).await.expect("first login upsert");
+
+        insert_session(&pool, "test-hashed-token-groups", &user.id, 14)
+            .await
+            .expect("insert session");
+        let found = get_session_with_user(&pool, "test-hashed-token-groups")
+            .await
+            .expect("lookup session")
+            .expect("session should exist");
+        assert_eq!(
+            found.groups,
+            vec!["mcp-users".to_string(), "mcp-live-boards".to_string()]
+        );
+
+        // Second login, with mcp-live-boards removed in Authentik -- must
+        // be reflected exactly, not unioned with the first login's set.
+        identity.groups = vec!["mcp-users".to_string()];
+        upsert_user(&pool, &identity).await.expect("second login upsert");
+        let found_again = get_session_with_user(&pool, "test-hashed-token-groups")
+            .await
+            .expect("lookup session")
+            .expect("session should still exist");
+        assert_eq!(found_again.groups, vec!["mcp-users".to_string()]);
+
+        delete_session(&pool, "test-hashed-token-groups")
+            .await
+            .expect("delete session");
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-USER-GROUPS-OVERWRITE'")
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 }
