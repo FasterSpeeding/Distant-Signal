@@ -1,4 +1,4 @@
-import { Alert, Code, List, Stack, Text, Title } from '@mantine/core';
+import { Alert, Code, List, ListItem, Stack, Text, Title } from '@mantine/core';
 import { getSession } from '@/lib/api';
 import { LoginLink } from '@/components/LoginLink';
 
@@ -61,20 +61,32 @@ export default async function ConnectClaudePage() {
         Connecting requires a Pro, Max, Team, or Enterprise Claude plan for full support (a free Claude.ai account
         gets one custom connector).
       </Alert>
+      {/* Flat `ListItem` named export, not the `List.Item` dot-notation
+          compound API -- this page is a Server Component and `List` carries
+          a `"use client"` directive, so a dot-notation sub-component
+          reached off its reference resolves to `undefined` once Next
+          actually compiles the Server/Client boundary, 500ing the route
+          with "Element type is invalid ... got: undefined". Same bug class
+          already hit and fixed for Table (AllLinesTable.tsx) and Tabs
+          (app/lines/[id]/history/page.tsx) -- confirmed live against a
+          running dev server, not reproducible via
+          jsdom/@testing-library/react (renderWithMantine renders
+          everything as one ordinary client tree and never enforces this
+          boundary). */}
       <List type="ordered">
-        <List.Item>
+        <ListItem>
           In Claude.ai or Claude Desktop, open <strong>Customize &gt; Connectors</strong>.
-        </List.Item>
-        <List.Item>
+        </ListItem>
+        <ListItem>
           Click <strong>+</strong>, then <strong>Add custom connector</strong>.
-        </List.Item>
-        <List.Item>
+        </ListItem>
+        <ListItem>
           Enter this URL: <Code>{railMcpPublicUrl()}</Code>
-        </List.Item>
-        <List.Item>
+        </ListItem>
+        <ListItem>
           Approve access when prompted -- you&apos;ll be sent to Distant Signal&apos;s own login if you
           aren&apos;t already signed in here, then asked to confirm the connection.
-        </List.Item>
+        </ListItem>
       </List>
       <Text size="sm" c="dimmed">
         Conversations happen entirely inside Claude&apos;s own interface, billed to your own Claude plan --
