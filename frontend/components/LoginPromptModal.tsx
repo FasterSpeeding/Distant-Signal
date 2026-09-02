@@ -1,8 +1,31 @@
 'use client';
 
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { Button, Group, Modal, Text } from '@mantine/core';
 import { useLoginHref } from './useLoginHref';
+
+/** Isolates the one `useLoginHref()` call (and therefore
+ * `usePathname()`/`useSearchParams()`) behind its own `<Suspense>`
+ * boundary below -- `next build`'s static prerendering of a route with no
+ * dynamic segment (e.g. `/lines/new`, which mounts `CustomLineForm`
+ * unconditionally) fails with "useSearchParams() should be wrapped in a
+ * suspense boundary" otherwise, since `LoginPromptModal` itself is now
+ * always mounted (not just on a 401 the way the old inline `LoginLink`
+ * was). A real gap the modal-login-prompt plan/design didn't anticipate,
+ * found by actually running `npm run build`, not just `vitest`/`tsc`.
+ * Plain `<Link>` wrapping `Button`, not `component={Link}` on the Mantine
+ * polymorphic prop -- established convention regardless of Server/Client
+ * boundary, see `CustomLineForm.tsx:236-240`'s own Cancel button and this
+ * design's Decision 3. */
+function LoginButtonLink() {
+  const href = useLoginHref();
+  return (
+    <Link href={href} style={{ textDecoration: 'none' }}>
+      <Button>Log in</Button>
+    </Link>
+  );
+}
 
 /** Thin, fully-controlled presentational wrapper -- mirrors
  * `DeleteLineButton.tsx:66-83`/`DeleteTrainButton.tsx:76-93`'s own
@@ -30,18 +53,13 @@ export function LoginPromptModal({
   onClose: () => void;
   children: React.ReactNode;
 }) {
-  const href = useLoginHref();
   return (
     <Modal opened={opened} onClose={onClose} title="Log in required" closeButtonProps={{ 'aria-label': 'Close' }}>
       <Text>{children}</Text>
       <Group justify="end" mt="md">
-        {/* Plain `<Link>` wrapping `Button`, not `component={Link}` on the
-            Mantine polymorphic prop -- established convention regardless of
-            Server/Client boundary, see `CustomLineForm.tsx:236-240`'s own
-            Cancel button and this design's Decision 3. */}
-        <Link href={href} style={{ textDecoration: 'none' }}>
-          <Button>Log in</Button>
-        </Link>
+        <Suspense fallback={<Button disabled>Log in</Button>}>
+          <LoginButtonLink />
+        </Suspense>
       </Group>
     </Modal>
   );
