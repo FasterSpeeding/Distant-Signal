@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ActionIcon, Group, Tooltip } from '@mantine/core';
-import { LoginLink } from './LoginLink';
+import { useNeedsLogin } from './useNeedsLogin';
+import { LoginPromptModal } from './LoginPromptModal';
 import type { Preferences } from '@/lib/types';
 
 type PinKind = 'line' | 'station';
@@ -40,10 +41,10 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
   const router = useRouter();
   const [pinned, setPinned] = useState(initiallyPinned);
   const [busy, setBusy] = useState(false);
-  // Set on a 401 from either request below, cleared at the start of every
+  // Set on a 401 from either request below, reset at the start of every
   // fresh attempt. Surfaces *why* the click did nothing, instead of the
   // dead-click silence this replaced (see the comment further down).
-  const [needsLogin, setNeedsLogin] = useState(false);
+  const needsLoginState = useNeedsLogin();
 
   /** Known tradeoff: this is a full read-modify-write against the whole
    * pinned list, not a per-item mutation. Each toggle re-fetches
@@ -59,7 +60,7 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
    * both out of scope for this plan. */
   async function toggle() {
     setBusy(true);
-    setNeedsLogin(false);
+    needsLoginState.reset();
     try {
       const prefsResponse = await fetch('/api/preferences');
       // Both endpoints below require an authenticated user, so an
@@ -75,7 +76,7 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
       // non-ok status still just bails silently, unchanged from before.
       if (!prefsResponse.ok) {
         if (prefsResponse.status === 401) {
-          setNeedsLogin(true);
+          needsLoginState.markNeedsLogin();
         }
         return;
       }
@@ -91,7 +92,7 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
       });
       if (!putResponse.ok) {
         if (putResponse.status === 401) {
-          setNeedsLogin(true);
+          needsLoginState.markNeedsLogin();
         }
         return;
       }
@@ -122,7 +123,9 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
           <StarIcon filled={pinned} />
         </ActionIcon>
       </Tooltip>
-      {needsLogin && <LoginLink underline="always">Log in to pin</LoginLink>}
+      <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
+        Log in to pin this {kind}.
+      </LoginPromptModal>
     </Group>
   );
 }

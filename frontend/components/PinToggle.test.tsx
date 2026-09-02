@@ -133,22 +133,25 @@ describe('PinToggle', () => {
   // some visible trace instead of the dead-click silence the comment on
   // `toggle()` describes, so an anonymous visitor can discover *why*
   // nothing happened and how to fix it.
-  it('a 401 from the preferences read shows a login prompt linking to /api/auth/login', async () => {
+  it('a 401 from the preferences read shows the login prompt modal, linking to /api/auth/login', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async () => new Response('no session', { status: 401 }));
 
     renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
-    expect(screen.queryByRole('link', { name: 'Log in to pin' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Log in to pin this line.')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
 
-    const loginLink = await screen.findByRole('link', { name: 'Log in to pin' });
-    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Flines');
+    expect(await screen.findByText('Log in to pin this line.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute(
+      'href',
+      '/api/auth/login?return_to=%2Flines',
+    );
   });
 
   // A 401 on the PUT (read succeeded, write didn't) must surface the same
   // prompt — the anonymous-visitor case can fail at either step.
-  it('a 401 from the PUT also shows the login prompt', async () => {
+  it('a 401 from the PUT also shows the login prompt modal', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url) => {
       if (url === '/api/preferences') {
@@ -160,7 +163,7 @@ describe('PinToggle', () => {
     renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
     fireEvent.click(screen.getByLabelText('Pin (currently not pinned)'));
 
-    expect(await screen.findByRole('link', { name: 'Log in to pin' })).toBeInTheDocument();
+    expect(await screen.findByText('Log in to pin this line.')).toBeInTheDocument();
   });
 
   // A non-401 failure (e.g. a 500) keeps the old silent-bail behaviour —
@@ -175,7 +178,7 @@ describe('PinToggle', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Pin (currently not pinned)')).not.toBeDisabled();
     });
-    expect(screen.queryByRole('link', { name: 'Log in to pin' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Log in to pin this line.')).not.toBeInTheDocument();
   });
 
   // Same reasoning one step later in the flow: the read succeeded but the
