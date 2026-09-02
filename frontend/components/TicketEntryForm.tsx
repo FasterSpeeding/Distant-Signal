@@ -52,9 +52,25 @@ type Tab = 'manual' | 'pkpass' | 'pdf';
  * (Client Components can't read the server-only `API_BASE_URL` env var
  * `lib/api.ts` relies on -- same reasoning as `PinToggle`/`TrackTrainForm`),
  * fixed for binary uploads by this plan's own Task 1. */
-export function TicketEntryForm({ trackingId, label }: { trackingId?: number; label: string }) {
+export function TicketEntryForm({
+  trackingId,
+  label,
+  defaultOpen,
+}: {
+  trackingId?: number;
+  label: string;
+  defaultOpen?: boolean;
+}) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  // Every existing call site omits this and keeps today's exact
+  // collapsed-by-default behavior; only /track/mine/add-ticket passes
+  // `defaultOpen` (a dedicated page whose entire reason for existing is
+  // "add a ticket" has no competing content to protect the way
+  // /track/mine's own trains list and unattached-tickets section do, so
+  // forcing a click through a button reading the identical words the
+  // page's own heading already committed to would be friction with
+  // nothing behind it).
+  const [open, setOpen] = useState(defaultOpen ?? false);
   const [tab, setTab] = useState<Tab>('manual');
   const [savedStandaloneTicket, setSavedStandaloneTicket] = useState<{ id: number; originCrs: string } | null>(null);
 
