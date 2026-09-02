@@ -17,11 +17,22 @@ import { useLoginHref } from './useLoginHref';
  * Plain `<Link>` wrapping `Button`, not `component={Link}` on the Mantine
  * polymorphic prop -- established convention regardless of Server/Client
  * boundary, see `CustomLineForm.tsx:236-240`'s own Cancel button and this
- * design's Decision 3. */
+ * design's Decision 3.
+ *
+ * `prefetch={false}`: same reasoning as `LoginLink.tsx`'s own doc comment
+ * -- this href is `crates/api/src/routes/auth.rs`'s `login` handler, not a
+ * real page, and Next's default prefetch-on-visibility would otherwise
+ * fire that handler's real side effects (a new `login_state` DB row, a
+ * fresh `login_state` cookie) the moment this link scrolls into view.
+ * Modal's own `keepMounted: false` default means this link isn't in the
+ * DOM at all while `opened` is `false`, so the exposure here is narrower
+ * than the always-mounted nav-bar `LoginLink` -- but once a visitor
+ * actually opens one of these prompts, the same unwanted-background-fetch
+ * risk applies for as long as it stays open. */
 function LoginButtonLink() {
   const href = useLoginHref();
   return (
-    <Link href={href} style={{ textDecoration: 'none' }}>
+    <Link href={href} style={{ textDecoration: 'none' }} prefetch={false}>
       <Button>Log in</Button>
     </Link>
   );
