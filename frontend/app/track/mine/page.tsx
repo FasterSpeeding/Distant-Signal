@@ -8,6 +8,7 @@ import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
 import { AttachTicketAction } from '@/components/AttachTicketAction';
 import { DeleteTicketButton } from '@/components/DeleteTicketButton';
 import { formatDate, formatTime } from '@/lib/dateFormat';
+import { routeLabel } from '@/lib/stationLabel';
 import type { TrackedTrainListItem, TicketListItem } from '@/lib/types';
 
 // See app/page.tsx's own `revalidate = 0` comment for the rationale: this
@@ -129,7 +130,12 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
       ? `/train/${train.trainUid}/${train.serviceDate}`
       : `/train/by-id/${train.id}`;
 
-  const route = train.pinDestinationCrs ? `${train.pinOriginCrs} → ${train.pinDestinationCrs}` : train.pinOriginCrs;
+  const route = routeLabel(
+    train.pinOriginCrs,
+    train.pinOriginName,
+    train.pinDestinationCrs,
+    train.pinDestinationName,
+  );
 
   return (
     <Card withBorder>

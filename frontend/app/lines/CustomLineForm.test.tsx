@@ -87,6 +87,29 @@ describe('CustomLineForm', () => {
     expect(input).toHaveValue('');
   });
 
+  it('the committed station chip carries the resolved name as a title tooltip', async () => {
+    // The chip keeps its bare code (space is at a premium in this compact
+    // list) but gains a `title=` tooltip carrying the full name -- the
+    // same tactic the operator pill already uses above. `nameByCode`
+    // already holds the answer from the suggestions fetch, so this is a
+    // pure-frontend fix with no backend dependency.
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'Woking' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    const option = await screen.findByRole('option', { name: 'WOK — Woking', hidden: true });
+    fireEvent.click(option);
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    const chip = screen.getByText('WOK').closest('[title]');
+    expect(chip).toHaveAttribute('title', 'Woking');
+  });
+
   // Clicking Add after typing a station name -- without picking the
   // dropdown option first -- must still resolve to the right CRS code,
   // the same "Look up" resolution `StationSearchForm` uses: exact code

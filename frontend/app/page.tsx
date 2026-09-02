@@ -17,6 +17,7 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank, worstStatus } from '@/lib/severity';
 import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { formatDate, formatTime } from '@/lib/dateFormat';
+import { routeLabel } from '@/lib/stationLabel';
 import type { LineStatus, LineStatusReport, TrackedTrainListItem } from '@/lib/types';
 
 // See app/lines/[id]/page.tsx-adjacent history page and this repo's other
@@ -324,7 +325,12 @@ function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem }) {
       ? `/train/${train.trainUid}/${train.serviceDate}`
       : `/train/by-id/${train.id}`;
 
-  const route = train.pinDestinationCrs ? `${train.pinOriginCrs} → ${train.pinDestinationCrs}` : train.pinOriginCrs;
+  const route = routeLabel(
+    train.pinOriginCrs,
+    train.pinOriginName,
+    train.pinDestinationCrs,
+    train.pinDestinationName,
+  );
 
   return (
     <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>

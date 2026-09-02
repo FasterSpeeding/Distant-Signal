@@ -29,6 +29,12 @@ function item(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListIt
     serviceDate: '2026-08-31',
     pinOriginCrs: 'WAT',
     pinDestinationCrs: 'WOK',
+    // Defaults to null (bare-code rendering) rather than a real name so
+    // every pre-existing assertion in this file that checks for the code
+    // itself keeps working unchanged -- the name-rendering path gets its
+    // own dedicated test below.
+    pinOriginName: null,
+    pinDestinationName: null,
     pinScheduledDeparture: '2026-08-31T18:32:00Z',
     resolutionStatus: 'resolved',
     trainUid: 'C21373',
@@ -241,6 +247,21 @@ describe('DashboardPage -- Your Tracked Trains section', () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByRole('link', { name: /WAT → WOK/ })).toHaveAttribute('href', '/train/C21373/2026-08-31');
+  });
+
+  it('renders station names when the backend resolved them, not just bare codes', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      item({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' }),
+    ]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByText('London Waterloo (WAT) → Woking (WOK)')).toBeInTheDocument();
+  });
+
+  it('falls back to the bare code, not "null" or an empty label, when a name did not resolve', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ pinOriginName: null, pinDestinationName: null })]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByText('WAT → WOK')).toBeInTheDocument();
+    expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
   });
 
   it('pending train: links to the by-id detail route', async () => {

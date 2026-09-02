@@ -10,6 +10,8 @@ function baseState(overrides: Partial<TrackedTrainState> = {}): TrackedTrainStat
     serviceDate: '2026-08-28',
     pinOriginCrs: 'WAT',
     pinDestinationCrs: 'WOK',
+    pinOriginName: null,
+    pinDestinationName: null,
     resolutionStatus: 'pending',
     trainUid: null,
     trainId: null,
@@ -30,6 +32,19 @@ describe('TrainJourney', () => {
     expect(screen.getByText('Waiting to hear from Network Rail')).toBeInTheDocument();
     expect(screen.getByText(/WAT/)).toBeInTheDocument();
     expect(screen.getByText(/WOK/)).toBeInTheDocument();
+  });
+
+  it('renders station names in the pin summary when the backend resolved them', () => {
+    renderWithMantine(
+      <TrainJourney state={baseState({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' })} />,
+    );
+    expect(screen.getByText(/London Waterloo \(WAT\) → Woking \(WOK\)/)).toBeInTheDocument();
+  });
+
+  it('falls back to the bare code, not "null", when a name did not resolve', () => {
+    renderWithMantine(<TrainJourney state={baseState()} />);
+    expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+    expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
   });
 
   it('unresolved: shows a terminal, non-retrying message', () => {

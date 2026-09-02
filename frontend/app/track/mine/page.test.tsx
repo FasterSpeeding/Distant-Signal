@@ -25,6 +25,11 @@ function train(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListI
     serviceDate: '2026-08-31',
     pinOriginCrs: 'WAT',
     pinDestinationCrs: 'WOK',
+    // null (bare-code rendering) by default -- see app/page.test.tsx's
+    // `item()` for the same rationale. The name-rendering path gets its
+    // own dedicated test below.
+    pinOriginName: null,
+    pinDestinationName: null,
     pinScheduledDeparture: '2026-08-31T18:32:00Z',
     resolutionStatus: 'resolved',
     trainUid: 'C21373',
@@ -43,6 +48,8 @@ function ticket(overrides: Partial<TicketListItem> = {}): TicketListItem {
     ticketType: 'Off-Peak Day Single',
     originCrs: 'KGX',
     destinationCrs: 'EDB',
+    originName: null,
+    destinationName: null,
     source: 'manual',
     createdAt: '2026-08-31T12:00:00Z',
     serviceDate: '2026-08-31',
@@ -211,6 +218,23 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
     expect(screen.getByText('12m late')).toBeInTheDocument();
+  });
+
+  it('renders station names when the backend resolved them, not just bare codes', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      train({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' }),
+    ]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.getByText('London Waterloo (WAT) → Woking (WOK)')).toBeInTheDocument();
+  });
+
+  it('falls back to the bare code, not "null" or an empty label, when a name did not resolve', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ pinOriginName: null, pinDestinationName: null })]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.getByText('WAT → WOK')).toBeInTheDocument();
+    expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
   });
 
   it('renders train rows in the same order getMyTrackedTrains returned them', async () => {

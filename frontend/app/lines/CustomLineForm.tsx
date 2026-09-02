@@ -191,7 +191,11 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
       </Group>
       <Group gap="xs">
         {stations.map((crs) => (
-          <Badge key={crs} rightSection={<CloseButton size="xs" onClick={() => removeStation(crs)} />}>
+          <Badge
+            key={crs}
+            title={nameByCode[crs]}
+            rightSection={<CloseButton size="xs" onClick={() => removeStation(crs)} />}
+          >
             {crs}
           </Badge>
         ))}
