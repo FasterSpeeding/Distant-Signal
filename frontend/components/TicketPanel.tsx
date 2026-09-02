@@ -4,6 +4,7 @@ import { LoginLink } from './LoginLink';
 import { TicketEntryForm } from './TicketEntryForm';
 import { DelayRepayEstimate } from './DelayRepayEstimate';
 import { TicketSummary } from './TicketSummary';
+import { DeleteTicketButton } from './DeleteTicketButton';
 
 /** Renders on both `/train/by-id/[trackingId]` and `/train/[uid]/[date]`,
  * directly below `<TrainJourney>`. This is a real, session-gated feature
@@ -93,6 +94,7 @@ export async function TicketPanel({ trackingId }: { trackingId: number }) {
           {index > 0 && <Divider />}
           <TicketSummary ticket={ticket} />
           {estimate && <DelayRepayEstimate response={estimate} />}
+          <DeleteTicketButton ticketId={ticket.id} />
         </Stack>
       ))}
       <TicketEntryForm trackingId={trackingId} label="Add another ticket" />

@@ -7,6 +7,7 @@ import { TicketSummary } from '@/components/TicketSummary';
 import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
 import { TicketEntryForm } from '@/components/TicketEntryForm';
 import { AttachTicketAction } from '@/components/AttachTicketAction';
+import { DeleteTicketButton } from '@/components/DeleteTicketButton';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import type { TrackedTrainListItem, TicketListItem } from '@/lib/types';
 
@@ -168,6 +169,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
                     disclaimer: ticket.disclaimer,
                   }}
                 />
+                <DeleteTicketButton ticketId={ticket.id} />
               </Stack>
             ))}
           </Stack>
@@ -205,6 +207,7 @@ function UnattachedTicketRow({ ticket, trains }: { ticket: TicketListItem; train
           <TextLink href={`/track?${trackParams.toString()}`} underline="always">
             Track a new train for this ticket
           </TextLink>
+          <DeleteTicketButton ticketId={ticket.id} />
         </Group>
       </Stack>
     </Card>

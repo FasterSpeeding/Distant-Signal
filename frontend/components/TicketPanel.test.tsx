@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TicketPanel } from './TicketPanel';
 import * as api from '@/lib/api';
@@ -80,6 +80,34 @@ describe('TicketPanel', () => {
     expect(screen.getByText(/KGX → EDB/)).toBeInTheDocument();
     expect(screen.getByText(/50% of your fare/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add another ticket' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+  });
+
+  it('clicking Delete for a ticket DELETEs that exact ticket id', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(session(true));
+    vi.mocked(api.getTicketsForTrackedTrain).mockResolvedValue([
+      {
+        id: 7,
+        trackedTrainId: 1,
+        operator: 'LNER',
+        ticketType: null,
+        originCrs: null,
+        destinationCrs: null,
+        source: 'manual',
+        createdAt: '2026-08-29T12:00:00Z',
+      },
+    ]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+
+    renderWithMantine(await TicketPanel({ trackingId: 1 }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith('/api/Train/tickets/7', { method: 'DELETE' });
+    });
+    vi.unstubAllGlobals();
   });
 
   it('multiple tickets: fetches a delay-repay estimate per ticket, not just the first', async () => {
