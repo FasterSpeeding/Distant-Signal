@@ -560,6 +560,85 @@ pub async fn insert_schedule_feed_ingest(
     Ok(())
 }
 
+/// Upserts a batch of resolved STANOX/CRS rows. Every daily delivery is a
+/// full refresh (see this table's migration comment), so this is always a
+/// complete-table upsert-by-`stanox`, never a delta -- no separate
+/// "delete rows missing from today's delivery" step is needed, since every
+/// successful run re-asserts every row it still resolves.
+pub async fn upsert_stanox_crs(pool: &PgPool, records: &[common::StanoxCrsRecord]) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+    let mut count = 0u64;
+
+    for record in records {
+        sqlx::query(
+            r#"
+            INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence, updated_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+            ON CONFLICT (stanox) DO UPDATE SET
+                crs             = EXCLUDED.crs,
+                tiploc          = EXCLUDED.tiploc,
+                station_name    = EXCLUDED.station_name,
+                source_sequence = EXCLUDED.source_sequence,
+                updated_at      = NOW()
+            "#,
+        )
+        .bind(&record.stanox)
+        .bind(&record.crs)
+        .bind(&record.tiploc)
+        .bind(&record.station_name)
+        .bind(record.source_sequence)
+        .execute(&mut *tx)
+        .await?;
+
+        count += 1;
+    }
+
+    tx.commit().await?;
+    Ok(count)
+}
+
+/// Row shape for `list_stanox_crs`'s `SELECT` -- a dedicated `FromRow`
+/// struct, matching this file's own established convention for any
+/// multi-column query result (see `IncidentRow`; `train_tracking.rs`'s
+/// `TrackedTrainRow`/`TrackedTrainListItem`), rather than a bare tuple --
+/// this repo reserves raw tuple `query_as` for single-column results only
+/// (e.g. `last_stations_fetch`'s `(Option<DateTime<Utc>>,)`).
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct StanoxCrsRow {
+    stanox: String,
+    crs: String,
+    tiploc: String,
+    station_name: String,
+    source_sequence: i32,
+}
+
+impl From<StanoxCrsRow> for common::StanoxCrsRecord {
+    fn from(row: StanoxCrsRow) -> Self {
+        common::StanoxCrsRecord {
+            stanox: row.stanox,
+            crs: row.crs,
+            tiploc: row.tiploc,
+            station_name: row.station_name,
+            source_sequence: row.source_sequence,
+        }
+    }
+}
+
+/// The full current STANOX/CRS table, ordered by `stanox` for a stable,
+/// reviewable response shape -- backs `GET /private/stanox-crs`, which
+/// `trust-consumer`'s periodic reload consumes directly (Task 5), unlike
+/// every `last_*_fetch` query in this file, which only returns a
+/// timestamp.
+pub async fn list_stanox_crs(pool: &PgPool) -> Result<Vec<common::StanoxCrsRecord>> {
+    let rows = sqlx::query_as::<_, StanoxCrsRow>(
+        "SELECT stanox, crs, tiploc, station_name, source_sequence FROM stanox_crs ORDER BY stanox",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(common::StanoxCrsRecord::from).collect())
+}
+
 /// The latest `StationSample` polled for a single station, or `None` if
 /// `station_samples` has no row for that CRS yet. `station_samples` is
 /// wholesale-replaced per poll (one row per station, no history -- see
@@ -1056,6 +1135,44 @@ mod tests {
         let tfl = summaries.iter().find(|row| row.id == "TEST-TFL").unwrap();
         assert_eq!(tfl.mode_name, "tube");
         assert_eq!(tfl.name, "test tfl line");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                a_re_post_with_a_changed_crs_overwrites_the_existing_row -- --ignored`"]
+    async fn a_re_post_with_a_changed_crs_overwrites_the_existing_row() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+
+        let first = common::StanoxCrsRecord {
+            stanox: "99999".to_string(),
+            crs: "TST".to_string(),
+            tiploc: "TESTLOC".to_string(),
+            station_name: "TEST STATION".to_string(),
+            source_sequence: 942,
+        };
+        upsert_stanox_crs(&pool, &[first]).await.expect("first upsert");
+
+        let second = common::StanoxCrsRecord {
+            stanox: "99999".to_string(),
+            crs: "TS2".to_string(),
+            tiploc: "TESTLOC".to_string(),
+            station_name: "TEST STATION".to_string(),
+            source_sequence: 943,
+        };
+        upsert_stanox_crs(&pool, &[second]).await.expect("re-upsert with changed crs");
+
+        let rows = list_stanox_crs(&pool).await.expect("list_stanox_crs");
+        let row = rows.iter().find(|r| r.stanox == "99999").expect("row present");
+        assert_eq!(row.crs, "TS2", "the re-POST must overwrite, not duplicate");
+        assert_eq!(row.source_sequence, 943);
+
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox = '99999'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture row");
     }
 
     #[tokio::test]
