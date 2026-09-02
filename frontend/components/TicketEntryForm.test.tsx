@@ -49,6 +49,44 @@ describe('TicketEntryForm', () => {
     return document.querySelector('input[type="file"][accept="application/pdf"]') as HTMLInputElement;
   }
 
+  // Mirrors react-dropzone's own test helper (react-dropzone/src/index.spec.js,
+  // createDtWithFiles) -- the shape react-dropzone@15.0.0's internal
+  // onDrop/onDragEnter handlers actually read off a native DragEvent's
+  // dataTransfer, confirmed against that file directly rather than guessed.
+  function dropFiles(node: Element, files: File[]) {
+    const dataTransfer = {
+      files,
+      items: files.map((file) => ({
+        kind: 'file',
+        size: file.size,
+        type: file.type,
+        getAsFile: () => file,
+      })),
+      types: ['Files'],
+    };
+    fireEvent.drop(node, { dataTransfer });
+  }
+
+  // The Dropzone's own focusable/drop-target root is an ANCESTOR of its
+  // hidden file input, not found via `closest('[tabindex]')` as might be
+  // assumed -- react-dropzone's hidden `<input>` itself carries
+  // `tabindex="-1"` (confirmed against the real rendered DOM this
+  // session), so that selector resolves to the input itself, not its
+  // parent. The actual focusable/keyboard-activatable/drop-target root is
+  // the input's immediate parent `<div>`, carrying `tabindex="0"`,
+  // `role="presentation"`, and Mantine's own stable, non-hashed
+  // `mantine-Dropzone-root` class (confirmed live via `npm run dev` this
+  // session, per Task 3's verification) -- used here instead, since it's
+  // stable across builds (unlike the CSS-module-hashed class alongside
+  // it).
+  function getPkpassDropzoneRoot(): HTMLElement {
+    return getPkpassFileInput().closest('.mantine-Dropzone-root') as HTMLElement;
+  }
+
+  function getPdfDropzoneRoot(): HTMLElement {
+    return getPdfFileInput().closest('.mantine-Dropzone-root') as HTMLElement;
+  }
+
   it('starts collapsed, showing only the entry-point button', () => {
     renderWithMantine(<TicketEntryForm trackingId={1} label="Add a ticket for this journey" />);
     expect(screen.getByRole('button', { name: 'Add a ticket for this journey' })).toBeInTheDocument();
@@ -116,6 +154,75 @@ describe('TicketEntryForm', () => {
     // The manual form must stay reachable regardless of why the upload
     // failed.
     expect(screen.getByRole('button', { name: 'or fill in the details manually' })).toBeInTheDocument();
+  });
+
+  it.each([
+    [400, "That doesn't look like a valid upload — try again or fill in the form manually"],
+    [422, 'could not read this as a train .pkpass: not a zip file'],
+    [504, 'That file took too long to read — try a smaller or simpler PDF, or fill in the details manually'],
+    [413, 'That file is too large (8 MB limit). Try filling in the details manually'],
+    [500, "Couldn't read this file. Try filling in the details manually"],
+  ])('pkpass drop: a %i response shows the mapped inline message', async (status, expectedSubstring) => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(status === 422 ? 'could not read this as a train .pkpass: not a zip file' : 'error', { status }),
+    );
+    openForm();
+    fireEvent.click(screen.getByRole('tab', { name: 'Upload .pkpass' }));
+    const file = new File(['fake'], 'ticket.pkpass', { type: 'application/octet-stream' });
+    dropFiles(getPkpassDropzoneRoot(), [file]);
+
+    expect(await screen.findByText(expectedSubstring)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'or fill in the details manually' })).toBeInTheDocument();
+  });
+
+  it('pkpass drop: on a 200, pre-fills manual fields and switches to the manual tab', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({ operator: 'LNER', ticketType: null, originCrs: 'KGX', destinationCrs: null, source: 'pkpass-heuristic' }),
+        { status: 200 },
+      ),
+    );
+    openForm();
+    fireEvent.click(screen.getByRole('tab', { name: 'Upload .pkpass' }));
+    const file = new File(['fake'], 'ticket.pkpass', { type: 'application/octet-stream' });
+    dropFiles(getPkpassDropzoneRoot(), [file]);
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'Manual entry', selected: true })).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText('Operator')).toHaveValue('LNER');
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith('/api/Train/1/tickets/pkpass', expect.objectContaining({ method: 'POST' }));
+    });
+  });
+
+  it('pdf drop: posts to the pdf-specific upload route, not the pkpass one', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({ operator: 'LNER', ticketType: null, originCrs: null, destinationCrs: null, source: 'pdf-heuristic' }),
+        { status: 200 },
+      ),
+    );
+    openForm();
+    fireEvent.click(screen.getByRole('tab', { name: 'Upload PDF e-ticket' }));
+    const file = new File(['fake'], 'ticket.pdf', { type: 'application/pdf' });
+    dropFiles(getPdfDropzoneRoot(), [file]);
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith('/api/Train/1/tickets/pdf', expect.objectContaining({ method: 'POST' }));
+    });
+  });
+
+  it('dropping a mismatched file type on the pkpass tab does not call fetch', async () => {
+    openForm();
+    fireEvent.click(screen.getByRole('tab', { name: 'Upload .pkpass' }));
+    const file = new File(['%PDF-1.4'], 'ticket.pdf', { type: 'application/pdf' });
+    dropFiles(getPkpassDropzoneRoot(), [file]);
+
+    // Give any (incorrect) async path a chance to run before asserting a
+    // negative -- consistent with this file's existing style of asserting
+    // absence via waitFor's polling rather than a bare synchronous check.
+    await waitFor(() => expect(fetch).not.toHaveBeenCalled());
   });
 
   it('pkpass upload: on a 200, pre-fills manual fields, marks them auto-filled, and switches to the manual tab', async () => {

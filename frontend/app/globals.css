@@ -1,5 +1,6 @@
 @import '@mantine/core/styles.css';
 @import '@mantine/dates/styles.css';
+@import '@mantine/dropzone/styles.css';
 
 /* Mantine resolves `--mantine-color-anchor` to `primaryColor`-6 in the
    light scheme, and grape 6 (#be4bdb) on white is 4.02:1 — under WCAG AA's
