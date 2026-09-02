@@ -46,6 +46,9 @@ pub struct PartialTicket {
 /// unconfirmed, so both paths are implemented, not just the optimistic
 /// one -- obtain 1-2 real sample passes to confirm this split's real-world
 /// hit rate before relying on it heavily.
+/// `ticket_type` is read from `boardingPass.auxiliaryFields` by exact
+/// `key` match (`"ticketType"`) via `keyed_field_value` -- `None` if that
+/// key isn't present, never guessed from label text or other fields.
 pub fn parse_pass_json(pass: &serde_json::Value) -> anyhow::Result<PartialTicket> {
     let boarding_pass = pass
         .get("boardingPass")
@@ -73,9 +76,13 @@ pub fn parse_pass_json(pass: &serde_json::Value) -> anyhow::Result<PartialTicket
             (origin, destination, "pkpass-heuristic")
         };
 
+    let ticket_type = boarding_pass
+        .get("auxiliaryFields")
+        .and_then(|fields| keyed_field_value(fields, "ticketType"));
+
     Ok(PartialTicket {
         operator,
-        ticket_type: None,
+        ticket_type,
         origin_crs: origin,
         destination_crs: destination,
         source,
@@ -119,6 +126,23 @@ fn primary_fields_origin_destination(
         ),
         _ => (None, None),
     }
+}
+
+/// Looks up an entry in a PassKit field array (`primaryFields`,
+/// `auxiliaryFields`, `secondaryFields` -- all the same `{key, label,
+/// value}` shape) by its machine-readable `key`, not by its
+/// issuer-chosen, freely-reworded `label` text. Returns `None` if `fields`
+/// isn't an array, or no entry has that exact key, or the matching
+/// entry's `value` isn't a string -- same "leave it blank, don't guess"
+/// contract as every other optional read in this module.
+fn keyed_field_value(fields: &serde_json::Value, key: &str) -> Option<String> {
+    fields
+        .as_array()?
+        .iter()
+        .find(|f| f.get("key").and_then(|v| v.as_str()) == Some(key))?
+        .get("value")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
 }
 
 use std::io::Read;
@@ -219,6 +243,42 @@ mod pass_json_tests {
     fn a_pass_with_no_boarding_pass_at_all_is_rejected() {
         let pass = json!({"organizationName": "Not A Boarding Pass"});
         assert!(parse_pass_json(&pass).is_err());
+    }
+
+    #[test]
+    fn ticket_type_is_read_from_auxiliary_fields_by_key() {
+        let pass = json!({
+            "organizationName": "Southern",
+            "boardingPass": {
+                "transitType": "PKTransitTypeTrain",
+                "primaryFields": [
+                    {"key":"origin","label":"FROM","value":"East Croydon"},
+                    {"key":"destination","label":"TO","value":"Brighton"}
+                ],
+                "auxiliaryFields": [
+                    {"key": "ticketType", "label": "TICKET TYPE", "value": "Super Off-Peak Return"}
+                ]
+            }
+        });
+        let ticket = parse_pass_json(&pass).unwrap();
+        assert_eq!(ticket.ticket_type, Some("Super Off-Peak Return".to_string()));
+    }
+
+    #[test]
+    fn ticket_type_ignores_a_field_with_the_wrong_key() {
+        let pass = json!({
+            "boardingPass": {
+                "transitType": "PKTransitTypeTrain",
+                "auxiliaryFields": [
+                    {"key": "railcard", "label": "TICKET TYPE DISCOUNT", "value": "Network Railcard"}
+                ]
+            }
+        });
+        let ticket = parse_pass_json(&pass).unwrap();
+        assert_eq!(
+            ticket.ticket_type, None,
+            "must match by the key field exactly, not by label text that happens to mention ticket type"
+        );
     }
 
     #[test]
