@@ -30,8 +30,8 @@ export function gapSpans(points: { day: string; delayRate: number | null }[]): {
 
 /** Widens a `gapSpans` span into the actual `x1`/`x2` values handed to
  * `<ReferenceArea>`. A live render (Task 7's screenshot verification pass,
- * flagged as a risk to check by this comment's own earlier draft -- Task 4
- * Step 3 / design spec Open question 4) confirmed the real failure mode:
+ * checking the exact risk Task 4 Step 3 / design spec Open question 4
+ * flagged as unverified) confirmed the real failure mode:
  * on `@mantine/charts`' `LineChart` (a Recharts point-scale category axis,
  * not a banded one), an isolated single-day span's `x1 === x2` renders no
  * `<ReferenceArea>` `<path>` at all -- not merely a thin sliver, nothing
