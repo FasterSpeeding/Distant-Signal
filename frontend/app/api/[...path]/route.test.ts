@@ -22,7 +22,12 @@ describe('/api/[...path] proxy', () => {
     vi.unstubAllGlobals();
   });
 
-  function makeRequest(pathname: string, init?: RequestInit): NextRequest {
+  // Typed off NextRequest's own constructor rather than the DOM lib's
+  // `RequestInit` -- Next's `RequestInit` (next/server, not re-exported
+  // publicly) narrows `signal` to `AbortSignal | undefined` (no `null`),
+  // which the DOM lib type allows, so `RequestInit` here didn't structurally
+  // match what `new NextRequest(...)` actually accepts.
+  function makeRequest(pathname: string, init?: ConstructorParameters<typeof NextRequest>[1]): NextRequest {
     return new NextRequest(`http://localhost:3000${pathname}`, init);
   }
 
