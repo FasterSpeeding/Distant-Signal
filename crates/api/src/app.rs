@@ -23,6 +23,11 @@ pub struct AppState {
     /// OIDC relying-party client -- see `auth::oidc`'s module doc for why
     /// discovery is lazy (not performed here in `init`).
     pub oidc: OidcClient,
+    /// Startup-built token-hash -> identity lookup for `/private/*`
+    /// (Decision 1/2). Built once in `init`, immutable afterward -- no
+    /// runtime credential add/remove without a redeploy, per Decision 2's
+    /// explicit rejection of a DB-backed, dynamically-editable table.
+    pub internal_services: crate::auth::InternalServiceRegistry,
 }
 
 /// Hand-rolled rather than `#[derive(Debug)]`. Two independent reasons:
@@ -51,6 +56,7 @@ impl std::fmt::Debug for AppState {
             .field("database", &"PgPool { .. }")
             .field("redis", &"redis::Client { .. }")
             .field("oidc", &"OidcClient { .. }")
+            .field("internal_services", &"InternalServiceRegistry { .. }")
             .finish()
     }
 }
@@ -70,6 +76,38 @@ impl AppState {
             !config.internal_token.is_empty(),
             "internal_token (--internal-token / INTERNAL_TOKEN) must not be empty"
         );
+
+        // Same failure class as the legacy internal_token guard above,
+        // applied to each of the seven per-service tokens: an empty value
+        // would let InternalServiceRegistry::resolve match an empty
+        // X-Internal-Token header against it.
+        for (name, value) in [
+            ("internal_token_poller_incidents", &config.internal_token_poller_incidents),
+            ("internal_token_poller_stations", &config.internal_token_poller_stations),
+            ("internal_token_poller_tocs", &config.internal_token_poller_tocs),
+            ("internal_token_poller_ldbws", &config.internal_token_poller_ldbws),
+            ("internal_token_poller_tfl", &config.internal_token_poller_tfl),
+            ("internal_token_trust_consumer", &config.internal_token_trust_consumer),
+            ("internal_token_schedule_ingest", &config.internal_token_schedule_ingest),
+        ] {
+            ensure!(
+                !value.is_empty(),
+                "{name} (--{}/{}) must not be empty",
+                name.replace('_', "-"),
+                name.to_uppercase()
+            );
+        }
+
+        let internal_services = crate::auth::InternalServiceRegistry::from_tokens(&[
+            (crate::auth::InternalService::Legacy, config.internal_token.as_str()),
+            (crate::auth::InternalService::PollerIncidents, config.internal_token_poller_incidents.as_str()),
+            (crate::auth::InternalService::PollerStations, config.internal_token_poller_stations.as_str()),
+            (crate::auth::InternalService::PollerTocs, config.internal_token_poller_tocs.as_str()),
+            (crate::auth::InternalService::PollerLdbws, config.internal_token_poller_ldbws.as_str()),
+            (crate::auth::InternalService::PollerTfl, config.internal_token_poller_tfl.as_str()),
+            (crate::auth::InternalService::TrustConsumer, config.internal_token_trust_consumer.as_str()),
+            (crate::auth::InternalService::ScheduleIngest, config.internal_token_schedule_ingest.as_str()),
+        ]);
 
         let db = PgPoolOptions::new()
             .max_connections(50)
@@ -104,6 +142,7 @@ impl AppState {
             database: db,
             redis,
             oidc,
+            internal_services,
         }))
     }
 }
