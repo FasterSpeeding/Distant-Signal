@@ -10,10 +10,10 @@
 //! standard `Authorization: Bearer <token>` header (RFC 6750), the token
 //! obtained from `crate::oauth_client::OAuthTokenCache` -- see
 //! docs/superpowers/specs/2026-09-02-internal-service-oauth2-design.md
-//! Decision 5. Previously this carried a bespoke `X-Internal-Token` shared
-//! secret via a custom header; that scheme is retired, not kept alongside
-//! this one (no dual-acceptance window -- see that document's Decision 5
-//! and this plan's own Global Constraints).
+//! Decision 5. Previously this carried a bespoke shared-secret custom
+//! header; that scheme is retired, not kept alongside this one (no
+//! dual-acceptance window -- see that document's Decision 5 and this
+//! plan's own Global Constraints).
 
 use std::time::Duration;
 

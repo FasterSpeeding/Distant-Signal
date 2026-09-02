@@ -159,6 +159,7 @@ dependencies = [
  "tower-http 0.6.11",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
  "zip",
 ]
 
@@ -564,8 +565,10 @@ dependencies = [
  "serde-inline-default",
  "serde_json",
  "serde_repr",
+ "tokio",
  "toml",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
@@ -3085,6 +3088,7 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-native-tls",

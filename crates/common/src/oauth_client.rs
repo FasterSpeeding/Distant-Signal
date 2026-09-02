@@ -21,9 +21,9 @@ use serde::Deserialize;
 
 /// Every real caller's own OAuth2 client-credentials config -- mirrors the
 /// design's Decision 6 field table exactly: `token_url`/`client_id`/`scope`
-/// are shared (the same value repeated per binary, like `INTERNAL_TOKEN`
-/// was before this design), `username`/`password` are per-service and are
-/// the actual secret.
+/// are shared (the same value repeated per binary, like the old shared
+/// secret this design retired was before it), `username`/`password` are
+/// per-service and are the actual secret.
 #[derive(Clone)]
 pub struct OAuthCredentials {
     pub token_url: String,

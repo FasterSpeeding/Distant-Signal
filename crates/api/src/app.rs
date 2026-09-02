@@ -42,9 +42,9 @@ pub struct AppState {
 ///    `CoreClient` does not implement `Debug` -- a derived `Debug` on
 ///    `AppState` simply fails to compile once the `oidc` field exists.
 /// 2. Even setting that aside, `config: ServiceArguments` carries
-///    `sso_client_secret`/`internal_token`/`database_url` (which itself
+///    `sso_client_secret`/`database_url` (which itself
 ///    embeds the Postgres password) -- printing it via its own derived
-///    `Debug` would leak all three the moment anything ever
+///    `Debug` would leak both the moment anything ever
 ///    debug-formats an `AppState`/`App` value. Nothing in this codebase
 ///    does that today, but a hand-rolled impl that never touches those
 ///    fields is cheap insurance against a future `tracing::debug!(?app,
@@ -88,7 +88,7 @@ impl AppState {
         // An empty client secret would make every future confidential-client
         // token exchange fail anyway, but only after a real user has already
         // been redirected all the way to the IdP and back -- reject at
-        // startup instead, matching `internal_token`'s posture above.
+        // startup instead, matching the internal-oauth guards below.
         ensure!(
             !config.sso_client_secret.is_empty(),
             "sso_client_secret (--sso-client-secret / SSO_CLIENT_SECRET) must not be empty"
@@ -103,12 +103,13 @@ impl AppState {
         .context("failed to construct OIDC client")?;
 
         // An empty required-group value must never silently become "any
-        // group matches" -- the same failure class the old single-token
-        // design guarded against for its own credential (see the removed
-        // internal_token guard this replaces). issuer_url/client_id are
-        // guarded too: an empty issuer_url would make IssuerUrl::new("")
-        // fail inside ServiceTokenVerifier::new below anyway, but failing
-        // here first gives a clearer message naming the actual env var.
+        // group matches" -- the same failure class the old shared-secret
+        // design guarded against for its own credential (see the startup
+        // guard this replaces, formerly against a now-deleted config
+        // field). issuer_url/client_id are guarded too: an empty
+        // issuer_url would make IssuerUrl::new("") fail inside
+        // ServiceTokenVerifier::new below anyway, but failing here first
+        // gives a clearer message naming the actual env var.
         for (name, value) in [
             ("internal_oauth_issuer_url", &config.internal_oauth_issuer_url),
             ("internal_oauth_client_id", &config.internal_oauth_client_id),

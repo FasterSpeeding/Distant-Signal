@@ -10,10 +10,10 @@
 //! ANY of that route's required group names (more than one for
 //! `/stanox-crs`, which has two legitimate callers). See
 //! docs/superpowers/specs/2026-09-02-internal-service-oauth2-design.md.
-//! This replaces a single shared-secret `X-Internal-Token` header,
-//! compared in fixed time against one configured string with no concept
-//! of *which* caller presented it -- that scheme is retired outright, not
-//! kept alongside this one (no dual-acceptance window).
+//! This replaces a single shared-secret header, compared in fixed time
+//! against one configured string with no concept of *which* caller
+//! presented it -- that scheme is retired outright, not kept alongside
+//! this one (no dual-acceptance window).
 
 pub mod internal_oauth;
 pub mod oidc;

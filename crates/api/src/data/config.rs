@@ -107,10 +107,12 @@ pub struct ServiceArguments {
     pub sso_client_id: String,
 
     /// OIDC client secret paired with `sso_client_id`. A genuinely new
-    /// *kind* of secret for this crate -- every other credential here
-    /// (`internal_token`, the RDM API keys in sibling pollers) is a single
-    /// shared/bearer token, not a paired OAuth2 confidential-client secret
-    /// -- but handled with the same posture: env-only, required, never
+    /// *kind* of secret for this crate -- every other credential this
+    /// crate's own config used to hold (the removed shared-secret field
+    /// this design retired; the RDM API keys living in sibling pollers'
+    /// own configs) is a single shared/bearer token, not a paired OAuth2
+    /// confidential-client secret -- but handled with the same posture:
+    /// env-only, required, never
     /// logged. `ServiceArguments` derives `Debug`; avoid ever logging
     /// `app.config` wholesale (nothing in this codebase does today) --
     /// log individual non-secret fields instead if a future debug log
