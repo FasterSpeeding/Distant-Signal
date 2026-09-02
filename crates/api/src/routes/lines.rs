@@ -490,7 +490,16 @@ mod db_tests {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
             redis_url: "redis://127.0.0.1:0".to_string(),
-            internal_token: "test-internal-token".to_string(),
+            internal_oauth_issuer_url: "https://example.invalid".to_string(),
+            internal_oauth_client_id: "test-internal-oauth-client".to_string(),
+            internal_oauth_group_poller_incidents: "svc-poller-incidents".to_string(),
+            internal_oauth_group_poller_stations: "svc-poller-stations".to_string(),
+            internal_oauth_group_poller_tocs: "svc-poller-tocs".to_string(),
+            internal_oauth_group_poller_ldbws: "svc-poller-ldbws".to_string(),
+            internal_oauth_group_poller_tfl: "svc-poller-tfl".to_string(),
+            internal_oauth_group_trust_consumer: "svc-trust-consumer".to_string(),
+            internal_oauth_group_schedule_ingest: "svc-schedule-ingest".to_string(),
+            internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),
             sso_client_secret: "test-secret".to_string(),
@@ -517,6 +526,12 @@ mod db_tests {
                 redirect_url: "https://example.invalid/callback".to_string(),
             })
             .expect("construct placeholder oidc client"),
+            internal_oauth_verifier: crate::auth::internal_oauth::ServiceTokenVerifier::new(
+                "https://example.invalid".to_string(),
+                "test-internal-oauth-client".to_string(),
+            )
+            .expect("construct placeholder internal-oauth verifier"),
+            internal_oauth_routes: Vec::new(),
         })
     }
 

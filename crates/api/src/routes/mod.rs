@@ -2,7 +2,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 
 use crate::app::{App, Router};
-use crate::auth::require_internal_token;
+use crate::auth::require_internal_oauth;
 
 pub mod auth;
 pub mod freshness;
@@ -37,7 +37,7 @@ pub fn public_router() -> Router {
     // shape. Nesting them under `/public` like `health` would silently
     // break that compatibility. `main.rs` merges `line_status::router()`
     // directly onto the top-level router instead; it's still
-    // unauthenticated (no `require_internal_token` layer applied), just
+    // unauthenticated (no `require_internal_oauth` layer applied), just
     // not routed through this particular function.
     Router::new()
         .merge(health::router())
@@ -59,7 +59,7 @@ pub fn private_router(app: App) -> Router {
     Router::new()
         .merge(ingest::router())
         .merge(samples::router())
-        .layer(middleware::from_fn_with_state(app, require_internal_token))
+        .layer(middleware::from_fn_with_state(app, require_internal_oauth))
         // Axum's `Json` extractor enforces an implicit 2MB body-read limit
         // unless overridden. `StationReference::accessibility` (see
         // crates/common) is a `#[serde(flatten)]` passthrough that carries

@@ -1,9 +1,19 @@
 //! Internal-auth gate for `private_router()`.
 //!
-//! One shared-secret header (`X-Internal-Token`), compared in fixed time
-//! against `ServiceArguments::internal_token`. This is intentionally not a
-//! general auth framework — just enough to keep the ingestion endpoints
-//! from being reachable by anyone who can hit the API's port.
+//! Bearer-token OAuth2 client-credentials auth (RFC 6750/6749 §4.4),
+//! delegated to Authentik. `require_internal_oauth` parses the
+//! `Authorization: Bearer` header, verifies it against Authentik's JWKS
+//! (`internal_oauth::ServiceTokenVerifier`, local, no per-request network
+//! round trip once cached), then checks the verified token's `groups`
+//! claim against a static, config-built route-scoping table
+//! (`App::internal_oauth_routes`) -- a route passes if `groups` contains
+//! ANY of that route's required group names (more than one for
+//! `/stanox-crs`, which has two legitimate callers). See
+//! docs/superpowers/specs/2026-09-02-internal-service-oauth2-design.md.
+//! This replaces a single shared-secret `X-Internal-Token` header,
+//! compared in fixed time against one configured string with no concept
+//! of *which* caller presented it -- that scheme is retired outright, not
+//! kept alongside this one (no dual-acceptance window).
 
 pub mod internal_oauth;
 pub mod oidc;
@@ -12,48 +22,66 @@ use axum::extract::{Request, State, FromRequestParts};
 use axum::http::{StatusCode, HeaderMap, request::Parts};
 use axum::middleware::Next;
 use axum::response::Response;
-use common::ingest::INTERNAL_TOKEN_HEADER;
 
 use crate::app::App;
 
-/// `axum::middleware::from_fn` handler enforcing the shared-secret header.
-/// Applied only to `private_router()` — `public_router()` never sees this.
-pub async fn require_internal_token(
+/// `axum::middleware::from_fn_with_state` handler enforcing internal-service
+/// OAuth2 auth. Applied only to `private_router()` -- `public_router()`
+/// never sees this.
+///
+/// Status codes: a missing/malformed/expired/signature-invalid/wrong-
+/// issuer/wrong-audience bearer token -> `401`, collapsed into one outcome
+/// deliberately (see `VerifyError`'s own doc comment) -- a caller
+/// presenting a token that fails verification for any of these reasons
+/// learns only "not accepted," never which specific check failed. A
+/// route absent from the scoping table, OR present but whose required
+/// group(s) the verified token's `groups` claim doesn't contain -> `403`,
+/// with the token's `sub` and the request path logged -- a real,
+/// Authentik-issued credential, just not scoped for this route, which is
+/// actionable signal for a misconfigured deployment (a chart/secret
+/// wiring mistake handing one service another's credential), not an
+/// information leak (the route table itself is fixed and not secret).
+pub async fn require_internal_oauth(
     State(app): State<App>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let provided = request
-        .headers()
-        .get(INTERNAL_TOKEN_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
+    let path = request.uri().path().to_string();
 
-    if constant_time_eq(provided.as_bytes(), app.config.internal_token.as_bytes()) {
-        Ok(next.run(request).await)
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
+    let Some(token) = bearer_token(request.headers()) else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    let claims = match app.internal_oauth_verifier.verify(&token).await {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    };
+
+    let required_groups = app
+        .internal_oauth_routes
+        .iter()
+        .find(|(prefix, _)| path.starts_with(prefix))
+        .map(|(_, groups)| groups);
+
+    let Some(required_groups) = required_groups else {
+        // A route with no entry in the table at all -- default-deny even
+        // for a perfectly valid token, rather than silently "allowed"
+        // because nobody added its row.
+        tracing::warn!(sub = %claims.sub, path, "internal oauth request rejected: no route-scoping entry for this path");
+        return Err(StatusCode::FORBIDDEN);
+    };
+
+    if !required_groups.iter().any(|group| claims.groups.contains(group)) {
+        tracing::warn!(sub = %claims.sub, path, "internal oauth request rejected: valid token, wrong scope");
+        return Err(StatusCode::FORBIDDEN);
     }
+
+    Ok(next.run(request).await)
 }
 
-/// Fixed-time byte comparison: no early return based on *content*, so a
-/// mismatching byte doesn't short-circuit the scan. (A length mismatch is
-/// still rejected immediately — hiding token *length* isn't a goal here,
-/// only avoiding a byte-by-byte timing oracle on a same-length guess.)
-///
-/// Hand-rolled rather than pulling in the `subtle` crate: this is a single
-/// comparison in one call site, and `subtle::ConstantTimeEq` has the same
-/// same-length requirement, so there's no behavioral gap being traded away.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    value.strip_prefix("Bearer ").map(str::to_string)
 }
 
 use base64::Engine;
@@ -212,33 +240,46 @@ impl FromRequestParts<App> for OptionalAuthenticatedUser {
 }
 
 #[cfg(test)]
-mod tests {
+mod internal_oauth_middleware_tests {
     use super::*;
 
     #[test]
-    fn equal_tokens_match() {
-        assert!(constant_time_eq(b"super-secret", b"super-secret"));
+    fn bearer_token_extracts_the_token_from_a_well_formed_header() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(axum::http::header::AUTHORIZATION, "Bearer abc.def.ghi".parse().unwrap());
+        assert_eq!(bearer_token(&headers), Some("abc.def.ghi".to_string()));
     }
 
     #[test]
-    fn different_content_same_length_does_not_match() {
-        assert!(!constant_time_eq(b"super-secret", b"super-sekret"));
+    fn bearer_token_returns_none_without_the_bearer_prefix() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(axum::http::header::AUTHORIZATION, "abc.def.ghi".parse().unwrap());
+        assert_eq!(bearer_token(&headers), None);
     }
 
     #[test]
-    fn different_length_does_not_match() {
-        assert!(!constant_time_eq(b"short", b"much-longer-token"));
+    fn bearer_token_returns_none_with_no_authorization_header_at_all() {
+        let headers = axum::http::HeaderMap::new();
+        assert_eq!(bearer_token(&headers), None);
     }
 
-    #[test]
-    fn empty_tokens_match() {
-        assert!(constant_time_eq(b"", b""));
-    }
+    // The route-scoping lookup itself (`find` + `starts_with`, then
+    // `groups.contains`) is exercised indirectly through
+    // `require_internal_oauth` in Task 4's `AppState`-building tests --
+    // no live `AppState`/database is constructed here (this module has
+    // no existing convention for that; see `internal_oauth::tests` for
+    // the JWT-verification coverage, which is the part of this feature
+    // that's genuinely pure and independently testable). This gap --
+    // `require_internal_oauth` itself is only exercised end-to-end,
+    // never unit-tested in isolation -- mirrors this codebase's existing
+    // posture for `AuthenticatedUser::from_request_parts` (also
+    // untested in isolation, for the same reason: it needs a live
+    // `AppState`).
+}
 
-    #[test]
-    fn empty_provided_against_real_token_does_not_match() {
-        assert!(!constant_time_eq(b"", b"super-secret"));
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[test]
     fn parse_cookie_finds_a_single_named_cookie() {
