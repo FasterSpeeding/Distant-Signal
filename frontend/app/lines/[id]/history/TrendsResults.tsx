@@ -24,7 +24,7 @@ export function toChartPoints(stats: LineDailyStats[]): ChartPoint[] {
   return stats.map((row) => {
     const sparse = row.sampleCycles < SPARSE_DATA_FLOOR_CYCLES;
     return {
-      day: row.day,
+      bucketKey: row.day,
       delayRate: sparse ? null : row.delayRate,
       cancellationRate: sparse ? null : row.cancellationRate,
       skipRate: sparse ? null : row.skipRate,
@@ -83,7 +83,7 @@ export async function TrendsResults({ id, from, to }: { id: string; from: string
           Client Component -- see its own doc comment for why: a plain
           function prop like `valueFormatter` can't cross the Server-to-
           Client boundary straight out of this `async` Server Component. */}
-      <TrendsCharts points={points} />
+      <TrendsCharts points={points} granularity="day" />
     </Stack>
   );
 }

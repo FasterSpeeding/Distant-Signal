@@ -133,6 +133,26 @@ export interface LineDailyStats {
   skipRate: number;
 }
 
+/** `GET /Line/{id}/Stats/Hourly/{from}/to/{to}`'s per-hour response shape
+ * -- hourly sibling of `LineDailyStats`. `hourStart` is an RFC3339 UTC
+ * instant (the top of the hour), not a calendar day -- always render it
+ * through `frontend/lib/dateFormat.ts`'s `formatTime` before display, same
+ * convention `LineDailyStats.day` follows for its own rendering. Same
+ * dedup/attribution caveat as `LineDailyStats` applies, reworded for "that
+ * hour" instead of "that day". */
+export interface LineHourlyStats {
+  hourStart: string; // RFC3339 UTC instant, top of the hour
+  sampleCycles: number;
+  total: number;
+  delayed: number;
+  cancelled: number;
+  skipped: number;
+  avgDelayMinutes: number;
+  delayRate: number;
+  cancellationRate: number;
+  skipRate: number;
+}
+
 export interface Preferences {
   pinnedLines: string[];
   pinnedStations: string[];

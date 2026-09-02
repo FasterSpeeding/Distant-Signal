@@ -3,6 +3,7 @@ import type {
   LineStatusReport,
   LineStatusHistoryEntry,
   LineDailyStats,
+  LineHourlyStats,
   Preferences,
   LineSummary,
   CustomLineDetail,
@@ -133,6 +134,25 @@ export async function getLineDailyStats(
 ): Promise<LineDailyStats[]> {
   return fetchJson<LineDailyStats[]>(
     `${baseUrl()}/Line/${id}/Stats/${from}/to/${to}`,
+    { cache: 'no-store' },
+  );
+}
+
+/** `GET /Line/{id}/Stats/Hourly/{from}/to/{to}` -- the hourly rollup
+ * route. Unlike `getLineDailyStats`, `from`/`to` are passed straight
+ * through as RFC3339 instants (no `londonDayKey` conversion) -- the
+ * route's own path segments are `DateTime<Utc>`, not `NaiveDate`, since an
+ * hour bucket has no calendar-day analog to round-trip through (Decision
+ * 6 of docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md).
+ * Same public, no-store, no-cookie-forwarding shape as
+ * `getLineDailyStats`/`getLineStatusHistory`. */
+export async function getLineHourlyStats(
+  id: string,
+  from: string,
+  to: string,
+): Promise<LineHourlyStats[]> {
+  return fetchJson<LineHourlyStats[]>(
+    `${baseUrl()}/Line/${id}/Stats/Hourly/${from}/to/${to}`,
     { cache: 'no-store' },
   );
 }

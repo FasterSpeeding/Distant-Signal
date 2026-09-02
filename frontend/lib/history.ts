@@ -187,6 +187,22 @@ export function resolveRange(
   };
 }
 
+const HOUR_MS = 3_600_000;
+
+/** The line-info-page embed's fixed rolling 24-hour window -- deliberately
+ * NOT a `RangePreset`/`resolveRange` variant: Decision 11 of
+ * docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md
+ * is explicit that this view has no user-selectable range at all, unlike
+ * the history page's day/30-day presets (which live in the URL). No
+ * `preset`/`from`/`to`-from-query-params handling is needed here for the
+ * same reason -- this always resolves the same window relative to `now`. */
+export function resolveHourlyRange(now: number): { from: string; to: string } {
+  return {
+    from: new Date(now - 24 * HOUR_MS).toISOString(),
+    to: new Date(now).toISOString(),
+  };
+}
+
 /** Whether `range.from` reaches back further than the backend's real
  * `line_status_history` retention window allows — and if so, by how many
  * whole days. `retentionDays` is the real, server-reported ceiling (see

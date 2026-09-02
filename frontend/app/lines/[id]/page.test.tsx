@@ -4,7 +4,7 @@ import { renderWithMantine } from '@/test/render';
 import LineDetailPage from './page';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
-import type { LineStatusReport, LineSummary, CustomLineDetail, LineDailyStats } from '@/lib/types';
+import type { LineStatusReport, LineSummary, CustomLineDetail, LineHourlyStats } from '@/lib/types';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -14,7 +14,7 @@ vi.mock('@/lib/api', async () => {
     getCustomLine: vi.fn(),
     getLineDefinition: vi.fn(),
     getAllLines: vi.fn(),
-    getLineDailyStats: vi.fn(),
+    getLineHourlyStats: vi.fn(),
   };
 });
 // DeleteLineButton (rendered whenever Edit/Delete render) calls useRouter()
@@ -62,9 +62,9 @@ function customLine(overrides: Partial<CustomLineDetail> = {}): CustomLineDetail
   };
 }
 
-function dailyStatsRow(overrides: Partial<LineDailyStats> = {}): LineDailyStats {
+function hourlyStatsRow(overrides: Partial<LineHourlyStats> = {}): LineHourlyStats {
   return {
-    day: '2026-08-30',
+    hourStart: '2026-08-30T14:00:00Z',
     sampleCycles: 500,
     total: 100,
     delayed: 10,
@@ -88,7 +88,7 @@ describe('LineDetailPage Edit/Delete visibility', () => {
     vi.mocked(api.getLineStatus).mockResolvedValue([report('custom-my-commute', 'My Commute')]);
     vi.mocked(api.getAllLines).mockResolvedValue(lines);
     vi.mocked(api.getLineDefinition).mockResolvedValue({ stations: ['WOK', 'CLJ'], operators: ['SW'] });
-    vi.mocked(api.getLineDailyStats).mockResolvedValue([]);
+    vi.mocked(api.getLineHourlyStats).mockResolvedValue([]);
   });
 
   it('a catalogue line (getCustomLine 404s) never shows Edit/Delete', async () => {
@@ -112,10 +112,10 @@ describe('LineDetailPage Edit/Delete visibility', () => {
 });
 
 // Item 3: the detail page used to only link out to `/lines/[id]/history`
-// for the trend charts -- this embeds a last-7-days preview of them
-// directly, reusing `TrendsResults` (the history page's own Trends-tab
-// component) wholesale rather than re-deriving its fetch or its
-// sparse-data/empty-state handling.
+// for the trend charts -- this embeds a rolling-24h hourly preview of them
+// directly via `HourlyTrendsResults`, sharing `TrendsCharts` (the actual
+// chart-rendering leaf) with the history page's daily Trends tab, per
+// docs/superpowers/plans/2026-09-02-trend-chart-granularity.md Task 13.
 describe('LineDetailPage embedded trends', () => {
   beforeEach(() => {
     vi.mocked(api.getLineStatus).mockResolvedValue([report('custom-my-commute', 'My Commute')]);
@@ -124,14 +124,14 @@ describe('LineDetailPage embedded trends', () => {
     vi.mocked(api.getCustomLine).mockResolvedValue(customLine());
   });
 
-  it('renders the trend charts when the line already has recent daily stats', async () => {
-    vi.mocked(api.getLineDailyStats).mockResolvedValue([
-      dailyStatsRow({ day: '2026-08-29' }),
-      dailyStatsRow({ day: '2026-08-30' }),
+  it('renders the trend charts when the line already has recent hourly stats', async () => {
+    vi.mocked(api.getLineHourlyStats).mockResolvedValue([
+      hourlyStatsRow({ hourStart: '2026-08-30T13:00:00Z' }),
+      hourlyStatsRow({ hourStart: '2026-08-30T14:00:00Z' }),
     ]);
     await renderPage();
 
-    expect(await screen.findByRole('heading', { name: 'Recent trends (last 7 days)' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Recent trends (last 24 hours)' })).toBeInTheDocument();
     const charts = await screen.findAllByTestId('line-chart');
     expect(charts).toHaveLength(2);
     expect(screen.queryByText('Not enough sampled data yet for this line.')).not.toBeInTheDocument();
@@ -148,11 +148,11 @@ describe('LineDetailPage embedded trends', () => {
   // hasn't run a cycle for it), so this must degrade to the same honest
   // empty state `TrendsResults` already shows on the full history page --
   // not an error, not an indefinite loading state.
-  it('shows the sane no-data-yet fallback for a line with no daily stats -- e.g. one just created', async () => {
-    vi.mocked(api.getLineDailyStats).mockResolvedValue([]);
+  it('shows the sane no-data-yet fallback for a line with no hourly stats -- e.g. one just created', async () => {
+    vi.mocked(api.getLineHourlyStats).mockResolvedValue([]);
     await renderPage();
 
-    expect(await screen.findByRole('heading', { name: 'Recent trends (last 7 days)' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Recent trends (last 24 hours)' })).toBeInTheDocument();
     expect(await screen.findByText('Not enough sampled data yet for this line.')).toBeInTheDocument();
     expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
   });

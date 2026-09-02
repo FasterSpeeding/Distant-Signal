@@ -3,22 +3,26 @@
 import { LineChart } from '@mantine/charts';
 import { Stack, Title } from '@mantine/core';
 import { ReferenceArea } from 'recharts';
+import { formatTime } from '@/lib/dateFormat';
 import type { ChartPoint } from './chartPoint';
 
-/** A contiguous run of one or more days where every rate/delay field is
- * `null` -- i.e. below `SPARSE_DATA_FLOOR_CYCLES` (`TrendsResults.tsx`'s
- * `toChartPoints`, lines 23-35). Checking `delayRate === null` alone is
- * sufficient today because `toChartPoints` guarantees all four fields are
- * nulled together for a sparse day -- an implicit coupling to that
- * invariant, not something `ChartPoint`'s own type enforces (design spec
- * Open question 5). If a future change ever nulls fields independently,
- * this derivation would need to change too. */
-export function gapSpans(points: { day: string; delayRate: number | null }[]): { startDay: string; endDay: string }[] {
-  const spans: { startDay: string; endDay: string }[] = [];
-  let current: { startDay: string; endDay: string } | null = null;
+/** A contiguous run of one or more buckets where every rate/delay field is
+ * `null` -- i.e. below the caller's own sparse-data floor (see
+ * `TrendsResults.tsx`'s/`HourlyTrendsResults.tsx`'s own `toChartPoints`-
+ * shaped helpers). Checking `delayRate === null` alone is sufficient
+ * today because both of those helpers guarantee all four fields are
+ * nulled together for a sparse bucket -- an implicit coupling to that
+ * invariant, not something `ChartPoint`'s own type enforces. Generalized
+ * from day-specific `{ day, startDay, endDay }` naming to
+ * `{ bucketKey, startKey, endKey }` -- Decision 9 of
+ * docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md;
+ * the underlying algorithm is unchanged from the daily-only version. */
+export function gapSpans(points: { bucketKey: string; delayRate: number | null }[]): { startKey: string; endKey: string }[] {
+  const spans: { startKey: string; endKey: string }[] = [];
+  let current: { startKey: string; endKey: string } | null = null;
   for (const point of points) {
     if (point.delayRate === null) {
-      current = current ? { startDay: current.startDay, endDay: point.day } : { startDay: point.day, endDay: point.day };
+      current = current ? { startKey: current.startKey, endKey: point.bucketKey } : { startKey: point.bucketKey, endKey: point.bucketKey };
     } else {
       if (current) spans.push(current);
       current = null;
@@ -29,55 +33,49 @@ export function gapSpans(points: { day: string; delayRate: number | null }[]): {
 }
 
 /** Widens a `gapSpans` span into the actual `x1`/`x2` values handed to
- * `<ReferenceArea>`. A live render (Task 7's screenshot verification pass,
- * checking the exact risk Task 4 Step 3 / design spec Open question 4
- * flagged as unverified) confirmed the real failure mode:
- * on `@mantine/charts`' `LineChart` (a Recharts point-scale category axis,
- * not a banded one), an isolated single-day span's `x1 === x2` renders no
- * `<ReferenceArea>` `<path>` at all -- not merely a thin sliver, nothing
- * -- because a point scale has no bandwidth to give a single category. A
- * multi-day span (`x1 !== x2`) is unaffected and renders correctly as-is.
- * There is no real "midpoint" category to anchor a precise half-day band
- * to on a point scale -- the only coordinates Recharts resolves are actual
- * `day` values already in `data` -- so this widens an isolated span to its
- * immediate neighbor(s) instead, the closest a point-scale axis can get to
- * a visible highlight for one point. This is still "one mechanism" in
- * Decision 4's sense (no isolated-day-specific rendering branch,
- * `<ReferenceArea>` used identically either way) -- only the coordinates
- * fed to it differ, and only because the platform itself has no zero-width
- * concept to fall back on. */
+ * `<ReferenceArea>` -- unchanged in substance from the daily-only
+ * version (see its prior doc comment, preserved in git history), only
+ * the field names are generalized. Still needed for both granularities:
+ * `@mantine/charts`' `LineChart` is a Recharts point-scale category axis
+ * regardless of whether the category values are day strings or hour-start
+ * instants, so an isolated single-bucket gap still needs widening to its
+ * neighbors to render at all. */
 function referenceAreaBounds(
-  span: { startDay: string; endDay: string },
-  points: { day: string }[],
+  span: { startKey: string; endKey: string },
+  points: { bucketKey: string }[],
 ): { x1: string; x2: string } {
-  if (span.startDay !== span.endDay) return { x1: span.startDay, x2: span.endDay };
-  const idx = points.findIndex((point) => point.day === span.startDay);
-  const prev = idx > 0 ? points[idx - 1].day : span.startDay;
-  const next = idx >= 0 && idx < points.length - 1 ? points[idx + 1].day : span.startDay;
+  if (span.startKey !== span.endKey) return { x1: span.startKey, x2: span.endKey };
+  const idx = points.findIndex((point) => point.bucketKey === span.startKey);
+  const prev = idx > 0 ? points[idx - 1].bucketKey : span.startKey;
+  const next = idx >= 0 && idx < points.length - 1 ? points[idx + 1].bucketKey : span.startKey;
   return { x1: prev, x2: next };
 }
 
-/** Split out of `TrendsResults` (an async Server Component) purely because
- * of `valueFormatter` below: it's a plain function, and Next's RSC
- * serialization refuses to pass a function prop from a Server Component
- * across the boundary into a Client Component (`@mantine/charts`' own
- * `LineChart` carries a `"use client"` directive) -- "Functions cannot be
- * passed directly to Client Components unless you explicitly expose it by
- * marking it with 'use server'." This is a real crash, not a lint nit:
- * confirmed live against a running dev server, both here and on
- * `/lines/[id]/history`'s Trends tab (the exact same `<LineChart
- * valueFormatter={...}>` call, unchanged since before this file existed) --
- * both 500'd with this same digest before this split. The repo's vitest
- * suite never caught it because its `@mantine/charts` mock (see
- * `TrendsResults.test.tsx`) renders everything as one ordinary client tree
- * in jsdom, which never enforces the real RSC server/client serialization
- * boundary a production `next start`/`next dev` request goes through.
+/** Split out of `TrendsResults`/`HourlyTrendsResults` (both `async` Server
+ * Components) purely because of `valueFormatter` below: a plain function,
+ * and Next's RSC serialization refuses to pass a function prop from a
+ * Server Component across the boundary into a Client Component. See git
+ * history for the full incident this originally fixed -- unchanged by
+ * this generalization.
  *
- * `points` is the only thing crossing the boundary now, and it's plain
- * data (strings/numbers/null) -- always serializable. Everything else
- * about the two charts (including `valueFormatter` itself) now lives
- * entirely on the client side of that boundary. */
-export function TrendsCharts({ points }: { points: ChartPoint[] }) {
+ * `granularity` is new: a plain, serializable `'day' | 'hour'` string
+ * (never a function, so it crosses the Server/Client boundary safely from
+ * either caller) that controls ONLY the x-axis tick label formatting.
+ * `points[].bucketKey` stays the raw, always-unique category identity for
+ * BOTH granularities (a "YYYY-MM-DD" day string, or an RFC3339 hour-start
+ * instant) -- `granularity === 'hour'` additionally renders each tick
+ * through `formatTime` (e.g. "14:00") for a legible axis, without
+ * changing what Recharts uses as the category key. This split matters
+ * because a rolling 24-hour window's wall-clock hour label can legitimately
+ * repeat once (yesterday's and today's same clock hour) whenever the
+ * window straddles a day boundary -- using a formatted label as the
+ * category KEY itself would silently collide two distinct buckets. */
+export function TrendsCharts({ points, granularity }: { points: ChartPoint[]; granularity: 'day' | 'hour' }) {
+  const xAxisProps = {
+    padding: { right: 12 },
+    ...(granularity === 'hour' ? { tickFormatter: (value: string) => formatTime(value) } : {}),
+  };
+
   return (
     <>
       <Stack gap={4}>
@@ -91,7 +89,7 @@ export function TrendsCharts({ points }: { points: ChartPoint[] }) {
         <LineChart
           h={310}
           data={points}
-          dataKey="day"
+          dataKey="bucketKey"
           withLegend
           series={[
             { name: 'delayRate', label: 'Delay rate', color: 'blue.6' },
@@ -100,13 +98,13 @@ export function TrendsCharts({ points }: { points: ChartPoint[] }) {
           ]}
           valueFormatter={(value) => `${(value * 100).toFixed(1)}%`}
           connectNulls={false}
-          xAxisProps={{ padding: { right: 12 } }}
+          xAxisProps={xAxisProps}
         >
           {gapSpans(points).map((span) => {
             const { x1, x2 } = referenceAreaBounds(span, points);
             return (
               <ReferenceArea
-                key={`${span.startDay}-${span.endDay}`}
+                key={`${span.startKey}-${span.endKey}`}
                 x1={x1}
                 x2={x2}
                 fill="var(--mantine-color-gray-5)"
@@ -125,17 +123,17 @@ export function TrendsCharts({ points }: { points: ChartPoint[] }) {
         <LineChart
           h={220}
           data={points}
-          dataKey="day"
+          dataKey="bucketKey"
           series={[{ name: 'avgDelayMinutes', label: 'Avg delay (minutes)', color: 'grape.6' }]}
           valueFormatter={(value) => `${value.toFixed(1)} min`}
           connectNulls={false}
-          xAxisProps={{ padding: { right: 12 } }}
+          xAxisProps={xAxisProps}
         >
           {gapSpans(points).map((span) => {
             const { x1, x2 } = referenceAreaBounds(span, points);
             return (
               <ReferenceArea
-                key={`${span.startDay}-${span.endDay}`}
+                key={`${span.startKey}-${span.endKey}`}
                 x1={x1}
                 x2={x2}
                 fill="var(--mantine-color-gray-5)"

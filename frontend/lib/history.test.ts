@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { groupHistoryByDay, resolveRange, retentionShortfallDays } from './history';
+import { groupHistoryByDay, resolveRange, resolveHourlyRange, retentionShortfallDays } from './history';
 import type { LineStatusHistoryEntry } from './types';
 
 function entry(computedAt: string, statuses: Array<[number, string]>): LineStatusHistoryEntry {
@@ -152,6 +152,16 @@ describe('resolveRange', () => {
 
   it('ignores a half-specified custom range', () => {
     expect(resolveRange({ from: '2026-08-01T00:00:00Z' }, NOW).preset).toBe('7d');
+  });
+});
+
+describe('resolveHourlyRange', () => {
+  const NOW = Date.parse('2026-08-21T12:00:00Z');
+
+  it('resolves exactly a 24-hour window ending at now', () => {
+    const range = resolveHourlyRange(NOW);
+    expect(range.to).toBe(new Date(NOW).toISOString());
+    expect(Date.parse(range.to) - Date.parse(range.from)).toBe(24 * 60 * 60 * 1000);
   });
 });
 

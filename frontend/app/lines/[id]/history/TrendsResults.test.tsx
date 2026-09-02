@@ -66,7 +66,7 @@ describe('toChartPoints', () => {
     const stats = [row({ sampleCycles: SPARSE_DATA_FLOOR_CYCLES })];
     const [point] = toChartPoints(stats);
     expect(point).toEqual({
-      day: '2026-08-01',
+      bucketKey: '2026-08-01',
       delayRate: 0.1,
       cancellationRate: 0.02,
       skipRate: 0.01,
@@ -83,7 +83,7 @@ describe('toChartPoints', () => {
     expect(point.skipRate).toBeNull();
     expect(point.avgDelayMinutes).toBeNull();
     expect(point.sampleCycles).toBe(SPARSE_DATA_FLOOR_CYCLES - 1);
-    expect(point.day).toBe('2026-08-01');
+    expect(point.bucketKey).toBe('2026-08-01');
   });
 });
 
@@ -109,7 +109,7 @@ describe('TrendsResults', () => {
     const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
     expect(rateChart).toBeDefined();
     const points = JSON.parse(rateChart!.dataset.points as string);
-    const sparseDay = points.find((point: { day: string }) => point.day === '2026-08-01');
+    const sparseDay = points.find((point: { bucketKey: string }) => point.bucketKey === '2026-08-01');
     expect(sparseDay.delayRate).toBeNull();
     expect(sparseDay.cancellationRate).toBeNull();
     expect(sparseDay.skipRate).toBeNull();
