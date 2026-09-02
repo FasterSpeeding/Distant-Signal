@@ -5,6 +5,7 @@
 //! general auth framework — just enough to keep the ingestion endpoints
 //! from being reachable by anyone who can hit the API's port.
 
+pub mod internal_oauth;
 pub mod oidc;
 
 use axum::extract::{Request, State, FromRequestParts};
