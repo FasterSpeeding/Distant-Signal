@@ -14,6 +14,9 @@ const WHITE = '#ffffff';
 const DARK_7 = '#242424'; // `--mantine-color-body` in the dark scheme
 const GRAY_6 = '#868e96';
 const GRAY_7 = '#495057';
+const GRAY_8 = '#343a40';
+const BLUE_8 = '#1971c2';
+const BLACK = '#000000';
 const DARK_2 = '#a6a7ab'; // `--mantine-color-dimmed` in the dark scheme
 
 // WCAG 2.1 relative luminance and contrast ratio. Colour can't usefully be
@@ -137,6 +140,28 @@ describe('filled-surface contrast under autoContrast', () => {
     expect(rule![0]).toContain('--mantine-color-grape-filled: var(--mantine-color-grape-7)');
     expect(rule![0]).toContain('--mantine-color-grape-filled-hover: var(--mantine-color-grape-8)');
     expect(rule![0]).toContain('--mantine-primary-color-contrast: var(--mantine-color-white)');
+  });
+});
+
+describe('scheme-blind filled colours (gray, blue)', () => {
+  // See lib/theme.ts's SCHEME_BLIND_FILLED_COLORS comment for the full
+  // derivation: none of Mantine's own Badge/Button/Chip callers pass a
+  // colorScheme into theme.variantColorResolver, so autoContrast's
+  // label-colour decision always evaluates shade 6's luminance, even when
+  // the rendered background is shade 8 (dark scheme). That's harmless for
+  // six of this app's eight filled colours, but not gray or blue.
+  it('confirms black actually fails AA on gray 8 and blue 8 -- the dark-scheme regression autoContrast alone would cause', () => {
+    expect(contrast(GRAY_8, BLACK)).toBeLessThan(AA_BODY_TEXT); // 1.83:1
+    expect(contrast(BLUE_8, BLACK)).toBeLessThan(AA_BODY_TEXT); // 4.18:1
+  });
+
+  it('confirms white clears AA on gray 8 and blue 8 -- what light-dark() restores', () => {
+    expect(contrast(GRAY_8, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 11.51:1
+    expect(contrast(BLUE_8, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 5.02:1
+  });
+
+  it('confirms black still clears AA on gray 6 and blue 6 -- why light mode needs black, not white, unlike dark', () => {
+    expect(contrast(GRAY_6, BLACK)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.32:1
   });
 });
 
