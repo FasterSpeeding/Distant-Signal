@@ -1,7 +1,8 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { useInterval } from '@mantine/hooks';
+import { useDocumentVisibility, useInterval } from '@mantine/hooks';
 
 const REFRESH_INTERVAL_MS = 30_000;
 
@@ -15,9 +16,42 @@ const REFRESH_INTERVAL_MS = 30_000;
  * 30s matches the cadence already implied elsewhere in the app: the former
  * `next: { revalidate: 30 }` windows on the line-status/freshness fetches
  * (now `no-store`, refreshed instead by this interval), and
- * `RELATIVE_TIME_TICK_MS` in `LastUpdated.tsx`. */
+ * `RELATIVE_TIME_TICK_MS` in `LastUpdated.tsx`.
+ *
+ * The interval is paused while the document is hidden (design spec
+ * Decision 4): polling a backgrounded tab every 30s spends the visitor's
+ * battery and the backend's capacity on data nobody is looking at, and
+ * during an outage it also piles up failures nobody is there to see. */
 export function AutoRefresh() {
   const router = useRouter();
-  useInterval(() => router.refresh(), REFRESH_INTERVAL_MS, { autoInvoke: true });
+  const visibility = useDocumentVisibility();
+  const interval = useInterval(() => router.refresh(), REFRESH_INTERVAL_MS);
+
+  // `useInterval` returns a fresh object literal `{ start, stop, toggle,
+  // active }` on every render (verified in
+  // node_modules/@mantine/hooks/esm/use-interval/use-interval.mjs), so it
+  // must NOT go in the dependency array: the effect would re-run every
+  // render and fire router.refresh() in a loop. `useRouter()` is likewise
+  // not guaranteed to be referentially stable. Both are therefore read
+  // through a ref kept current on each render -- the same technique
+  // useInterval itself uses internally for its `intervalValueRef` -- and
+  // the effect keys on `visibility` alone, which is the only input that
+  // should actually start or stop the timer.
+  const latest = useRef({ router, interval });
+  latest.current = { router, interval };
+
+  useEffect(() => {
+    if (visibility !== 'visible') {
+      latest.current.interval.stop();
+      return undefined;
+    }
+    // Refresh once immediately on becoming visible rather than making a
+    // returning visitor wait up to 30s: whatever is on screen is by
+    // definition as stale as the time they spent away.
+    latest.current.router.refresh();
+    latest.current.interval.start();
+    return () => latest.current.interval.stop();
+  }, [visibility]);
+
   return null;
 }
