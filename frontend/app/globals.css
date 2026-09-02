@@ -8,11 +8,12 @@
    4.5:1 for body text, so every link in the app failed. Grape 7 (#ae3ec9)
    is 4.85:1 and clears it.
 
-   Nothing but Mantine's `Anchor` and the `c="var(--mantine-color-anchor)"`
-   call sites read this variable, so the change is contained to links: it
-   does not touch `primaryShade`, `StatusBadge`, or filled buttons (see the
-   comment in `lib/theme.ts` for why a global `primaryShade` bump was
-   rejected).
+   Mantine's `Anchor`, the `c="var(--mantine-color-anchor)"` call sites, and
+   (as of the `[data-rich-text] a` rule further down this file) the anchors
+   inside sanitized incident HTML are the only readers of this variable, so
+   the change is contained to links: it does not touch `primaryShade`,
+   `StatusBadge`, or filled buttons (see the comment in `lib/theme.ts` for
+   why a global `primaryShade` bump was rejected).
 
    The dark scheme is deliberately untouched — Mantine hardcodes anchor to
    `primaryColor`-4 there, and grape 4 (#da77f2) is 5.84:1 on the dark body.
@@ -927,6 +928,25 @@ nav::before {
    hover-only rather than turning whole regions of the UI into rules. */
 a[data-text-link='always'] {
   text-decoration: underline;
+}
+
+/* Links inside sanitized incident HTML. These anchors come from external
+   Knowledgebase copy, not from Mantine's `Anchor` or this app's
+   `TextLink`, so nothing had ever set their colour: they rendered
+   browser-default blue while every app-chrome link beside them rendered
+   theme grape -- and blue is the colour this theme reserved for "planned
+   closure" badges. `--mantine-color-anchor` is deliberately the token
+   used rather than a grape shade: it is grape 7 in the light scheme (the
+   override at the top of this file) and Mantine's own grape 4 in dark, so
+   one rule is correct in both schemes and no dark-scheme selector is
+   needed here (which `app/globals.test.ts` forbids anyway).
+
+   Colour only -- no `text-decoration`. Unlike `a[data-text-link]` above,
+   which drops the underline because those links sit in chrome and
+   headings, these sit mid-paragraph in prose, where colour alone is not a
+   sufficient distinguisher from surrounding body text (WCAG 1.4.1). */
+[data-rich-text] a {
+  color: var(--mantine-color-anchor);
 }
 
 /* Mantine's Badge root sets `overflow: hidden` + `text-overflow: ellipsis`

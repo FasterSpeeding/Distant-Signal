@@ -19,6 +19,11 @@ describe('DisruptionDetail', () => {
     expect(screen.getByText('Signal failure at Woking')).toBeInTheDocument();
   });
 
+  it('marks the sanitized-HTML container so globals.css can theme its links', () => {
+    const { container } = renderWithMantine(<DisruptionDetail disruption={sample} />);
+    expect(container.querySelector('[data-rich-text]')).not.toBeNull();
+  });
+
   it('renders each affected stop', () => {
     renderWithMantine(<DisruptionDetail disruption={sample} />);
     expect(screen.getByText('WOK')).toBeInTheDocument();

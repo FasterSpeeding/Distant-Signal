@@ -58,7 +58,11 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
         <Badge color={incident.isPlanned ? 'blue' : 'orange'}>{incident.isPlanned ? 'Planned Work' : 'Real-Time'}</Badge>
       </Group>
 
-      <div dangerouslySetInnerHTML={{ __html: sanitizeDescription(incident.description) }} />
+      {/* `data-rich-text`: see the identical hook and full rationale on
+          `components/DisruptionDetail.tsx`'s sanitized-HTML container. Note
+          the blue `Badge` above (`Planned Work`) is also touched by the
+          accessibility plan's Task 3/Decision 3 -- not changed here. */}
+      <div data-rich-text dangerouslySetInnerHTML={{ __html: sanitizeDescription(incident.description) }} />
 
       {incident.affectedStations.length > 0 && (
         <Group gap="xs">

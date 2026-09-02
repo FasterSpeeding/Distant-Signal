@@ -17,7 +17,18 @@ export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
           {impactLabel}
         </Badge>
       )}
-      <div dangerouslySetInnerHTML={{ __html: sanitizeDescription(disruption.description) }} />
+      {/* `data-rich-text`: the CSS hook for `app/globals.css`'s
+          `[data-rich-text] a` rule. Anchors inside knowledgebase incident
+          copy arrive as external HTML, so they carry no Mantine class and
+          (per `lib/sanitizeHtml.ts`'s `ALLOWED_ATTR = ['href']`) no class or
+          data attribute of their own -- they were rendering browser-default
+          blue next to blue "PLANNED WORK" badges, the exact collision the
+          grape theme was created to eliminate
+          (docs/superpowers/specs/2026-09-02-frontend-ui-ux-review.md §F7).
+          A descendant selector from this container is the only way to reach
+          them, and this is the same data-attribute pattern `data-text-link`
+          and `data-status-badge` already use. */}
+      <div data-rich-text dangerouslySetInnerHTML={{ __html: sanitizeDescription(disruption.description) }} />
       {disruption.affectedStops.length > 0 && (
         <Group gap="xs">
           {disruption.affectedStops.map((crs) => (
