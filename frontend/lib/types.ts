@@ -439,7 +439,9 @@ export interface TicketListItem {
 }
 
 // ---------------------------------------------------------------------------
-// Chat orchestrator (embedded-chatbot-option-b plan, Task 5)
+// Chat (embedded-chatbot-option-b-client-side-tokens plan) -- ChatPanel's
+// own browser-side tool-calling loop, not a server-side orchestrator
+// (that was removed, see that plan's Task 5).
 // ---------------------------------------------------------------------------
 
 /** Mirrors `distant-signal-mcp`'s own `StationRef`
