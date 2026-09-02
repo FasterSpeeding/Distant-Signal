@@ -10,6 +10,7 @@ import { DataFreshnessInfo } from '@/components/DataFreshnessInfo';
 import { AuthStatus } from '@/components/AuthStatus';
 import { AutoRefresh } from '@/components/AutoRefresh';
 import { ColorSchemeMeta } from '@/components/ColorSchemeMeta';
+import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
 import { OpenDataAttribution } from '@/components/OpenDataAttribution';
 import { getDataFreshness, getSession } from '@/lib/api';
 import { theme } from '@/lib/theme';
@@ -125,6 +126,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <MantineProvider theme={theme} defaultColorScheme="auto">
           <AutoRefresh />
           <ColorSchemeMeta />
+          {/* RootLayout is a Server Component and re-executes on every
+              navigation and every AutoRefresh-triggered router.refresh() --
+              a fresh ISO timestamp here is what lets
+              ServiceWorkerRegister record "last successful load" purely
+              from receiving a new prop value; see that component's own
+              doc comment. */}
+          <ServiceWorkerRegister loadedAt={new Date().toISOString()} />
           {/* No max-width anywhere meant a 1920px viewport put a line's
               name at x≈30, its status badge at x≈870 and its pin at
               x≈1780 — the row stopped being scannable as a row. `lg` is

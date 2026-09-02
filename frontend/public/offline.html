@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Distant Signal — Offline</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    background: #ffffff;
+    color: #1a1a1a;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #242424; color: #f1f1f1; }
+  }
+  main { max-width: 28rem; padding: 2rem; text-align: center; }
+  h1 { font-size: 1.5rem; margin: 0 0 0.5rem; }
+  p { color: #6b6b6b; margin: 0 0 1.5rem; }
+  @media (prefers-color-scheme: dark) { p { color: #a8a8a8; } }
+  button {
+    font: inherit;
+    padding: 0.6rem 1.4rem;
+    border: none;
+    border-radius: 4px;
+    background: #ae3ec9;
+    color: #ffffff;
+    cursor: pointer;
+  }
+  button:hover { background: #9c35b5; }
+</style>
+</head>
+<body>
+<main>
+  <h1>You&rsquo;re offline</h1>
+  <p id="offline-message">Distant Signal needs a connection to show current line status.</p>
+  <button type="button" onclick="location.reload()">Try again</button>
+</main>
+<script>
+  // Reuses LastUpdated.tsx's mechanic (a stored absolute timestamp, "now"
+  // recomputed at render/tick time) without reusing the component itself --
+  // this page has no React runtime. If no value is stored yet (first-ever
+  // visit, offline before any successful load), the line is simply
+  // omitted -- no fabricated fallback timestamp. Written by
+  // ServiceWorkerRegister.tsx on every successful navigation/RSC-refresh
+  // (see that component's doc comment).
+  (function () {
+    try {
+      var last = window.localStorage.getItem('lastSuccessfulLoadAt');
+      if (!last) return;
+      var lastDate = new Date(last);
+      if (isNaN(lastDate.getTime())) return;
+
+      var messageEl = document.getElementById('offline-message');
+      var baseText = 'Distant Signal needs a connection to show current line status.';
+
+      function render() {
+        var diffMs = Date.now() - lastDate.getTime();
+        var mins = Math.floor(diffMs / 60000);
+        var relative;
+        if (mins < 1) relative = 'less than a minute ago';
+        else if (mins === 1) relative = '1 minute ago';
+        else if (mins < 60) relative = mins + ' minutes ago';
+        else {
+          var hours = Math.floor(mins / 60);
+          relative = hours === 1 ? '1 hour ago' : hours + ' hours ago';
+        }
+        messageEl.textContent = baseText + ' Last connected around ' + relative + '.';
+      }
+
+      render();
+      setInterval(render, 30000);
+    } catch (e) {
+      // localStorage can throw (private browsing / storage blocked) --
+      // the page still renders correctly with the fixed base message set
+      // in markup above.
+    }
+  })();
+</script>
+</body>
+</html>
