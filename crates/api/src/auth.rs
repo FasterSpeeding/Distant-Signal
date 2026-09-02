@@ -1,9 +1,14 @@
 //! Internal-auth gate for `private_router()`.
 //!
-//! One shared-secret header (`X-Internal-Token`), compared in fixed time
-//! against `ServiceArguments::internal_token`. This is intentionally not a
-//! general auth framework — just enough to keep the ingestion endpoints
-//! from being reachable by anyone who can hit the API's port.
+//! Per-service bearer tokens (`X-Internal-Token`), resolved via a
+//! startup-built hash lookup (`InternalServiceRegistry`) into an
+//! `InternalService` identity, then checked against the requested route's
+//! allowed prefixes. A legacy shared-token identity (`InternalService::Legacy`)
+//! is allowed every route during a bounded rollout window -- see
+//! docs/superpowers/specs/2026-09-01-internal-service-accounts-design.md.
+//! This is intentionally not a general auth framework -- just enough to
+//! keep the ingestion endpoints reachable only by their own legitimate
+//! caller.
 
 pub mod oidc;
 
@@ -15,7 +20,70 @@ use common::ingest::INTERNAL_TOKEN_HEADER;
 
 use crate::app::App;
 
-/// `axum::middleware::from_fn` handler enforcing the shared-secret header.
+/// Outcome of resolving one `/private/*` request's presented token against
+/// the requested path -- deliberately a plain, loggable-and-testable enum
+/// rather than folding straight into a `StatusCode`, so the decision of
+/// "was this request allowed, and by which identity" is unit-testable
+/// without capturing `tracing` output (this codebase has no existing
+/// log-capture test convention).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InternalAuthOutcome {
+    /// No identity resolved at all -- unchanged failure mode from the old
+    /// single-token scheme. Always `401`.
+    Unknown,
+    /// A real identity resolved, but it isn't allowed on this path. Always
+    /// `403` (Decision 3) -- deliberately NOT this app's usual
+    /// 404-for-ownership convention; see `require_internal_token`'s own
+    /// doc comment for why.
+    Forbidden(InternalService),
+    /// A real identity resolved and is allowed here. `next.run(...)`
+    /// proceeds; the caller decides what (if anything) to log, since
+    /// `InternalService::Legacy` gets an extra `warn` that a real
+    /// per-service identity doesn't.
+    Allowed(InternalService),
+}
+
+impl InternalAuthOutcome {
+    /// Whether this outcome is the pre-migration shared-token identity
+    /// succeeding -- the exact condition `require_internal_token` uses to
+    /// decide whether to emit the Decision 5 migration-nudge warning.
+    /// Pulled out as its own function so it's unit-testable without
+    /// capturing `tracing` output.
+    pub(crate) fn is_legacy_success(&self) -> bool {
+        matches!(self, InternalAuthOutcome::Allowed(InternalService::Legacy))
+    }
+}
+
+pub(crate) fn classify_internal_request(
+    registry: &InternalServiceRegistry,
+    token: &str,
+    path: &str,
+) -> InternalAuthOutcome {
+    let Some(identity) = registry.resolve(token) else {
+        return InternalAuthOutcome::Unknown;
+    };
+    if identity.allows(path) {
+        InternalAuthOutcome::Allowed(identity)
+    } else {
+        InternalAuthOutcome::Forbidden(identity)
+    }
+}
+
+/// `axum::middleware::from_fn` handler enforcing per-service internal
+/// auth. Resolves the presented `X-Internal-Token` value against
+/// `app.internal_services` (Decision 1/2), then checks the resolved
+/// identity against the requested path (`InternalService::allows`).
+///
+/// Status codes, per Decision 3 -- a deliberate departure from this app's
+/// usual 404-for-ownership convention (`crate::routes::train`'s module
+/// doc): unknown token -> `401` (no identity resolved at all, unchanged
+/// from before). Known, valid, WRONG-SCOPE token -> `403` (a real
+/// credential, just not for this route) -- not `404`, because the thing
+/// being protected is a fixed, publicly-visible route table (no existence
+/// fact to withhold) and the caller is a trusted internal service (not an
+/// untrusted human prober), so a `403` is diagnosable signal for a
+/// misconfigured deployment, not an information leak.
+///
 /// Applied only to `private_router()` — `public_router()` never sees this.
 pub async fn require_internal_token(
     State(app): State<App>,
@@ -27,32 +95,28 @@ pub async fn require_internal_token(
         .get(INTERNAL_TOKEN_HEADER)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
+    let path = request.uri().path().to_string();
 
-    if constant_time_eq(provided.as_bytes(), app.config.internal_token.as_bytes()) {
-        Ok(next.run(request).await)
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
+    match classify_internal_request(&app.internal_services, provided, &path) {
+        InternalAuthOutcome::Unknown => Err(StatusCode::UNAUTHORIZED),
+        InternalAuthOutcome::Forbidden(identity) => {
+            tracing::warn!(?identity, path, "internal request rejected: valid credential, wrong scope");
+            Err(StatusCode::FORBIDDEN)
+        }
+        InternalAuthOutcome::Allowed(identity) => {
+            let outcome = InternalAuthOutcome::Allowed(identity);
+            if outcome.is_legacy_success() {
+                tracing::warn!(
+                    path,
+                    "legacy shared X-Internal-Token used -- migrate this caller to its own per-service token \
+                     (see docs/superpowers/specs/2026-09-01-internal-service-accounts-design.md Decision 5)"
+                );
+            } else {
+                tracing::debug!(?identity, path, "internal request authenticated");
+            }
+            Ok(next.run(request).await)
+        }
     }
-}
-
-/// Fixed-time byte comparison: no early return based on *content*, so a
-/// mismatching byte doesn't short-circuit the scan. (A length mismatch is
-/// still rejected immediately — hiding token *length* isn't a goal here,
-/// only avoiding a byte-by-byte timing oracle on a same-length guess.)
-///
-/// Hand-rolled rather than pulling in the `subtle` crate: this is a single
-/// comparison in one call site, and `subtle::ConstantTimeEq` has the same
-/// same-length requirement, so there's no behavioral gap being traded away.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 use base64::Engine;
@@ -300,31 +364,6 @@ impl FromRequestParts<App> for OptionalAuthenticatedUser {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn equal_tokens_match() {
-        assert!(constant_time_eq(b"super-secret", b"super-secret"));
-    }
-
-    #[test]
-    fn different_content_same_length_does_not_match() {
-        assert!(!constant_time_eq(b"super-secret", b"super-sekret"));
-    }
-
-    #[test]
-    fn different_length_does_not_match() {
-        assert!(!constant_time_eq(b"short", b"much-longer-token"));
-    }
-
-    #[test]
-    fn empty_tokens_match() {
-        assert!(constant_time_eq(b"", b""));
-    }
-
-    #[test]
-    fn empty_provided_against_real_token_does_not_match() {
-        assert!(!constant_time_eq(b"", b"super-secret"));
-    }
 
     #[test]
     fn parse_cookie_finds_a_single_named_cookie() {
@@ -603,5 +642,57 @@ mod internal_service_tests {
         ] {
             assert!(!service.allows(fabricated), "{service:?} must not be allowed on {fabricated}");
         }
+    }
+
+    #[test]
+    fn classify_returns_unknown_for_an_unresolvable_token() {
+        let reg = registry();
+        assert_eq!(
+            classify_internal_request(&reg, "not-a-real-token", "/incidents"),
+            InternalAuthOutcome::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_returns_allowed_for_a_services_own_route() {
+        let reg = registry();
+        assert_eq!(
+            classify_internal_request(&reg, "tok-incidents", "/incidents"),
+            InternalAuthOutcome::Allowed(InternalService::PollerIncidents)
+        );
+    }
+
+    #[test]
+    fn classify_returns_forbidden_for_a_valid_token_on_another_services_route() {
+        let reg = registry();
+        assert_eq!(
+            classify_internal_request(&reg, "tok-tfl", "/schedule-feed-ingests"),
+            InternalAuthOutcome::Forbidden(InternalService::PollerTfl)
+        );
+    }
+
+    #[test]
+    fn classify_returns_allowed_for_legacy_on_any_route() {
+        let reg = registry();
+        assert_eq!(
+            classify_internal_request(&reg, "tok-legacy", "/schedule-feed-ingests"),
+            InternalAuthOutcome::Allowed(InternalService::Legacy)
+        );
+    }
+
+    #[test]
+    fn legacy_success_is_flagged_for_the_migration_warning() {
+        assert!(InternalAuthOutcome::Allowed(InternalService::Legacy).is_legacy_success());
+    }
+
+    #[test]
+    fn a_real_per_service_success_is_not_flagged_as_legacy() {
+        assert!(!InternalAuthOutcome::Allowed(InternalService::PollerIncidents).is_legacy_success());
+    }
+
+    #[test]
+    fn forbidden_and_unknown_are_never_flagged_as_legacy_success() {
+        assert!(!InternalAuthOutcome::Forbidden(InternalService::Legacy).is_legacy_success());
+        assert!(!InternalAuthOutcome::Unknown.is_legacy_success());
     }
 }

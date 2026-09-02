@@ -68,9 +68,9 @@ impl AppState {
     pub async fn init() -> Result<App> {
         let config = ServiceArguments::parse();
 
-        // An empty token would make `auth::constant_time_eq` compare two
-        // empty byte slices and accept any request with no
-        // `X-Internal-Token` header at all — reject that at startup rather
+        // An empty token would let InternalServiceRegistry::resolve match
+        // an empty raw token (hashed the same as anything else) against an
+        // empty `X-Internal-Token` header -- reject that at startup rather
         // than silently running an unauthenticated `private_router()`.
         ensure!(
             !config.internal_token.is_empty(),
