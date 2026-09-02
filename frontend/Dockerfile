@@ -74,11 +74,18 @@ WORKDIR /app
 COPY --from=builder-prod --chown=frontend:frontend /app/.next ./.next
 COPY --from=builder-prod --chown=frontend:frontend /app/node_modules ./node_modules
 COPY --from=builder-prod --chown=frontend:frontend /app/package.json ./package.json
-# No `public/` directory: this plan adds no static assets (no favicon,
-# no images). Next.js's `public/` dir is optional — omitting this COPY
-# is correct, not a shortcut. If a later change adds static assets under
-# `frontend/public/`, add `COPY --from=builder-prod --chown=frontend:frontend
-# /app/public ./public` back in at that point.
+# public/ now holds real, load-bearing static assets: the PWA manifest
+# icons (icon-192.png/icon-512.png, commit 86b26b6) and, as of
+# docs/superpowers/plans/2026-09-02-pwa-service-worker.md, sw.js/
+# sw-cache-rules.js/offline.html. The comment this replaced ("no public/
+# directory... add COPY back if one appears later") went stale when the
+# manifest icons landed without this line being restored -- meaning both
+# icons have likely been silently 404ing in the deployed image ever
+# since (invisible in `next dev`, which reads public/ straight off disk
+# regardless of this Dockerfile). See
+# docs/superpowers/specs/2026-09-02-pwa-service-worker-design.md's
+# "Current relevant state," last bullet.
+COPY --from=builder-prod --chown=frontend:frontend /app/public ./public
 
 USER frontend
 
