@@ -80,6 +80,14 @@ pub fn parse_pass_json(pass: &serde_json::Value) -> anyhow::Result<PartialTicket
         .get("auxiliaryFields")
         .and_then(|fields| keyed_field_value(fields, "ticketType"));
 
+    // Diagnostic only -- never surfaced in PartialTicket, the frontend, or
+    // any persisted row. debug-level specifically so it costs nothing in
+    // default-configured production logging and cannot become a de facto
+    // data-collection channel without a deliberate decision to promote it.
+    // See Decision 3 of
+    // docs/superpowers/specs/2026-09-02-ticket-processing-improvements-design.md.
+    tracing::debug!(barcode_format = ?barcode_format(pass), "parsed .pkpass");
+
     Ok(PartialTicket {
         operator,
         ticket_type,
@@ -141,6 +149,28 @@ fn keyed_field_value(fields: &serde_json::Value, key: &str) -> Option<String> {
         .iter()
         .find(|f| f.get("key").and_then(|v| v.as_str()) == Some(key))?
         .get("value")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// Reads only the barcode's `format` string (e.g.
+/// `"PKBarcodeFormatAztec"`) from `pass.json`'s singular `"barcode"`
+/// object or, per Apple's newer PassKit convention, the first entry of
+/// the plural `"barcodes"` array -- documented container metadata,
+/// structurally no different from `organizationName` or `transitType`,
+/// both already read elsewhere in this module. NEVER reads `"message"`,
+/// the barcode payload -- that field is categorically off limits, see
+/// this module's own doc comment and
+/// docs/superpowers/specs/2026-09-02-ticket-processing-improvements-design.md's
+/// Explicitly out of scope section.
+fn barcode_format(pass: &serde_json::Value) -> Option<String> {
+    pass.get("barcode")
+        .or_else(|| {
+            pass.get("barcodes")
+                .and_then(|b| b.as_array())
+                .and_then(|a| a.first())
+        })
+        .and_then(|b| b.get("format"))
         .and_then(|v| v.as_str())
         .map(str::to_string)
 }
@@ -285,6 +315,46 @@ mod pass_json_tests {
     fn ticket_type_is_never_guessed_at() {
         let pass = json!({"boardingPass": {"transitType": "PKTransitTypeTrain"}});
         assert_eq!(parse_pass_json(&pass).unwrap().ticket_type, None);
+    }
+}
+
+#[cfg(test)]
+mod barcode_format_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn reads_format_from_the_singular_barcode_object() {
+        // The `message` value here is deliberately an obvious
+        // non-payload placeholder -- never anything resembling a real
+        // RSP-6 payload shape. See this plan's Global Constraints.
+        let pass = json!({
+            "barcode": {
+                "format": "PKBarcodeFormatAztec",
+                "message": "PLACEHOLDER-NOT-A-REAL-PAYLOAD",
+                "messageEncoding": "iso-8859-1"
+            }
+        });
+        assert_eq!(
+            barcode_format(&pass),
+            Some("PKBarcodeFormatAztec".to_string())
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_plural_barcodes_array() {
+        let pass = json!({
+            "barcodes": [
+                {"format": "PKBarcodeFormatQR", "message": "PLACEHOLDER-NOT-A-REAL-PAYLOAD"}
+            ]
+        });
+        assert_eq!(barcode_format(&pass), Some("PKBarcodeFormatQR".to_string()));
+    }
+
+    #[test]
+    fn returns_none_when_neither_field_is_present() {
+        let pass = json!({"organizationName": "LNER"});
+        assert_eq!(barcode_format(&pass), None);
     }
 }
 
