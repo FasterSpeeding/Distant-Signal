@@ -46,6 +46,9 @@ pub struct PartialTicket {
 /// unconfirmed, so both paths are implemented, not just the optimistic
 /// one -- obtain 1-2 real sample passes to confirm this split's real-world
 /// hit rate before relying on it heavily.
+/// `ticket_type` is read from `boardingPass.auxiliaryFields` by exact
+/// `key` match (`"ticketType"`) via `keyed_field_value` -- `None` if that
+/// key isn't present, never guessed from label text or other fields.
 pub fn parse_pass_json(pass: &serde_json::Value) -> anyhow::Result<PartialTicket> {
     let boarding_pass = pass
         .get("boardingPass")
@@ -73,9 +76,21 @@ pub fn parse_pass_json(pass: &serde_json::Value) -> anyhow::Result<PartialTicket
             (origin, destination, "pkpass-heuristic")
         };
 
+    let ticket_type = boarding_pass
+        .get("auxiliaryFields")
+        .and_then(|fields| keyed_field_value(fields, "ticketType"));
+
+    // Diagnostic only -- never surfaced in PartialTicket, the frontend, or
+    // any persisted row. debug-level specifically so it costs nothing in
+    // default-configured production logging and cannot become a de facto
+    // data-collection channel without a deliberate decision to promote it.
+    // See Decision 3 of
+    // docs/superpowers/specs/2026-09-02-ticket-processing-improvements-design.md.
+    tracing::debug!(barcode_format = ?barcode_format(pass), "parsed .pkpass");
+
     Ok(PartialTicket {
         operator,
-        ticket_type: None,
+        ticket_type,
         origin_crs: origin,
         destination_crs: destination,
         source,
@@ -119,6 +134,45 @@ fn primary_fields_origin_destination(
         ),
         _ => (None, None),
     }
+}
+
+/// Looks up an entry in a PassKit field array (`primaryFields`,
+/// `auxiliaryFields`, `secondaryFields` -- all the same `{key, label,
+/// value}` shape) by its machine-readable `key`, not by its
+/// issuer-chosen, freely-reworded `label` text. Returns `None` if `fields`
+/// isn't an array, or no entry has that exact key, or the matching
+/// entry's `value` isn't a string -- same "leave it blank, don't guess"
+/// contract as every other optional read in this module.
+fn keyed_field_value(fields: &serde_json::Value, key: &str) -> Option<String> {
+    fields
+        .as_array()?
+        .iter()
+        .find(|f| f.get("key").and_then(|v| v.as_str()) == Some(key))?
+        .get("value")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// Reads only the barcode's `format` string (e.g.
+/// `"PKBarcodeFormatAztec"`) from `pass.json`'s singular `"barcode"`
+/// object or, per Apple's newer PassKit convention, the first entry of
+/// the plural `"barcodes"` array -- documented container metadata,
+/// structurally no different from `organizationName` or `transitType`,
+/// both already read elsewhere in this module. NEVER reads `"message"`,
+/// the barcode payload -- that field is categorically off limits, see
+/// this module's own doc comment and
+/// docs/superpowers/specs/2026-09-02-ticket-processing-improvements-design.md's
+/// Explicitly out of scope section.
+fn barcode_format(pass: &serde_json::Value) -> Option<String> {
+    pass.get("barcode")
+        .or_else(|| {
+            pass.get("barcodes")
+                .and_then(|b| b.as_array())
+                .and_then(|a| a.first())
+        })
+        .and_then(|b| b.get("format"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
 }
 
 use std::io::Read;
@@ -222,9 +276,85 @@ mod pass_json_tests {
     }
 
     #[test]
+    fn ticket_type_is_read_from_auxiliary_fields_by_key() {
+        let pass = json!({
+            "organizationName": "Southern",
+            "boardingPass": {
+                "transitType": "PKTransitTypeTrain",
+                "primaryFields": [
+                    {"key":"origin","label":"FROM","value":"East Croydon"},
+                    {"key":"destination","label":"TO","value":"Brighton"}
+                ],
+                "auxiliaryFields": [
+                    {"key": "ticketType", "label": "TICKET TYPE", "value": "Super Off-Peak Return"}
+                ]
+            }
+        });
+        let ticket = parse_pass_json(&pass).unwrap();
+        assert_eq!(ticket.ticket_type, Some("Super Off-Peak Return".to_string()));
+    }
+
+    #[test]
+    fn ticket_type_ignores_a_field_with_the_wrong_key() {
+        let pass = json!({
+            "boardingPass": {
+                "transitType": "PKTransitTypeTrain",
+                "auxiliaryFields": [
+                    {"key": "railcard", "label": "TICKET TYPE DISCOUNT", "value": "Network Railcard"}
+                ]
+            }
+        });
+        let ticket = parse_pass_json(&pass).unwrap();
+        assert_eq!(
+            ticket.ticket_type, None,
+            "must match by the key field exactly, not by label text that happens to mention ticket type"
+        );
+    }
+
+    #[test]
     fn ticket_type_is_never_guessed_at() {
         let pass = json!({"boardingPass": {"transitType": "PKTransitTypeTrain"}});
         assert_eq!(parse_pass_json(&pass).unwrap().ticket_type, None);
+    }
+}
+
+#[cfg(test)]
+mod barcode_format_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn reads_format_from_the_singular_barcode_object() {
+        // The `message` value here is deliberately an obvious
+        // non-payload placeholder -- never anything resembling a real
+        // RSP-6 payload shape. See this plan's Global Constraints.
+        let pass = json!({
+            "barcode": {
+                "format": "PKBarcodeFormatAztec",
+                "message": "PLACEHOLDER-NOT-A-REAL-PAYLOAD",
+                "messageEncoding": "iso-8859-1"
+            }
+        });
+        assert_eq!(
+            barcode_format(&pass),
+            Some("PKBarcodeFormatAztec".to_string())
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_plural_barcodes_array() {
+        let pass = json!({
+            "barcodes": [
+                {"format": "PKBarcodeFormatQR", "message": "PLACEHOLDER-NOT-A-REAL-PAYLOAD"}
+            ]
+        });
+        assert_eq!(barcode_format(&pass), Some("PKBarcodeFormatQR".to_string()));
+    }
+
+    #[test]
+    fn returns_none_when_neither_field_is_present() {
+        let pass = json!({"organizationName": "LNER"});
+        assert_eq!(barcode_format(&pass), None);
     }
 }
 
@@ -288,28 +418,21 @@ mod parse_pkpass_tests {
 /// Research summary §3 and Open Question 2) -- this is a genuinely
 /// fragile, lower-confidence tier than `.pkpass` parsing, by design; an
 /// unmatched field is left `None` for manual completion, never guessed at
-/// when nothing matches. `ROUTE_PATTERN` in particular is best-effort in
-/// the other direction too: because it matches against unstructured,
-/// unanchored text with no field boundaries, it can occasionally capture
-/// nearby boilerplate prose rather than the actual route (see that
-/// pattern's own doc comment) -- `train_tracking::validate_ticket_entry`'s
-/// CRS-format check (Task 2) is what actually prevents an unedited false
-/// match from ever being saved, not this regex's own precision.
+/// when nothing matches. The generic fallback pattern in `ROUTE_PATTERNS`
+/// in particular is best-effort in the other direction too: because it
+/// matches against unstructured, unanchored text with no field
+/// boundaries, it can occasionally capture nearby boilerplate prose
+/// rather than the actual route (see that pattern's own doc comment) --
+/// `train_tracking::validate_ticket_entry`'s CRS-format check (Task 2) is
+/// what actually prevents an unedited false match from ever being saved,
+/// not this regex's own precision.
 pub fn parse_pdf_text(text: &str) -> PartialTicket {
     let operator = KNOWN_RETAILER_MARKERS
         .iter()
         .find(|marker| text.contains(**marker))
         .map(|marker| marker.to_string());
 
-    let (origin, destination) = ROUTE_PATTERN
-        .captures(text)
-        .map(|caps| {
-            (
-                Some(caps[1].trim().to_string()),
-                Some(caps[2].trim().to_string()),
-            )
-        })
-        .unwrap_or((None, None));
+    let (origin, destination) = extract_route(text);
 
     let text_lower = text.to_lowercase();
     let ticket_type = TICKET_TYPE_KEYWORDS
@@ -338,29 +461,61 @@ const TICKET_TYPE_KEYWORDS: &[&str] = &[
     "Advance Single",
     "Season",
     "Open Return",
+    "Super Off-Peak Return",
 ];
 
-/// Matches the "<origin> to <destination>" shape the design doc's own
-/// worked example uses ("18:32 London Waterloo to Woking, Off-Peak Day
-/// Single") -- deliberately conservative (letters/spaces/apostrophes/
-/// hyphens only) since this matches against unstructured extracted text
-/// with no field boundaries at all. The trailing delimiter accepts a
-/// comma/period/newline OR end-of-string, so a route with nothing after it
-/// (e.g. the destination is the last thing in the extracted text) still
-/// matches. `captures()` returns the leftmost match in the whole document
-/// with no anchoring to a specific line, so this can and occasionally will
-/// latch onto unrelated boilerplate prose containing "... to ..." before
-/// the real route line (e.g. "Please remember to bring photo ID... Leeds
-/// to York."), not just the intended route -- this is a known, accepted
-/// imprecision, not a bug to chase here; see `parse_pdf_text`'s doc comment
-/// for why that's still safe. Confirm this against 1-2 real e-ticket PDFs
-/// at implementation time (Open Question 2 flags real samples as needed,
-/// same as `.pkpass`'s Open Question 1) and adjust -- this is a starting
-/// point, not a pattern verified against real tickets.
-static ROUTE_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"([A-Za-z][A-Za-z '\-]+?)\s+to\s+([A-Za-z][A-Za-z '\-]+?)(?:[,\.\n]|$)")
-        .unwrap()
+/// Two route-extraction patterns, tried in order by `extract_route`:
+/// OTRL's anchored `Out:`/`Ret:` line first (higher confidence -- an
+/// explicit label plus already-CRS-shaped codes), falling back to the
+/// original generic "<name> to <name>" prose match. Mirrors the ordering
+/// precedent one function away: `parse_pass_json` tries the
+/// higher-confidence `semantics` dictionary before falling back to the
+/// positional `primaryFields` heuristic -- "most specific/structured
+/// signal first, generic fallback second" is now the same shape in both
+/// parsers.
+static ROUTE_PATTERNS: std::sync::LazyLock<[regex::Regex; 2]> = std::sync::LazyLock::new(|| {
+    [
+        // OTRL's "Out:"/"Ret:" line -- anchored, already CRS-shaped,
+        // tried first. A small Unicode hyphen/dash range is accepted
+        // defensively alongside plain ASCII "-", since it is unconfirmed
+        // whether every OTRL PDF generation renders a plain ASCII hyphen
+        // here (see this module's Open questions).
+        regex::Regex::new(r"(?:Out|Ret):\s*([A-Z]{3})\s*[-\u{2010}-\u{2015}]\s*([A-Z]{3})").unwrap(),
+        // The original generic "<origin> to <destination>" prose match --
+        // matches the design doc's own worked example ("18:32 London
+        // Waterloo to Woking, Off-Peak Day Single"). Deliberately
+        // conservative (letters/spaces/apostrophes/hyphens only) since
+        // this matches against unstructured extracted text with no field
+        // boundaries at all. The trailing delimiter accepts a
+        // comma/period/newline OR end-of-string, so a route with nothing
+        // after it (e.g. the destination is the last thing in the
+        // extracted text) still matches. This is unanchored and can latch
+        // onto unrelated boilerplate prose containing "... to ..." (e.g.
+        // "Please remember to bring photo ID... Leeds to York.") -- a
+        // known, accepted imprecision; the OTRL pattern above is tried
+        // first specifically to prefer the higher-confidence match when
+        // both are present. `train_tracking::validate_ticket_entry`'s
+        // CRS-format check is what actually prevents an unedited false
+        // match from ever being saved, not this regex's own precision.
+        regex::Regex::new(r"([A-Za-z][A-Za-z '\-]+?)\s+to\s+([A-Za-z][A-Za-z '\-]+?)(?:[,\.\n]|$)").unwrap(),
+    ]
 });
+
+/// Tries each pattern in `ROUTE_PATTERNS` in order, returning the first
+/// match's `(origin, destination)` capture pair. Returns `(None, None)`
+/// if neither pattern matches -- no panic path, since `Regex::captures`
+/// never panics on non-matching input.
+fn extract_route(text: &str) -> (Option<String>, Option<String>) {
+    for pattern in ROUTE_PATTERNS.iter() {
+        if let Some(caps) = pattern.captures(text) {
+            return (
+                Some(caps[1].trim().to_string()),
+                Some(caps[2].trim().to_string()),
+            );
+        }
+    }
+    (None, None)
+}
 
 #[cfg(test)]
 mod parse_pdf_text_tests {
@@ -402,11 +557,44 @@ mod parse_pdf_text_tests {
     #[test]
     fn a_route_with_nothing_after_the_destination_still_matches() {
         // No trailing comma/period/newline after "Woking" -- the
-        // destination is the last thing in the text. See ROUTE_PATTERN's
-        // doc comment for why `$` is part of its trailing delimiter.
+        // destination is the last thing in the text. See ROUTE_PATTERNS's
+        // generic-fallback entry's doc comment for why `$` is part of its
+        // trailing delimiter.
         let ticket = parse_pdf_text("Trainline: London Waterloo to Woking");
         assert_eq!(ticket.origin_crs, Some("London Waterloo".to_string()));
         assert_eq!(ticket.destination_crs, Some("Woking".to_string()));
+    }
+
+    #[test]
+    fn otrl_out_ret_line_is_matched_when_the_generic_to_pattern_fails() {
+        // Modeled on the real extracted-text shape a real OTRL PDF
+        // produces: the route "arrow" line renders as a mangled glyph
+        // with no literal "to" in it (here stood in for by a plain
+        // placeholder line, since the real glyph mapping is unconfirmed
+        // to be stable -- see this module's Open questions), while an
+        // anchored Ret:/Out: line sits nearby with clean CRS-shaped codes.
+        let text = "Southern e-ticket\n= 1 Sep 2026 Ret: ABC - XYZ\nSTATION A [glyph] STATION B\nSuper Off-Peak Return";
+        let ticket = parse_pdf_text(text);
+        assert_eq!(ticket.origin_crs, Some("ABC".to_string()));
+        assert_eq!(ticket.destination_crs, Some("XYZ".to_string()));
+    }
+
+    #[test]
+    fn otrl_pattern_is_preferred_over_a_coincidental_to_match_earlier_in_the_text() {
+        // A generic-pattern false positive (unrelated "...to bring..."
+        // prose) appears BEFORE the anchored Out:/Ret: line in document
+        // order -- the ordered chain must still prefer the higher-confidence
+        // anchored pattern, not whichever a plain first-match scan hits.
+        let text = "Please remember to bring photo ID.\nOut: ABC - XYZ\nSuper Off-Peak Return";
+        let ticket = parse_pdf_text(text);
+        assert_eq!(ticket.origin_crs, Some("ABC".to_string()));
+        assert_eq!(ticket.destination_crs, Some("XYZ".to_string()));
+    }
+
+    #[test]
+    fn ticket_type_matches_the_super_off_peak_return_keyword() {
+        let ticket = parse_pdf_text("Southern e-ticket\nOut: ABC - XYZ\nSuper Off-Peak Return");
+        assert_eq!(ticket.ticket_type, Some("Super Off-Peak Return".to_string()));
     }
 }
 
