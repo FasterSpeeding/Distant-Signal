@@ -25,19 +25,27 @@ export function TextLink({
   underline = 'hover',
   target,
   rel,
+  prefetch,
 }: {
   href: string;
   children: React.ReactNode;
   underline?: 'hover' | 'always';
   target?: string;
   rel?: string;
+  // Passed straight through to `next/link`'s own `prefetch` prop.
+  // Deliberately omitted (left `undefined`, i.e. Next's own default) for
+  // every ordinary in-app page link -- only `LoginLink` overrides this to
+  // `false`. See `LoginLink.tsx`'s own doc comment for why: its href is
+  // never a real page, so letting Next prefetch it fires a real,
+  // side-effecting request with no user interaction at all.
+  prefetch?: boolean;
 }) {
   return (
     // The undecorated resting state comes from the stylesheet rather than
     // the `style={{ textDecoration: 'none' }}` these call sites used to
     // carry: an inline style outranks every selector, so a hover rule
     // would never have got a look in.
-    <Link href={href} data-text-link={underline} target={target} rel={rel}>
+    <Link href={href} data-text-link={underline} target={target} rel={rel} prefetch={prefetch}>
       <Text c="var(--mantine-color-anchor)">{children}</Text>
     </Link>
   );

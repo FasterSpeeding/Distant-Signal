@@ -1,9 +1,50 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TextLink } from './TextLink';
 
+// Real next/link renders a plain <a> in jsdom (no router context needed),
+// so every existing DOM-attribute assertion below still holds against this
+// mock -- the only thing it adds is surfacing `prefetch`, which next/link
+// itself deliberately does NOT forward to the rendered element (it's a
+// component-only prop consumed by the router's IntersectionObserver
+// prefetch logic), so there is no other way to assert it landed on the
+// `<Link>` element at all.
+vi.mock('next/link', () => ({
+  default: ({
+    href,
+    children,
+    prefetch,
+    ...rest
+  }: {
+    href: string;
+    children: React.ReactNode;
+    prefetch?: boolean;
+    [key: string]: unknown;
+  }) => (
+    <a href={href} data-prefetch={String(prefetch)} {...rest}>
+      {children}
+    </a>
+  ),
+}));
+
 describe('TextLink', () => {
+  it('forwards an explicit prefetch={false} through to next/link (regression: LoginLink relies on this to stop a real, side-effecting backend request from firing on mere link visibility)', () => {
+    renderWithMantine(
+      <TextLink href="/api/auth/login?return_to=%2F" prefetch={false}>
+        Log in
+      </TextLink>,
+    );
+    const link = screen.getByRole('link', { name: 'Log in' });
+    expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2F');
+    expect(link).toHaveAttribute('data-prefetch', 'false');
+  });
+
+  it('leaves prefetch as next/link\'s own default (undefined) when not specified', () => {
+    renderWithMantine(<TextLink href="/lines">All Lines</TextLink>);
+    expect(screen.getByRole('link', { name: 'All Lines' })).toHaveAttribute('data-prefetch', 'undefined');
+  });
+
   it('renders an anchor to the href carrying the link colour', () => {
     renderWithMantine(<TextLink href="/lines">All Lines</TextLink>);
 

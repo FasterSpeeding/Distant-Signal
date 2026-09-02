@@ -10,10 +10,39 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => mockUseSearchParams(),
 }));
 
+// See TextLink.test.tsx's own comment on this mock shape -- surfaces
+// `prefetch`, which real next/link never renders as a DOM attribute.
+vi.mock('next/link', () => ({
+  default: ({
+    href,
+    children,
+    prefetch,
+    ...rest
+  }: {
+    href: string;
+    children: React.ReactNode;
+    prefetch?: boolean;
+    [key: string]: unknown;
+  }) => (
+    <a href={href} data-prefetch={String(prefetch)} {...rest}>
+      {children}
+    </a>
+  ),
+}));
+
 describe('LoginPromptModal', () => {
   beforeEach(() => {
     mockUsePathname.mockReturnValue('/lines');
     mockUseSearchParams.mockReturnValue(new URLSearchParams(''));
+  });
+
+  it('disables next/link prefetch on its own Log in link -- same side-effecting-backend-endpoint reasoning as LoginLink.tsx', () => {
+    renderWithMantine(
+      <LoginPromptModal opened={true} onClose={vi.fn()}>
+        Log in to pin this line.
+      </LoginPromptModal>,
+    );
+    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute('data-prefetch', 'false');
   });
 
   it('renders nothing interactive when opened is false', () => {
