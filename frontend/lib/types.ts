@@ -133,15 +133,18 @@ export interface LineDailyStats {
   skipRate: number;
 }
 
-/** `GET /Line/{id}/Stats/Hourly/{from}/to/{to}`'s per-hour response shape
- * -- hourly sibling of `LineDailyStats`. `hourStart` is an RFC3339 UTC
- * instant (the top of the hour), not a calendar day -- always render it
- * through `frontend/lib/dateFormat.ts`'s `formatTime` before display, same
+/** `GET /Line/{id}/Stats/HalfHourly/{from}/to/{to}`'s per-bucket response
+ * shape -- half-hourly sibling of `LineDailyStats`. `halfHourStart` is an
+ * RFC3339 UTC instant (the start of the 30-minute bucket -- :00 or :30),
+ * not a calendar day -- always render it through
+ * `frontend/lib/dateFormat.ts`'s `formatTime` before display, same
  * convention `LineDailyStats.day` follows for its own rendering. Same
  * dedup/attribution caveat as `LineDailyStats` applies, reworded for "that
- * hour" instead of "that day". */
-export interface LineHourlyStats {
-  hourStart: string; // RFC3339 UTC instant, top of the hour
+ * half hour" instead of "that day". Originally `LineHourlyStats` with an
+ * `hourStart` field (1-hour buckets); renamed when the trend chart's
+ * granularity was doubled -- see git history for the hourly-era version. */
+export interface LineHalfHourlyStats {
+  halfHourStart: string; // RFC3339 UTC instant, start of the 30-minute bucket
   sampleCycles: number;
   total: number;
   delayed: number;

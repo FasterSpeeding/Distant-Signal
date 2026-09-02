@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { groupHistoryByDay, resolveRange, resolveHourlyRange, retentionShortfallDays } from './history';
+import { groupHistoryByDay, resolveRange, resolveHalfHourlyRange, retentionShortfallDays } from './history';
 import type { LineStatusHistoryEntry } from './types';
 
 function entry(computedAt: string, statuses: Array<[number, string]>): LineStatusHistoryEntry {
@@ -155,11 +155,11 @@ describe('resolveRange', () => {
   });
 });
 
-describe('resolveHourlyRange', () => {
+describe('resolveHalfHourlyRange', () => {
   const NOW = Date.parse('2026-08-21T12:00:00Z');
 
   it('resolves exactly a 24-hour window ending at now', () => {
-    const range = resolveHourlyRange(NOW);
+    const range = resolveHalfHourlyRange(NOW);
     expect(range.to).toBe(new Date(NOW).toISOString());
     expect(Date.parse(range.to) - Date.parse(range.from)).toBe(24 * 60 * 60 * 1000);
   });

@@ -195,8 +195,14 @@ const HOUR_MS = 3_600_000;
  * is explicit that this view has no user-selectable range at all, unlike
  * the history page's day/30-day presets (which live in the URL). No
  * `preset`/`from`/`to`-from-query-params handling is needed here for the
- * same reason -- this always resolves the same window relative to `now`. */
-export function resolveHourlyRange(now: number): { from: string; to: string } {
+ * same reason -- this always resolves the same window relative to `now`.
+ * The window itself (24 hours) is independent of the chart's bucket
+ * granularity, so this logic is unchanged from its original
+ * `resolveHourlyRange` form -- only the name changed, to stay consistent
+ * with the rest of this feature's rename when the bucket size was halved
+ * to 30 minutes (see `HalfHourlyTrendsResults.tsx`, which is this
+ * function's only caller). */
+export function resolveHalfHourlyRange(now: number): { from: string; to: string } {
   return {
     from: new Date(now - 24 * HOUR_MS).toISOString(),
     to: new Date(now).toISOString(),
