@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useMounted } from '@mantine/hooks';
 import { Alert, Button, Group, PasswordInput, Stack, Text } from '@mantine/core';
 import { getAnthropicApiKey, setAnthropicApiKey, clearAnthropicApiKey } from '@/lib/anthropicKey';
 
@@ -11,11 +12,26 @@ import { getAnthropicApiKey, setAnthropicApiKey, clearAnthropicApiKey } from '@/
  *
  * The disclosure text below is a real trust requirement, not polish: the
  * whole point of this redesign is that the key never reaches a Distant
- * Signal server, which only has value if the user is told it's true. */
+ * Signal server, which only has value if the user is told it's true.
+ *
+ * Same useMounted()-gated shape PrideToggle.tsx already uses for its own
+ * localStorage-seeded state: `localStorage` doesn't exist during SSR (or
+ * the client's first pre-hydration render), so `hasKey` starts at the
+ * deterministic `false` every render agrees on, and only picks up the
+ * real stored value from an effect gated on `mounted` -- never read
+ * directly during render. */
 export function AnthropicKeySettings() {
-  const [hasKey, setHasKey] = useState(() => getAnthropicApiKey() !== null);
+  const mounted = useMounted();
+  const [hasKey, setHasKey] = useState(false);
   const [input, setInput] = useState('');
   const [savedMessage, setSavedMessage] = useState(false);
+
+  useEffect(() => {
+    if (!mounted) return;
+    setHasKey(getAnthropicApiKey() !== null);
+  }, [mounted]);
+
+  const displayedHasKey = mounted ? hasKey : false;
 
   function handleSave() {
     if (!input.trim()) return;
@@ -39,7 +55,7 @@ export function AnthropicKeySettings() {
         seen by any Distant Signal server.
       </Alert>
       <Text size="sm" fw={500}>
-        {hasKey ? 'Key saved.' : 'No key set.'}
+        {displayedHasKey ? 'Key saved.' : 'No key set.'}
       </Text>
       <Group align="flex-end">
         <PasswordInput
@@ -52,7 +68,7 @@ export function AnthropicKeySettings() {
         <Button onClick={handleSave} disabled={!input.trim()}>
           Save
         </Button>
-        {hasKey && (
+        {displayedHasKey && (
           <Button variant="subtle" color="red" onClick={handleClear}>
             Clear
           </Button>
