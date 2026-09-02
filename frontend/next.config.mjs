@@ -33,6 +33,29 @@ const nextConfig = {
       },
     ];
   },
+  // /sw.js's own byte content changes on every deploy (scripts/
+  // stamp-sw-version.mjs stamps a fresh BUILD_ID into it) -- an
+  // aggressively browser-HTTP-cached response could mask that from the
+  // browser's own service-worker update check, which re-fetches this URL
+  // on every navigation and does a byte-for-byte comparison. `no-cache`
+  // (not `no-store`) still permits a cheap conditional revalidation
+  // request rather than forcing a full re-download every time, while
+  // guaranteeing the browser never trusts a locally-cached copy without
+  // checking. See
+  // docs/superpowers/specs/2026-09-02-pwa-service-worker-design.md
+  // Decision 5, point 4. This app is served directly via `next start`
+  // with no CDN/ingress layer in front that would override response
+  // headers (confirmed by reading charts/distant-signal/templates/ for
+  // any cache-control/proxy-cache rule -- none exists), so this header
+  // reaches the browser unmodified.
+  async headers() {
+    return [
+      {
+        source: '/sw.js',
+        headers: [{ key: 'Cache-Control', value: 'no-cache' }],
+      },
+    ];
+  },
 };
 
 export default nextConfig;
