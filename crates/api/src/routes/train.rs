@@ -39,12 +39,15 @@ pub fn router() -> Router {
         // same preview-only parse as their `{tracking_id}`-scoped
         // siblings, just reachable before a tracked train exists;
         // `/Train/tickets/{ticket_id}/attach` is how a standalone ticket
-        // later gets a `tracked_train_id`.
+        // later gets a `tracked_train_id`. `/Train/tickets/{ticket_id}`
+        // (`DELETE` only) removes a ticket outright, regardless of
+        // attachment status -- see `delete_ticket`'s own doc comment.
         .route("/Train/tickets", axum::routing::post(post_standalone_ticket))
         .route("/Train/tickets/mine", axum::routing::get(get_my_tickets))
         .route("/Train/tickets/pkpass", axum::routing::post(post_pkpass_upload_standalone))
         .route("/Train/tickets/pdf", axum::routing::post(post_pdf_upload_standalone))
         .route("/Train/tickets/{ticket_id}/attach", axum::routing::post(post_attach_ticket))
+        .route("/Train/tickets/{ticket_id}", axum::routing::delete(delete_ticket))
         .route("/Train/{tracking_id}", axum::routing::get(get_by_tracking_id).delete(delete_tracked_train))
         .route("/Train/by-uid/{train_uid}/{date}", axum::routing::get(get_by_uid_and_date))
         .route("/Train/{tracking_id}/tickets", axum::routing::post(post_ticket).get(get_tickets))
@@ -184,6 +187,33 @@ async fn post_attach_ticket(
     }
 
     Ok(Json(AttachTicketResponse { ticket_id, tracked_train_id: body.tracking_id }))
+}
+
+/// `DELETE /Train/tickets/{ticketId}` -- mirrors `delete_tracked_train`
+/// (below) exactly: same `AuthenticatedUser` + 404-for-unknown-or-not-yours
+/// shape, same `204 No Content` on success. Ownership is folded directly
+/// into `train_tracking::delete_ticket`'s own `WHERE id = $1 AND user_id =
+/// $2` (no join, no separate ownership lookup first -- see that function's
+/// doc comment). Deliberately flat (`/Train/tickets/{ticket_id}`, not
+/// nested under a `{tracking_id}`), matching `post_attach_ticket`'s own
+/// reasoning just above: a ticket may have no owning tracked train at all
+/// (a STANDALONE ticket), so a route shape that requires a `tracking_id`
+/// in its path cannot express deleting one. Applies uniformly regardless
+/// of attachment status -- `tracked_train_tickets` has no child rows to
+/// clean up either way (unlike `delete_tracked_train`, this is a leaf in
+/// the FK graph).
+async fn delete_ticket(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(ticket_id): Path<i64>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let deleted = train_tracking::delete_ticket(&app.database, ticket_id, &user.id)
+        .await
+        .map_err(internal_error("delete ticket"))?;
+    if !deleted {
+        return Err((StatusCode::NOT_FOUND, "no ticket with that id".to_string()));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn get_tickets(
@@ -1229,6 +1259,167 @@ mod db_tests {
         assert!(gone.is_none(), "row should be gone after the owner deletes it");
 
         cleanup_user(&pool, "TEST-DELETE-REAL-OWNER").await;
+    }
+
+    // --- delete_ticket (Decision 2 of
+    // docs/superpowers/specs/2026-09-02-ticket-display-delete-original-design.md) ---
+
+    /// Seeds one `tracked_train_tickets` fixture row directly via
+    /// `train_tracking::create_ticket` -- `tracking_id: None` creates a
+    /// STANDALONE ticket, matching `create_ticket`'s own documented
+    /// convention. Returns the new row's `id`.
+    async fn seed_ticket(pool: &PgPool, user_id: &str, tracking_id: Option<i64>) -> i64 {
+        let entry = common::TicketEntryRequest {
+            operator: Some("LNER".to_string()),
+            ticket_type: Some("Off-Peak Day Single".to_string()),
+            origin_crs: Some("KGX".to_string()),
+            destination_crs: Some("EDB".to_string()),
+            source: "manual".to_string(),
+        };
+        crate::data::train_tracking::create_ticket(pool, tracking_id, &entry, user_id)
+            .await
+            .expect("insert fixture ticket")
+    }
+
+    /// Issues `DELETE /Train/tickets/{ticketId}`, optionally with a session
+    /// cookie -- mirrors `delete_request` above, for the ticket-scoped
+    /// sibling route.
+    async fn delete_ticket_request(router: axum::Router, ticket_id: i64, raw_token: Option<&str>) -> (StatusCode, Value) {
+        let mut builder = Request::builder().method("DELETE").uri(format!("/Train/tickets/{ticket_id}"));
+        if let Some(token) = raw_token {
+            builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
+        }
+        let req = builder.body(Body::empty()).expect("build request");
+        let response = router.oneshot(req).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+        let value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+            })
+        };
+        (status, value)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_ticket -- --ignored --test-threads=1`"]
+    async fn delete_ticket_no_session_is_401() {
+        let pool = connect().await;
+        seed_session(&pool, "TEST-TICKET-DELETE-401-OWNER").await;
+        let ticket_id = seed_ticket(&pool, "TEST-TICKET-DELETE-401-OWNER", None).await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = delete_ticket_request(router, ticket_id, None).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body, Value::String("no session".to_string()));
+
+        cleanup_user(&pool, "TEST-TICKET-DELETE-401-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_ticket -- --ignored --test-threads=1`"]
+    async fn delete_ticket_a_non_owner_session_gets_the_same_404_as_unknown_and_the_row_survives() {
+        let pool = connect().await;
+        seed_session(&pool, "TEST-TICKET-DELETE-OWNER").await;
+        let other_token = seed_session(&pool, "TEST-TICKET-DELETE-OTHER").await;
+        let ticket_id = seed_ticket(&pool, "TEST-TICKET-DELETE-OWNER", None).await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = delete_ticket_request(router, ticket_id, Some(&other_token)).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("no ticket with that id".to_string()));
+
+        let still_there = crate::data::train_tracking::get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-OWNER")
+            .await
+            .expect("read ticket");
+        assert!(still_there.is_some(), "row should survive a non-owner's delete attempt");
+
+        cleanup_user(&pool, "TEST-TICKET-DELETE-OWNER").await;
+        cleanup_user(&pool, "TEST-TICKET-DELETE-OTHER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_ticket -- --ignored --test-threads=1`"]
+    async fn delete_ticket_a_nonexistent_id_is_404_with_the_unchanged_message() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-TICKET-DELETE-NOTFOUND").await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = delete_ticket_request(router, 99999999, Some(&token)).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("no ticket with that id".to_string()));
+
+        cleanup_user(&pool, "TEST-TICKET-DELETE-NOTFOUND").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_ticket -- --ignored --test-threads=1`"]
+    async fn delete_ticket_the_owner_can_delete_a_standalone_ticket() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-TICKET-DELETE-REAL-OWNER").await;
+        // tracking_id: None -- confirms this route applies uniformly to a
+        // STANDALONE ticket, not just an attached one.
+        let ticket_id = seed_ticket(&pool, "TEST-TICKET-DELETE-REAL-OWNER", None).await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, _body) = delete_ticket_request(router, ticket_id, Some(&token)).await;
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let gone = crate::data::train_tracking::get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-REAL-OWNER")
+            .await
+            .expect("read ticket");
+        assert!(gone.is_none(), "ticket row should be gone after the owner deletes it");
+
+        cleanup_user(&pool, "TEST-TICKET-DELETE-REAL-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_ticket -- --ignored --test-threads=1`"]
+    async fn delete_ticket_a_deleted_ticket_disappears_from_every_other_ticket_reading_route() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-TICKET-DELETE-CASCADE-READS").await;
+        let tracking_id =
+            seed_tracked_train(&pool, "TEST-TICKET-DELETE-CASCADE-READS", Some("D44444"), "2026-08-29".parse().unwrap()).await;
+        let ticket_id = seed_ticket(&pool, "TEST-TICKET-DELETE-CASCADE-READS", Some(tracking_id)).await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, _) = delete_ticket_request(router.clone(), ticket_id, Some(&token)).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // The list route no longer includes it...
+        let (status, tickets) = request(router.clone(), "/Train/tickets/mine".to_string(), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = tickets.as_array().expect("array body");
+        assert!(
+            rows.iter().all(|r| r.get("id").and_then(Value::as_i64) != Some(ticket_id)),
+            "deleted ticket should not appear in the mine list: {rows:?}"
+        );
+
+        // ...and the per-ticket delay-repay route 404s, same as any other
+        // ticket that never existed -- proves Decision 3's "no orphaned
+        // estimate" claim (both reads recompute fresh from the row on
+        // every request; once the row is gone, there is nothing to find).
+        let (status, body) = request(router, format!("/Train/{tracking_id}/tickets/{ticket_id}/delay-repay"), Some(&token)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("no ticket with that id for that tracked train".to_string()));
+
+        cleanup_user(&pool, "TEST-TICKET-DELETE-CASCADE-READS").await;
     }
 
     // --- get_by_uid_and_date -------------------------------------------------

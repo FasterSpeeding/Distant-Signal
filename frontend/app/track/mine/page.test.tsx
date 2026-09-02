@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import MyTrackedTrainsPage from './page';
 import * as api from '@/lib/api';
@@ -99,6 +99,23 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       'href',
       'https://delayrepay.lner.co.uk/delayrepayV2/',
     );
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+  });
+
+  it('clicking Delete on an attached ticket row DELETEs that exact ticket id', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ id: 9, trackedTrainId: 1 })]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+
+    renderWithMantine(await MyTrackedTrainsPage());
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith('/api/Train/tickets/9', { method: 'DELETE' });
+    });
+    vi.unstubAllGlobals();
   });
 
   it('multiple tickets on one train: renders every one of them, not just the first', async () => {
@@ -149,6 +166,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     // (the visible input plus its combobox option list), so
     // getAllByLabelText (not getByLabelText) is the correct query here.
     expect(screen.getAllByLabelText('Attach to one of your tracked trains').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
   });
 
   it('an unattached ticket with no origin: the track-a-new-train link omits the origin param', async () => {
