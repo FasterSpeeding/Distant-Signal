@@ -607,6 +607,34 @@ pub async fn get_ticket_owned(pool: &PgPool, ticket_id: i64, user_id: &str) -> a
     Ok(row)
 }
 
+/// Deletes a ticket by id, scoped to the caller's ownership -- mirrors
+/// `delete_tracked_train`'s own `WHERE id = $1 AND user_id = $2` shape
+/// exactly (`crates/api/src/data/train_tracking.rs:413-420`). No join
+/// needed, per `get_ticket_owned`'s own established precedent just above:
+/// `tracked_train_tickets.user_id` is a direct, indexed column
+/// (`tracked_train_tickets_user_id`,
+/// `crates/api/migrations/20260829090000_journey_ticket_tracking.sql:56`),
+/// not transitive through the owning tracked train. Applies identically
+/// whether the ticket is attached (`tracked_train_id: Some(_)`) or
+/// standalone (`tracked_train_id: None`, per
+/// `crates/api/migrations/20260901140000_standalone_tickets.sql`) -- the
+/// `WHERE` clause never references that column, so there is nothing to
+/// special-case. Nothing else needs deleting as a consequence: unlike a
+/// tracked train, a ticket is a leaf in the FK graph -- nothing
+/// `REFERENCES tracked_train_tickets` anywhere in this schema. Returns
+/// `true` if a row was deleted, `false` if no ticket with that id belongs
+/// to this caller (doesn't exist, or belongs to someone else --
+/// indistinguishable at this layer, same as every other ownership check
+/// in this file; the route handler maps `false` to `404`, never `403`).
+pub async fn delete_ticket(pool: &PgPool, ticket_id: i64, user_id: &str) -> anyhow::Result<bool> {
+    let result = sqlx::query("DELETE FROM tracked_train_tickets WHERE id = $1 AND user_id = $2")
+        .bind(ticket_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Caps `list_tickets_for_user`'s response size. No retention/pruning job
 /// exists anywhere in this codebase for `tracked_train_tickets` either
 /// (grepped for `prune`/`retention`/`expire`/`DELETE FROM tracked_train_tickets`
@@ -883,5 +911,147 @@ mod ticket_list_tests {
         assert_eq!(item.estimate, None);
         assert_eq!(item.claim_url, delay_repay_rules::GENERIC_CLAIM_URL);
         assert_eq!(item.disclaimer, delay_repay_rules::ROUTE_DISCLAIMER);
+    }
+}
+
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn connect() -> PgPool {
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres")
+    }
+
+    async fn seed_user(pool: &PgPool, user_id: &str) {
+        sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING")
+            .bind(user_id)
+            .bind(format!("{user_id}@example.com"))
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("seed fixture user");
+    }
+
+    async fn cleanup_user(pool: &PgPool, user_id: &str) {
+        sqlx::query("DELETE FROM tracked_train_tickets WHERE user_id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture tickets");
+        sqlx::query("DELETE FROM tracked_trains WHERE user_id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture tracked_trains");
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture user");
+    }
+
+    /// Minimal fixture row -- only the `NOT NULL` columns
+    /// (`crates/api/migrations/20260828120000_train_tracking.sql:40-76`).
+    async fn seed_tracked_train(pool: &PgPool, user_id: &str) -> i64 {
+        let (id,): (i64,) = sqlx::query_as(
+            "INSERT INTO tracked_trains (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind(user_id)
+        .bind("2026-09-02".parse::<chrono::NaiveDate>().unwrap())
+        .bind("KGX")
+        .bind("2026-09-02T09:00:00Z".parse::<DateTime<Utc>>().unwrap())
+        .fetch_one(pool)
+        .await
+        .expect("insert fixture tracked_trains row");
+        id
+    }
+
+    fn fixture_entry() -> TicketEntryRequest {
+        TicketEntryRequest {
+            operator: Some("LNER".to_string()),
+            ticket_type: Some("single".to_string()),
+            origin_crs: Some("KGX".to_string()),
+            destination_crs: Some("EDB".to_string()),
+            source: "manual".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_ticket -- --ignored --test-threads=1`"]
+    async fn delete_ticket_the_owner_can_delete_their_own_attached_ticket() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-TICKET-DELETE-OWNER").await;
+        let tracking_id = seed_tracked_train(&pool, "TEST-TICKET-DELETE-OWNER").await;
+        let ticket_id = create_ticket(&pool, Some(tracking_id), &fixture_entry(), "TEST-TICKET-DELETE-OWNER")
+            .await
+            .expect("create fixture ticket");
+
+        let deleted = delete_ticket(&pool, ticket_id, "TEST-TICKET-DELETE-OWNER").await.expect("delete ticket");
+        assert!(deleted);
+
+        let gone = get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-OWNER").await.expect("read ticket");
+        assert!(gone.is_none(), "ticket row should be gone after the owner deletes it");
+
+        cleanup_user(&pool, "TEST-TICKET-DELETE-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_ticket -- --ignored --test-threads=1`"]
+    async fn delete_ticket_a_non_owner_cannot_delete_it_and_the_row_survives() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-TICKET-DELETE-REAL-OWNER").await;
+        seed_user(&pool, "TEST-TICKET-DELETE-OTHER").await;
+        let ticket_id = create_ticket(&pool, None, &fixture_entry(), "TEST-TICKET-DELETE-REAL-OWNER")
+            .await
+            .expect("create fixture ticket");
+
+        let deleted = delete_ticket(&pool, ticket_id, "TEST-TICKET-DELETE-OTHER").await.expect("delete ticket");
+        assert!(!deleted);
+
+        let still_there = get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-REAL-OWNER").await.expect("read ticket");
+        assert!(still_there.is_some(), "row should survive a non-owner's delete attempt");
+
+        cleanup_user(&pool, "TEST-TICKET-DELETE-REAL-OWNER").await;
+        cleanup_user(&pool, "TEST-TICKET-DELETE-OTHER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_ticket -- --ignored --test-threads=1`"]
+    async fn delete_ticket_a_nonexistent_id_returns_false() {
+        let pool = connect().await;
+        let deleted = delete_ticket(&pool, 99999999, "TEST-TICKET-DELETE-NOBODY").await.expect("delete ticket");
+        assert!(!deleted);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_ticket -- --ignored --test-threads=1`"]
+    async fn delete_ticket_an_unattached_standalone_ticket_deletes_identically_to_an_attached_one() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-TICKET-DELETE-STANDALONE").await;
+        // tracked_train_id: None -- a STANDALONE ticket. delete_ticket's
+        // own WHERE clause never references this column, so this must
+        // succeed identically to the attached case above.
+        let ticket_id = create_ticket(&pool, None, &fixture_entry(), "TEST-TICKET-DELETE-STANDALONE")
+            .await
+            .expect("create fixture ticket");
+
+        let deleted = delete_ticket(&pool, ticket_id, "TEST-TICKET-DELETE-STANDALONE").await.expect("delete ticket");
+        assert!(deleted);
+
+        let gone = get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-STANDALONE").await.expect("read ticket");
+        assert!(gone.is_none());
+
+        cleanup_user(&pool, "TEST-TICKET-DELETE-STANDALONE").await;
     }
 }
