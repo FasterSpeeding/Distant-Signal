@@ -1,7 +1,31 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { NotificationsToggle } from './NotificationsToggle';
+import { NotificationsToggle, urlBase64ToUint8Array } from './NotificationsToggle';
+
+describe('urlBase64ToUint8Array', () => {
+  it('decodes a plain base64url string with no padding characters needed', () => {
+    // "AAECAw" (no '=' in the source) is the base64url encoding of the
+    // four raw bytes [0, 1, 2, 3].
+    expect(Array.from(urlBase64ToUint8Array('AAECAw'))).toEqual([0, 1, 2, 3]);
+  });
+
+  it('translates "-" and "_" to the standard base64 "+" and "/" alphabet', () => {
+    // "_-8" is the base64url form of standard base64 "/+8=" -- both decode
+    // to the same two bytes, [255, 239].
+    expect(Array.from(urlBase64ToUint8Array('_-8'))).toEqual([255, 239]);
+  });
+
+  it('decodes a real-shaped 65-byte uncompressed P-256 VAPID public key', () => {
+    // A well-known example VAPID public key (from the Push API reference
+    // examples) -- a real key is always 65 bytes and starts with 0x04,
+    // the uncompressed-point marker.
+    const key = 'BEl62iUYgUivxIkv69yViEuiBIa40HI0DLLuxazjBk9j4H_hMVU2fV4kX_pMcFOxIRXVFrCzYqfE_ArNVjpJUBg';
+    const decoded = urlBase64ToUint8Array(key);
+    expect(decoded).toHaveLength(65);
+    expect(decoded[0]).toBe(4);
+  });
+});
 
 // LoginPromptModal's own LoginButtonLink calls useLoginHref(), which calls
 // usePathname()/useSearchParams() -- same stub PinToggle.test.tsx uses for
