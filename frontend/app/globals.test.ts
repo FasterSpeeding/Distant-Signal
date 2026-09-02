@@ -12,6 +12,9 @@ const GRAPE_6 = '#be4bdb';
 const GRAPE_7 = '#ae3ec9';
 const WHITE = '#ffffff';
 const DARK_7 = '#242424'; // `--mantine-color-body` in the dark scheme
+const GRAY_6 = '#868e96';
+const GRAY_7 = '#495057';
+const DARK_2 = '#a6a7ab'; // `--mantine-color-dimmed` in the dark scheme
 
 // WCAG 2.1 relative luminance and contrast ratio. Colour can't usefully be
 // asserted shade by shade in a unit test, but "does this pair clear AA for
@@ -134,6 +137,23 @@ describe('filled-surface contrast under autoContrast', () => {
     expect(rule![0]).toContain('--mantine-color-grape-filled: var(--mantine-color-grape-7)');
     expect(rule![0]).toContain('--mantine-color-grape-filled-hover: var(--mantine-color-grape-8)');
     expect(rule![0]).toContain('--mantine-primary-color-contrast: var(--mantine-color-white)');
+  });
+});
+
+describe('dimmed body text contrast', () => {
+  it('overrides --mantine-color-dimmed to gray 7 for the light scheme only', () => {
+    const rule = css.match(/html:root\[data-mantine-color-scheme=['"]light['"]\]\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('--mantine-color-dimmed: var(--mantine-color-gray-7)');
+  });
+
+  it('confirms the dimmed shade the light scheme was moved off actually failed AA', () => {
+    expect(contrast(GRAY_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.32:1
+    expect(contrast(GRAY_7, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 8.18:1
+  });
+
+  it("leaves the dark scheme's dimmed colour alone, where it already clears AA", () => {
+    expect(contrast(DARK_2, DARK_7)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.46:1
   });
 });
 

@@ -38,6 +38,19 @@ html:root[data-mantine-color-scheme='light'] {
      rather than through the variantColorResolver would then paint black
      on the grape-7 fill above (4.29:1, fail). */
   --mantine-primary-color-contrast: var(--mantine-color-white);
+  /* Mantine resolves `--mantine-color-dimmed` to gray 6 (#868e96) in the
+     light scheme: 3.32:1 on white, short of AA's 4.5:1 for body text, and
+     this app has 72 `c="dimmed"` call sites -- the single most widespread
+     contrast defect the accessibility audit found
+     (docs/superpowers/specs/2026-09-02-frontend-accessibility-audit-research.md).
+     Gray 7 (#495057) is 8.18:1 and is the only shade on Mantine's gray
+     scale that clears AA; a hand-mixed intermediate is ruled out by the
+     grape spec's "no custom colour tuples" Non-goal. Dimmed text still
+     reads as dimmed because body text here is black (21:1), so the
+     hierarchy survives -- but it IS visibly darker than before; see this
+     plan's Task 6. Dark is untouched: `--mantine-color-dimmed` resolves to
+     dark 2 (#a6a7ab) there, already 6.46:1 on the #242424 body. */
+  --mantine-color-dimmed: var(--mantine-color-gray-7);
 }
 
 /* `components/TextLink.tsx` opts in via `data-text-link`. The colour above
