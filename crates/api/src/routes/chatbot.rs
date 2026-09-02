@@ -1,12 +1,21 @@
-//! `/public/chatbot/access` -- the DS-hosted chat orchestrator (Option B)'s
-//! own allowlist check. See
-//! docs/superpowers/plans/2026-09-02-embedded-chatbot-option-b.md's Task 2
-//! and docs/superpowers/specs/2026-09-02-embedded-chatbot-dual-mode-design.md's
-//! Decision 5.
+//! `/public/chatbot/access` -- a beta/feature-flag gate for the `/chat`
+//! page's own visibility. NOT spend-protection: that was this table's
+//! original purpose (dual-mode design's Decision 5), back when Option B
+//! held a DS-funded Anthropic key server-side. Once each user supplies
+//! their own Anthropic key directly to their own browser (see
+//! docs/superpowers/specs/2026-09-02-embedded-chatbot-option-b-client-side-tokens-design.md's
+//! Decision 4), there is no DS spend left to protect -- this is now purely
+//! a soft-launch/access-control gate, independent from and not a proxy for
+//! `distant-signal-mcp`'s own `mcp-users`/`mcp-live-boards` access groups
+//! (which gate the tools themselves, for a materially different
+//! population -- Option C's arbitrary Claude.ai users included).
 //!
-//! Two callers: `frontend/app/chat/page.tsx` (Task 5, a page-load gate) and
-//! `orchestrator/` (Task 3, the actual cost-protecting check, since a
-//! request can reach the orchestrator without ever rendering the page).
+//! One caller: `frontend/app/chat/page.tsx`'s own page-load gate. (The
+//! former second caller, `orchestrator/`'s `checkChatbotAccess` -- "the
+//! actual cost-protecting check, since a request can reach the
+//! orchestrator without ever rendering the page" -- no longer exists;
+//! `orchestrator/` was removed entirely, see the client-side-tokens plan's
+//! Task 5.)
 
 use axum::Json;
 use serde_json::{Value, json};
