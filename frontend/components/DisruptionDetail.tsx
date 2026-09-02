@@ -5,6 +5,7 @@ import type { Disruption } from '@/lib/types';
 import { sanitizeDescription } from '@/lib/sanitizeHtml';
 import { incidentIdFromSource } from '@/lib/incidents';
 import { impactTypeLabel } from '@/lib/impactType';
+import { incidentSourceLabel } from '@/lib/incidentSource';
 import { TextLink } from './TextLink';
 
 export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
@@ -43,9 +44,17 @@ export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
           {route.from} → {route.to}
         </Text>
       ))}
-      {disruption.source && (
-        <Text size="xs" c="dimmed">
-          Source: {disruption.source}
+      {incidentSourceLabel(disruption.source) && (
+        // `title` keeps the raw provenance string one hover away for debugging
+        // without putting a 32-hex ID in body copy -- the same tactic
+        // CustomLineForm.tsx uses for its code/name pills. Not an
+        // InfoIcon+Tooltip (components/InfoIcon.tsx): that's a heavier control
+        // than a value no user needs to read deserves. Note the incident id
+        // this string carries is ALREADY surfaced usefully below, as the
+        // "View full incident details" link (via lib/incidents.ts) -- so
+        // nothing is lost by not printing it.
+        <Text size="xs" c="dimmed" title={disruption.source ?? undefined}>
+          Source: {incidentSourceLabel(disruption.source)}
         </Text>
       )}
       {incidentId && (
