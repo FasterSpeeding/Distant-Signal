@@ -2,7 +2,31 @@
 
 import { LineChart } from '@mantine/charts';
 import { Stack, Title } from '@mantine/core';
+import { ReferenceArea } from 'recharts';
 import type { ChartPoint } from './chartPoint';
+
+/** A contiguous run of one or more days where every rate/delay field is
+ * `null` -- i.e. below `SPARSE_DATA_FLOOR_CYCLES` (`TrendsResults.tsx`'s
+ * `toChartPoints`, lines 23-35). Checking `delayRate === null` alone is
+ * sufficient today because `toChartPoints` guarantees all four fields are
+ * nulled together for a sparse day -- an implicit coupling to that
+ * invariant, not something `ChartPoint`'s own type enforces (design spec
+ * Open question 5). If a future change ever nulls fields independently,
+ * this derivation would need to change too. */
+export function gapSpans(points: { day: string; delayRate: number | null }[]): { startDay: string; endDay: string }[] {
+  const spans: { startDay: string; endDay: string }[] = [];
+  let current: { startDay: string; endDay: string } | null = null;
+  for (const point of points) {
+    if (point.delayRate === null) {
+      current = current ? { startDay: current.startDay, endDay: point.day } : { startDay: point.day, endDay: point.day };
+    } else {
+      if (current) spans.push(current);
+      current = null;
+    }
+  }
+  if (current) spans.push(current);
+  return spans;
+}
 
 /** Split out of `TrendsResults` (an async Server Component) purely because
  * of `valueFormatter` below: it's a plain function, and Next's RSC
@@ -47,7 +71,27 @@ export function TrendsCharts({ points }: { points: ChartPoint[] }) {
           ]}
           valueFormatter={(value) => `${(value * 100).toFixed(1)}%`}
           connectNulls={false}
-        />
+        >
+          {/* Whether x1/x2 resolve cleanly against this chart's string `day`
+              category values for a single isolated gap day (covering exactly
+              that day's category width, not spilling into neighbors) was
+              never verified against a live render by the design (Open
+              question 4). If Task 7's screenshot pass shows a single-day
+              band overshooting or undershooting its category, switch to
+              adjacent-day midpoints for x1/x2 instead of the exact category
+              values. */}
+          {gapSpans(points).map((span) => (
+            <ReferenceArea
+              key={`${span.startDay}-${span.endDay}`}
+              x1={span.startDay}
+              x2={span.endDay}
+              fill="var(--mantine-color-gray-5)"
+              fillOpacity={0.15}
+              stroke="none"
+              ifOverflow="visible"
+            />
+          ))}
+        </LineChart>
       </Stack>
       <Stack gap={4}>
         <Title order={4} size="h6">
@@ -60,7 +104,19 @@ export function TrendsCharts({ points }: { points: ChartPoint[] }) {
           series={[{ name: 'avgDelayMinutes', label: 'Avg delay (minutes)', color: 'grape.6' }]}
           valueFormatter={(value) => `${value.toFixed(1)} min`}
           connectNulls={false}
-        />
+        >
+          {gapSpans(points).map((span) => (
+            <ReferenceArea
+              key={`${span.startDay}-${span.endDay}`}
+              x1={span.startDay}
+              x2={span.endDay}
+              fill="var(--mantine-color-gray-5)"
+              fillOpacity={0.15}
+              stroke="none"
+              ifOverflow="visible"
+            />
+          ))}
+        </LineChart>
       </Stack>
     </>
   );
