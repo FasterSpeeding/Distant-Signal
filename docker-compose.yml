@@ -649,12 +649,6 @@ services:
       OAUTH_REDIS_URL: redis://redis:6379
       DS_FRONTEND_ORIGIN: ${RAIL_MCP_DS_FRONTEND_ORIGIN:-http://localhost:${FRONTEND_HOST_PORT:-3000}}
       OAUTH_INTERNAL_COMPLETE_TOKEN: ${RAIL_MCP_INTERNAL_COMPLETE_TOKEN}
-      # The non-interactive orchestrator-session grant (embedded-chatbot-
-      # option-b plan, Task 1) -- a SEPARATE credential from
-      # OAUTH_INTERNAL_COMPLETE_TOKEN above (see Task 1's own rationale).
-      # Shared with the `orchestrator` service below, which sends this
-      # exact value back as its own X-Orchestrator-Internal-Token header.
-      OAUTH_ORCHESTRATOR_INTERNAL_TOKEN: ${RAIL_MCP_ORCHESTRATOR_INTERNAL_TOKEN}
       # LDBWS/Rail Data Marketplace credentials the fork's board/service-
       # detail tools still call directly (Decision 5 -- unchanged by this
       # integration, board tools are not routed through DS).
@@ -664,51 +658,6 @@ services:
       LDBWS_ARRIVALS_KEY: ${LDBWS_ARRIVALS_KEY}
       LDBWS_SERVICE_URL: ${LDBWS_SERVICE_URL}
       LDBWS_SERVICE_KEY: ${LDBWS_SERVICE_KEY}
-
-  orchestrator:
-    # The DS-hosted chat orchestrator (embedded-chatbot-option-b plan,
-    # Task 3/6). Reuses `rail-mcp`'s own `profiles: ["rail-mcp"]` tag
-    # rather than a new one: this service is meaningless without rail-mcp
-    # already running (it exchanges a bearer token against rail-mcp's own
-    # /token and calls its /mcp endpoint) -- see that service's own
-    # `profiles:` comment for the general opt-in-gating rationale, which
-    # applies identically here.
-    profiles: ["rail-mcp"]
-    build:
-      context: .
-      dockerfile: orchestrator/Dockerfile
-    restart: unless-stopped
-    depends_on:
-      api:
-        condition: service_healthy
-      rail-mcp:
-        condition: service_started
-    ports:
-      # Exposed on the host for local debugging convenience only -- the
-      # real chart deployment (charts/distant-signal/templates/
-      # orchestrator-service.yaml) is deliberately ClusterIP-only with no
-      # Ingress rule (Decision 2 of the dual-mode design). This host port
-      # mapping is compose-local dev tooling, not a statement that this
-      # service is meant to be publicly reachable.
-      - "${ORCHESTRATOR_PORT:-3101}:3001"
-    environment:
-      # orchestrator/src/config.ts: Config.
-      PORT: "3001"
-      ANTHROPIC_API_KEY: ${ORCHESTRATOR_ANTHROPIC_API_KEY}
-      ANTHROPIC_MODEL: ${ORCHESTRATOR_ANTHROPIC_MODEL:-}
-      # Same in-network hostname api: already uses for itself (see
-      # rail-mcp's own DS_API_BASE_URL above) -- the allowlist check (GET
-      # /public/chatbot/access) is this service's only direct call into
-      # `api`.
-      DS_API_BASE_URL: http://api:8080
-      # rail-mcp's own in-network hostname/port -- both the token exchange
-      # (POST /token) and the actual MCP tool calls (POST /mcp) happen
-      # entirely inside the compose network.
-      RAILMCP_BASE_URL: http://rail-mcp:3000
-      # The SAME value rail-mcp's own OAUTH_ORCHESTRATOR_INTERNAL_TOKEN
-      # above is set to -- these two must always match, since rail-mcp
-      # validates what this service sends.
-      OAUTH_ORCHESTRATOR_INTERNAL_TOKEN: ${RAIL_MCP_ORCHESTRATOR_INTERNAL_TOKEN}
 
   frontend:
     build:
@@ -733,11 +682,6 @@ services:
       RAILMCP_BASE_URL: http://rail-mcp:3000
       RAILMCP_INTERNAL_COMPLETE_TOKEN: ${RAIL_MCP_INTERNAL_COMPLETE_TOKEN}
       NEXT_PUBLIC_RAILMCP_PUBLIC_URL: ${RAIL_MCP_PUBLIC_URL:-http://localhost:3100}
-      # frontend/app/api/chat/route.ts (embedded-chatbot-option-b plan,
-      # Task 4) -- same "harmless to always set" reasoning as
-      # RAILMCP_BASE_URL above: only read at request time, when a request
-      # actually reaches /api/chat.
-      ORCHESTRATOR_BASE_URL: http://orchestrator:3001
     ports:
       - "${FRONTEND_HOST_PORT:-3000}:3000"
 

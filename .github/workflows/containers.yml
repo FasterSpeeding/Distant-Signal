@@ -1,10 +1,9 @@
 name: Containers
 
-# Build (and, on push to main/master, publish) all 11 container images this
-# repo defines: the 9 Rust service Dockerfiles under docker/, frontend/Dockerfile's
-# `runtime-prod` target, and orchestrator/Dockerfile (the DS-hosted chat
-# orchestrator, embedded-chatbot-option-b plan Task 6). This is the "main
-# aim" CI/CD job per the repo owner's request.
+# Build (and, on push to main/master, publish) all 10 container images this
+# repo defines: the 9 Rust service Dockerfiles under docker/, and
+# frontend/Dockerfile's `runtime-prod` target. This is the "main aim"
+# CI/CD job per the repo owner's request.
 #
 # Why this is a hand-rolled matrix job rather than a call into
 # FasterSpeeding/Piped's own `build-container.yml` reusable workflow --
@@ -145,17 +144,6 @@ jobs:
           - service: frontend
             dockerfile: frontend/Dockerfile
             target: runtime-prod
-          # The DS-hosted chat orchestrator (embedded-chatbot-option-b
-          # plan, Task 3/6) -- own top-level directory, own Dockerfile,
-          # built and published by this repo's own CI just like frontend
-          # above (unlike railMcp, an externally-built fork this chart
-          # only deploys, never a matrix entry here). No `target`: unlike
-          # frontend/Dockerfile, orchestrator/Dockerfile's `runtime-prod`
-          # is its own last stage -- there is no separate dev stage an
-          # implicit last-stage build would wrongly pick up instead.
-          - service: chat-orchestrator
-            dockerfile: orchestrator/Dockerfile
-            target: ""
 
     steps:
       - name: Checkout repository
