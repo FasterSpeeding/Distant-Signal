@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, FileInput, Group, Stack, Tabs, TextInput, Text } from '@mantine/core';
+import { Alert, Button, Group, Stack, Tabs, TextInput, Text } from '@mantine/core';
+import { Dropzone, PDF_MIME_TYPE } from '@mantine/dropzone';
 import { LoginLink } from './LoginLink';
 import { TextLink } from './TextLink';
 import type { PartialTicket, TicketCreatedResponse, TicketEntryRequest, TicketSource } from '@/lib/types';
@@ -349,12 +350,12 @@ export function TicketEntryForm({ trackingId, label }: { trackingId?: number; la
         </Tabs.Panel>
 
         <Tabs.Panel value="pkpass" pt="md">
-          <UploadPanel kind="pkpass" accept=".pkpass" uploading={uploading} error={uploadError} onFile={handleUpload}
+          <UploadPanel kind="pkpass" accept={['.pkpass']} uploading={uploading} error={uploadError} onFile={handleUpload}
             onFallback={() => setTab('manual')} />
         </Tabs.Panel>
 
         <Tabs.Panel value="pdf" pt="md">
-          <UploadPanel kind="pdf" accept="application/pdf" uploading={uploading} error={uploadError} onFile={handleUpload}
+          <UploadPanel kind="pdf" accept={PDF_MIME_TYPE} uploading={uploading} error={uploadError} onFile={handleUpload}
             onFallback={() => setTab('manual')} />
         </Tabs.Panel>
       </Tabs>
@@ -391,7 +392,7 @@ function UploadPanel({
   onFallback,
 }: {
   kind: 'pkpass' | 'pdf';
-  accept: string;
+  accept: string[];
   uploading: boolean;
   error: string | null;
   onFile: (file: File | null, kind: 'pkpass' | 'pdf') => void;
@@ -399,12 +400,30 @@ function UploadPanel({
 }) {
   return (
     <Stack gap="sm">
-      <FileInput
-        label={kind === 'pkpass' ? 'Apple Wallet .pkpass file' : 'PDF e-ticket'}
+      <Dropzone
         accept={accept}
-        disabled={uploading}
-        onChange={(file) => onFile(file, kind)}
-      />
+        multiple={false}
+        loading={uploading}
+        onDrop={(files) => onFile(files[0] ?? null, kind)}
+        onReject={() => {
+          /* Decision 3: a mismatched file type is a client-side pre-filter,
+           * not a request -- no request reaches handleUpload, so there is
+           * nothing to report through the existing uploadError/UploadPanel
+           * error path. Rendering polish (an inline "wrong file type"
+           * message via Dropzone.Reject) is explicitly left to the
+           * implementer per the spec's "Explicitly out of scope: Visual
+           * design of the drop area itself." */
+        }}
+      >
+        <Stack gap={4} align="center" style={{ pointerEvents: 'none' }}>
+          <Text size="sm" fw={500}>
+            {kind === 'pkpass' ? 'Apple Wallet .pkpass file' : 'PDF e-ticket'}
+          </Text>
+          <Text size="xs" c="dimmed">
+            Drag and drop, or click to browse
+          </Text>
+        </Stack>
+      </Dropzone>
       {error && (
         <Alert color="red">
           <Stack gap={4}>
