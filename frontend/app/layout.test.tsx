@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
@@ -51,5 +52,17 @@ describe('metadata.appleWebApp', () => {
     // Constraints reject -- omitting the key is not equivalent to
     // rejecting the tag here.
     expect(metadata.appleWebApp).toEqual({ capable: false, statusBarStyle: 'black-translucent' });
+  });
+});
+
+describe('page content landmark', () => {
+  // RootLayout renders <html>/<body>, which @testing-library/react can't
+  // mount into a <div> container, so this asserts on the source rather
+  // than the DOM -- the same tactic app/globals.test.ts uses for CSS
+  // rules that only exist at the stylesheet level. The live-DOM check for
+  // this lives in e2e/accessibility.spec.ts instead.
+  it('renders page content inside a <main> landmark, not a bare Container div', () => {
+    const source = readFileSync('app/layout.tsx', 'utf8');
+    expect(source).toMatch(/<Container\s+component="main"/);
   });
 });

@@ -181,7 +181,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </Group>
             </Container>
           </Box>
-          <Container size="lg" px={0}>
+          {/* `component="main"`: Mantine's Container renders a plain
+              <div> by default, which left every page's actual content
+              outside any landmark -- axe's `landmark-one-main` fired on
+              every route tested, and `region` fired once per unlandmarked
+              node (487 on /lines alone). See
+              docs/superpowers/specs/2026-09-02-frontend-accessibility-audit-research.md.
+              The nav (:144) and footer (OpenDataAttribution.tsx) were
+              already landmarked; only the middle was not. Polymorphic
+              `component` swaps the tag only -- size/px/class output is
+              unchanged. */}
+          <Container component="main" size="lg" px={0}>
             {children}
           </Container>
           <OpenDataAttribution />
