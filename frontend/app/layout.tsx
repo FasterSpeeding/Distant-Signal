@@ -1,6 +1,6 @@
 import '@/app/globals.css';
 import { Suspense } from 'react';
-import { ActionIcon, MantineProvider, ColorSchemeScript, mantineHtmlProps, Group, Text, Box, Container } from '@mantine/core';
+import { ActionIcon, ColorSchemeScript, mantineHtmlProps, Group, Text, Box, Container } from '@mantine/core';
 import Link from 'next/link';
 import type { Metadata, Viewport } from 'next';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -12,8 +12,8 @@ import { AutoRefresh } from '@/components/AutoRefresh';
 import { ColorSchemeMeta } from '@/components/ColorSchemeMeta';
 import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
 import { OpenDataAttribution } from '@/components/OpenDataAttribution';
+import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { getDataFreshness, getSession } from '@/lib/api';
-import { theme } from '@/lib/theme';
 
 export const metadata: Metadata = {
   title: 'Distant Signal',
@@ -123,7 +123,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ColorSchemeScript defaultColorScheme="auto" />
       </head>
       <body>
-        <MantineProvider theme={theme} defaultColorScheme="auto">
+        <AppMantineProvider>
           <AutoRefresh />
           <ColorSchemeMeta />
           {/* RootLayout is a Server Component and re-executes on every
@@ -181,11 +181,21 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </Group>
             </Container>
           </Box>
-          <Container size="lg" px={0}>
+          {/* `component="main"`: Mantine's Container renders a plain
+              <div> by default, which left every page's actual content
+              outside any landmark -- axe's `landmark-one-main` fired on
+              every route tested, and `region` fired once per unlandmarked
+              node (487 on /lines alone). See
+              docs/superpowers/specs/2026-09-02-frontend-accessibility-audit-research.md.
+              The nav (:144) and footer (OpenDataAttribution.tsx) were
+              already landmarked; only the middle was not. Polymorphic
+              `component` swaps the tag only -- size/px/class output is
+              unchanged. */}
+          <Container component="main" size="lg" px={0}>
             {children}
           </Container>
           <OpenDataAttribution />
-        </MantineProvider>
+        </AppMantineProvider>
       </body>
     </html>
   );

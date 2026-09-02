@@ -1,7 +1,7 @@
 'use client';
 
 import { LineChart } from '@mantine/charts';
-import { Stack, Title } from '@mantine/core';
+import { Stack, Title, type TitleOrder } from '@mantine/core';
 import { ReferenceArea } from 'recharts';
 import { formatTime } from '@/lib/dateFormat';
 import type { ChartPoint } from './chartPoint';
@@ -74,7 +74,23 @@ function referenceAreaBounds(
  * 1-hour bucket -- renamed to `'halfHour'` alongside the rest of this
  * feature when the bucket size was halved; the collision risk and its
  * fix are unchanged, just at double the bucket count.) */
-export function TrendsCharts({ points, granularity }: { points: ChartPoint[]; granularity: 'day' | 'halfHour' }) {
+export function TrendsCharts({
+  points,
+  granularity,
+  order,
+}: {
+  points: ChartPoint[];
+  granularity: 'day' | 'halfHour';
+  /** Heading level for the two chart titles. Required, deliberately
+   * undefaulted: this component is mounted at two different depths
+   * (h2 on /lines/[id]/history's Trends tab, h3 under "Recent trends" on
+   * /lines/[id]), so any default would render a heading-order skip on one
+   * of them -- which is exactly the axe `heading-order` defect this
+   * replaced (both titles were a hardcoded `order={4}`). `size="h6"` stays
+   * pinned at both call sites, so changing the level changes the tag only,
+   * never the rendered font size. */
+  order: TitleOrder;
+}) {
   const xAxisProps = {
     padding: { right: 12 },
     ...(granularity === 'halfHour' ? { tickFormatter: (value: string) => formatTime(value) } : {}),
@@ -83,7 +99,7 @@ export function TrendsCharts({ points, granularity }: { points: ChartPoint[]; gr
   return (
     <>
       <Stack gap={4}>
-        <Title order={4} size="h6">
+        <Title order={order} size="h6">
           Delay / cancellation / skip rate
         </Title>
         {/* The three rate metrics are 0-1 proportions and share one chart/axis.
@@ -121,7 +137,7 @@ export function TrendsCharts({ points, granularity }: { points: ChartPoint[]; gr
         </LineChart>
       </Stack>
       <Stack gap={4}>
-        <Title order={4} size="h6">
+        <Title order={order} size="h6">
           Average delay (minutes)
         </Title>
         <LineChart

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { theme } from '@/lib/theme';
 
 // Vitest runs with `frontend/` as its root (see vitest.config.ts).
 const css = readFileSync('app/globals.css', 'utf8');
@@ -11,6 +12,12 @@ const GRAPE_6 = '#be4bdb';
 const GRAPE_7 = '#ae3ec9';
 const WHITE = '#ffffff';
 const DARK_7 = '#242424'; // `--mantine-color-body` in the dark scheme
+const GRAY_6 = '#868e96';
+const GRAY_7 = '#495057';
+const GRAY_8 = '#343a40';
+const BLUE_8 = '#1971c2';
+const BLACK = '#000000';
+const DARK_2 = '#a6a7ab'; // `--mantine-color-dimmed` in the dark scheme
 
 // WCAG 2.1 relative luminance and contrast ratio. Colour can't usefully be
 // asserted shade by shade in a unit test, but "does this pair clear AA for
@@ -29,11 +36,11 @@ function contrast(a: string, b: string): number {
 const AA_BODY_TEXT = 4.5;
 
 describe('link colour', () => {
-  it('confirms the shade the light scheme was moved off actually failed AA', () => {
+  it('confirms the shade the light scheme (links, and now filled grape surfaces too) was moved off actually failed AA', () => {
     expect(contrast(GRAPE_6, WHITE)).toBeLessThan(AA_BODY_TEXT);
   });
 
-  it('clears AA for body text in the light scheme', () => {
+  it('clears AA for body text -- and, via lib/theme.ts\'s variantColorResolver, for filled surfaces -- in the light scheme', () => {
     expect(contrast(GRAPE_7, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
   });
 
@@ -52,6 +59,126 @@ describe('link colour', () => {
 
   it('leaves the dark scheme alone, where grape 4 already clears AA', () => {
     expect(contrast(GRAPE_4, DARK_7)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+  });
+});
+
+describe('filled-surface contrast under autoContrast', () => {
+  // Mantine's shipped palette (node_modules/@mantine/core/.../default-colors.ts)
+  // for the eight colours this app renders filled, at shades 6/7/8 -- 6 is
+  // where `filled` resolves in the light scheme, 8 in the dark scheme
+  // (`primaryShade: { light: 6, dark: 8 }`, Mantine's own default), and 7
+  // is the shade the light scheme substitutes in for grape specifically
+  // (see app/globals.css and lib/theme.ts's variantColorResolver). All
+  // three shades are checked for every colour, not just the ones actually
+  // used that way today, because the point of a derived threshold (see
+  // lib/theme.ts's comment) is that it's correct for colours this table
+  // doesn't even need to enumerate -- 24 of 24 below is the same
+  // exhaustive check done during planning, kept as a standing regression
+  // net rather than a one-off calculation.
+  const PALETTE: [name: string, shade: 6 | 7 | 8, hex: string][] = [
+    ['gray', 6, '#868e96'],
+    ['gray', 7, '#495057'],
+    ['gray', 8, '#343a40'],
+    ['red', 6, '#fa5252'],
+    ['red', 7, '#f03e3e'],
+    ['red', 8, '#e03131'],
+    ['green', 6, '#40c057'],
+    ['green', 7, '#37b24d'],
+    ['green', 8, '#2f9e44'],
+    ['blue', 6, '#228be6'],
+    ['blue', 7, '#1c7ed6'],
+    ['blue', 8, '#1971c2'],
+    ['yellow', 6, '#fab005'],
+    ['yellow', 7, '#f59f00'],
+    ['yellow', 8, '#f08c00'],
+    ['orange', 6, '#fd7e14'],
+    ['orange', 7, '#f76707'],
+    ['orange', 8, '#e8590c'],
+    ['grape', 6, '#be4bdb'],
+    ['grape', 7, '#ae3ec9'],
+    ['grape', 8, '#9c36b5'],
+    ['teal', 6, '#12b886'],
+    ['teal', 7, '#0ca678'],
+    ['teal', 8, '#099268'],
+  ];
+
+  // Mirrors Mantine's own autoContrast rule: black text when the
+  // background's relative luminance exceeds theme.luminanceThreshold,
+  // white otherwise. Kept as an independent reimplementation rather than
+  // importing Mantine's -- the point is to check the THRESHOLD choice, and
+  // a test that borrowed Mantine's implementation could only ever agree
+  // with itself.
+  function autoContrastText(bg: string, threshold: number): string {
+    return luminance(bg) > threshold ? '#000000' : '#ffffff';
+  }
+
+  it.each(PALETTE)(
+    '%s-%i clears AA for body text with the autoContrast-chosen label colour',
+    (name, shade, hex) => {
+      expect(contrast(hex, autoContrastText(hex, theme.luminanceThreshold!))).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    },
+  );
+
+  it('keeps the threshold inside the window where BOTH branches clear AA', () => {
+    // The real guarantee: any threshold in [0.1750, 0.1833] is AA-correct
+    // for every possible background, so this asserts the derivation, not
+    // just today's palette. See lib/theme.ts for the algebra.
+    expect(theme.luminanceThreshold!).toBeGreaterThanOrEqual(4.5 * 0.05 - 0.05);
+    expect(theme.luminanceThreshold!).toBeLessThanOrEqual(1.05 / 4.5 - 0.05);
+  });
+
+  it('pins filled grape to white text on the grape 7 the light scheme substitutes', () => {
+    expect(contrast(GRAPE_7, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    // The failure this guards: black on grape 7 is 4.33:1, which is what
+    // autoContrast would choose unaided -- see lib/theme.ts's resolver.
+    expect(contrast(GRAPE_7, '#000000')).toBeLessThan(AA_BODY_TEXT);
+  });
+
+  it("redirects the light scheme's grape filled background and hover to grape 7/8", () => {
+    const rule = css.match(/html:root\[data-mantine-color-scheme=['"]light['"]\]\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('--mantine-color-grape-filled: var(--mantine-color-grape-7)');
+    expect(rule![0]).toContain('--mantine-color-grape-filled-hover: var(--mantine-color-grape-8)');
+    expect(rule![0]).toContain('--mantine-primary-color-contrast: var(--mantine-color-white)');
+  });
+});
+
+describe('scheme-blind filled colours (gray, blue)', () => {
+  // See lib/theme.ts's SCHEME_BLIND_FILLED_COLORS comment for the full
+  // derivation: none of Mantine's own Badge/Button/Chip callers pass a
+  // colorScheme into theme.variantColorResolver, so autoContrast's
+  // label-colour decision always evaluates shade 6's luminance, even when
+  // the rendered background is shade 8 (dark scheme). That's harmless for
+  // six of this app's eight filled colours, but not gray or blue.
+  it('confirms black actually fails AA on gray 8 and blue 8 -- the dark-scheme regression autoContrast alone would cause', () => {
+    expect(contrast(GRAY_8, BLACK)).toBeLessThan(AA_BODY_TEXT); // 1.83:1
+    expect(contrast(BLUE_8, BLACK)).toBeLessThan(AA_BODY_TEXT); // 4.18:1
+  });
+
+  it('confirms white clears AA on gray 8 and blue 8 -- what light-dark() restores', () => {
+    expect(contrast(GRAY_8, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 11.51:1
+    expect(contrast(BLUE_8, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 5.02:1
+  });
+
+  it('confirms black still clears AA on gray 6 and blue 6 -- why light mode needs black, not white, unlike dark', () => {
+    expect(contrast(GRAY_6, BLACK)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.32:1
+  });
+});
+
+describe('dimmed body text contrast', () => {
+  it('overrides --mantine-color-dimmed to gray 7 for the light scheme only', () => {
+    const rule = css.match(/html:root\[data-mantine-color-scheme=['"]light['"]\]\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('--mantine-color-dimmed: var(--mantine-color-gray-7)');
+  });
+
+  it('confirms the dimmed shade the light scheme was moved off actually failed AA', () => {
+    expect(contrast(GRAY_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.32:1
+    expect(contrast(GRAY_7, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 8.18:1
+  });
+
+  it("leaves the dark scheme's dimmed colour alone, where it already clears AA", () => {
+    expect(contrast(DARK_2, DARK_7)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.46:1
   });
 });
 

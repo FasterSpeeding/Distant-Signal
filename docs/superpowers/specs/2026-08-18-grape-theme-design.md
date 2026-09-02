@@ -153,13 +153,17 @@ to shade 4 there, and grape 4 on the dark body is 5.84:1.
 ratios directly, so the thresholds are checked rather than asserted by
 eye.
 
-**Still open:** white-on-grape-6 *filled buttons* remain at 4.02:1.
-`autoContrast` would address them, but it is global and would also flip
-`StatusBadge`'s text colour (yellow badges would gain black text — an
-improvement the original review actually asked for, but still a change to
-how the severity palette renders). That needs a deliberate decision against
-the Non-goals above, so it is tracked separately rather than folded in
-here.
+**Resolved** by
+`docs/superpowers/plans/2026-09-02-frontend-accessibility-fixes.md` (Task
+4): `autoContrast: true` with a derived `luminanceThreshold: 0.179` is
+that deliberate decision against the Non-goals, made once the
+accessibility audit gave the evidence this section asked for — white text
+fails AA on all five of `GROUP_COLOR`'s hues, not just the amber one this
+review guessed at. `lib/severity.ts`'s hues are untouched; badges just
+gained (mostly) black text. Filled grape specifically goes to grape 7 via
+a scoped `variantColorResolver`, the same instrument this section
+predicted (:161-162 of the original draft) — white-on-grape-6's 4.02:1 is
+now white-on-grape-7 at 4.85:1.
 
 ### What must NOT become grape
 
@@ -183,10 +187,17 @@ degradation in scanning speed, not a loss of information. Accept, but
 check it deliberately rather than discovering it later.
 
 **Contrast in dark mode.** Grape 8 (`#9c36b5`) as a filled background with
-white text is darker than blue 8; confirm it still clears 4.5:1. The
-review also flagged existing contrast concerns (dimmed grey body text,
-white-on-amber badges) as *unmeasured* — this is a good moment to run an
-automated pass rather than trust eyeballs on either.
+white text is darker than blue 8; confirmed at **5.82:1** (clears AA) —
+see `app/globals.test.ts`'s `filled-surface contrast under autoContrast`
+suite. The review also flagged existing contrast concerns (dimmed grey
+body text, white-on-amber badges) as *unmeasured*; both are now measured
+and fixed by `docs/superpowers/plans/2026-09-02-frontend-accessibility-fixes.md`
+(Task 4 for the badges, Task 5 for dimmed text: gray 6 at 3.32:1 → gray 7
+at 8.18:1 in the light scheme). That same plan's Task 6 additionally
+found and fixed a related dark-mode-only regression `autoContrast` alone
+would have introduced for the gray/blue severity badges specifically (not
+predicted by this section) — see `lib/theme.ts`'s
+`SCHEME_BLIND_FILLED_COLORS` comment.
 
 ## Testing
 
