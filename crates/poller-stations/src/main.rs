@@ -38,9 +38,16 @@ async fn main() -> anyhow::Result<()> {
         common::metrics::install(config.metrics_port)?;
     }
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+    let internal_oauth = common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
+        token_url: config.internal_oauth_token_url.clone(),
+        client_id: config.internal_oauth_client_id.clone(),
+        scope: config.internal_oauth_scope.clone(),
+        username: config.internal_oauth_username.clone(),
+        password: config.internal_oauth_password.clone(),
+    });
 
     let poll_interval = Duration::from_secs(config.poll_interval_secs);
-    let delay = ingest::time_until_next_poll(&client, &config.api_ingest_url, &config.internal_token, poll_interval).await;
+    let delay = ingest::time_until_next_poll(&client, &config.api_ingest_url, &internal_oauth, poll_interval).await;
     if !delay.is_zero() {
         tracing::info!(delay_secs = delay.as_secs(), "data still fresh from a prior run; delaying first poll");
     }
@@ -50,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
         interval.tick().await;
 
         let cycle_start = std::time::Instant::now();
-        let result = poll_once(&client, &config).await;
+        let result = poll_once(&client, &config, &internal_oauth).await;
         metrics::histogram!(
             common::metrics::metric_name("poller_cycle_duration_seconds"),
             "poller" => "stations"
@@ -69,7 +76,11 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn poll_once(client: &Client, config: &Config) -> anyhow::Result<()> {
+async fn poll_once(
+    client: &Client,
+    config: &Config,
+    internal_oauth: &common::oauth_client::OAuthTokenCache,
+) -> anyhow::Result<()> {
     let body = fetch_stations_json(client, config).await?;
     let stations = schema::parse_stations(&body)?;
 
@@ -78,7 +89,7 @@ async fn poll_once(client: &Client, config: &Config) -> anyhow::Result<()> {
     ingest::post_batch(
         client,
         &config.api_ingest_url,
-        &config.internal_token,
+        internal_oauth,
         &stations,
         "stations",
     )

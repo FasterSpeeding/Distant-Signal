@@ -30,13 +30,20 @@ async fn main() -> anyhow::Result<()> {
         common::metrics::install(config.metrics_port)?;
     }
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+    let internal_oauth = common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
+        token_url: config.internal_oauth_token_url.clone(),
+        client_id: config.internal_oauth_client_id.clone(),
+        scope: config.internal_oauth_scope.clone(),
+        username: config.internal_oauth_username.clone(),
+        password: config.internal_oauth_password.clone(),
+    });
     let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
     let mut last_processed_sequence: Option<u32> = None;
 
     loop {
         interval.tick().await;
         let cycle_start = std::time::Instant::now();
-        let result = poll_once(&client, &config, &mut last_processed_sequence).await;
+        let result = poll_once(&client, &config, &mut last_processed_sequence, &internal_oauth).await;
         metrics::histogram!(common::metrics::metric_name("schedule_reference_cycle_duration_seconds"))
             .record(cycle_start.elapsed().as_secs_f64());
         if let Err(err) = result {
@@ -72,6 +79,7 @@ async fn poll_once(
     client: &Client,
     config: &Config,
     last_processed_sequence: &mut Option<u32>,
+    internal_oauth: &common::oauth_client::OAuthTokenCache,
 ) -> anyhow::Result<()> {
     let Some(sequence) = sequence::highest_complete_sequence(&config.storage_dir)? else {
         tracing::debug!("no complete MCA+MSN sequence directory found yet");
@@ -106,7 +114,7 @@ async fn poll_once(
         })
         .collect();
 
-    common::ingest::post_batch(client, &config.api_ingest_url, &config.internal_token, &records, "stanox/crs rows").await?;
+    common::ingest::post_batch(client, &config.api_ingest_url, internal_oauth, &records, "stanox/crs rows").await?;
 
     // Only advance on a successful POST -- a failed POST just means the
     // already-computed table is discarded and rebuilt from the same
