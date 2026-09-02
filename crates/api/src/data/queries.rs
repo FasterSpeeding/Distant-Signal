@@ -1547,8 +1547,18 @@ mod schedule_feed_ingest_query_tests {
                 schedule_feed_insert_then_last_fetch_returns_the_ingested_at \
                 -- --ignored`"]
     async fn schedule_feed_insert_then_last_fetch_returns_the_ingested_at() {
+        use chrono::SubsecRound;
+
         let pool = test_pool().await;
-        let ingested_at = chrono::Utc::now();
+        // `schedule_feed_ingests.ingested_at` is `TIMESTAMPTZ`, which
+        // Postgres only ever stores at microsecond precision (it silently
+        // truncates, not rounds, anything finer) -- whereas
+        // `chrono::Utc::now()` captures nanosecond precision from the
+        // system clock. Truncate the in-memory expectation to the same
+        // microsecond precision the round trip through Postgres actually
+        // guarantees, rather than asserting bit-for-bit equality against a
+        // precision level the database can't preserve.
+        let ingested_at = chrono::Utc::now().trunc_subsecs(6);
         let files = serde_json::json!([{"name": "TEST.DAT", "bytes": 123}]);
 
         insert_schedule_feed_ingest(&pool, 900001, ingested_at, &files)
@@ -1571,8 +1581,15 @@ mod schedule_feed_ingest_query_tests {
                 schedule_feed_reinserting_the_same_sequence_does_not_change_the_row \
                 -- --ignored`"]
     async fn schedule_feed_reinserting_the_same_sequence_does_not_change_the_row() {
+        use chrono::SubsecRound;
+
         let pool = test_pool().await;
-        let first_ingested_at = chrono::Utc::now();
+        // See the trunc_subsecs(6) comment in
+        // `schedule_feed_insert_then_last_fetch_returns_the_ingested_at`
+        // above -- `ingested_at` is `TIMESTAMPTZ`, microsecond precision
+        // only, so the in-memory value must match that precision to
+        // compare equal after a round trip through Postgres.
+        let first_ingested_at = chrono::Utc::now().trunc_subsecs(6);
         let first_files = serde_json::json!([{"name": "TEST-A.DAT", "bytes": 111}]);
 
         insert_schedule_feed_ingest(&pool, 900002, first_ingested_at, &first_files)
