@@ -5,6 +5,7 @@
 
 mod config;
 mod decision;
+mod queries;
 
 use std::time::Duration;
 
