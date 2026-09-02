@@ -5,6 +5,7 @@ import {
   getStopPointDisruption,
   getLineStatusHistory,
   getLineDailyStats,
+  getLineHourlyStats,
   getPreferences,
   getAllLines,
   getAllTocs,
@@ -197,6 +198,18 @@ describe('api client', () => {
       vi.fn(async () => new Response(JSON.stringify(sampleStats), { status: 200 })),
     );
     await expect(getLineDailyStats('wcml', '2026-07-01', '2026-07-07')).resolves.toEqual(sampleStats);
+  });
+
+  it('getLineHourlyStats builds the correct URL', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+    await getLineHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Line/wcml/Stats/Hourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
   });
 
   it('getPreferences fetches the correct URL with no caching', async () => {
