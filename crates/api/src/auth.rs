@@ -1,58 +1,121 @@
 //! Internal-auth gate for `private_router()`.
 //!
-//! One shared-secret header (`X-Internal-Token`), compared in fixed time
-//! against `ServiceArguments::internal_token`. This is intentionally not a
-//! general auth framework — just enough to keep the ingestion endpoints
-//! from being reachable by anyone who can hit the API's port.
+//! Bearer-token OAuth2 client-credentials auth (RFC 6750/6749 §4.4),
+//! delegated to Authentik. `require_internal_oauth` parses the
+//! `Authorization: Bearer` header, verifies it against Authentik's JWKS
+//! (`internal_oauth::ServiceTokenVerifier`, local, no per-request network
+//! round trip once cached), then matches the request's path AND method
+//! against a static, config-built route-scoping table
+//! (`App::internal_oauth_routes`), and finally checks the verified
+//! token's `groups` claim against that matched entry's required group
+//! names -- a route passes if `groups` contains ANY of them. The method
+//! dimension is load-bearing, not incidental: `/stanox-crs` has two
+//! legitimate callers, `trust-consumer` (read-only, `GET` only) and
+//! `schedule-reference` (write-only, `POST` only), each with its OWN
+//! table entry carrying only its own group -- a token good for one
+//! method on a path is never treated as good for a different method on
+//! that same path just because some group would otherwise be allowed
+//! there. See
+//! docs/superpowers/specs/2026-09-02-internal-service-oauth2-design.md.
+//! This replaces a single shared-secret header, compared in fixed time
+//! against one configured string with no concept of *which* caller
+//! presented it -- that scheme is retired outright, not kept alongside
+//! this one (no dual-acceptance window).
 
+pub mod internal_oauth;
 pub mod oidc;
 
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::{HeaderMap, StatusCode, request::Parts};
 use axum::middleware::Next;
 use axum::response::Response;
-use common::ingest::INTERNAL_TOKEN_HEADER;
 
 use crate::app::App;
 
-/// `axum::middleware::from_fn` handler enforcing the shared-secret header.
-/// Applied only to `private_router()` — `public_router()` never sees this.
-pub async fn require_internal_token(
+/// `axum::middleware::from_fn_with_state` handler enforcing internal-service
+/// OAuth2 auth. Applied only to `private_router()` -- `public_router()`
+/// never sees this.
+///
+/// Status codes: a missing/malformed/expired/signature-invalid/wrong-
+/// issuer/wrong-audience bearer token -> `401`, collapsed into one outcome
+/// deliberately (see `VerifyError`'s own doc comment) -- a caller
+/// presenting a token that fails verification for any of these reasons
+/// learns only "not accepted," never which specific check failed. A path
+/// absent from the scoping table entirely, OR present but not for the
+/// request's method, OR present for that exact (path, method) but whose
+/// required group(s) the verified token's `groups` claim doesn't contain
+/// -> `403` in all three cases, with the token's `sub` and the request
+/// path (and, for the latter two, method) logged -- a real,
+/// Authentik-issued credential, just not scoped for this route, which is
+/// actionable signal for a misconfigured deployment (a chart/secret
+/// wiring mistake handing one service another's credential), not an
+/// information leak (the route table itself is fixed and not secret).
+pub async fn require_internal_oauth(
     State(app): State<App>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let provided = request
-        .headers()
-        .get(INTERNAL_TOKEN_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
+    let path = request.uri().path().to_string();
+    let method = request.method().clone();
 
-    if constant_time_eq(provided.as_bytes(), app.config.internal_token.as_bytes()) {
-        Ok(next.run(request).await)
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
+    let Some(token) = bearer_token(request.headers()) else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    let claims = match app.internal_oauth_verifier.verify(&token).await {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    };
+
+    // Two-phase lookup, deliberately not a single `.find()` keyed on
+    // (path, method) together: a path known to the table but hit with
+    // the wrong method needs to be distinguishable (for logging/clarity)
+    // from a path the table has never heard of at all. Phase 1 matches
+    // path only.
+    let path_matches: Vec<_> = app
+        .internal_oauth_routes
+        .iter()
+        .filter(|(prefix, _, _)| path.starts_with(prefix))
+        .collect();
+
+    if path_matches.is_empty() {
+        // No entry for this path at all -- default-deny even for a
+        // perfectly valid token, rather than silently "allowed" because
+        // nobody added its row.
+        tracing::warn!(sub = %claims.sub, path, "internal oauth request rejected: no route-scoping entry for this path");
+        return Err(StatusCode::FORBIDDEN);
     }
+
+    // Phase 2: among the path-matching entries, require one whose method
+    // also matches. A route known to the table under a DIFFERENT method
+    // (e.g. `/stanox-crs` has a `GET` entry and a separate `POST` entry)
+    // must never fall back to some other method's required group --
+    // that's exactly the gap this method dimension exists to close.
+    let Some((_, _, required_groups)) = path_matches
+        .into_iter()
+        .find(|(_, entry_method, _)| *entry_method == method)
+    else {
+        tracing::warn!(sub = %claims.sub, path, %method, "internal oauth request rejected: valid token, wrong method for this route");
+        return Err(StatusCode::FORBIDDEN);
+    };
+
+    if !required_groups
+        .iter()
+        .any(|group| claims.groups.contains(group))
+    {
+        tracing::warn!(sub = %claims.sub, path, %method, "internal oauth request rejected: valid token, wrong scope");
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    Ok(next.run(request).await)
 }
 
-/// Fixed-time byte comparison: no early return based on *content*, so a
-/// mismatching byte doesn't short-circuit the scan. (A length mismatch is
-/// still rejected immediately — hiding token *length* isn't a goal here,
-/// only avoiding a byte-by-byte timing oracle on a same-length guess.)
-///
-/// Hand-rolled rather than pulling in the `subtle` crate: this is a single
-/// comparison in one call site, and `subtle::ConstantTimeEq` has the same
-/// same-length requirement, so there's no behavioral gap being traded away.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let value = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    value.strip_prefix("Bearer ").map(str::to_string)
 }
 
 use base64::Engine;
@@ -225,33 +288,47 @@ impl FromRequestParts<App> for OptionalAuthenticatedUser {
 }
 
 #[cfg(test)]
-mod tests {
+mod internal_oauth_middleware_tests {
     use super::*;
 
     #[test]
-    fn equal_tokens_match() {
-        assert!(constant_time_eq(b"super-secret", b"super-secret"));
+    fn bearer_token_extracts_the_token_from_a_well_formed_header() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer abc.def.ghi".parse().unwrap(),
+        );
+        assert_eq!(bearer_token(&headers), Some("abc.def.ghi".to_string()));
     }
 
     #[test]
-    fn different_content_same_length_does_not_match() {
-        assert!(!constant_time_eq(b"super-secret", b"super-sekret"));
+    fn bearer_token_returns_none_without_the_bearer_prefix() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "abc.def.ghi".parse().unwrap(),
+        );
+        assert_eq!(bearer_token(&headers), None);
     }
 
     #[test]
-    fn different_length_does_not_match() {
-        assert!(!constant_time_eq(b"short", b"much-longer-token"));
+    fn bearer_token_returns_none_with_no_authorization_header_at_all() {
+        let headers = axum::http::HeaderMap::new();
+        assert_eq!(bearer_token(&headers), None);
     }
 
-    #[test]
-    fn empty_tokens_match() {
-        assert!(constant_time_eq(b"", b""));
-    }
+    // The route-scoping lookup itself (path match, then method match,
+    // then `groups.contains`) is exercised end-to-end, not here --
+    // see `route_scoping_tests` below, which builds a real `AppState`
+    // (via `crate::app::build_internal_oauth_routes`, the actual
+    // production table, not a hand-copied stand-in) and drives real
+    // `Request`s with real, wiremock-signed JWTs through
+    // `require_internal_oauth` itself.
+}
 
-    #[test]
-    fn empty_provided_against_real_token_does_not_match() {
-        assert!(!constant_time_eq(b"", b"super-secret"));
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[test]
     fn parse_cookie_finds_a_single_named_cookie() {
@@ -445,5 +522,308 @@ mod tests {
         // to update it, rather than a silent behavior change.
         assert!(validate_return_to("/api/auth/login").is_some());
         assert!(validate_return_to("/api/auth/callback").is_some());
+    }
+}
+
+/// End-to-end coverage for `require_internal_oauth`'s route-scoping check
+/// -- the security gap this test suite exists to close (and pin against
+/// regressing) is that a route-scoping table keyed on path alone lets
+/// EITHER of `/stanox-crs`'s two legitimate callers authorize BOTH `GET`
+/// and `POST` on it, when only one method is actually legitimate per
+/// caller. Builds a real `App` (real `AppState`, a real mocked-Authentik
+/// `ServiceTokenVerifier`, and -- critically -- the REAL production
+/// route table via `crate::app::build_internal_oauth_routes`, not a
+/// hand-copied stand-in that could silently drift from it) and drives
+/// real `axum::http::Request`s, with real signed-and-verified JWTs, all
+/// the way through `require_internal_oauth` via `tower::ServiceExt::
+/// oneshot` -- mirrors `routes::lines::db_tests`'s established
+/// `test_router`/`.oneshot(..)` pattern, minus that module's Postgres
+/// dependency (this middleware never touches the database, so `database`
+/// here is a lazily-parsed, never-connected pool -- see `test_app`'s own
+/// doc comment).
+#[cfg(test)]
+mod route_scoping_tests {
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode, header};
+    use axum::middleware;
+    use serde_json::json;
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+    use wiremock::MockServer;
+
+    use super::require_internal_oauth;
+    use crate::app::{App, AppState, build_internal_oauth_routes};
+    use crate::auth::internal_oauth::test_support::{mock_authentik, sign_token, valid_claims};
+    use crate::auth::oidc::{OidcClient, OidcConfig};
+    use crate::data::config::{LineCatalogue, ServiceArguments};
+
+    /// Every caller gets its OWN group name, matching real deployment
+    /// (Decision 3: one group per real caller, never shared) -- so a
+    /// wrong-caller's token failing a check here is unambiguously "wrong
+    /// caller," never a coincidental group-name collision this fixture
+    /// introduced by accident.
+    fn test_config() -> ServiceArguments {
+        ServiceArguments {
+            bind_url: "0.0.0.0:0".to_string(),
+            database_url: String::new(),
+            redis_url: "redis://127.0.0.1:0".to_string(),
+            internal_oauth_issuer_url: "https://example.invalid".to_string(),
+            internal_oauth_client_id: "test-internal-oauth-client".to_string(),
+            internal_oauth_group_poller_incidents: "svc-poller-incidents".to_string(),
+            internal_oauth_group_poller_stations: "svc-poller-stations".to_string(),
+            internal_oauth_group_poller_tocs: "svc-poller-tocs".to_string(),
+            internal_oauth_group_poller_ldbws: "svc-poller-ldbws".to_string(),
+            internal_oauth_group_poller_tfl: "svc-poller-tfl".to_string(),
+            internal_oauth_group_trust_consumer: "svc-trust-consumer".to_string(),
+            internal_oauth_group_schedule_ingest: "svc-schedule-ingest".to_string(),
+            internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
+            sso_issuer_url: "https://example.invalid".to_string(),
+            sso_client_id: "test-client".to_string(),
+            sso_client_secret: "test-secret".to_string(),
+            sso_redirect_url: "https://example.invalid/callback".to_string(),
+            sso_post_login_redirect_url: "https://example.invalid/".to_string(),
+            session_ttl_days: 14,
+            history_retention_days: 7,
+            metrics_enabled: false,
+            defaults_file: None,
+            lines: LineCatalogue(Vec::new()),
+            vapid_public_key: "test-vapid-public-key".to_string(),
+        }
+    }
+
+    /// Returns `(mock Authentik server, the App under test, the
+    /// production route table `App` was built with)`. The `MockServer`
+    /// MUST stay alive (bound, not `_`-discarded) for as long as the
+    /// returned `App`/router is used -- `ServiceTokenVerifier` fetches
+    /// its JWKS lazily, on first `verify()` call, not at construction, so
+    /// a dropped-and-shut-down mock server would only surface as a
+    /// confusing failure on the FIRST request a test sends, not here.
+    ///
+    /// `database` is a lazily-parsed `PgPool` (`connect_lazy` -- parses
+    /// the URL, never opens a socket, same "no eager connect" posture as
+    /// `AppState::redis`'s own doc comment) rather than a real connected
+    /// pool or `#[sqlx::test]`: `require_internal_oauth` never touches
+    /// `app.database` at all, so this suite has no business requiring a
+    /// live Postgres the way `routes::lines::db_tests` does.
+    async fn test_app() -> (MockServer, App, Vec<(&'static str, Method, Vec<String>)>) {
+        let (server, verifier) = mock_authentik().await;
+        let config = test_config();
+        let internal_oauth_routes = build_internal_oauth_routes(&config);
+        let expected_routes = internal_oauth_routes.clone();
+
+        let app = std::sync::Arc::new(AppState {
+            config,
+            database: PgPoolOptions::new()
+                .connect_lazy("postgres://user:password@127.0.0.1:0/placeholder")
+                .expect("build placeholder lazy pg pool"),
+            redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
+            oidc: OidcClient::new(OidcConfig {
+                issuer_url: "https://example.invalid".to_string(),
+                client_id: "test-client".to_string(),
+                client_secret: "test-secret".to_string(),
+                redirect_url: "https://example.invalid/callback".to_string(),
+            })
+            .expect("construct placeholder oidc client"),
+            internal_oauth_verifier: verifier,
+            internal_oauth_routes,
+        });
+
+        (server, app, expected_routes)
+    }
+
+    /// A minimal router carrying ONLY `require_internal_oauth` -- no real
+    /// `ingest`/`samples` handlers (which would need a live database) --
+    /// so a request that gets past the middleware always hits a fixed
+    /// `200 OK` fallback. What matters for this suite is entirely what
+    /// the middleware itself does with the request BEFORE that point.
+    fn test_router(app: App) -> axum::Router {
+        async fn ok() -> StatusCode {
+            StatusCode::OK
+        }
+
+        crate::app::Router::new()
+            .fallback(ok)
+            .layer(middleware::from_fn_with_state(
+                app.clone(),
+                require_internal_oauth,
+            ))
+            .with_state(app)
+    }
+
+    fn token_for(issuer: &str, sub: &str, groups: &[&str]) -> String {
+        let groups: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
+        sign_token(&valid_claims(issuer, |c| {
+            c["sub"] = json!(sub);
+            c["groups"] = json!(groups);
+        }))
+    }
+
+    async fn send(
+        router: &axum::Router,
+        method: Method,
+        path: &str,
+        token: Option<&str>,
+    ) -> StatusCode {
+        let mut builder = Request::builder().method(method).uri(path);
+        if let Some(token) = token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let request = builder.body(Body::empty()).expect("build request");
+        router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("oneshot request")
+            .status()
+    }
+
+    #[tokio::test]
+    async fn trust_consumers_token_is_accepted_on_get_stanox_crs() {
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let token = token_for(
+            &server.uri(),
+            "svc-trust-consumer-1",
+            &["svc-trust-consumer"],
+        );
+
+        assert_eq!(
+            send(&router, Method::GET, "/stanox-crs", Some(&token)).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn trust_consumers_token_is_rejected_on_post_stanox_crs() {
+        // The bug this whole suite exists to pin: before the fix, a
+        // route-scoping table keyed on path alone let trust-consumer's
+        // READ-ONLY token authorize a WRITE to the STANOX/CRS reference
+        // table it should only ever read.
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let token = token_for(
+            &server.uri(),
+            "svc-trust-consumer-1",
+            &["svc-trust-consumer"],
+        );
+
+        assert_eq!(
+            send(&router, Method::POST, "/stanox-crs", Some(&token)).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_references_token_is_accepted_on_post_stanox_crs() {
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let token = token_for(
+            &server.uri(),
+            "svc-schedule-reference-1",
+            &["svc-schedule-reference"],
+        );
+
+        assert_eq!(
+            send(&router, Method::POST, "/stanox-crs", Some(&token)).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_references_token_is_rejected_on_get_stanox_crs() {
+        // The other half of the same bug: schedule-reference's WRITE-ONLY
+        // token must not also authorize reading the table back out.
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let token = token_for(
+            &server.uri(),
+            "svc-schedule-reference-1",
+            &["svc-schedule-reference"],
+        );
+
+        assert_eq!(
+            send(&router, Method::GET, "/stanox-crs", Some(&token)).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_with_no_matching_group_at_all_is_rejected_on_stanox_crs() {
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let token = token_for(
+            &server.uri(),
+            "svc-poller-incidents-1",
+            &["svc-poller-incidents"],
+        );
+
+        assert_eq!(
+            send(&router, Method::GET, "/stanox-crs", Some(&token)).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(&router, Method::POST, "/stanox-crs", Some(&token)).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_with_no_bearer_token_is_rejected_unauthorized() {
+        let (_server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+
+        assert_eq!(
+            send(&router, Method::GET, "/stanox-crs", None).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn a_path_absent_from_the_table_entirely_is_rejected_forbidden_even_with_a_valid_token() {
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let token = token_for(
+            &server.uri(),
+            "svc-trust-consumer-1",
+            &["svc-trust-consumer"],
+        );
+
+        assert_eq!(
+            send(&router, Method::GET, "/some-unknown-route", Some(&token)).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    /// Regression coverage for every OTHER route the fix touched: for
+    /// each `(path, method, groups)` entry in the REAL production table
+    /// (`build_internal_oauth_routes`, not a hand-copied list here), a
+    /// token carrying that entry's own required group must still be
+    /// accepted on that exact method. Every entry in the fixed table
+    /// carries exactly one group (the `/stanox-crs` split was the only
+    /// multi-group entry that ever existed), so this loop can mint one
+    /// token per entry without needing per-route special-casing. This is
+    /// the check that "nothing else broke" -- if a future edit to
+    /// `build_internal_oauth_routes` drops or mis-scopes any entry, this
+    /// test fails alongside the two explicit `/stanox-crs` tests above.
+    #[tokio::test]
+    async fn every_production_route_entry_is_reachable_by_its_own_caller_on_its_own_method() {
+        let (server, app, routes) = test_app().await;
+        let router = test_router(app.clone());
+
+        for (path, method, groups) in &routes {
+            assert_eq!(
+                groups.len(),
+                1,
+                "expected exactly one group per route entry post-fix: {path} {method}"
+            );
+            let token = token_for(&server.uri(), "svc-under-test", &[groups[0].as_str()]);
+
+            let status = send(&router, method.clone(), path, Some(&token)).await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "expected {method} {path} to accept its own caller's token"
+            );
+        }
     }
 }

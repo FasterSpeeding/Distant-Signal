@@ -18,8 +18,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Permissive ORIGIN, deliberately non-credentialed. The four
     // line-status endpoints and /public/health are intentionally public,
-    // and /private/* is gated by the shared-secret X-Internal-Token header
-    // (crates/api/src/auth.rs) — a header check CORS doesn't bypass.
+    // and /private/* is gated by internal-service OAuth2
+    // (require_internal_oauth, crates/api/src/auth.rs) — a header check
+    // CORS doesn't bypass.
     //
     // READ THIS BEFORE CHANGING THE TWO LINES BELOW. /public/* now also
     // carries cookie-based session auth (the `distant_signal_session` cookie, see
@@ -66,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     // crates/api/src/data/config.rs.
     if app.config.metrics_enabled {
         router = router
-            // Deliberately NOT gated by require_internal_token. Read-only,
+            // Deliberately NOT gated by require_internal_oauth. Read-only,
             // and NetworkPolicy-gated (from the monitoring namespace
             // specifically) when NetworkPolicy is enabled (see
             // docs/superpowers/specs/2026-08-29-metrics-design.md's Open

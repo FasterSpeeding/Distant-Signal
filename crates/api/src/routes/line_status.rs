@@ -394,7 +394,13 @@ fn hourly_stats_to_json(row: queries::HourlyStatsRow) -> Value {
     } else {
         0.0
     };
-    let rate = |numerator: i64| if row.total > 0 { numerator as f64 / row.total as f64 } else { 0.0 };
+    let rate = |numerator: i64| {
+        if row.total > 0 {
+            numerator as f64 / row.total as f64
+        } else {
+            0.0
+        }
+    };
 
     serde_json::json!({
         "hourStart": row.hour_start,
@@ -655,12 +661,22 @@ mod tests {
     }
 
     fn hourly_stats_row(
-        total: i64, delayed: i64, cancelled: i64, skipped: i64, running_count: i64, delay_minutes_sum: f64,
+        total: i64,
+        delayed: i64,
+        cancelled: i64,
+        skipped: i64,
+        running_count: i64,
+        delay_minutes_sum: f64,
     ) -> queries::HourlyStatsRow {
         queries::HourlyStatsRow {
             hour_start: "2026-08-15T14:00:00Z".parse().unwrap(),
             sample_cycles: 12,
-            total, delayed, cancelled, skipped, running_count, delay_minutes_sum,
+            total,
+            delayed,
+            cancelled,
+            skipped,
+            running_count,
+            delay_minutes_sum,
         }
     }
 
@@ -678,7 +694,12 @@ mod tests {
     fn hourly_stats_to_json_zero_total_never_produces_nan_or_infinity() {
         let row = hourly_stats_row(0, 0, 0, 0, 0, 0.0);
         let json = hourly_stats_to_json(row);
-        for field in ["avgDelayMinutes", "delayRate", "cancellationRate", "skipRate"] {
+        for field in [
+            "avgDelayMinutes",
+            "delayRate",
+            "cancellationRate",
+            "skipRate",
+        ] {
             let value = json[field].as_f64().unwrap();
             assert!(value.is_finite());
             assert_eq!(value, 0.0);
@@ -699,29 +720,63 @@ mod tests {
         use axum::http::Request;
         use tower::ServiceExt;
 
-        async fn daily_probe(Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>) -> String {
+        async fn daily_probe(
+            Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>,
+        ) -> String {
             format!("daily:{id}|{from}|{to}")
         }
-        async fn hourly_probe(Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>) -> String {
+        async fn hourly_probe(
+            Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+        ) -> String {
             format!("hourly:{id}|{from}|{to}")
         }
 
         let app: axum::Router = axum::Router::new()
-            .route("/Line/{id}/Stats/{from}/to/{to}", axum::routing::get(daily_probe))
-            .route("/Line/{id}/Stats/Hourly/{from}/to/{to}", axum::routing::get(hourly_probe));
+            .route(
+                "/Line/{id}/Stats/{from}/to/{to}",
+                axum::routing::get(daily_probe),
+            )
+            .route(
+                "/Line/{id}/Stats/Hourly/{from}/to/{to}",
+                axum::routing::get(hourly_probe),
+            );
 
-        let daily_response = app.clone()
-            .oneshot(Request::builder().uri("/Line/northern/Stats/2026-08-01/to/2026-08-31").body(Body::empty()).unwrap())
-            .await.unwrap();
+        let daily_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/Line/northern/Stats/2026-08-01/to/2026-08-31")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(daily_response.status(), StatusCode::OK);
-        let daily_body = axum::body::to_bytes(daily_response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(String::from_utf8(daily_body.to_vec()).unwrap(), "daily:northern|2026-08-01|2026-08-31");
+        let daily_body = axum::body::to_bytes(daily_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(daily_body.to_vec()).unwrap(),
+            "daily:northern|2026-08-01|2026-08-31"
+        );
 
         let hourly_response = app
-            .oneshot(Request::builder().uri("/Line/northern/Stats/Hourly/2026-08-31T00:00:00Z/to/2026-09-01T00:00:00Z").body(Body::empty()).unwrap())
-            .await.unwrap();
-        assert_eq!(hourly_response.status(), StatusCode::OK, "the Hourly route must not be shadowed by the sibling NaiveDate route");
-        let hourly_body = axum::body::to_bytes(hourly_response.into_body(), usize::MAX).await.unwrap();
+            .oneshot(
+                Request::builder()
+                    .uri("/Line/northern/Stats/Hourly/2026-08-31T00:00:00Z/to/2026-09-01T00:00:00Z")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            hourly_response.status(),
+            StatusCode::OK,
+            "the Hourly route must not be shadowed by the sibling NaiveDate route"
+        );
+        let hourly_body = axum::body::to_bytes(hourly_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(
             String::from_utf8(hourly_body.to_vec()).unwrap(),
             "hourly:northern|2026-08-31 00:00:00 UTC|2026-09-01 00:00:00 UTC",
@@ -766,7 +821,16 @@ mod db_tests {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
             redis_url: "redis://127.0.0.1:0".to_string(),
-            internal_token: "test-internal-token".to_string(),
+            internal_oauth_issuer_url: "https://example.invalid".to_string(),
+            internal_oauth_client_id: "test-internal-oauth-client".to_string(),
+            internal_oauth_group_poller_incidents: "svc-poller-incidents".to_string(),
+            internal_oauth_group_poller_stations: "svc-poller-stations".to_string(),
+            internal_oauth_group_poller_tocs: "svc-poller-tocs".to_string(),
+            internal_oauth_group_poller_ldbws: "svc-poller-ldbws".to_string(),
+            internal_oauth_group_poller_tfl: "svc-poller-tfl".to_string(),
+            internal_oauth_group_trust_consumer: "svc-trust-consumer".to_string(),
+            internal_oauth_group_schedule_ingest: "svc-schedule-ingest".to_string(),
+            internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),
             sso_client_secret: "test-secret".to_string(),
@@ -794,6 +858,12 @@ mod db_tests {
                 redirect_url: "https://example.invalid/callback".to_string(),
             })
             .expect("construct placeholder oidc client"),
+            internal_oauth_verifier: crate::auth::internal_oauth::ServiceTokenVerifier::new(
+                "https://example.invalid".to_string(),
+                "test-internal-oauth-client".to_string(),
+            )
+            .expect("construct placeholder internal-oauth verifier"),
+            internal_oauth_routes: Vec::new(),
         })
     }
 

@@ -50,10 +50,46 @@ pub struct ServiceArguments {
     pub database_url: String,
     #[arg(long, env)]
     pub redis_url: String,
-    /// Shared secret pollers must present via `X-Internal-Token` to reach
-    /// `private_router()` endpoints.
+    /// OIDC issuer base URL for the internal-service OAuth2 provider
+    /// (Authentik) -- JWKS endpoint is learned via standard OIDC
+    /// discovery against this URL, same mechanism as `sso_issuer_url`
+    /// below. May be the same Authentik instance as `sso_issuer_url` (a
+    /// different Application/Provider under it) or a different one --
+    /// operator's call.
+    /// docs/superpowers/specs/2026-09-02-internal-service-oauth2-design.md
+    /// Decision 6.
     #[arg(long, env)]
-    pub internal_token: String,
+    pub internal_oauth_issuer_url: String,
+
+    /// Expected `aud` claim on a verified internal-service access token --
+    /// the shared Authentik OAuth2 Provider's own client_id (Decision 1:
+    /// one provider, 8 service accounts underneath it). Must match every
+    /// real caller's own `internal_oauth_client_id` (its own config) --
+    /// same value, independently configured on each side.
+    #[arg(long, env)]
+    pub internal_oauth_client_id: String,
+
+    /// Required Authentik group name per real caller (Decision 3) --
+    /// gates which /private/* routes each caller's verified token may
+    /// reach. Not secret (a group name isn't confidential). Suggested
+    /// defaults only -- an operator's actual Authentik group names are
+    /// not mandated by this design.
+    #[arg(long, env, default_value = "svc-poller-incidents")]
+    pub internal_oauth_group_poller_incidents: String,
+    #[arg(long, env, default_value = "svc-poller-stations")]
+    pub internal_oauth_group_poller_stations: String,
+    #[arg(long, env, default_value = "svc-poller-tocs")]
+    pub internal_oauth_group_poller_tocs: String,
+    #[arg(long, env, default_value = "svc-poller-ldbws")]
+    pub internal_oauth_group_poller_ldbws: String,
+    #[arg(long, env, default_value = "svc-poller-tfl")]
+    pub internal_oauth_group_poller_tfl: String,
+    #[arg(long, env, default_value = "svc-trust-consumer")]
+    pub internal_oauth_group_trust_consumer: String,
+    #[arg(long, env, default_value = "svc-schedule-ingest")]
+    pub internal_oauth_group_schedule_ingest: String,
+    #[arg(long, env, default_value = "svc-schedule-reference")]
+    pub internal_oauth_group_schedule_reference: String,
     /// OIDC issuer base URL (e.g. `https://sso.example.com/realms/rail`).
     /// `crates/api` discovers every other endpoint (authorization, token,
     /// JWKS) from this single URL's `.well-known/openid-configuration`
@@ -70,10 +106,12 @@ pub struct ServiceArguments {
     pub sso_client_id: String,
 
     /// OIDC client secret paired with `sso_client_id`. A genuinely new
-    /// *kind* of secret for this crate -- every other credential here
-    /// (`internal_token`, the RDM API keys in sibling pollers) is a single
-    /// shared/bearer token, not a paired OAuth2 confidential-client secret
-    /// -- but handled with the same posture: env-only, required, never
+    /// *kind* of secret for this crate -- every other credential this
+    /// crate's own config used to hold (the removed shared-secret field
+    /// this design retired; the RDM API keys living in sibling pollers'
+    /// own configs) is a single shared/bearer token, not a paired OAuth2
+    /// confidential-client secret -- but handled with the same posture:
+    /// env-only, required, never
     /// logged. `ServiceArguments` derives `Debug`; avoid ever logging
     /// `app.config` wholesale (nothing in this codebase does today) --
     /// log individual non-secret fields instead if a future debug log
