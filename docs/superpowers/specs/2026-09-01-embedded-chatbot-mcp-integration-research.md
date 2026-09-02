@@ -69,6 +69,230 @@ its own working code, not the design/plan documents' description of what
 was intended, though those were also read for context and are cited where
 they help characterize a decision already made.
 
+## Corrections (2026-09-02): the public-exposure blocker has been removed
+
+**What changed, precisely.** This document's original Architecture recommendation
+(Section 1, and Recommendation item 1) chose Option B over Option A for one
+decisive, non-preference reason: Anthropic's MCP connector documentation
+states a connector-attached remote MCP server "must be publicly exposed
+through HTTP," which directly conflicted with `distant-signal-mcp`'s
+then-shipped `ClusterIP`-only, `railMcp.enabled: false`-by-default
+deployment. **That blocker no longer applies.** The user has directed
+making `distant-signal-mcp` publicly accessible, gated behind Distant
+Signal's own first-party OIDC SSO session system and other access rules.
+A sibling task in this same session is revising
+`docs/superpowers/specs/2026-09-01-train-mcp-integration-design.md`'s own
+Decision 4 (Auth) and Decision 6 (Deployment) to design this concretely;
+this correction was written without waiting for that document to land,
+working from the decision as described in this task's own brief, and
+cross-references it by path below rather than its finished content.
+
+This correction re-opens Section 1's Option A/B analysis, re-verifies the
+public-exposure and data-retention findings against Anthropic's current
+documentation (re-fetched today, not assumed unchanged), researches for
+the first time a materially different third shape this document did not
+originally consider, and explicitly confirms which of the original
+findings (Sections 2 and 3) are unaffected. Nothing below deletes the
+original analysis; each affected section gets a dated correction note
+pointing here for the full reasoning, and the original text is left
+standing as the "before" half of the record.
+
+### The public-exposure requirement itself: unchanged, re-verified today
+
+Re-fetched in full this session: `platform.claude.com/docs/en/agents-and-tools/mcp-connector`.
+Its "Limitations" section reads, word-for-word identical to the original
+research pass's citation: *"The server must be publicly exposed through
+HTTP (supports both Streamable HTTP and SSE transports). Local STDIO
+servers cannot be connected directly."* Its "Data retention" section is
+also unchanged: *"The MCP connector is not covered by ZDR arrangements.
+Data exchanged with MCP servers, including tool definitions and execution
+results, is retained according to Anthropic's standard data retention
+policy."* **Neither of these is a documentation change** — the correction
+is entirely on Distant Signal's side (a deliberate decision to make
+`distant-signal-mcp` public), not a loosening of Anthropic's own
+requirements. Worth stating plainly since it would be easy to assume the
+blocker was somehow resolved by Anthropic; it wasn't — DS simply chose to
+satisfy a requirement that was always there.
+
+### Three shapes, not two — the original "Option A" undersold what "Anthropic's remote MCP connector" actually covers
+
+The original Section 1 defined Option A narrowly: *"DS's own backend...
+holds an Anthropic API key and calls `POST /v1/messages` with
+`distant-signal-mcp`'s URL wired in via the `mcp_servers` request
+parameter."* That is a real, distinct mechanism — call it **Option A1**
+below — but it is not the only way "Anthropic's remote MCP connector"
+reaches an end user, and it is not the shape most worth re-evaluating now
+that the public-exposure blocker is gone. Fetched today:
+`claude.com/docs/connectors/building/authentication` (Anthropic's current
+first-party developer docs for connectors — the Help Center article this
+session also fetched,
+`support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp`,
+explicitly states "The guide to building custom connectors has moved" to
+this page) describes a second, materially different mechanism:
+
+- **Option A1 (as originally scoped): DS's own backend calls the Messages
+  API with `mcp_servers`.** DS still holds an Anthropic API key, still
+  pays per-token, still hosts the request/response relay, and (per the
+  fetched authentication page's "Authentication" and "Custom connectors"
+  sections) is now also responsible for obtaining a valid OAuth
+  `authorization_token` for `distant-signal-mcp` on the calling user's
+  behalf before every request — *"API consumers are expected to handle
+  the OAuth flow and obtain the access token prior to making the API
+  call, and to refresh the token as needed"* (MCP connector page,
+  "Authentication" section, re-fetched this session). This is genuinely
+  new work Option A1 didn't need to do when the blocker analysis stopped
+  at "public reachability" — DS's orchestrator would need real per-user
+  token acquisition/refresh logic against its own MCP server, on top of
+  everything Option B already needs.
+- **Option C (not considered in the original pass at all): an individual
+  end user adds `distant-signal-mcp` as a custom connector directly in
+  their own Claude.ai / Claude Desktop / Claude mobile / Cowork account,
+  and chats entirely inside Claude's own interface — never touching
+  Distant Signal's frontend.** Confirmed directly from the Help Center
+  article fetched this session: users go to **Customize > Connectors**,
+  click the "+" button, choose "Add custom connector," and enter
+  `distant-signal-mcp`'s URL (optionally an OAuth client ID/secret under
+  "Advanced settings"); free accounts get one custom connector, Pro/Max
+  get full support, Team/Enterprise route through an org Owner.
+  **"Conversations occur entirely within Claude.ai's standard interface"**
+  (same source) — this is not an embedded-in-DS feature at all, it's a
+  bring-your-own-Claude-client feature DS enables by publishing a
+  connector.
+
+Option A1 and Option C share the same public-reachability and
+OAuth-authentication prerequisites, but are otherwise different products
+with different cost and UX consequences — treating "Option A" as one
+thing, as the original document did, obscures a real decision the removed
+blocker now actually opens up. Both are addressed below and in Section
+1's own correction subsection.
+
+### Does DS's own OIDC session gate map onto how Claude expects a remote MCP server to authenticate callers?
+
+Yes, in shape — but it's new engineering, not a free byproduct of the OIDC
+relying-party system DS already has. This is the piece most worth
+re-verifying, since the original rejection of Option A was purely about
+public reachability and never examined Claude's authentication model at
+all. Fetched in full this session, `claude.com/docs/connectors/building/authentication`
+— Anthropic's current, first-party reference for exactly this question:
+
+- **Per-user OAuth is the well-supported, expected default, not an edge
+  case.** The page's authentication-types table lists `oauth_dcr` (RFC
+  7591 Dynamic Client Registration, "supported out of the box"),
+  `oauth_cimd` (Client ID Metadata Documents, also out of the box),
+  `oauth_anthropic_creds` (Anthropic holds the OAuth client credentials,
+  by arrangement), `static_headers` (one fixed org-level credential,
+  beta), and `none` (authless). **"A pure machine-to-machine
+  `client_credentials` grant... is not supported. Every connection
+  requires user consent."** — real per-user identity, not a shared
+  secret, is the norm Claude's connector infrastructure is built around,
+  which is directly the shape "gate `distant-signal-mcp` behind DS's own
+  user OIDC session" needs.
+- **The MCP server does not have to be its own OAuth authorization
+  server.** The page's "Cross-host authorization servers" section states
+  the authorization server named in a server's Protected Resource
+  Metadata (RFC 9728) "doesn't need anything special on its own... Claude
+  resolves it regardless of which host it points at." Concretely:
+  `distant-signal-mcp` could stay a thin **resource server** (validate
+  bearer tokens, serve `/.well-known/oauth-protected-resource`) while an
+  existing OAuth/OIDC **authorization server** issues the tokens — which
+  is architecturally exactly the split "gated behind DS's existing OIDC
+  SSO" implies, *if* that existing IdP (the one
+  `crates/api/src/auth/oidc.rs` is already a relying party of, per the
+  earlier train-mcp research doc's Auth section) can itself serve RFC
+  8414/OIDC Discovery metadata, support PKCE with
+  `code_challenge_methods_supported: ["S256"]` (mandatory — "Claude
+  includes a PKCE `code_challenge` with `code_challenge_method=S256` on
+  every authorization request"), and either expose a DCR
+  `registration_endpoint` or advertise CIMD support. **This is not
+  verified here** — whether DS's specific third-party OIDC provider
+  supports DCR/CIMD/PKCE the way Claude's connector infrastructure
+  expects is a concrete, checkable question that belongs to the sibling
+  design doc's own Decision 4, not this document; flagged as a new open
+  question below, not answered.
+- **This is real, non-trivial new scope for `distant-signal-mcp` itself,
+  not a checkbox.** Today `distant-signal-mcp` is gated by a flat
+  Discord-user-ID allowlist (`DISCORD_ALLOWED_USER_IDS`, per the original
+  research's own Section 1 citation) — a shared-secret check, not an
+  OAuth resource-server implementation. Becoming
+  Claude-connector-authenticatable means implementing (at minimum): the
+  `401` + `WWW-Authenticate: Bearer resource_metadata=...` handshake on
+  every unauthenticated request ("Claude does not honor a
+  `WWW-Authenticate` header on a `200` response"), a correctly-shaped
+  Protected Resource Metadata document whose `resource` field matches the
+  connector URL exactly, bearer-token validation (signature, issuer,
+  audience, expiry, scope) on every tool call, and (per "Token refresh")
+  RFC 6749-compliant error codes so Claude's own refresh logic works.
+  None of this exists in `distant-signal-mcp` today. It maps cleanly onto
+  DS's stated intent *in concept* — but "cleanly" should not be read as
+  "cheaply": this is genuinely comparable in scope to the
+  OAuth-authorization-server-adjacent work the sibling design doc's
+  Decision 4 is already taking on for its own reasons, not a separate
+  cost Option C adds on top for free.
+- **A concrete, favorable detail for network shape**: the Help Center
+  article states the requirement more precisely than "fully public" —
+  *"Your MCP server must be reachable over the public internet from
+  Anthropic's IP ranges. Servers on private networks require firewall
+  allowlisting of Anthropic's IPs."* The connector's own developer docs
+  give the actual range: **`160.79.104.0/21`** ("Network reference"
+  section, `claude.com/docs/connectors/building/authentication`). A
+  human's own browser also needs to reach the authorization server's
+  consent screen directly (the OAuth redirect is user-driven), so this
+  doesn't reduce the MCP endpoint itself to "IP-allowlist only" — but
+  it's a more precise, citable fact than the original document had,
+  worth carrying into whichever document ends up specifying
+  `distant-signal-mcp`'s actual ingress rules (the sibling Decision 6).
+
+### What this does and doesn't change about Section 1's Option A vs. B conclusion
+
+The original recommendation's *other* reasons for Option B — independent
+of the public-reachability blocker — were real and are unaffected by any
+of the above:
+
+- Option B keeps `distant-signal-mcp`'s tool-call traffic entirely inside
+  DS's own network, so it never becomes subject to Anthropic's non-ZDR
+  MCP-connector data retention policy at all (a cost Option A1 still
+  pays, unchanged from the original finding — the retention wording
+  above is identical to before).
+- Option B is the only shape where DS's own orchestrator sits in the
+  tool-calling loop and can layer DS-specific context (rate limiting, its
+  own error handling/retry policy, prompt/system-message control, and —
+  newly, see below — a legitimately-scoped per-user session) onto every
+  tool call, rather than handing that loop to Anthropic's infrastructure.
+- Option A1 does not become simpler now that public exposure is allowed —
+  it becomes *harder* than the original document's blocker-only framing
+  suggested, because it now additionally needs DS's backend to do real
+  per-user OAuth token acquisition/refresh against its own MCP server
+  (see above), work Option B's direct MCP-client call never needed.
+
+**So: for a DS-hosted, embedded-in-DS-frontend chatbot, nothing here
+overturns Option B.** Option A1 specifically remains not recommended, for
+reasons independent of the now-resolved public-exposure blocker.
+
+**What is new: a legitimately-scoped per-user token becomes available to
+Option B's own orchestrator, closing a gap the original document flagged
+as unresolved.** The original Section 1 flagged that `distant-signal-mcp`'s
+tools "never accept or forward a caller's session at all," so an embedded
+orchestrator with the user's real DS session cookie available couldn't
+actually use it to unlock `annotateLeg.ts`'s TRUST-corroboration tier
+without new, undesigned code. Once `distant-signal-mcp` requires real
+per-caller OAuth tokens anyway (a consequence of the sibling Decision 4,
+not something this document is deciding), **a DS-hosted Option B
+orchestrator — which already knows which DS user it's acting for — is a
+natural, already-privileged position to mint or forward a correctly-scoped
+access token for that same user**, rather than calling anonymously. This
+doesn't design the session-forwarding variant (still explicitly out of
+scope, per the original document's own "Explicitly out of scope" list and
+Open question 4), but it means the prerequisite blocking it —
+`distant-signal-mcp` having no per-caller identity concept at all — is
+now expected to go away as a side effect of the sibling deployment
+decision, independent of whatever else this document concludes.
+
+**What is genuinely new and worth designing as its own decision: Option
+C.** A user connecting `distant-signal-mcp` directly to their own
+Claude.ai/Desktop account is not a variant of Option A or B — see Section
+4's correction for the UX consequence and Cost/risk's correction for the
+billing consequence.
+
 ## 1. Architecture: how would an embedded chatbot actually call `distant-signal-mcp`?
 
 ### The two options, precisely
@@ -262,7 +486,41 @@ service) but that code is a documented, first-class SDK pattern
 section was architectural, not implementation-difficulty, and it resolves
 cleanly in Option B's favor.
 
+### Correction (2026-09-02)
+
+See the top-level "Corrections (2026-09-02)" section for the full
+re-analysis this pointer summarizes. Short version: the public-exposure
+blocker that drove this section's recommendation is gone (DS has decided
+to make `distant-signal-mcp` public and OIDC-gated), but the recommendation
+**for an embedded-in-DS-frontend chatbot is unchanged — Option B over
+Option A1** — for reasons independent of that blocker (no Anthropic
+non-ZDR retention exposure, DS keeps control of the tool-calling loop, and
+Option A1 now additionally needs DS to run its own per-user OAuth token
+acquisition against its own MCP server, work Option B never needed). What
+*is* new: a third, previously-unconsidered shape — **Option C**, a user
+connecting `distant-signal-mcp` directly to their own Claude.ai/Claude
+Desktop account via Anthropic's custom-connector feature, chatting
+entirely inside Claude's own UI, billed to the user's own Claude plan — is
+now genuinely viable, well-supported by Anthropic's documented OAuth model
+for remote connectors (`claude.com/docs/connectors/building/authentication`,
+fetched in full this session), and worth a real product decision of its
+own, distinct from the Option A/B choice this section made. Not a strict
+alternative to Option B — a different product. See Sections 4 and
+Cost/risk below for the UX and billing consequences.
+
 ## 2. "Let users link their own Anthropic account" — verified, not assumed
+
+**Correction (2026-09-02):** this section's conclusion is unaffected by
+the public-MCP-server decision and is not re-opened here — it was about
+whether DS's *own embedded orchestrator* could let a user delegate their
+personal Anthropic subscription to DS, a different question from either
+Option A1/B (DS's own API key pays) or the newly-considered Option C
+(Section 1's Correction, above). In Option C, the user's own Claude
+subscription pays directly, through their own already-authenticated
+Claude client — DS never touches the user's Anthropic identity at all in
+that shape, so the "not a real, stable delegation mechanism" finding
+below doesn't even apply to it; there's no delegation step for it to
+apply to. Confirmed, not re-opened.
 
 The task asked this to be checked precisely, distinguishing two very
 different mechanisms: **OAuth account delegation** (a "Sign in with
@@ -376,6 +634,17 @@ designed here; it's flagged as real, non-trivial scope distinct from
 BYO-API-key as a small thing either.
 
 ## 3. Gating certain users onto the local LLM server
+
+**Correction (2026-09-02):** unaffected by the public-MCP-server decision.
+This section's findings (serial contention in `crates/enricher`, the
+deployed model's unconfirmed tool-calling support, and this app's lack of
+any role/tier concept) are entirely about how DS's *own* backend/orchestrator
+(Option B) would source its LLM calls and gate access to that orchestrator
+— a question orthogonal to whether `distant-signal-mcp` itself is public
+or OIDC-gated. It is also not applicable to Option C at all (Section 1's
+Correction): a user connecting their own Claude.ai/Desktop account doesn't
+route through DS's enricher LLM endpoint or DS's own auth model in any
+way. Confirmed unchanged; relevant only if Option B ships.
 
 Three genuinely separate questions, per the task brief — capacity,
 suitability, and authorization. All three are real, and none is small.
@@ -572,6 +841,49 @@ own import) is a small, concrete piece of real reuse, distinct from
 reusing `rendering.ts`'s text-generation functions, which is not
 recommended.
 
+### Correction (2026-09-02): does Option C change this section's "new route inside this app" assumption?
+
+Yes, but only for Option C specifically — the analysis above (placement,
+`TrackTrainForm` relation, `rendering.ts`-vs-`structuredContent` reuse) is
+about Option B's embedded chatbot and is unaffected if that's what ships;
+see the top-level Corrections section for the full Option A/B/C
+re-analysis.
+
+If Option C ships (a user connects `distant-signal-mcp` directly to their
+own Claude.ai/Claude Desktop account), there is no chat UI inside Distant
+Signal's own frontend for that path at all — confirmed directly from the
+Help Center article fetched this session
+(`support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp`):
+"conversations occur entirely within Claude.ai's standard interface." The
+`frontend/app/chat/` route sketched above, this section's `rendering.ts`-
+vs-`structuredContent` reuse analysis, and the `TrackTrainForm` deep-link
+idea are all specific to an embedded orchestrator (Option B) — none of
+them are needed, or reachable, for Option C, because Claude's own client
+renders the conversation, including however it chooses to present
+`plan_journey`'s `structuredContent`, with no DS-authored component
+involved anywhere in that path.
+
+What Option C would need from `frontend/` instead is much smaller and
+differently shaped: a page telling a user how to connect (the connector
+URL, and — once the sibling design's Decision 4 lands — whatever DS-account
+sign-in step that connection requires), not a chat surface. This still
+fits the same "new, dedicated route per concern" navigation pattern this
+section already found this app uses (`track/`, `stations/[crs]/`, etc.) —
+just for a short onboarding/instructions page (e.g. a
+`frontend/app/connect-claude/`-shaped route) rather than a live chat
+transcript. A materially smaller design surface than a chat UI, not
+designed further here.
+
+This is not an either/or with Option B's UX shape: DS could ship neither,
+either, or both — an embedded first-party chat (Option B, the design
+above) and a "connect it to your own Claude" onramp (Option C) are
+separate product decisions serving different users (someone who wants a
+no-Claude-account-needed experience inside DS's own app, vs. an existing
+Claude user who'd rather stay in their own client). Nothing here decides
+which, if either, DS should build; it corrects the original document's
+implicit assumption that "Option A" was strictly about DS's own frontend
+either way — it wasn't, once Option C is distinguished from Option A1.
+
 ## Cost/risk framing
 
 **This is a genuinely new class of operational cost for this app, and it
@@ -601,6 +913,36 @@ against Anthropic's hosted API is exactly the number a "route it through
 the free local LLM instead" plan would need to actually save, weighed
 against that path's real capacity-contention and tool-calling-support
 risks (Section 3).
+
+### Correction (2026-09-02): Option C's cost story is genuinely different — restated plainly, per this section's own instruction not to bury it
+
+The framing above — "Distant Signal's own operator pays Anthropic for
+every token of every conversation" — is stated as true of both Option A
+and Option B, because at the time both routes required DS's own backend
+to hold the Anthropic API key. **That framing is now only true for Option
+B and Option A1** (Section 1's Correction). It is **not true for Option
+C**: confirmed directly from the Help Center article fetched this session,
+connector usage "occurs within the user's existing Claude plan" — the
+conversation is billed against the connecting user's own Claude.ai account
+(Free/Pro/Max/Team/Enterprise), not against any credential Distant Signal
+holds. If Option C ships, **Distant Signal pays $0 in Anthropic API costs
+for that conversation** — the "genuinely new class of operational cost"
+this section names for Option A1/B does not apply to it at all.
+
+This does not mean Option C is free for DS to operate. Making
+`distant-signal-mcp` public and OAuth-gated (the sibling design's own
+Decision 6/4) is itself new infrastructure and security-review cost
+regardless of which option(s) DS ships — a public, authenticated endpoint
+is a new attack surface DS now maintains, whether or not any Anthropic
+token is ever billed to DS for using it. The genuinely new claim here is
+narrower and more specific than "Option C has no cost" — it's that **the
+per-conversation, usage-scaling LLM token cost this section's own pricing
+table sizes (Sonnet 5 at $2/$10, Opus 5 at $5/$25 per million tokens) is
+the end user's bill to pay, not Distant Signal's, if Option C is the shape
+that ships.** Whoever eventually decides between Option B and Option C
+should treat this as a real, materially different line item, not a
+rounding difference — exactly the kind of framing this section's own
+opening line ("should be named plainly, not hedged") already asks for.
 
 ## Explicitly out of scope
 
@@ -650,6 +992,32 @@ Ranked:
    already chose and shipped for `distant-signal-mcp`. Choosing Option A
    would mean re-opening and reversing that decision as a prerequisite,
    not a side effect.
+
+   **Correction (2026-09-02):** the public-exposure reason above no
+   longer applies — DS has decided to make `distant-signal-mcp` public and
+   OIDC-gated (see `docs/superpowers/specs/2026-09-01-train-mcp-integration-design.md`'s
+   revised Decision 4/Auth and Decision 6/Deployment). Re-evaluated in
+   Section 1's own correction and the top-level "Corrections (2026-09-02)"
+   section: **the conclusion for an embedded-in-DS-frontend chatbot is
+   unchanged — Option B still over Option A1** (the API-level `mcp_servers`
+   connector, as originally scoped) — for reasons independent of the
+   removed blocker (no Anthropic non-ZDR retention exposure, DS keeps
+   control of the tool-calling loop, and Option A1 now additionally needs
+   DS to run its own per-user OAuth token acquisition against its own MCP
+   server, which Option B never needed). **What has changed is that a
+   third, previously-unconsidered shape — Option C, an end user
+   connecting `distant-signal-mcp` directly to their own Claude.ai/Claude
+   Desktop account via Anthropic's custom-connector feature, with the
+   conversation happening entirely in Claude's own UI and billed to the
+   user's own Claude plan — is now genuinely viable and worth a real
+   decision of its own**, confirmed against Anthropic's current
+   documentation (`claude.com/docs/connectors/building/authentication`,
+   fetched in full this session). It is not a strict alternative to
+   Option B: it's a different product (bring-your-own-Claude-client vs.
+   DS's own embedded chat) with a different cost profile (user-funded, not
+   DS-funded — see item 2's own correction below) and no DS frontend
+   chat-UI work, only a short connect/onboarding page. See the top-level
+   Corrections section for the full re-analysis.
 2. **Treat "let users link their own Anthropic account" as not currently
    real for this app's purposes, and do not design toward it.** What
    exists under that name today is narrow (a specific OAuth flow tied to
@@ -665,6 +1033,18 @@ Ranked:
    `SSO_CLIENT_SECRET`'s and `railMcp`'s own `secretKeyRef` precedent) —
    which puts the Cost/risk framing above squarely on the table as a real
    decision, not a footnote.
+
+   **Correction (2026-09-02):** unaffected for Option B/A1 — this
+   paragraph's finding stands unchanged for any DS-embedded orchestrator.
+   It does not, however, apply to Option C at all: a user connecting
+   `distant-signal-mcp` directly to their own Claude.ai/Desktop account
+   pays through their own existing Claude plan, with no "link your
+   Anthropic account to DS" delegation step of any kind — DS never handles
+   the user's Anthropic identity or credentials in that shape. If Option C
+   ships, this is a materially cheaper and simpler cost story than either
+   the operator-funded-API-key path above or the per-user-BYO-API-key gap
+   this section flags — see Cost/risk's own correction for the full
+   restatement.
 3. **Do not route chatbot traffic through the enricher's existing local
    LLM endpoint without first resolving two separate, real blockers**:
    confirmed contention (the enricher calls this endpoint strictly
@@ -691,6 +1071,18 @@ Ranked:
    `2026-08-22-tfl-service-metrics-v2-design.md` gave their own features)
    before any code changes — this document is a landscape survey, not
    that spec, per its own Status line.
+6. **(Added 2026-09-02) Treat "should DS build a connect-your-own-Claude
+   onramp (Option C)" as a distinct product decision from "should DS build
+   an embedded chatbot (Option B)," not a resolution of it.** Both are
+   real and viable now that `distant-signal-mcp` is becoming public and
+   OIDC-gated. They serve different users (no-Claude-account-needed vs.
+   bring-your-own-Claude-client) and have genuinely different cost
+   profiles (DS-funded vs. user-funded — Cost/risk's correction). Nothing
+   in this document recommends one over the other; if this feature area
+   is pursued, whoever writes the eventual design-spec pass (item 5,
+   above) should decide explicitly which, if either, to build, rather
+   than defaulting to Option B just because it was this document's
+   original conclusion.
 
 ## Open questions (explicit, not resolved here)
 
@@ -715,6 +1107,22 @@ Ranked:
    session-forwarding authenticated variant** to unlock the TRUST-
    corroboration tier for the embedded (same-origin-session) case flagged
    in Section 1 — real opportunity, not designed here.
+5. **(Added 2026-09-02) Whether DS's existing third-party OIDC provider
+   (the one `crates/api/src/auth/oidc.rs` is already a relying party of)
+   can itself serve as the OAuth authorization server Claude's connector
+   infrastructure discovers** — i.e. whether it already supports RFC
+   8414/OIDC Discovery metadata, PKCE with `S256`, and either Dynamic
+   Client Registration or Client ID Metadata Document support — or
+   whether `distant-signal-mcp`/DS needs a separate, dedicated
+   authorization-server layer in front of or alongside it. This is the
+   single most consequential unresolved question raised by the top-level
+   Corrections section's OAuth research; it belongs to the sibling design
+   doc's own Decision 4, not answered here.
+6. **(Added 2026-09-02) Whether DS should build Option C (a connect-your-
+   own-Claude onramp) at all, and if so, whether alongside, instead of, or
+   before Option B (an embedded DS chatbot).** Recommendation item 6
+   names this as a real, open product decision this correction surfaces
+   but does not make.
 
 ## References
 
@@ -755,3 +1163,34 @@ Ranked:
   where load-bearing for this document's own claims).
 - `docs/superpowers/specs/2026-08-31-other-uk-transit-networks-research.md`
   (this document's structural template).
+
+### Added for the 2026-09-02 Corrections
+
+- `platform.claude.com/docs/en/agents-and-tools/mcp-connector`, re-fetched
+  in full this session (2026-09-02) to confirm the "must be publicly
+  exposed through HTTP" and "not covered by ZDR" wording is unchanged
+  from the original research pass, and to re-cite the "Authentication"
+  section's `authorization_token`/OAuth-flow-is-the-caller's-responsibility
+  language.
+- `claude.com/docs/connectors/building/authentication`, fetched in full
+  this session (2026-09-02) — Anthropic's current first-party reference
+  for how a remote MCP server authenticates callers for Claude.ai/Claude
+  Desktop custom connectors: the `oauth_dcr`/`oauth_cimd`/
+  `oauth_anthropic_creds`/`static_headers`/`none` authentication-type
+  table, the "every connection requires user consent" (no pure
+  `client_credentials`) rule, cross-host authorization server support,
+  mandatory PKCE `S256`, DCR-vs-CIMD guidance, the `401` +
+  `WWW-Authenticate: Bearer resource_metadata=...` handshake, and the
+  `160.79.104.0/21` Anthropic egress range.
+- `support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp`,
+  fetched in full this session (2026-09-02) — confirms the Claude.ai/Desktop
+  custom-connector UI flow (Customize > Connectors > "+" > "Add custom
+  connector"), Free/Pro/Max/Team/Enterprise tier support, that
+  "conversations occur entirely within Claude.ai's standard interface,"
+  and that usage is billed within the connecting user's own Claude plan.
+- `docs/superpowers/specs/2026-09-01-train-mcp-integration-design.md`'s
+  revised Decision 4 (Auth) and Decision 6 (Deployment) — being updated by
+  a sibling task in this same session to design `distant-signal-mcp`'s
+  public, OIDC-gated deployment concretely. Cross-referenced by path only;
+  not read in its updated form as part of this correction, per the task's
+  own instruction not to block on it.
