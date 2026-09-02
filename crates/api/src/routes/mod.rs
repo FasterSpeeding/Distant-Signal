@@ -12,6 +12,7 @@ pub mod incidents;
 pub mod ingest;
 pub mod line_status;
 pub mod lines;
+pub mod notifications;
 pub mod preferences;
 pub mod reference;
 pub mod samples;
@@ -45,6 +46,7 @@ pub fn public_router() -> Router {
         .merge(history_retention::router())
         .merge(incidents::router())
         .merge(lines::router())
+        .merge(notifications::router())
         .merge(preferences::router())
         .merge(reference::router())
         .merge(auth::router())

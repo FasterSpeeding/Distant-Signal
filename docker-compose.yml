@@ -126,6 +126,17 @@ services:
       # crates/api/src/data/config.rs's history_retention_days doc comment.
       # Same variable, same default, read from the one env file.
       HISTORY_RETENTION_DAYS: ${HISTORY_RETENTION_DAYS:-7}
+      # Public VAPID key served (unauthenticated) at
+      # GET /public/notifications/vapid-public-key for the browser's
+      # PushManager.subscribe() call -- same value the notifier service
+      # below signs pushes with (VAPID_PUBLIC_KEY there). Required by
+      # clap with no default, but deliberately defaulted to empty here
+      # (not `:?`) rather than blocking the whole stack from starting:
+      # unlike notifier, api has no startup fail-fast on this being
+      # empty -- an unset value just means the notifications feature is
+      # inert (an empty applicationServerKey the browser will reject),
+      # not a crash loop.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
     ports:
       - "${API_HOST_PORT:-8080}:8080"
     healthcheck:
@@ -270,6 +281,35 @@ services:
       LINES_DIR: /app/lines
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_AGGREGATOR:-60}
       HISTORY_RETENTION_DAYS: ${HISTORY_RETENTION_DAYS:-7}
+      RUST_LOG: ${RUST_LOG:-info}
+
+  notifier:
+    build:
+      context: .
+      dockerfile: docker/notifier.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # crates/notifier/src/config.rs: Config. VAPID_PRIVATE_KEY/
+      # VAPID_PUBLIC_KEY/VAPID_SUBJECT are required by clap with no
+      # default -- unlike api's own VAPID_PUBLIC_KEY above, notifier
+      # itself fails fast at startup (crates/notifier/src/main.rs's
+      # `ensure!`s) if any of the three is empty, so an unconfigured
+      # deployment crash-loops this one service loudly rather than
+      # silently sending no pushes. Still defaulted to empty (not `:?`)
+      # here so `docker compose up` without VAPID configured doesn't
+      # block the REST of the stack from starting.
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_NOTIFIER:-60}
+      COOLDOWN_MINUTES: ${COOLDOWN_MINUTES_NOTIFIER:-20}
+      TRAIN_DELAY_THRESHOLD_MINUTES: ${TRAIN_DELAY_THRESHOLD_MINUTES_NOTIFIER:-15}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       RUST_LOG: ${RUST_LOG:-info}
 
   enricher:

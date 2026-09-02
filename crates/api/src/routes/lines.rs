@@ -513,6 +513,7 @@ mod db_tests {
             metrics_enabled: false,
             defaults_file: None,
             lines: LineCatalogue(lines),
+            vapid_public_key: "test-vapid-public-key".to_string(),
         };
 
         std::sync::Arc::new(AppState {
