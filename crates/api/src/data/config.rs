@@ -153,4 +153,12 @@ pub struct ServiceArguments {
     /// (non-Docker) runs.
     #[arg(long = "lines-dir", env = "LINES_DIR", default_value = "/app/lines", value_parser = parse_lines, value_hint = ValueHint::FilePath, value_name = "DIR")]
     pub lines: LineCatalogue,
+
+    /// The VAPID public key `crates/notifier` signs push messages with —
+    /// handed to the browser's `PushManager.subscribe({ applicationServerKey })`
+    /// call unchanged. The matching PRIVATE key lives only in `crates/notifier`'s
+    /// own config -- `api` never needs it, since `api` only stores
+    /// subscriptions, it never sends to them.
+    #[arg(long, env)]
+    pub vapid_public_key: String,
 }
