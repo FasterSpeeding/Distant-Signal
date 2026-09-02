@@ -539,6 +539,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "${RAIL_MCP_PORT:-3100}:3000"
     environment:
@@ -547,12 +549,22 @@ services:
       PUBLIC_URL: ${RAIL_MCP_PUBLIC_URL:-http://localhost:3100}
       # In-network hostname every other compose service already uses to
       # reach `api` (see api:'s own BIND_URL / frontend's API_BASE_URL
-      # above) -- no new DS-side route or auth needed (Decision 4: every
-      # DS call this service makes is anonymous).
+      # above). resolve_station/GET /public/lines/GET /Line/.../Status
+      # remain anonymous DS calls (Decision 4, unchanged) -- see
+      # railmcp-deployment.yaml's own updated comment for what this no
+      # longer covers now that the adapter auth layer exists.
       DS_API_BASE_URL: http://api:8080
       DS_LINE_CATALOGUE_TTL_MS: ${DS_LINE_CATALOGUE_TTL_MS:-900000}
-      DISCORD_CLIENT_ID: ${RAIL_MCP_DISCORD_CLIENT_ID}
-      DISCORD_ALLOWED_USER_IDS: ${RAIL_MCP_DISCORD_ALLOWED_USER_IDS}
+      # The adapter auth layer (embedded-chatbot-shared-foundation-and-
+      # option-c plan, Tasks 1-7) -- replaces the DISCORD_CLIENT_ID/
+      # DISCORD_ALLOWED_USER_IDS env vars this block used to render here
+      # (retired, not kept alongside: that plan's Task 8). Reuses the
+      # same `redis` service every other compose service already shares
+      # (see api:'s own REDIS_URL above) -- src/oauth/store.ts namespaces
+      # its own keys under `railmcp:oauth:` to avoid collision.
+      OAUTH_REDIS_URL: redis://redis:6379
+      DS_FRONTEND_ORIGIN: ${RAIL_MCP_DS_FRONTEND_ORIGIN:-http://localhost:${FRONTEND_HOST_PORT:-3000}}
+      OAUTH_INTERNAL_COMPLETE_TOKEN: ${RAIL_MCP_INTERNAL_COMPLETE_TOKEN}
       # LDBWS/Rail Data Marketplace credentials the fork's board/service-
       # detail tools still call directly (Decision 5 -- unchanged by this
       # integration, board tools are not routed through DS).
@@ -576,6 +588,16 @@ services:
       # frontend/lib/api.ts: baseUrl(). Server-side only — resolved
       # inside the docker-compose network, not exposed to the browser.
       API_BASE_URL: http://api:8080
+      # frontend/app/connect-claude/{authorize/route.ts,page.tsx} --
+      # embedded-chatbot-shared-foundation-and-option-c plan, Tasks 6/9.
+      # Harmless to always set, even when the `rail-mcp` service isn't
+      # started (it's opt-in behind the `rail-mcp` Compose profile, see
+      # that service's own comment above): these are only read at request
+      # time, when a request actually reaches /connect-claude, not at
+      # frontend boot.
+      RAILMCP_BASE_URL: http://rail-mcp:3000
+      RAILMCP_INTERNAL_COMPLETE_TOKEN: ${RAIL_MCP_INTERNAL_COMPLETE_TOKEN}
+      NEXT_PUBLIC_RAILMCP_PUBLIC_URL: ${RAIL_MCP_PUBLIC_URL:-http://localhost:3100}
     ports:
       - "${FRONTEND_HOST_PORT:-3000}:3000"
 
