@@ -332,6 +332,32 @@ pub fn london_calendar_day(instant: DateTime<Utc>) -> NaiveDate {
     instant.with_timezone(&chrono_tz::Europe::London).date_naive()
 }
 
+/// The plain UTC hour `instant` falls in, truncated to the top of the
+/// hour (e.g. 14:37:12Z -> 14:00:00Z). Deliberately NOT routed through
+/// `chrono_tz::Europe::London` the way `london_calendar_day` is -- Decision
+/// 4 of docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md
+/// explains why: `line_status_hourly_stats` only ever backs a rolling
+/// 24-hour window, which has no calendar-day identity worth preserving
+/// through a DST transition the way the daily table's London-local `day`
+/// does. A plain UTC truncation has no 23/25-hour-day edge case to get
+/// wrong at all. Never displayed directly to a viewer -- always rendered
+/// through `frontend/lib/dateFormat.ts`'s `formatTime` (London wall-clock)
+/// first.
+///
+/// Implemented via explicit `NaiveDate`/`Timelike` arithmetic rather than
+/// `chrono::DurationRound::duration_trunc`, since that trait's `round`
+/// Cargo feature was not confirmed enabled for this crate's `chrono`
+/// dependency -- this avoids depending on an unverified feature flag for
+/// what is otherwise a three-line truncation.
+pub fn utc_hour_start(instant: DateTime<Utc>) -> DateTime<Utc> {
+    use chrono::Timelike;
+    instant
+        .date_naive()
+        .and_hms_opt(instant.hour(), 0, 0)
+        .expect("hour() is always 0-23, so this can never fail")
+        .and_utc()
+}
+
 /// Upserts one line's contribution to its `(line_id, day)` daily rollup row
 /// for this cycle. Called from `run_cycle` (`main.rs`, a later task) AT MOST
 /// ONCE per line per cycle, gated on the line having had ANY raw sample
@@ -1031,6 +1057,40 @@ mod tests {
         let just_after: DateTime<Utc> = "2026-10-25T01:30:00Z".parse().unwrap();
         assert_eq!(london_calendar_day(just_before), NaiveDate::from_ymd_opt(2026, 10, 25).unwrap());
         assert_eq!(london_calendar_day(just_after), NaiveDate::from_ymd_opt(2026, 10, 25).unwrap());
+    }
+
+    // --- utc_hour_start ---
+    //
+    // Deliberately no DST-transition cases here, unlike london_calendar_day's
+    // suite above -- see Decision 4 / this function's own doc comment for why
+    // a plain UTC truncation has nothing DST-related to get wrong.
+
+    #[test]
+    fn utc_hour_start_truncates_to_the_top_of_the_hour() {
+        let instant: DateTime<Utc> = "2026-08-15T14:37:12Z".parse().unwrap();
+        assert_eq!(utc_hour_start(instant), "2026-08-15T14:00:00Z".parse::<DateTime<Utc>>().unwrap());
+    }
+
+    #[test]
+    fn utc_hour_start_on_the_exact_hour_boundary_is_a_no_op() {
+        let instant: DateTime<Utc> = "2026-08-15T14:00:00Z".parse().unwrap();
+        assert_eq!(utc_hour_start(instant), instant);
+    }
+
+    #[test]
+    fn utc_hour_start_just_before_midnight_stays_on_the_same_utc_day() {
+        let instant: DateTime<Utc> = "2026-08-15T23:59:59Z".parse().unwrap();
+        assert_eq!(utc_hour_start(instant), "2026-08-15T23:00:00Z".parse::<DateTime<Utc>>().unwrap());
+    }
+
+    #[test]
+    fn utc_hour_start_across_the_uk_spring_forward_transition_is_unaffected() {
+        // Unlike london_calendar_day_across_the_spring_forward_transition, this
+        // is purely a sanity check that UTC arithmetic doesn't care that the
+        // UK clock changed at all -- there is no "skipped" or "repeated" UTC
+        // hour on this date, only on the London-local wall clock.
+        let instant: DateTime<Utc> = "2026-03-29T01:30:00Z".parse().unwrap();
+        assert_eq!(utc_hour_start(instant), "2026-03-29T01:00:00Z".parse::<DateTime<Utc>>().unwrap());
     }
 
     // --- record_daily_stats / prune_daily_stats ---
