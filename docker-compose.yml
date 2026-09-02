@@ -19,8 +19,17 @@
 # Each env file sets `COMPOSE_FILE` itself, so the two commands above are
 # all there is to it — `local.env` selects this file alone, `dev.env`
 # selects this file plus `docker-compose.dev.yml` (the thin debug/hot-reload
-# override). No Compose profiles are involved; a bare `docker compose up`
-# with no `--env-file` will simply fail on unset variables.
+# override). Compose profiles are NOT used to switch between those two
+# modes (see docker-compose.dev.yml's own comment on why that split was
+# removed); a bare `docker compose up` with no `--env-file` will simply
+# fail on unset variables. One service, `rail-mcp`, is a deliberate,
+# narrower exception: it carries its own `profiles: ["rail-mcp"]` tag so it
+# stays out of BOTH commands above unless you also pass `--profile
+# rail-mcp` (see that service's own comment for why). Its variables still
+# need real or placeholder entries in both `*.env.example` files even
+# though it's opt-in -- Compose interpolates every `${VAR}` in the whole
+# file before it filters by profile, so an unset one warns regardless of
+# whether the service the profile gates ever actually starts.
 #
 # In dev mode `frontend` bind-mounts `./frontend` into the container and
 # runs `next dev`, so editing a file on the host recompiles in place with no
@@ -492,6 +501,39 @@ services:
     # above, not a `build:` context into this repo. Tag pinning is an
     # implementation-time decision, not sketched further here (same
     # posture schedule-sftp's own comment takes).
+    #
+    # GATING (fixed 2026-09-02): this service is genuinely opt-in, matching
+    # `railMcp.enabled: false` in charts/distant-signal/values.yaml for the
+    # exact same component -- unlike every other service in this file, a
+    # plain `docker compose --env-file <local|dev>.env up` should NOT try to
+    # start it. `profiles: ["rail-mcp"]` is Compose's own mechanism for
+    # exactly that: a service tagged with a profile only starts when that
+    # profile is explicitly activated (`--profile rail-mcp` or
+    # `COMPOSE_PROFILES=rail-mcp`); every other service here carries no
+    # `profiles:` key at all, so it stays in the implicit "default" group
+    # and is unaffected. This is NOT a revival of the dual prod/dev profile
+    # split cb2993b removed (see docker-compose.dev.yml's own comment) --
+    # that scheme gave every core service two full copies behind
+    # `--profile prod`/`--profile dev`, so a bare `docker compose up`
+    # started nothing at all; this is one profile on one add-on service, so
+    # a bare `docker compose up` still starts the entire rest of the stack
+    # exactly as before, it just no longer also tries (and fails) to pull
+    # this one.
+    #
+    # Without this, plain `docker compose up` unconditionally tried to
+    # resolve `image:` below -- and its default value, `CHANGE-ME`, is a
+    # deliberately-invalid placeholder repo name (see below), so every
+    # `docker compose up` hard-failed with "invalid reference format"
+    # before anything else could start. Reproduced and confirmed via this
+    # exact failure mode this session.
+    profiles: ["rail-mcp"]
+    # Deliberately left unresolved, not "fixed": once this service is
+    # actually gated behind `--profile rail-mcp`, resolving this image only
+    # happens when someone has explicitly opted in -- at that point failing
+    # loudly with "invalid reference format" until RAIL_MCP_IMAGE is set to
+    # a real image is the desired behaviour (same posture as
+    # schedule-sftp's `image:` comment on tag pinning being an
+    # implementation-time decision), not a bug to paper over here.
     image: ${RAIL_MCP_IMAGE:-ghcr.io/CHANGE-ME/distant-signal-mcp:latest}
     restart: unless-stopped
     depends_on:
