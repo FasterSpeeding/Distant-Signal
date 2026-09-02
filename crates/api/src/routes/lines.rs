@@ -491,6 +491,13 @@ mod db_tests {
             database_url: String::new(),
             redis_url: "redis://127.0.0.1:0".to_string(),
             internal_token: "test-internal-token".to_string(),
+            internal_token_poller_incidents: "test-internal-token-poller-incidents".to_string(),
+            internal_token_poller_stations: "test-internal-token-poller-stations".to_string(),
+            internal_token_poller_tocs: "test-internal-token-poller-tocs".to_string(),
+            internal_token_poller_ldbws: "test-internal-token-poller-ldbws".to_string(),
+            internal_token_poller_tfl: "test-internal-token-poller-tfl".to_string(),
+            internal_token_trust_consumer: "test-internal-token-trust-consumer".to_string(),
+            internal_token_schedule_ingest: "test-internal-token-schedule-ingest".to_string(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),
             sso_client_secret: "test-secret".to_string(),
@@ -502,6 +509,11 @@ mod db_tests {
             defaults_file: None,
             lines: LineCatalogue(lines),
         };
+
+        // None of this file's routes are private_router() endpoints, so an
+        // empty registry is fine -- see AppState::init for the real
+        // from_tokens construction this mirrors.
+        let internal_services = crate::auth::InternalServiceRegistry::default();
 
         std::sync::Arc::new(AppState {
             config,
@@ -517,6 +529,7 @@ mod db_tests {
                 redirect_url: "https://example.invalid/callback".to_string(),
             })
             .expect("construct placeholder oidc client"),
+            internal_services,
         })
     }
 
