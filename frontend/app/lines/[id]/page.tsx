@@ -10,8 +10,8 @@ import { DeleteLineButton } from '@/components/DeleteLineButton';
 import { LineDefinitionTooltip } from '@/components/LineDefinitionTooltip';
 import { TextLink } from '@/components/TextLink';
 import { worstStatus } from '@/lib/severity';
-import { resolveRange } from '@/lib/history';
-import { TrendsResults } from './history/TrendsResults';
+import { resolveHourlyRange } from '@/lib/history';
+import { HourlyTrendsResults } from './history/HourlyTrendsResults';
 
 // Same `revalidate = 0` rationale as `/lines/[id]/history` -- this page now
 // also computes a range off `Date.now()` (`resolveRange` below), so it must
@@ -96,12 +96,12 @@ export default async function LineDetailPage({
   // every request (this route is dynamic) and re-stamped by AutoRefresh.
   const now = Date.now();
 
-  // The default (no query params) 7-day window `/lines/[id]/history` itself
-  // falls back to -- same `resolveRange` call, so this embedded preview and
-  // "View history"'s own default page land on identical numbers rather than
-  // two independently-computed "last 7 days". Passing `{}` (this page has
-  // no range-picker query params of its own) always resolves the 7d preset.
-  const trendsRange = resolveRange({}, now);
+  // A fixed rolling 24-hour window, not a URL-driven preset -- this embed
+  // has no range picker of its own (Decision 11 of
+  // docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md).
+  // "View history" below remains the way to reach the full range picker
+  // and the daily Trends tab.
+  const trendsRange = resolveHourlyRange(now);
 
   return (
     <Stack p="lg" gap="md">
@@ -160,26 +160,29 @@ export default async function LineDetailPage({
       )}
       <Stack gap="xs">
         <Title order={2} size="h4">
-          Recent trends (last 7 days)
+          Recent trends (last 24 hours)
         </Title>
-        {/* Reuses `/lines/[id]/history`'s own Trends-tab component wholesale
-            -- same fetch, same sparse-data-floor gap handling, same honesty
-            copy about what the rates actually mean -- rather than
-            re-deriving any of that here. `View history` above remains the
-            way to reach the full range picker, the Timeline tab, and
-            ranges longer than this fixed 7-day preview.
+        {/* Hourly, not the dedicated history page's daily rollup -- Decision
+            1/2 of docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md:
+            a rolling 24-hour window needs intra-day resolution the daily
+            table can't provide, so this renders through a new, separate
+            hourly fetch/component (HourlyTrendsResults) rather than
+            TrendsResults. It still shares TrendsCharts -- the actual chart
+            rendering, legend, dash patterns, gap bands, edge padding --
+            with the dedicated history page's daily Trends tab; only the
+            fetch, sparse-data floor, and copy are hourly-specific.
+            `View history` above remains the way to reach the full range
+            picker, the Timeline tab, and the daily Trends tab.
 
-            Wrapped in its own Suspense boundary, same rationale as the
-            history page's: `getLineDailyStats` is comparatively slow, and
-            without this boundary it would block the whole page -- status,
-            issues, everything above -- behind a chart a visitor may not
-            even scroll down to see. A brand-new line with no daily-stats
-            rows yet (Task 1's "stuck loading" fix made that reachable
-            moments after creation) still resolves fast: `TrendsResults`
+            Wrapped in its own Suspense boundary, same rationale as before:
+            `getLineHourlyStats` is comparatively slow, and without this
+            boundary it would block the whole page behind a chart a visitor
+            may not even scroll down to see. A brand-new line with no
+            hourly-stats rows yet still resolves fast: `HourlyTrendsResults`
             renders its own "Not enough sampled data yet" text rather than
             leaving this section hanging. */}
         <Suspense fallback={<Skeleton height={280} />}>
-          <TrendsResults id={id} from={trendsRange.from} to={trendsRange.to} />
+          <HourlyTrendsResults id={id} from={trendsRange.from} to={trendsRange.to} />
         </Suspense>
       </Stack>
     </Stack>
