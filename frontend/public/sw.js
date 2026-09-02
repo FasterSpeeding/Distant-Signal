@@ -115,3 +115,39 @@ self.addEventListener('fetch', (event) => {
   // already does today with no service worker present, by simply not
   // calling event.respondWith() here.
 });
+
+// Web Push notifications -- docs/superpowers/specs/
+// 2026-09-02-line-status-notifications-design.md. Payload contract, fixed
+// by that plan and mirrored exactly by crates/notifier/src/send.rs's
+// `NotificationPayload`: `{ title, body, url, tag }`, JSON-encoded, where
+// `url` is an app-relative pathname (e.g. "/lines/bakerloo" or
+// "/track/42"), not a full URL. Kept as two flat, independent
+// addEventListener blocks below, touching none of install/activate/fetch
+// above, per this file's own header comment.
+
+self.addEventListener('push', (event) => {
+  if (!event.data) {
+    return;
+  }
+  const { title, body, url, tag } = event.data.json();
+
+  event.waitUntil(
+    (async () => {
+      // Skip showing a notification if a focused client already has this
+      // exact URL open -- AutoRefresh already covers that case within its
+      // existing 30s poll, so a push notification on top of an
+      // already-visible, already-fresh tab would be redundant.
+      const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      const alreadyFocused = clientList.some((client) => client.focused && new URL(client.url).pathname === url);
+      if (alreadyFocused) {
+        return;
+      }
+      await self.registration.showNotification(title, { body, tag, data: { url } });
+    })(),
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(self.clients.openWindow(event.notification.data.url));
+});
