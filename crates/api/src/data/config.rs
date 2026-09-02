@@ -52,9 +52,34 @@ pub struct ServiceArguments {
     #[arg(long, env)]
     pub redis_url: String,
     /// Shared secret pollers must present via `X-Internal-Token` to reach
-    /// `private_router()` endpoints.
+    /// `private_router()` endpoints. Wired to `auth::InternalService::Legacy`
+    /// (allowed every route) during the Decision 5 dual-acceptance window --
+    /// see the seven per-service fields below for the real, scoped
+    /// credentials new deployments should move onto.
     #[arg(long, env)]
     pub internal_token: String,
+    /// Per-service internal tokens (Decision 1/2,
+    /// docs/superpowers/specs/2026-09-01-internal-service-accounts-design.md).
+    /// Each is this app's OWN minted credential for exactly one real
+    /// caller -- see `auth::InternalService` for the identity each maps
+    /// to and which /private/* routes it may reach. `internal_token`
+    /// above stays wired to `auth::InternalService::Legacy` (allowed
+    /// every route, Decision 5's dual-acceptance window), not replaced by
+    /// these.
+    #[arg(long, env)]
+    pub internal_token_poller_incidents: String,
+    #[arg(long, env)]
+    pub internal_token_poller_stations: String,
+    #[arg(long, env)]
+    pub internal_token_poller_tocs: String,
+    #[arg(long, env)]
+    pub internal_token_poller_ldbws: String,
+    #[arg(long, env)]
+    pub internal_token_poller_tfl: String,
+    #[arg(long, env)]
+    pub internal_token_trust_consumer: String,
+    #[arg(long, env)]
+    pub internal_token_schedule_ingest: String,
     /// OIDC issuer base URL (e.g. `https://sso.example.com/realms/rail`).
     /// `crates/api` discovers every other endpoint (authorization, token,
     /// JWKS) from this single URL's `.well-known/openid-configuration`
