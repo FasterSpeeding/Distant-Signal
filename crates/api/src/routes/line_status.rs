@@ -40,6 +40,7 @@ pub fn router() -> Router {
         .route("/StopPoint/{crs}/Disruption", axum::routing::get(get_stop_point_disruption))
         .route("/Line/{id}/Status/{from}/to/{to}", axum::routing::get(get_line_status_history))
         .route("/Line/{id}/Stats/{from}/to/{to}", axum::routing::get(get_line_daily_stats))
+        .route("/Line/{id}/Stats/Hourly/{from}/to/{to}", axum::routing::get(get_line_hourly_stats))
 }
 
 #[derive(Debug, Deserialize)]
@@ -343,6 +344,41 @@ async fn get_line_daily_stats(
     Ok(Json(rows.into_iter().map(daily_stats_to_json).collect()))
 }
 
+/// Hourly sibling of `daily_stats_to_json` -- identical rate-derivation
+/// logic, `hourStart` (an ISO instant) in place of `day`.
+fn hourly_stats_to_json(row: queries::HourlyStatsRow) -> Value {
+    let avg_delay_minutes = if row.running_count > 0 {
+        row.delay_minutes_sum / row.running_count as f64
+    } else {
+        0.0
+    };
+    let rate = |numerator: i64| if row.total > 0 { numerator as f64 / row.total as f64 } else { 0.0 };
+
+    serde_json::json!({
+        "hourStart": row.hour_start,
+        "sampleCycles": row.sample_cycles,
+        "total": row.total,
+        "delayed": row.delayed,
+        "cancelled": row.cancelled,
+        "skipped": row.skipped,
+        "avgDelayMinutes": avg_delay_minutes,
+        "delayRate": rate(row.delayed),
+        "cancellationRate": rate(row.cancelled),
+        "skipRate": rate(row.skipped),
+    })
+}
+
+async fn get_line_hourly_stats(
+    State(app): State<App>,
+    Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let rows = queries::hourly_stats_for_range(&app.database, &id, from, to)
+        .await
+        .map_err(internal_error)?;
+
+    Ok(Json(rows.into_iter().map(hourly_stats_to_json).collect()))
+}
+
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "line status query failed");
     (StatusCode::INTERNAL_SERVER_ERROR, "query failed".to_string())
@@ -544,6 +580,80 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert_eq!(body, "northern|2026-08-01|2026-08-31");
+    }
+
+    fn hourly_stats_row(
+        total: i64, delayed: i64, cancelled: i64, skipped: i64, running_count: i64, delay_minutes_sum: f64,
+    ) -> queries::HourlyStatsRow {
+        queries::HourlyStatsRow {
+            hour_start: "2026-08-15T14:00:00Z".parse().unwrap(),
+            sample_cycles: 12,
+            total, delayed, cancelled, skipped, running_count, delay_minutes_sum,
+        }
+    }
+
+    #[test]
+    fn hourly_stats_to_json_computes_rates_for_a_normal_row() {
+        let row = hourly_stats_row(100, 10, 5, 2, 95, 190.0);
+        let json = hourly_stats_to_json(row);
+
+        assert_eq!(json["hourStart"], serde_json::json!("2026-08-15T14:00:00Z"));
+        assert_eq!(json["avgDelayMinutes"], serde_json::json!(2.0));
+        assert_eq!(json["delayRate"], serde_json::json!(0.1));
+    }
+
+    #[test]
+    fn hourly_stats_to_json_zero_total_never_produces_nan_or_infinity() {
+        let row = hourly_stats_row(0, 0, 0, 0, 0, 0.0);
+        let json = hourly_stats_to_json(row);
+        for field in ["avgDelayMinutes", "delayRate", "cancellationRate", "skipRate"] {
+            let value = json[field].as_f64().unwrap();
+            assert!(value.is_finite());
+            assert_eq!(value, 0.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn both_stats_routes_coexist_and_route_to_the_correct_handler() {
+        // The real risk this test exists for: `/Line/{id}/Stats/{from}/to/{to}`
+        // (NaiveDate) and `/Line/{id}/Stats/Hourly/{from}/to/{to}` (DateTime<Utc>)
+        // share a path prefix with a dynamic segment at the exact position the
+        // new route's literal "Hourly" segment occupies. Two throwaway probe
+        // handlers, mounted the same way the daily route's own precedent probe
+        // (`get_line_daily_stats_route_mounts_and_parses_naive_date_path_segments`,
+        // above) does, confirm axum's router sends each URL to the right one
+        // rather than assuming it from matchit's documented priority rules.
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        async fn daily_probe(Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>) -> String {
+            format!("daily:{id}|{from}|{to}")
+        }
+        async fn hourly_probe(Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>) -> String {
+            format!("hourly:{id}|{from}|{to}")
+        }
+
+        let app: axum::Router = axum::Router::new()
+            .route("/Line/{id}/Stats/{from}/to/{to}", axum::routing::get(daily_probe))
+            .route("/Line/{id}/Stats/Hourly/{from}/to/{to}", axum::routing::get(hourly_probe));
+
+        let daily_response = app.clone()
+            .oneshot(Request::builder().uri("/Line/northern/Stats/2026-08-01/to/2026-08-31").body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(daily_response.status(), StatusCode::OK);
+        let daily_body = axum::body::to_bytes(daily_response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(String::from_utf8(daily_body.to_vec()).unwrap(), "daily:northern|2026-08-01|2026-08-31");
+
+        let hourly_response = app
+            .oneshot(Request::builder().uri("/Line/northern/Stats/Hourly/2026-08-31T00:00:00Z/to/2026-09-01T00:00:00Z").body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(hourly_response.status(), StatusCode::OK, "the Hourly route must not be shadowed by the sibling NaiveDate route");
+        let hourly_body = axum::body::to_bytes(hourly_response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            String::from_utf8(hourly_body.to_vec()).unwrap(),
+            "hourly:northern|2026-08-31 00:00:00 UTC|2026-09-01 00:00:00 UTC",
+        );
     }
 }
 
