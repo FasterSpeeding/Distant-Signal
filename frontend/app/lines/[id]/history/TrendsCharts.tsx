@@ -71,6 +71,7 @@ export function TrendsCharts({ points }: { points: ChartPoint[] }) {
           ]}
           valueFormatter={(value) => `${(value * 100).toFixed(1)}%`}
           connectNulls={false}
+          xAxisProps={{ padding: { right: 12 } }}
         >
           {/* Whether x1/x2 resolve cleanly against this chart's string `day`
               category values for a single isolated gap day (covering exactly
@@ -104,6 +105,7 @@ export function TrendsCharts({ points }: { points: ChartPoint[] }) {
           series={[{ name: 'avgDelayMinutes', label: 'Avg delay (minutes)', color: 'grape.6' }]}
           valueFormatter={(value) => `${value.toFixed(1)} min`}
           connectNulls={false}
+          xAxisProps={{ padding: { right: 12 } }}
         >
           {gapSpans(points).map((span) => (
             <ReferenceArea

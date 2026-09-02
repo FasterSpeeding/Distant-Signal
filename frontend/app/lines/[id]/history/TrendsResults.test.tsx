@@ -167,6 +167,15 @@ describe('TrendsResults', () => {
     expect(avgDelayProps.valueFormatter?.(0.41267123328767123)).toBe('0.4 min');
   });
 
+  it('insets the right edge of the x-axis on both charts so the last dot stops clipping', async () => {
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([row({ day: '2026-08-01' })]);
+    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
+
+    for (const [props] of lineChartMock.mock.calls) {
+      expect(props.xAxisProps).toEqual({ padding: { right: 12 } });
+    }
+  });
+
   it('passes connectNulls={false} to both charts so gaps render instead of interpolating', async () => {
     vi.mocked(api.getLineDailyStats).mockResolvedValue([row({ day: '2026-08-01' })]);
     renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
