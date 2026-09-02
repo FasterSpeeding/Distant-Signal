@@ -94,6 +94,18 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       BIND_URL: 0.0.0.0:8080
       INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      # Per-service internal tokens api uses to build its startup identity
+      # registry (crates/api/src/auth.rs::InternalServiceRegistry) -- see
+      # docs/superpowers/specs/2026-09-01-internal-service-accounts-design.md.
+      # api is the only consumer that needs all seven; each poller/service
+      # below keeps sending its own unchanged INTERNAL_TOKEN.
+      INTERNAL_TOKEN_POLLER_INCIDENTS: ${INTERNAL_TOKEN_POLLER_INCIDENTS}
+      INTERNAL_TOKEN_POLLER_STATIONS: ${INTERNAL_TOKEN_POLLER_STATIONS}
+      INTERNAL_TOKEN_POLLER_TOCS: ${INTERNAL_TOKEN_POLLER_TOCS}
+      INTERNAL_TOKEN_POLLER_LDBWS: ${INTERNAL_TOKEN_POLLER_LDBWS}
+      INTERNAL_TOKEN_POLLER_TFL: ${INTERNAL_TOKEN_POLLER_TFL}
+      INTERNAL_TOKEN_TRUST_CONSUMER: ${INTERNAL_TOKEN_TRUST_CONSUMER}
+      INTERNAL_TOKEN_SCHEDULE_INGEST: ${INTERNAL_TOKEN_SCHEDULE_INGEST}
       REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
       # All five are required by the binary with no defaults, so they use
