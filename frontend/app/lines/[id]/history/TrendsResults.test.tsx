@@ -88,11 +88,14 @@ describe('toChartPoints', () => {
 });
 
 describe('TrendsResults', () => {
-  it('renders the empty state when there are no rows', async () => {
+  it('renders the empty state when there are no rows, inside a bounded container', async () => {
     vi.mocked(api.getLineDailyStats).mockResolvedValue([]);
     renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
-    expect(screen.getByText('Not enough sampled data yet for this line.')).toBeInTheDocument();
+    const text = screen.getByText('Not enough sampled data yet for this line.');
+    expect(text).toBeInTheDocument();
     expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
+    // Confirms the bounded wrapper, not just the text -- Mantine's Paper renders a div with its own class.
+    expect(text.closest('.mantine-Paper-root')).not.toBeNull();
   });
 
   it('a sparse day does not throw and does not render a flat-zero-looking point', async () => {

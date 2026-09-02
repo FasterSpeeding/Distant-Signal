@@ -1,4 +1,4 @@
-import { Stack, Text, Title } from '@mantine/core';
+import { Paper, Stack, Text, Title } from '@mantine/core';
 import { getLineDailyStats } from '@/lib/api';
 import { londonDayKey } from '@/lib/dateFormat';
 import type { LineDailyStats } from '@/lib/types';
@@ -38,7 +38,24 @@ export async function TrendsResults({ id, from, to }: { id: string; from: string
   const stats = await getLineDailyStats(id, londonDayKey(from), londonDayKey(to));
 
   if (stats.length === 0) {
-    return <Text c="dimmed">Not enough sampled data yet for this line.</Text>;
+    // Live-investigated (docs/superpowers/plans/2026-09-02-line-history-chart-fixes.md
+    // Task 6 Step 1, design spec Open question 3): the reported "dead
+    // whitespace below the footer" is a genuine but transient Suspense
+    // loading-flash artifact, not a persistent layout bug -- confirmed
+    // against a real dev server by artificially delaying this fetch and
+    // screenshotting mid-flight (the route's `<Skeleton height={320}>`
+    // fallback, `history/page.tsx`, briefly occupies far more vertical
+    // space than this short resolved text ever will) versus after full
+    // resolution (no lingering gap remains; the footer sits immediately
+    // below this text). Wrapped in a bounded `Paper` anyway, since that
+    // fix is worth making regardless of the flash outcome -- it reads as
+    // a deliberately-finished component rather than a chart that failed
+    // to render, not because it shrinks whitespace below it.
+    return (
+      <Paper withBorder p="md">
+        <Text c="dimmed">Not enough sampled data yet for this line.</Text>
+      </Paper>
+    );
   }
 
   const points = toChartPoints(stats);
