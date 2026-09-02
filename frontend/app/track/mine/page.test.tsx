@@ -9,11 +9,10 @@ vi.mock('@/lib/api');
 // The not-logged-in prompt is AutoOpenLoginPrompt -> LoginPromptModal,
 // which calls useLoginHref() (usePathname()/useSearchParams() under the
 // hood) -- same stub AuthStatus.test.tsx and TicketPanel.test.tsx use for
-// the same reason. This page also renders
-// TicketEntryForm (the "Add a ticket" entry point) and AttachTicketAction,
-// both of which call useRouter() from next/navigation -- same workaround
-// TicketPanel.test.tsx/TicketEntryForm.test.tsx use for the same reason
-// (useRouter() throws outside an app router context).
+// the same reason. This page also renders AttachTicketAction and
+// DeleteTicketButton, both of which call useRouter() from next/navigation
+// -- same workaround TicketPanel.test.tsx/TicketEntryForm.test.tsx use for
+// the same reason (useRouter() throws outside an app router context).
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
   usePathname: () => '/track/mine',
@@ -228,10 +227,14 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     expect(originOrder).toEqual([expect.stringMatching(/^WAT/), expect.stringMatching(/^PAD/)]);
   });
 
-  it('renders the "Add a ticket" entry point', async () => {
+  it('renders "Track a new train" and "Add a ticket" entry-point links beside the title', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByRole('button', { name: 'Add a ticket' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Track a new train' })).toHaveAttribute('href', '/track');
+    expect(screen.getByRole('link', { name: 'Add a ticket' })).toHaveAttribute(
+      'href',
+      '/track/mine/add-ticket',
+    );
   });
 });

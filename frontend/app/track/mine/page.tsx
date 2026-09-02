@@ -5,7 +5,6 @@ import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
 import { TextLink } from '@/components/TextLink';
 import { TicketSummary } from '@/components/TicketSummary';
 import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
-import { TicketEntryForm } from '@/components/TicketEntryForm';
 import { AttachTicketAction } from '@/components/AttachTicketAction';
 import { DeleteTicketButton } from '@/components/DeleteTicketButton';
 import { formatDate, formatTime } from '@/lib/dateFormat';
@@ -76,7 +75,10 @@ export default async function MyTrackedTrainsPage() {
     <Stack p="lg" gap="lg">
       <Group justify="space-between" align="baseline">
         <Title order={1}>My Trains &amp; Tickets</Title>
-        <TextLink href="/track">Track a new train</TextLink>
+        <Group gap="md">
+          <TextLink href="/track">Track a new train</TextLink>
+          <TextLink href="/track/mine/add-ticket">Add a ticket</TextLink>
+        </Group>
       </Group>
       {nothingToShow ? (
         <Text c="dimmed">
@@ -111,7 +113,6 @@ export default async function MyTrackedTrainsPage() {
           )}
         </>
       )}
-      <TicketEntryForm label="Add a ticket" />
     </Stack>
   );
 }

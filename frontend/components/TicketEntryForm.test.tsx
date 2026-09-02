@@ -93,6 +93,12 @@ describe('TicketEntryForm', () => {
     expect(screen.queryByLabelText('Operator')).not.toBeInTheDocument();
   });
 
+  it('defaultOpen renders the manual-entry tab immediately, with no collapsed-button click needed', () => {
+    renderWithMantine(<TicketEntryForm label="Add a ticket" defaultOpen />);
+    expect(screen.getByLabelText('Operator')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add a ticket' })).not.toBeInTheDocument();
+  });
+
   it('expands into the manual-entry tab by default when opened', () => {
     openForm();
     expect(screen.getByLabelText('Operator')).toBeInTheDocument();
