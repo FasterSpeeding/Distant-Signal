@@ -37,15 +37,33 @@ const MAX_PIN_AGE: chrono::Duration = chrono::Duration::hours(6);
 /// what falls past this cap).
 const MINE_LIST_LIMIT: i64 = 100;
 
+/// These messages are USER-FACING COPY, not developer diagnostics. There is
+/// no error envelope anywhere in this API (`crates/api/src/routes/train.rs`
+/// returns `(StatusCode::BAD_REQUEST, String)` as plain text), and
+/// `frontend/components/TrackTrainForm.tsx` renders the body verbatim as
+/// the form's error `Alert` -- so a snake_case field name written here
+/// becomes a snake_case field name on a user's screen
+/// (docs/superpowers/specs/2026-09-02-frontend-ui-ux-review.md §F5).
 pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), String> {
     if pin.origin_crs.trim().is_empty() {
-        return Err("origin_crs must not be empty".to_string());
+        return Err("Enter the station you're departing from.".to_string());
     }
     if pin.origin_crs.len() != 3 {
-        return Err("origin_crs must be a 3-letter CRS code".to_string());
+        return Err(
+            "That doesn't look like a station code — CRS codes are three letters, like WOK \
+             or EUS."
+                .to_string(),
+        );
     }
     if now - pin.scheduled_departure > MAX_PIN_AGE {
-        return Err("scheduled_departure is too far in the past to track".to_string());
+        // Interpolated from MAX_PIN_AGE, not typed as prose, so this message
+        // can never drift from the constant it describes.
+        return Err(format!(
+            "That departure time is more than {} hours ago — trains can only be tracked \
+             within {} hours of departure.",
+            MAX_PIN_AGE.num_hours(),
+            MAX_PIN_AGE.num_hours(),
+        ));
     }
     Ok(())
 }
@@ -97,19 +115,34 @@ const TICKET_SOURCES: [&str; 4] = [
 /// non-3-letter value here means a `PartialTicket` preview resubmitted
 /// unedited is *guaranteed* to fail this check, forcing a human to correct
 /// it into a real code before anything is ever saved.
+/// Same user-facing-copy posture as [`validate_pin`]'s doc comment.
 pub fn validate_ticket_entry(entry: &TicketEntryRequest) -> Result<(), String> {
     if !TICKET_SOURCES.contains(&entry.source.as_str()) {
-        return Err(format!("source must be one of {TICKET_SOURCES:?}"));
+        // Not a `{TICKET_SOURCES:?}` Debug dump of the array (that used to
+        // render e.g. `source must be one of ["manual", "pkpass-semantics",
+        // "pkpass-heuristic", "pdf-heuristic"]` verbatim to a user). This
+        // path is unreachable from the app's own form, which always
+        // supplies `source` itself, so listing the valid values buys a
+        // direct-API caller nothing a 400 doesn't already tell them.
+        return Err("That's not a recognised ticket source.".to_string());
     }
     if let Some(crs) = &entry.origin_crs
         && crs.len() != 3
     {
-        return Err("origin_crs must be a 3-letter CRS code".to_string());
+        return Err(
+            "That doesn't look like a station code — CRS codes are three letters, like WOK \
+             or EUS."
+                .to_string(),
+        );
     }
     if let Some(crs) = &entry.destination_crs
         && crs.len() != 3
     {
-        return Err("destination_crs must be a 3-letter CRS code".to_string());
+        return Err(
+            "That doesn't look like a destination station code — CRS codes are three \
+             letters, like WOK or EUS."
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -165,6 +198,37 @@ mod ticket_entry_tests {
     #[test]
     fn an_unknown_source_is_rejected() {
         assert!(validate_ticket_entry(&entry(Some("KGX"), "barcode-decoded")).is_err());
+    }
+
+    #[test]
+    fn validation_messages_carry_no_internal_field_names_or_debug_dumps() {
+        // Same guard as train_tracking::tests -- these 400 bodies are
+        // rendered verbatim by TicketEntryForm.tsx. The old
+        // `format!("source must be one of {TICKET_SOURCES:?}")` failed this
+        // twice over: both an identifier AND a Rust Debug array dump.
+        let messages = [
+            validate_ticket_entry(&entry(Some("KGX"), "barcode-decoded")).unwrap_err(),
+            validate_ticket_entry(&entry(Some("Kings Cross"), "manual")).unwrap_err(),
+            validate_ticket_entry(&TicketEntryRequest {
+                operator: None,
+                ticket_type: None,
+                origin_crs: Some("KGX".to_string()),
+                destination_crs: Some("Edinburgh Waverley".to_string()),
+                source: "manual".to_string(),
+            })
+            .unwrap_err(),
+        ];
+        for message in messages {
+            assert!(!message.is_empty(), "validation message must not be empty");
+            assert!(
+                !message.contains('_'),
+                "user-facing copy leaked an identifier: {message}"
+            );
+            assert!(
+                !message.contains('['),
+                "user-facing copy leaked a Debug array dump: {message}"
+            );
+        }
     }
 }
 
@@ -488,6 +552,29 @@ mod tests {
         let now: DateTime<Utc> = "2026-06-15T12:00:00Z".parse().unwrap();
         let departure: DateTime<Utc> = "2026-06-15T02:00:00Z".parse().unwrap(); // 10h ago
         assert!(validate_pin(&pin("WAT", departure), now).is_err());
+    }
+
+    #[test]
+    fn validation_messages_carry_no_internal_field_names() {
+        // The 400 body is rendered verbatim as the form's error Alert
+        // (frontend/components/TrackTrainForm.tsx), so a snake_case field
+        // name here lands on screen. See the review's §F5. A cheap, durable
+        // guard: no branch's message should ever contain `_`.
+        let now: DateTime<Utc> = "2026-06-15T12:00:00Z".parse().unwrap();
+        let stale_departure: DateTime<Utc> = "2026-06-15T02:00:00Z".parse().unwrap();
+
+        let messages = [
+            validate_pin(&pin("", now), now).unwrap_err(),
+            validate_pin(&pin("WATERLOO", now), now).unwrap_err(),
+            validate_pin(&pin("WAT", stale_departure), now).unwrap_err(),
+        ];
+        for message in messages {
+            assert!(!message.is_empty(), "validation message must not be empty");
+            assert!(
+                !message.contains('_'),
+                "user-facing copy leaked an identifier: {message}"
+            );
+        }
     }
 }
 

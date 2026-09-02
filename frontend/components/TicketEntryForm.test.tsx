@@ -138,10 +138,20 @@ describe('TicketEntryForm', () => {
   });
 
   it('manual submit: on a 400, shows the backend message inline', async () => {
-    vi.mocked(fetch).mockResolvedValue(new Response('origin_crs must be a 3-letter CRS code', { status: 400 }));
+    // The exact copy is
+    // `crates/api/src/data/train_tracking.rs::validate_ticket_entry`'s
+    // source of truth -- this is testing the pass-through, not owning the
+    // wording itself.
+    vi.mocked(fetch).mockResolvedValue(
+      new Response("That doesn't look like a station code — CRS codes are three letters, like WOK or EUS.", {
+        status: 400,
+      }),
+    );
     openForm();
     fireEvent.click(screen.getByRole('button', { name: 'Save ticket' }));
-    expect(await screen.findByText('origin_crs must be a 3-letter CRS code')).toBeInTheDocument();
+    expect(
+      await screen.findByText("That doesn't look like a station code — CRS codes are three letters, like WOK or EUS."),
+    ).toBeInTheDocument();
   });
 
   it.each([
