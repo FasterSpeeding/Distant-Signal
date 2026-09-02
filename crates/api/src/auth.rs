@@ -60,6 +60,93 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
+/// One variant per legitimate caller of `private_router()`, plus `Legacy`
+/// for the pre-migration shared token (Decision 5). A static, code-defined
+/// table -- not a DB-backed ACL -- per Decision 2: the caller set is small,
+/// changes only alongside a code deploy, and `require_internal_token` runs
+/// on every `/private/*` request, including poller-ldbws's every-60s
+/// station-sample POST, so this must stay a zero-I/O check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InternalService {
+    PollerIncidents,
+    PollerStations,
+    PollerTocs,
+    PollerLdbws,
+    PollerTfl,
+    TrustConsumer,
+    ScheduleIngest,
+    /// The pre-migration shared `X-Internal-Token` value (Decision 5).
+    /// Allowed every route, unlike every other variant -- see `allows`.
+    /// Retiring this variant (and the config field it's built from) is a
+    /// separate, later plan; see this plan's Task 8.
+    Legacy,
+}
+
+impl InternalService {
+    /// The route prefixes this identity may reach, matched against
+    /// `request.uri().path()` with a plain `starts_with` -- no
+    /// `MatchedPath` extractor, matching this file's own hand-rolled
+    /// posture for something this narrow (see `parse_cookie`'s doc
+    /// comment). A route added to `ingest.rs`/`samples.rs` without a
+    /// matching entry here is default-denied for every real service (see
+    /// the regression tests below).
+    fn allowed_prefixes(&self) -> &'static [&'static str] {
+        match self {
+            InternalService::PollerIncidents => &["/incidents"],
+            InternalService::PollerStations => &["/stations"],
+            InternalService::PollerTocs => &["/tocs"],
+            InternalService::PollerLdbws => &["/sample-stations", "/station-samples"],
+            InternalService::PollerTfl => &["/tfl-line-status"],
+            InternalService::TrustConsumer => &["/train-events", "/tracked-trains"],
+            InternalService::ScheduleIngest => &["/schedule-feed-ingests"],
+            // Legacy never consults this list -- see `allows`. Returning
+            // an empty slice here (rather than every real prefix) means
+            // this list never needs updating when a new service/route is
+            // added; only `allows`'s one early-return needs to exist.
+            InternalService::Legacy => &[],
+        }
+    }
+
+    /// `Legacy` is allowed everywhere -- today's actual behavior,
+    /// preserved for the Decision 5 transition window. Every other
+    /// variant is checked against its own `allowed_prefixes`.
+    pub fn allows(&self, path: &str) -> bool {
+        if matches!(self, InternalService::Legacy) {
+            return true;
+        }
+        self.allowed_prefixes().iter().any(|prefix| path.starts_with(prefix))
+    }
+}
+
+/// Opaque-token -> `InternalService` lookup, built once at startup from
+/// config (`AppState::init`) -- not a DB table (Decision 2). Mirrors
+/// `AuthenticatedUser`'s own "hash the presented token, look up the hash"
+/// shape (`hash_session_token` / `get_session_with_user`), just against an
+/// in-memory map instead of the `sessions` table, since this set is small
+/// and fixed at deploy time.
+#[derive(Debug, Default)]
+pub struct InternalServiceRegistry(std::collections::HashMap<String, InternalService>);
+
+impl InternalServiceRegistry {
+    /// `pairs` is `(identity, raw token)` -- every entry's token is hashed
+    /// before being stored, exactly like a session token, so a leaked
+    /// startup panic message or `{:?}` dump of this struct never contains
+    /// a raw credential. A duplicate raw token across two different
+    /// identities silently lets the later entry win (last-write-wins on
+    /// the same hash key) -- not guarded against here.
+    pub fn from_tokens(pairs: &[(InternalService, &str)]) -> Self {
+        let mut map = std::collections::HashMap::with_capacity(pairs.len());
+        for (identity, token) in pairs {
+            map.insert(hash_session_token(token), *identity);
+        }
+        InternalServiceRegistry(map)
+    }
+
+    pub fn resolve(&self, token: &str) -> Option<InternalService> {
+        self.0.get(&hash_session_token(token)).copied()
+    }
+}
+
 pub const SESSION_COOKIE_NAME: &str = "distant_signal_session";
 pub const LOGIN_STATE_COOKIE_NAME: &str = "distant_signal_login";
 
@@ -411,5 +498,110 @@ mod tests {
         // to update it, rather than a silent behavior change.
         assert!(validate_return_to("/api/auth/login").is_some());
         assert!(validate_return_to("/api/auth/callback").is_some());
+    }
+}
+
+#[cfg(test)]
+mod internal_service_tests {
+    use super::*;
+
+    fn registry() -> InternalServiceRegistry {
+        InternalServiceRegistry::from_tokens(&[
+            (InternalService::PollerIncidents, "tok-incidents"),
+            (InternalService::PollerStations, "tok-stations"),
+            (InternalService::PollerTocs, "tok-tocs"),
+            (InternalService::PollerLdbws, "tok-ldbws"),
+            (InternalService::PollerTfl, "tok-tfl"),
+            (InternalService::TrustConsumer, "tok-trust"),
+            (InternalService::ScheduleIngest, "tok-schedule"),
+            (InternalService::Legacy, "tok-legacy"),
+        ])
+    }
+
+    #[test]
+    fn a_known_token_resolves_to_its_identity() {
+        assert_eq!(registry().resolve("tok-incidents"), Some(InternalService::PollerIncidents));
+    }
+
+    #[test]
+    fn an_unknown_token_resolves_to_none() {
+        assert_eq!(registry().resolve("not-a-real-token"), None);
+    }
+
+    #[test]
+    fn an_empty_token_resolves_to_none_even_against_an_empty_registry() {
+        // Mirrors the old single-token scheme's
+        // empty_provided_against_real_token_does_not_match case -- an empty
+        // presented token must never accidentally match anything, including
+        // a registry with no entries at all.
+        let empty = InternalServiceRegistry::default();
+        assert_eq!(empty.resolve(""), None);
+    }
+
+    // Table-driven scope-enforcement test: every real (InternalService, route)
+    // pair from this task's route table allows; at least one OTHER service's
+    // identity against that same route is denied. Regression guard for "a
+    // newly added /private/* route forgets to declare who may call it."
+    #[test]
+    fn each_service_is_allowed_only_its_own_routes() {
+        let cases: &[(InternalService, &str)] = &[
+            (InternalService::PollerIncidents, "/incidents"),
+            (InternalService::PollerStations, "/stations"),
+            (InternalService::PollerTocs, "/tocs"),
+            (InternalService::PollerLdbws, "/sample-stations"),
+            (InternalService::PollerLdbws, "/station-samples"),
+            (InternalService::PollerTfl, "/tfl-line-status"),
+            (InternalService::TrustConsumer, "/train-events"),
+            (InternalService::TrustConsumer, "/tracked-trains"),
+            (InternalService::ScheduleIngest, "/schedule-feed-ingests"),
+        ];
+        let all_services = [
+            InternalService::PollerIncidents,
+            InternalService::PollerStations,
+            InternalService::PollerTocs,
+            InternalService::PollerLdbws,
+            InternalService::PollerTfl,
+            InternalService::TrustConsumer,
+            InternalService::ScheduleIngest,
+        ];
+
+        for (owner, route) in cases {
+            assert!(owner.allows(route), "{owner:?} must be allowed on its own route {route}");
+            for other in all_services.iter().filter(|s| *s != owner) {
+                assert!(
+                    !other.allows(route),
+                    "{other:?} must NOT be allowed on {owner:?}'s route {route}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_is_allowed_on_every_real_route() {
+        for route in [
+            "/incidents", "/stations", "/tocs", "/sample-stations", "/station-samples",
+            "/tfl-line-status", "/train-events", "/tracked-trains", "/schedule-feed-ingests",
+        ] {
+            assert!(InternalService::Legacy.allows(route), "Legacy must be allowed on {route}");
+        }
+    }
+
+    #[test]
+    fn a_route_not_in_any_services_allowlist_is_denied_for_every_real_identity() {
+        // Default-deny guard: a fabricated route present in nobody's
+        // allowlist must never accidentally pass for a real (non-Legacy)
+        // identity.
+        let fabricated = "/some-future-route-nobody-declared";
+        for service in [
+            InternalService::PollerIncidents,
+            InternalService::PollerStations,
+            InternalService::PollerTocs,
+            InternalService::PollerLdbws,
+            InternalService::PollerTfl,
+            InternalService::TrustConsumer,
+            InternalService::ScheduleIngest,
+        ] {
+            assert!(!service.allows(fabricated), "{service:?} must not be allowed on {fabricated}");
+        }
     }
 }
