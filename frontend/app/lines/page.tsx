@@ -1,7 +1,7 @@
-import { Stack, Title } from '@mantine/core';
+import { Group, Stack, Title } from '@mantine/core';
 import { getAllLines, getAllTocs, getLineStatusForMode, getPreferences } from '@/lib/api';
 import { DISPLAYED_MODES_PARAM } from '@/lib/modes';
-import { CustomLineForm } from './CustomLineForm';
+import { TextLink } from '@/components/TextLink';
 import { AllLinesTable } from './AllLinesTable';
 
 export const revalidate = 0;
@@ -17,13 +17,11 @@ export default async function AllLinesPage() {
   return (
     <Stack p="lg" gap="xl">
       <Stack gap="md">
-        <Title order={1}>All Lines</Title>
+        <Group justify="space-between" align="baseline">
+          <Title order={1}>All Lines</Title>
+          <TextLink href="/lines/new">New custom line</TextLink>
+        </Group>
         <AllLinesTable lines={lines} reports={reports} pinnedLineIds={preferences.pinnedLines} tocs={tocs} />
-      </Stack>
-
-      <Stack gap="md">
-        <Title order={2}>New Custom Line</Title>
-        <CustomLineForm />
       </Stack>
     </Stack>
   );
