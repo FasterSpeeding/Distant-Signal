@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import AllLinesPage from './page';
 import * as api from '@/lib/api';
+import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
 import type { LineStatusReport, LineSummary, Suggestion, Preferences } from '@/lib/types';
 
 vi.mock('@/lib/api', async () => {
@@ -15,6 +16,14 @@ vi.mock('@/lib/api', async () => {
     getAllTocs: vi.fn(),
   };
 });
+// `withStaleFallback` (lib/liveDataCache.ts) reads the session cookie via
+// `next/headers` to scope its cache per visitor, and there is no Next
+// request context in a unit test. Same stub shape lib/api.test.ts uses,
+// plus the `.get()` the cache needs.
+vi.mock('next/headers', () => ({
+  cookies: async () => ({ toString: () => '', get: () => undefined }),
+}));
+
 // AllLinesTable renders a PinToggle per row, which calls useRouter() from
 // next/navigation -- same workaround AllLinesTable.test.tsx itself uses
 // (that hook throws outside a real Next.js App Router tree). PinToggle also
@@ -45,6 +54,7 @@ async function renderPage() {
 
 describe('AllLinesPage', () => {
   beforeEach(() => {
+    __resetStaleCacheForTests();
     vi.stubGlobal('fetch', vi.fn());
     vi.mocked(api.getAllLines).mockResolvedValue(lines);
     vi.mocked(api.getPreferences).mockResolvedValue(preferences);
@@ -69,5 +79,33 @@ describe('AllLinesPage', () => {
     expect(screen.queryByLabelText('Name')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Create line' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'New Custom Line' })).not.toBeInTheDocument();
+  });
+
+  // Outage behaviour (design spec Decision 5 / plan Task 5).
+  it('keeps rendering the last-known line status when the status fetch fails', async () => {
+    // One good render populates the stale cache...
+    await renderPage();
+    cleanup();
+    vi.mocked(api.getLineStatusForMode).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    vi.mocked(api.getAllLines).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+    // ...so the next one survives the outage instead of throwing to
+    // app/error.tsx.
+    await renderPage();
+    expect(screen.getByRole('heading', { name: 'All Lines', level: 1 })).toBeInTheDocument();
+  });
+
+  it('still renders, with nothing pinned, when getPreferences fails', async () => {
+    vi.mocked(api.getPreferences).mockRejectedValue(new Error('500'));
+
+    await renderPage();
+    expect(screen.getByRole('heading', { name: 'All Lines', level: 1 })).toBeInTheDocument();
+  });
+
+  it('still renders when the TOC reference lookup fails', async () => {
+    vi.mocked(api.getAllTocs).mockRejectedValue(new Error('500'));
+
+    await renderPage();
+    expect(screen.getByRole('heading', { name: 'All Lines', level: 1 })).toBeInTheDocument();
   });
 });

@@ -1,6 +1,7 @@
 import { Stack, Title, Text, Group, Divider } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import { getStopPointDisruption, getPreferences, getStationName } from '@/lib/api';
+import { withStaleFallback } from '@/lib/liveDataCache';
 import { StatusBadge } from '@/components/StatusBadge';
 import { IssueList } from '@/components/IssueList';
 import { PinToggle } from '@/components/PinToggle';
@@ -8,6 +9,7 @@ import { TextLink } from '@/components/TextLink';
 import { worstStatus, severityRank } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
+import type { Preferences } from '@/lib/types';
 
 /** Three outcomes, not two. The previous version collapsed "there is no
  * such station" and "the name lookup failed" into a single `null`, so the
@@ -24,6 +26,12 @@ type StationLookup =
 /** Every CRS code is exactly three letters, so a malformed one is answered
  * without troubling the API at all. */
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
+
+// The exact shape getPreferences() already returns for a 401, named so the
+// fallback below is typed as `Preferences` rather than inferred with
+// `never[]` members. Per-user data fails closed during an outage (design
+// spec Decision 5) instead of being stale-served.
+const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [] };
 
 async function lookupStation(crs: string): Promise<StationLookup> {
   if (!CRS_PATTERN.test(crs)) return { outcome: 'unknown' };
@@ -51,7 +59,13 @@ export default async function StationDisruptionPage({
     notFound();
   }
 
-  const [reports, preferences] = await Promise.all([getStopPointDisruption(crs), getPreferences()]);
+  const [reports, preferences] = await Promise.all([
+    withStaleFallback(`stopPointDisruption:${crs}`, () => getStopPointDisruption(crs)),
+    // Per-user, so it fails closed to "nothing pinned" (the shape a 401
+    // already returns) rather than being stale-served -- design spec
+    // Decision 5. The pin button reads as unpinned during an outage.
+    getPreferences().catch(() => NO_PREFERENCES),
+  ]);
   const heading = lookup.outcome === 'found' ? `${lookup.name} (${crs})` : crs;
 
   // Stamped once for the whole page (all per-line IssueLists share it) so

@@ -8,6 +8,7 @@ import {
   getStationName,
   getStopPointDisruption,
 } from '@/lib/api';
+import { withStaleFallback } from '@/lib/liveDataCache';
 import { DISPLAYED_MODES_PARAM, MERGED_TFL_LINE_IDS } from '@/lib/modes';
 import { LineStatusCard } from '@/components/LineStatusCard';
 import { LoginLink } from '@/components/LoginLink';
@@ -17,7 +18,7 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank, worstStatus } from '@/lib/severity';
 import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { formatDate, formatTime } from '@/lib/dateFormat';
-import type { LineStatus, LineStatusReport, TrackedTrainListItem } from '@/lib/types';
+import type { LineStatus, LineStatusReport, Preferences, TrackedTrainListItem } from '@/lib/types';
 
 // See app/lines/[id]/page.tsx-adjacent history page and this repo's other
 // dynamic routes for the same `revalidate = 0` rationale: without it,
@@ -25,6 +26,12 @@ import type { LineStatus, LineStatusReport, TrackedTrainListItem } from '@/lib/t
 // prerender it during `next build`, which fails since the `api` service
 // only exists on the compose network at runtime.
 export const revalidate = 0;
+
+// The exact shape getPreferences() already returns for a 401, named so the
+// fallback below is typed as `Preferences` rather than inferred with
+// `never[]` members. Per-user data fails closed during an outage (design
+// spec Decision 5) instead of being stale-served.
+const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [] };
 
 function worstSeverityAcrossReports(reports: LineStatusReport[]): number {
   let worst = 10; // Good Service
@@ -93,11 +100,22 @@ export default async function DashboardPage() {
   // docs/superpowers/specs/2026-09-01-tracked-trains-home-page-design.md
   // Decision 3.
   const [preferences, allReports, myTrackedTrains] = await Promise.all([
-    getPreferences(),
+    // Fails closed to "nothing pinned" -- the exact shape getPreferences
+    // already returns for a 401 -- rather than being stale-served: this is
+    // per-user data, and the design spec's Decision 5 excludes per-user
+    // state from the stale cache on correctness grounds. Losing the pinned
+    // sections for the duration of an outage is materially better than
+    // losing the whole page, which is what an unguarded throw here did.
+    getPreferences().catch(() => NO_PREFERENCES),
     // Every displayed mode, not just national-rail: a pinned TfL line would
     // otherwise be silently missing from "Your Lines".
-    getLineStatusForMode(DISPLAYED_MODES_PARAM),
-    getMyTrackedTrains(),
+    withStaleFallback(`lineStatusForMode:${DISPLAYED_MODES_PARAM}`, () =>
+      getLineStatusForMode(DISPLAYED_MODES_PARAM),
+    ),
+    // null is getMyTrackedTrains()'s own established "not logged in" value,
+    // and the call site below already collapses it to []. Same fail-closed
+    // rationale as preferences above.
+    getMyTrackedTrains().catch(() => null),
   ]);
 
   if (!session.authenticated) {
@@ -181,7 +199,13 @@ export default async function DashboardPage() {
       // reference data (see `getStationName`), and a failure here falls back
       // to the code rather than taking the dashboard down.
       name: await getStationName(crs).catch(() => null),
-      reports: await getStopPointDisruption(crs),
+      // Same guard as the name lookup on the line above: one pinned
+      // station's disruption call failing must not take the whole
+      // dashboard down. Stale-served first (it is public, read-only status
+      // data), and only degrades to an empty list if nothing is cached.
+      reports: await withStaleFallback(`stopPointDisruption:${crs}`, () =>
+        getStopPointDisruption(crs),
+      ).catch(() => []),
     })),
   );
 
