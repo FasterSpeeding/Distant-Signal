@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation';
 import { Alert, Button, Group, Stack, TextInput } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import dayjs from 'dayjs';
-import { LoginLink } from './LoginLink';
+import { useNeedsLogin } from './useNeedsLogin';
+import { LoginPromptModal } from './LoginPromptModal';
 import type { TrackPinRequest, TrackPinResponse } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
@@ -53,7 +54,7 @@ export function TrackTrainForm({
   const [operator, setOperator] = useState('');
   const [scheduledDeparture, setScheduledDeparture] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [needsLogin, setNeedsLogin] = useState(false);
+  const needsLoginState = useNeedsLogin();
   const [fieldError, setFieldError] = useState<string | null>(null);
 
   const originValid = CRS_PATTERN.test(originCrs.trim());
@@ -63,7 +64,7 @@ export function TrackTrainForm({
     event.preventDefault();
     if (!canSubmit || scheduledDeparture === null) return;
     setSubmitting(true);
-    setNeedsLogin(false);
+    needsLoginState.reset();
     setFieldError(null);
     try {
       // `scheduledDeparture` is the DateTimePicker's own local-wall-clock
@@ -115,7 +116,7 @@ export function TrackTrainForm({
         return;
       }
       if (response.status === 401) {
-        setNeedsLogin(true);
+        needsLoginState.markNeedsLogin();
         return;
       }
       if (response.status === 400) {
@@ -191,12 +192,10 @@ export function TrackTrainForm({
         <Button type="submit" disabled={!canSubmit}>
           {submitting ? 'Tracking…' : 'Track this train'}
         </Button>
-        {needsLogin && (
-          <LoginLink underline="always">
-            Log in to track this train
-          </LoginLink>
-        )}
       </Group>
+      <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
+        Log in to track this train.
+      </LoginPromptModal>
     </Stack>
   );
 }

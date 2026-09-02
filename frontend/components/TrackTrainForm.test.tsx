@@ -93,7 +93,7 @@ describe('TrackTrainForm', () => {
     });
   });
 
-  it('on a 401, shows the login prompt and preserves the typed field values', async () => {
+  it('on a 401, shows the login prompt modal and preserves the typed field values', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
 
@@ -104,8 +104,11 @@ describe('TrackTrainForm', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
-    const loginLink = await screen.findByRole('link', { name: 'Log in to track this train' });
-    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrack');
+    expect(await screen.findByText('Log in to track this train.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute(
+      'href',
+      '/api/auth/login?return_to=%2Ftrack',
+    );
     // Unlike PinToggle's toggle-and-forget click, the form's own input
     // must survive a 401 -- Decision 4's explicit "preserve typed values"
     // call.
