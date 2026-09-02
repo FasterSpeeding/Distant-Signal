@@ -61,59 +61,59 @@ pub(crate) fn build_internal_oauth_routes(
         (
             "/incidents",
             Method::GET,
-            vec![config.internal_oauth_group_poller_incidents.clone()],
+            vec![config.internal_oauth_group_incidents.clone()],
         ),
         (
             "/incidents",
             Method::POST,
-            vec![config.internal_oauth_group_poller_incidents.clone()],
+            vec![config.internal_oauth_group_incidents.clone()],
         ),
         (
             "/stations",
             Method::GET,
-            vec![config.internal_oauth_group_poller_stations.clone()],
+            vec![config.internal_oauth_group_stations.clone()],
         ),
         (
             "/stations",
             Method::POST,
-            vec![config.internal_oauth_group_poller_stations.clone()],
+            vec![config.internal_oauth_group_stations.clone()],
         ),
         (
             "/tocs",
             Method::GET,
-            vec![config.internal_oauth_group_poller_tocs.clone()],
+            vec![config.internal_oauth_group_tocs.clone()],
         ),
         (
             "/tocs",
             Method::POST,
-            vec![config.internal_oauth_group_poller_tocs.clone()],
+            vec![config.internal_oauth_group_tocs.clone()],
         ),
         (
             "/station-samples",
             Method::GET,
-            vec![config.internal_oauth_group_poller_ldbws.clone()],
+            vec![config.internal_oauth_group_ldbws.clone()],
         ),
         (
             "/station-samples",
             Method::POST,
-            vec![config.internal_oauth_group_poller_ldbws.clone()],
+            vec![config.internal_oauth_group_ldbws.clone()],
         ),
         // GET-only: `samples::router()` never wires a POST handler for
         // this path at all.
         (
             "/sample-stations",
             Method::GET,
-            vec![config.internal_oauth_group_poller_ldbws.clone()],
+            vec![config.internal_oauth_group_ldbws.clone()],
         ),
         (
             "/tfl-line-status",
             Method::GET,
-            vec![config.internal_oauth_group_poller_tfl.clone()],
+            vec![config.internal_oauth_group_tfl.clone()],
         ),
         (
             "/tfl-line-status",
             Method::POST,
-            vec![config.internal_oauth_group_poller_tfl.clone()],
+            vec![config.internal_oauth_group_tfl.clone()],
         ),
         // POST-only: trust-consumer's per-poll-cycle event batch --
         // `ingest::router()` never wires a GET handler for this path.
@@ -240,24 +240,24 @@ impl AppState {
             ),
             ("internal_oauth_client_id", &config.internal_oauth_client_id),
             (
-                "internal_oauth_group_poller_incidents",
-                &config.internal_oauth_group_poller_incidents,
+                "internal_oauth_group_incidents",
+                &config.internal_oauth_group_incidents,
             ),
             (
-                "internal_oauth_group_poller_stations",
-                &config.internal_oauth_group_poller_stations,
+                "internal_oauth_group_stations",
+                &config.internal_oauth_group_stations,
             ),
             (
-                "internal_oauth_group_poller_tocs",
-                &config.internal_oauth_group_poller_tocs,
+                "internal_oauth_group_tocs",
+                &config.internal_oauth_group_tocs,
             ),
             (
-                "internal_oauth_group_poller_ldbws",
-                &config.internal_oauth_group_poller_ldbws,
+                "internal_oauth_group_ldbws",
+                &config.internal_oauth_group_ldbws,
             ),
             (
-                "internal_oauth_group_poller_tfl",
-                &config.internal_oauth_group_poller_tfl,
+                "internal_oauth_group_tfl",
+                &config.internal_oauth_group_tfl,
             ),
             (
                 "internal_oauth_group_trust_consumer",

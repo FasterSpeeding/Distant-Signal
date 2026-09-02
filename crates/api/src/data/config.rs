@@ -75,15 +75,15 @@ pub struct ServiceArguments {
     /// defaults only -- an operator's actual Authentik group names are
     /// not mandated by this design.
     #[arg(long, env, default_value = "svc-poller-incidents")]
-    pub internal_oauth_group_poller_incidents: String,
+    pub internal_oauth_group_incidents: String,
     #[arg(long, env, default_value = "svc-poller-stations")]
-    pub internal_oauth_group_poller_stations: String,
+    pub internal_oauth_group_stations: String,
     #[arg(long, env, default_value = "svc-poller-tocs")]
-    pub internal_oauth_group_poller_tocs: String,
+    pub internal_oauth_group_tocs: String,
     #[arg(long, env, default_value = "svc-poller-ldbws")]
-    pub internal_oauth_group_poller_ldbws: String,
+    pub internal_oauth_group_ldbws: String,
     #[arg(long, env, default_value = "svc-poller-tfl")]
-    pub internal_oauth_group_poller_tfl: String,
+    pub internal_oauth_group_tfl: String,
     #[arg(long, env, default_value = "svc-trust-consumer")]
     pub internal_oauth_group_trust_consumer: String,
     #[arg(long, env, default_value = "svc-schedule-ingest")]
