@@ -3,7 +3,7 @@ import type {
   LineStatusReport,
   LineStatusHistoryEntry,
   LineDailyStats,
-  LineHourlyStats,
+  LineHalfHourlyStats,
   Preferences,
   LineSummary,
   CustomLineDetail,
@@ -148,21 +148,26 @@ export async function getLineDailyStats(
   );
 }
 
-/** `GET /Line/{id}/Stats/Hourly/{from}/to/{to}` -- the hourly rollup
- * route. Unlike `getLineDailyStats`, `from`/`to` are passed straight
- * through as RFC3339 instants (no `londonDayKey` conversion) -- the
- * route's own path segments are `DateTime<Utc>`, not `NaiveDate`, since an
- * hour bucket has no calendar-day analog to round-trip through (Decision
- * 6 of docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md).
- * Same public, no-store, no-cookie-forwarding shape as
- * `getLineDailyStats`/`getLineStatusHistory`. */
-export async function getLineHourlyStats(
+/** `GET /Line/{id}/Stats/HalfHourly/{from}/to/{to}` -- the half-hourly
+ * rollup route (30-minute buckets). Unlike `getLineDailyStats`, `from`/
+ * `to` are passed straight through as RFC3339 instants (no `londonDayKey`
+ * conversion) -- the route's own path segments are `DateTime<Utc>`, not
+ * `NaiveDate`, since a 30-minute bucket has no calendar-day analog to
+ * round-trip through (Decision 6 of
+ * docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md,
+ * written for the original 1-hour bucket -- the reasoning is unchanged at
+ * 30 minutes). Same public, no-store, no-cookie-forwarding shape as
+ * `getLineDailyStats`/`getLineStatusHistory`. Originally
+ * `getLineHourlyStats` calling `/Stats/Hourly/...`; renamed alongside the
+ * backend route when the bucket size was halved -- see git history for
+ * the hourly-era version. */
+export async function getLineHalfHourlyStats(
   id: string,
   from: string,
   to: string,
-): Promise<LineHourlyStats[]> {
-  return fetchJson<LineHourlyStats[]>(
-    `${baseUrl()}/Line/${id}/Stats/Hourly/${from}/to/${to}`,
+): Promise<LineHalfHourlyStats[]> {
+  return fetchJson<LineHalfHourlyStats[]>(
+    `${baseUrl()}/Line/${id}/Stats/HalfHourly/${from}/to/${to}`,
     { cache: 'no-store' },
   );
 }

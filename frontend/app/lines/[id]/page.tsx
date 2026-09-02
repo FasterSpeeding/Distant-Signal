@@ -10,8 +10,8 @@ import { DeleteLineButton } from '@/components/DeleteLineButton';
 import { LineDefinitionTooltip } from '@/components/LineDefinitionTooltip';
 import { TextLink } from '@/components/TextLink';
 import { worstStatus } from '@/lib/severity';
-import { resolveHourlyRange } from '@/lib/history';
-import { HourlyTrendsResults } from './history/HourlyTrendsResults';
+import { resolveHalfHourlyRange } from '@/lib/history';
+import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 
 // Same `revalidate = 0` rationale as `/lines/[id]/history` -- this page now
 // also computes a range off `Date.now()` (`resolveRange` below), so it must
@@ -101,7 +101,7 @@ export default async function LineDetailPage({
   // docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md).
   // "View history" below remains the way to reach the full range picker
   // and the daily Trends tab.
-  const trendsRange = resolveHourlyRange(now);
+  const trendsRange = resolveHalfHourlyRange(now);
 
   return (
     <Stack p="lg" gap="md">
@@ -162,27 +162,30 @@ export default async function LineDetailPage({
         <Title order={2} size="h4">
           Recent trends (last 24 hours)
         </Title>
-        {/* Hourly, not the dedicated history page's daily rollup -- Decision
-            1/2 of docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md:
-            a rolling 24-hour window needs intra-day resolution the daily
-            table can't provide, so this renders through a new, separate
-            hourly fetch/component (HourlyTrendsResults) rather than
-            TrendsResults. It still shares TrendsCharts -- the actual chart
-            rendering, legend, dash patterns, gap bands, edge padding --
-            with the dedicated history page's daily Trends tab; only the
-            fetch, sparse-data floor, and copy are hourly-specific.
+        {/* Half-hourly (30-minute buckets), not the dedicated history
+            page's daily rollup -- Decision 1/2 of
+            docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md
+            (written for the original 1-hour bucket; the reasoning is
+            unchanged at 30 minutes): a rolling 24-hour window needs
+            intra-day resolution the daily table can't provide, so this
+            renders through a new, separate half-hourly fetch/component
+            (HalfHourlyTrendsResults, formerly HourlyTrendsResults) rather
+            than TrendsResults. It still shares TrendsCharts -- the actual
+            chart rendering, legend, dash patterns, gap bands, edge padding
+            -- with the dedicated history page's daily Trends tab; only the
+            fetch, sparse-data floor, and copy are half-hourly-specific.
             `View history` above remains the way to reach the full range
             picker, the Timeline tab, and the daily Trends tab.
 
             Wrapped in its own Suspense boundary, same rationale as before:
-            `getLineHourlyStats` is comparatively slow, and without this
+            `getLineHalfHourlyStats` is comparatively slow, and without this
             boundary it would block the whole page behind a chart a visitor
             may not even scroll down to see. A brand-new line with no
-            hourly-stats rows yet still resolves fast: `HourlyTrendsResults`
-            renders its own "Not enough sampled data yet" text rather than
-            leaving this section hanging. */}
+            half-hourly-stats rows yet still resolves fast:
+            `HalfHourlyTrendsResults` renders its own "Not enough sampled
+            data yet" text rather than leaving this section hanging. */}
         <Suspense fallback={<Skeleton height={280} />}>
-          <HourlyTrendsResults id={id} from={trendsRange.from} to={trendsRange.to} />
+          <HalfHourlyTrendsResults id={id} from={trendsRange.from} to={trendsRange.to} />
         </Suspense>
       </Stack>
     </Stack>

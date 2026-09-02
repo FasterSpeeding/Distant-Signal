@@ -808,8 +808,8 @@ pub async fn daily_stats_for_range(
         .collect()
 }
 
-pub struct HourlyStatsRow {
-    pub hour_start: chrono::DateTime<chrono::Utc>,
+pub struct HalfHourlyStatsRow {
+    pub half_hour_start: chrono::DateTime<chrono::Utc>,
     pub sample_cycles: i64,
     pub total: i64,
     pub delayed: i64,
@@ -819,25 +819,29 @@ pub struct HourlyStatsRow {
     pub delay_minutes_sum: f64,
 }
 
-/// Hourly-granularity sibling of `daily_stats_for_range` -- same shape,
-/// same "empty vec for an unknown line_id, no error" behavior, same
+/// Half-hourly-granularity sibling of `daily_stats_for_range` -- same
+/// shape, same "empty vec for an unknown line_id, no error" behavior, same
 /// read-time rate derivation posture (never stored pre-divided). `from`/
-/// `to` are real instants (`DateTime<Utc>`), not calendar dates -- an hour
-/// bucket has no calendar-day analog to round-trip through, unlike the
-/// daily route (Decision 6 of
-/// docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md).
-pub async fn hourly_stats_for_range(
+/// `to` are real instants (`DateTime<Utc>`), not calendar dates -- a
+/// 30-minute bucket has no calendar-day analog to round-trip through,
+/// unlike the daily route (Decision 6 of
+/// docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md,
+/// written when this was still an hourly bucket -- the reasoning is
+/// unchanged at 30 minutes). Originally `hourly_stats_for_range` reading
+/// `line_status_hourly_stats`; renamed alongside that table when the
+/// bucket size was halved -- see git history for the hourly-era version.
+pub async fn half_hourly_stats_for_range(
     pool: &PgPool,
     line_id: &str,
     from: chrono::DateTime<chrono::Utc>,
     to: chrono::DateTime<chrono::Utc>,
-) -> Result<Vec<HourlyStatsRow>> {
+) -> Result<Vec<HalfHourlyStatsRow>> {
     use sqlx::Row;
     let rows = sqlx::query(
-        "SELECT hour_start, sample_cycles, total, delayed, cancelled, skipped, running_count, delay_minutes_sum
-         FROM line_status_hourly_stats
-         WHERE line_id = $1 AND hour_start BETWEEN $2 AND $3
-         ORDER BY hour_start",
+        "SELECT half_hour_start, sample_cycles, total, delayed, cancelled, skipped, running_count, delay_minutes_sum
+         FROM line_status_half_hourly_stats
+         WHERE line_id = $1 AND half_hour_start BETWEEN $2 AND $3
+         ORDER BY half_hour_start",
     )
     .bind(line_id)
     .bind(from)
@@ -847,8 +851,8 @@ pub async fn hourly_stats_for_range(
 
     rows.into_iter()
         .map(|row| {
-            Ok(HourlyStatsRow {
-                hour_start: row.try_get("hour_start")?,
+            Ok(HalfHourlyStatsRow {
+                half_hour_start: row.try_get("half_hour_start")?,
                 sample_cycles: row.try_get("sample_cycles")?,
                 total: row.try_get("total")?,
                 delayed: row.try_get("delayed")?,
@@ -1345,43 +1349,43 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                hourly_stats_for_range_filters_orders_and_handles_unknown_lines -- --ignored` \
+                half_hourly_stats_for_range_filters_orders_and_handles_unknown_lines -- --ignored` \
                 against docker compose's postgres"]
-    async fn hourly_stats_for_range_filters_orders_and_handles_unknown_lines() {
+    async fn half_hourly_stats_for_range_filters_orders_and_handles_unknown_lines() {
         let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
         let pool = sqlx::postgres::PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
-        const LINE_ID: &str = "TEST-HOURLY-RANGE";
+        const LINE_ID: &str = "TEST-HALF-HOURLY-RANGE";
 
-        sqlx::query("DELETE FROM line_status_hourly_stats WHERE line_id = $1").bind(LINE_ID).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1").bind(LINE_ID).execute(&pool).await.unwrap();
 
         let h1: chrono::DateTime<chrono::Utc> = "2026-08-31T12:00:00Z".parse().unwrap();
-        let h2: chrono::DateTime<chrono::Utc> = "2026-08-31T14:00:00Z".parse().unwrap();
+        let h2: chrono::DateTime<chrono::Utc> = "2026-08-31T14:30:00Z".parse().unwrap();
         let out_of_range: chrono::DateTime<chrono::Utc> = "2026-08-28T00:00:00Z".parse().unwrap();
 
         sqlx::query(
-            "INSERT INTO line_status_hourly_stats (line_id, hour_start, sample_cycles, total) VALUES \
+            "INSERT INTO line_status_half_hourly_stats (line_id, half_hour_start, sample_cycles, total) VALUES \
                 ($1, $2, 1, 5), ($1, $3, 1, 3), ($1, $4, 1, 99)",
         )
         .bind(LINE_ID).bind(h2).bind(h1).bind(out_of_range) // inserted out of order on purpose
         .execute(&pool).await.expect("seed rows");
 
-        let rows = hourly_stats_for_range(
+        let rows = half_hourly_stats_for_range(
             &pool, LINE_ID,
             "2026-08-31T00:00:00Z".parse().unwrap(),
             "2026-09-01T00:00:00Z".parse().unwrap(),
-        ).await.expect("hourly_stats_for_range");
+        ).await.expect("half_hourly_stats_for_range");
 
-        sqlx::query("DELETE FROM line_status_hourly_stats WHERE line_id = $1").bind(LINE_ID).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1").bind(LINE_ID).execute(&pool).await.unwrap();
 
         assert_eq!(rows.len(), 2, "the out-of-range row must be excluded");
-        assert_eq!(rows[0].hour_start, h1, "results must be ordered ascending by hour_start");
-        assert_eq!(rows[1].hour_start, h2);
+        assert_eq!(rows[0].half_hour_start, h1, "results must be ordered ascending by half_hour_start");
+        assert_eq!(rows[1].half_hour_start, h2);
 
-        let unknown = hourly_stats_for_range(
-            &pool, "TEST-HOURLY-RANGE-UNKNOWN",
+        let unknown = half_hourly_stats_for_range(
+            &pool, "TEST-HALF-HOURLY-RANGE-UNKNOWN",
             "2026-08-31T00:00:00Z".parse().unwrap(),
             "2026-09-01T00:00:00Z".parse().unwrap(),
-        ).await.expect("hourly_stats_for_range for an unknown line_id");
+        ).await.expect("half_hourly_stats_for_range for an unknown line_id");
         assert!(unknown.is_empty());
     }
 }

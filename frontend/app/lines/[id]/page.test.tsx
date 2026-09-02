@@ -4,7 +4,7 @@ import { renderWithMantine } from '@/test/render';
 import LineDetailPage from './page';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
-import type { LineStatusReport, LineSummary, CustomLineDetail, LineHourlyStats } from '@/lib/types';
+import type { LineStatusReport, LineSummary, CustomLineDetail, LineHalfHourlyStats } from '@/lib/types';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -14,7 +14,7 @@ vi.mock('@/lib/api', async () => {
     getCustomLine: vi.fn(),
     getLineDefinition: vi.fn(),
     getAllLines: vi.fn(),
-    getLineHourlyStats: vi.fn(),
+    getLineHalfHourlyStats: vi.fn(),
   };
 });
 // DeleteLineButton (rendered whenever Edit/Delete render) calls useRouter()
@@ -62,9 +62,9 @@ function customLine(overrides: Partial<CustomLineDetail> = {}): CustomLineDetail
   };
 }
 
-function hourlyStatsRow(overrides: Partial<LineHourlyStats> = {}): LineHourlyStats {
+function halfHourlyStatsRow(overrides: Partial<LineHalfHourlyStats> = {}): LineHalfHourlyStats {
   return {
-    hourStart: '2026-08-30T14:00:00Z',
+    halfHourStart: '2026-08-30T14:00:00Z',
     sampleCycles: 500,
     total: 100,
     delayed: 10,
@@ -88,7 +88,7 @@ describe('LineDetailPage Edit/Delete visibility', () => {
     vi.mocked(api.getLineStatus).mockResolvedValue([report('custom-my-commute', 'My Commute')]);
     vi.mocked(api.getAllLines).mockResolvedValue(lines);
     vi.mocked(api.getLineDefinition).mockResolvedValue({ stations: ['WOK', 'CLJ'], operators: ['SW'] });
-    vi.mocked(api.getLineHourlyStats).mockResolvedValue([]);
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
   });
 
   it('a catalogue line (getCustomLine 404s) never shows Edit/Delete', async () => {
@@ -112,10 +112,12 @@ describe('LineDetailPage Edit/Delete visibility', () => {
 });
 
 // Item 3: the detail page used to only link out to `/lines/[id]/history`
-// for the trend charts -- this embeds a rolling-24h hourly preview of them
-// directly via `HourlyTrendsResults`, sharing `TrendsCharts` (the actual
-// chart-rendering leaf) with the history page's daily Trends tab, per
-// docs/superpowers/plans/2026-09-02-trend-chart-granularity.md Task 13.
+// for the trend charts -- this embeds a rolling-24h half-hourly preview of
+// them directly via `HalfHourlyTrendsResults` (formerly `HourlyTrendsResults`,
+// before the bucket size was halved to 30 minutes), sharing `TrendsCharts`
+// (the actual chart-rendering leaf) with the history page's daily Trends
+// tab, per docs/superpowers/plans/2026-09-02-trend-chart-granularity.md
+// Task 13.
 describe('LineDetailPage embedded trends', () => {
   beforeEach(() => {
     vi.mocked(api.getLineStatus).mockResolvedValue([report('custom-my-commute', 'My Commute')]);
@@ -124,10 +126,10 @@ describe('LineDetailPage embedded trends', () => {
     vi.mocked(api.getCustomLine).mockResolvedValue(customLine());
   });
 
-  it('renders the trend charts when the line already has recent hourly stats', async () => {
-    vi.mocked(api.getLineHourlyStats).mockResolvedValue([
-      hourlyStatsRow({ hourStart: '2026-08-30T13:00:00Z' }),
-      hourlyStatsRow({ hourStart: '2026-08-30T14:00:00Z' }),
+  it('renders the trend charts when the line already has recent half-hourly stats', async () => {
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([
+      halfHourlyStatsRow({ halfHourStart: '2026-08-30T13:30:00Z' }),
+      halfHourlyStatsRow({ halfHourStart: '2026-08-30T14:00:00Z' }),
     ]);
     await renderPage();
 
@@ -148,8 +150,8 @@ describe('LineDetailPage embedded trends', () => {
   // hasn't run a cycle for it), so this must degrade to the same honest
   // empty state `TrendsResults` already shows on the full history page --
   // not an error, not an indefinite loading state.
-  it('shows the sane no-data-yet fallback for a line with no hourly stats -- e.g. one just created', async () => {
-    vi.mocked(api.getLineHourlyStats).mockResolvedValue([]);
+  it('shows the sane no-data-yet fallback for a line with no half-hourly stats -- e.g. one just created', async () => {
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
     await renderPage();
 
     expect(await screen.findByRole('heading', { name: 'Recent trends (last 24 hours)' })).toBeInTheDocument();

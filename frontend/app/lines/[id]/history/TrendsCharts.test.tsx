@@ -70,39 +70,39 @@ describe('gapSpans', () => {
   });
 });
 
-describe('gapSpans (hourly buckets)', () => {
-  function hourPoint(hourStart: string, delayRate: number | null) {
-    return { bucketKey: hourStart, delayRate };
+describe('gapSpans (half-hourly buckets)', () => {
+  function halfHourPoint(halfHourStart: string, delayRate: number | null) {
+    return { bucketKey: halfHourStart, delayRate };
   }
 
-  it('returns a single-bucket span for one isolated sparse hour', () => {
+  it('returns a single-bucket span for one isolated sparse half hour', () => {
     expect(
       gapSpans([
-        hourPoint('2026-08-31T12:00:00Z', 0.1),
-        hourPoint('2026-08-31T13:00:00Z', null),
-        hourPoint('2026-08-31T14:00:00Z', 0.2),
+        halfHourPoint('2026-08-31T12:00:00Z', 0.1),
+        halfHourPoint('2026-08-31T12:30:00Z', null),
+        halfHourPoint('2026-08-31T13:00:00Z', 0.2),
       ]),
-    ).toEqual([{ startKey: '2026-08-31T13:00:00Z', endKey: '2026-08-31T13:00:00Z' }]);
+    ).toEqual([{ startKey: '2026-08-31T12:30:00Z', endKey: '2026-08-31T12:30:00Z' }]);
   });
 
-  it('merges a multi-hour gap into one span, including one that crosses a day boundary', () => {
+  it('merges a multi-bucket gap into one span, including one that crosses a day boundary', () => {
     expect(
       gapSpans([
-        hourPoint('2026-08-31T23:00:00Z', 0.1),
-        hourPoint('2026-09-01T00:00:00Z', null),
-        hourPoint('2026-09-01T01:00:00Z', null),
-        hourPoint('2026-09-01T02:00:00Z', 0.2),
+        halfHourPoint('2026-08-31T23:30:00Z', 0.1),
+        halfHourPoint('2026-09-01T00:00:00Z', null),
+        halfHourPoint('2026-09-01T00:30:00Z', null),
+        halfHourPoint('2026-09-01T01:00:00Z', 0.2),
       ]),
-    ).toEqual([{ startKey: '2026-09-01T00:00:00Z', endKey: '2026-09-01T01:00:00Z' }]);
+    ).toEqual([{ startKey: '2026-09-01T00:00:00Z', endKey: '2026-09-01T00:30:00Z' }]);
   });
 
-  it('does not collide two buckets that share the same wall-clock hour label on different days', () => {
+  it('does not collide two buckets that share the same wall-clock time-of-day label on different days', () => {
     // Regression guard for the finding in this plan's Status note: the raw
     // RFC3339 instant, not a formatted "HH:mm" label, must be what
     // gapSpans/referenceAreaBounds treat as the bucket identity.
     const points = [
-      hourPoint('2026-08-30T14:00:00Z', 0.1),
-      hourPoint('2026-08-31T14:00:00Z', null),
+      halfHourPoint('2026-08-30T14:00:00Z', 0.1),
+      halfHourPoint('2026-08-31T14:00:00Z', null),
     ];
     const spans = gapSpans(points);
     expect(spans).toEqual([{ startKey: '2026-08-31T14:00:00Z', endKey: '2026-08-31T14:00:00Z' }]);

@@ -8,7 +8,7 @@ import type { ChartPoint } from './chartPoint';
 
 /** A contiguous run of one or more buckets where every rate/delay field is
  * `null` -- i.e. below the caller's own sparse-data floor (see
- * `TrendsResults.tsx`'s/`HourlyTrendsResults.tsx`'s own `toChartPoints`-
+ * `TrendsResults.tsx`'s/`HalfHourlyTrendsResults.tsx`'s own `toChartPoints`-
  * shaped helpers). Checking `delayRate === null` alone is sufficient
  * today because both of those helpers guarantee all four fields are
  * nulled together for a sparse bucket -- an implicit coupling to that
@@ -51,29 +51,33 @@ function referenceAreaBounds(
   return { x1: prev, x2: next };
 }
 
-/** Split out of `TrendsResults`/`HourlyTrendsResults` (both `async` Server
- * Components) purely because of `valueFormatter` below: a plain function,
- * and Next's RSC serialization refuses to pass a function prop from a
- * Server Component across the boundary into a Client Component. See git
- * history for the full incident this originally fixed -- unchanged by
- * this generalization.
+/** Split out of `TrendsResults`/`HalfHourlyTrendsResults` (both `async`
+ * Server Components) purely because of `valueFormatter` below: a plain
+ * function, and Next's RSC serialization refuses to pass a function prop
+ * from a Server Component across the boundary into a Client Component.
+ * See git history for the full incident this originally fixed --
+ * unchanged by this generalization.
  *
- * `granularity` is new: a plain, serializable `'day' | 'hour'` string
+ * `granularity` is new: a plain, serializable `'day' | 'halfHour'` string
  * (never a function, so it crosses the Server/Client boundary safely from
  * either caller) that controls ONLY the x-axis tick label formatting.
  * `points[].bucketKey` stays the raw, always-unique category identity for
- * BOTH granularities (a "YYYY-MM-DD" day string, or an RFC3339 hour-start
- * instant) -- `granularity === 'hour'` additionally renders each tick
- * through `formatTime` (e.g. "14:00") for a legible axis, without
- * changing what Recharts uses as the category key. This split matters
- * because a rolling 24-hour window's wall-clock hour label can legitimately
- * repeat once (yesterday's and today's same clock hour) whenever the
- * window straddles a day boundary -- using a formatted label as the
- * category KEY itself would silently collide two distinct buckets. */
-export function TrendsCharts({ points, granularity }: { points: ChartPoint[]; granularity: 'day' | 'hour' }) {
+ * BOTH granularities (a "YYYY-MM-DD" day string, or an RFC3339
+ * half-hour-start instant) -- `granularity === 'halfHour'` additionally
+ * renders each tick through `formatTime` (e.g. "14:30") for a legible
+ * axis, without changing what Recharts uses as the category key. This
+ * split matters because a rolling 24-hour window's wall-clock
+ * time-of-day label can legitimately repeat once (yesterday's and
+ * today's same clock time) whenever the window straddles a day boundary
+ * -- using a formatted label as the category KEY itself would silently
+ * collide two distinct buckets. (Originally `'day' | 'hour'`, for a
+ * 1-hour bucket -- renamed to `'halfHour'` alongside the rest of this
+ * feature when the bucket size was halved; the collision risk and its
+ * fix are unchanged, just at double the bucket count.) */
+export function TrendsCharts({ points, granularity }: { points: ChartPoint[]; granularity: 'day' | 'halfHour' }) {
   const xAxisProps = {
     padding: { right: 12 },
-    ...(granularity === 'hour' ? { tickFormatter: (value: string) => formatTime(value) } : {}),
+    ...(granularity === 'halfHour' ? { tickFormatter: (value: string) => formatTime(value) } : {}),
   };
 
   return (
