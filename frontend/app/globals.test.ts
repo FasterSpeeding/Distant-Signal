@@ -177,6 +177,19 @@ describe('dimmed body text contrast', () => {
     expect(contrast(GRAY_7, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 8.18:1
   });
 
+  // Mantine hardcodes a *titled* Notification's description to gray 6
+  // rather than reading --mantine-color-dimmed, so the override above does
+  // not reach ConnectivityMonitor's "Reconnecting..." banner -- it shipped
+  // at the same failing 3.32:1 until axe caught it against the
+  // banner-visible state (e2e/connectivity-banner.spec.ts).
+  it('also lifts a titled Notification description off gray 6 in the light scheme', () => {
+    const rule = css.match(
+      /\.mantine-Notification-description:where\(\[data-with-title\]\)\s*\{[^}]*\}/,
+    );
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('color: var(--mantine-color-gray-7)');
+  });
+
   it("leaves the dark scheme's dimmed colour alone, where it already clears AA", () => {
     expect(contrast(DARK_2, DARK_7)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.46:1
   });
