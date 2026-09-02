@@ -261,6 +261,14 @@ struct SessionResponse {
     id: Option<String>,
     email: Option<String>,
     name: Option<String>,
+    /// Always present, empty when logged out or when the logged-in user
+    /// asserted no groups -- never omitted, so a consumer (Task 9's
+    /// adapter, in distant-signal-mcp's own separate repository) can
+    /// always treat this as a plain string array rather than an optional
+    /// field. See
+    /// docs/superpowers/specs/2026-09-02-mcp-server-oauth-access-groups-design.md
+    /// Decision 2's "one existing read-back point" framing.
+    groups: Vec<String>,
 }
 
 async fn session(
@@ -272,12 +280,14 @@ async fn session(
             id: Some(u.id),
             email: u.email,
             name: u.name,
+            groups: u.groups,
         }),
         None => Json(SessionResponse {
             authenticated: false,
             id: None,
             email: None,
             name: None,
+            groups: vec![],
         }),
     }
 }
@@ -329,5 +339,34 @@ mod tests {
             post_login_target(Some("https://evil.com"), fallback),
             fallback
         );
+    }
+
+    #[test]
+    fn session_response_serializes_groups_as_a_plain_camel_case_array() {
+        let response = SessionResponse {
+            authenticated: true,
+            id: Some("user-123".to_string()),
+            email: Some("rider@example.com".to_string()),
+            name: Some("Ada Rider".to_string()),
+            groups: vec!["mcp-users".to_string(), "mcp-live-boards".to_string()],
+        };
+        let json = serde_json::to_value(&response).expect("serializes");
+        assert_eq!(
+            json["groups"],
+            serde_json::json!(["mcp-users", "mcp-live-boards"])
+        );
+    }
+
+    #[test]
+    fn session_response_groups_is_an_empty_array_not_null_when_logged_out() {
+        let response = SessionResponse {
+            authenticated: false,
+            id: None,
+            email: None,
+            name: None,
+            groups: vec![],
+        };
+        let json = serde_json::to_value(&response).expect("serializes");
+        assert_eq!(json["groups"], serde_json::json!([]));
     }
 }
