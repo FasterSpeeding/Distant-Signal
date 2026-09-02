@@ -27,12 +27,76 @@ pub struct AppState {
     /// token against Authentik's JWKS -- see
     /// `crate::auth::internal_oauth`.
     pub internal_oauth_verifier: crate::auth::internal_oauth::ServiceTokenVerifier,
-    /// Route prefix -> one-or-more required group names, built once here
-    /// from config. More than one group per route exists because
-    /// `/stanox-crs` has two legitimate callers (`trust-consumer` reads
-    /// it, `schedule-reference` writes it) -- either one's group is
-    /// sufficient.
-    pub internal_oauth_routes: Vec<(&'static str, Vec<String>)>,
+    /// (Route prefix, HTTP method, required group names), built once here
+    /// from config. The method dimension is load-bearing: `/stanox-crs`
+    /// has two legitimate callers with DIFFERENT methods --
+    /// `trust-consumer` only ever `GET`s it (a read-only reference
+    /// reload) and `schedule-reference` only ever `POST`s it (its
+    /// per-sequence write) -- so each caller gets its own `(prefix,
+    /// method)` entry with exactly its own group, never the other
+    /// caller's group. A single path-keyed-only table (no method
+    /// dimension) previously let EITHER caller's token authorize BOTH
+    /// methods on this route -- trust-consumer's read-only token could
+    /// `POST` (corrupt the reference table), and schedule-reference's
+    /// write token could `GET` -- see
+    /// docs/superpowers/plans/2026-09-02-internal-service-oauth2.md's
+    /// security review. Every other route in this table happens to have
+    /// exactly one caller today, so its entry (or entries, for a caller
+    /// that legitimately uses both `GET` and `POST` on the same path)
+    /// carries only that caller's group regardless -- see
+    /// `build_internal_oauth_routes`.
+    pub internal_oauth_routes: Vec<(&'static str, axum::http::Method, Vec<String>)>,
+}
+
+/// Builds `AppState::internal_oauth_routes` from config. Factored out of
+/// `AppState::init` so tests (`crate::auth`'s route-scoping test suite)
+/// can exercise the REAL production table -- not a hand-copied stand-in
+/// that could silently drift from it -- without needing every other part
+/// of `AppState::init` (a live database connection, etc.).
+pub(crate) fn build_internal_oauth_routes(
+    config: &ServiceArguments,
+) -> Vec<(&'static str, axum::http::Method, Vec<String>)> {
+    use axum::http::Method;
+
+    vec![
+        ("/incidents", Method::GET, vec![config.internal_oauth_group_poller_incidents.clone()]),
+        ("/incidents", Method::POST, vec![config.internal_oauth_group_poller_incidents.clone()]),
+        ("/stations", Method::GET, vec![config.internal_oauth_group_poller_stations.clone()]),
+        ("/stations", Method::POST, vec![config.internal_oauth_group_poller_stations.clone()]),
+        ("/tocs", Method::GET, vec![config.internal_oauth_group_poller_tocs.clone()]),
+        ("/tocs", Method::POST, vec![config.internal_oauth_group_poller_tocs.clone()]),
+        ("/station-samples", Method::GET, vec![config.internal_oauth_group_poller_ldbws.clone()]),
+        ("/station-samples", Method::POST, vec![config.internal_oauth_group_poller_ldbws.clone()]),
+        // GET-only: `samples::router()` never wires a POST handler for
+        // this path at all.
+        ("/sample-stations", Method::GET, vec![config.internal_oauth_group_poller_ldbws.clone()]),
+        ("/tfl-line-status", Method::GET, vec![config.internal_oauth_group_poller_tfl.clone()]),
+        ("/tfl-line-status", Method::POST, vec![config.internal_oauth_group_poller_tfl.clone()]),
+        // POST-only: trust-consumer's per-poll-cycle event batch --
+        // `ingest::router()` never wires a GET handler for this path.
+        ("/train-events", Method::POST, vec![config.internal_oauth_group_trust_consumer.clone()]),
+        // GET-only: trust-consumer's periodic tracked-trains reload --
+        // `ingest::router()` never wires a POST handler for this path.
+        ("/tracked-trains", Method::GET, vec![config.internal_oauth_group_trust_consumer.clone()]),
+        (
+            "/schedule-feed-ingests",
+            Method::GET,
+            vec![config.internal_oauth_group_schedule_ingest.clone()],
+        ),
+        (
+            "/schedule-feed-ingests",
+            Method::POST,
+            vec![config.internal_oauth_group_schedule_ingest.clone()],
+        ),
+        // Split by method, NOT a shared two-group entry: trust-consumer
+        // only ever GETs (read-only reload), schedule-reference only
+        // ever POSTs (its write) -- see this field's own doc comment on
+        // `AppState::internal_oauth_routes` for why a merged entry here
+        // was the actual security gap this table's method dimension
+        // fixes.
+        ("/stanox-crs", Method::GET, vec![config.internal_oauth_group_trust_consumer.clone()]),
+        ("/stanox-crs", Method::POST, vec![config.internal_oauth_group_schedule_reference.clone()]),
+    ]
 }
 
 /// Hand-rolled rather than `#[derive(Debug)]`. Two independent reasons:
@@ -131,24 +195,7 @@ impl AppState {
         )
         .context("failed to construct internal-oauth verifier")?;
 
-        let internal_oauth_routes: Vec<(&'static str, Vec<String>)> = vec![
-            ("/incidents", vec![config.internal_oauth_group_poller_incidents.clone()]),
-            ("/stations", vec![config.internal_oauth_group_poller_stations.clone()]),
-            ("/tocs", vec![config.internal_oauth_group_poller_tocs.clone()]),
-            ("/station-samples", vec![config.internal_oauth_group_poller_ldbws.clone()]),
-            ("/sample-stations", vec![config.internal_oauth_group_poller_ldbws.clone()]),
-            ("/tfl-line-status", vec![config.internal_oauth_group_poller_tfl.clone()]),
-            ("/train-events", vec![config.internal_oauth_group_trust_consumer.clone()]),
-            ("/tracked-trains", vec![config.internal_oauth_group_trust_consumer.clone()]),
-            ("/schedule-feed-ingests", vec![config.internal_oauth_group_schedule_ingest.clone()]),
-            (
-                "/stanox-crs",
-                vec![
-                    config.internal_oauth_group_trust_consumer.clone(),
-                    config.internal_oauth_group_schedule_reference.clone(),
-                ],
-            ),
-        ];
+        let internal_oauth_routes = build_internal_oauth_routes(&config);
 
         Ok(Arc::new(Self {
             config,

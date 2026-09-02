@@ -191,16 +191,26 @@ impl ServiceTokenVerifier {
     }
 }
 
+/// JWT-signing/mock-Authentik fixtures shared by this module's own
+/// verification tests AND `crate::auth`'s route-scoping test suite
+/// (`crate::auth::route_scoping_tests`) -- both need "mint a
+/// signature-valid internal-service token with these claims against a
+/// real (mocked) Authentik," so this is factored out here (the module
+/// that owns `ServiceTokenVerifier`) rather than duplicated. `pub(crate)`
+/// rather than `pub`: test-only surface, never meant to be reachable
+/// outside this crate.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use openidconnect::JsonWebKeyId;
-    use openidconnect::core::{CoreJwsSigningAlgorithm, CoreRsaPrivateSigningKey};
+    use openidconnect::core::{CoreJsonWebKeySet, CoreJwsSigningAlgorithm, CoreRsaPrivateSigningKey};
     use openidconnect::PrivateSigningKey;
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::*;
+    use super::ServiceTokenVerifier;
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     /// Test-only 2048-bit RSA keypair, generated once for this plan
     /// (`openssl genrsa -out priv.pem 2048 && openssl rsa -in priv.pem
@@ -211,7 +221,7 @@ mod tests {
     /// versions -- confirmed directly against the vendored
     /// `openidconnect-4.0.1` source this plan was written against. Never
     /// Authentik's real key.
-    const TEST_RSA_PRIVATE_KEY_PEM: &str = "-----BEGIN RSA PRIVATE KEY-----
+    pub(crate) const TEST_RSA_PRIVATE_KEY_PEM: &str = "-----BEGIN RSA PRIVATE KEY-----
 MIIEogIBAAKCAQEAkXH3+3kYxgn6JADaRM0Wv8i3bo0vdLkuwI0LR00aDYiN6XGC
 iSPnr1AfSPlNSQxNQ2q+xyRiLnAwkJ9bcnuHNR818Ok984u3k2nHI+fg5MVrAkcH
 Ytk+OIrnVsAxFZjG+vBN9gVbrkiQoBVAZKJ7D6DGAXZnexri7FGR5ttnASvwtzBt
@@ -239,15 +249,15 @@ okZbiUUfaTzSWjonh81igWBCbs9l7+FaaiMCy3Hy5rA7g2eTdJoU7gxlabEnzdUj
 9O7hQg5LztVsx4CpVlyjw8gYB14pwoxrbJc4mDUwT7MPH29EgDE=
 -----END RSA PRIVATE KEY-----";
 
-    const KID: &str = "test-kid";
-    const AUDIENCE: &str = "distant-signal-internal";
+    pub(crate) const KID: &str = "test-kid";
+    pub(crate) const AUDIENCE: &str = "distant-signal-internal";
 
-    fn signing_key() -> CoreRsaPrivateSigningKey {
+    pub(crate) fn signing_key() -> CoreRsaPrivateSigningKey {
         CoreRsaPrivateSigningKey::from_pem(TEST_RSA_PRIVATE_KEY_PEM, Some(JsonWebKeyId::new(KID.to_string())))
             .expect("test RSA key should parse")
     }
 
-    fn sign_token(claims: &serde_json::Value) -> String {
+    pub(crate) fn sign_token(claims: &serde_json::Value) -> String {
         let key = signing_key();
         let header = json!({"alg": "RS256", "kid": KID, "typ": "JWT"});
         let header_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
@@ -262,7 +272,7 @@ okZbiUUfaTzSWjonh81igWBCbs9l7+FaaiMCy3Hy5rA7g2eTdJoU7gxlabEnzdUj
 
     /// Mints a valid claims JSON with `exp` far in the future, overridable
     /// per test via the closure.
-    fn valid_claims(issuer: &str, mutate: impl FnOnce(&mut serde_json::Value)) -> serde_json::Value {
+    pub(crate) fn valid_claims(issuer: &str, mutate: impl FnOnce(&mut serde_json::Value)) -> serde_json::Value {
         let mut claims = json!({
             "sub": "svc-poller-incidents",
             "iss": issuer,
@@ -278,7 +288,7 @@ okZbiUUfaTzSWjonh81igWBCbs9l7+FaaiMCy3Hy5rA7g2eTdJoU7gxlabEnzdUj
     /// a JWKS endpoint serving the test key's public half. Returns the
     /// server (whose `uri()` is also the `issuer_url`) and a
     /// `ServiceTokenVerifier` pointed at it.
-    async fn mock_authentik() -> (MockServer, ServiceTokenVerifier) {
+    pub(crate) async fn mock_authentik() -> (MockServer, ServiceTokenVerifier) {
         let server = MockServer::start().await;
         let issuer = server.uri();
 
@@ -306,6 +316,14 @@ okZbiUUfaTzSWjonh81igWBCbs9l7+FaaiMCy3Hy5rA7g2eTdJoU7gxlabEnzdUj
         let verifier = ServiceTokenVerifier::new(issuer.clone(), AUDIENCE.to_string()).unwrap();
         (server, verifier)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use super::test_support::{mock_authentik, sign_token, valid_claims};
 
     #[tokio::test]
     async fn a_valid_token_with_expected_claims_verifies() {
