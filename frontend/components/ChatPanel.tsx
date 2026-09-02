@@ -2,18 +2,13 @@
 
 import { useRef, useState, type FormEvent } from 'react';
 import { Alert, Button, Card, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
+import Anthropic from '@anthropic-ai/sdk';
 import Link from 'next/link';
 import type { RenderedTrainLeg } from '@/lib/types';
-
-/** One SSE frame's parsed `data:` payload -- mirrors `orchestrator/src/chat.ts`'s
- * own `ChatEvent` union (a different repository/deploy unit, no shared
- * package to import the type from) plus the error shape `orchestrator/src/app.ts`
- * writes on a mid-stream failure. */
-type ChatStreamEvent =
-  | { type: 'text-delta'; text: string }
-  | { type: 'tool-result'; toolName: string; structuredContent?: unknown }
-  | { type: 'done' }
-  | { type: 'error'; error: string };
+import { getAnthropicApiKey } from '@/lib/anthropicKey';
+import { BrowserMcpOAuthProvider } from '@/lib/mcpOAuthProvider';
+import { AnthropicKeySettings } from './AnthropicKeySettings';
+import { runChatTurn, type ChatEvent } from '@/lib/chatTurn';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -43,52 +38,36 @@ function asRenderedTrainLeg(value: unknown): RenderedTrainLeg | null {
   return v as unknown as RenderedTrainLeg;
 }
 
-function parseSseFrames(buffer: string): { events: ChatStreamEvent[]; rest: string } {
-  const events: ChatStreamEvent[] = [];
-  const parts = buffer.split('\n\n');
-  // The last part is either an empty string (buffer ended exactly on a
-  // frame boundary) or a partial frame still awaiting more bytes -- either
-  // way, it's not a complete frame yet, so it's carried forward rather
-  // than parsed.
-  const rest = parts.pop() ?? '';
-  for (const part of parts) {
-    const line = part.split('\n').find((l) => l.startsWith('data: '));
-    if (!line) continue;
-    try {
-      events.push(JSON.parse(line.slice('data: '.length)) as ChatStreamEvent);
-    } catch {
-      // A malformed frame is skipped, not fatal to the rest of the
-      // stream -- one bad event shouldn't take down an otherwise-working
-      // conversation.
-    }
-  }
-  return { events, rest };
-}
+// Same unresearched-starting-figure posture as orchestrator/'s own model
+// choice (now deleted, see this plan's Task 5) -- carried forward
+// unchanged, not re-benchmarked by this task.
+const CHAT_MODEL = 'claude-opus-4-6';
 
-/** The chat UI's own message list + input (embedded-chatbot-option-b plan,
- * Task 5 Step 3). A Client Component -- it needs `fetch`+`ReadableStream`
- * reading and local message state, neither available to `app/chat/page.tsx`'s
- * Server Component.
- *
- * Submits through the same-origin `/api/chat` proxy (Task 4), reading
- * `response.body.getReader()` manually rather than `EventSource`: native
- * `EventSource` is GET-only and can't carry a POST body or this app's own
- * `Cookie`-forwarding proxy path -- a concrete, implementation-time choice
- * the dual-mode design's own Decision 4 left unresolved. */
+type ChatError =
+  | { kind: 'no-key' }
+  | { kind: 'anthropic-rejected' }
+  | { kind: 'mcp-reconnect' }
+  | { kind: 'tool-error'; message: string };
+
+/** The chat UI's own message list + input (embedded-chatbot-option-b-
+ * client-side-tokens plan, Task 10). A Client Component -- it needs the
+ * user's own localStorage-held Anthropic key and MCP tokens, and runs the
+ * tool-calling loop (`runChatTurn`, Task 1's `orchestrator/src/chat.ts`
+ * relocated) directly in the browser now, not through a server-side
+ * proxy -- there is no longer a server-side orchestrator to talk to
+ * (Decision 1/3 of the client-side-tokens design doc). */
 export function ChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ChatError | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
+  const historyRef = useRef<Anthropic.Beta.Messages.BetaMessageParam[]>([]);
 
   function scrollToBottom() {
     // A convenience, never load-bearing: guarded so an environment without
     // a real `scrollTo` implementation (jsdom in this file's own tests)
-    // can't turn a scroll nicety into a thrown exception that aborts the
-    // SSE read loop mid-stream -- confirmed as a real failure mode this
-    // session (an unguarded call here silently dropped every event after
-    // the first).
+    // can't turn a scroll nicety into a thrown exception mid-loop.
     if (typeof viewport.current?.scrollTo === 'function') {
       viewport.current.scrollTo({ top: viewport.current.scrollHeight });
     }
@@ -96,13 +75,26 @@ export function ChatPanel() {
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    const message = input.trim();
-    if (!message || sending) return;
+    const trimmed = input.trim();
+    if (!trimmed || sending) return;
+
+    const apiKey = getAnthropicApiKey();
+    if (!apiKey) {
+      setError({ kind: 'no-key' });
+      return;
+    }
+
+    const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
+    const tokens = provider.tokens();
+    if (!tokens) {
+      setError({ kind: 'mcp-reconnect' });
+      return;
+    }
 
     setError(null);
     setInput('');
     setSending(true);
-    setMessages((prev) => [...prev, { role: 'user', content: message, legs: [] }]);
+    setMessages((prev) => [...prev, { role: 'user', content: trimmed, legs: [] }]);
     setMessages((prev) => [...prev, { role: 'assistant', content: '', legs: [] }]);
     // Index of the assistant turn just pushed above -- both pushes above
     // are synchronous state updates within this same handler, so `prev`
@@ -116,43 +108,33 @@ export function ChatPanel() {
     });
 
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
-      });
+      const anthropic = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+      let assistantText = '';
 
-      if (res.status === 401 || res.status === 403) {
-        setError(
-          res.status === 401
-            ? 'Your session has expired -- sign in again to keep chatting.'
-            : 'Chat is not available for your account.',
-        );
-        setMessages((prev) => prev.slice(0, -1));
-        return;
-      }
-      if (!res.ok || !res.body) {
-        setError('Something went wrong reaching the chat service.');
-        setMessages((prev) => prev.slice(0, -1));
-        return;
+      for await (const event of runChatTurn({
+        anthropic,
+        model: CHAT_MODEL,
+        mcpUrl: `${process.env.NEXT_PUBLIC_RAILMCP_PUBLIC_URL}/mcp`,
+        mcpAuthProvider: provider,
+        conversationHistory: historyRef.current,
+        userMessage: trimmed,
+      })) {
+        if (event.type === 'text-delta') assistantText += event.text;
+        applyChatEvent(event, assistantIndex, setMessages);
+        scrollToBottom();
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const { events, rest } = parseSseFrames(buffer);
-        buffer = rest;
-        for (const event of events) {
-          applyEvent(event, assistantIndex, setMessages);
-          scrollToBottom();
-        }
-      }
-    } catch {
-      setError('Lost connection to the chat service.');
+      historyRef.current = [
+        ...historyRef.current,
+        { role: 'user', content: trimmed },
+        { role: 'assistant', content: assistantText },
+      ];
+    } catch (err) {
+      // Drop only the empty pending assistant turn -- the user's own
+      // message stays visible, with the error shown alongside it, rather
+      // than silently disappearing too.
+      setMessages((prev) => prev.slice(0, -1));
+      setError(classifyChatError(err));
     } finally {
       setSending(false);
     }
@@ -160,11 +142,8 @@ export function ChatPanel() {
 
   return (
     <Stack gap="md" h="100%" style={{ flex: 1, minHeight: 0 }}>
-      {error && (
-        <Alert color="red" variant="light">
-          {error}
-        </Alert>
-      )}
+      <AnthropicKeySettings />
+      {error && <ChatErrorAlert error={error} />}
       <ScrollArea viewportRef={viewport} style={{ flex: 1 }} offsetScrollbars>
         <Stack gap="md" p="xs">
           {messages.length === 0 && (
@@ -181,7 +160,7 @@ export function ChatPanel() {
         <Group gap="xs" align="flex-end">
           <TextInput
             style={{ flex: 1 }}
-            placeholder="When's the next train from King's Cross?"
+            placeholder="Ask about the next train, delays, or plan a journey…"
             value={input}
             onChange={(event) => setInput(event.currentTarget.value)}
             disabled={sending}
@@ -195,8 +174,65 @@ export function ChatPanel() {
   );
 }
 
-function applyEvent(
-  event: ChatStreamEvent,
+/** Anthropic's own `APIError` (and its `AuthenticationError` subclass, the
+ * real shape a rejected/invalid key throws as) carries a numeric `status`.
+ * Checked structurally as well as via `instanceof` so a test double or any
+ * other Anthropic-error-shaped value (constructor named `APIError`, a
+ * `status` of 401) is still recognized without depending on the real
+ * class's prototype chain. */
+function isAnthropicAuthError(err: unknown): boolean {
+  if (err instanceof Anthropic.APIError) return err.status === 401;
+  if (err && typeof err === 'object' && 'status' in err) {
+    const status = (err as { status?: unknown }).status;
+    const ctorName = (err as { constructor?: { name?: string } }).constructor?.name;
+    return status === 401 && ctorName === 'APIError';
+  }
+  return false;
+}
+
+function classifyChatError(err: unknown): ChatError {
+  if (isAnthropicAuthError(err)) {
+    return { kind: 'anthropic-rejected' };
+  }
+  const message = err instanceof Error ? err.message : 'Something went wrong.';
+  if (/401|403|unauthoriz/i.test(message)) {
+    return { kind: 'mcp-reconnect' };
+  }
+  return { kind: 'tool-error', message };
+}
+
+function ChatErrorAlert({ error }: { error: ChatError }) {
+  switch (error.kind) {
+    case 'no-key':
+      return (
+        <Alert color="orange" variant="light">
+          Set your Anthropic API key below to start chatting.
+        </Alert>
+      );
+    case 'anthropic-rejected':
+      return (
+        <Alert color="red" variant="light">
+          Your Anthropic API key was rejected. Check that it&apos;s correct and try again.
+        </Alert>
+      );
+    case 'mcp-reconnect':
+      return (
+        <Alert color="red" variant="light">
+          Your connection to the rail data service has expired or was not found -- reconnect from the Chat page to
+          keep chatting.
+        </Alert>
+      );
+    case 'tool-error':
+      return (
+        <Alert color="red" variant="light">
+          Something went wrong answering that: {error.message}
+        </Alert>
+      );
+  }
+}
+
+function applyChatEvent(
+  event: ChatEvent,
   assistantIndex: number,
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
 ) {
@@ -223,16 +259,6 @@ function applyEvent(
       return next;
     });
     return;
-  }
-  if (event.type === 'error') {
-    setMessages((prev) => {
-      const next = [...prev];
-      const target = next[assistantIndex];
-      if (target && !target.content) {
-        next[assistantIndex] = { ...target, content: 'Sorry, something went wrong answering that.' };
-      }
-      return next;
-    });
   }
   // 'done' needs no state change -- the stream ending IS the signal.
 }

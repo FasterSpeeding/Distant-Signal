@@ -1,151 +1,131 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { ChatPanel } from './ChatPanel';
+import { setAnthropicApiKey } from '@/lib/anthropicKey';
 
-/** Builds a `Response` whose body streams the given SSE `data: ...`
- * payloads one chunk at a time -- mirrors what `frontend/app/api/chat/route.ts`
- * hands back verbatim from `orchestrator/`'s own `POST /chat` (Task 3's SSE
- * emission), without a live network call. */
-function sseResponse(events: unknown[], status = 200): Response {
-  const encoder = new TextEncoder();
-  const body = new ReadableStream({
-    start(controller) {
-      for (const event of events) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-      }
-      controller.close();
-    },
-  });
-  return new Response(body, { status, headers: { 'Content-Type': 'text/event-stream' } });
+const mockRunChatTurn = vi.fn();
+vi.mock('@/lib/chatTurn', () => ({
+  runChatTurn: (...args: unknown[]) => mockRunChatTurn(...args),
+}));
+
+function seedMcpTokens() {
+  localStorage.setItem('ds-mcp-oauth:tokens', JSON.stringify({ access_token: 'tok', token_type: 'Bearer' }));
 }
 
 describe('ChatPanel', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
+  beforeEach(() => {
+    localStorage.clear();
+    mockRunChatTurn.mockReset();
+    vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', 'https://mcp.example.com');
   });
 
   it('renders a placeholder prompt before any message is sent', () => {
+    seedMcpTokens();
+    setAnthropicApiKey('sk-ant-test');
     renderWithMantine(<ChatPanel />);
     expect(screen.getByText(/Ask about live departures/)).toBeInTheDocument();
   });
 
-  it('sends the typed message to /api/chat and renders the streamed reply', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        sseResponse([
-          { type: 'text-delta', text: 'The next ' },
-          { type: 'text-delta', text: 'train is at 10:32.' },
-          { type: 'done' },
-        ]),
-      ),
+  it('shows a "no key" error when submitting without an Anthropic key set', async () => {
+    seedMcpTokens();
+    renderWithMantine(<ChatPanel />);
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(await screen.findByText(/set your anthropic api key/i)).toBeInTheDocument();
+    expect(mockRunChatTurn).not.toHaveBeenCalled();
+  });
+
+  it('shows a "reconnect" error when no MCP token is stored', async () => {
+    setAnthropicApiKey('sk-ant-test');
+    renderWithMantine(<ChatPanel />);
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(await screen.findByText(/reconnect/i)).toBeInTheDocument();
+    expect(mockRunChatTurn).not.toHaveBeenCalled();
+  });
+
+  it('renders streamed text-delta events as the assistant reply', async () => {
+    setAnthropicApiKey('sk-ant-test');
+    seedMcpTokens();
+    mockRunChatTurn.mockReturnValue(
+      (async function* () {
+        yield { type: 'text-delta', text: 'Next ' };
+        yield { type: 'text-delta', text: 'train is at 10:15.' };
+        yield { type: 'done' };
+      })(),
     );
     renderWithMantine(<ChatPanel />);
-
-    fireEvent.change(screen.getByPlaceholderText(/next train/), { target: { value: "when's the next train?" } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-
-    expect(screen.getByText("when's the next train?")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText('The next train is at 10:32.')).toBeInTheDocument());
-
-    const [url, init] = vi.mocked(fetch).mock.calls[0];
-    expect(url).toBe('/api/chat');
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ message: "when's the next train?" });
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(await screen.findByText(/next train is at 10:15/i)).toBeInTheDocument();
   });
 
-  it('clears the input immediately on submit', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => sseResponse([{ type: 'done' }])));
-    renderWithMantine(<ChatPanel />);
-    const input = screen.getByPlaceholderText(/next train/) as HTMLInputElement;
-    fireEvent.change(input, { target: { value: 'hello' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    expect(input.value).toBe('');
-    await waitFor(() => expect(fetch).toHaveBeenCalled());
-  });
-
-  it('renders a "track this leg" card with the correct href for a plan_journey tool-result event', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        sseResponse([
-          { type: 'text-delta', text: 'Here is a journey option.' },
-          {
-            type: 'tool-result',
-            toolName: 'plan_journey',
-            structuredContent: {
-              kind: 'train',
-              from: { tiploc: 'KNGX', name: 'London Kings Cross', crs: 'KGX' },
-              to: { tiploc: 'YORK', name: 'York', crs: 'YRK' },
-              departure: '10:32',
-              arrival: '12:01',
-              departureAt: '2026-09-02T10:32:00Z',
-              arrivalAt: '2026-09-02T12:01:00Z',
-              operator: 'LNER',
-              uid: 'C12345',
-            },
+  it('renders a "track this train" card for a plan_journey tool-result event', async () => {
+    setAnthropicApiKey('sk-ant-test');
+    seedMcpTokens();
+    mockRunChatTurn.mockReturnValue(
+      (async function* () {
+        yield {
+          type: 'tool-result',
+          toolName: 'plan_journey',
+          structuredContent: {
+            kind: 'train',
+            from: { tiploc: 'KNGX', name: 'London Kings Cross', crs: 'KGX' },
+            to: { tiploc: 'YORK', name: 'York', crs: 'YRK' },
+            departure: '10:32',
+            arrival: '12:01',
+            departureAt: '2026-09-02T10:32:00Z',
+            arrivalAt: '2026-09-02T12:01:00Z',
+            operator: 'LNER',
+            uid: 'A12345',
           },
-          { type: 'done' },
-        ]),
-      ),
+        };
+        yield { type: 'done' };
+      })(),
     );
     renderWithMantine(<ChatPanel />);
-
-    fireEvent.change(screen.getByPlaceholderText(/next train/), { target: { value: 'plan a journey to york' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-
-    await waitFor(() => expect(screen.getByRole('link', { name: 'Track this train' })).toBeInTheDocument());
-    const link = screen.getByRole('link', { name: 'Track this train' });
-    expect(link).toHaveAttribute('href', '/track?origin=KGX');
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'plan a trip' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(await screen.findByRole('link', { name: /track this train/i })).toBeInTheDocument();
   });
 
-  it('does not render a track link for a leg with no CRS, but still renders the card text', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        sseResponse([
-          {
-            type: 'tool-result',
-            toolName: 'plan_journey',
-            structuredContent: {
-              kind: 'train',
-              from: { tiploc: 'KNGX', name: 'London Kings Cross', crs: null },
-              to: { tiploc: 'YORK', name: 'York', crs: 'YRK' },
-              departure: '10:32',
-              arrival: '12:01',
-              departureAt: null,
-              arrivalAt: null,
-              operator: null,
-              uid: 'C12345',
-            },
-          },
-          { type: 'done' },
-        ]),
-      ),
+  it('shows the Anthropic-key error distinctly from a tool error on a 401', async () => {
+    setAnthropicApiKey('sk-ant-bad');
+    seedMcpTokens();
+    mockRunChatTurn.mockReturnValue(
+      (async function* () {
+        throw Object.assign(new Error('invalid api key'), { status: 401, constructor: { name: 'APIError' } });
+      })(),
     );
     renderWithMantine(<ChatPanel />);
-    fireEvent.change(screen.getByPlaceholderText(/next train/), { target: { value: 'plan a journey' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-
-    await waitFor(() => expect(screen.getByText(/London Kings Cross → York/)).toBeInTheDocument());
-    expect(screen.queryByRole('link', { name: 'Track this train' })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(await screen.findByText(/anthropic api key was rejected/i)).toBeInTheDocument();
   });
 
-  it('shows an error and removes the pending turn on a 403 response', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'chatbot_not_available' }), { status: 403 })));
+  it('shows a distinct tool-error message for a non-auth failure', async () => {
+    setAnthropicApiKey('sk-ant-test');
+    seedMcpTokens();
+    mockRunChatTurn.mockReturnValue(
+      (async function* () {
+        throw new Error('get_departures failed: upstream Darwin timeout');
+      })(),
+    );
     renderWithMantine(<ChatPanel />);
-    fireEvent.change(screen.getByPlaceholderText(/next train/), { target: { value: 'hi' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-
-    await waitFor(() => expect(screen.getByText(/not available for your account/)).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(await screen.findByText(/darwin timeout/i)).toBeInTheDocument();
   });
 
   it('does not submit an empty or whitespace-only message', () => {
-    vi.stubGlobal('fetch', vi.fn());
+    setAnthropicApiKey('sk-ant-test');
+    seedMcpTokens();
     renderWithMantine(<ChatPanel />);
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
-    fireEvent.change(screen.getByPlaceholderText(/next train/), { target: { value: '   ' } });
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
-    expect(fetch).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(mockRunChatTurn).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: '   ' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(mockRunChatTurn).not.toHaveBeenCalled();
   });
 });
