@@ -1008,6 +1008,15 @@ railMcp:
   accessGroups:
     mcpUsersGroup: mcp-users
     mcpLiveBoardsGroup: mcp-live-boards
+  # -- Shared secret between this service's /token orchestrator-session
+  # grant (embedded-chatbot-option-b plan, Task 1) and orchestrator/'s own
+  # token-acquisition step (Task 3) -- a SEPARATE credential from
+  # internalCompleteToken above, same auto-generate-if-empty pattern (see
+  # secret.yaml). REMOVED by Task 5 of the client-side-tokens plan, kept
+  # here only because this task is a pure reconciliation, not yet the
+  # redesign.
+  orchestratorInternalToken: ""
+  existingSecretOrchestratorInternalTokenKey: orchestrator-internal-token
   # -- LDBWS/Rail Data Marketplace credentials the fork's board/service-
   # detail tools still call directly (Decision 5 of the design doc --
   # unchanged by this integration, board tools are not routed through DS).
@@ -1059,6 +1068,53 @@ railMcp:
   # here because this chart's own Ingress is a real, known hop -- leaving
   # this at 0 behind it is the exact gap this value exists to close.
   trustProxyHops: 1
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  podSecurityContext: {}
+
+# ---------------------------------------------------------------------------
+# orchestrator: the DS-hosted chat orchestrator (embedded-chatbot-option-b
+# plan, Task 3/6) -- own top-level directory in THIS repo (orchestrator/),
+# own Dockerfile, built and published by this repo's own CI
+# (.github/workflows/containers.yml), unlike railMcp above (an externally-
+# built fork this chart only deploys). Holds DS's own ANTHROPIC_API_KEY;
+# ClusterIP-only, deliberately never given an Ingress rule anywhere in this
+# chart -- Decision 2 of the dual-mode design requires this service is
+# never reachable from outside the cluster. Depends on railMcp: it exchanges
+# a bearer token against railMcp's own /token orchestrator-session grant
+# (Task 1) and calls its /mcp endpoint -- enabling this without
+# railMcp.enabled leaves orchestrator-deployment.yaml's RAILMCP_BASE_URL
+# pointing at a Service that was never created.
+# ---------------------------------------------------------------------------
+orchestrator:
+  # -- Opt-in; false by default, matching railMcp.enabled's own
+  # opt-in-and-costed-feature posture (this one spends against a real,
+  # metered Anthropic API key on every chat turn).
+  enabled: false
+  image:
+    # -- This repo's own CI builds and publishes this image -- a bare
+    # distant-signal/<name> short name, NOT railMcp.image.repository's
+    # externally-built ghcr.io/CHANGE-ME/... shape.
+    repository: distant-signal/chat-orchestrator
+    tag: ""
+    pullPolicy: IfNotPresent
+  service:
+    port: 3001
+  # -- DS's own Anthropic API key -- a genuinely external credential this
+  # chart cannot generate, same posture as railMcp.ldbws.* above. Required
+  # (this chart fails the render loudly, not silently) when
+  # orchestrator.enabled is true and no existingSecret is configured.
+  anthropicApiKey: ""
+  # -- Model choice for the tool-calling loop (orchestrator/src/chat.ts) --
+  # an unresearched starting figure, not a benchmarked one (same posture as
+  # railMcp.lineCatalogueTtlMs's own TTL). Empty uses that service's own
+  # built-in default.
+  model: ""
+  existingSecret: ""
+  existingSecretAnthropicApiKeyKey: anthropic-api-key
   resources: {}
   nodeSelector: {}
   tolerations: []

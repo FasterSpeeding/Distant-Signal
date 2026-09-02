@@ -67,6 +67,17 @@ spec:
             - name: NEXT_PUBLIC_RAILMCP_PUBLIC_URL
               value: {{ .Values.railMcp.publicUrl | quote }}
             {{- end }}
+            {{- if .Values.orchestrator.enabled }}
+            # frontend/app/api/chat/route.ts (embedded-chatbot-option-b
+            # plan, Task 4) -- same conditional-env-var shape as
+            # RAILMCP_BASE_URL above (that plan's own Open questions/risks
+            # #5 flagged no prior precedent existed for this; RAILMCP_BASE_URL
+            # landing first is what this now follows). Harmless to always
+            # set once orchestrator is enabled: only read at request time,
+            # when a request actually reaches /api/chat.
+            - name: ORCHESTRATOR_BASE_URL
+              value: {{ include "distant-signal.orchestratorInClusterUrl" . | quote }}
+            {{- end }}
             {{- with .Values.frontend.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -1,0 +1,102 @@
+{{/*
+The DS-hosted chat orchestrator (embedded-chatbot-option-b plan, Task 3/6)
+-- ONE container, no verifier/sidecar counterpart, mirroring
+railmcp-deployment.yaml's own shape. Unlike railMcp, this image is built
+and published by THIS repo's own CI (.github/workflows/containers.yml),
+so it gets the same strict container security posture api-deployment.yaml
+and friends use (readOnlyRootFilesystem: true) rather than railMcp's
+relaxed, third-party-image stance -- this service has no runtime cache
+directory to write to, unlike frontend's own `next start`.
+*/}}
+{{- if .Values.orchestrator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "distant-signal.orchestratorFullname" . }}
+  labels:
+    {{- include "distant-signal.labels" (dict "root" . "component" "orchestrator") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "distant-signal.selectorLabels" (dict "root" . "component" "orchestrator") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "distant-signal.labels" (dict "root" . "component" "orchestrator") | nindent 8 }}
+      {{- with .Values.orchestrator.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "distant-signal.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "distant-signal.podSecurityContext" (dict "override" .Values.orchestrator.podSecurityContext) | nindent 8 }}
+      containers:
+        - name: orchestrator
+          image: {{ include "distant-signal.image" (dict "root" . "image" .Values.orchestrator.image) | quote }}
+          imagePullPolicy: {{ .Values.orchestrator.image.pullPolicy }}
+          securityContext:
+            {{- include "distant-signal.containerSecurityContext" (dict "readOnlyRootFilesystem" true) | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.orchestrator.service.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.orchestrator.service.port | quote }}
+            {{- with .Values.orchestrator.model }}
+            - name: ANTHROPIC_MODEL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "distant-signal.orchestratorSecretName" . }}
+                  key: {{ include "distant-signal.orchestratorAnthropicApiKeySecretKey" . }}
+            # The allowlist check (GET /public/chatbot/access, Task 2) --
+            # this service's only call into `api` directly. Same in-cluster
+            # DNS name every other component already uses
+            # (distant-signal.apiBaseUrl).
+            - name: DS_API_BASE_URL
+              value: {{ include "distant-signal.apiBaseUrl" . | quote }}
+            # INTERNAL cluster DNS for distant-signal-mcp, not
+            # railMcp.publicUrl -- both the token exchange (POST /token)
+            # and the MCP tool calls (POST /mcp) happen entirely inside
+            # the cluster, mirroring frontend-deployment.yaml's own
+            # RAILMCP_BASE_URL (which is the ONE other consumer of this
+            # exact URL, for its own, different, purpose -- the consent
+            # bridge).
+            - name: RAILMCP_BASE_URL
+              value: {{ include "distant-signal.railMcpInClusterUrl" . | quote }}
+            # Reads the SAME secret/key railMcp itself validates against
+            # (Task 1) -- see that value's own values.yaml comment for why
+            # this is a single shared credential between exactly these two
+            # processes, not chart-generated independently on each side.
+            - name: OAUTH_ORCHESTRATOR_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "distant-signal.railMcpSecretName" . }}
+                  key: {{ include "distant-signal.railMcpOrchestratorInternalTokenSecretKey" . }}
+          {{- with .Values.orchestrator.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.orchestrator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
