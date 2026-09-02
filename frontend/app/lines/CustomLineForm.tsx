@@ -126,35 +126,12 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         setSubmitting(false);
         return;
       }
-      if (existingLine) {
-        // Edit mode always navigates to a *different* route
-        // (`/lines/{id}`), so App Router remounts this component on the
-        // way there and `submitting` resets for free.
-        router.push(`/lines/${existingLine.id}`);
-      } else {
-        // Create mode navigates back to `/lines` -- the same route this
-        // form already lives on (it's rendered inline at the bottom of
-        // the All Lines page). A same-route `router.push` re-renders the
-        // page with fresh server data (the new line shows up in the
-        // table above) but does NOT remount this client component -- React
-        // reconciles it in place since its type and position in the tree
-        // haven't changed, so `submitting` was never reset back to
-        // `false`. Left alone, the button spun forever even though the
-        // line had already been created (confirmed live: the table above
-        // it updated immediately, but the form/button below stayed stuck
-        // -- this was the actual "gets stuck loading" bug, not anything
-        // slow on the server). Explicitly reset submitting and clear the
-        // fields so the form is left ready for another entry, matching
-        // what a remount would have produced anyway.
-        setSubmitting(false);
-        setName('');
-        setOperators([]);
-        setStations([]);
-        setHeadcodePrefixes([]);
-        setDestinationCrsFilter([]);
-        setAdvancedOpen(false);
-        router.push('/lines');
-      }
+      // Both create and edit now navigate to a route different from
+      // wherever this form is rendered (`/lines/new` for create,
+      // `/lines/{id}/edit` for edit) -- App Router remounts this
+      // component on the way there either way, so `submitting` and every
+      // field reset for free, with no manual work needed here.
+      router.push(existingLine ? `/lines/${existingLine.id}` : '/lines');
     } catch {
       setError('Request failed.');
       setSubmitting(false);
