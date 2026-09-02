@@ -3,7 +3,11 @@
 # Not selected by hand: `dev.env` sets
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml
 # so `docker compose --env-file dev.env up --build` picks up both files.
-# There are no Compose profiles any more; the env file is the only switch.
+# There are no Compose profiles for switching MODES any more (prod vs. dev
+# used to be two profiles behind `--profile prod`/`--profile dev`; the env
+# file is the only switch for that now). docker-compose.yml's `rail-mcp`
+# service carries its own, unrelated `profiles: ["rail-mcp"]` tag for
+# opt-in service gating, not a mode switch -- see its comment there.
 #
 # Why a second file rather than `${CARGO_PROFILE:-release}` interpolation in
 # one file: interpolation would handle the build args fine, but Compose has
