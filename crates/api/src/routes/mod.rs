@@ -5,6 +5,7 @@ use crate::app::{App, Router};
 use crate::auth::require_internal_oauth;
 
 pub mod auth;
+pub mod chatbot;
 pub mod freshness;
 pub mod health;
 pub mod history_retention;
@@ -50,6 +51,7 @@ pub fn public_router() -> Router {
         .merge(preferences::router())
         .merge(reference::router())
         .merge(auth::router())
+        .merge(chatbot::router())
 }
 
 /// Takes the app state directly (rather than picking it up later via

@@ -15,6 +15,11 @@ real differentiator.
   `enricher`, `trust-consumer`, and five `poller-*` crates.
 - `frontend/` — the Next.js web frontend.
 - `charts/distant-signal/` — the Helm chart for deploying the whole stack.
+- `vault/` — `install.sh` + `values.yaml` for standing up OpenBao (an
+  open-source, MPL-2.0 HashiCorp Vault fork/alternative — see
+  `vault/install.sh`'s header for why) in a Kubernetes cluster via its
+  official Helm chart, wired up to the `devAuthentik` dev IdP
+  (`charts/distant-signal/values.yaml`'s `devAuthentik.*`) for OIDC login.
 - `lines/` — the curated TOML line-definition catalogue (unchanged from
   this project's original design).
 

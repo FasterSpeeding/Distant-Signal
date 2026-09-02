@@ -21,6 +21,7 @@ import {
   getDelayRepayEstimate,
   getMyTickets,
   getIncident,
+  getChatbotAccess,
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from './api';
@@ -732,6 +733,39 @@ describe('api client', () => {
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/public/incidents/123%2F..%2Flines',
       expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getChatbotAccess returns "allowed" for a 200', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ allowed: true }), { status: 200 })));
+    await expect(getChatbotAccess()).resolves.toBe('allowed');
+  });
+
+  it('getChatbotAccess returns "unauthenticated" for a 401 -- no session at all', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('unauthorized', { status: 401 })));
+    await expect(getChatbotAccess()).resolves.toBe('unauthenticated');
+  });
+
+  it('getChatbotAccess returns "forbidden" for a 403 -- a real, logged-in, non-allowlisted user', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ error: 'chatbot_not_available' }), { status: 403 })),
+    );
+    await expect(getChatbotAccess()).resolves.toBe('forbidden');
+  });
+
+  it('getChatbotAccess fails closed to "forbidden" on any other failure (never a positive allow on an ambiguous answer)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    await expect(getChatbotAccess()).resolves.toBe('forbidden');
+  });
+
+  it('getChatbotAccess fetches GET /public/chatbot/access, forwarding cookies, with no caching', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ allowed: true }), { status: 200 })));
+    await getChatbotAccess();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/chatbot/access',
+      expect.objectContaining({ cache: 'no-store', headers: { Cookie: 'distant_signal_session=abc123' } }),
     );
   });
 });

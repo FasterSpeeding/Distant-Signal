@@ -437,3 +437,38 @@ export interface TicketListItem {
   claimUrl: string;
   disclaimer: string;
 }
+
+// ---------------------------------------------------------------------------
+// Chat (embedded-chatbot-option-b-client-side-tokens plan) -- ChatPanel's
+// own browser-side tool-calling loop, not a server-side orchestrator
+// (that was removed, see that plan's Task 5).
+// ---------------------------------------------------------------------------
+
+/** Mirrors `distant-signal-mcp`'s own `StationRef`
+ * (`src/tools/plan-journey.ts`) -- ported here (not imported: a separate
+ * repository, no shared package) only as far as `ChatPanel` actually needs
+ * for the "track this leg" deep-link. */
+export interface RenderedStationRef {
+  tiploc: string;
+  name: string | null;
+  crs: string | null;
+}
+
+/** Ported from `distant-signal-mcp`'s own `RenderedTrainLeg`
+ * (`src/tools/plan-journey.ts:160-179`, per the chatbot MCP-integration
+ * research doc's own citation) -- only the fields `ChatPanel`'s "track
+ * this leg" card actually reads. A `plan_journey` tool-result's
+ * `structuredContent` carries the full shape (including `RenderedTransferLeg`
+ * siblings this app never renders a card for); this type is intentionally
+ * a subset, not a 1:1 port of every field distant-signal-mcp defines. */
+export interface RenderedTrainLeg {
+  kind: 'train';
+  from: RenderedStationRef;
+  to: RenderedStationRef;
+  departure: string;
+  arrival: string;
+  departureAt: string | null;
+  arrivalAt: string | null;
+  operator: string | null;
+  uid: string;
+}

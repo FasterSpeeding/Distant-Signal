@@ -210,6 +210,21 @@ pub async fn consume_login_state(pool: &PgPool, id: &str) -> Result<Option<Login
     Ok(row)
 }
 
+/// Backs `crate::auth::ChatbotAuthorizedUser` (embedded-chatbot-option-b
+/// plan Task 2) -- a single existence check against `chatbot_allowed_users`.
+/// A row for `user_id` present means allowed; absent (including a user_id
+/// that doesn't exist in `users` at all) means not allowed. No separate
+/// `NOT FOUND` case: an unresolvable user_id and a resolvable-but-not-
+/// allowlisted one both simply return `false` here.
+pub async fn is_chatbot_allowed(pool: &PgPool, user_id: &str) -> Result<bool> {
+    let (allowed,): (bool,) =
+        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM chatbot_allowed_users WHERE user_id = $1)")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await?;
+    Ok(allowed)
+}
+
 #[cfg(test)]
 mod db_tests {
     use super::*;
@@ -316,5 +331,62 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                is_chatbot_allowed -- --ignored`"]
+    async fn is_chatbot_allowed_reflects_allowlist_membership() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ('TEST-USER-CHATBOT-ALLOWED', NULL, NULL) \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture user");
+
+        assert!(
+            !is_chatbot_allowed(&pool, "TEST-USER-CHATBOT-ALLOWED")
+                .await
+                .expect("lookup before allowlisting"),
+            "not allowlisted yet"
+        );
+
+        sqlx::query(
+            "INSERT INTO chatbot_allowed_users (user_id) VALUES ('TEST-USER-CHATBOT-ALLOWED')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert allowlist row");
+        assert!(
+            is_chatbot_allowed(&pool, "TEST-USER-CHATBOT-ALLOWED")
+                .await
+                .expect("lookup after allowlisting"),
+            "allowlisted now"
+        );
+
+        // A user_id with no `users` row at all -- same false as a resolvable
+        // but non-allowlisted user, no separate error case.
+        assert!(
+            !is_chatbot_allowed(&pool, "TEST-USER-DOES-NOT-EXIST")
+                .await
+                .expect("lookup for a nonexistent user")
+        );
+
+        // Cleanup -- chatbot_allowed_users cascades via ON DELETE CASCADE.
+        sqlx::query("DELETE FROM users WHERE id = 'TEST-USER-CHATBOT-ALLOWED'")
+            .execute(&pool)
+            .await
+            .expect("cleanup test user");
     }
 }
