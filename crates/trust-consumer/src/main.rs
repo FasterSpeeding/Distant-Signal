@@ -34,6 +34,13 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
     let connection_state = health::spawn(config.health_bind_url.clone());
     let http = reqwest::Client::new();
+    let internal_oauth = common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
+        token_url: config.internal_oauth_token_url.clone(),
+        client_id: config.internal_oauth_client_id.clone(),
+        scope: config.internal_oauth_scope.clone(),
+        username: config.internal_oauth_username.clone(),
+        password: config.internal_oauth_password.clone(),
+    });
 
     let mut feed = KafkaMovementFeed::connect(&config, connection_state)?;
 
@@ -62,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
             match queries::fetch_active_tracked_trains(
                 &http,
                 &config.api_tracked_trains_url,
-                &config.internal_token,
+                &internal_oauth,
             )
             .await
             {
@@ -87,13 +94,13 @@ async fn main() -> anyhow::Result<()> {
         }
 
         if last_stanox_crs_reload.elapsed() >= stanox_crs_reload_interval {
-            let fetched = queries::fetch_stanox_crs(&http, &config.stanox_crs_url, &config.internal_token).await;
+            let fetched = queries::fetch_stanox_crs(&http, &config.stanox_crs_url, &internal_oauth).await;
             process::apply_stanox_crs_reload(fetched, &stanox_crs);
             last_stanox_crs_reload = tokio::time::Instant::now();
         }
 
         let outcome = run_cycle(&mut feed, &reference, &mut state, &stanox_crs, async |events| {
-            queries::post_train_events(&http, &config.api_ingest_url, &config.internal_token, events).await
+            queries::post_train_events(&http, &config.api_ingest_url, &internal_oauth, events).await
         })
         .await;
 
