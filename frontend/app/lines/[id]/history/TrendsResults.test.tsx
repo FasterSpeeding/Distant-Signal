@@ -16,26 +16,34 @@ vi.mock('@/lib/api');
 // output (see the design spec's Testing section and TicketPanel.test.tsx's
 // precedent for async Server Component tests). A light mock of
 // `@mantine/charts`' `LineChart` lets these tests assert on the data-driven
-// props actually passed to it -- `series`/`data`/`connectNulls` -- and on
-// how many separate chart instances got rendered, without depending on
-// Recharts' internal SVG rendering in jsdom.
-vi.mock('@mantine/charts', () => ({
-  LineChart: (props: {
-    data: unknown[];
-    series: { name: string; strokeDasharray?: string | number }[];
-    connectNulls?: boolean;
-    withLegend?: boolean;
-  }) => (
-    <div
-      data-testid="line-chart"
-      data-series={props.series.map((series) => series.name).join(',')}
-      data-connect-nulls={String(props.connectNulls)}
-      data-points={JSON.stringify(props.data)}
-      data-with-legend={String(props.withLegend)}
-      data-dash-patterns={props.series.map((series) => series.strokeDasharray ?? '').join(',')}
-    />
-  ),
-}));
+// props actually passed to it -- `series`/`data`/`connectNulls`/
+// `valueFormatter`/etc -- and on how many separate chart instances got
+// rendered, without depending on Recharts' internal SVG rendering in
+// jsdom. Routed through a single `vi.fn()` capture (rather than reading
+// props back off `data-*` attributes alone) so non-serializable props like
+// `valueFormatter` -- a function, which can't round-trip through a DOM
+// attribute -- are inspectable too via `lineChartMock.mock.calls`.
+type MockLineChartProps = {
+  data: unknown[];
+  series: { name: string; strokeDasharray?: string | number }[];
+  connectNulls?: boolean;
+  withLegend?: boolean;
+  valueFormatter?: (value: number) => string;
+  xAxisProps?: unknown;
+};
+
+const lineChartMock = vi.fn((props: MockLineChartProps) => (
+  <div
+    data-testid="line-chart"
+    data-series={props.series.map((series) => series.name).join(',')}
+    data-connect-nulls={String(props.connectNulls)}
+    data-points={JSON.stringify(props.data)}
+    data-with-legend={String(props.withLegend)}
+    data-dash-patterns={props.series.map((series) => series.strokeDasharray ?? '').join(',')}
+  />
+));
+
+vi.mock('@mantine/charts', () => ({ LineChart: (props: MockLineChartProps) => lineChartMock(props) }));
 
 function row(overrides: Partial<LineDailyStats> = {}): LineDailyStats {
   return {
@@ -148,6 +156,15 @@ describe('TrendsResults', () => {
     expect(new Set(dashPatterns).size).toBe(3); // three distinct values, including the empty string for the solid default
 
     expect(avgDelayChart.dataset.withLegend).not.toBe('true');
+  });
+
+  it('formats the average-delay tooltip to one decimal place with a unit suffix', async () => {
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([row({ day: '2026-08-01', avgDelayMinutes: 0.41267123328767123 })]);
+    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
+
+    const avgDelayCall = lineChartMock.mock.calls.find(([props]) => props.series[0]?.name === 'avgDelayMinutes')!;
+    const [avgDelayProps] = avgDelayCall;
+    expect(avgDelayProps.valueFormatter?.(0.41267123328767123)).toBe('0.4 min');
   });
 
   it('passes connectNulls={false} to both charts so gaps render instead of interpolating', async () => {

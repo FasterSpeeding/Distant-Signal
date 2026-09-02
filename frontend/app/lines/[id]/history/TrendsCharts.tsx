@@ -58,6 +58,7 @@ export function TrendsCharts({ points }: { points: ChartPoint[] }) {
           data={points}
           dataKey="day"
           series={[{ name: 'avgDelayMinutes', label: 'Avg delay (minutes)', color: 'grape.6' }]}
+          valueFormatter={(value) => `${value.toFixed(1)} min`}
           connectNulls={false}
         />
       </Stack>
