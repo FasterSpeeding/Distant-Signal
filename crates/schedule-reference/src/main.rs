@@ -37,8 +37,10 @@ async fn main() -> anyhow::Result<()> {
         interval.tick().await;
         let cycle_start = std::time::Instant::now();
         let result = poll_once(&client, &config, &mut last_processed_sequence).await;
-        metrics::histogram!(common::metrics::metric_name("schedule_reference_cycle_duration_seconds"))
-            .record(cycle_start.elapsed().as_secs_f64());
+        metrics::histogram!(common::metrics::metric_name(
+            "schedule_reference_cycle_duration_seconds"
+        ))
+        .record(cycle_start.elapsed().as_secs_f64());
         if let Err(err) = result {
             tracing::error!(error = ?err, "schedule-reference cycle failed; will retry next interval");
         }
@@ -78,7 +80,10 @@ async fn poll_once(
         return Ok(());
     };
     if Some(sequence) == *last_processed_sequence {
-        tracing::debug!(sequence, "no new sequence since last successful parse; nothing to do");
+        tracing::debug!(
+            sequence,
+            "no new sequence since last successful parse; nothing to do"
+        );
         return Ok(());
     }
 
@@ -93,7 +98,12 @@ async fn poll_once(
     let msn_crs = parser::parse_msn_a_lines(&a_text);
     let rows = parser::resolve(&ti_records, &msn_crs);
 
-    tracing::info!(sequence, ti_records = ti_records.len(), resolved = rows.len(), "parsed stanox/crs table from sequence");
+    tracing::info!(
+        sequence,
+        ti_records = ti_records.len(),
+        resolved = rows.len(),
+        "parsed stanox/crs table from sequence"
+    );
 
     let records: Vec<common::StanoxCrsRecord> = rows
         .into_iter()
@@ -106,7 +116,14 @@ async fn poll_once(
         })
         .collect();
 
-    common::ingest::post_batch(client, &config.api_ingest_url, &config.internal_token, &records, "stanox/crs rows").await?;
+    common::ingest::post_batch(
+        client,
+        &config.api_ingest_url,
+        &config.internal_token,
+        &records,
+        "stanox/crs rows",
+    )
+    .await?;
 
     // Only advance on a successful POST -- a failed POST just means the
     // already-computed table is discarded and rebuilt from the same

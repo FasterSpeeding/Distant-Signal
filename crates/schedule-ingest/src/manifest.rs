@@ -64,11 +64,9 @@ pub fn parse(content: &str) -> anyhow::Result<Manifest> {
             if let Some(value) = rest.trim().strip_prefix("Sequence:") {
                 let value = value.trim();
                 let value = value.split_whitespace().next().unwrap_or(value);
-                sequence = Some(
-                    value
-                        .parse()
-                        .map_err(|error| anyhow::anyhow!("invalid Sequence value {value:?}: {error}"))?,
-                );
+                sequence = Some(value.parse().map_err(|error| {
+                    anyhow::anyhow!("invalid Sequence value {value:?}: {error}")
+                })?);
             }
             // Every other `/!!` line (Start of file, Content type,
             // Generated, Exporter, End of file) carries no information
@@ -164,7 +162,8 @@ mod tests {
 
     #[test]
     fn errors_with_zero_listed_files() {
-        let fixture = "/!! Start of file\r\n/!! Sequence:      942\r\n/!! End of file (0 records)\r\n";
+        let fixture =
+            "/!! Start of file\r\n/!! Sequence:      942\r\n/!! End of file (0 records)\r\n";
         let error = parse(fixture).unwrap_err();
         assert!(error.to_string().contains("zero files"));
     }
@@ -184,7 +183,10 @@ mod tests {
 
     #[test]
     fn classify_next_sequence_is_expected() {
-        assert_eq!(classify_sequence(Some(942), 943), SequenceRelation::Expected);
+        assert_eq!(
+            classify_sequence(Some(942), 943),
+            SequenceRelation::Expected
+        );
     }
 
     #[test]

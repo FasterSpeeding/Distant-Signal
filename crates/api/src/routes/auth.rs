@@ -64,7 +64,11 @@ async fn login(
         Ok(v) => v,
         Err(err) => {
             tracing::error!(error = ?err, "OIDC discovery/authorize_url failed");
-            return (StatusCode::SERVICE_UNAVAILABLE, "sign-in temporarily unavailable").into_response();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "sign-in temporarily unavailable",
+            )
+                .into_response();
         }
     };
 
@@ -92,8 +96,13 @@ async fn login(
     let mut response = Redirect::temporary(url.as_str()).into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
-        HeaderValue::from_str(&auth::set_cookie_header(auth::LOGIN_STATE_COOKIE_NAME, &login_state_id, 900, cookie_secure(&app)))
-            .expect("cookie header value is always valid ASCII"),
+        HeaderValue::from_str(&auth::set_cookie_header(
+            auth::LOGIN_STATE_COOKIE_NAME,
+            &login_state_id,
+            900,
+            cookie_secure(&app),
+        ))
+        .expect("cookie header value is always valid ASCII"),
     );
     response
 }
@@ -109,10 +118,16 @@ struct CallbackParams {
 /// validates (re-checked here, defense in depth), else the operator's
 /// static fallback.
 fn post_login_target(stored_return_to: Option<&str>, fallback: &str) -> String {
-    stored_return_to.and_then(auth::validate_return_to).unwrap_or_else(|| fallback.to_string())
+    stored_return_to
+        .and_then(auth::validate_return_to)
+        .unwrap_or_else(|| fallback.to_string())
 }
 
-async fn callback(State(app): State<App>, headers: axum::http::HeaderMap, Query(params): Query<CallbackParams>) -> Response {
+async fn callback(
+    State(app): State<App>,
+    headers: axum::http::HeaderMap,
+    Query(params): Query<CallbackParams>,
+) -> Response {
     if let Some(error) = params.error {
         tracing::warn!(oidc_error = %error, "SSO server returned an error to the callback");
         return (StatusCode::BAD_GATEWAY, "sign-in was not completed").into_response();
@@ -126,7 +141,13 @@ async fn callback(State(app): State<App>, headers: axum::http::HeaderMap, Query(
     };
     let stored = match users::consume_login_state(&app.database, &login_state_id).await {
         Ok(Some(s)) => s,
-        Ok(None) => return (StatusCode::BAD_REQUEST, "login state expired or already used").into_response(),
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "login state expired or already used",
+            )
+                .into_response();
+        }
         Err(err) => {
             tracing::error!(error = ?err, "login state lookup failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
@@ -184,17 +205,28 @@ async fn callback(State(app): State<App>, headers: axum::http::HeaderMap, Query(
     // and guards against any future code path that might write to that
     // column without going through login()'s own validation), not just
     // trust that it was already validated once at insert time.
-    let target = post_login_target(stored.return_to.as_deref(), &app.config.sso_post_login_redirect_url);
+    let target = post_login_target(
+        stored.return_to.as_deref(),
+        &app.config.sso_post_login_redirect_url,
+    );
     let mut response = Redirect::temporary(&target).into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
-        HeaderValue::from_str(&auth::set_cookie_header(auth::SESSION_COOKIE_NAME, &session_token, max_age, cookie_secure(&app)))
-            .expect("cookie header value is always valid ASCII"),
+        HeaderValue::from_str(&auth::set_cookie_header(
+            auth::SESSION_COOKIE_NAME,
+            &session_token,
+            max_age,
+            cookie_secure(&app),
+        ))
+        .expect("cookie header value is always valid ASCII"),
     );
     response.headers_mut().append(
         header::SET_COOKIE,
-        HeaderValue::from_str(&auth::clear_cookie_header(auth::LOGIN_STATE_COOKIE_NAME, cookie_secure(&app)))
-            .expect("cookie header value is always valid ASCII"),
+        HeaderValue::from_str(&auth::clear_cookie_header(
+            auth::LOGIN_STATE_COOKIE_NAME,
+            cookie_secure(&app),
+        ))
+        .expect("cookie header value is always valid ASCII"),
     );
     response
 }
@@ -205,15 +237,19 @@ async fn logout(State(app): State<App>, headers: axum::http::HeaderMap) -> Respo
     // or already invalid, logout is still a no-op success (idempotent),
     // not an error.
     if let Some(token) = auth::parse_cookie(&headers, auth::SESSION_COOKIE_NAME)
-        && let Err(err) = users::delete_session(&app.database, &auth::hash_session_token(&token)).await
+        && let Err(err) =
+            users::delete_session(&app.database, &auth::hash_session_token(&token)).await
     {
         tracing::error!(error = ?err, "failed to delete session on logout");
     }
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
-        HeaderValue::from_str(&auth::clear_cookie_header(auth::SESSION_COOKIE_NAME, cookie_secure(&app)))
-            .expect("cookie header value is always valid ASCII"),
+        HeaderValue::from_str(&auth::clear_cookie_header(
+            auth::SESSION_COOKIE_NAME,
+            cookie_secure(&app),
+        ))
+        .expect("cookie header value is always valid ASCII"),
     );
     response
 }
@@ -227,10 +263,22 @@ struct SessionResponse {
     name: Option<String>,
 }
 
-async fn session(OptionalAuthenticatedUser(user): OptionalAuthenticatedUser) -> Json<SessionResponse> {
+async fn session(
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
+) -> Json<SessionResponse> {
     match user {
-        Some(u) => Json(SessionResponse { authenticated: true, id: Some(u.id), email: u.email, name: u.name }),
-        None => Json(SessionResponse { authenticated: false, id: None, email: None, name: None }),
+        Some(u) => Json(SessionResponse {
+            authenticated: true,
+            id: Some(u.id),
+            email: u.email,
+            name: u.name,
+        }),
+        None => Json(SessionResponse {
+            authenticated: false,
+            id: None,
+            email: None,
+            name: None,
+        }),
     }
 }
 
@@ -245,7 +293,10 @@ mod tests {
 
     #[test]
     fn captured_return_to_keeps_a_valid_return_to() {
-        assert_eq!(captured_return_to(Some("/lines/some-line")), Some("/lines/some-line".to_string()));
+        assert_eq!(
+            captured_return_to(Some("/lines/some-line")),
+            Some("/lines/some-line".to_string())
+        );
     }
 
     #[test]
@@ -255,7 +306,10 @@ mod tests {
 
     #[test]
     fn post_login_target_uses_the_stored_return_to_when_valid() {
-        let target = post_login_target(Some("/lines/some-line?tab=history"), "https://rail.example.com/");
+        let target = post_login_target(
+            Some("/lines/some-line?tab=history"),
+            "https://rail.example.com/",
+        );
         assert_eq!(target, "/lines/some-line?tab=history");
     }
 
@@ -271,6 +325,9 @@ mod tests {
         // go through login()'s own validation (e.g. a future code path with a
         // bug) must still be caught here, not trusted blindly.
         let fallback = "https://rail.example.com/";
-        assert_eq!(post_login_target(Some("https://evil.com"), fallback), fallback);
+        assert_eq!(
+            post_login_target(Some("https://evil.com"), fallback),
+            fallback
+        );
     }
 }

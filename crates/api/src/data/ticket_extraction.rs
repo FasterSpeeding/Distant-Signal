@@ -47,26 +47,48 @@ pub struct PartialTicket {
 /// one -- obtain 1-2 real sample passes to confirm this split's real-world
 /// hit rate before relying on it heavily.
 pub fn parse_pass_json(pass: &serde_json::Value) -> anyhow::Result<PartialTicket> {
-    let boarding_pass = pass.get("boardingPass").ok_or_else(|| anyhow::anyhow!("not a boardingPass-style pkpass"))?;
-    let transit_type = boarding_pass.get("transitType").and_then(|v| v.as_str()).unwrap_or_default();
-    anyhow::ensure!(transit_type == "PKTransitTypeTrain", "not a train boarding pass (transitType = {transit_type:?})");
+    let boarding_pass = pass
+        .get("boardingPass")
+        .ok_or_else(|| anyhow::anyhow!("not a boardingPass-style pkpass"))?;
+    let transit_type = boarding_pass
+        .get("transitType")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    anyhow::ensure!(
+        transit_type == "PKTransitTypeTrain",
+        "not a train boarding pass (transitType = {transit_type:?})"
+    );
 
-    let operator = pass.get("organizationName").and_then(|v| v.as_str()).map(str::to_string);
+    let operator = pass
+        .get("organizationName")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let semantics = boarding_pass.get("semantics");
 
-    let (origin, destination, source) = if let Some((origin, destination)) = semantics.and_then(semantics_origin_destination) {
-        (Some(origin), Some(destination), "pkpass-semantics")
-    } else {
-        let (origin, destination) = primary_fields_origin_destination(boarding_pass);
-        (origin, destination, "pkpass-heuristic")
-    };
+    let (origin, destination, source) =
+        if let Some((origin, destination)) = semantics.and_then(semantics_origin_destination) {
+            (Some(origin), Some(destination), "pkpass-semantics")
+        } else {
+            let (origin, destination) = primary_fields_origin_destination(boarding_pass);
+            (origin, destination, "pkpass-heuristic")
+        };
 
-    Ok(PartialTicket { operator, ticket_type: None, origin_crs: origin, destination_crs: destination, source })
+    Ok(PartialTicket {
+        operator,
+        ticket_type: None,
+        origin_crs: origin,
+        destination_crs: destination,
+        source,
+    })
 }
 
 fn semantics_origin_destination(semantics: &serde_json::Value) -> Option<(String, String)> {
-    let origin = semantics.get("departureStationName").and_then(|v| v.as_str())?;
-    let destination = semantics.get("destinationStationName").and_then(|v| v.as_str())?;
+    let origin = semantics
+        .get("departureStationName")
+        .and_then(|v| v.as_str())?;
+    let destination = semantics
+        .get("destinationStationName")
+        .and_then(|v| v.as_str())?;
     Some((origin.to_string(), destination.to_string()))
 }
 
@@ -75,14 +97,25 @@ fn semantics_origin_destination(semantics: &serde_json::Value) -> Option<(String
 /// departure, then arrival, in that order. Returns `(None, None)` for
 /// anything that doesn't match that exact two-field shape, rather than
 /// guessing at which field is which.
-fn primary_fields_origin_destination(boarding_pass: &serde_json::Value) -> (Option<String>, Option<String>) {
-    let Some(fields) = boarding_pass.get("primaryFields").and_then(|v| v.as_array()) else {
+fn primary_fields_origin_destination(
+    boarding_pass: &serde_json::Value,
+) -> (Option<String>, Option<String>) {
+    let Some(fields) = boarding_pass
+        .get("primaryFields")
+        .and_then(|v| v.as_array())
+    else {
         return (None, None);
     };
     match fields.as_slice() {
         [origin, destination] => (
-            origin.get("value").and_then(|v| v.as_str()).map(str::to_string),
-            destination.get("value").and_then(|v| v.as_str()).map(str::to_string),
+            origin
+                .get("value")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            destination
+                .get("value")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
         ),
         _ => (None, None),
     }
@@ -105,7 +138,8 @@ const MAX_ENTRY_BYTES: u64 = 1_000_000; // 1 MiB
 /// precedent.
 pub fn parse_pkpass(bytes: &[u8]) -> anyhow::Result<PartialTicket> {
     let cursor = std::io::Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor).map_err(|err| anyhow::anyhow!("not a valid .pkpass (zip) file: {err}"))?;
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|err| anyhow::anyhow!("not a valid .pkpass (zip) file: {err}"))?;
     let mut entry = archive
         .by_name("pass.json")
         .map_err(|err| anyhow::anyhow!("pass.json not found in .pkpass archive: {err}"))?;
@@ -113,7 +147,8 @@ pub fn parse_pkpass(bytes: &[u8]) -> anyhow::Result<PartialTicket> {
     let mut buf = Vec::new();
     entry.by_ref().take(MAX_ENTRY_BYTES).read_to_end(&mut buf)?;
 
-    let pass: serde_json::Value = serde_json::from_slice(&buf).map_err(|err| anyhow::anyhow!("pass.json is not valid JSON: {err}"))?;
+    let pass: serde_json::Value = serde_json::from_slice(&buf)
+        .map_err(|err| anyhow::anyhow!("pass.json is not valid JSON: {err}"))?;
     parse_pass_json(&pass)
 }
 
@@ -202,7 +237,9 @@ mod parse_pkpass_tests {
         let mut buf = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-            writer.start_file("pass.json", zip::write::SimpleFileOptions::default()).unwrap();
+            writer
+                .start_file("pass.json", zip::write::SimpleFileOptions::default())
+                .unwrap();
             writer.write_all(pass_json.to_string().as_bytes()).unwrap();
             writer.finish().unwrap();
         }
@@ -229,7 +266,9 @@ mod parse_pkpass_tests {
         let mut buf = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-            writer.start_file("readme.txt", zip::write::SimpleFileOptions::default()).unwrap();
+            writer
+                .start_file("readme.txt", zip::write::SimpleFileOptions::default())
+                .unwrap();
             writer.write_all(b"not a pass").unwrap();
             writer.finish().unwrap();
         }
@@ -257,17 +296,34 @@ mod parse_pkpass_tests {
 /// CRS-format check (Task 2) is what actually prevents an unedited false
 /// match from ever being saved, not this regex's own precision.
 pub fn parse_pdf_text(text: &str) -> PartialTicket {
-    let operator = KNOWN_RETAILER_MARKERS.iter().find(|marker| text.contains(**marker)).map(|marker| marker.to_string());
+    let operator = KNOWN_RETAILER_MARKERS
+        .iter()
+        .find(|marker| text.contains(**marker))
+        .map(|marker| marker.to_string());
 
     let (origin, destination) = ROUTE_PATTERN
         .captures(text)
-        .map(|caps| (Some(caps[1].trim().to_string()), Some(caps[2].trim().to_string())))
+        .map(|caps| {
+            (
+                Some(caps[1].trim().to_string()),
+                Some(caps[2].trim().to_string()),
+            )
+        })
         .unwrap_or((None, None));
 
     let text_lower = text.to_lowercase();
-    let ticket_type = TICKET_TYPE_KEYWORDS.iter().find(|kw| text_lower.contains(&kw.to_lowercase())).map(|kw| kw.to_string());
+    let ticket_type = TICKET_TYPE_KEYWORDS
+        .iter()
+        .find(|kw| text_lower.contains(&kw.to_lowercase()))
+        .map(|kw| kw.to_string());
 
-    PartialTicket { operator, ticket_type, origin_crs: origin, destination_crs: destination, source: "pdf-heuristic" }
+    PartialTicket {
+        operator,
+        ticket_type,
+        origin_crs: origin,
+        destination_crs: destination,
+        source: "pdf-heuristic",
+    }
 }
 
 /// The "smallest possible set of known templates" the design doc's Open
@@ -275,8 +331,14 @@ pub fn parse_pdf_text(text: &str) -> PartialTicket {
 /// Expanding this list is real follow-up work, not attempted here.
 const KNOWN_RETAILER_MARKERS: &[&str] = &["LNER", "Trainline"];
 
-const TICKET_TYPE_KEYWORDS: &[&str] =
-    &["Anytime Day Single", "Off-Peak Day Single", "Off-Peak Day Return", "Advance Single", "Season", "Open Return"];
+const TICKET_TYPE_KEYWORDS: &[&str] = &[
+    "Anytime Day Single",
+    "Off-Peak Day Single",
+    "Off-Peak Day Return",
+    "Advance Single",
+    "Season",
+    "Open Return",
+];
 
 /// Matches the "<origin> to <destination>" shape the design doc's own
 /// worked example uses ("18:32 London Waterloo to Woking, Off-Peak Day
@@ -296,7 +358,8 @@ const TICKET_TYPE_KEYWORDS: &[&str] =
 /// same as `.pkpass`'s Open Question 1) and adjust -- this is a starting
 /// point, not a pattern verified against real tickets.
 static ROUTE_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"([A-Za-z][A-Za-z '\-]+?)\s+to\s+([A-Za-z][A-Za-z '\-]+?)(?:[,\.\n]|$)").unwrap()
+    regex::Regex::new(r"([A-Za-z][A-Za-z '\-]+?)\s+to\s+([A-Za-z][A-Za-z '\-]+?)(?:[,\.\n]|$)")
+        .unwrap()
 });
 
 #[cfg(test)]
@@ -305,7 +368,8 @@ mod parse_pdf_text_tests {
 
     #[test]
     fn matches_the_design_docs_own_worked_example() {
-        let text = "LNER e-ticket\n18:32 London Waterloo to Woking, Off-Peak Day Single\nFare: withheld";
+        let text =
+            "LNER e-ticket\n18:32 London Waterloo to Woking, Off-Peak Day Single\nFare: withheld";
         let ticket = parse_pdf_text(text);
         assert_eq!(ticket.operator, Some("LNER".to_string()));
         assert_eq!(ticket.origin_crs, Some("London Waterloo".to_string()));
@@ -316,7 +380,9 @@ mod parse_pdf_text_tests {
 
     #[test]
     fn an_unrecognized_retailer_yields_no_operator_guess() {
-        let ticket = parse_pdf_text("Some Other Retailer Ltd e-ticket, King's Cross to York, Anytime Day Single");
+        let ticket = parse_pdf_text(
+            "Some Other Retailer Ltd e-ticket, King's Cross to York, Anytime Day Single",
+        );
         assert_eq!(ticket.operator, None);
     }
 
@@ -353,7 +419,10 @@ mod parse_pdf_text_tests {
 /// this one request, not take the whole handler down. See this plan's
 /// Global Constraints on file upload hygiene.
 pub fn parse_pdf(bytes: &[u8]) -> anyhow::Result<PartialTicket> {
-    anyhow::ensure!(bytes.starts_with(b"%PDF-"), "not a PDF file (missing %PDF- header)");
+    anyhow::ensure!(
+        bytes.starts_with(b"%PDF-"),
+        "not a PDF file (missing %PDF- header)"
+    );
 
     let text = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(bytes))
         .map_err(|_| anyhow::anyhow!("PDF text extraction panicked"))?

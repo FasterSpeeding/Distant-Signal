@@ -7,7 +7,6 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 use crate::auth::oidc::{OidcClient, OidcConfig};
 use crate::data::config::ServiceArguments;
 
-
 pub struct AppState {
     pub config: ServiceArguments,
     pub database: PgPool,
@@ -79,8 +78,8 @@ impl AppState {
 
         // No eager connect: only the URL is validated here. See the `redis`
         // field's doc comment on `AppState`.
-        let redis = redis::Client::open(config.redis_url.clone())
-            .context("Could not parse REDIS_URL")?;
+        let redis =
+            redis::Client::open(config.redis_url.clone()).context("Could not parse REDIS_URL")?;
 
         // An empty client secret would make every future confidential-client
         // token exchange fail anyway, but only after a real user has already

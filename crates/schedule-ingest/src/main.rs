@@ -77,7 +77,9 @@ async fn main() -> anyhow::Result<()> {
     // `22:00..01:30` overnight, then `16:00` the following afternoon as a
     // catch-all), so "last in the list" and "chronologically latest" are
     // NOT the same thing — this must stay a positional lookup.
-    let final_check_time = *check_times.last().expect("parse_check_times guarantees a non-empty list");
+    let final_check_time = *check_times
+        .last()
+        .expect("parse_check_times guarantees a non-empty list");
 
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
 
@@ -102,7 +104,10 @@ async fn main() -> anyhow::Result<()> {
         } else {
             let now_london = Utc::now().with_timezone(&London);
             let (target, slot) = next_check_time(now_london, &check_times);
-            let sleep_for = target.signed_duration_since(now_london).to_std().unwrap_or(Duration::ZERO);
+            let sleep_for = target
+                .signed_duration_since(now_london)
+                .to_std()
+                .unwrap_or(Duration::ZERO);
             tracing::info!(sleep_secs = sleep_for.as_secs(), slot = %slot, "sleeping until next check time");
             tokio::time::sleep(sleep_for).await;
             Some(slot)
@@ -125,8 +130,10 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!(error = ?err, "scan cycle failed unexpectedly; will retry next check time");
         }
 
-        metrics::histogram!(common::metrics::metric_name("schedule_feed_scan_duration_seconds"))
-            .record(cycle_start.elapsed().as_secs_f64());
+        metrics::histogram!(common::metrics::metric_name(
+            "schedule_feed_scan_duration_seconds"
+        ))
+        .record(cycle_start.elapsed().as_secs_f64());
     }
 }
 
@@ -162,9 +169,15 @@ async fn run_scan_cycle(
     if let Some(pending) = pending_post.take() {
         match post_ingest(client, config, &pending).await {
             Ok(()) => {
-                tracing::info!(sequence = pending.sequence, "retried and succeeded posting a previously-failed ingest record");
+                tracing::info!(
+                    sequence = pending.sequence,
+                    "retried and succeeded posting a previously-failed ingest record"
+                );
                 *last_ingested_sequence = Some(pending.sequence as u32);
-                metrics::gauge!(common::metrics::metric_name("schedule_feed_last_ingest_sequence")).set(pending.sequence as f64);
+                metrics::gauge!(common::metrics::metric_name(
+                    "schedule_feed_last_ingest_sequence"
+                ))
+                .set(pending.sequence as f64);
             }
             Err(err) => {
                 tracing::error!(error = ?err, sequence = pending.sequence, "retry POST still failing; will retry again next cycle");
@@ -218,7 +231,10 @@ async fn run_scan_cycle(
 
     match manifest::classify_sequence(*last_ingested_sequence, parsed.sequence) {
         SequenceRelation::AlreadyIngested => {
-            tracing::info!(sequence = parsed.sequence, "manifest sequence already ingested; heartbeat only");
+            tracing::info!(
+                sequence = parsed.sequence,
+                "manifest sequence already ingested; heartbeat only"
+            );
             return Ok(());
         }
         SequenceRelation::Gap => {
@@ -227,7 +243,10 @@ async fn run_scan_cycle(
                 current_sequence = parsed.sequence,
                 "non-contiguous schedule feed sequence number; proceeding to ingest anyway per RSPS5046 \u{a7}7.4"
             );
-            metrics::counter!(common::metrics::metric_name("schedule_feed_sequence_gap_total")).increment(1);
+            metrics::counter!(common::metrics::metric_name(
+                "schedule_feed_sequence_gap_total"
+            ))
+            .increment(1);
         }
         SequenceRelation::Expected => {}
     }
@@ -257,13 +276,14 @@ async fn run_scan_cycle(
     for name in std::iter::once(&manifest_filename).chain(parsed.files.iter()) {
         // Use the size already observed by this cycle's snapshot/stability
         // check -- do NOT re-stat after the move, per the plan.
-        let bytes = snapshot
-            .0
-            .get(name)
-            .map(|&(_, len)| len)
-            .ok_or_else(|| anyhow::anyhow!("file {name:?} vanished from the snapshot just before moving"))?;
+        let bytes = snapshot.0.get(name).map(|&(_, len)| len).ok_or_else(|| {
+            anyhow::anyhow!("file {name:?} vanished from the snapshot just before moving")
+        })?;
         std::fs::rename(config.watch_dir.join(name), sequence_dir.join(name))?;
-        files.push(ScheduleFeedFile { name: name.clone(), bytes });
+        files.push(ScheduleFeedFile {
+            name: name.clone(),
+            bytes,
+        });
     }
 
     let request = ScheduleFeedIngestRequest {
@@ -274,9 +294,15 @@ async fn run_scan_cycle(
 
     match post_ingest(client, config, &request).await {
         Ok(()) => {
-            tracing::info!(sequence = parsed.sequence, "schedule feed delivery moved to storage and posted to api");
+            tracing::info!(
+                sequence = parsed.sequence,
+                "schedule feed delivery moved to storage and posted to api"
+            );
             *last_ingested_sequence = Some(parsed.sequence);
-            metrics::gauge!(common::metrics::metric_name("schedule_feed_last_ingest_sequence")).set(parsed.sequence as f64);
+            metrics::gauge!(common::metrics::metric_name(
+                "schedule_feed_last_ingest_sequence"
+            ))
+            .set(parsed.sequence as f64);
         }
         Err(err) => {
             // The files stay in `storage_dir/<nnn>/` -- this is a locally-
@@ -306,7 +332,11 @@ async fn run_scan_cycle(
 /// rather than match it, so this is a small bespoke POST instead (mirroring
 /// `post_batch`'s own request-building/error-handling shape, just without
 /// the `&[T]` framing).
-async fn post_ingest(client: &Client, config: &Config, request: &ScheduleFeedIngestRequest) -> anyhow::Result<()> {
+async fn post_ingest(
+    client: &Client,
+    config: &Config,
+    request: &ScheduleFeedIngestRequest,
+) -> anyhow::Result<()> {
     let response = client
         .post(&config.api_ingest_url)
         .header(INTERNAL_TOKEN_HEADER, &config.internal_token)
@@ -315,7 +345,11 @@ async fn post_ingest(client: &Client, config: &Config, request: &ScheduleFeedIng
         .await?;
 
     if response.status().is_success() {
-        tracing::info!(sequence = request.sequence, files = request.files.len(), "posted schedule feed ingest to api");
+        tracing::info!(
+            sequence = request.sequence,
+            files = request.files.len(),
+            "posted schedule feed ingest to api"
+        );
         Ok(())
     } else {
         let status = response.status();
@@ -353,7 +387,10 @@ fn parse_check_times(raw: &str) -> anyhow::Result<Vec<NaiveTime>> {
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| NaiveTime::parse_from_str(s, "%H:%M").map_err(|error| anyhow::anyhow!("invalid check time {s:?}: {error}")))
+        .map(|s| {
+            NaiveTime::parse_from_str(s, "%H:%M")
+                .map_err(|error| anyhow::anyhow!("invalid check time {s:?}: {error}"))
+        })
         .collect::<Result<_, _>>()?;
 
     if times.is_empty() {
@@ -408,7 +445,10 @@ fn is_manifest_filename(name: &str) -> bool {
     const PREFIX: &str = "RJTTF";
     const SUFFIX: &str = "DAT.txt";
 
-    if !name.starts_with(PREFIX) || !name.ends_with(SUFFIX) || name.len() < PREFIX.len() + SUFFIX.len() {
+    if !name.starts_with(PREFIX)
+        || !name.ends_with(SUFFIX)
+        || name.len() < PREFIX.len() + SUFFIX.len()
+    {
         return false;
     }
 
@@ -421,7 +461,12 @@ fn is_manifest_filename(name: &str) -> bool {
 /// normally there's at most one candidate at a time; a second is a
 /// pathological case the caller logs about).
 fn find_manifest_candidates(snapshot: &DirSnapshot) -> Vec<String> {
-    let mut names: Vec<String> = snapshot.0.keys().filter(|name| is_manifest_filename(name)).cloned().collect();
+    let mut names: Vec<String> = snapshot
+        .0
+        .keys()
+        .filter(|name| is_manifest_filename(name))
+        .cloned()
+        .collect();
     names.sort();
     names
 }
@@ -429,10 +474,16 @@ fn find_manifest_candidates(snapshot: &DirSnapshot) -> Vec<String> {
 /// Filenames from `files` that are either absent from `snapshot` or not
 /// yet a member of `known_stable` -- i.e. not yet safe to treat as part of
 /// a complete delivery.
-fn missing_listed_files(files: &[String], snapshot: &DirSnapshot, known_stable: &HashSet<String>) -> Vec<String> {
+fn missing_listed_files(
+    files: &[String],
+    snapshot: &DirSnapshot,
+    known_stable: &HashSet<String>,
+) -> Vec<String> {
     files
         .iter()
-        .filter(|name| !(snapshot.0.contains_key(name.as_str()) && known_stable.contains(name.as_str())))
+        .filter(|name| {
+            !(snapshot.0.contains_key(name.as_str()) && known_stable.contains(name.as_str()))
+        })
         .cloned()
         .collect()
 }
@@ -523,7 +574,7 @@ mod tests {
     fn next_check_time_picks_the_soonest_upcoming_slot_today() {
         let now = London.with_ymd_and_hms(2026, 9, 1, 10, 0, 0).unwrap();
         let check_times = vec![
-            NaiveTime::from_hms_opt(9, 0, 0).unwrap(),  // already passed today
+            NaiveTime::from_hms_opt(9, 0, 0).unwrap(), // already passed today
             NaiveTime::from_hms_opt(16, 0, 0).unwrap(), // later today -- soonest
             NaiveTime::from_hms_opt(22, 0, 0).unwrap(), // later today
         ];
@@ -540,7 +591,10 @@ mod tests {
 
         let (target, slot) = next_check_time(now, &check_times);
         assert_eq!(slot, NaiveTime::from_hms_opt(16, 0, 0).unwrap());
-        assert_eq!(target.date_naive(), now.date_naive() + chrono::Duration::days(1));
+        assert_eq!(
+            target.date_naive(),
+            now.date_naive() + chrono::Duration::days(1)
+        );
     }
 
     #[test]
@@ -575,7 +629,10 @@ mod tests {
         assert!(known_stable.contains("RJTTF942DAT.txt"));
 
         let missing = missing_listed_files(&sample_manifest_files(), &snapshot, &known_stable);
-        assert!(missing.is_empty(), "expected a complete delivery to have no missing files, got {missing:?}");
+        assert!(
+            missing.is_empty(),
+            "expected a complete delivery to have no missing files, got {missing:?}"
+        );
     }
 
     #[test]
@@ -618,7 +675,16 @@ mod tests {
             .collect();
         remaining.sort();
 
-        assert_eq!(remaining, vec!["04a".to_string(), "3".to_string(), "4".to_string(), "not-a-number".to_string(), "stray.txt".to_string()]);
+        assert_eq!(
+            remaining,
+            vec![
+                "04a".to_string(),
+                "3".to_string(),
+                "4".to_string(),
+                "not-a-number".to_string(),
+                "stray.txt".to_string()
+            ]
+        );
     }
 
     /// Regression test, same shape as `scan::scan_incoming_on_nonexistent_

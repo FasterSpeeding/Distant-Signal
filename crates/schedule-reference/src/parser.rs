@@ -48,8 +48,17 @@ pub fn parse_ti_lines(text: &str) -> Vec<TiRecord> {
                 Some(stanox_raw.to_string())
             };
             let crs_raw = line[53..56].trim();
-            let crs = if crs_raw.is_empty() { None } else { Some(crs_raw.to_string()) };
-            Some(TiRecord { tiploc, station_name, stanox, crs })
+            let crs = if crs_raw.is_empty() {
+                None
+            } else {
+                Some(crs_raw.to_string())
+            };
+            Some(TiRecord {
+                tiploc,
+                station_name,
+                stanox,
+                crs,
+            })
         })
         .collect()
 }
@@ -105,10 +114,18 @@ pub fn resolve(ti: &[TiRecord], msn_crs_by_tiploc: &HashMap<String, String>) -> 
     let mut by_stanox: HashMap<String, Vec<(&TiRecord, String)>> = HashMap::new();
 
     for record in ti {
-        let Some(stanox) = &record.stanox else { continue };
-        let crs = record.crs.clone().or_else(|| msn_crs_by_tiploc.get(&record.tiploc).cloned());
+        let Some(stanox) = &record.stanox else {
+            continue;
+        };
+        let crs = record
+            .crs
+            .clone()
+            .or_else(|| msn_crs_by_tiploc.get(&record.tiploc).cloned());
         let Some(crs) = crs else { continue };
-        by_stanox.entry(stanox.clone()).or_default().push((record, crs));
+        by_stanox
+            .entry(stanox.clone())
+            .or_default()
+            .push((record, crs));
     }
 
     let mut rows = Vec::new();
@@ -120,12 +137,23 @@ pub fn resolve(ti: &[TiRecord], msn_crs_by_tiploc: &HashMap<String, String>) -> 
         let winner = if distinct.len() == 1 {
             Some(distinct[0])
         } else {
-            let non_x: Vec<&str> = distinct.iter().copied().filter(|c| !c.starts_with('X')).collect();
-            if non_x.len() == 1 { Some(non_x[0]) } else { None }
+            let non_x: Vec<&str> = distinct
+                .iter()
+                .copied()
+                .filter(|c| !c.starts_with('X'))
+                .collect();
+            if non_x.len() == 1 {
+                Some(non_x[0])
+            } else {
+                None
+            }
         };
 
         if let Some(winner) = winner {
-            let (record, crs) = candidates.iter().find(|(_, crs)| crs == winner).expect("winner came from distinct");
+            let (record, crs) = candidates
+                .iter()
+                .find(|(_, crs)| crs == winner)
+                .expect("winner came from distinct");
             rows.push(ParsedRow {
                 stanox,
                 crs: crs.clone(),
@@ -153,8 +181,10 @@ mod tests {
     // VICTRCR match crates/trust-consumer/src/stanox_crs.rs's existing
     // REAL_EUSTON/REAL_VICTORIA/REAL_VICTORIA_CARRIAGE_ROAD fixtures
     // exactly.
-    const TI_EUSTON: &str = "TIEUSTON 00144400NLONDON EUSTON             724102893EUSLONDON EUSTON           ";
-    const TI_WATRLMN: &str = "TIWATRLMN16559801RLONDON WATERLOO           87212   0                           ";
+    const TI_EUSTON: &str =
+        "TIEUSTON 00144400NLONDON EUSTON             724102893EUSLONDON EUSTON           ";
+    const TI_WATRLMN: &str =
+        "TIWATRLMN16559801RLONDON WATERLOO           87212   0                           ";
 
     #[test]
     fn extracts_stanox_tiploc_crs_and_name_from_a_real_ti_line() {
@@ -191,7 +221,8 @@ mod msn_tests {
     // Real `A` lines, byte-verbatim, independently re-extracted this
     // session from timetable_full.zip's RJTTF942MSN.txt.
     const A_WATRLMN: &str = "A    LONDON WATERLOO               3WATRLMNWAT   WAT15312 6179815";
-    const A_HEADER: &str = "A                             FILE-SPEC=05 1.00 28/08/26 18.08.01   944           ";
+    const A_HEADER: &str =
+        "A                             FILE-SPEC=05 1.00 28/08/26 18.08.01   944           ";
 
     #[test]
     fn extracts_tiploc_to_crs_from_a_real_a_record() {
@@ -202,7 +233,10 @@ mod msn_tests {
     #[test]
     fn the_file_spec_header_pseudo_record_is_excluded() {
         let map = parse_msn_a_lines(A_HEADER);
-        assert!(map.is_empty(), "the header record must not be mistaken for a real TIPLOC");
+        assert!(
+            map.is_empty(),
+            "the header record must not be mistaken for a real TIPLOC"
+        );
     }
 }
 
@@ -214,14 +248,25 @@ mod resolve_tests {
         TiRecord {
             tiploc: tiploc.to_string(),
             station_name: name.to_string(),
-            stanox: if stanox.is_empty() { None } else { Some(stanox.to_string()) },
-            crs: if crs.is_empty() { None } else { Some(crs.to_string()) },
+            stanox: if stanox.is_empty() {
+                None
+            } else {
+                Some(stanox.to_string())
+            },
+            crs: if crs.is_empty() {
+                None
+            } else {
+                Some(crs.to_string())
+            },
         }
     }
 
     #[test]
     fn an_unambiguous_stanox_resolves_directly() {
-        let rows = resolve(&[ti("EUSTON", "LONDON EUSTON", "72410", "EUS")], &HashMap::new());
+        let rows = resolve(
+            &[ti("EUSTON", "LONDON EUSTON", "72410", "EUS")],
+            &HashMap::new(),
+        );
         assert_eq!(
             rows,
             vec![ParsedRow {
@@ -276,32 +321,63 @@ mod resolve_tests {
         // set differs, this test's own failure is the signal to update it
         // (Open question 4 in the spec).
         let ti_records = vec![
-            ti("A1", "n", "30120", "PRE"), ti("A2", "n", "30120", "XPU"),
-            ti("B1", "n", "31510", "MCV"), ti("B2", "n", "31510", "XVS"),
-            ti("C1", "n", "40320", "CTR"), ti("C2", "n", "40320", "XCZ"),
-            ti("D1", "n", "52215", "SDI"), ti("D2", "n", "52215", "SFA"),
-            ti("E1", "n", "86441", "BOG"), ti("E2", "n", "86441", "XBN"),
-            ti("F1", "n", "86935", "PFT"), ti("F2", "n", "86935", "POO"),
-            ti("G1", "n", "86981", "WEY"), ti("G2", "n", "86981", "XWJ"),
-            ti("H1", "n", "87201", "VIC"), ti("H2", "n", "87201", "XVR"),
-            ti("I1", "n", "87219", "CLJ"), ti("I2", "n", "87219", "XCP"),
-            ti("J1", "n", "87261", "WIM"), ti("J2", "n", "87261", "XWD"),
-            ti("K1", "n", "87981", "XBP"), ti("K2", "n", "87981", "XMP"),
-            ti("L1", "n", "88486", "SAY"), ti("L2", "n", "88486", "XSQ"),
-            ti("M1", "n", "89428", "AFK"), ti("M2", "n", "89428", "ASI"),
-            ti("N1", "n", "89530", "EBD"), ti("N2", "n", "89530", "EBF"),
+            ti("A1", "n", "30120", "PRE"),
+            ti("A2", "n", "30120", "XPU"),
+            ti("B1", "n", "31510", "MCV"),
+            ti("B2", "n", "31510", "XVS"),
+            ti("C1", "n", "40320", "CTR"),
+            ti("C2", "n", "40320", "XCZ"),
+            ti("D1", "n", "52215", "SDI"),
+            ti("D2", "n", "52215", "SFA"),
+            ti("E1", "n", "86441", "BOG"),
+            ti("E2", "n", "86441", "XBN"),
+            ti("F1", "n", "86935", "PFT"),
+            ti("F2", "n", "86935", "POO"),
+            ti("G1", "n", "86981", "WEY"),
+            ti("G2", "n", "86981", "XWJ"),
+            ti("H1", "n", "87201", "VIC"),
+            ti("H2", "n", "87201", "XVR"),
+            ti("I1", "n", "87219", "CLJ"),
+            ti("I2", "n", "87219", "XCP"),
+            ti("J1", "n", "87261", "WIM"),
+            ti("J2", "n", "87261", "XWD"),
+            ti("K1", "n", "87981", "XBP"),
+            ti("K2", "n", "87981", "XMP"),
+            ti("L1", "n", "88486", "SAY"),
+            ti("L2", "n", "88486", "XSQ"),
+            ti("M1", "n", "89428", "AFK"),
+            ti("M2", "n", "89428", "ASI"),
+            ti("N1", "n", "89530", "EBD"),
+            ti("N2", "n", "89530", "EBF"),
         ];
         let rows = resolve(&ti_records, &HashMap::new());
-        let resolved: HashMap<&str, &str> = rows.iter().map(|r| (r.stanox.as_str(), r.crs.as_str())).collect();
+        let resolved: HashMap<&str, &str> = rows
+            .iter()
+            .map(|r| (r.stanox.as_str(), r.crs.as_str()))
+            .collect();
 
         for (stanox, expected_crs) in [
-            ("30120", "PRE"), ("31510", "MCV"), ("40320", "CTR"), ("86441", "BOG"),
-            ("86981", "WEY"), ("87201", "VIC"), ("87219", "CLJ"), ("87261", "WIM"), ("88486", "SAY"),
+            ("30120", "PRE"),
+            ("31510", "MCV"),
+            ("40320", "CTR"),
+            ("86441", "BOG"),
+            ("86981", "WEY"),
+            ("87201", "VIC"),
+            ("87219", "CLJ"),
+            ("87261", "WIM"),
+            ("88486", "SAY"),
         ] {
-            assert_eq!(resolved.get(stanox), Some(&expected_crs), "stanox {stanox} should resolve to {expected_crs}");
+            assert_eq!(
+                resolved.get(stanox),
+                Some(&expected_crs),
+                "stanox {stanox} should resolve to {expected_crs}"
+            );
         }
         for stanox in ["52215", "86935", "87981", "89428", "89530"] {
-            assert!(!resolved.contains_key(stanox), "stanox {stanox} should be excluded, not resolved");
+            assert!(
+                !resolved.contains_key(stanox),
+                "stanox {stanox} should be excluded, not resolved"
+            );
         }
         assert_eq!(rows.len(), 9);
     }

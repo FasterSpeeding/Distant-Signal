@@ -81,7 +81,10 @@ mod tests {
     #[test]
     fn no_target_destination_means_no_darwin_eta() {
         let date: NaiveDate = "2026-08-28".parse().unwrap();
-        assert_eq!(find_darwin_eta(&[departure("WOK", "18:40", false)], None, None, date), None);
+        assert_eq!(
+            find_darwin_eta(&[departure("WOK", "18:40", false)], None, None, date),
+            None
+        );
     }
 
     /// August is inside British Summer Time, so Darwin's `18:41` is

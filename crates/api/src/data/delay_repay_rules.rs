@@ -74,8 +74,14 @@ const DR30_OPERATORS: &[&str] = &["lner", "crosscountry", "scotrail"];
 /// Global Constraints.
 const CLAIM_URLS: &[(&str, &str)] = &[
     ("lner", "https://delayrepay.lner.co.uk/delayrepayV2/"),
-    ("crosscountry", "https://delayrepay.crosscountrytrains.co.uk/"),
-    ("scotrail", "https://www.scotrail.co.uk/plan-your-journey/our-delay-repay-guarantee"),
+    (
+        "crosscountry",
+        "https://delayrepay.crosscountrytrains.co.uk/",
+    ),
+    (
+        "scotrail",
+        "https://www.scotrail.co.uk/plan-your-journey/our-delay-repay-guarantee",
+    ),
 ];
 
 /// National Rail's own compensation page -- confirmed real and accurate by
@@ -83,7 +89,8 @@ const CLAIM_URLS: &[(&str, &str)] = &[
 /// passengers to claim directly from your train company." The universal
 /// fallback for any operator not in `CLAIM_URLS`, so this route never
 /// returns a claim link that goes nowhere real.
-pub const GENERIC_CLAIM_URL: &str = "https://www.nationalrail.co.uk/help-and-assistance/compensation-and-refunds/";
+pub const GENERIC_CLAIM_URL: &str =
+    "https://www.nationalrail.co.uk/help-and-assistance/compensation-and-refunds/";
 
 /// Returns `None` if `delay_minutes` doesn't clear the relevant scheme's
 /// lowest band (e.g. a 20-minute delay on a DR30 operator) -- there is
@@ -99,7 +106,12 @@ pub fn estimate_delay_repay(operator: &str, delay_minutes: i32) -> Option<DelayR
         ("DR15", dr15_band(delay_minutes)?)
     };
 
-    Some(DelayRepayEstimate { scheme, band_minutes: band.0, percentage: band.1, disclaimer: DISCLAIMER })
+    Some(DelayRepayEstimate {
+        scheme,
+        band_minutes: band.0,
+        percentage: band.1,
+        disclaimer: DISCLAIMER,
+    })
 }
 
 fn dr15_band(delay_minutes: i32) -> Option<(i32, u8)> {
@@ -137,12 +149,30 @@ mod tests {
     #[test]
     fn dr15_band_edges() {
         assert_eq!(estimate_delay_repay("Southeastern", 14), None);
-        assert_eq!(estimate_delay_repay("Southeastern", 15).unwrap().percentage, 25);
-        assert_eq!(estimate_delay_repay("Southeastern", 29).unwrap().percentage, 25);
-        assert_eq!(estimate_delay_repay("Southeastern", 30).unwrap().percentage, 50);
-        assert_eq!(estimate_delay_repay("Southeastern", 59).unwrap().percentage, 50);
-        assert_eq!(estimate_delay_repay("Southeastern", 60).unwrap().percentage, 100);
-        assert_eq!(estimate_delay_repay("Southeastern", 30).unwrap().scheme, "DR15");
+        assert_eq!(
+            estimate_delay_repay("Southeastern", 15).unwrap().percentage,
+            25
+        );
+        assert_eq!(
+            estimate_delay_repay("Southeastern", 29).unwrap().percentage,
+            25
+        );
+        assert_eq!(
+            estimate_delay_repay("Southeastern", 30).unwrap().percentage,
+            50
+        );
+        assert_eq!(
+            estimate_delay_repay("Southeastern", 59).unwrap().percentage,
+            50
+        );
+        assert_eq!(
+            estimate_delay_repay("Southeastern", 60).unwrap().percentage,
+            100
+        );
+        assert_eq!(
+            estimate_delay_repay("Southeastern", 30).unwrap().scheme,
+            "DR15"
+        );
     }
 
     #[test]
@@ -159,7 +189,10 @@ mod tests {
     fn dr30_operator_matching_is_case_insensitive_and_substring_based() {
         assert_eq!(estimate_delay_repay("ScotRail", 30).unwrap().scheme, "DR30");
         assert_eq!(estimate_delay_repay("scotrail", 30).unwrap().scheme, "DR30");
-        assert_eq!(estimate_delay_repay("Abellio ScotRail", 30).unwrap().scheme, "DR30");
+        assert_eq!(
+            estimate_delay_repay("Abellio ScotRail", 30).unwrap().scheme,
+            "DR30"
+        );
     }
 
     #[test]
@@ -170,13 +203,22 @@ mod tests {
 
     #[test]
     fn known_operators_get_their_own_claim_page() {
-        assert_eq!(claim_url_for("LNER"), "https://delayrepay.lner.co.uk/delayrepayV2/");
-        assert_eq!(claim_url_for("CrossCountry"), "https://delayrepay.crosscountrytrains.co.uk/");
+        assert_eq!(
+            claim_url_for("LNER"),
+            "https://delayrepay.lner.co.uk/delayrepayV2/"
+        );
+        assert_eq!(
+            claim_url_for("CrossCountry"),
+            "https://delayrepay.crosscountrytrains.co.uk/"
+        );
     }
 
     #[test]
     fn an_unlisted_operator_still_gets_a_real_link_never_none() {
-        assert_eq!(claim_url_for("Some Operator Not In Our Table"), GENERIC_CLAIM_URL);
+        assert_eq!(
+            claim_url_for("Some Operator Not In Our Table"),
+            GENERIC_CLAIM_URL
+        );
     }
 
     #[test]

@@ -66,7 +66,10 @@ pub async fn list_custom_lines(pool: &PgPool) -> Result<Vec<CustomLine>> {
 /// by `20260828100000_add_ownership.sql` is closed. `get_line` (the only
 /// caller that needs it) uses this to gate ownership; `get_line_definition`
 /// ignores it.
-pub async fn get_custom_line(pool: &PgPool, id: &str) -> Result<Option<(CustomLine, Option<String>)>> {
+pub async fn get_custom_line(
+    pool: &PgPool,
+    id: &str,
+) -> Result<Option<(CustomLine, Option<String>)>> {
     let row = sqlx::query(
         "SELECT id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id \
          FROM custom_lines WHERE id = $1",
@@ -115,7 +118,11 @@ pub async fn get_custom_line(pool: &PgPool, id: &str) -> Result<Option<(CustomLi
 /// earlier pin of an id that didn't correspond to any line yet. Without this, creating a
 /// line whose slug collides with such a stale pin would roll back an
 /// otherwise-valid `custom_lines` insert and surface as a 500.
-pub async fn insert_custom_line(pool: &PgPool, new: NewCustomLine, user_id: &str) -> Result<CustomLine> {
+pub async fn insert_custom_line(
+    pool: &PgPool,
+    new: NewCustomLine,
+    user_id: &str,
+) -> Result<CustomLine> {
     let base_id = slugify(&new.name);
     let mut id = base_id.clone();
     let mut suffix = 2;
@@ -240,14 +247,22 @@ pub async fn delete_custom_line(pool: &PgPool, id: &str, user_id: &str) -> Resul
 /// ids in `ids` simply won't match anything here -- callers should look
 /// them up unconditionally in the returned map and treat "no entry" as
 /// "not a custom line, leave it alone," never as "unowned."
-pub async fn owners_for_ids(pool: &PgPool, ids: &[String]) -> Result<std::collections::HashMap<String, Option<String>>> {
+pub async fn owners_for_ids(
+    pool: &PgPool,
+    ids: &[String],
+) -> Result<std::collections::HashMap<String, Option<String>>> {
     let rows = sqlx::query("SELECT id, user_id FROM custom_lines WHERE id = ANY($1)")
         .bind(ids)
         .fetch_all(pool)
         .await?;
 
     rows.into_iter()
-        .map(|row| Ok((row.try_get::<String, _>("id")?, row.try_get::<Option<String>, _>("user_id")?)))
+        .map(|row| {
+            Ok((
+                row.try_get::<String, _>("id")?,
+                row.try_get::<Option<String>, _>("user_id")?,
+            ))
+        })
         .collect()
 }
 
@@ -314,8 +329,12 @@ mod db_tests {
     async fn get_custom_line_reports_the_owning_user_id() {
         use sqlx::postgres::PgPoolOptions;
 
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
 
         sqlx::query(
             "INSERT INTO users (id, email, name) VALUES ('TEST-CUSTOM-LINE-OWNER', 'owner@example.com', 'Owner') \
@@ -377,8 +396,12 @@ mod db_tests {
         // confirming Postgres now rejects it.
         use sqlx::postgres::PgPoolOptions;
 
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
 
         let result = sqlx::query(
             "INSERT INTO custom_lines (id, name, operators, stations, headcode_prefixes, destination_crs_filter, user_id, created_at) \
@@ -416,8 +439,12 @@ mod db_tests {
         // the constraint itself instead.
         use sqlx::postgres::PgPoolOptions;
 
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
 
         sqlx::query(
             "INSERT INTO users (id, email, name) VALUES ('TEST-OWNERS-FOR-IDS-OWNER', 'owner@example.com', 'Owner') \
@@ -487,8 +514,12 @@ mod db_tests {
     async fn list_custom_lines_for_user_returns_only_calling_users_rows() {
         use sqlx::postgres::PgPoolOptions;
 
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
 
         // Create two test users
         sqlx::query(
@@ -542,11 +573,7 @@ mod db_tests {
             .await
             .expect("list user 1 lines");
 
-        assert_eq!(
-            user1_lines.len(),
-            1,
-            "user 1 should have exactly 1 line"
-        );
+        assert_eq!(user1_lines.len(), 1, "user 1 should have exactly 1 line");
         assert_eq!(
             user1_lines[0].id, user1_line.id,
             "user 1's line should be their created line"
@@ -561,11 +588,7 @@ mod db_tests {
             .await
             .expect("list user 2 lines");
 
-        assert_eq!(
-            user2_lines.len(),
-            1,
-            "user 2 should have exactly 1 line"
-        );
+        assert_eq!(user2_lines.len(), 1, "user 2 should have exactly 1 line");
         assert_eq!(
             user2_lines[0].id, user2_line.id,
             "user 2's line should be their created line"

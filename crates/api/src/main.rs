@@ -79,7 +79,10 @@ async fn main() -> anyhow::Result<()> {
             // exposure is read-only request-count/latency telemetry, not
             // secrets, and metrics.enabled=false removes this route
             // entirely.
-            .route("/metrics", axum::routing::get(move || async move { metrics_handle.render() }))
+            .route(
+                "/metrics",
+                axum::routing::get(move || async move { metrics_handle.render() }),
+            )
             .layer(metrics_layer);
     }
 

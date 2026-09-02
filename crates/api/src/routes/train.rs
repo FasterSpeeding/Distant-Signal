@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
-use crate::data::{eta_blend, ticket_extraction, train_tracking, delay_repay_rules};
+use crate::data::{delay_repay_rules, eta_blend, ticket_extraction, train_tracking};
 
 pub fn router() -> Router {
     Router::new()
@@ -42,18 +42,51 @@ pub fn router() -> Router {
         // later gets a `tracked_train_id`. `/Train/tickets/{ticket_id}`
         // (`DELETE` only) removes a ticket outright, regardless of
         // attachment status -- see `delete_ticket`'s own doc comment.
-        .route("/Train/tickets", axum::routing::post(post_standalone_ticket))
+        .route(
+            "/Train/tickets",
+            axum::routing::post(post_standalone_ticket),
+        )
         .route("/Train/tickets/mine", axum::routing::get(get_my_tickets))
-        .route("/Train/tickets/pkpass", axum::routing::post(post_pkpass_upload_standalone))
-        .route("/Train/tickets/pdf", axum::routing::post(post_pdf_upload_standalone))
-        .route("/Train/tickets/{ticket_id}/attach", axum::routing::post(post_attach_ticket))
-        .route("/Train/tickets/{ticket_id}", axum::routing::delete(delete_ticket))
-        .route("/Train/{tracking_id}", axum::routing::get(get_by_tracking_id).delete(delete_tracked_train))
-        .route("/Train/by-uid/{train_uid}/{date}", axum::routing::get(get_by_uid_and_date))
-        .route("/Train/{tracking_id}/tickets", axum::routing::post(post_ticket).get(get_tickets))
-        .route("/Train/{tracking_id}/tickets/{ticket_id}/delay-repay", axum::routing::get(get_delay_repay_estimate))
-        .route("/Train/{tracking_id}/tickets/pkpass", axum::routing::post(post_pkpass_upload))
-        .route("/Train/{tracking_id}/tickets/pdf", axum::routing::post(post_pdf_upload))
+        .route(
+            "/Train/tickets/pkpass",
+            axum::routing::post(post_pkpass_upload_standalone),
+        )
+        .route(
+            "/Train/tickets/pdf",
+            axum::routing::post(post_pdf_upload_standalone),
+        )
+        .route(
+            "/Train/tickets/{ticket_id}/attach",
+            axum::routing::post(post_attach_ticket),
+        )
+        .route(
+            "/Train/tickets/{ticket_id}",
+            axum::routing::delete(delete_ticket),
+        )
+        .route(
+            "/Train/{tracking_id}",
+            axum::routing::get(get_by_tracking_id).delete(delete_tracked_train),
+        )
+        .route(
+            "/Train/by-uid/{train_uid}/{date}",
+            axum::routing::get(get_by_uid_and_date),
+        )
+        .route(
+            "/Train/{tracking_id}/tickets",
+            axum::routing::post(post_ticket).get(get_tickets),
+        )
+        .route(
+            "/Train/{tracking_id}/tickets/{ticket_id}/delay-repay",
+            axum::routing::get(get_delay_repay_estimate),
+        )
+        .route(
+            "/Train/{tracking_id}/tickets/pkpass",
+            axum::routing::post(post_pkpass_upload),
+        )
+        .route(
+            "/Train/{tracking_id}/tickets/pdf",
+            axum::routing::post(post_pdf_upload),
+        )
         // 8 MiB: generous for a real boarding pass or e-ticket PDF (both
         // are typically tens of KB to low single-digit MB), bounded
         // against abuse. Applies to every route on this router, including
@@ -98,14 +131,23 @@ async fn post_ticket(
 ) -> Result<Json<TicketCreatedResponse>, (StatusCode, String)> {
     train_tracking::validate_ticket_entry(&entry).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
 
-    match train_tracking::tracked_train_owner(&app.database, tracking_id).await.map_err(internal_error("check tracked train ownership"))? {
+    match train_tracking::tracked_train_owner(&app.database, tracking_id)
+        .await
+        .map_err(internal_error("check tracked train ownership"))?
+    {
         Some(owner) if owner == user.id => {}
-        _ => return Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string())),
+        _ => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                "no tracked train with that id".to_string(),
+            ));
+        }
     }
 
-    let ticket_id = train_tracking::create_ticket(&app.database, Some(tracking_id), &entry, &user.id)
-        .await
-        .map_err(internal_error("create ticket"))?;
+    let ticket_id =
+        train_tracking::create_ticket(&app.database, Some(tracking_id), &entry, &user.id)
+            .await
+            .map_err(internal_error("create ticket"))?;
 
     Ok(Json(TicketCreatedResponse { ticket_id }))
 }
@@ -161,9 +203,17 @@ async fn post_attach_ticket(
     Path(ticket_id): Path<i64>,
     Json(body): Json<AttachTicketRequest>,
 ) -> Result<Json<AttachTicketResponse>, (StatusCode, String)> {
-    match train_tracking::tracked_train_owner(&app.database, body.tracking_id).await.map_err(internal_error("check tracked train ownership"))? {
+    match train_tracking::tracked_train_owner(&app.database, body.tracking_id)
+        .await
+        .map_err(internal_error("check tracked train ownership"))?
+    {
         Some(owner) if owner == user.id => {}
-        _ => return Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string())),
+        _ => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                "no tracked train with that id".to_string(),
+            ));
+        }
     }
 
     let ticket = train_tracking::get_ticket_owned(&app.database, ticket_id, &user.id)
@@ -172,21 +222,35 @@ async fn post_attach_ticket(
         .ok_or((StatusCode::NOT_FOUND, "no ticket with that id".to_string()))?;
 
     if ticket.tracked_train_id.is_some() {
-        return Err((StatusCode::CONFLICT, "ticket is already attached to a tracked train".to_string()));
+        return Err((
+            StatusCode::CONFLICT,
+            "ticket is already attached to a tracked train".to_string(),
+        ));
     }
 
-    let attached = train_tracking::attach_ticket_to_tracked_train(&app.database, ticket_id, body.tracking_id, &user.id)
-        .await
-        .map_err(internal_error("attach ticket"))?;
+    let attached = train_tracking::attach_ticket_to_tracked_train(
+        &app.database,
+        ticket_id,
+        body.tracking_id,
+        &user.id,
+    )
+    .await
+    .map_err(internal_error("attach ticket"))?;
     if !attached {
         // Lost a race against a concurrent attach/re-check between the
         // reads above and this write -- treat it the same as the
         // already-attached case above rather than a 500, since that's
         // exactly what it now is.
-        return Err((StatusCode::CONFLICT, "ticket is already attached to a tracked train".to_string()));
+        return Err((
+            StatusCode::CONFLICT,
+            "ticket is already attached to a tracked train".to_string(),
+        ));
     }
 
-    Ok(Json(AttachTicketResponse { ticket_id, tracked_train_id: body.tracking_id }))
+    Ok(Json(AttachTicketResponse {
+        ticket_id,
+        tracked_train_id: body.tracking_id,
+    }))
 }
 
 /// `DELETE /Train/tickets/{ticketId}` -- mirrors `delete_tracked_train`
@@ -221,14 +285,23 @@ async fn get_tickets(
     user: AuthenticatedUser,
     Path(tracking_id): Path<i64>,
 ) -> Result<Json<Vec<train_tracking::TrackedTrainTicket>>, (StatusCode, String)> {
-    match train_tracking::tracked_train_owner(&app.database, tracking_id).await.map_err(internal_error("check tracked train ownership"))? {
+    match train_tracking::tracked_train_owner(&app.database, tracking_id)
+        .await
+        .map_err(internal_error("check tracked train ownership"))?
+    {
         Some(owner) if owner == user.id => {}
-        _ => return Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string())),
+        _ => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                "no tracked train with that id".to_string(),
+            ));
+        }
     }
 
-    let tickets = train_tracking::list_tickets_for_tracked_train(&app.database, tracking_id, &user.id)
-        .await
-        .map_err(internal_error("list tickets"))?;
+    let tickets =
+        train_tracking::list_tickets_for_tracked_train(&app.database, tracking_id, &user.id)
+            .await
+            .map_err(internal_error("list tickets"))?;
     Ok(Json(tickets))
 }
 
@@ -241,12 +314,18 @@ async fn get_delay_repay_estimate(
         .await
         .map_err(internal_error("read ticket"))?
         .filter(|t| t.tracked_train_id == Some(tracking_id))
-        .ok_or((StatusCode::NOT_FOUND, "no ticket with that id for that tracked train".to_string()))?;
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "no ticket with that id for that tracked train".to_string(),
+        ))?;
 
     let state = train_tracking::get_by_tracking_id(&app.database, tracking_id)
         .await
         .map_err(internal_error("read tracked train state"))?
-        .ok_or((StatusCode::NOT_FOUND, "no tracked train with that id".to_string()))?;
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "no tracked train with that id".to_string(),
+        ))?;
 
     Ok(Json(build_delay_repay_response(&ticket, &state)))
 }
@@ -261,10 +340,16 @@ fn build_delay_repay_response(
     state: &train_tracking::TrackedTrainState,
 ) -> DelayRepayEstimateResponse {
     let estimate = match (ticket.operator.as_deref(), state.delay_minutes) {
-        (Some(operator), Some(delay_minutes)) => delay_repay_rules::estimate_delay_repay(operator, delay_minutes),
+        (Some(operator), Some(delay_minutes)) => {
+            delay_repay_rules::estimate_delay_repay(operator, delay_minutes)
+        }
         _ => None,
     };
-    let claim_url = ticket.operator.as_deref().map(delay_repay_rules::claim_url_for).unwrap_or(delay_repay_rules::GENERIC_CLAIM_URL);
+    let claim_url = ticket
+        .operator
+        .as_deref()
+        .map(delay_repay_rules::claim_url_for)
+        .unwrap_or(delay_repay_rules::GENERIC_CLAIM_URL);
 
     DelayRepayEstimateResponse {
         delay_minutes: state.delay_minutes,
@@ -285,7 +370,10 @@ async fn post_track(
         .await
         .map_err(internal_error("create tracking pin"))?;
 
-    Ok(Json(TrackPinResponse { tracking_id, resolution_status: "pending" }))
+    Ok(Json(TrackPinResponse {
+        tracking_id,
+        resolution_status: "pending",
+    }))
 }
 
 /// Always `200` with a (possibly empty) array for any authenticated
@@ -328,9 +416,17 @@ async fn get_by_tracking_id(
     user: AuthenticatedUser,
     Path(tracking_id): Path<i64>,
 ) -> Result<Json<train_tracking::TrackedTrainState>, (StatusCode, String)> {
-    match train_tracking::tracked_train_owner(&app.database, tracking_id).await.map_err(internal_error("check tracked train ownership"))? {
+    match train_tracking::tracked_train_owner(&app.database, tracking_id)
+        .await
+        .map_err(internal_error("check tracked train ownership"))?
+    {
         Some(owner) if owner == user.id => {}
-        _ => return Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string())),
+        _ => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                "no tracked train with that id".to_string(),
+            ));
+        }
     }
 
     let state = train_tracking::get_by_tracking_id(&app.database, tracking_id)
@@ -338,7 +434,10 @@ async fn get_by_tracking_id(
         .map_err(internal_error("read tracked train state"))?;
     match state {
         Some(state) => Ok(Json(blend_darwin_eta(&app, state).await)),
-        None => Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string())),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            "no tracked train with that id".to_string(),
+        )),
     }
 }
 
@@ -361,7 +460,10 @@ async fn delete_tracked_train(
         .await
         .map_err(internal_error("delete tracked train"))?;
     if !deleted {
-        return Err((StatusCode::NOT_FOUND, "no tracked train with that id".to_string()));
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no tracked train with that id".to_string(),
+        ));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -375,12 +477,23 @@ async fn get_by_uid_and_date(
         .await
         .map_err(internal_error("read tracked train state"))?;
     let Some(state) = state else {
-        return Err((StatusCode::NOT_FOUND, "no resolved tracked train for that uid/date".to_string()));
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no resolved tracked train for that uid/date".to_string(),
+        ));
     };
 
-    match train_tracking::tracked_train_owner(&app.database, state.id).await.map_err(internal_error("check tracked train ownership"))? {
+    match train_tracking::tracked_train_owner(&app.database, state.id)
+        .await
+        .map_err(internal_error("check tracked train ownership"))?
+    {
         Some(owner) if owner == user.id => {}
-        _ => return Err((StatusCode::NOT_FOUND, "no resolved tracked train for that uid/date".to_string())),
+        _ => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                "no resolved tracked train for that uid/date".to_string(),
+            ));
+        }
     }
 
     Ok(Json(blend_darwin_eta(&app, state).await))
@@ -396,15 +509,29 @@ async fn get_by_uid_and_date(
 /// (no row yet, a transient DB error) just leaves `state` as TRUST's own
 /// propagation already had it -- this is a nice-to-have enhancement, not
 /// something either read route should fail over.
-async fn blend_darwin_eta(app: &App, mut state: train_tracking::TrackedTrainState) -> train_tracking::TrackedTrainState {
-    let Some(destination) = state.pin_destination_crs.as_deref().or(state.next_calling_point.as_deref()) else {
+async fn blend_darwin_eta(
+    app: &App,
+    mut state: train_tracking::TrackedTrainState,
+) -> train_tracking::TrackedTrainState {
+    let Some(destination) = state
+        .pin_destination_crs
+        .as_deref()
+        .or(state.next_calling_point.as_deref())
+    else {
         return state;
     };
-    let Ok(samples) = crate::data::queries::latest_station_sample(&app.database, &state.pin_origin_crs).await else {
+    let Ok(samples) =
+        crate::data::queries::latest_station_sample(&app.database, &state.pin_origin_crs).await
+    else {
         return state;
     };
     if let Some(sample) = samples
-        && let Some(eta) = eta_blend::find_darwin_eta(&sample.departures, Some(destination), None, state.service_date)
+        && let Some(eta) = eta_blend::find_darwin_eta(
+            &sample.departures,
+            Some(destination),
+            None,
+            state.service_date,
+        )
     {
         state.eta_next = Some(eta);
         state.eta_source = Some("darwin-estimated".to_string());
@@ -450,11 +577,18 @@ async fn post_pkpass_upload_standalone(
 /// `sqlx::query` call and touches no database handle -- there is nothing
 /// in this file that could accidentally persist an unreviewed upload. See
 /// this plan's Global Constraints.
-async fn handle_pkpass_upload(mut multipart: Multipart) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
+async fn handle_pkpass_upload(
+    mut multipart: Multipart,
+) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
     let bytes = read_single_file_field(&mut multipart, "file").await?;
     ticket_extraction::parse_pkpass(&bytes)
         .map(Json)
-        .map_err(|err| (StatusCode::UNPROCESSABLE_ENTITY, format!("could not read this as a train .pkpass: {err}")))
+        .map_err(|err| {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("could not read this as a train .pkpass: {err}"),
+            )
+        })
 }
 
 /// Same contract as `post_pkpass_upload` (Task 7) -- see that handler's
@@ -488,21 +622,34 @@ async fn post_pdf_upload_standalone(
     handle_pdf_upload(multipart).await
 }
 
-async fn handle_pdf_upload(mut multipart: Multipart) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
+async fn handle_pdf_upload(
+    mut multipart: Multipart,
+) -> Result<Json<ticket_extraction::PartialTicket>, (StatusCode, String)> {
     let bytes = read_single_file_field(&mut multipart, "file").await?;
 
-    let parsed = tokio::time::timeout(PDF_PARSE_TIMEOUT, tokio::task::spawn_blocking(move || ticket_extraction::parse_pdf(&bytes))).await;
+    let parsed = tokio::time::timeout(
+        PDF_PARSE_TIMEOUT,
+        tokio::task::spawn_blocking(move || ticket_extraction::parse_pdf(&bytes)),
+    )
+    .await;
 
     match parsed {
         Ok(Ok(Ok(ticket))) => Ok(Json(ticket)),
-        Ok(Ok(Err(err))) => Err((StatusCode::UNPROCESSABLE_ENTITY, format!("could not read this as a PDF e-ticket: {err}"))),
+        Ok(Ok(Err(err))) => Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("could not read this as a PDF e-ticket: {err}"),
+        )),
         Ok(Err(join_err)) => {
             tracing::error!(error = ?join_err, "PDF parse task panicked or was cancelled");
-            Err((StatusCode::INTERNAL_SERVER_ERROR, "failed to parse PDF e-ticket".to_string()))
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to parse PDF e-ticket".to_string(),
+            ))
         }
-        Err(_elapsed) => {
-            Err((StatusCode::GATEWAY_TIMEOUT, "PDF e-ticket parsing took too long; try a smaller or simpler file".to_string()))
-        }
+        Err(_elapsed) => Err((
+            StatusCode::GATEWAY_TIMEOUT,
+            "PDF e-ticket parsing took too long; try a smaller or simpler file".to_string(),
+        )),
     }
 }
 
@@ -515,14 +662,29 @@ const PDF_PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10
 /// Shared by this route and Task 9's PDF upload route: reads the single
 /// multipart field named `field_name` (expected to be `"file"` for both)
 /// into memory and returns its raw bytes.
-async fn read_single_file_field(multipart: &mut Multipart, field_name: &str) -> Result<Vec<u8>, (StatusCode, String)> {
-    while let Some(field) = multipart.next_field().await.map_err(|err| (StatusCode::BAD_REQUEST, format!("malformed upload: {err}")))? {
+async fn read_single_file_field(
+    multipart: &mut Multipart,
+    field_name: &str,
+) -> Result<Vec<u8>, (StatusCode, String)> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|err| (StatusCode::BAD_REQUEST, format!("malformed upload: {err}")))?
+    {
         if field.name() == Some(field_name) {
-            let bytes = field.bytes().await.map_err(|err| (StatusCode::BAD_REQUEST, format!("failed to read upload: {err}")))?;
+            let bytes = field.bytes().await.map_err(|err| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("failed to read upload: {err}"),
+                )
+            })?;
             return Ok(bytes.to_vec());
         }
     }
-    Err((StatusCode::BAD_REQUEST, format!("no '{field_name}' field in upload")))
+    Err((
+        StatusCode::BAD_REQUEST,
+        format!("no '{field_name}' field in upload"),
+    ))
 }
 
 /// Shared 500 mapper for every route in this file. Takes the operation that
@@ -533,7 +695,10 @@ async fn read_single_file_field(multipart: &mut Multipart, field_name: &str) -> 
 fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusCode, String) {
     move |err| {
         tracing::error!(error = ?err, operation, "train tracking request failed");
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to {operation}"))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to {operation}"),
+        )
     }
 }
 
@@ -616,12 +781,19 @@ mod tests {
             .route("/Train/{id}", axum::routing::get(|| async { "dynamic" }));
 
         let response = app
-            .oneshot(Request::builder().uri("/Train/mine").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/Train/mine")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(&body[..], b"literal");
     }
 
@@ -629,10 +801,15 @@ mod tests {
     fn dr30_operator_with_a_qualifying_delay_gets_a_specific_estimate_and_claim_url() {
         let response = build_delay_repay_response(&ticket(Some("LNER")), &state(Some(45)));
 
-        let estimate = response.estimate.expect("LNER + 45 minutes should clear the DR30 30-minute band");
+        let estimate = response
+            .estimate
+            .expect("LNER + 45 minutes should clear the DR30 30-minute band");
         assert_eq!(estimate.scheme, "DR30");
         assert_eq!(estimate.percentage, 50);
-        assert_eq!(response.claim_url, "https://delayrepay.lner.co.uk/delayrepayV2/");
+        assert_eq!(
+            response.claim_url,
+            "https://delayrepay.lner.co.uk/delayrepayV2/"
+        );
         assert_eq!(response.delay_minutes, Some(45));
     }
 
@@ -653,7 +830,10 @@ mod tests {
 
         assert_eq!(response.estimate, None);
         assert_eq!(response.delay_minutes, None);
-        assert_eq!(response.claim_url, "https://delayrepay.lner.co.uk/delayrepayV2/");
+        assert_eq!(
+            response.claim_url,
+            "https://delayrepay.lner.co.uk/delayrepayV2/"
+        );
         assert!(!response.disclaimer.is_empty());
     }
 }
@@ -731,7 +911,9 @@ mod db_tests {
     /// does, turned into a `tower::Service` a test can drive with
     /// `.oneshot(..)`.
     fn test_router(app: App) -> axum::Router {
-        crate::app::Router::new().merge(super::router()).with_state(app)
+        crate::app::Router::new()
+            .merge(super::router())
+            .with_state(app)
     }
 
     /// Seeds a real, resolvable session for `user_id` (creating the user if
@@ -739,13 +921,15 @@ mod db_tests {
     /// `Cookie: distant_signal_session=<raw>`, never the hash `sessions`
     /// actually stores.
     async fn seed_session(pool: &PgPool, user_id: &str) -> String {
-        sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING")
-            .bind(user_id)
-            .bind(format!("{user_id}@example.com"))
-            .bind(user_id)
-            .execute(pool)
-            .await
-            .expect("seed fixture user");
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(format!("{user_id}@example.com"))
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("seed fixture user");
 
         let raw_token = format!("test-raw-session-token-for-{user_id}");
         insert_session(pool, &hash_session_token(&raw_token), user_id, 14)
@@ -791,8 +975,12 @@ mod db_tests {
     }
 
     async fn connect() -> PgPool {
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        sqlx::postgres::PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres")
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        sqlx::postgres::PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
     }
 
     /// Inserts one `tracked_trains` fixture row owned by `user_id`, plus a
@@ -801,8 +989,17 @@ mod db_tests {
     /// `resolved` (required for `get_by_uid_and_date` to find it at all --
     /// see that route's `WHERE tt.train_uid = $1 AND tt.service_date = $2`).
     /// Returns the new row's `id`.
-    async fn seed_tracked_train(pool: &PgPool, user_id: &str, train_uid: Option<&str>, service_date: chrono::NaiveDate) -> i64 {
-        let resolution_status = if train_uid.is_some() { "resolved" } else { "pending" };
+    async fn seed_tracked_train(
+        pool: &PgPool,
+        user_id: &str,
+        train_uid: Option<&str>,
+        service_date: chrono::NaiveDate,
+    ) -> i64 {
+        let resolution_status = if train_uid.is_some() {
+            "resolved"
+        } else {
+            "pending"
+        };
         let (id,): (i64,) = sqlx::query_as(
             "INSERT INTO tracked_trains \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs, \
@@ -873,7 +1070,11 @@ mod db_tests {
     /// a JSON object body or a plain-text `(StatusCode, String)` error
     /// body, so wrapping the latter as a JSON string lets every case share
     /// one return shape.
-    async fn request(router: axum::Router, uri: String, raw_token: Option<&str>) -> (StatusCode, Value) {
+    async fn request(
+        router: axum::Router,
+        uri: String,
+        raw_token: Option<&str>,
+    ) -> (StatusCode, Value) {
         let mut builder = Request::builder().uri(uri);
         if let Some(token) = raw_token {
             builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
@@ -881,7 +1082,9 @@ mod db_tests {
         let req = builder.body(Body::empty()).expect("build request");
         let response = router.oneshot(req).await.expect("oneshot request");
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
         let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
             Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
         });
@@ -893,15 +1096,29 @@ mod db_tests {
     /// (which only ever issues an empty-body `GET`). Same shared
     /// `(status, parsed body)` return shape, same plain-text-becomes-`Value::String`
     /// handling for a `(StatusCode, String)` error response.
-    async fn post_json(router: axum::Router, uri: String, raw_token: Option<&str>, body: serde_json::Value) -> (StatusCode, Value) {
-        let mut builder = Request::builder().uri(uri).method("POST").header(header::CONTENT_TYPE, "application/json");
+    async fn post_json(
+        router: axum::Router,
+        uri: String,
+        raw_token: Option<&str>,
+        body: serde_json::Value,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .uri(uri)
+            .method("POST")
+            .header(header::CONTENT_TYPE, "application/json");
         if let Some(token) = raw_token {
             builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
         }
-        let req = builder.body(Body::from(serde_json::to_vec(&body).expect("serialize request body"))).expect("build request");
+        let req = builder
+            .body(Body::from(
+                serde_json::to_vec(&body).expect("serialize request body"),
+            ))
+            .expect("build request");
         let response = router.oneshot(req).await.expect("oneshot request");
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
         let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
             Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
         });
@@ -918,8 +1135,13 @@ mod db_tests {
         let pool = connect().await;
         let router = test_router(test_app(pool.clone()));
 
-        let (status, body) =
-            post_json(router, "/Train/tickets".to_string(), None, serde_json::json!({ "source": "manual" })).await;
+        let (status, body) = post_json(
+            router,
+            "/Train/tickets".to_string(),
+            None,
+            serde_json::json!({ "source": "manual" }),
+        )
+        .await;
 
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body, Value::String("no session".to_string()));
@@ -942,19 +1164,36 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        let ticket_id = body.get("ticketId").and_then(Value::as_i64).expect("ticketId present");
+        let ticket_id = body
+            .get("ticketId")
+            .and_then(Value::as_i64)
+            .expect("ticketId present");
 
         // No tracked_train_id at all yet -- must still show up on the
         // cross-train "mine" list (Decision: list_tickets_for_user's LEFT
         // JOIN), not be silently dropped.
-        let (status, tickets) = request(router, "/Train/tickets/mine".to_string(), Some(&token)).await;
+        let (status, tickets) =
+            request(router, "/Train/tickets/mine".to_string(), Some(&token)).await;
         assert_eq!(status, StatusCode::OK);
         let rows = tickets.as_array().expect("array body");
-        let row = rows.iter().find(|r| r.get("id").and_then(Value::as_i64) == Some(ticket_id)).expect("ticket present in mine list");
+        let row = rows
+            .iter()
+            .find(|r| r.get("id").and_then(Value::as_i64) == Some(ticket_id))
+            .expect("ticket present in mine list");
         assert_eq!(row.get("trackedTrainId"), Some(&Value::Null));
         assert_eq!(row.get("operator").and_then(Value::as_str), Some("LNER"));
-        assert!(row.get("claimUrl").and_then(Value::as_str).is_some_and(|u| !u.is_empty()), "claimUrl must still be populated: {row:?}");
-        assert!(row.get("disclaimer").and_then(Value::as_str).is_some_and(|d| !d.is_empty()), "disclaimer must still be populated: {row:?}");
+        assert!(
+            row.get("claimUrl")
+                .and_then(Value::as_str)
+                .is_some_and(|u| !u.is_empty()),
+            "claimUrl must still be populated: {row:?}"
+        );
+        assert!(
+            row.get("disclaimer")
+                .and_then(Value::as_str)
+                .is_some_and(|d| !d.is_empty()),
+            "disclaimer must still be populated: {row:?}"
+        );
 
         cleanup_user(&pool, "TEST-STANDALONE-TICKET").await;
     }
@@ -963,11 +1202,18 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 attach_ticket -- --ignored --test-threads=1`"]
-    async fn post_attach_ticket_the_owner_can_attach_their_own_standalone_ticket_to_their_own_train() {
+    async fn post_attach_ticket_the_owner_can_attach_their_own_standalone_ticket_to_their_own_train()
+     {
         let pool = connect().await;
         let token = seed_session(&pool, "TEST-ATTACH-OWNER").await;
         let router = test_router(test_app(pool.clone()));
-        let tracking_id = seed_tracked_train(&pool, "TEST-ATTACH-OWNER", None, "2026-09-01".parse().unwrap()).await;
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-ATTACH-OWNER",
+            None,
+            "2026-09-01".parse().unwrap(),
+        )
+        .await;
 
         let (_, created) = post_json(
             router.clone(),
@@ -976,7 +1222,10 @@ mod db_tests {
             serde_json::json!({ "operator": "LNER", "source": "manual" }),
         )
         .await;
-        let ticket_id = created.get("ticketId").and_then(Value::as_i64).expect("ticketId present");
+        let ticket_id = created
+            .get("ticketId")
+            .and_then(Value::as_i64)
+            .expect("ticketId present");
 
         let (status, body) = post_json(
             router.clone(),
@@ -986,14 +1235,29 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "attach response: {body:?}");
-        assert_eq!(body.get("ticketId").and_then(Value::as_i64), Some(ticket_id));
-        assert_eq!(body.get("trackedTrainId").and_then(Value::as_i64), Some(tracking_id));
+        assert_eq!(
+            body.get("ticketId").and_then(Value::as_i64),
+            Some(ticket_id)
+        );
+        assert_eq!(
+            body.get("trackedTrainId").and_then(Value::as_i64),
+            Some(tracking_id)
+        );
 
         // Now visible under the tracked train's own scoped ticket list too.
-        let (status, tickets) = request(router, format!("/Train/{tracking_id}/tickets"), Some(&token)).await;
+        let (status, tickets) = request(
+            router,
+            format!("/Train/{tracking_id}/tickets"),
+            Some(&token),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         let rows = tickets.as_array().expect("array body");
-        assert!(rows.iter().any(|r| r.get("id").and_then(Value::as_i64) == Some(ticket_id)), "attached ticket should now be listed under its tracked train: {rows:?}");
+        assert!(
+            rows.iter()
+                .any(|r| r.get("id").and_then(Value::as_i64) == Some(ticket_id)),
+            "attached ticket should now be listed under its tracked train: {rows:?}"
+        );
 
         cleanup_user(&pool, "TEST-ATTACH-OWNER").await;
     }
@@ -1007,7 +1271,13 @@ mod db_tests {
         let ticket_owner_token = seed_session(&pool, "TEST-ATTACH-TICKET-OWNER").await;
         seed_session(&pool, "TEST-ATTACH-TRAIN-OWNER").await;
         let router = test_router(test_app(pool.clone()));
-        let other_users_train = seed_tracked_train(&pool, "TEST-ATTACH-TRAIN-OWNER", None, "2026-09-01".parse().unwrap()).await;
+        let other_users_train = seed_tracked_train(
+            &pool,
+            "TEST-ATTACH-TRAIN-OWNER",
+            None,
+            "2026-09-01".parse().unwrap(),
+        )
+        .await;
 
         let (_, created) = post_json(
             router.clone(),
@@ -1016,7 +1286,10 @@ mod db_tests {
             serde_json::json!({ "source": "manual" }),
         )
         .await;
-        let ticket_id = created.get("ticketId").and_then(Value::as_i64).expect("ticketId present");
+        let ticket_id = created
+            .get("ticketId")
+            .and_then(Value::as_i64)
+            .expect("ticketId present");
 
         let (status, body) = post_json(
             router,
@@ -1026,7 +1299,10 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, Value::String("no tracked train with that id".to_string()));
+        assert_eq!(
+            body,
+            Value::String("no tracked train with that id".to_string())
+        );
 
         cleanup_user(&pool, "TEST-ATTACH-TICKET-OWNER").await;
         cleanup_user(&pool, "TEST-ATTACH-TRAIN-OWNER").await;
@@ -1040,11 +1316,25 @@ mod db_tests {
         let pool = connect().await;
         let token = seed_session(&pool, "TEST-ATTACH-CONFLICT").await;
         let router = test_router(test_app(pool.clone()));
-        let tracking_id = seed_tracked_train(&pool, "TEST-ATTACH-CONFLICT", None, "2026-09-01".parse().unwrap()).await;
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-ATTACH-CONFLICT",
+            None,
+            "2026-09-01".parse().unwrap(),
+        )
+        .await;
 
-        let (_, created) =
-            post_json(router.clone(), "/Train/tickets".to_string(), Some(&token), serde_json::json!({ "source": "manual" })).await;
-        let ticket_id = created.get("ticketId").and_then(Value::as_i64).expect("ticketId present");
+        let (_, created) = post_json(
+            router.clone(),
+            "/Train/tickets".to_string(),
+            Some(&token),
+            serde_json::json!({ "source": "manual" }),
+        )
+        .await;
+        let ticket_id = created
+            .get("ticketId")
+            .and_then(Value::as_i64)
+            .expect("ticketId present");
 
         let (first_status, _) = post_json(
             router.clone(),
@@ -1063,7 +1353,10 @@ mod db_tests {
         )
         .await;
         assert_eq!(second_status, StatusCode::CONFLICT);
-        assert_eq!(body, Value::String("ticket is already attached to a tracked train".to_string()));
+        assert_eq!(
+            body,
+            Value::String("ticket is already attached to a tracked train".to_string())
+        );
 
         cleanup_user(&pool, "TEST-ATTACH-CONFLICT").await;
     }
@@ -1077,7 +1370,13 @@ mod db_tests {
     async fn get_by_tracking_id_no_session_is_401() {
         let pool = connect().await;
         seed_session(&pool, "TEST-TRACKID-401-OWNER").await;
-        let tracking_id = seed_tracked_train(&pool, "TEST-TRACKID-401-OWNER", Some("A11111"), "2026-08-29".parse().unwrap()).await;
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-TRACKID-401-OWNER",
+            Some("A11111"),
+            "2026-08-29".parse().unwrap(),
+        )
+        .await;
 
         let router = test_router(test_app(pool.clone()));
         let (status, body) = request(router, format!("/Train/{tracking_id}"), None).await;
@@ -1096,13 +1395,23 @@ mod db_tests {
         let pool = connect().await;
         seed_session(&pool, "TEST-TRACKID-OWNER").await;
         let other_token = seed_session(&pool, "TEST-TRACKID-OTHER").await;
-        let tracking_id = seed_tracked_train(&pool, "TEST-TRACKID-OWNER", Some("A22222"), "2026-08-29".parse().unwrap()).await;
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-TRACKID-OWNER",
+            Some("A22222"),
+            "2026-08-29".parse().unwrap(),
+        )
+        .await;
 
         let router = test_router(test_app(pool.clone()));
-        let (status, body) = request(router, format!("/Train/{tracking_id}"), Some(&other_token)).await;
+        let (status, body) =
+            request(router, format!("/Train/{tracking_id}"), Some(&other_token)).await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, Value::String("no tracked train with that id".to_string()));
+        assert_eq!(
+            body,
+            Value::String("no tracked train with that id".to_string())
+        );
 
         cleanup_user(&pool, "TEST-TRACKID-OWNER").await;
         cleanup_user(&pool, "TEST-TRACKID-OTHER").await;
@@ -1120,7 +1429,10 @@ mod db_tests {
         let (status, body) = request(router, "/Train/99999999".to_string(), Some(&token)).await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, Value::String("no tracked train with that id".to_string()));
+        assert_eq!(
+            body,
+            Value::String("no tracked train with that id".to_string())
+        );
 
         cleanup_user(&pool, "TEST-TRACKID-NOTFOUND").await;
     }
@@ -1133,22 +1445,38 @@ mod db_tests {
         let pool = connect().await;
         let owner_token = seed_session(&pool, "TEST-TRACKID-REAL-OWNER").await;
         let service_date: chrono::NaiveDate = "2026-08-29".parse().unwrap();
-        let tracking_id = seed_tracked_train(&pool, "TEST-TRACKID-REAL-OWNER", Some("A33333"), service_date).await;
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-TRACKID-REAL-OWNER",
+            Some("A33333"),
+            service_date,
+        )
+        .await;
         seed_station_sample(&pool, "KGX", "EDB", "13:45").await;
 
         let router = test_router(test_app(pool.clone()));
-        let (status, body) = request(router, format!("/Train/{tracking_id}"), Some(&owner_token)).await;
+        let (status, body) =
+            request(router, format!("/Train/{tracking_id}"), Some(&owner_token)).await;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body.get("id").and_then(Value::as_i64), Some(tracking_id));
         assert_eq!(body.get("trainUid").and_then(Value::as_str), Some("A33333"));
-        assert_eq!(body.get("lastReportedLocation").and_then(Value::as_str), Some("York"));
+        assert_eq!(
+            body.get("lastReportedLocation").and_then(Value::as_str),
+            Some("York")
+        );
         // blend_darwin_eta overlay: eta_source flips to darwin-estimated and
         // eta_next becomes a concrete timestamp derived from the seeded
         // station sample, not whatever train_current_state itself held
         // (nothing -- this fixture never seeded eta_next/eta_source there).
-        assert_eq!(body.get("etaSource").and_then(Value::as_str), Some("darwin-estimated"));
-        assert!(body.get("etaNext").and_then(Value::as_str).is_some(), "etaNext should be populated by the overlay: {body:?}");
+        assert_eq!(
+            body.get("etaSource").and_then(Value::as_str),
+            Some("darwin-estimated")
+        );
+        assert!(
+            body.get("etaNext").and_then(Value::as_str).is_some(),
+            "etaNext should be populated by the overlay: {body:?}"
+        );
 
         cleanup_station_sample(&pool, "KGX").await;
         cleanup_user(&pool, "TEST-TRACKID-REAL-OWNER").await;
@@ -1162,15 +1490,23 @@ mod db_tests {
     /// `Value::Null` rather than fed to `serde_json::from_slice` (which
     /// would otherwise fail to parse it and mask a real body on any other
     /// status).
-    async fn delete_request(router: axum::Router, tracking_id: i64, raw_token: Option<&str>) -> (StatusCode, Value) {
-        let mut builder = Request::builder().method("DELETE").uri(format!("/Train/{tracking_id}"));
+    async fn delete_request(
+        router: axum::Router,
+        tracking_id: i64,
+        raw_token: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method("DELETE")
+            .uri(format!("/Train/{tracking_id}"));
         if let Some(token) = raw_token {
             builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
         }
         let req = builder.body(Body::empty()).expect("build request");
         let response = router.oneshot(req).await.expect("oneshot request");
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
         let value = if bytes.is_empty() {
             Value::Null
         } else {
@@ -1188,7 +1524,13 @@ mod db_tests {
     async fn delete_tracked_train_no_session_is_401() {
         let pool = connect().await;
         seed_session(&pool, "TEST-DELETE-401-OWNER").await;
-        let tracking_id = seed_tracked_train(&pool, "TEST-DELETE-401-OWNER", Some("D11111"), "2026-08-29".parse().unwrap()).await;
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-DELETE-401-OWNER",
+            Some("D11111"),
+            "2026-08-29".parse().unwrap(),
+        )
+        .await;
 
         let router = test_router(test_app(pool.clone()));
         let (status, body) = delete_request(router, tracking_id, None).await;
@@ -1203,22 +1545,37 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 delete_tracked_train -- --ignored --test-threads=1`"]
-    async fn delete_tracked_train_a_non_owner_session_gets_the_same_404_as_unknown_and_the_row_survives() {
+    async fn delete_tracked_train_a_non_owner_session_gets_the_same_404_as_unknown_and_the_row_survives()
+     {
         let pool = connect().await;
         seed_session(&pool, "TEST-DELETE-OWNER").await;
         let other_token = seed_session(&pool, "TEST-DELETE-OTHER").await;
-        let tracking_id = seed_tracked_train(&pool, "TEST-DELETE-OWNER", Some("D22222"), "2026-08-29".parse().unwrap()).await;
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-DELETE-OWNER",
+            Some("D22222"),
+            "2026-08-29".parse().unwrap(),
+        )
+        .await;
 
         let router = test_router(test_app(pool.clone()));
         let (status, body) = delete_request(router, tracking_id, Some(&other_token)).await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, Value::String("no tracked train with that id".to_string()));
+        assert_eq!(
+            body,
+            Value::String("no tracked train with that id".to_string())
+        );
 
         // Confirms the delete was a genuine no-op for a non-owner, not just
         // a 404 with the row quietly gone anyway.
-        let still_there = crate::data::train_tracking::get_by_tracking_id(&pool, tracking_id).await.expect("read tracked train state");
-        assert!(still_there.is_some(), "row should survive a non-owner's delete attempt");
+        let still_there = crate::data::train_tracking::get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("read tracked train state");
+        assert!(
+            still_there.is_some(),
+            "row should survive a non-owner's delete attempt"
+        );
 
         cleanup_user(&pool, "TEST-DELETE-OWNER").await;
         cleanup_user(&pool, "TEST-DELETE-OTHER").await;
@@ -1236,7 +1593,10 @@ mod db_tests {
         let (status, body) = delete_request(router, 99999999, Some(&token)).await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, Value::String("no tracked train with that id".to_string()));
+        assert_eq!(
+            body,
+            Value::String("no tracked train with that id".to_string())
+        );
 
         cleanup_user(&pool, "TEST-DELETE-NOTFOUND").await;
     }
@@ -1248,15 +1608,26 @@ mod db_tests {
     async fn delete_tracked_train_the_owner_can_delete_it() {
         let pool = connect().await;
         let owner_token = seed_session(&pool, "TEST-DELETE-REAL-OWNER").await;
-        let tracking_id = seed_tracked_train(&pool, "TEST-DELETE-REAL-OWNER", Some("D33333"), "2026-08-29".parse().unwrap()).await;
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-DELETE-REAL-OWNER",
+            Some("D33333"),
+            "2026-08-29".parse().unwrap(),
+        )
+        .await;
 
         let router = test_router(test_app(pool.clone()));
         let (status, _body) = delete_request(router, tracking_id, Some(&owner_token)).await;
 
         assert_eq!(status, StatusCode::NO_CONTENT);
 
-        let gone = crate::data::train_tracking::get_by_tracking_id(&pool, tracking_id).await.expect("read tracked train state");
-        assert!(gone.is_none(), "row should be gone after the owner deletes it");
+        let gone = crate::data::train_tracking::get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("read tracked train state");
+        assert!(
+            gone.is_none(),
+            "row should be gone after the owner deletes it"
+        );
 
         cleanup_user(&pool, "TEST-DELETE-REAL-OWNER").await;
     }
@@ -1284,15 +1655,23 @@ mod db_tests {
     /// Issues `DELETE /Train/tickets/{ticketId}`, optionally with a session
     /// cookie -- mirrors `delete_request` above, for the ticket-scoped
     /// sibling route.
-    async fn delete_ticket_request(router: axum::Router, ticket_id: i64, raw_token: Option<&str>) -> (StatusCode, Value) {
-        let mut builder = Request::builder().method("DELETE").uri(format!("/Train/tickets/{ticket_id}"));
+    async fn delete_ticket_request(
+        router: axum::Router,
+        ticket_id: i64,
+        raw_token: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method("DELETE")
+            .uri(format!("/Train/tickets/{ticket_id}"));
         if let Some(token) = raw_token {
             builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
         }
         let req = builder.body(Body::empty()).expect("build request");
         let response = router.oneshot(req).await.expect("oneshot request");
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
         let value = if bytes.is_empty() {
             Value::Null
         } else {
@@ -1337,10 +1716,17 @@ mod db_tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body, Value::String("no ticket with that id".to_string()));
 
-        let still_there = crate::data::train_tracking::get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-OWNER")
-            .await
-            .expect("read ticket");
-        assert!(still_there.is_some(), "row should survive a non-owner's delete attempt");
+        let still_there = crate::data::train_tracking::get_ticket_owned(
+            &pool,
+            ticket_id,
+            "TEST-TICKET-DELETE-OWNER",
+        )
+        .await
+        .expect("read ticket");
+        assert!(
+            still_there.is_some(),
+            "row should survive a non-owner's delete attempt"
+        );
 
         cleanup_user(&pool, "TEST-TICKET-DELETE-OWNER").await;
         cleanup_user(&pool, "TEST-TICKET-DELETE-OTHER").await;
@@ -1379,10 +1765,17 @@ mod db_tests {
 
         assert_eq!(status, StatusCode::NO_CONTENT);
 
-        let gone = crate::data::train_tracking::get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-REAL-OWNER")
-            .await
-            .expect("read ticket");
-        assert!(gone.is_none(), "ticket row should be gone after the owner deletes it");
+        let gone = crate::data::train_tracking::get_ticket_owned(
+            &pool,
+            ticket_id,
+            "TEST-TICKET-DELETE-REAL-OWNER",
+        )
+        .await
+        .expect("read ticket");
+        assert!(
+            gone.is_none(),
+            "ticket row should be gone after the owner deletes it"
+        );
 
         cleanup_user(&pool, "TEST-TICKET-DELETE-REAL-OWNER").await;
     }
@@ -1394,20 +1787,32 @@ mod db_tests {
     async fn delete_ticket_a_deleted_ticket_disappears_from_every_other_ticket_reading_route() {
         let pool = connect().await;
         let token = seed_session(&pool, "TEST-TICKET-DELETE-CASCADE-READS").await;
-        let tracking_id =
-            seed_tracked_train(&pool, "TEST-TICKET-DELETE-CASCADE-READS", Some("D44444"), "2026-08-29".parse().unwrap()).await;
-        let ticket_id = seed_ticket(&pool, "TEST-TICKET-DELETE-CASCADE-READS", Some(tracking_id)).await;
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-TICKET-DELETE-CASCADE-READS",
+            Some("D44444"),
+            "2026-08-29".parse().unwrap(),
+        )
+        .await;
+        let ticket_id =
+            seed_ticket(&pool, "TEST-TICKET-DELETE-CASCADE-READS", Some(tracking_id)).await;
 
         let router = test_router(test_app(pool.clone()));
         let (status, _) = delete_ticket_request(router.clone(), ticket_id, Some(&token)).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
 
         // The list route no longer includes it...
-        let (status, tickets) = request(router.clone(), "/Train/tickets/mine".to_string(), Some(&token)).await;
+        let (status, tickets) = request(
+            router.clone(),
+            "/Train/tickets/mine".to_string(),
+            Some(&token),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         let rows = tickets.as_array().expect("array body");
         assert!(
-            rows.iter().all(|r| r.get("id").and_then(Value::as_i64) != Some(ticket_id)),
+            rows.iter()
+                .all(|r| r.get("id").and_then(Value::as_i64) != Some(ticket_id)),
             "deleted ticket should not appear in the mine list: {rows:?}"
         );
 
@@ -1415,9 +1820,17 @@ mod db_tests {
         // ticket that never existed -- proves Decision 3's "no orphaned
         // estimate" claim (both reads recompute fresh from the row on
         // every request; once the row is gone, there is nothing to find).
-        let (status, body) = request(router, format!("/Train/{tracking_id}/tickets/{ticket_id}/delay-repay"), Some(&token)).await;
+        let (status, body) = request(
+            router,
+            format!("/Train/{tracking_id}/tickets/{ticket_id}/delay-repay"),
+            Some(&token),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, Value::String("no ticket with that id for that tracked train".to_string()));
+        assert_eq!(
+            body,
+            Value::String("no ticket with that id for that tracked train".to_string())
+        );
 
         cleanup_user(&pool, "TEST-TICKET-DELETE-CASCADE-READS").await;
     }
@@ -1432,10 +1845,17 @@ mod db_tests {
         let pool = connect().await;
         seed_session(&pool, "TEST-UIDDATE-401-OWNER").await;
         let service_date: chrono::NaiveDate = "2026-08-29".parse().unwrap();
-        seed_tracked_train(&pool, "TEST-UIDDATE-401-OWNER", Some("B11111"), service_date).await;
+        seed_tracked_train(
+            &pool,
+            "TEST-UIDDATE-401-OWNER",
+            Some("B11111"),
+            service_date,
+        )
+        .await;
 
         let router = test_router(test_app(pool.clone()));
-        let (status, body) = request(router, format!("/Train/by-uid/B11111/{service_date}"), None).await;
+        let (status, body) =
+            request(router, format!("/Train/by-uid/B11111/{service_date}"), None).await;
 
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body, Value::String("no session".to_string()));
@@ -1455,10 +1875,18 @@ mod db_tests {
         seed_tracked_train(&pool, "TEST-UIDDATE-OWNER", Some("B22222"), service_date).await;
 
         let router = test_router(test_app(pool.clone()));
-        let (status, body) = request(router, format!("/Train/by-uid/B22222/{service_date}"), Some(&other_token)).await;
+        let (status, body) = request(
+            router,
+            format!("/Train/by-uid/B22222/{service_date}"),
+            Some(&other_token),
+        )
+        .await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, Value::String("no resolved tracked train for that uid/date".to_string()));
+        assert_eq!(
+            body,
+            Value::String("no resolved tracked train for that uid/date".to_string())
+        );
 
         cleanup_user(&pool, "TEST-UIDDATE-OWNER").await;
         cleanup_user(&pool, "TEST-UIDDATE-OTHER").await;
@@ -1473,10 +1901,18 @@ mod db_tests {
         let token = seed_session(&pool, "TEST-UIDDATE-NOTFOUND").await;
 
         let router = test_router(test_app(pool.clone()));
-        let (status, body) = request(router, "/Train/by-uid/NOSUCHUID/2026-08-29".to_string(), Some(&token)).await;
+        let (status, body) = request(
+            router,
+            "/Train/by-uid/NOSUCHUID/2026-08-29".to_string(),
+            Some(&token),
+        )
+        .await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, Value::String("no resolved tracked train for that uid/date".to_string()));
+        assert_eq!(
+            body,
+            Value::String("no resolved tracked train for that uid/date".to_string())
+        );
 
         cleanup_user(&pool, "TEST-UIDDATE-NOTFOUND").await;
     }
@@ -1489,18 +1925,38 @@ mod db_tests {
         let pool = connect().await;
         let owner_token = seed_session(&pool, "TEST-UIDDATE-REAL-OWNER").await;
         let service_date: chrono::NaiveDate = "2026-08-29".parse().unwrap();
-        let tracking_id = seed_tracked_train(&pool, "TEST-UIDDATE-REAL-OWNER", Some("B33333"), service_date).await;
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-UIDDATE-REAL-OWNER",
+            Some("B33333"),
+            service_date,
+        )
+        .await;
         seed_station_sample(&pool, "KGX", "EDB", "13:45").await;
 
         let router = test_router(test_app(pool.clone()));
-        let (status, body) = request(router, format!("/Train/by-uid/B33333/{service_date}"), Some(&owner_token)).await;
+        let (status, body) = request(
+            router,
+            format!("/Train/by-uid/B33333/{service_date}"),
+            Some(&owner_token),
+        )
+        .await;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body.get("id").and_then(Value::as_i64), Some(tracking_id));
         assert_eq!(body.get("trainUid").and_then(Value::as_str), Some("B33333"));
-        assert_eq!(body.get("lastReportedLocation").and_then(Value::as_str), Some("York"));
-        assert_eq!(body.get("etaSource").and_then(Value::as_str), Some("darwin-estimated"));
-        assert!(body.get("etaNext").and_then(Value::as_str).is_some(), "etaNext should be populated by the overlay: {body:?}");
+        assert_eq!(
+            body.get("lastReportedLocation").and_then(Value::as_str),
+            Some("York")
+        );
+        assert_eq!(
+            body.get("etaSource").and_then(Value::as_str),
+            Some("darwin-estimated")
+        );
+        assert!(
+            body.get("etaNext").and_then(Value::as_str).is_some(),
+            "etaNext should be populated by the overlay: {body:?}"
+        );
 
         cleanup_station_sample(&pool, "KGX").await;
         cleanup_user(&pool, "TEST-UIDDATE-REAL-OWNER").await;

@@ -35,7 +35,10 @@ pub fn router() -> Router {
             "/stations",
             axum::routing::get(get_stations_last_fetched).post(post_stations),
         )
-        .route("/tocs", axum::routing::get(get_tocs_last_fetched).post(post_tocs))
+        .route(
+            "/tocs",
+            axum::routing::get(get_tocs_last_fetched).post(post_tocs),
+        )
         .route(
             "/station-samples",
             axum::routing::get(get_station_samples_last_fetched).post(post_station_samples),
@@ -45,7 +48,10 @@ pub fn router() -> Router {
             axum::routing::get(get_tfl_line_status_last_fetched).post(post_tfl_line_status),
         )
         .route("/train-events", axum::routing::post(post_train_events))
-        .route("/tracked-trains", axum::routing::get(get_active_tracked_trains))
+        .route(
+            "/tracked-trains",
+            axum::routing::get(get_active_tracked_trains),
+        )
         .route(
             "/schedule-feed-ingests",
             axum::routing::get(get_schedule_feed_last_fetched).post(post_schedule_feed_ingest),
@@ -79,8 +85,12 @@ async fn get_stations_last_fetched(
     Ok(Json(LastFetchedResponse { fetched_at }))
 }
 
-async fn get_tocs_last_fetched(State(app): State<App>) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
-    let fetched_at = queries::last_tocs_fetch(&app.database).await.map_err(internal_error)?;
+async fn get_tocs_last_fetched(
+    State(app): State<App>,
+) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
+    let fetched_at = queries::last_tocs_fetch(&app.database)
+        .await
+        .map_err(internal_error)?;
     Ok(Json(LastFetchedResponse { fetched_at }))
 }
 
@@ -170,7 +180,9 @@ async fn post_train_events(
             .await
             .map_err(internal_error)?;
     }
-    Ok(Json(UpsertResponse { upserted: events.len() as u64 }))
+    Ok(Json(UpsertResponse {
+        upserted: events.len() as u64,
+    }))
 }
 
 /// `trust-consumer`'s periodic reference reload -- pending and
@@ -243,8 +255,12 @@ async fn post_stanox_crs(
 /// current table, not a freshness timestamp (see `queries::list_stanox_crs`'s
 /// own doc comment for why this route differs from every `last_*_fetch`
 /// GET elsewhere in this file).
-async fn get_stanox_crs(State(app): State<App>) -> Result<Json<Vec<common::StanoxCrsRecord>>, (StatusCode, String)> {
-    let rows = queries::list_stanox_crs(&app.database).await.map_err(internal_error)?;
+async fn get_stanox_crs(
+    State(app): State<App>,
+) -> Result<Json<Vec<common::StanoxCrsRecord>>, (StatusCode, String)> {
+    let rows = queries::list_stanox_crs(&app.database)
+        .await
+        .map_err(internal_error)?;
     Ok(Json(rows))
 }
 

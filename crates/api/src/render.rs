@@ -39,7 +39,8 @@ pub fn to_tfl_shape_with_overlay(
 ) -> Value {
     let mut out = to_tfl_shape(report, computed_at, detail);
     if let Some(statuses) = tfl_overlay {
-        out["tflStatus"] = Value::Array(statuses.iter().map(|s| status_to_json(s, detail)).collect());
+        out["tflStatus"] =
+            Value::Array(statuses.iter().map(|s| status_to_json(s, detail)).collect());
     }
     out
 }
@@ -77,9 +78,7 @@ fn status_to_json(status: &LineStatus, detail: bool) -> Value {
         common::SampleAvailability::Available(_) => json!({ "state": "available" }),
     };
 
-    if detail
-        && let Some(disruption) = &status.disruption
-    {
+    if detail && let Some(disruption) = &status.disruption {
         out["disruption"] = json!({
             "category": disruption.category,
             "description": disruption.description,
@@ -115,7 +114,11 @@ mod tests {
             statuses: vec![LineStatus {
                 severity: Severity::MinorDelays,
                 reason: "Signal failure".to_string(),
-                validity: ValidityPeriod { from_date: Utc::now(), to_date: None, is_now: true },
+                validity: ValidityPeriod {
+                    from_date: Utc::now(),
+                    to_date: None,
+                    is_now: true,
+                },
                 disruption,
                 data_quality: DataQuality::Knowledgebase,
                 sample_stats: None,
@@ -180,7 +183,10 @@ mod tests {
             category: "RealTime".to_string(),
             description: "Signal failure at Woking".to_string(),
             affected_stops: vec!["WOK".to_string()],
-            affected_routes: vec![common::AffectedRoute { from_crs: "WAT".to_string(), to_crs: "WOK".to_string() }],
+            affected_routes: vec![common::AffectedRoute {
+                from_crs: "WAT".to_string(),
+                to_crs: "WOK".to_string(),
+            }],
             source: Some("knowledgebase-incident-1".to_string()),
             impact_type: Some("rail_replacement_bus".to_string()),
         };
@@ -248,13 +254,19 @@ mod tests {
     fn sample_availability_is_always_present_unlike_sample_stats() {
         let report = sample_report(None); // sample_stats is None
         let json = to_tfl_shape(&report, sample_computed_at(), false);
-        assert_eq!(json["lineStatuses"][0]["sampleAvailability"], serde_json::json!({"state": "no-coverage"}));
+        assert_eq!(
+            json["lineStatuses"][0]["sampleAvailability"],
+            serde_json::json!({"state": "no-coverage"})
+        );
     }
 
     #[test]
     fn sample_availability_below_threshold_shape() {
         let mut report = sample_report(None);
-        report.statuses[0].sample_availability = SampleAvailability::BelowThreshold { observed: 2, required: 3 };
+        report.statuses[0].sample_availability = SampleAvailability::BelowThreshold {
+            observed: 2,
+            required: 3,
+        };
         let json = to_tfl_shape(&report, sample_computed_at(), false);
         assert_eq!(
             json["lineStatuses"][0]["sampleAvailability"],
@@ -265,19 +277,37 @@ mod tests {
     #[test]
     fn sample_availability_available_case_does_not_duplicate_sample_stats_fields() {
         let mut report = sample_report(None);
-        let stats = SampleStats { total: 10, delayed: 4, cancelled: 1, skipped: 2, avg_delay_minutes: 6.5 };
+        let stats = SampleStats {
+            total: 10,
+            delayed: 4,
+            cancelled: 1,
+            skipped: 2,
+            avg_delay_minutes: 6.5,
+        };
         report.statuses[0].sample_stats = Some(stats.clone());
         report.statuses[0].sample_availability = SampleAvailability::Available(stats);
         let json = to_tfl_shape(&report, sample_computed_at(), false);
-        assert_eq!(json["lineStatuses"][0]["sampleAvailability"], serde_json::json!({"state": "available"}));
-        assert!(json["lineStatuses"][0]["sampleAvailability"].get("total").is_none(), "Available must not re-embed SampleStats fields");
+        assert_eq!(
+            json["lineStatuses"][0]["sampleAvailability"],
+            serde_json::json!({"state": "available"})
+        );
+        assert!(
+            json["lineStatuses"][0]["sampleAvailability"]
+                .get("total")
+                .is_none(),
+            "Available must not re-embed SampleStats fields"
+        );
     }
 
     fn overlay_status(reason: &str) -> LineStatus {
         LineStatus {
             severity: Severity::MinorDelays,
             reason: reason.to_string(),
-            validity: ValidityPeriod { from_date: Utc::now(), to_date: None, is_now: true },
+            validity: ValidityPeriod {
+                from_date: Utc::now(),
+                to_date: None,
+                is_now: true,
+            },
             disruption: None,
             data_quality: DataQuality::Tfl,
             sample_stats: None,
@@ -290,7 +320,10 @@ mod tests {
         let report = sample_report(None);
         let overlay = vec![overlay_status("Minor delays due to signalling")];
         let json = to_tfl_shape_with_overlay(&report, sample_computed_at(), false, Some(&overlay));
-        assert_eq!(json["tflStatus"][0]["reason"], "Minor delays due to signalling");
+        assert_eq!(
+            json["tflStatus"][0]["reason"],
+            "Minor delays due to signalling"
+        );
         assert_eq!(json["tflStatus"][0]["dataQuality"], "tfl");
     }
 
@@ -323,10 +356,16 @@ mod tests {
         // unlike the aggregator's volatile sample-stats annotation pattern
         // that caused a separate line-history duplication bug.
         let report = sample_report(None);
-        let overlay = vec![overlay_status("Severe delays between Paddington and Heathrow")];
+        let overlay = vec![overlay_status(
+            "Severe delays between Paddington and Heathrow",
+        )];
         let first = to_tfl_shape_with_overlay(&report, sample_computed_at(), false, Some(&overlay));
-        let second = to_tfl_shape_with_overlay(&report, sample_computed_at(), false, Some(&overlay));
+        let second =
+            to_tfl_shape_with_overlay(&report, sample_computed_at(), false, Some(&overlay));
         assert_eq!(first["tflStatus"], second["tflStatus"]);
-        assert_eq!(first["tflStatus"][0]["reason"], "Severe delays between Paddington and Heathrow");
+        assert_eq!(
+            first["tflStatus"][0]["reason"],
+            "Severe delays between Paddington and Heathrow"
+        );
     }
 }

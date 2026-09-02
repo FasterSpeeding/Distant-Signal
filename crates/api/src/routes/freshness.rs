@@ -38,7 +38,9 @@ pub struct DataFreshness {
     pub schedule_feed: Option<DateTime<Utc>>,
 }
 
-async fn get_freshness(State(app): State<App>) -> Result<Json<DataFreshness>, (StatusCode, String)> {
+async fn get_freshness(
+    State(app): State<App>,
+) -> Result<Json<DataFreshness>, (StatusCode, String)> {
     let (stations, tocs, incidents, tfl, schedule_feed) = tokio::try_join!(
         queries::last_stations_fetch(&app.database),
         queries::last_tocs_fetch(&app.database),
@@ -47,12 +49,21 @@ async fn get_freshness(State(app): State<App>) -> Result<Json<DataFreshness>, (S
         queries::last_schedule_feed_fetch(&app.database),
     )
     .map_err(internal_error)?;
-    Ok(Json(DataFreshness { stations, tocs, incidents, tfl, schedule_feed }))
+    Ok(Json(DataFreshness {
+        stations,
+        tocs,
+        incidents,
+        tfl,
+        schedule_feed,
+    }))
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "data freshness query failed");
-    (StatusCode::INTERNAL_SERVER_ERROR, "query failed".to_string())
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "query failed".to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -62,8 +73,13 @@ mod tests {
 
     #[test]
     fn serializes_missing_data_as_null() {
-        let freshness =
-            DataFreshness { stations: None, tocs: None, incidents: None, tfl: None, schedule_feed: None };
+        let freshness = DataFreshness {
+            stations: None,
+            tocs: None,
+            incidents: None,
+            tfl: None,
+            schedule_feed: None,
+        };
         let json = serde_json::to_value(&freshness).unwrap();
         assert!(json["stations"].is_null());
         assert!(json["tocs"].is_null());
@@ -85,7 +101,8 @@ mod tests {
         let json = serde_json::to_value(&freshness).unwrap();
         let roundtripped: DateTime<Utc> = json["stations"].as_str().unwrap().parse().unwrap();
         assert_eq!(roundtripped, ts);
-        let schedule_feed_roundtripped: DateTime<Utc> = json["schedule_feed"].as_str().unwrap().parse().unwrap();
+        let schedule_feed_roundtripped: DateTime<Utc> =
+            json["schedule_feed"].as_str().unwrap().parse().unwrap();
         assert_eq!(schedule_feed_roundtripped, ts);
     }
 }

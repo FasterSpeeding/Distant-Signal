@@ -174,7 +174,10 @@ mod tests {
         assert_eq!(period["fromDate"], "2026-08-30T09:00:00+00:00");
         assert!(period["toDate"].is_null());
         assert_eq!(period["isNow"], true);
-        assert!(period.get("from_date").is_none(), "must not leak the raw snake_case JSONB field name");
+        assert!(
+            period.get("from_date").is_none(),
+            "must not leak the raw snake_case JSONB field name"
+        );
     }
 
     #[test]
@@ -217,14 +220,23 @@ mod tests {
 
     #[test]
     fn currently_affects_lines_renders_id_and_name() {
-        let lines = vec![queries::IncidentLineRefRow { line_id: "south-western".to_string(), name: "South Western Main Line".to_string() }];
+        let lines = vec![queries::IncidentLineRefRow {
+            line_id: "south-western".to_string(),
+            name: "South Western Main Line".to_string(),
+        }];
         let json = to_incident_detail_json(sample_incident(), vec![], lines);
         assert_eq!(json["currentlyAffectsLines"][0]["id"], "south-western");
-        assert_eq!(json["currentlyAffectsLines"][0]["name"], "South Western Main Line");
+        assert_eq!(
+            json["currentlyAffectsLines"][0]["name"],
+            "South Western Main Line"
+        );
     }
 
     #[test]
     fn knowledgebase_source_matches_the_exact_format_correction_1_verified() {
-        assert_eq!(knowledgebase_source("12345"), "knowledgebase-incident-12345");
+        assert_eq!(
+            knowledgebase_source("12345"),
+            "knowledgebase-incident-12345"
+        );
     }
 }
