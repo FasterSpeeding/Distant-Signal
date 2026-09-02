@@ -24,6 +24,20 @@
    specificity instead, which holds regardless of injection order. */
 html:root[data-mantine-color-scheme='light'] {
   --mantine-color-anchor: var(--mantine-color-grape-7);
+  /* Same grape 7 as the anchor above, for the same reason and with the
+     same measurement: white on grape 6 is 4.02:1, white on grape 7 is
+     4.85:1. The anchor half of this shipped with the grape theme; this is
+     the filled half it left open (see lib/theme.ts's variantColorResolver
+     comment, which explains why the JS side has to be pinned in step with
+     this). Hover follows one shade further down, as Mantine's own filled
+     hover does. Dark is untouched: grape 8 with white is already 5.82:1. */
+  --mantine-color-grape-filled: var(--mantine-color-grape-7);
+  --mantine-color-grape-filled-hover: var(--mantine-color-grape-8);
+  /* `autoContrast` also drives this theme-level variable from grape 6's
+     luminance and would set it to black; anything reading it directly
+     rather than through the variantColorResolver would then paint black
+     on the grape-7 fill above (4.29:1, fail). */
+  --mantine-primary-color-contrast: var(--mantine-color-white);
 }
 
 /* `components/TextLink.tsx` opts in via `data-text-link`. The colour above

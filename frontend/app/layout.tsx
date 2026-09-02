@@ -1,6 +1,6 @@
 import '@/app/globals.css';
 import { Suspense } from 'react';
-import { ActionIcon, MantineProvider, ColorSchemeScript, mantineHtmlProps, Group, Text, Box, Container } from '@mantine/core';
+import { ActionIcon, ColorSchemeScript, mantineHtmlProps, Group, Text, Box, Container } from '@mantine/core';
 import Link from 'next/link';
 import type { Metadata, Viewport } from 'next';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -12,8 +12,8 @@ import { AutoRefresh } from '@/components/AutoRefresh';
 import { ColorSchemeMeta } from '@/components/ColorSchemeMeta';
 import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
 import { OpenDataAttribution } from '@/components/OpenDataAttribution';
+import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { getDataFreshness, getSession } from '@/lib/api';
-import { theme } from '@/lib/theme';
 
 export const metadata: Metadata = {
   title: 'Distant Signal',
@@ -123,7 +123,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ColorSchemeScript defaultColorScheme="auto" />
       </head>
       <body>
-        <MantineProvider theme={theme} defaultColorScheme="auto">
+        <AppMantineProvider>
           <AutoRefresh />
           <ColorSchemeMeta />
           {/* RootLayout is a Server Component and re-executes on every
@@ -195,7 +195,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {children}
           </Container>
           <OpenDataAttribution />
-        </MantineProvider>
+        </AppMantineProvider>
       </body>
     </html>
   );

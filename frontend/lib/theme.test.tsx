@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineProvider, DEFAULT_THEME, mergeThemeOverrides } from '@mantine/core';
 import { theme } from './theme';
+
+// The real merged theme the provider actually resolves `variantColorResolver`
+// against (DEFAULT_THEME with this app's overrides layered on), rather than a
+// hand-rolled stand-in that could quietly diverge from it.
+const mergedTheme = mergeThemeOverrides(DEFAULT_THEME, theme);
 
 // Per the grape-theme spec's Testing section: colour is largely not
 // unit-testable and shouldn't be asserted shade by shade (that's a job for
@@ -51,5 +56,23 @@ describe('theme', () => {
       '--mantine-color-anchor',
     );
     expect(anchorColor).not.toBe('var(--mantine-color-grape-6)');
+  });
+
+  it('sets autoContrast and the AA-derived luminance threshold', () => {
+    expect(theme.autoContrast).toBe(true);
+    expect(theme.luminanceThreshold).toBe(0.179);
+  });
+
+  it("resolves filled grape to white text rather than autoContrast's black", () => {
+    // Calls the resolver directly -- reading the rendered colour back out of
+    // jsdom isn't reliable for Mantine's CSS variables (see this file's
+    // existing note about :root-scoped custom properties).
+    const resolved = theme.variantColorResolver!({ color: 'grape', variant: 'filled', theme: mergedTheme });
+    expect(resolved.color).toBe('var(--mantine-color-white)');
+  });
+
+  it('leaves every other colour to autoContrast', () => {
+    const resolved = theme.variantColorResolver!({ color: 'red', variant: 'filled', theme: mergedTheme });
+    expect(resolved.color).not.toBe('var(--mantine-color-white)');
   });
 });
