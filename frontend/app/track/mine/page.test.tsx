@@ -6,9 +6,10 @@ import * as api from '@/lib/api';
 import type { TrackedTrainListItem, TicketListItem } from '@/lib/types';
 
 vi.mock('@/lib/api');
-// The not-logged-in login nudge is LoginLink, which calls
-// usePathname()/useSearchParams() -- same stub AuthStatus.test.tsx and
-// TicketPanel.test.tsx use for the same reason. This page also renders
+// The not-logged-in prompt is AutoOpenLoginPrompt -> LoginPromptModal,
+// which calls useLoginHref() (usePathname()/useSearchParams() under the
+// hood) -- same stub AuthStatus.test.tsx and TicketPanel.test.tsx use for
+// the same reason. This page also renders
 // TicketEntryForm (the "Add a ticket" entry point) and AttachTicketAction,
 // both of which call useRouter() from next/navigation -- same workaround
 // TicketPanel.test.tsx/TicketEntryForm.test.tsx use for the same reason
@@ -61,13 +62,16 @@ function ticket(overrides: Partial<TicketListItem> = {}): TicketListItem {
 }
 
 describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
-  it('null (not logged in): shows a login nudge', async () => {
+  it('null (not logged in): shows an auto-opened login prompt modal', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
     vi.mocked(api.getMyTickets).mockResolvedValue(null);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(
-      screen.getByRole('link', { name: "Log in to see the trains and tickets you're tracking" }),
-    ).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrack%2Fmine');
+    expect(screen.getByText('Log in required')).toBeInTheDocument();
+    expect(screen.getByText("Log in to see the trains and tickets you're tracking.")).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute(
+      'href',
+      '/api/auth/login?return_to=%2Ftrack%2Fmine',
+    );
   });
 
   it('no trains and no tickets: shows the empty state with a working link to /track', async () => {
