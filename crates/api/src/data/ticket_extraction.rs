@@ -418,13 +418,14 @@ mod parse_pkpass_tests {
 /// Research summary §3 and Open Question 2) -- this is a genuinely
 /// fragile, lower-confidence tier than `.pkpass` parsing, by design; an
 /// unmatched field is left `None` for manual completion, never guessed at
-/// when nothing matches. `ROUTE_PATTERN` in particular is best-effort in
-/// the other direction too: because it matches against unstructured,
-/// unanchored text with no field boundaries, it can occasionally capture
-/// nearby boilerplate prose rather than the actual route (see that
-/// pattern's own doc comment) -- `train_tracking::validate_ticket_entry`'s
-/// CRS-format check (Task 2) is what actually prevents an unedited false
-/// match from ever being saved, not this regex's own precision.
+/// when nothing matches. The generic fallback pattern in `ROUTE_PATTERNS`
+/// in particular is best-effort in the other direction too: because it
+/// matches against unstructured, unanchored text with no field
+/// boundaries, it can occasionally capture nearby boilerplate prose
+/// rather than the actual route (see that pattern's own doc comment) --
+/// `train_tracking::validate_ticket_entry`'s CRS-format check (Task 2) is
+/// what actually prevents an unedited false match from ever being saved,
+/// not this regex's own precision.
 pub fn parse_pdf_text(text: &str) -> PartialTicket {
     let operator = KNOWN_RETAILER_MARKERS
         .iter()
@@ -556,8 +557,9 @@ mod parse_pdf_text_tests {
     #[test]
     fn a_route_with_nothing_after_the_destination_still_matches() {
         // No trailing comma/period/newline after "Woking" -- the
-        // destination is the last thing in the text. See ROUTE_PATTERN's
-        // doc comment for why `$` is part of its trailing delimiter.
+        // destination is the last thing in the text. See ROUTE_PATTERNS's
+        // generic-fallback entry's doc comment for why `$` is part of its
+        // trailing delimiter.
         let ticket = parse_pdf_text("Trainline: London Waterloo to Woking");
         assert_eq!(ticket.origin_crs, Some("London Waterloo".to_string()));
         assert_eq!(ticket.destination_crs, Some("Woking".to_string()));
