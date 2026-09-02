@@ -19,8 +19,14 @@ use crate::data::{custom_lines, preferences, queries};
 pub fn router() -> Router {
     Router::new()
         .route("/preferences", axum::routing::get(get_preferences))
-        .route("/preferences/pinned-lines", axum::routing::put(put_pinned_lines))
-        .route("/preferences/pinned-stations", axum::routing::put(put_pinned_stations))
+        .route(
+            "/preferences/pinned-lines",
+            axum::routing::put(put_pinned_lines),
+        )
+        .route(
+            "/preferences/pinned-stations",
+            axum::routing::put(put_pinned_stations),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -60,11 +66,15 @@ async fn get_preferences(
     let pinned_station_candidates = preferences::list_pinned_station_crs(&app.database, &user.id)
         .await
         .map_err(internal_error)?;
-    let pinned_stations = preferences::filter_existing_station_crs(&app.database, &pinned_station_candidates)
-        .await
-        .map_err(internal_error)?;
+    let pinned_stations =
+        preferences::filter_existing_station_crs(&app.database, &pinned_station_candidates)
+            .await
+            .map_err(internal_error)?;
 
-    Ok(Json(PreferencesResponse { pinned_lines, pinned_stations }))
+    Ok(Json(PreferencesResponse {
+        pinned_lines,
+        pinned_stations,
+    }))
 }
 
 async fn put_pinned_lines(
@@ -98,7 +108,10 @@ async fn put_pinned_stations(
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "preferences operation failed");
-    (StatusCode::INTERNAL_SERVER_ERROR, "operation failed".to_string())
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "operation failed".to_string(),
+    )
 }
 
 /// Filters `pinned_line_ids` down to ones that still resolve to a real
@@ -118,9 +131,15 @@ fn filter_known_pinned_lines(
     custom_ids: impl IntoIterator<Item = String>,
     tfl_ids: impl IntoIterator<Item = String>,
 ) -> Vec<String> {
-    let known_line_ids: HashSet<String> =
-        catalogue_ids.into_iter().chain(custom_ids).chain(tfl_ids).collect();
-    pinned_line_ids.into_iter().filter(|id| known_line_ids.contains(id)).collect()
+    let known_line_ids: HashSet<String> = catalogue_ids
+        .into_iter()
+        .chain(custom_ids)
+        .chain(tfl_ids)
+        .collect();
+    pinned_line_ids
+        .into_iter()
+        .filter(|id| known_line_ids.contains(id))
+        .collect()
 }
 
 #[cfg(test)]
@@ -141,7 +160,10 @@ mod tests {
             vec![],
             vec!["tfl-victoria".to_string()],
         );
-        assert_eq!(result, vec!["tfl-victoria".to_string(), "northern".to_string()]);
+        assert_eq!(
+            result,
+            vec!["tfl-victoria".to_string(), "northern".to_string()]
+        );
     }
 
     #[test]
@@ -187,11 +209,16 @@ mod db_tests {
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 a_pinned_tfl_line_is_still_returned_by_get_preferences_after_a_real_write_read_round_trip \
                 -- --ignored`"]
-    async fn a_pinned_tfl_line_is_still_returned_by_get_preferences_after_a_real_write_read_round_trip() {
+    async fn a_pinned_tfl_line_is_still_returned_by_get_preferences_after_a_real_write_read_round_trip()
+     {
         use sqlx::postgres::PgPoolOptions;
 
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
 
         sqlx::query(
             "INSERT INTO users (id, email, name) VALUES ('TEST-PREFS-USER', 'test@example.com', 'Test Rider') \
@@ -224,9 +251,15 @@ mod db_tests {
         let pinned_line_ids = preferences::list_pinned_line_ids(&pool, "TEST-PREFS-USER")
             .await
             .expect("list pinned line ids");
-        let tfl = queries::tfl_line_summaries(&pool).await.expect("tfl_line_summaries");
-        let pinned_lines =
-            filter_known_pinned_lines(pinned_line_ids, vec![], vec![], tfl.into_iter().map(|l| l.id));
+        let tfl = queries::tfl_line_summaries(&pool)
+            .await
+            .expect("tfl_line_summaries");
+        let pinned_lines = filter_known_pinned_lines(
+            pinned_line_ids,
+            vec![],
+            vec![],
+            tfl.into_iter().map(|l| l.id),
+        );
 
         sqlx::query("DELETE FROM pinned_lines WHERE user_id = 'TEST-PREFS-USER'")
             .execute(&pool)

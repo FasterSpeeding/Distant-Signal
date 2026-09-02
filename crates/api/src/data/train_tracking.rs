@@ -55,7 +55,11 @@ pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), Str
 /// resolved by the route handler's `AuthenticatedUser` extractor
 /// (`crates/api/src/routes/train.rs::post_track`, below), never taken from
 /// the request body itself.
-pub async fn create_pin(pool: &PgPool, pin: &TrackPinRequest, user_id: &str) -> anyhow::Result<i64> {
+pub async fn create_pin(
+    pool: &PgPool,
+    pin: &TrackPinRequest,
+    user_id: &str,
+) -> anyhow::Result<i64> {
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO tracked_trains \
             (user_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs, pin_operator) \
@@ -78,7 +82,12 @@ pub async fn create_pin(pool: &PgPool, pin: &TrackPinRequest, user_id: &str) -> 
 /// place (this constant, not repeated string literals) so this app-layer
 /// check and the migration's own CHECK constraint (Task 1) can't silently
 /// drift apart; if they ever do, the DB constraint is the backstop.
-const TICKET_SOURCES: [&str; 4] = ["manual", "pkpass-semantics", "pkpass-heuristic", "pdf-heuristic"];
+const TICKET_SOURCES: [&str; 4] = [
+    "manual",
+    "pkpass-semantics",
+    "pkpass-heuristic",
+    "pdf-heuristic",
+];
 
 /// This is the actual mechanism behind "review before save" for the
 /// `.pkpass`/PDF ingestion tiers (Tasks 6-9), not merely a data-quality
@@ -146,7 +155,10 @@ mod ticket_entry_tests {
     #[test]
     fn every_declared_source_is_accepted() {
         for source in TICKET_SOURCES {
-            assert!(validate_ticket_entry(&entry(Some("KGX"), source)).is_ok(), "{source} should be valid");
+            assert!(
+                validate_ticket_entry(&entry(Some("KGX"), source)).is_ok(),
+                "{source} should be valid"
+            );
         }
     }
 
@@ -216,10 +228,14 @@ pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<Tra
 /// current-state values twice is harmless (idempotent by construction, not
 /// merely by dedup), so this doesn't need to be conditioned on whether the
 /// event insert actually inserted a row.
-pub async fn upsert_train_event(pool: &PgPool, event: &TrainMovementEventMessage) -> anyhow::Result<()> {
+pub async fn upsert_train_event(
+    pool: &PgPool,
+    event: &TrainMovementEventMessage,
+) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
 
-    if let (Some(train_uid), Some(train_id)) = (&event.resolved_train_uid, &event.resolved_train_id) {
+    if let (Some(train_uid), Some(train_id)) = (&event.resolved_train_uid, &event.resolved_train_id)
+    {
         sqlx::query(
             "UPDATE tracked_trains \
              SET train_uid = $2, train_id = $3, resolution_status = 'resolved', resolved_at = NOW() \
@@ -351,7 +367,10 @@ pub struct TrackedTrainListItem {
 /// "active only" filter would silently do almost nothing while implying
 /// curation that isn't happening; this function intentionally does not
 /// attempt one.
-pub async fn list_tracked_trains_for_user(pool: &PgPool, user_id: &str) -> anyhow::Result<Vec<TrackedTrainListItem>> {
+pub async fn list_tracked_trains_for_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> anyhow::Result<Vec<TrackedTrainListItem>> {
     let rows = sqlx::query_as::<_, TrackedTrainListItem>(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
                 tt.pin_scheduled_departure, tt.resolution_status, tt.train_uid, \
@@ -369,11 +388,16 @@ pub async fn list_tracked_trains_for_user(pool: &PgPool, user_id: &str) -> anyho
     Ok(rows)
 }
 
-pub async fn get_by_tracking_id(pool: &PgPool, id: i64) -> anyhow::Result<Option<TrackedTrainState>> {
-    let row = sqlx::query_as::<_, TrackedTrainState>(&format!("{TRACKED_TRAIN_STATE_SELECT} WHERE tt.id = $1"))
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+pub async fn get_by_tracking_id(
+    pool: &PgPool,
+    id: i64,
+) -> anyhow::Result<Option<TrackedTrainState>> {
+    let row = sqlx::query_as::<_, TrackedTrainState>(&format!(
+        "{TRACKED_TRAIN_STATE_SELECT} WHERE tt.id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
     Ok(row)
 }
 
@@ -475,9 +499,14 @@ mod tests {
 /// tracked train both map to the same `404` at the route layer -- never
 /// `403` -- matching `docs/superpowers/plans/2026-08-28-user-accounts-sso.md`'s
 /// existing "exists but not yours" convention.
-pub async fn tracked_train_owner(pool: &PgPool, tracking_id: i64) -> anyhow::Result<Option<String>> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT user_id FROM tracked_trains WHERE id = $1").bind(tracking_id).fetch_optional(pool).await?;
+pub async fn tracked_train_owner(
+    pool: &PgPool,
+    tracking_id: i64,
+) -> anyhow::Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT user_id FROM tracked_trains WHERE id = $1")
+        .bind(tracking_id)
+        .fetch_optional(pool)
+        .await?;
     Ok(row.map(|(id,)| id))
 }
 
@@ -598,12 +627,18 @@ pub async fn list_tickets_for_tracked_train(
 
 /// Used by the Delay Repay estimate route (Task 5), which needs a single
 /// ticket by its own id, still scoped to the caller.
-pub async fn get_ticket_owned(pool: &PgPool, ticket_id: i64, user_id: &str) -> anyhow::Result<Option<TrackedTrainTicket>> {
-    let row = sqlx::query_as::<_, TrackedTrainTicket>(&format!("{TICKET_SELECT} WHERE id = $1 AND user_id = $2"))
-        .bind(ticket_id)
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await?;
+pub async fn get_ticket_owned(
+    pool: &PgPool,
+    ticket_id: i64,
+    user_id: &str,
+) -> anyhow::Result<Option<TrackedTrainTicket>> {
+    let row = sqlx::query_as::<_, TrackedTrainTicket>(&format!(
+        "{TICKET_SELECT} WHERE id = $1 AND user_id = $2"
+    ))
+    .bind(ticket_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
     Ok(row)
 }
 
@@ -732,10 +767,16 @@ pub struct TicketListItem {
 /// never disagree.
 fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
     let estimate = match (row.operator.as_deref(), row.delay_minutes) {
-        (Some(operator), Some(delay_minutes)) => delay_repay_rules::estimate_delay_repay(operator, delay_minutes),
+        (Some(operator), Some(delay_minutes)) => {
+            delay_repay_rules::estimate_delay_repay(operator, delay_minutes)
+        }
         _ => None,
     };
-    let claim_url = row.operator.as_deref().map(delay_repay_rules::claim_url_for).unwrap_or(delay_repay_rules::GENERIC_CLAIM_URL);
+    let claim_url = row
+        .operator
+        .as_deref()
+        .map(delay_repay_rules::claim_url_for)
+        .unwrap_or(delay_repay_rules::GENERIC_CLAIM_URL);
 
     TicketListItem {
         id: row.id,
@@ -778,7 +819,10 @@ fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
 /// matches every other query in this file that reads it: a `pending`/
 /// just-resolved tracked train legitimately has no `train_current_state`
 /// row yet, same as before.
-pub async fn list_tickets_for_user(pool: &PgPool, user_id: &str) -> anyhow::Result<Vec<TicketListItem>> {
+pub async fn list_tickets_for_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> anyhow::Result<Vec<TicketListItem>> {
     let rows = sqlx::query_as::<_, TicketListRow>(
         "SELECT t.id, t.tracked_train_id, t.operator, t.ticket_type, t.origin_crs, t.destination_crs, \
                 t.source, t.created_at, \
@@ -858,10 +902,15 @@ mod ticket_list_tests {
     fn matches_build_delay_repay_response_for_a_qualifying_dr30_delay() {
         let item = build_ticket_list_item(row(Some("LNER"), Some(45)));
 
-        let estimate = item.estimate.expect("LNER + 45 minutes should clear the DR30 30-minute band");
+        let estimate = item
+            .estimate
+            .expect("LNER + 45 minutes should clear the DR30 30-minute band");
         assert_eq!(estimate.scheme, "DR30");
         assert_eq!(estimate.percentage, 50);
-        assert_eq!(item.claim_url, "https://delayrepay.lner.co.uk/delayrepayV2/");
+        assert_eq!(
+            item.claim_url,
+            "https://delayrepay.lner.co.uk/delayrepayV2/"
+        );
         assert_eq!(item.delay_minutes, Some(45));
     }
 
@@ -880,7 +929,10 @@ mod ticket_list_tests {
 
         assert_eq!(item.estimate, None);
         assert_eq!(item.delay_minutes, None);
-        assert_eq!(item.claim_url, "https://delayrepay.lner.co.uk/delayrepayV2/");
+        assert_eq!(
+            item.claim_url,
+            "https://delayrepay.lner.co.uk/delayrepayV2/"
+        );
         assert_eq!(item.disclaimer, delay_repay_rules::ROUTE_DISCLAIMER);
     }
 
@@ -890,7 +942,8 @@ mod ticket_list_tests {
     // fields actually compose safely for a row with no owning tracked
     // train at all, not just no delay data yet.
     #[test]
-    fn a_standalone_ticket_with_no_tracked_train_has_no_estimate_but_still_a_real_claim_link_and_disclaimer() {
+    fn a_standalone_ticket_with_no_tracked_train_has_no_estimate_but_still_a_real_claim_link_and_disclaimer()
+     {
         let item = build_ticket_list_item(standalone_row(Some("LNER")));
 
         assert_eq!(item.tracked_train_id, None);
@@ -900,7 +953,10 @@ mod ticket_list_tests {
         assert_eq!(item.status, None);
         assert_eq!(item.delay_minutes, None);
         assert_eq!(item.estimate, None);
-        assert_eq!(item.claim_url, "https://delayrepay.lner.co.uk/delayrepayV2/");
+        assert_eq!(
+            item.claim_url,
+            "https://delayrepay.lner.co.uk/delayrepayV2/"
+        );
         assert_eq!(item.disclaimer, delay_repay_rules::ROUTE_DISCLAIMER);
     }
 
@@ -920,18 +976,24 @@ mod db_tests {
     use sqlx::postgres::PgPoolOptions;
 
     async fn connect() -> PgPool {
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres")
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
     }
 
     async fn seed_user(pool: &PgPool, user_id: &str) {
-        sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING")
-            .bind(user_id)
-            .bind(format!("{user_id}@example.com"))
-            .bind(user_id)
-            .execute(pool)
-            .await
-            .expect("seed fixture user");
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(format!("{user_id}@example.com"))
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("seed fixture user");
     }
 
     async fn cleanup_user(pool: &PgPool, user_id: &str) {
@@ -987,15 +1049,27 @@ mod db_tests {
         let pool = connect().await;
         seed_user(&pool, "TEST-TICKET-DELETE-OWNER").await;
         let tracking_id = seed_tracked_train(&pool, "TEST-TICKET-DELETE-OWNER").await;
-        let ticket_id = create_ticket(&pool, Some(tracking_id), &fixture_entry(), "TEST-TICKET-DELETE-OWNER")
-            .await
-            .expect("create fixture ticket");
+        let ticket_id = create_ticket(
+            &pool,
+            Some(tracking_id),
+            &fixture_entry(),
+            "TEST-TICKET-DELETE-OWNER",
+        )
+        .await
+        .expect("create fixture ticket");
 
-        let deleted = delete_ticket(&pool, ticket_id, "TEST-TICKET-DELETE-OWNER").await.expect("delete ticket");
+        let deleted = delete_ticket(&pool, ticket_id, "TEST-TICKET-DELETE-OWNER")
+            .await
+            .expect("delete ticket");
         assert!(deleted);
 
-        let gone = get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-OWNER").await.expect("read ticket");
-        assert!(gone.is_none(), "ticket row should be gone after the owner deletes it");
+        let gone = get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-OWNER")
+            .await
+            .expect("read ticket");
+        assert!(
+            gone.is_none(),
+            "ticket row should be gone after the owner deletes it"
+        );
 
         cleanup_user(&pool, "TEST-TICKET-DELETE-OWNER").await;
     }
@@ -1008,15 +1082,27 @@ mod db_tests {
         let pool = connect().await;
         seed_user(&pool, "TEST-TICKET-DELETE-REAL-OWNER").await;
         seed_user(&pool, "TEST-TICKET-DELETE-OTHER").await;
-        let ticket_id = create_ticket(&pool, None, &fixture_entry(), "TEST-TICKET-DELETE-REAL-OWNER")
-            .await
-            .expect("create fixture ticket");
+        let ticket_id = create_ticket(
+            &pool,
+            None,
+            &fixture_entry(),
+            "TEST-TICKET-DELETE-REAL-OWNER",
+        )
+        .await
+        .expect("create fixture ticket");
 
-        let deleted = delete_ticket(&pool, ticket_id, "TEST-TICKET-DELETE-OTHER").await.expect("delete ticket");
+        let deleted = delete_ticket(&pool, ticket_id, "TEST-TICKET-DELETE-OTHER")
+            .await
+            .expect("delete ticket");
         assert!(!deleted);
 
-        let still_there = get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-REAL-OWNER").await.expect("read ticket");
-        assert!(still_there.is_some(), "row should survive a non-owner's delete attempt");
+        let still_there = get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-REAL-OWNER")
+            .await
+            .expect("read ticket");
+        assert!(
+            still_there.is_some(),
+            "row should survive a non-owner's delete attempt"
+        );
 
         cleanup_user(&pool, "TEST-TICKET-DELETE-REAL-OWNER").await;
         cleanup_user(&pool, "TEST-TICKET-DELETE-OTHER").await;
@@ -1028,7 +1114,9 @@ mod db_tests {
                 delete_ticket -- --ignored --test-threads=1`"]
     async fn delete_ticket_a_nonexistent_id_returns_false() {
         let pool = connect().await;
-        let deleted = delete_ticket(&pool, 99999999, "TEST-TICKET-DELETE-NOBODY").await.expect("delete ticket");
+        let deleted = delete_ticket(&pool, 99999999, "TEST-TICKET-DELETE-NOBODY")
+            .await
+            .expect("delete ticket");
         assert!(!deleted);
     }
 
@@ -1036,20 +1124,30 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 delete_ticket -- --ignored --test-threads=1`"]
-    async fn delete_ticket_an_unattached_standalone_ticket_deletes_identically_to_an_attached_one() {
+    async fn delete_ticket_an_unattached_standalone_ticket_deletes_identically_to_an_attached_one()
+    {
         let pool = connect().await;
         seed_user(&pool, "TEST-TICKET-DELETE-STANDALONE").await;
         // tracked_train_id: None -- a STANDALONE ticket. delete_ticket's
         // own WHERE clause never references this column, so this must
         // succeed identically to the attached case above.
-        let ticket_id = create_ticket(&pool, None, &fixture_entry(), "TEST-TICKET-DELETE-STANDALONE")
-            .await
-            .expect("create fixture ticket");
+        let ticket_id = create_ticket(
+            &pool,
+            None,
+            &fixture_entry(),
+            "TEST-TICKET-DELETE-STANDALONE",
+        )
+        .await
+        .expect("create fixture ticket");
 
-        let deleted = delete_ticket(&pool, ticket_id, "TEST-TICKET-DELETE-STANDALONE").await.expect("delete ticket");
+        let deleted = delete_ticket(&pool, ticket_id, "TEST-TICKET-DELETE-STANDALONE")
+            .await
+            .expect("delete ticket");
         assert!(deleted);
 
-        let gone = get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-STANDALONE").await.expect("read ticket");
+        let gone = get_ticket_owned(&pool, ticket_id, "TEST-TICKET-DELETE-STANDALONE")
+            .await
+            .expect("read ticket");
         assert!(gone.is_none());
 
         cleanup_user(&pool, "TEST-TICKET-DELETE-STANDALONE").await;

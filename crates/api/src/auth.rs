@@ -7,8 +7,8 @@
 
 pub mod oidc;
 
-use axum::extract::{Request, State, FromRequestParts};
-use axum::http::{StatusCode, HeaderMap, request::Parts};
+use axum::extract::{FromRequestParts, Request, State};
+use axum::http::{HeaderMap, StatusCode, request::Parts};
 use axum::middleware::Next;
 use axum::response::Response;
 use common::ingest::INTERNAL_TOKEN_HEADER;
@@ -183,17 +183,29 @@ impl FromRequestParts<App> for AuthenticatedUser {
     type Rejection = (axum::http::StatusCode, String);
 
     async fn from_request_parts(parts: &mut Parts, app: &App) -> Result<Self, Self::Rejection> {
-        let token = parse_cookie(&parts.headers, SESSION_COOKIE_NAME)
-            .ok_or((axum::http::StatusCode::UNAUTHORIZED, "no session".to_string()))?;
+        let token = parse_cookie(&parts.headers, SESSION_COOKIE_NAME).ok_or((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "no session".to_string(),
+        ))?;
         let hashed = hash_session_token(&token);
         let session = crate::data::users::get_session_with_user(&app.database, &hashed)
             .await
             .map_err(|err| {
                 tracing::error!(error = ?err, "session lookup failed");
-                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "session lookup failed".to_string())
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "session lookup failed".to_string(),
+                )
             })?
-            .ok_or((axum::http::StatusCode::UNAUTHORIZED, "session expired or unknown".to_string()))?;
-        Ok(AuthenticatedUser { id: session.id, email: session.email, name: session.name })
+            .ok_or((
+                axum::http::StatusCode::UNAUTHORIZED,
+                "session expired or unknown".to_string(),
+            ))?;
+        Ok(AuthenticatedUser {
+            id: session.id,
+            email: session.email,
+            name: session.name,
+        })
     }
 }
 
@@ -206,7 +218,9 @@ impl FromRequestParts<App> for OptionalAuthenticatedUser {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(parts: &mut Parts, app: &App) -> Result<Self, Self::Rejection> {
-        Ok(OptionalAuthenticatedUser(AuthenticatedUser::from_request_parts(parts, app).await.ok()))
+        Ok(OptionalAuthenticatedUser(
+            AuthenticatedUser::from_request_parts(parts, app).await.ok(),
+        ))
     }
 }
 
@@ -242,15 +256,29 @@ mod tests {
     #[test]
     fn parse_cookie_finds_a_single_named_cookie() {
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(axum::http::header::COOKIE, "distant_signal_session=abc123".parse().unwrap());
-        assert_eq!(parse_cookie(&headers, "distant_signal_session"), Some("abc123".to_string()));
+        headers.insert(
+            axum::http::header::COOKIE,
+            "distant_signal_session=abc123".parse().unwrap(),
+        );
+        assert_eq!(
+            parse_cookie(&headers, "distant_signal_session"),
+            Some("abc123".to_string())
+        );
     }
 
     #[test]
     fn parse_cookie_finds_one_among_several() {
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(axum::http::header::COOKIE, "theme=dark; distant_signal_session=abc123; other=x".parse().unwrap());
-        assert_eq!(parse_cookie(&headers, "distant_signal_session"), Some("abc123".to_string()));
+        headers.insert(
+            axum::http::header::COOKIE,
+            "theme=dark; distant_signal_session=abc123; other=x"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            parse_cookie(&headers, "distant_signal_session"),
+            Some("abc123".to_string())
+        );
     }
 
     #[test]
@@ -303,7 +331,10 @@ mod tests {
 
     #[test]
     fn hash_session_token_is_deterministic() {
-        assert_eq!(hash_session_token("same-token"), hash_session_token("same-token"));
+        assert_eq!(
+            hash_session_token("same-token"),
+            hash_session_token("same-token")
+        );
     }
 
     #[test]
@@ -322,7 +353,10 @@ mod tests {
 
     #[test]
     fn validate_return_to_accepts_a_plain_relative_path() {
-        assert_eq!(validate_return_to("/lines/some-line"), Some("/lines/some-line".to_string()));
+        assert_eq!(
+            validate_return_to("/lines/some-line"),
+            Some("/lines/some-line".to_string())
+        );
     }
 
     #[test]

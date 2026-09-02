@@ -13,7 +13,10 @@ use crate::auth::oidc::OidcIdentity;
 /// `crates/api/src/auth/oidc.rs`'s `identity_from_claims` doc comment,
 /// which maps the claim through unfiltered; this is where it's filtered).
 fn verified_email(identity: &OidcIdentity) -> Option<&str> {
-    identity.email_verified.then_some(identity.email.as_deref()).flatten()
+    identity
+        .email_verified
+        .then_some(identity.email.as_deref())
+        .flatten()
 }
 
 #[cfg(test)]
@@ -86,7 +89,12 @@ pub async fn upsert_user(pool: &PgPool, identity: &OidcIdentity) -> Result<User>
 /// The column itself stays in the schema, unused, for whoever implements
 /// refresh: it is nullable, so nothing needs migrating when that lands,
 /// and this is the only INSERT that would have to start binding it.
-pub async fn insert_session(pool: &PgPool, hashed_token: &str, user_id: &str, ttl_days: i64) -> Result<()> {
+pub async fn insert_session(
+    pool: &PgPool,
+    hashed_token: &str,
+    user_id: &str,
+    ttl_days: i64,
+) -> Result<()> {
     sqlx::query(
         "INSERT INTO sessions (id, user_id, refresh_token, created_at, expires_at) \
          VALUES ($1, $2, NULL, NOW(), NOW() + make_interval(days => $3))",
@@ -111,7 +119,10 @@ pub struct SessionUser {
 /// no row at all. Expired rows are never explicitly pruned by a
 /// background job in this plan (a small table; left as a documented
 /// follow-up, same posture as not implementing RP-initiated logout).
-pub async fn get_session_with_user(pool: &PgPool, hashed_token: &str) -> Result<Option<SessionUser>> {
+pub async fn get_session_with_user(
+    pool: &PgPool,
+    hashed_token: &str,
+) -> Result<Option<SessionUser>> {
     let row = sqlx::query_as::<_, SessionUser>(
         "SELECT u.id, u.email, u.name \
          FROM sessions s JOIN users u ON u.id = s.user_id \
@@ -124,7 +135,10 @@ pub async fn get_session_with_user(pool: &PgPool, hashed_token: &str) -> Result<
 }
 
 pub async fn delete_session(pool: &PgPool, hashed_token: &str) -> Result<()> {
-    sqlx::query("DELETE FROM sessions WHERE id = $1").bind(hashed_token).execute(pool).await?;
+    sqlx::query("DELETE FROM sessions WHERE id = $1")
+        .bind(hashed_token)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -199,8 +213,12 @@ mod db_tests {
     async fn session_round_trip_creates_looks_up_and_deletes() {
         use sqlx::postgres::PgPoolOptions;
 
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
 
         let identity = OidcIdentity {
             sub: "TEST-USER-ROUND-TRIP".to_string(),
@@ -211,7 +229,9 @@ mod db_tests {
         let user = upsert_user(&pool, &identity).await.expect("upsert user");
         assert_eq!(user.id, "TEST-USER-ROUND-TRIP");
 
-        insert_session(&pool, "test-hashed-token", &user.id, 14).await.expect("insert session");
+        insert_session(&pool, "test-hashed-token", &user.id, 14)
+            .await
+            .expect("insert session");
 
         let found = get_session_with_user(&pool, "test-hashed-token")
             .await
@@ -219,8 +239,12 @@ mod db_tests {
             .expect("session should exist");
         assert_eq!(found.id, "TEST-USER-ROUND-TRIP");
 
-        delete_session(&pool, "test-hashed-token").await.expect("delete session");
-        let gone = get_session_with_user(&pool, "test-hashed-token").await.expect("lookup after delete");
+        delete_session(&pool, "test-hashed-token")
+            .await
+            .expect("delete session");
+        let gone = get_session_with_user(&pool, "test-hashed-token")
+            .await
+            .expect("lookup after delete");
         assert!(gone.is_none());
 
         // Cleanup -- cascades to sessions via ON DELETE CASCADE, though

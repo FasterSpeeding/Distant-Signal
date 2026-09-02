@@ -20,16 +20,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
 use crate::auth::{AuthenticatedUser, OptionalAuthenticatedUser};
-use crate::data::{custom_lines::{self, NewCustomLine}, queries};
+use crate::data::{
+    custom_lines::{self, NewCustomLine},
+    queries,
+};
 
 pub fn router() -> Router {
     Router::new()
         .route("/lines", axum::routing::get(list_lines).post(create_line))
         .route(
             "/lines/{id}",
-            axum::routing::get(get_line).put(update_line).delete(delete_line),
+            axum::routing::get(get_line)
+                .put(update_line)
+                .delete(delete_line),
         )
-        .route("/lines/{id}/definition", axum::routing::get(get_line_definition))
+        .route(
+            "/lines/{id}/definition",
+            axum::routing::get(get_line_definition),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -87,7 +95,11 @@ async fn get_line_definition(
 ) -> Result<Json<LineDefinitionSummary>, (StatusCode, String)> {
     if let Some(catalogue_line) = app.config.lines.iter().find(|l| l.id == id) {
         return Ok(Json(LineDefinitionSummary {
-            stations: catalogue_line.stations.iter().map(|s| s.crs.clone()).collect(),
+            stations: catalogue_line
+                .stations
+                .iter()
+                .map(|s| s.crs.clone())
+                .collect(),
             operators: catalogue_line.operators.clone(),
         }));
     }
@@ -477,10 +489,10 @@ mod db_tests {
 
     use crate::app::{App, AppState};
     use crate::auth::hash_session_token;
+    use crate::auth::oidc::{OidcClient, OidcConfig};
     use crate::data::config::{LineCatalogue, ServiceArguments};
     use crate::data::custom_lines::{self, NewCustomLine};
     use crate::data::users::insert_session;
-    use crate::auth::oidc::{OidcClient, OidcConfig};
 
     /// Every `ServiceArguments` field filled with an inert placeholder
     /// except `lines`, which the caller supplies -- the one field a
@@ -524,7 +536,9 @@ mod db_tests {
     /// `main.rs` does, turned into a `tower::Service` a test can drive
     /// with `.oneshot(..)`.
     fn test_router(app: App) -> axum::Router {
-        crate::app::Router::new().nest("/public", crate::routes::public_router()).with_state(app)
+        crate::app::Router::new()
+            .nest("/public", crate::routes::public_router())
+            .with_state(app)
     }
 
     /// Seeds a real, resolvable session for `user_id` (creating the user
@@ -532,13 +546,15 @@ mod db_tests {
     /// as `Cookie: distant_signal_session=<raw>`, never the hash `sessions`
     /// actually stores.
     async fn seed_session(pool: &PgPool, user_id: &str) -> String {
-        sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING")
-            .bind(user_id)
-            .bind(format!("{user_id}@example.com"))
-            .bind(user_id)
-            .execute(pool)
-            .await
-            .expect("seed fixture user");
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(format!("{user_id}@example.com"))
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("seed fixture user");
 
         let raw_token = format!("test-raw-session-token-for-{user_id}");
         insert_session(pool, &hash_session_token(&raw_token), user_id, 14)
@@ -562,12 +578,20 @@ mod db_tests {
     }
 
     async fn connect() -> PgPool {
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        sqlx::postgres::PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres")
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        sqlx::postgres::PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
     }
 
     /// Issues `GET /public/lines/{id}`, optionally with a session cookie.
-    async fn get_line(router: axum::Router, id: &str, raw_token: Option<&str>) -> (StatusCode, Value) {
+    async fn get_line(
+        router: axum::Router,
+        id: &str,
+        raw_token: Option<&str>,
+    ) -> (StatusCode, Value) {
         let mut builder = Request::builder().uri(format!("/public/lines/{id}"));
         if let Some(token) = raw_token {
             builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
@@ -575,7 +599,9 @@ mod db_tests {
         let request = builder.body(Body::empty()).expect("build request");
         let response = router.oneshot(request).await.expect("oneshot request");
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
         // 401/404 bodies are plain-text ((StatusCode, String) -- see
         // `internal_error` and `get_line`'s own error returns), not JSON;
         // wrap them as a JSON string so every case can share one return
@@ -661,7 +687,8 @@ mod db_tests {
         let caller_token = seed_session(&pool, "TEST-GET-LINE-CALLER-2").await;
 
         let router = test_router(test_app(pool.clone(), vec![]));
-        let (status, body) = get_line(router, "custom-totally-does-not-exist", Some(&caller_token)).await;
+        let (status, body) =
+            get_line(router, "custom-totally-does-not-exist", Some(&caller_token)).await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body, Value::String("custom line not found".to_string()));
@@ -696,15 +723,48 @@ mod db_tests {
 
         assert_eq!(status, StatusCode::OK);
         let object = body.as_object().expect("200 body should be a JSON object");
-        assert_eq!(object.get("id").and_then(Value::as_str), Some(line.id.as_str()));
-        assert_eq!(object.get("name").and_then(Value::as_str), Some("Test Owned Detail Line"));
-        assert_eq!(object.get("operators").and_then(Value::as_array).map(Vec::len), Some(2));
-        assert_eq!(object.get("stations").and_then(Value::as_array).map(Vec::len), Some(2));
-        assert_eq!(object.get("headcodePrefixes").and_then(Value::as_array).map(Vec::len), Some(1));
-        assert_eq!(object.get("destinationCrsFilter").and_then(Value::as_array).map(Vec::len), Some(1));
+        assert_eq!(
+            object.get("id").and_then(Value::as_str),
+            Some(line.id.as_str())
+        );
+        assert_eq!(
+            object.get("name").and_then(Value::as_str),
+            Some("Test Owned Detail Line")
+        );
+        assert_eq!(
+            object
+                .get("operators")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            object
+                .get("stations")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            object
+                .get("headcodePrefixes")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            object
+                .get("destinationCrsFilter")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
         // The point of this task: the vestigial ownership flag is gone
         // entirely, not just always-true.
-        assert!(!object.contains_key("isOwner"), "isOwner must not appear in the response body at all");
+        assert!(
+            !object.contains_key("isOwner"),
+            "isOwner must not appear in the response body at all"
+        );
 
         cleanup_user(&pool, "TEST-GET-LINE-REAL-OWNER").await;
     }
@@ -724,8 +784,18 @@ mod db_tests {
             category: "main-line".to_string(),
             operators: vec!["SW".to_string()],
             stations: vec![
-                common::Station { crs: "WOK".to_string(), tiploc: None, role: "major".to_string(), segment: None },
-                common::Station { crs: "CLJ".to_string(), tiploc: None, role: "major".to_string(), segment: None },
+                common::Station {
+                    crs: "WOK".to_string(),
+                    tiploc: None,
+                    role: "major".to_string(),
+                    segment: None,
+                },
+                common::Station {
+                    crs: "CLJ".to_string(),
+                    tiploc: None,
+                    role: "major".to_string(),
+                    segment: None,
+                },
             ],
             sample_stations: vec![],
             match_keywords: vec![],
@@ -763,8 +833,18 @@ mod db_tests {
             category: "main-line".to_string(),
             operators: vec!["SW".to_string()],
             stations: vec![
-                common::Station { crs: "WOK".to_string(), tiploc: None, role: "major".to_string(), segment: None },
-                common::Station { crs: "CLJ".to_string(), tiploc: None, role: "major".to_string(), segment: None },
+                common::Station {
+                    crs: "WOK".to_string(),
+                    tiploc: None,
+                    role: "major".to_string(),
+                    segment: None,
+                },
+                common::Station {
+                    crs: "CLJ".to_string(),
+                    tiploc: None,
+                    role: "major".to_string(),
+                    segment: None,
+                },
             ],
             sample_stations: vec![],
             match_keywords: vec![],
@@ -803,7 +883,10 @@ mod db_tests {
 
     /// Issues `GET /public/lines`, optionally with a session cookie, and
     /// returns the parsed JSON array of `LineSummary` entries.
-    async fn list_lines_request(router: axum::Router, raw_token: Option<&str>) -> (StatusCode, Vec<Value>) {
+    async fn list_lines_request(
+        router: axum::Router,
+        raw_token: Option<&str>,
+    ) -> (StatusCode, Vec<Value>) {
         let mut builder = Request::builder().uri("/public/lines");
         if let Some(token) = raw_token {
             builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
@@ -811,9 +894,15 @@ mod db_tests {
         let request = builder.body(Body::empty()).expect("build request");
         let response = router.oneshot(request).await.expect("oneshot request");
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
-        let value: Value = serde_json::from_slice(&bytes).expect("list_lines response body is valid JSON");
-        let array = value.as_array().cloned().expect("list_lines response body is a JSON array");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let value: Value =
+            serde_json::from_slice(&bytes).expect("list_lines response body is valid JSON");
+        let array = value
+            .as_array()
+            .cloned()
+            .expect("list_lines response body is a JSON array");
         (status, array)
     }
 
@@ -821,7 +910,11 @@ mod db_tests {
     /// cookie. Mirrors `get_line` above -- same request-building/body-shape
     /// handling, since `get_line_definition`'s error bodies are the same
     /// plain-text `(StatusCode, String)` shape.
-    async fn get_line_definition(router: axum::Router, id: &str, raw_token: Option<&str>) -> (StatusCode, Value) {
+    async fn get_line_definition(
+        router: axum::Router,
+        id: &str,
+        raw_token: Option<&str>,
+    ) -> (StatusCode, Value) {
         let mut builder = Request::builder().uri(format!("/public/lines/{id}/definition"));
         if let Some(token) = raw_token {
             builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
@@ -829,7 +922,9 @@ mod db_tests {
         let request = builder.body(Body::empty()).expect("build request");
         let response = router.oneshot(request).await.expect("oneshot request");
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
         let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
             Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
         });
@@ -928,7 +1023,12 @@ mod db_tests {
         let caller_token = seed_session(&pool, "TEST-GET-LINE-DEF-CALLER-2").await;
 
         let router = test_router(test_app(pool.clone(), vec![]));
-        let (status, body) = get_line_definition(router, "custom-totally-does-not-exist-def", Some(&caller_token)).await;
+        let (status, body) = get_line_definition(
+            router,
+            "custom-totally-does-not-exist-def",
+            Some(&caller_token),
+        )
+        .await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body, Value::String("line not found".to_string()));
@@ -963,8 +1063,20 @@ mod db_tests {
 
         assert_eq!(status, StatusCode::OK);
         let object = body.as_object().expect("200 body should be a JSON object");
-        assert_eq!(object.get("stations").and_then(Value::as_array).map(Vec::len), Some(2));
-        assert_eq!(object.get("operators").and_then(Value::as_array).map(Vec::len), Some(2));
+        assert_eq!(
+            object
+                .get("stations")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            object
+                .get("operators")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
 
         cleanup_user(&pool, "TEST-GET-LINE-DEF-REAL-OWNER").await;
     }
@@ -983,12 +1095,27 @@ mod db_tests {
 
         // Anonymous caller.
         let anon_router = test_router(test_app(pool.clone(), vec![catalogue_line.clone()]));
-        let (anon_status, anon_body) = get_line_definition(anon_router, "test-get-line-def-catalogue", None).await;
+        let (anon_status, anon_body) =
+            get_line_definition(anon_router, "test-get-line-def-catalogue", None).await;
 
         assert_eq!(anon_status, StatusCode::OK);
-        let anon_object = anon_body.as_object().expect("200 body should be a JSON object");
-        assert_eq!(anon_object.get("stations").and_then(Value::as_array).map(Vec::len), Some(2));
-        assert_eq!(anon_object.get("operators").and_then(Value::as_array).map(Vec::len), Some(1));
+        let anon_object = anon_body
+            .as_object()
+            .expect("200 body should be a JSON object");
+        assert_eq!(
+            anon_object
+                .get("stations")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            anon_object
+                .get("operators")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
 
         // Authenticated caller, who owns nothing related to this id -- the
         // catalogue-first branch returns before ever touching
@@ -996,7 +1123,12 @@ mod db_tests {
         // ownership either way.
         let caller_token = seed_session(&pool, "TEST-GET-LINE-DEF-CATALOGUE-CALLER").await;
         let auth_router = test_router(test_app(pool.clone(), vec![catalogue_line]));
-        let (auth_status, auth_body) = get_line_definition(auth_router, "test-get-line-def-catalogue", Some(&caller_token)).await;
+        let (auth_status, auth_body) = get_line_definition(
+            auth_router,
+            "test-get-line-def-catalogue",
+            Some(&caller_token),
+        )
+        .await;
 
         assert_eq!(auth_status, StatusCode::OK);
         assert_eq!(anon_body, auth_body);
@@ -1030,23 +1162,32 @@ mod db_tests {
         .await
         .expect("insert fixture custom line");
 
-        let catalogue_line = test_catalogue_line("test-list-lines-anon-catalogue", "Test List Lines Anon Catalogue");
+        let catalogue_line = test_catalogue_line(
+            "test-list-lines-anon-catalogue",
+            "Test List Lines Anon Catalogue",
+        );
         let router = test_router(test_app(pool.clone(), vec![catalogue_line]));
         let (status, body) = list_lines_request(router, None).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(
-            body.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some("test-list-lines-anon-catalogue")
-                && entry.get("source").and_then(Value::as_str) == Some("catalogue")),
+            body.iter()
+                .any(|entry| entry.get("id").and_then(Value::as_str)
+                    == Some("test-list-lines-anon-catalogue")
+                    && entry.get("source").and_then(Value::as_str) == Some("catalogue")),
             "catalogue entry missing from anonymous response: {body:?}"
         );
         assert!(
-            body.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some("test-list-lines-anon-tfl")
-                && entry.get("source").and_then(Value::as_str) == Some("tfl")),
+            body.iter()
+                .any(|entry| entry.get("id").and_then(Value::as_str)
+                    == Some("test-list-lines-anon-tfl")
+                    && entry.get("source").and_then(Value::as_str) == Some("tfl")),
             "tfl entry missing from anonymous response: {body:?}"
         );
         assert_eq!(
-            body.iter().filter(|entry| entry.get("source").and_then(Value::as_str) == Some("custom")).count(),
+            body.iter()
+                .filter(|entry| entry.get("source").and_then(Value::as_str) == Some("custom"))
+                .count(),
             0,
             "anonymous caller should see zero custom-line entries: {body:?}"
         );
@@ -1093,23 +1234,33 @@ mod db_tests {
         .await
         .expect("insert fixture other-owner line");
 
-        let catalogue_line = test_catalogue_line("test-list-lines-owner-catalogue", "Test List Lines Owner Catalogue");
+        let catalogue_line = test_catalogue_line(
+            "test-list-lines-owner-catalogue",
+            "Test List Lines Owner Catalogue",
+        );
         let router = test_router(test_app(pool.clone(), vec![catalogue_line]));
         let (status, body) = list_lines_request(router, Some(&owner_token)).await;
 
         assert_eq!(status, StatusCode::OK);
         assert!(
-            body.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some("test-list-lines-owner-catalogue")
-                && entry.get("source").and_then(Value::as_str) == Some("catalogue")),
+            body.iter()
+                .any(|entry| entry.get("id").and_then(Value::as_str)
+                    == Some("test-list-lines-owner-catalogue")
+                    && entry.get("source").and_then(Value::as_str) == Some("catalogue")),
             "catalogue entry missing from authenticated response: {body:?}"
         );
         assert!(
-            body.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some(own_line.id.as_str())
-                && entry.get("source").and_then(Value::as_str) == Some("custom")),
+            body.iter()
+                .any(
+                    |entry| entry.get("id").and_then(Value::as_str) == Some(own_line.id.as_str())
+                        && entry.get("source").and_then(Value::as_str) == Some("custom")
+                ),
             "caller's own custom line missing from response: {body:?}"
         );
         assert!(
-            !body.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some(other_line.id.as_str())),
+            !body.iter().any(
+                |entry| entry.get("id").and_then(Value::as_str) == Some(other_line.id.as_str())
+            ),
             "another user's custom line leaked into the response: {body:?}"
         );
 
@@ -1143,7 +1294,10 @@ mod db_tests {
         .await
         .expect("insert fixture owned line");
 
-        let catalogue_line = test_catalogue_line("test-list-lines-session-catalogue", "Test List Lines Session Catalogue");
+        let catalogue_line = test_catalogue_line(
+            "test-list-lines-session-catalogue",
+            "Test List Lines Session Catalogue",
+        );
 
         let anon_router = test_router(test_app(pool.clone(), vec![catalogue_line.clone()]));
         let (anon_status, anon_body) = list_lines_request(anon_router, None).await;
@@ -1168,7 +1322,11 @@ mod db_tests {
         // Sanity: the authenticated caller's custom line is in fact present
         // (so the equality above isn't vacuously true because both sides
         // happened to have no custom entries at all).
-        assert!(auth_body.iter().any(|entry| entry.get("source").and_then(Value::as_str) == Some("custom")));
+        assert!(
+            auth_body
+                .iter()
+                .any(|entry| entry.get("source").and_then(Value::as_str) == Some("custom"))
+        );
 
         cleanup_tfl_line(&pool, "test-list-lines-session-tfl").await;
         cleanup_user(&pool, "TEST-LIST-LINES-SESSION-STATE").await;

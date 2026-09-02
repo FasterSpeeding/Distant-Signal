@@ -5,11 +5,14 @@ use anyhow::Result;
 use sqlx::{PgPool, Row};
 
 pub async fn list_pinned_line_ids(pool: &PgPool, user_id: &str) -> Result<Vec<String>> {
-    let rows = sqlx::query("SELECT line_id FROM pinned_lines WHERE user_id = $1 ORDER BY pinned_at")
-        .bind(user_id)
-        .fetch_all(pool)
-        .await?;
-    rows.into_iter().map(|row| Ok(row.try_get("line_id")?)).collect()
+    let rows =
+        sqlx::query("SELECT line_id FROM pinned_lines WHERE user_id = $1 ORDER BY pinned_at")
+            .bind(user_id)
+            .fetch_all(pool)
+            .await?;
+    rows.into_iter()
+        .map(|row| Ok(row.try_get("line_id")?))
+        .collect()
 }
 
 pub async fn list_pinned_station_crs(pool: &PgPool, user_id: &str) -> Result<Vec<String>> {
@@ -17,12 +20,17 @@ pub async fn list_pinned_station_crs(pool: &PgPool, user_id: &str) -> Result<Vec
         .bind(user_id)
         .fetch_all(pool)
         .await?;
-    rows.into_iter().map(|row| Ok(row.try_get("crs")?)).collect()
+    rows.into_iter()
+        .map(|row| Ok(row.try_get("crs")?))
+        .collect()
 }
 
 /// Filters `candidates` down to only those that exist in `stations` —
 /// used to drop stale pinned-station ids on read.
-pub async fn filter_existing_station_crs(pool: &PgPool, candidates: &[String]) -> Result<Vec<String>> {
+pub async fn filter_existing_station_crs(
+    pool: &PgPool,
+    candidates: &[String],
+) -> Result<Vec<String>> {
     if candidates.is_empty() {
         return Ok(vec![]);
     }
@@ -30,7 +38,9 @@ pub async fn filter_existing_station_crs(pool: &PgPool, candidates: &[String]) -
         .bind(candidates)
         .fetch_all(pool)
         .await?;
-    rows.into_iter().map(|row| Ok(row.try_get("crs")?)).collect()
+    rows.into_iter()
+        .map(|row| Ok(row.try_get("crs")?))
+        .collect()
 }
 
 /// Replaces `user_id`'s entire pinned-lines set with `ids`, in one
@@ -40,22 +50,34 @@ pub async fn filter_existing_station_crs(pool: &PgPool, candidates: &[String]) -
 /// (no predicate) would wipe every other user's pins too.
 pub async fn replace_pinned_lines(pool: &PgPool, user_id: &str, ids: &[String]) -> Result<()> {
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM pinned_lines WHERE user_id = $1").bind(user_id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM pinned_lines WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
     for id in ids {
-        sqlx::query("INSERT INTO pinned_lines (user_id, line_id, pinned_at) VALUES ($1, $2, NOW())")
-            .bind(user_id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO pinned_lines (user_id, line_id, pinned_at) VALUES ($1, $2, NOW())",
+        )
+        .bind(user_id)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     Ok(())
 }
 
 /// Same replace-whole-set semantics as `replace_pinned_lines`, for stations.
-pub async fn replace_pinned_stations(pool: &PgPool, user_id: &str, crs_codes: &[String]) -> Result<()> {
+pub async fn replace_pinned_stations(
+    pool: &PgPool,
+    user_id: &str,
+    crs_codes: &[String],
+) -> Result<()> {
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM pinned_stations WHERE user_id = $1").bind(user_id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM pinned_stations WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
     for crs in crs_codes {
         sqlx::query("INSERT INTO pinned_stations (user_id, crs, pinned_at) VALUES ($1, $2, NOW())")
             .bind(user_id)

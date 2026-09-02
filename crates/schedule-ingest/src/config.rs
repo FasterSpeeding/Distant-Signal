@@ -47,7 +47,11 @@ pub struct Config {
 
     /// The `api` crate's ingestion endpoint for completed schedule feed
     /// sequences.
-    #[arg(long, env, default_value = "http://api:8080/private/schedule-feed-ingests")]
+    #[arg(
+        long,
+        env,
+        default_value = "http://api:8080/private/schedule-feed-ingests"
+    )]
     pub api_ingest_url: String,
 
     /// Shared secret sent via `X-Internal-Token` to reach the `api`

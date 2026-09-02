@@ -21,7 +21,10 @@ use serde::Serialize;
 use crate::app::{App, Router};
 
 pub fn router() -> Router {
-    Router::new().route("/history-retention", axum::routing::get(get_history_retention))
+    Router::new().route(
+        "/history-retention",
+        axum::routing::get(get_history_retention),
+    )
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -42,7 +45,9 @@ mod tests {
 
     #[test]
     fn serializes_as_camel_case() {
-        let body = HistoryRetention { history_retention_days: 7 };
+        let body = HistoryRetention {
+            history_retention_days: 7,
+        };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["historyRetentionDays"], 7);
         assert!(json.get("history_retention_days").is_none());

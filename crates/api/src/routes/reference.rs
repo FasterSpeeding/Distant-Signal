@@ -76,7 +76,11 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
 /// yet (e.g. the field was just focused, or the user cleared it).
 fn sanitize_query(raw: &str) -> Option<&str> {
     let trimmed = raw.trim();
-    if trimmed.is_empty() { None } else { Some(trimmed) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 #[cfg(test)]

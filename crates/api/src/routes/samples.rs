@@ -17,8 +17,12 @@ pub fn router() -> Router {
     Router::new().route("/sample-stations", axum::routing::get(get_sample_stations))
 }
 
-async fn get_sample_stations(State(app): State<App>) -> Result<Json<Vec<String>>, (StatusCode, String)> {
-    let custom = custom_lines::list_custom_lines(&app.database).await.map_err(internal_error)?;
+async fn get_sample_stations(
+    State(app): State<App>,
+) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+    let custom = custom_lines::list_custom_lines(&app.database)
+        .await
+        .map_err(internal_error)?;
     let mut lines: Vec<LineDefinition> = app.config.lines.to_vec();
     lines.extend(custom.into_iter().map(LineDefinition::from));
     Ok(Json(dedup_sample_stations(&lines)))
@@ -26,5 +30,8 @@ async fn get_sample_stations(State(app): State<App>) -> Result<Json<Vec<String>>
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "sample-stations query failed");
-    (StatusCode::INTERNAL_SERVER_ERROR, "query failed".to_string())
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "query failed".to_string(),
+    )
 }

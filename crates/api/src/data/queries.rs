@@ -296,7 +296,10 @@ pub async fn upsert_station_samples(pool: &PgPool, samples: &[StationSample]) ->
 /// `line_status_history` grows a row every poll cycle. This guard exists
 /// ahead of any TfL-sourced line actually populating `sample_stats` (see
 /// `crates/poller-tfl/src/dlr`), so it's already in place once one does.
-fn tfl_statuses_changed(existing: Option<&serde_json::Value>, incoming: &serde_json::Value) -> bool {
+fn tfl_statuses_changed(
+    existing: Option<&serde_json::Value>,
+    incoming: &serde_json::Value,
+) -> bool {
     match existing {
         None => true,
         Some(stored) => normalize_for_diff(stored) != normalize_for_diff(incoming),
@@ -341,11 +344,12 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
     for report in reports {
         let statuses_json = serde_json::to_value(&report.statuses)?;
 
-        let existing: Option<serde_json::Value> =
-            sqlx::query_scalar("SELECT statuses FROM line_status WHERE line_id = $1 AND source = 'tfl'")
-                .bind(&report.id)
-                .fetch_optional(&mut *tx)
-                .await?;
+        let existing: Option<serde_json::Value> = sqlx::query_scalar(
+            "SELECT statuses FROM line_status WHERE line_id = $1 AND source = 'tfl'",
+        )
+        .bind(&report.id)
+        .fetch_optional(&mut *tx)
+        .await?;
 
         sqlx::query(
             r#"
@@ -387,11 +391,12 @@ pub async fn upsert_tfl_line_status(pool: &PgPool, reports: &[LineStatusReport])
     // `prune_removed_lines` is the same idea from the other side of the
     // fence; each writer prunes only what it owns.
     let ids: Vec<&str> = reports.iter().map(|r| r.id.as_str()).collect();
-    let pruned = sqlx::query("DELETE FROM line_status WHERE source = 'tfl' AND NOT (line_id = ANY($1))")
-        .bind(&ids)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+    let pruned =
+        sqlx::query("DELETE FROM line_status WHERE source = 'tfl' AND NOT (line_id = ANY($1))")
+            .bind(&ids)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
     if pruned > 0 {
         tracing::info!(pruned, "removed TfL lines no longer present in the feed");
     }
@@ -440,7 +445,9 @@ pub async fn tfl_line_summaries(pool: &PgPool) -> Result<Vec<TflLineSummaryRow>>
 /// Timestamp of the most recent TfL line-status ingest, or `None` if none
 /// has ever landed. Backs both `GET /private/tfl-line-status` (the poller's
 /// startup freshness check) and the public `/public/freshness` endpoint.
-pub async fn last_tfl_line_status_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+pub async fn last_tfl_line_status_fetch(
+    pool: &PgPool,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
     let (computed_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
         sqlx::query_as("SELECT MAX(computed_at) FROM line_status WHERE source = 'tfl'")
             .fetch_one(pool)
@@ -515,7 +522,9 @@ pub async fn last_incidents_fetch(pool: &PgPool) -> Result<Option<chrono::DateTi
     Ok(fetched_at)
 }
 
-pub async fn last_station_samples_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+pub async fn last_station_samples_fetch(
+    pool: &PgPool,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
     let (polled_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
         sqlx::query_as("SELECT MAX(polled_at) FROM station_samples")
             .fetch_one(pool)
@@ -528,7 +537,9 @@ pub async fn last_station_samples_fetch(pool: &PgPool) -> Result<Option<chrono::
 /// `GET /private/schedule-feed-ingests` (the `schedule-ingest` crate's
 /// startup check, once it exists) and the public `/public/freshness`
 /// endpoint's `schedule_feed` field.
-pub async fn last_schedule_feed_fetch(pool: &PgPool) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+pub async fn last_schedule_feed_fetch(
+    pool: &PgPool,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
     let (ingested_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
         sqlx::query_as("SELECT MAX(ingested_at) FROM schedule_feed_ingests")
             .fetch_one(pool)
@@ -636,7 +647,10 @@ pub async fn list_stanox_crs(pool: &PgPool) -> Result<Vec<common::StanoxCrsRecor
     .fetch_all(pool)
     .await?;
 
-    Ok(rows.into_iter().map(common::StanoxCrsRecord::from).collect())
+    Ok(rows
+        .into_iter()
+        .map(common::StanoxCrsRecord::from)
+        .collect())
 }
 
 /// The latest `StationSample` polled for a single station, or `None` if
@@ -852,7 +866,10 @@ pub struct IncidentHistoryRow {
 /// Newest-first, matching the `incident_history_id_time` index
 /// (`(incident_id, recorded_at DESC)`, created in the initial migration)
 /// exactly -- no new index needed.
-pub async fn incident_history_for_id(pool: &PgPool, incident_id: &str) -> Result<Vec<IncidentHistoryRow>> {
+pub async fn incident_history_for_id(
+    pool: &PgPool,
+    incident_id: &str,
+) -> Result<Vec<IncidentHistoryRow>> {
     let rows = sqlx::query_as::<_, IncidentHistoryRow>(
         "SELECT summary, description, operators, affected_stations, priority, validity_periods, \
                 is_planned, is_cleared, recorded_at \
@@ -887,7 +904,10 @@ pub struct IncidentLineRefRow {
 /// `20260822120000_line_status_source.sql`). No new index: this table is
 /// tens of rows total, matching this repo's own stated rationale for
 /// leaving `line_status.source` itself unindexed.
-pub async fn lines_currently_reporting_incident(pool: &PgPool, source: &str) -> Result<Vec<IncidentLineRefRow>> {
+pub async fn lines_currently_reporting_incident(
+    pool: &PgPool,
+    source: &str,
+) -> Result<Vec<IncidentLineRefRow>> {
     let rows = sqlx::query_as::<_, IncidentLineRefRow>(
         "SELECT DISTINCT line_status.line_id, line_status.name \
          FROM line_status, jsonb_array_elements(statuses) AS s \
@@ -991,13 +1011,21 @@ mod tests {
     #[test]
     fn text_changed_true_when_summary_differs() {
         let row = existing("Signal failure", "Delays expected", serde_json::json!([]));
-        assert!(text_changed(Some(&row), "Points failure", "Delays expected"));
+        assert!(text_changed(
+            Some(&row),
+            "Points failure",
+            "Delays expected"
+        ));
     }
 
     #[test]
     fn text_changed_true_when_description_differs() {
         let row = existing("Signal failure", "Delays expected", serde_json::json!([]));
-        assert!(text_changed(Some(&row), "Signal failure", "Disruption has now ended"));
+        assert!(text_changed(
+            Some(&row),
+            "Signal failure",
+            "Disruption has now ended"
+        ));
     }
 
     #[test]
@@ -1008,7 +1036,11 @@ mod tests {
         // same summary/description text_changed actually looks at; there's
         // no validity parameter to vary because text_changed never takes one.
         let row = existing("Signal failure", "Delays expected", serde_json::json!([]));
-        assert!(!text_changed(Some(&row), "Signal failure", "Delays expected"));
+        assert!(!text_changed(
+            Some(&row),
+            "Signal failure",
+            "Delays expected"
+        ));
     }
 
     #[test]
@@ -1026,7 +1058,8 @@ mod tests {
     #[test]
     fn a_new_severity_is_changed() {
         let stored = serde_json::json!([{ "severity": 10, "reason": "Good Service" }]);
-        let incoming = serde_json::json!([{ "severity": 6, "reason": "Signal failure at Oxford Circus" }]);
+        let incoming =
+            serde_json::json!([{ "severity": 6, "reason": "Signal failure at Oxford Circus" }]);
         assert!(tfl_statuses_changed(Some(&stored), &incoming));
     }
 
@@ -1107,8 +1140,12 @@ mod tests {
     async fn tfl_line_summaries_lists_only_tfl_owned_rows() {
         use sqlx::postgres::PgPoolOptions;
 
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
 
         sqlx::query(
             "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, source) \
@@ -1129,8 +1166,14 @@ mod tests {
             .expect("cleanup fixture rows");
 
         let ids: Vec<&str> = summaries.iter().map(|row| row.id.as_str()).collect();
-        assert!(ids.contains(&"TEST-TFL"), "a TfL-owned row should be listed");
-        assert!(!ids.contains(&"TEST-AGG"), "the catalogue already lists aggregator lines");
+        assert!(
+            ids.contains(&"TEST-TFL"),
+            "a TfL-owned row should be listed"
+        );
+        assert!(
+            !ids.contains(&"TEST-AGG"),
+            "the catalogue already lists aggregator lines"
+        );
 
         let tfl = summaries.iter().find(|row| row.id == "TEST-TFL").unwrap();
         assert_eq!(tfl.mode_name, "tube");
@@ -1143,8 +1186,12 @@ mod tests {
     async fn a_re_post_with_a_changed_crs_overwrites_the_existing_row() {
         use sqlx::postgres::PgPoolOptions;
 
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
 
         let first = common::StanoxCrsRecord {
             stanox: "99999".to_string(),
@@ -1153,7 +1200,9 @@ mod tests {
             station_name: "TEST STATION".to_string(),
             source_sequence: 942,
         };
-        upsert_stanox_crs(&pool, &[first]).await.expect("first upsert");
+        upsert_stanox_crs(&pool, &[first])
+            .await
+            .expect("first upsert");
 
         let second = common::StanoxCrsRecord {
             stanox: "99999".to_string(),
@@ -1162,10 +1211,15 @@ mod tests {
             station_name: "TEST STATION".to_string(),
             source_sequence: 943,
         };
-        upsert_stanox_crs(&pool, &[second]).await.expect("re-upsert with changed crs");
+        upsert_stanox_crs(&pool, &[second])
+            .await
+            .expect("re-upsert with changed crs");
 
         let rows = list_stanox_crs(&pool).await.expect("list_stanox_crs");
-        let row = rows.iter().find(|r| r.stanox == "99999").expect("row present");
+        let row = rows
+            .iter()
+            .find(|r| r.stanox == "99999")
+            .expect("row present");
         assert_eq!(row.crs, "TS2", "the re-POST must overwrite, not duplicate");
         assert_eq!(row.source_sequence, 943);
 
@@ -1182,8 +1236,12 @@ mod tests {
     async fn daily_stats_for_range_filters_orders_and_handles_unknown_lines() {
         use sqlx::postgres::PgPoolOptions;
 
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        let pool = PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
 
         sqlx::query(
             "INSERT INTO line_status_daily_stats \
@@ -1226,7 +1284,10 @@ mod tests {
         let unknown = daily_stats_for_range(&pool, "TEST-STATS-UNKNOWN", from, to)
             .await
             .expect("daily_stats_for_range for an unknown line_id");
-        assert!(unknown.is_empty(), "unknown line_id should return an empty vec, not an error");
+        assert!(
+            unknown.is_empty(),
+            "unknown line_id should return an empty vec, not an error"
+        );
     }
 }
 
@@ -1236,8 +1297,12 @@ mod incident_query_tests {
     use sqlx::postgres::PgPoolOptions;
 
     async fn test_pool() -> PgPool {
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres")
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
     }
 
     #[tokio::test]
@@ -1253,14 +1318,22 @@ mod incident_query_tests {
         .await
         .expect("seed fixture row");
 
-        let found = incident_by_id(&pool, "TEST-INC-1").await.expect("query").expect("row should exist");
+        let found = incident_by_id(&pool, "TEST-INC-1")
+            .await
+            .expect("query")
+            .expect("row should exist");
         assert_eq!(found.summary, "Signal failure");
         assert_eq!(found.affected_stations, vec!["WOK".to_string()]);
 
-        let missing = incident_by_id(&pool, "TEST-INC-DOES-NOT-EXIST").await.expect("query");
+        let missing = incident_by_id(&pool, "TEST-INC-DOES-NOT-EXIST")
+            .await
+            .expect("query");
         assert!(missing.is_none());
 
-        sqlx::query("DELETE FROM incidents WHERE incident_id = 'TEST-INC-1'").execute(&pool).await.expect("cleanup");
+        sqlx::query("DELETE FROM incidents WHERE incident_id = 'TEST-INC-1'")
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 
     #[tokio::test]
@@ -1278,15 +1351,22 @@ mod incident_query_tests {
         .await
         .expect("seed fixture rows");
 
-        let history = incident_history_for_id(&pool, "TEST-INC-2").await.expect("query");
+        let history = incident_history_for_id(&pool, "TEST-INC-2")
+            .await
+            .expect("query");
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].summary, "v2", "newest snapshot should be first");
         assert_eq!(history[1].summary, "v1");
 
-        let empty = incident_history_for_id(&pool, "TEST-INC-DOES-NOT-EXIST").await.expect("query");
+        let empty = incident_history_for_id(&pool, "TEST-INC-DOES-NOT-EXIST")
+            .await
+            .expect("query");
         assert!(empty.is_empty());
 
-        sqlx::query("DELETE FROM incident_history WHERE incident_id = 'TEST-INC-2'").execute(&pool).await.expect("cleanup");
+        sqlx::query("DELETE FROM incident_history WHERE incident_id = 'TEST-INC-2'")
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 
     #[tokio::test]
@@ -1317,16 +1397,24 @@ mod incident_query_tests {
         .await
         .expect("seed fixture rows");
 
-        let matches = lines_currently_reporting_incident(&pool, "knowledgebase-incident-TEST-INC-3")
-            .await
-            .expect("query");
+        let matches =
+            lines_currently_reporting_incident(&pool, "knowledgebase-incident-TEST-INC-3")
+                .await
+                .expect("query");
         let ids: Vec<&str> = matches.iter().map(|r| r.line_id.as_str()).collect();
         assert!(ids.contains(&"TEST-LINE-A"));
-        assert!(!ids.contains(&"TEST-LINE-B"), "must not match the unrelated tfl-line-status-* source");
-
-        let no_match = lines_currently_reporting_incident(&pool, "ldbws-sampling").await.expect("query");
         assert!(
-            no_match.iter().all(|r| r.line_id != "TEST-LINE-A" && r.line_id != "TEST-LINE-B"),
+            !ids.contains(&"TEST-LINE-B"),
+            "must not match the unrelated tfl-line-status-* source"
+        );
+
+        let no_match = lines_currently_reporting_incident(&pool, "ldbws-sampling")
+            .await
+            .expect("query");
+        assert!(
+            no_match
+                .iter()
+                .all(|r| r.line_id != "TEST-LINE-A" && r.line_id != "TEST-LINE-B"),
             "the shared 'ldbws-sampling' literal must never match a real incident lookup"
         );
 
@@ -1351,8 +1439,12 @@ mod schedule_feed_ingest_query_tests {
     use sqlx::postgres::PgPoolOptions;
 
     async fn test_pool() -> PgPool {
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres")
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
     }
 
     #[tokio::test]
@@ -1368,7 +1460,9 @@ mod schedule_feed_ingest_query_tests {
             .await
             .expect("insert schedule feed ingest");
 
-        let last = last_schedule_feed_fetch(&pool).await.expect("last_schedule_feed_fetch");
+        let last = last_schedule_feed_fetch(&pool)
+            .await
+            .expect("last_schedule_feed_fetch");
         assert_eq!(last, Some(ingested_at));
 
         sqlx::query("DELETE FROM schedule_feed_ingests WHERE sequence = 900001")
@@ -1398,15 +1492,24 @@ mod schedule_feed_ingest_query_tests {
             .await
             .expect("re-insert schedule feed ingest with the same sequence");
 
-        let last = last_schedule_feed_fetch(&pool).await.expect("last_schedule_feed_fetch");
-        assert_eq!(last, Some(first_ingested_at), "the original row must survive unchanged");
+        let last = last_schedule_feed_fetch(&pool)
+            .await
+            .expect("last_schedule_feed_fetch");
+        assert_eq!(
+            last,
+            Some(first_ingested_at),
+            "the original row must survive unchanged"
+        );
 
         let (stored_files,): (serde_json::Value,) =
             sqlx::query_as("SELECT files FROM schedule_feed_ingests WHERE sequence = 900002")
                 .fetch_one(&pool)
                 .await
                 .expect("fetch stored row");
-        assert_eq!(stored_files, first_files, "the original files payload must survive unchanged");
+        assert_eq!(
+            stored_files, first_files,
+            "the original files payload must survive unchanged"
+        );
 
         sqlx::query("DELETE FROM schedule_feed_ingests WHERE sequence = 900002")
             .execute(&pool)
@@ -1430,7 +1533,9 @@ mod schedule_feed_ingest_query_tests {
             .await
             .expect("ensure fixture sequence is absent");
 
-        let last = last_schedule_feed_fetch(&pool).await.expect("last_schedule_feed_fetch");
+        let last = last_schedule_feed_fetch(&pool)
+            .await
+            .expect("last_schedule_feed_fetch");
         // Note: this only proves `None` when the whole table is empty (the
         // realistic case for a fresh environment); if other rows already
         // exist this assertion is skipped rather than false-failing.

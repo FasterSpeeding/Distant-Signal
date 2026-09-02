@@ -151,7 +151,10 @@ mod tests {
 
         assert_eq!(tracker.observe(&snap, 3), Vec::<String>::new());
         assert_eq!(tracker.observe(&snap, 3), Vec::<String>::new());
-        assert_eq!(tracker.observe(&snap, 3), vec!["RJTTF942ZTR.txt".to_string()]);
+        assert_eq!(
+            tracker.observe(&snap, 3),
+            vec!["RJTTF942ZTR.txt".to_string()]
+        );
         // Not returned again on subsequent identical observations.
         assert_eq!(tracker.observe(&snap, 3), Vec::<String>::new());
         assert_eq!(tracker.observe(&snap, 3), Vec::<String>::new());
@@ -172,7 +175,10 @@ mod tests {
         // as the second consecutive observation), this call would already
         // report the file stable one cycle too early. It must take a
         // further two matching observations from the reset point.
-        assert_eq!(tracker.observe(&stable, 2), vec!["RJTTF942ZTR.txt".to_string()]);
+        assert_eq!(
+            tracker.observe(&stable, 2),
+            vec!["RJTTF942ZTR.txt".to_string()]
+        );
     }
 
     #[test]
@@ -190,7 +196,10 @@ mod tests {
         // count 3 (stable). It must instead take a fresh 3 observations.
         assert_eq!(tracker.observe(&present, 3), Vec::<String>::new());
         assert_eq!(tracker.observe(&present, 3), Vec::<String>::new());
-        assert_eq!(tracker.observe(&present, 3), vec!["RJTTF942ZTR.txt".to_string()]);
+        assert_eq!(
+            tracker.observe(&present, 3),
+            vec!["RJTTF942ZTR.txt".to_string()]
+        );
     }
 
     #[test]

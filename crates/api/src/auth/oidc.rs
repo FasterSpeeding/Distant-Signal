@@ -91,8 +91,14 @@ impl std::fmt::Debug for OidcConfig {
 /// (as the plan's draft implicitly did) does not compile, since
 /// `authorize_url`/`exchange_code` are only defined for clients whose
 /// typestate matches what discovery actually produces.
-type DiscoveredClient =
-    CoreClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointMaybeSet, EndpointMaybeSet>;
+type DiscoveredClient = CoreClient<
+    EndpointSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointMaybeSet,
+    EndpointMaybeSet,
+>;
 
 /// The OIDC relying-party client. Discovery is deliberately lazy -- see
 /// this plan's Global Constraints -- so constructing this value can never
@@ -125,7 +131,11 @@ impl OidcClient {
             .build()
             .context("failed to build OIDC HTTP client")?;
 
-        Ok(Self { config, http_client, inner: tokio::sync::OnceCell::new() })
+        Ok(Self {
+            config,
+            http_client,
+            inner: tokio::sync::OnceCell::new(),
+        })
     }
 
     /// Performs OIDC discovery on first use only, then caches the result
@@ -157,7 +167,11 @@ impl OidcClient {
         let client = self.client().await?;
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let (url, csrf_state, nonce) = client
-            .authorize_url(CoreAuthenticationFlow::AuthorizationCode, CsrfToken::new_random, Nonce::new_random)
+            .authorize_url(
+                CoreAuthenticationFlow::AuthorizationCode,
+                CsrfToken::new_random,
+                Nonce::new_random,
+            )
             .add_scope(Scope::new("email".to_string()))
             .add_scope(Scope::new("profile".to_string()))
             .set_pkce_challenge(pkce_challenge)
@@ -203,7 +217,10 @@ impl OidcClient {
             sub: claims.subject().as_str().to_string(),
             email: claims.email().map(|e| e.as_str().to_string()),
             email_verified: claims.email_verified(),
-            name: claims.name().and_then(|n| n.get(None)).map(|n| n.as_str().to_string()),
+            name: claims
+                .name()
+                .and_then(|n| n.get(None))
+                .map(|n| n.as_str().to_string()),
         };
         let refresh_token = token_response.refresh_token().map(|t| t.secret().clone());
 
