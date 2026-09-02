@@ -6,15 +6,39 @@ const DAY_MS = 86_400_000;
 
 const LIVE_SAMPLE_ANNOTATION = / \(live samples show: [^)]*\)$/;
 
+/** Matches the fluctuating live counts `classify()`
+ * (crates/aggregator/src/aggregation.rs) bakes directly into a
+ * sample-inferred `reason`, e.g. `"5 of 9 sampled services delayed."` —
+ * every `classify()` template has this exact `"<count> of <count> sampled
+ * services <cause>"` shape (singly, or joined with `", "` in the
+ * delay+skip-tie case), so one global regex catches all of them. Mirrors
+ * `normalize_sample_counts` in crates/aggregator/src/queries.rs — same
+ * marker shape (`" of "` + digits + `" sampled services"`), same decision
+ * to replace only the counts with a stable placeholder rather than a
+ * regex-driven full parse. */
+const SAMPLE_COUNT_CLAUSE = /\d+ of \d+ sampled services/g;
+
 /** Strips the `" (live samples show: ...)"` annotation `escalate_from_sample_stats`
- * (crates/aggregator/src/aggregation.rs) appends to `reason` on escalation.
- * Its counts roll over almost every poll cycle even when the underlying
- * incident hasn't changed, so it must not participate in incident identity
- * — mirrors `strip_live_sample_annotation` in crates/aggregator/src/queries.rs,
- * which strips the same suffix before the aggregator decides whether to
- * write a new history row at all. */
+ * (crates/aggregator/src/aggregation.rs) appends to `reason` on escalation,
+ * and normalizes the fluctuating live counts `classify()` bakes directly
+ * into a sample-inferred `reason`. Both roll over almost every poll cycle
+ * even when the underlying incident/situation hasn't changed, so neither
+ * must participate in incident identity — mirrors
+ * `strip_live_sample_annotation`/`normalize_sample_counts` in
+ * crates/aggregator/src/queries.rs, which strip the same two things before
+ * the aggregator decides whether to write a new history row at all.
+ *
+ * Deliberately does NOT touch the `"(most cited: ...)"` suffix
+ * `infer_from_samples` separately appends: unlike the raw counts, the
+ * most-cited free-text delay/cancel reason is real information about *why*
+ * services are disrupted. If it genuinely changes (e.g. "Signal failure" to
+ * "Engineering works"), that's a real change in the reported cause worth
+ * its own row, not noise to collapse away — see `collapseDay`'s regression
+ * tests for both directions of this. */
 function coreReason(reason: string): string {
-  return reason.replace(LIVE_SAMPLE_ANNOTATION, '');
+  return reason
+    .replace(LIVE_SAMPLE_ANNOTATION, '')
+    .replace(SAMPLE_COUNT_CLAUSE, 'N of M sampled services');
 }
 
 /** Stand-in for "this recompute had no active status" (i.e. good service),
@@ -43,8 +67,9 @@ export interface SeverityFlip {
 }
 
 export interface HistorySpan {
-  /** Incident identity: `reason` with the live-sample annotation stripped.
-   * Empty string means "no active status" (good service). */
+  /** Incident identity: `reason` with the live-sample annotation stripped
+   * and embedded sample counts normalized — see `coreReason`. Empty string
+   * means "no active status" (good service). */
   reason: string;
   /** Worst severity (by true rank) hit anywhere in this span. */
   severity: number;

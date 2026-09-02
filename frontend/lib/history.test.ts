@@ -84,6 +84,51 @@ describe('groupHistoryByDay', () => {
     expect(spans[0].samples).toBe(2);
   });
 
+  it('does not let embedded live sample counts defeat grouping of an ongoing sample-inferred situation', () => {
+    // The write-side/read-side regression this fix exists for: pure count
+    // wobble on `classify()`'s baked-in "N of M sampled services ..."
+    // text, same most-cited cause, must collapse into one span.
+    const spans = spansFor([
+      entry('2026-08-19T11:00:00Z', [[9, '5 of 9 sampled services delayed. (most cited: Signal failure)']]),
+      entry('2026-08-19T11:10:00Z', [[9, '7 of 14 sampled services delayed. (most cited: Signal failure)']]),
+      entry('2026-08-19T11:20:00Z', [[9, '2 of 3 sampled services delayed. (most cited: Signal failure)']]),
+    ]);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].reason).toBe('N of M sampled services delayed. (most cited: Signal failure)');
+    expect(spans[0].samples).toBe(3);
+  });
+
+  it('starts a new span when the most-cited cause genuinely changes, even though counts also fluctuate', () => {
+    // Design decision: the count fluctuating minute-to-minute is noise, but
+    // a genuine change in the most-cited reported cause (e.g. Signal
+    // failure -> Engineering works) is real information worth a new entry,
+    // so it must NOT collapse together with the prior cause's span.
+    const spans = spansFor([
+      entry('2026-08-19T11:00:00Z', [[9, '5 of 9 sampled services delayed. (most cited: Signal failure)']]),
+      entry('2026-08-19T11:10:00Z', [[9, '7 of 14 sampled services delayed. (most cited: Engineering works)']]),
+    ]);
+    expect(spans).toHaveLength(2);
+    expect(spans.map((s) => s.reason).sort()).toEqual([
+      'N of M sampled services delayed. (most cited: Engineering works)',
+      'N of M sampled services delayed. (most cited: Signal failure)',
+    ]);
+  });
+
+  it('normalizes both clauses of a combined delay+skip sample-inferred reason', () => {
+    const spans = spansFor([
+      entry('2026-08-19T11:00:00Z', [
+        [6, '5 of 9 sampled services delayed, 3 of 9 sampled services skipping a scheduled stop.'],
+      ]),
+      entry('2026-08-19T11:10:00Z', [
+        [6, '7 of 14 sampled services delayed, 4 of 14 sampled services skipping a scheduled stop.'],
+      ]),
+    ]);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].reason).toBe(
+      'N of M sampled services delayed, N of M sampled services skipping a scheduled stop.',
+    );
+  });
+
   it('starts a new span when the reason genuinely changes', () => {
     const spans = spansFor([
       entry('2026-08-19T18:00:00Z', [[9, 'Minor delays']]),
