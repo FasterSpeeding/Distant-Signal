@@ -121,9 +121,14 @@ describe('POST /connect-claude/authorize', () => {
     vi.unstubAllGlobals();
   });
 
-  function postRequest(mcpRequestId: string, decision: 'approve' | 'deny', cookie?: string): NextRequest {
+  function postRequest(
+    mcpRequestId: string,
+    decision: 'approve' | 'deny',
+    cookie?: string,
+    originHeaders: Record<string, string> = { origin: 'http://localhost:3000' },
+  ): NextRequest {
     const form = new URLSearchParams({ decision });
-    const headers = new Headers({ 'content-type': 'application/x-www-form-urlencoded' });
+    const headers = new Headers({ 'content-type': 'application/x-www-form-urlencoded', ...originHeaders });
     if (cookie) headers.set('cookie', cookie);
     return new NextRequest(`http://localhost:3000/connect-claude/authorize?mcp_request_id=${mcpRequestId}`, {
       method: 'POST',
@@ -136,6 +141,41 @@ describe('POST /connect-claude/authorize', () => {
     const req = postRequest('req1', 'approve');
     const res = await POST(req);
     expect(res.status).toBe(400);
+  });
+
+  it('403s a cross-site POST with a mismatched Origin, even with a valid session cookie', async () => {
+    const req = postRequest('req1', 'approve', 'distant_signal_session=raw-token-value', {
+      origin: 'https://evil.example.com',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(403);
+  });
+
+  it('403s a POST with no Origin and a Referer on a different origin', async () => {
+    const req = postRequest('req1', 'approve', 'distant_signal_session=raw-token-value', {
+      referer: 'https://evil.example.com/attack',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(403);
+  });
+
+  it('403s a POST with neither an Origin nor a Referer header', async () => {
+    const req = postRequest('req1', 'approve', 'distant_signal_session=raw-token-value', {});
+    const res = await POST(req);
+    expect(res.status).toBe(403);
+  });
+
+  it('accepts a same-origin POST that carries Referer but no Origin', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ redirectUrl: 'https://claude.ai/cb?code=abc&state=xyz' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const req = postRequest('req1', 'approve', 'distant_signal_session=raw-token-value', {
+      referer: 'http://localhost:3000/connect-claude/authorize?mcp_request_id=req1',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(307);
   });
 
   it('on approval, forwards the RAW session cookie value to /internal/complete-authorization and redirects to the returned URL', async () => {

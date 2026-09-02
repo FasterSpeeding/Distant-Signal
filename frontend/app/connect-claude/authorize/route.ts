@@ -19,6 +19,48 @@ function internalCompleteToken(): string {
   return token;
 }
 
+/** Rejects a cross-site POST before it ever touches the ambient session
+ * cookie. This route completes an OAuth grant server-to-server using
+ * whatever `distant_signal_session` cookie the browser happens to attach --
+ * exactly the shape a confused-deputy/CSRF-vulnerable endpoint takes: a
+ * hostile page that gets a victim's browser to POST here would otherwise
+ * complete a grant the victim never consented to.
+ *
+ * The session cookie is already `SameSite=Lax` (crates/api/src/auth.rs's
+ * `set_cookie_header`), which blocks the classic cross-site
+ * form-post-from-another-site case in a spec-compliant browser -- a
+ * cross-site top-level POST navigation isn't a "safe" method, so Lax
+ * withholds the cookie (the same reasoning crates/api/src/main.rs's CORS
+ * comment relies on for every other cookie-authenticated mutation this app
+ * has). But that's this app's *only* other CSRF precedent, it's enforced
+ * entirely client-side with nothing backing it up server-side, and this is
+ * the one route that turns an ambient cookie into a completed OAuth grant --
+ * so, belt-and-suspenders, this also verifies the request actually
+ * originated from this app's own origin (falling back to Referer when
+ * Origin is absent, and refusing to guess when neither is present), the
+ * standard OWASP-recommended Origin check for a state-changing handler like
+ * this one. There's no CSRF-token convention anywhere else in this
+ * codebase to reuse instead. */
+function isSameOriginRequest(req: NextRequest): boolean {
+  const origin = req.headers.get('origin');
+  if (origin !== null) {
+    return origin === req.nextUrl.origin;
+  }
+  const referer = req.headers.get('referer');
+  if (referer !== null) {
+    try {
+      return new URL(referer).origin === req.nextUrl.origin;
+    } catch {
+      return false;
+    }
+  }
+  // Neither header present -- a real browser-submitted POST always sends
+  // at least one of these today, so treat the absence of both as hostile
+  // (or at best a client this check can't vouch for) rather than let it
+  // through.
+  return false;
+}
+
 /** Escapes the only untrusted value this page ever interpolates into HTML --
  * the DCR-registered client_name (Open questions/risks #2: entirely
  * self-reported by the connecting MCP client, never verified). */
@@ -95,6 +137,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isSameOriginRequest(req)) {
+    return new NextResponse('cross-site request rejected', { status: 403 });
+  }
+
   const mcpRequestId = req.nextUrl.searchParams.get('mcp_request_id');
   const sessionCookie = req.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (!mcpRequestId || !sessionCookie) {
