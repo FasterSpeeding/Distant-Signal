@@ -73,7 +73,10 @@ export async function HalfHourlyTrendsResults({ id, from, to }: { id: string; fr
         while still in view will still show here as on time. Half-hour periods with too little coverage show as a
         gap rather than a misleading flat line.
       </Text>
-      <TrendsCharts points={points} granularity="halfHour" />
+      {/* order={3}: this sits under /lines/[id]'s h1 line name -> h2
+          "Recent trends (last 24 hours)" -- h3 keeps the chart titles one
+          level below that h2, with no skip. */}
+      <TrendsCharts points={points} granularity="halfHour" order={3} />
     </Stack>
   );
 }

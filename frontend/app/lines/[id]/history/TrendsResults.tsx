@@ -83,7 +83,10 @@ export async function TrendsResults({ id, from, to }: { id: string; from: string
           Client Component -- see its own doc comment for why: a plain
           function prop like `valueFormatter` can't cross the Server-to-
           Client boundary straight out of this `async` Server Component. */}
-      <TrendsCharts points={points} granularity="day" />
+      {/* order={2}: this sits directly under /lines/[id]/history's only
+          h1 ("History: {name}"), with nothing between -- h2 keeps the
+          chart titles one level below that h1, with no skip. */}
+      <TrendsCharts points={points} granularity="day" order={2} />
     </Stack>
   );
 }

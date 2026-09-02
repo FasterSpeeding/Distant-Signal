@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import LineHistoryPage from './page';
+import LineHistoryPage, { HistoryResults } from './page';
 import * as api from '@/lib/api';
 import type { LineStatusReport, LineDailyStats } from '@/lib/types';
+import { formatDate } from '@/lib/dateFormat';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -103,5 +104,20 @@ describe('LineHistoryPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Trends' }));
 
     expect(await screen.findByText('Not enough sampled data yet for this line.')).toBeInTheDocument();
+  });
+
+  it('renders a Timeline per-day header at h2, one level below this page\'s only h1 ("History: {name}")', async () => {
+    // Awaits HistoryResults directly rather than rendering LineHistoryPage
+    // and waiting on its Suspense boundary -- see HistoryResults' own doc
+    // comment in page.tsx for why (this harness has no RSC runtime, so that
+    // Suspense boundary never settles here). Reuses report()'s own default
+    // computedAt ('2026-08-31T09:00:00Z') rather than inventing a new date
+    // string, per this task's plan.
+    vi.mocked(api.getLineStatusHistory).mockResolvedValue([report('c2c', 'c2c (London, Tilbury & Southend line)')]);
+    renderWithMantine(
+      await HistoryResults({ id: 'c2c', from: '2026-08-26T00:00:00Z', to: '2026-09-02T00:00:00Z' }),
+    );
+
+    expect(screen.getByRole('heading', { name: formatDate('2026-08-31T09:00:00Z'), level: 2 })).toBeInTheDocument();
   });
 });

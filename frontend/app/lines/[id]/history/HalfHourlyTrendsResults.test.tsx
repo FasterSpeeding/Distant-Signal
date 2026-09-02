@@ -144,4 +144,14 @@ describe('HalfHourlyTrendsResults', () => {
       expect(formatted).toMatch(/^\d{2}:\d{2}$/);
     }
   });
+
+  it('renders both chart titles at h3, one level below /lines/[id]\'s h2 "Recent trends (last 24 hours)"', async () => {
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([halfHourlyRow({ halfHourStart: '2026-08-31T14:00:00Z' })]);
+    renderWithMantine(
+      await HalfHourlyTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
+    );
+
+    expect(screen.getByRole('heading', { name: 'Delay / cancellation / skip rate', level: 3 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Average delay (minutes)', level: 3 })).toBeInTheDocument();
+  });
 });

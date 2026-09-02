@@ -188,4 +188,12 @@ describe('TrendsResults', () => {
       expect(chart.dataset.connectNulls).toBe('false');
     }
   });
+
+  it('renders both chart titles at h2, one level below this page\'s only h1 ("History: {name}")', async () => {
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([row({ day: '2026-08-01' })]);
+    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
+
+    expect(screen.getByRole('heading', { name: 'Delay / cancellation / skip rate', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Average delay (minutes)', level: 2 })).toBeInTheDocument();
+  });
 });

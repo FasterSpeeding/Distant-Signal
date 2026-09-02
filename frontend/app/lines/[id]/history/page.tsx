@@ -145,7 +145,17 @@ export default async function LineHistoryPage({
   );
 }
 
-async function HistoryResults({ id, from, to }: { id: string; from: string; to: string }) {
+// Exported (unlike an ordinary route-local helper) purely for
+// testability, the same reason TrendsResults/HalfHourlyTrendsResults are
+// their own modules: this page's <Suspense><HistoryResults .../></Suspense>
+// wraps an async Server Component, and this repo's jsdom/@testing-library
+// harness has no RSC runtime to resolve that promise -- rendering
+// LineHistoryPage and waiting on the Timeline tab's Suspense boundary to
+// settle hangs on the Skeleton fallback forever (confirmed: no existing
+// test in this file asserts on HistoryResults' resolved content). Awaiting
+// this function directly, the same way TrendsResults.test.tsx does for its
+// sibling, sidesteps the Suspense boundary entirely.
+export async function HistoryResults({ id, from, to }: { id: string; from: string; to: string }) {
   const entries = await getLineStatusHistory(id, from, to);
   const days = groupHistoryByDay(entries);
   const spanCount = days.reduce((total, day) => total + day.spans.length, 0);
@@ -164,7 +174,15 @@ async function HistoryResults({ id, from, to }: { id: string; from: string; to: 
       </Text>
       {days.map((day) => (
         <Stack key={day.day} gap="xs">
-          <Title order={3} size="h5">
+          {/* order={2}, not 3: this page's only other heading is the
+              `History: {name}` h1 at :74 -- there is no h2 between them,
+              so an h3 here skipped a level (axe `heading-order`).
+              `size="h5"` is unchanged, so this is a tag-only change with
+              no visual effect. Both TabsPanels are mounted at once
+              (Mantine Tabs keepMounted defaults to true), so this and the
+              Trends tab's chart headings both have to land at h2 for the
+              document to be skip-free either way the tabs are read. */}
+          <Title order={2} size="h5">
             {formatDate(day.spans[0].to)}
           </Title>
           <Divider />
