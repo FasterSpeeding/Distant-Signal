@@ -117,14 +117,17 @@ describe('TicketEntryForm', () => {
     expect(screen.getByRole('button', { name: 'Add a ticket for this journey' })).toBeInTheDocument();
   });
 
-  it('manual submit: on a 401, shows the login prompt and preserves typed fields', async () => {
+  it('manual submit: on a 401, shows the login prompt modal and preserves typed fields', async () => {
     vi.mocked(fetch).mockResolvedValue(new Response('no session', { status: 401 }));
     openForm();
     fireEvent.change(screen.getByLabelText('Operator'), { target: { value: 'LNER' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save ticket' }));
 
-    const loginLink = await screen.findByRole('link', { name: 'Log in to save this ticket' });
-    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrain%2Fby-id%2F1');
+    expect(await screen.findByText('Log in to save this ticket.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute(
+      'href',
+      '/api/auth/login?return_to=%2Ftrain%2Fby-id%2F1',
+    );
     expect(screen.getByLabelText('Operator')).toHaveValue('LNER');
   });
 
@@ -303,13 +306,13 @@ describe('TicketEntryForm', () => {
     });
   });
 
-  it('a 401 during upload shows the login prompt, same as the final-submit 401 handling', async () => {
+  it('a 401 during upload shows the login prompt modal, same as the final-submit 401 handling', async () => {
     vi.mocked(fetch).mockResolvedValue(new Response('no session', { status: 401 }));
     openForm();
     fireEvent.click(screen.getByRole('tab', { name: 'Upload .pkpass' }));
     const file = new File(['fake'], 'ticket.pkpass', { type: 'application/octet-stream' });
     fireEvent.change(getPkpassFileInput(), { target: { files: [file] } });
-    expect(await screen.findByRole('link', { name: 'Log in to save this ticket' })).toBeInTheDocument();
+    expect(await screen.findByText('Log in to save this ticket.')).toBeInTheDocument();
   });
 
   // Part A of the upload-first plan: no `trackingId` prop at all -- a

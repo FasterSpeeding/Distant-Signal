@@ -85,36 +85,33 @@ async function AuthNavItem() {
   return <AuthStatus session={session} />;
 }
 
-// Same rationale as AuthNavItem/DataFreshnessNavItem: a separate async
-// Server Component so <Suspense> can stream the session check in without
-// blocking the rest of the shell. Unlike those two, this one renders
-// nothing at all when logged out (Decision 4 of
-// docs/superpowers/specs/2026-08-31-tracked-trains-list-design.md) --
-// this is a full nav-bar entry point to a page whose entire content is
-// private to the viewer, not a section of an already-public page (the
-// TicketPanel pattern), so showing it to every visitor and having it
-// always resolve to a login nudge would be dead weight for the common
-// case of an anonymous visitor. Guarded with the same .catch() shape as
-// AuthNavItem/DataFreshnessNavItem: a root layout has no route-level
-// error.tsx, so an unguarded getSession() here could take down every
-// page's nav bar on an auth glitch -- the same historical bug class
-// already fixed in TicketPanel.tsx, not repeated here.
+// Reclassified from Tier 3 (hidden entirely when logged out) to
+// always-visible, per
+// docs/superpowers/specs/2026-09-02-modal-login-prompt-design.md
+// Decision 6 -- a deliberate, named reversal of
+// docs/superpowers/specs/2026-08-31-tracked-trains-list-design.md's
+// Decision 4, which chose "hidden entirely" specifically because at the
+// time an anonymous click would have resolved to a bare inline sentence
+// with nothing else on the page. Now that `/track/mine`'s own existing
+// `getMyTrackedTrains()` null-on-401 gate (unchanged -- see
+// `app/track/mine/page.tsx`) opens a real, actionable `LoginPromptModal`
+// instead, "dead weight in the nav bar" no longer describes what a
+// logged-out click produces, so this link is worth advertising rather
+// than hiding.
+//
+// No `getSession()` call here any more, and no `Suspense` wrapper needed
+// at the call site below -- the real gating already lives entirely on
+// `/track/mine`'s own page, which has no id in its path to disambiguate
+// (same reasoning that page's own doc comment already gives for not
+// needing a second `getSession()` call of its own). Adding a second,
+// client-side session check here just to decide what to render would be
+// duplicate plumbing for a decision this nav item no longer needs to
+// make.
 //
 // Labelled "My Trains & Tickets," not "My Tracked Trains," now that
 // `/track/mine` is the single merged page for both (Part B of the
-// upload-first ticket-tracking plan) -- the separate `MyTicketsNavItem`
-// this file used to also render (pointing at the now-redirected
-// `/track/tickets`) is gone; one nav entry for one merged page.
-export async function TrackedTrainsNavItem() {
-  const session = await getSession().catch(() => ({
-    authenticated: false,
-    id: null,
-    email: null,
-    name: null,
-  }));
-  if (!session.authenticated) {
-    return null;
-  }
+// upload-first ticket-tracking plan).
+export function TrackedTrainsNavItem() {
   return <TextLink href="/track/mine">My Trains &amp; Tickets</TextLink>;
 }
 
@@ -163,9 +160,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <Group gap="lg">
                   <TextLink href="/lines">All Lines</TextLink>
                   <TextLink href="/stations">Station Lookup</TextLink>
-                  <Suspense fallback={null}>
-                    <TrackedTrainsNavItem />
-                  </Suspense>
+                  <TrackedTrainsNavItem />
                   <Suspense fallback={<ActionIcon variant="subtle" aria-label="Data freshness" disabled loading />}>
                     <DataFreshnessNavItem />
                   </Suspense>

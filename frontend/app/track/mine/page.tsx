@@ -1,7 +1,7 @@
 import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import Link from 'next/link';
 import { getMyTrackedTrains, getMyTickets } from '@/lib/api';
-import { LoginLink } from '@/components/LoginLink';
+import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
 import { TextLink } from '@/components/TextLink';
 import { TicketSummary } from '@/components/TicketSummary';
 import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
@@ -51,9 +51,9 @@ export default async function MyTrackedTrainsPage() {
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>My Trains &amp; Tickets</Title>
-        <LoginLink underline="always">
-          Log in to see the trains and tickets you&apos;re tracking
-        </LoginLink>
+        <AutoOpenLoginPrompt>
+          Log in to see the trains and tickets you&apos;re tracking.
+        </AutoOpenLoginPrompt>
       </Stack>
     );
   }

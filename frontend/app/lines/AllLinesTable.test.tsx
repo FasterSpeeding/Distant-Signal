@@ -4,8 +4,17 @@ import { renderWithMantine } from '@/test/render';
 import { AllLinesTable, expandOperatorForFiltering } from './AllLinesTable';
 import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
+// `PinToggle` (rendered per row below) unconditionally renders
+// `LoginPromptModal`, which calls `useLoginHref()` -- and therefore
+// `usePathname()`/`useSearchParams()` -- on every render regardless of
+// whether the modal is open, not just on a 401 (`LoginPromptModal`'s own
+// doc comment on why it's always mounted). So this mock needs both stubs
+// even though none of this file's own tests exercise the login-prompt
+// path directly.
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
+  usePathname: () => '/lines',
+  useSearchParams: () => new URLSearchParams(''),
 }));
 
 function report(overrides: Partial<LineStatusReport> & { id: string; name: string }): LineStatusReport {

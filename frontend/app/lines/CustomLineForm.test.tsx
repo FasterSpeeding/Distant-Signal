@@ -222,7 +222,7 @@ describe('CustomLineForm', () => {
   // between page load and this submit. Same `needsLogin` treatment as
   // `PinToggle`: a login prompt, never the raw backend rejection text
   // ("no session") this used to render straight into a red <Text>.
-  it('a 401 on save shows a login prompt instead of the raw backend error text', async () => {
+  it('a 401 on save shows the login prompt modal instead of the raw backend error text', async () => {
     vi.mocked(fetch).mockImplementation(async (url) => {
       if (typeof url === 'string' && url.startsWith('/api/lines')) {
         return new Response('no session', { status: 401 });
@@ -234,8 +234,11 @@ describe('CustomLineForm', () => {
     renderWithProvider({ existingLine });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    const loginLink = await screen.findByRole('link', { name: 'Log in to edit a line' });
-    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Flines%2Fmy-line%2Fedit');
+    expect(await screen.findByText('Log in to edit a custom line.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute(
+      'href',
+      '/api/auth/login?return_to=%2Flines%2Fmy-line%2Fedit',
+    );
     expect(screen.queryByText('no session')).not.toBeInTheDocument();
   });
 
@@ -257,8 +260,7 @@ describe('CustomLineForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     fireEvent.click(screen.getByRole('button', { name: 'Create line' }));
 
-    const loginLink = await screen.findByRole('link', { name: 'Log in to create a line' });
-    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Flines%2Fnew');
+    expect(await screen.findByText('Log in to create a custom line.')).toBeInTheDocument();
   });
 
   // Every other non-ok status keeps the old behaviour -- only a 401 is
@@ -275,6 +277,6 @@ describe('CustomLineForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     expect(await screen.findByText('a line needs at least 2 stations')).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /Log in to/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Log in' })).not.toBeInTheDocument();
   });
 });
