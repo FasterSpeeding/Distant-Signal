@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button, Group, Stack, Tabs, TextInput, Text } from '@mantine/core';
 import { Dropzone, PDF_MIME_TYPE } from '@mantine/dropzone';
-import { LoginLink } from './LoginLink';
+import { useNeedsLogin } from './useNeedsLogin';
+import { LoginPromptModal } from './LoginPromptModal';
 import { TextLink } from './TextLink';
 import type { PartialTicket, TicketCreatedResponse, TicketEntryRequest, TicketSource } from '@/lib/types';
 
@@ -69,7 +70,7 @@ export function TicketEntryForm({ trackingId, label }: { trackingId?: number; la
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [needsLogin, setNeedsLogin] = useState(false);
+  const needsLoginState = useNeedsLogin();
 
   const originValid = originCrs.trim() === '' || CRS_PATTERN.test(originCrs.trim());
   const destinationValid = destinationCrs.trim() === '' || CRS_PATTERN.test(destinationCrs.trim());
@@ -129,7 +130,7 @@ export function TicketEntryForm({ trackingId, label }: { trackingId?: number; la
     if (!file) return;
     setUploading(true);
     setUploadError(null);
-    setNeedsLogin(false);
+    needsLoginState.reset();
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -147,7 +148,7 @@ export function TicketEntryForm({ trackingId, label }: { trackingId?: number; la
         return;
       }
       if (response.status === 401) {
-        setNeedsLogin(true);
+        needsLoginState.markNeedsLogin();
         return;
       }
       if (response.status === 400) {
@@ -180,7 +181,7 @@ export function TicketEntryForm({ trackingId, label }: { trackingId?: number; la
   async function handleSubmit() {
     setSubmitting(true);
     setSubmitError(null);
-    setNeedsLogin(false);
+    needsLoginState.reset();
     try {
       const body: TicketEntryRequest = {
         source,
@@ -216,7 +217,7 @@ export function TicketEntryForm({ trackingId, label }: { trackingId?: number; la
         return;
       }
       if (response.status === 401) {
-        setNeedsLogin(true);
+        needsLoginState.markNeedsLogin();
         return;
       }
       if (response.status === 400) {
@@ -373,12 +374,10 @@ export function TicketEntryForm({ trackingId, label }: { trackingId?: number; la
         <Button variant="subtle" onClick={() => setOpen(false)}>
           Cancel
         </Button>
-        {needsLogin && (
-          <LoginLink underline="always">
-            Log in to save this ticket
-          </LoginLink>
-        )}
       </Group>
+      <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
+        Log in to save this ticket.
+      </LoginPromptModal>
     </Stack>
   );
 }
