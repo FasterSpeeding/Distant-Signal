@@ -13,8 +13,21 @@
 // blocks pasted at the bottom of this file, touching none of the three
 // below.
 
+// NOTE: deliberately no `const isCacheable = self.isCacheable` local alias
+// here (as it might seem natural to add) -- classic scripts loaded via
+// importScripts() share ONE global lexical environment with the importing
+// script, the same way multiple <script> tags on one page do. A top-level
+// `const`/`let` in *this* file is hoisted (TDZ) for this file's entire
+// evaluation before its first statement runs, including before
+// importScripts() below reaches sw-cache-rules.js's `function isCacheable`
+// declaration -- so a same-named `const isCacheable` here collides with
+// that function declaration and throws a real
+// "Identifier 'isCacheable' has already been declared" SyntaxError,
+// which fails registration outright (confirmed empirically against a real
+// ServiceWorkerGlobalScope this session, not a hypothetical). Calling
+// `self.isCacheable(...)` directly in the fetch handler below sidesteps
+// this entirely.
 importScripts('/sw-cache-rules.js');
-const isCacheable = self.isCacheable;
 
 // Stamped by scripts/stamp-sw-version.mjs at build time (Task 5),
 // substituting .next/BUILD_ID's real value for this placeholder -- see
@@ -65,7 +78,7 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
 
-  if (isCacheable(url.pathname)) {
+  if (self.isCacheable(url.pathname)) {
     event.respondWith(
       caches.match(request).then((cached) => {
         if (cached) return cached;
