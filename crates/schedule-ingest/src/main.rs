@@ -43,7 +43,6 @@ use chrono::{DateTime, NaiveTime, TimeZone, Utc};
 use chrono_tz::Europe::London;
 use chrono_tz::Tz;
 use clap::Parser;
-use common::ingest::INTERNAL_TOKEN_HEADER;
 use config::Config;
 use manifest::SequenceRelation;
 use reqwest::Client;
@@ -80,6 +79,13 @@ async fn main() -> anyhow::Result<()> {
     let final_check_time = *check_times.last().expect("parse_check_times guarantees a non-empty list");
 
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+    let internal_oauth = common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
+        token_url: config.internal_oauth_token_url.clone(),
+        client_id: config.internal_oauth_client_id.clone(),
+        scope: config.internal_oauth_scope.clone(),
+        username: config.internal_oauth_username.clone(),
+        password: config.internal_oauth_password.clone(),
+    });
 
     let mut tracker = StabilityTracker::new();
     let mut known_stable: HashSet<String> = HashSet::new();
@@ -114,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
         if let Err(err) = run_scan_cycle(
             &client,
             &config,
+            &internal_oauth,
             &mut tracker,
             &mut known_stable,
             &mut last_ingested_sequence,
@@ -144,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run_scan_cycle(
     client: &Client,
     config: &Config,
+    internal_oauth: &common::oauth_client::OAuthTokenCache,
     tracker: &mut StabilityTracker,
     known_stable: &mut HashSet<String>,
     last_ingested_sequence: &mut Option<u32>,
@@ -160,7 +168,7 @@ async fn run_scan_cycle(
     // documented in this module's doc comment) — a real but narrow gap,
     // not silently pretended away.
     if let Some(pending) = pending_post.take() {
-        match post_ingest(client, config, &pending).await {
+        match post_ingest(client, config, internal_oauth, &pending).await {
             Ok(()) => {
                 tracing::info!(sequence = pending.sequence, "retried and succeeded posting a previously-failed ingest record");
                 *last_ingested_sequence = Some(pending.sequence as u32);
@@ -272,7 +280,7 @@ async fn run_scan_cycle(
         files,
     };
 
-    match post_ingest(client, config, &request).await {
+    match post_ingest(client, config, internal_oauth, &request).await {
         Ok(()) => {
             tracing::info!(sequence = parsed.sequence, "schedule feed delivery moved to storage and posted to api");
             *last_ingested_sequence = Some(parsed.sequence);
@@ -306,10 +314,16 @@ async fn run_scan_cycle(
 /// rather than match it, so this is a small bespoke POST instead (mirroring
 /// `post_batch`'s own request-building/error-handling shape, just without
 /// the `&[T]` framing).
-async fn post_ingest(client: &Client, config: &Config, request: &ScheduleFeedIngestRequest) -> anyhow::Result<()> {
+async fn post_ingest(
+    client: &Client,
+    config: &Config,
+    tokens: &common::oauth_client::OAuthTokenCache,
+    request: &ScheduleFeedIngestRequest,
+) -> anyhow::Result<()> {
+    let token = tokens.get_token(client).await?;
     let response = client
         .post(&config.api_ingest_url)
-        .header(INTERNAL_TOKEN_HEADER, &config.internal_token)
+        .bearer_auth(&token)
         .json(request)
         .send()
         .await?;
