@@ -23,6 +23,16 @@ pub struct AppState {
     /// OIDC relying-party client -- see `auth::oidc`'s module doc for why
     /// discovery is lazy (not performed here in `init`).
     pub oidc: OidcClient,
+    /// Verifies an incoming `/private/*` request's `Authorization: Bearer`
+    /// token against Authentik's JWKS -- see
+    /// `crate::auth::internal_oauth`.
+    pub internal_oauth_verifier: crate::auth::internal_oauth::ServiceTokenVerifier,
+    /// Route prefix -> one-or-more required group names, built once here
+    /// from config. More than one group per route exists because
+    /// `/stanox-crs` has two legitimate callers (`trust-consumer` reads
+    /// it, `schedule-reference` writes it) -- either one's group is
+    /// sufficient.
+    pub internal_oauth_routes: Vec<(&'static str, Vec<String>)>,
 }
 
 /// Hand-rolled rather than `#[derive(Debug)]`. Two independent reasons:
@@ -51,6 +61,8 @@ impl std::fmt::Debug for AppState {
             .field("database", &"PgPool { .. }")
             .field("redis", &"redis::Client { .. }")
             .field("oidc", &"OidcClient { .. }")
+            .field("internal_oauth_verifier", &"ServiceTokenVerifier { .. }")
+            .field("internal_oauth_routes", &self.internal_oauth_routes)
             .finish()
     }
 }
@@ -61,15 +73,6 @@ pub type Router = axum::Router<App>;
 impl AppState {
     pub async fn init() -> Result<App> {
         let config = ServiceArguments::parse();
-
-        // An empty token would make `auth::constant_time_eq` compare two
-        // empty byte slices and accept any request with no
-        // `X-Internal-Token` header at all — reject that at startup rather
-        // than silently running an unauthenticated `private_router()`.
-        ensure!(
-            !config.internal_token.is_empty(),
-            "internal_token (--internal-token / INTERNAL_TOKEN) must not be empty"
-        );
 
         let db = PgPoolOptions::new()
             .max_connections(50)
@@ -99,11 +102,60 @@ impl AppState {
         })
         .context("failed to construct OIDC client")?;
 
+        // An empty required-group value must never silently become "any
+        // group matches" -- the same failure class the old single-token
+        // design guarded against for its own credential (see the removed
+        // internal_token guard this replaces). issuer_url/client_id are
+        // guarded too: an empty issuer_url would make IssuerUrl::new("")
+        // fail inside ServiceTokenVerifier::new below anyway, but failing
+        // here first gives a clearer message naming the actual env var.
+        for (name, value) in [
+            ("internal_oauth_issuer_url", &config.internal_oauth_issuer_url),
+            ("internal_oauth_client_id", &config.internal_oauth_client_id),
+            ("internal_oauth_group_poller_incidents", &config.internal_oauth_group_poller_incidents),
+            ("internal_oauth_group_poller_stations", &config.internal_oauth_group_poller_stations),
+            ("internal_oauth_group_poller_tocs", &config.internal_oauth_group_poller_tocs),
+            ("internal_oauth_group_poller_ldbws", &config.internal_oauth_group_poller_ldbws),
+            ("internal_oauth_group_poller_tfl", &config.internal_oauth_group_poller_tfl),
+            ("internal_oauth_group_trust_consumer", &config.internal_oauth_group_trust_consumer),
+            ("internal_oauth_group_schedule_ingest", &config.internal_oauth_group_schedule_ingest),
+            ("internal_oauth_group_schedule_reference", &config.internal_oauth_group_schedule_reference),
+        ] {
+            ensure!(!value.is_empty(), "{name} must not be empty (see --{}/{})", name.replace('_', "-"), name.to_uppercase());
+        }
+
+        let internal_oauth_verifier = crate::auth::internal_oauth::ServiceTokenVerifier::new(
+            config.internal_oauth_issuer_url.clone(),
+            config.internal_oauth_client_id.clone(),
+        )
+        .context("failed to construct internal-oauth verifier")?;
+
+        let internal_oauth_routes: Vec<(&'static str, Vec<String>)> = vec![
+            ("/incidents", vec![config.internal_oauth_group_poller_incidents.clone()]),
+            ("/stations", vec![config.internal_oauth_group_poller_stations.clone()]),
+            ("/tocs", vec![config.internal_oauth_group_poller_tocs.clone()]),
+            ("/station-samples", vec![config.internal_oauth_group_poller_ldbws.clone()]),
+            ("/sample-stations", vec![config.internal_oauth_group_poller_ldbws.clone()]),
+            ("/tfl-line-status", vec![config.internal_oauth_group_poller_tfl.clone()]),
+            ("/train-events", vec![config.internal_oauth_group_trust_consumer.clone()]),
+            ("/tracked-trains", vec![config.internal_oauth_group_trust_consumer.clone()]),
+            ("/schedule-feed-ingests", vec![config.internal_oauth_group_schedule_ingest.clone()]),
+            (
+                "/stanox-crs",
+                vec![
+                    config.internal_oauth_group_trust_consumer.clone(),
+                    config.internal_oauth_group_schedule_reference.clone(),
+                ],
+            ),
+        ];
+
         Ok(Arc::new(Self {
             config,
             database: db,
             redis,
             oidc,
+            internal_oauth_verifier,
+            internal_oauth_routes,
         }))
     }
 }
