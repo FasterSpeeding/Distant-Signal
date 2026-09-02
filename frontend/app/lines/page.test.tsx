@@ -17,9 +17,16 @@ vi.mock('@/lib/api', async () => {
 });
 // AllLinesTable renders a PinToggle per row, which calls useRouter() from
 // next/navigation -- same workaround AllLinesTable.test.tsx itself uses
-// (that hook throws outside a real Next.js App Router tree).
+// (that hook throws outside a real Next.js App Router tree). PinToggle also
+// unconditionally renders LoginPromptModal, which calls useLoginHref() --
+// and therefore usePathname()/useSearchParams() -- on every render
+// regardless of whether the modal is open (see LoginPromptModal's own doc
+// comment), so both stubs are needed here too even though this file's own
+// tests never exercise the login-prompt path directly.
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
+  usePathname: () => '/lines',
+  useSearchParams: () => new URLSearchParams(''),
 }));
 
 const lines: LineSummary[] = [
