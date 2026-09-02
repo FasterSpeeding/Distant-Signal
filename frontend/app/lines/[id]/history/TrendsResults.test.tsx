@@ -20,12 +20,19 @@ vi.mock('@/lib/api');
 // how many separate chart instances got rendered, without depending on
 // Recharts' internal SVG rendering in jsdom.
 vi.mock('@mantine/charts', () => ({
-  LineChart: (props: { data: unknown[]; series: { name: string }[]; connectNulls?: boolean }) => (
+  LineChart: (props: {
+    data: unknown[];
+    series: { name: string; strokeDasharray?: string | number }[];
+    connectNulls?: boolean;
+    withLegend?: boolean;
+  }) => (
     <div
       data-testid="line-chart"
       data-series={props.series.map((series) => series.name).join(',')}
       data-connect-nulls={String(props.connectNulls)}
       data-points={JSON.stringify(props.data)}
+      data-with-legend={String(props.withLegend)}
+      data-dash-patterns={props.series.map((series) => series.strokeDasharray ?? '').join(',')}
     />
   ),
 }));
@@ -126,6 +133,21 @@ describe('TrendsResults', () => {
     expect(seriesSets).toContain('avgDelayMinutes');
     // Never combined into one four-series chart.
     expect(seriesSets).not.toContain('delayRate,cancellationRate,skipRate,avgDelayMinutes');
+  });
+
+  it('gives the rate chart a legend and three distinct dash patterns, but not the average-delay chart', async () => {
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([row({ day: '2026-08-01' })]);
+    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
+
+    const charts = screen.getAllByTestId('line-chart');
+    const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate')!;
+    const avgDelayChart = charts.find((chart) => chart.dataset.series === 'avgDelayMinutes')!;
+
+    expect(rateChart.dataset.withLegend).toBe('true');
+    const dashPatterns = rateChart.dataset.dashPatterns!.split(',');
+    expect(new Set(dashPatterns).size).toBe(3); // three distinct values, including the empty string for the solid default
+
+    expect(avgDelayChart.dataset.withLegend).not.toBe('true');
   });
 
   it('passes connectNulls={false} to both charts so gaps render instead of interpolating', async () => {

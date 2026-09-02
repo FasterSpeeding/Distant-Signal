@@ -36,13 +36,14 @@ export function TrendsCharts({ points }: { points: ChartPoint[] }) {
             combined onto this chart or its axis -- see the second LineChart
             below, and the plan's Global Constraints. */}
         <LineChart
-          h={280}
+          h={310}
           data={points}
           dataKey="day"
+          withLegend
           series={[
             { name: 'delayRate', label: 'Delay rate', color: 'blue.6' },
-            { name: 'cancellationRate', label: 'Cancellation rate', color: 'red.6' },
-            { name: 'skipRate', label: 'Skip rate', color: 'yellow.6' },
+            { name: 'cancellationRate', label: 'Cancellation rate', color: 'red.6', strokeDasharray: '6 4' },
+            { name: 'skipRate', label: 'Skip rate', color: 'yellow.6', strokeDasharray: '2 3' },
           ]}
           valueFormatter={(value) => `${(value * 100).toFixed(1)}%`}
           connectNulls={false}
