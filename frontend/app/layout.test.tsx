@@ -1,8 +1,18 @@
 import { readFileSync } from 'node:fs';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { TrackedTrainsNavItem, viewport, metadata } from './layout';
+import { DataFreshnessNavItem, TrackedTrainsNavItem, viewport, metadata } from './layout';
+
+// This file imports `app/layout.tsx`, which imports `@/lib/api` -- whose
+// module scope reads `next/headers`. There is no Next request context in a
+// unit test, and none of the cases here should reach the network at all
+// (DataFreshnessNavItem is now a pure prop-taking component; that is
+// precisely what the first case below asserts).
+vi.mock('@/lib/api', () => ({
+  getDataFreshness: vi.fn(),
+  getSession: vi.fn(),
+}));
 
 describe('TrackedTrainsNavItem', () => {
   it('renders "My Trains & Tickets" unconditionally, pointing at /track/mine', () => {
@@ -64,5 +74,40 @@ describe('page content landmark', () => {
   it('renders page content inside a <main> landmark, not a bare Container div', () => {
     const source = readFileSync('app/layout.tsx', 'utf8');
     expect(source).toMatch(/<Container\s+component="main"/);
+  });
+});
+
+describe('DataFreshnessNavItem', () => {
+  it('renders the freshness it is given, without fetching', async () => {
+    const { getDataFreshness } = await import('@/lib/api');
+    renderWithMantine(
+      <DataFreshnessNavItem freshness={{ stations: null, tocs: null, incidents: null, tfl: null }} />,
+    );
+    expect(screen.getByRole('button', { name: 'Data freshness' })).toBeInTheDocument();
+    // The whole point of Correction 1: this component no longer owns the
+    // fetch, so it must not perform one.
+    expect(getDataFreshness).not.toHaveBeenCalled();
+  });
+});
+
+describe('backend reachability threading', () => {
+  // RootLayout renders <html>/<body> and cannot be mounted by
+  // @testing-library/react (same constraint the <main> landmark test
+  // above documents), so this asserts on the source -- the established
+  // tactic in this file and in app/globals.test.ts. The behavioural
+  // coverage lives in ConnectivityMonitor.test.tsx and e2e.
+  it('passes a backendReachable boolean derived from the freshness fetch', () => {
+    const source = readFileSync('app/layout.tsx', 'utf8');
+    expect(source).toMatch(/backendReachable = true/);
+    expect(source).toMatch(/backendReachable = false/);
+  });
+
+  it('no longer wraps the freshness nav item in a Suspense boundary', () => {
+    // Correction 1's load-bearing structural change: a streamed freshness
+    // fetch resolves after RootLayout has returned, so its outcome could
+    // never reach a sibling. AuthNavItem's own Suspense must survive.
+    const source = readFileSync('app/layout.tsx', 'utf8');
+    expect(source).toMatch(/<DataFreshnessNavItem freshness=\{freshness\} \/>/);
+    expect(source).toMatch(/<Suspense fallback=\{<Text size="sm" c="dimmed">Log in<\/Text>\}>/);
   });
 });

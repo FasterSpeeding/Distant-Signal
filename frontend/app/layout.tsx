@@ -1,6 +1,6 @@
 import '@/app/globals.css';
 import { Suspense } from 'react';
-import { ActionIcon, ColorSchemeScript, mantineHtmlProps, Group, Text, Box, Container } from '@mantine/core';
+import { ColorSchemeScript, mantineHtmlProps, Group, Text, Box, Container } from '@mantine/core';
 import Link from 'next/link';
 import type { Metadata, Viewport } from 'next';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -14,6 +14,7 @@ import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
 import { OpenDataAttribution } from '@/components/OpenDataAttribution';
 import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { getDataFreshness, getSession } from '@/lib/api';
+import type { DataFreshness } from '@/lib/types';
 
 export const metadata: Metadata = {
   title: 'Distant Signal',
@@ -51,21 +52,22 @@ export const viewport: Viewport = {
   ],
 };
 
-// A separate async Server Component (rather than awaiting inline in
-// RootLayout) so `<Suspense>` below can stream it in without blocking the
-// rest of the shell — this is decorative nav-bar data, not core page
-// content, and shouldn't add to every route's time-to-first-byte.
-async function DataFreshnessNavItem() {
-  // A root layout has no route-level `error.tsx` boundary (that only
-  // catches errors in child segments), so an uncaught fetch failure here
-  // would take down every page rather than just one — fall back to an
-  // all-"never fetched" state instead.
-  const freshness = await getDataFreshness().catch(() => ({
-    stations: null,
-    tocs: null,
-    incidents: null,
-    tfl: null,
-  }));
+// Takes `freshness` as a prop rather than fetching it itself. The fetch
+// moved up into RootLayout (below) because its *success or failure* is
+// this app's backend-reachability signal -- and a fetch inside a
+// <Suspense> boundary resolves after RootLayout has already returned its
+// JSX, so RootLayout could never read the outcome to pass to a sibling.
+// See docs/superpowers/specs/2026-09-02-frontend-disconnect-reconnect-ux-design.md
+// Decision 1 and its implementation plan's Correction 1.
+//
+// The cost, stated plainly: this nav-bar tooltip no longer streams in --
+// RootLayout awaits it before emitting any HTML. Acceptable because the
+// call is against the same in-cluster `api` service every page already
+// awaits for its own content, and because in the failure case (the one
+// this whole design exists for) we specifically need the outcome before
+// first paint. AuthNavItem below deliberately keeps its own <Suspense>:
+// it is not a connectivity oracle.
+export function DataFreshnessNavItem({ freshness }: { freshness: DataFreshness }) {
   return <DataFreshnessInfo freshness={freshness} />;
 }
 
@@ -116,7 +118,36 @@ export function TrackedTrainsNavItem() {
   return <TextLink href="/track/mine">My Trains &amp; Tickets</TextLink>;
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+const UNAVAILABLE_FRESHNESS: DataFreshness = {
+  stations: null,
+  tocs: null,
+  incidents: null,
+  tfl: null,
+};
+
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // A root layout has no route-level `error.tsx` boundary (that only
+  // catches errors in child segments), so an uncaught fetch failure here
+  // would take down every page rather than just one -- fall back to an
+  // all-"never fetched" state instead. Unchanged in substance from the
+  // previous `.catch()` on this same call; the only addition is that we
+  // now also record *whether* it fell back, which is the
+  // backend-reachability signal ConnectivityMonitor debounces.
+  let freshness: DataFreshness;
+  let backendReachable: boolean;
+  try {
+    freshness = await getDataFreshness();
+    backendReachable = true;
+  } catch {
+    freshness = UNAVAILABLE_FRESHNESS;
+    backendReachable = false;
+  }
+  // Computed here but not consumed until Task 3 of
+  // docs/superpowers/plans/2026-09-02-frontend-disconnect-reconnect-ux.md,
+  // which mounts <ConnectivityMonitor backendReachable={backendReachable}>
+  // around the tree below.
+  void backendReachable;
+
   return (
     <html lang="en" {...mantineHtmlProps}>
       <head>
@@ -169,9 +200,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <TextLink href="/lines">All Lines</TextLink>
                   <TextLink href="/stations">Station Lookup</TextLink>
                   <TrackedTrainsNavItem />
-                  <Suspense fallback={<ActionIcon variant="subtle" aria-label="Data freshness" disabled loading />}>
-                    <DataFreshnessNavItem />
-                  </Suspense>
+                  <DataFreshnessNavItem freshness={freshness} />
                   <ThemeToggle />
                   <PrideToggle />
                   <Suspense fallback={<Text size="sm" c="dimmed">Log in</Text>}>
