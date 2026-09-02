@@ -21,6 +21,7 @@ import type { IssueItem } from '@/lib/stationIssues';
 import { bucketFor, governingPeriod, periodIsActive, type IssueBucket } from '@/lib/validity';
 import { formatDate, formatDateTime } from '@/lib/dateFormat';
 import { isGoodSeverity } from '@/lib/severity';
+import { impactTypeLabel } from '@/lib/impactType';
 
 type ActiveFilter = 'all' | IssueBucket;
 
@@ -352,6 +353,11 @@ export function IssueList({
                   <Text size="xs" c="dimmed">
                     {formatValiditySummary(status, now)}
                   </Text>
+                  {impactTypeLabel(status.disruption?.impactType) && (
+                    <Badge variant="light" size="sm" color="orange">
+                      {impactTypeLabel(status.disruption?.impactType)}
+                    </Badge>
+                  )}
                   {(linesByStatus.get(status) ?? []).length > 1 && (
                     <Badge variant="outline" size="sm" color="gray">
                       {linesByStatus.get(status)!.length} lines

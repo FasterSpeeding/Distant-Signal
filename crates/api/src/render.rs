@@ -89,6 +89,7 @@ fn status_to_json(status: &LineStatus, detail: bool) -> Value {
                 "to": r.to_crs,
             })).collect::<Vec<_>>(),
             "source": disruption.source,
+            "impactType": disruption.impact_type,
         });
     }
 
@@ -166,6 +167,7 @@ mod tests {
             affected_stops: vec!["WOK".to_string()],
             affected_routes: vec![],
             source: Some("knowledgebase-incident-1".to_string()),
+            impact_type: None,
         };
         let report = sample_report(Some(disruption));
         let json = to_tfl_shape(&report, sample_computed_at(), false);
@@ -180,6 +182,7 @@ mod tests {
             affected_stops: vec!["WOK".to_string()],
             affected_routes: vec![common::AffectedRoute { from_crs: "WAT".to_string(), to_crs: "WOK".to_string() }],
             source: Some("knowledgebase-incident-1".to_string()),
+            impact_type: Some("rail_replacement_bus".to_string()),
         };
         let report = sample_report(Some(disruption));
         let json = to_tfl_shape(&report, sample_computed_at(), true);
@@ -190,6 +193,22 @@ mod tests {
         assert_eq!(d["affectedRoutes"][0]["from"], "WAT");
         assert_eq!(d["affectedRoutes"][0]["to"], "WOK");
         assert_eq!(d["source"], "knowledgebase-incident-1");
+        assert_eq!(d["impactType"], "rail_replacement_bus");
+    }
+
+    #[test]
+    fn impact_type_renders_as_json_null_when_absent() {
+        let disruption = Disruption {
+            category: "RealTime".to_string(),
+            description: "Signal failure".to_string(),
+            affected_stops: vec![],
+            affected_routes: vec![],
+            source: None,
+            impact_type: None,
+        };
+        let report = sample_report(Some(disruption));
+        let json = to_tfl_shape(&report, sample_computed_at(), true);
+        assert!(json["lineStatuses"][0]["disruption"]["impactType"].is_null());
     }
 
     #[test]

@@ -15,6 +15,7 @@ export interface Disruption {
   affectedStops: string[];
   affectedRoutes: AffectedRoute[];
   source: string | null;
+  impactType: string | null;
 }
 
 export interface IncidentLineRef {
