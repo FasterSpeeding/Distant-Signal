@@ -240,6 +240,7 @@ pub struct AuthenticatedUser {
     pub id: String,
     pub email: Option<String>,
     pub name: Option<String>,
+    pub groups: Vec<String>,
 }
 
 impl FromRequestParts<App> for AuthenticatedUser {
@@ -268,6 +269,7 @@ impl FromRequestParts<App> for AuthenticatedUser {
             id: session.id,
             email: session.email,
             name: session.name,
+            groups: session.groups,
         })
     }
 }

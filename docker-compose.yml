@@ -632,6 +632,13 @@ services:
       # longer covers now that the adapter auth layer exists.
       DS_API_BASE_URL: http://api:8080
       DS_LINE_CATALOGUE_TTL_MS: ${DS_LINE_CATALOGUE_TTL_MS:-900000}
+      # Plain, non-secret config -- an Authentik group name, not a
+      # credential (Decision 3 of
+      # docs/superpowers/specs/2026-09-02-mcp-server-oauth-access-groups-design.md).
+      # Defaults match charts/distant-signal/values.yaml's own
+      # railMcp.accessGroups.* defaults.
+      MCP_USERS_GROUP: ${RAIL_MCP_USERS_GROUP:-mcp-users}
+      MCP_LIVE_BOARDS_GROUP: ${RAIL_MCP_LIVE_BOARDS_GROUP:-mcp-live-boards}
       # The adapter auth layer (embedded-chatbot-shared-foundation-and-
       # option-c plan, Tasks 1-7) -- replaces the DISCORD_CLIENT_ID/
       # DISCORD_ALLOWED_USER_IDS env vars this block used to render here

@@ -6,27 +6,34 @@
 //! used instead.
 
 use anyhow::{Context, Result};
-use openidconnect::core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata};
+use openidconnect::core::{
+    CoreAuthDisplay, CoreAuthPrompt, CoreAuthenticationFlow, CoreErrorResponseType,
+    CoreGenderClaim, CoreJsonWebKey, CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm,
+    CoreProviderMetadata, CoreRevocableToken, CoreRevocationErrorResponse,
+    CoreTokenIntrospectionResponse, CoreTokenType,
+};
 use openidconnect::url::Url;
 use openidconnect::{
-    AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointMaybeSet, EndpointNotSet,
-    EndpointSet, IssuerUrl, Nonce, OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier,
-    RedirectUrl, Scope,
+    AdditionalClaims, AuthorizationCode, Client, ClientId, ClientSecret, CsrfToken,
+    EmptyExtraTokenFields, EndpointMaybeSet, EndpointNotSet, EndpointSet, IdTokenFields,
+    IssuerUrl, Nonce, OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl,
+    Scope, StandardErrorResponse, StandardTokenResponse,
 };
 
 /// The claims this app actually reads out of a verified ID token and
 /// persists -- see the design doc's `users` table section for why nothing
-/// beyond these four is stored.
+/// beyond these five is stored.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OidcIdentity {
     pub sub: String,
     pub email: Option<String>,
     pub email_verified: bool,
     pub name: Option<String>,
+    pub groups: Vec<String>,
 }
 
-/// The four raw claim values pulled off a verified `openidconnect`
-/// `CoreIdTokenClaims`, immediately after signature/issuer/audience/nonce
+/// The five raw claim values pulled off a verified `openidconnect`
+/// `IdTokenClaims`, immediately after signature/issuer/audience/nonce
 /// verification (which is `openidconnect`'s job -- see this plan's Global
 /// Constraints on why that surface isn't re-tested here). This
 /// indirection exists so `identity_from_claims` -- the one piece of this
@@ -39,19 +46,64 @@ pub struct RawClaims {
     pub email: Option<String>,
     pub email_verified: Option<bool>,
     pub name: Option<String>,
+    pub groups: Option<Vec<String>>,
 }
 
 /// Maps raw claims onto the subset this app persists. A missing/absent
 /// `email_verified` claim defaults to `false` (never trust silence as
-/// verification) -- see design doc Open Question 2.
+/// verification) -- see design doc Open Question 2. A missing/absent
+/// `groups` claim defaults to an empty vec -- see
+/// docs/superpowers/specs/2026-09-02-mcp-server-oauth-access-groups-design.md
+/// Decision 2.
 pub fn identity_from_claims(claims: RawClaims) -> OidcIdentity {
     OidcIdentity {
         sub: claims.sub,
         email: claims.email,
         email_verified: claims.email_verified.unwrap_or(false),
         name: claims.name,
+        groups: claims.groups.unwrap_or_default(),
     }
 }
+
+/// The `groups` claim this app additionally requests and reads off the ID
+/// token, beyond what `openidconnect::core`'s fixed `CoreClient` alias can
+/// see. Confirmed directly against the pinned `openidconnect` 4.0.1
+/// source this session: `core::CoreClient` hardcodes its
+/// `AdditionalClaims` type parameter to `EmptyAdditionalClaims`, which
+/// silently discards any claim beyond the standard set `openidconnect::
+/// core` models -- reading `groups` requires this real `AdditionalClaims`
+/// impl and a `Client` built on it, not just a new field read off an
+/// already-parsed struct. See
+/// docs/superpowers/specs/2026-09-02-mcp-server-oauth-access-groups-design.md
+/// Decision 2.
+///
+/// `#[serde(default)]` on `groups`: a missing claim deserializes to
+/// `None`, never a deserialization error -- the same "never trust silence
+/// as something stronger than it is" posture `email_verified`'s own
+/// handling already takes below.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct AccessGroupClaims {
+    #[serde(default)]
+    pub groups: Option<Vec<String>>,
+}
+
+impl AdditionalClaims for AccessGroupClaims {}
+
+/// Mirrors `openidconnect::core`'s own `CoreIdTokenFields`/
+/// `CoreTokenResponse` type aliases (`core/mod.rs`), but with
+/// `AccessGroupClaims` in place of `EmptyAdditionalClaims` as the
+/// `AdditionalClaims` type parameter. Both must be redefined together --
+/// see this file's own module-level note on why swapping only
+/// `DiscoveredClient`'s `AC` parameter and leaving `TR` at
+/// `CoreTokenResponse` would silently keep discarding the claim.
+type GroupsIdTokenFields = IdTokenFields<
+    AccessGroupClaims,
+    EmptyExtraTokenFields,
+    CoreGenderClaim,
+    CoreJweContentEncryptionAlgorithm,
+    CoreJwsSigningAlgorithm,
+>;
+type GroupsTokenResponse = StandardTokenResponse<GroupsIdTokenFields, CoreTokenType>;
 
 #[derive(Clone)]
 pub struct OidcConfig {
@@ -78,20 +130,37 @@ impl std::fmt::Debug for OidcConfig {
     }
 }
 
-/// `CoreClient` after `from_provider_metadata` + `set_redirect_uri`, at its
-/// concrete typestate: `from_provider_metadata` always sets the
-/// authorization endpoint (`EndpointSet`, required by OIDC discovery) but
-/// leaves the token/userinfo endpoints merely possibly-set
-/// (`EndpointMaybeSet`, since `ProviderMetadata` models them as optional at
-/// the type level even though a real provider always returns them), and
-/// never sets device-auth/introspection/revocation endpoints at all
-/// (`EndpointNotSet` -- this app never uses those flows). `openidconnect`
-/// 4.0's `CoreClient` type alias defaults every one of these six params to
-/// `EndpointNotSet`, which does NOT match this shape -- naming it bare here
-/// (as the plan's draft implicitly did) does not compile, since
-/// `authorize_url`/`exchange_code` are only defined for clients whose
-/// typestate matches what discovery actually produces.
-type DiscoveredClient = CoreClient<
+/// `CoreClient` after `from_provider_metadata` + `set_redirect_uri`, at
+/// its concrete typestate -- see the original comment on this type (now
+/// below) for why the six endpoint-typestate parameters are what they
+/// are; unchanged by this task. Built on the fully generic
+/// `openidconnect::Client<...>` rather than the `core` module's
+/// `CoreClient` alias, since `CoreClient` fixes its `AdditionalClaims`
+/// parameter to `EmptyAdditionalClaims` (see `AccessGroupClaims`'s own
+/// doc comment, above). Every parameter here besides `AC`/`TR` is copied
+/// verbatim from `core::CoreClient`'s own definition
+/// (`openidconnect::core::mod`, confirmed against the pinned 4.0.1
+/// source this session).
+///
+/// `from_provider_metadata` always sets the authorization endpoint
+/// (`EndpointSet`, required by OIDC discovery) but leaves the
+/// token/userinfo endpoints merely possibly-set (`EndpointMaybeSet`,
+/// since `ProviderMetadata` models them as optional at the type level
+/// even though a real provider always returns them), and never sets
+/// device-auth/introspection/revocation endpoints at all
+/// (`EndpointNotSet` -- this app never uses those flows).
+type DiscoveredClient = Client<
+    AccessGroupClaims,
+    CoreAuthDisplay,
+    CoreGenderClaim,
+    CoreJweContentEncryptionAlgorithm,
+    CoreJsonWebKey,
+    CoreAuthPrompt,
+    StandardErrorResponse<CoreErrorResponseType>,
+    GroupsTokenResponse,
+    CoreTokenIntrospectionResponse,
+    CoreRevocableToken,
+    CoreRevocationErrorResponse,
     EndpointSet,
     EndpointNotSet,
     EndpointNotSet,
@@ -148,7 +217,7 @@ impl OidcClient {
                 let metadata = CoreProviderMetadata::discover_async(issuer, &self.http_client)
                     .await
                     .context("OIDC discovery failed")?;
-                let client = CoreClient::from_provider_metadata(
+                let client = Client::from_provider_metadata(
                     metadata,
                     ClientId::new(self.config.client_id.clone()),
                     Some(ClientSecret::new(self.config.client_secret.clone())),
@@ -174,6 +243,16 @@ impl OidcClient {
             )
             .add_scope(Scope::new("email".to_string()))
             .add_scope(Scope::new("profile".to_string()))
+            // A dedicated scope, not relying on the built-in `profile`
+            // mapping's own group-membership behaviour alone -- see
+            // Decision 2 of
+            // docs/superpowers/specs/2026-09-02-mcp-server-oauth-access-groups-design.md
+            // on why (real-world reports of the built-in mapping not
+            // reliably populating groups). Task 6 adds the matching
+            // custom ScopeMapping to this repo's own dev Authentik
+            // blueprint; a real deployment's operator provisions the
+            // equivalent on their own instance.
+            .add_scope(Scope::new("groups".to_string()))
             .set_pkce_challenge(pkce_challenge)
             .url();
         Ok((url, pkce_verifier, csrf_state, nonce))
@@ -181,7 +260,7 @@ impl OidcClient {
 
     /// Exchanges the authorization code for tokens, verifies the ID
     /// token's signature/issuer/audience/nonce/expiry (`openidconnect`'s
-    /// job, not re-implemented here), extracts the four claims this app
+    /// job, not re-implemented here), extracts the five claims this app
     /// cares about into `RawClaims`, and maps them through
     /// `identity_from_claims`. Also returns the refresh token, if the
     /// provider issued one (not guaranteed) -- though no caller consumes
@@ -221,6 +300,7 @@ impl OidcClient {
                 .name()
                 .and_then(|n| n.get(None))
                 .map(|n| n.as_str().to_string()),
+            groups: claims.additional_claims().groups.clone(),
         };
         let refresh_token = token_response.refresh_token().map(|t| t.secret().clone());
 
@@ -233,11 +313,16 @@ mod tests {
     use super::*;
 
     fn claims(email_verified: Option<bool>) -> RawClaims {
+        claims_with_groups(email_verified, None)
+    }
+
+    fn claims_with_groups(email_verified: Option<bool>, groups: Option<Vec<String>>) -> RawClaims {
         RawClaims {
             sub: "user-123".to_string(),
             email: Some("rider@example.com".to_string()),
             email_verified,
             name: Some("Ada Rider".to_string()),
+            groups,
         }
     }
 
@@ -272,5 +357,23 @@ mod tests {
     fn missing_email_verified_claim_defaults_to_unverified() {
         let identity = identity_from_claims(claims(None));
         assert!(!identity.email_verified);
+    }
+
+    #[test]
+    fn groups_claim_is_kept_when_present() {
+        let identity = identity_from_claims(claims_with_groups(
+            Some(true),
+            Some(vec!["mcp-users".to_string(), "mcp-live-boards".to_string()]),
+        ));
+        assert_eq!(
+            identity.groups,
+            vec!["mcp-users".to_string(), "mcp-live-boards".to_string()]
+        );
+    }
+
+    #[test]
+    fn missing_groups_claim_defaults_to_empty_vec_not_an_error() {
+        let identity = identity_from_claims(claims(Some(true)));
+        assert_eq!(identity.groups, Vec::<String>::new());
     }
 }
