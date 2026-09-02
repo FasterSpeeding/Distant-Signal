@@ -289,6 +289,46 @@ impl FromRequestParts<App> for OptionalAuthenticatedUser {
     }
 }
 
+/// Wraps `AuthenticatedUser` with one more lookup against
+/// `chatbot_allowed_users` -- the DS-hosted chat orchestrator (Option B)'s
+/// cost/access gate, embedded-chatbot-dual-mode-design's Decision 5. See
+/// `docs/superpowers/plans/2026-09-02-embedded-chatbot-option-b.md` Task 2.
+///
+/// Deliberately a SEPARATE rejection shape from `AuthenticatedUser`'s own
+/// `401` ("no session at all"): a resolved, real user who simply isn't on
+/// the list is a genuinely different case and, per that design's own Error
+/// handling section, must not collapse into a `404` -- this isn't an
+/// ownership check hiding a secret resource, the feature's existence isn't
+/// a secret, so a logged-in-but-not-allowlisted user gets a plain `403`
+/// "not available for your account" instead.
+pub struct ChatbotAuthorizedUser(pub AuthenticatedUser);
+
+impl FromRequestParts<App> for ChatbotAuthorizedUser {
+    type Rejection = (axum::http::StatusCode, axum::Json<serde_json::Value>);
+
+    async fn from_request_parts(parts: &mut Parts, app: &App) -> Result<Self, Self::Rejection> {
+        let user = AuthenticatedUser::from_request_parts(parts, app)
+            .await
+            .map_err(|(status, msg)| (status, axum::Json(serde_json::json!({ "error": msg }))))?;
+        let allowed = crate::data::users::is_chatbot_allowed(&app.database, &user.id)
+            .await
+            .map_err(|err| {
+                tracing::error!(error = ?err, "chatbot allowlist lookup failed");
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({ "error": "chatbot allowlist lookup failed" })),
+                )
+            })?;
+        if !allowed {
+            return Err((
+                axum::http::StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({ "error": "chatbot_not_available" })),
+            ));
+        }
+        Ok(ChatbotAuthorizedUser(user))
+    }
+}
+
 #[cfg(test)]
 mod internal_oauth_middleware_tests {
     use super::*;
