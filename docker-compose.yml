@@ -102,7 +102,16 @@ services:
       # crates/api/src/data/config.rs: ServiceArguments
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       BIND_URL: 0.0.0.0:8080
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      INTERNAL_OAUTH_ISSUER_URL: ${INTERNAL_OAUTH_ISSUER_URL:?INTERNAL_OAUTH_ISSUER_URL must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_GROUP_POLLER_INCIDENTS: ${INTERNAL_OAUTH_GROUP_POLLER_INCIDENTS:-svc-poller-incidents}
+      INTERNAL_OAUTH_GROUP_POLLER_STATIONS: ${INTERNAL_OAUTH_GROUP_POLLER_STATIONS:-svc-poller-stations}
+      INTERNAL_OAUTH_GROUP_POLLER_TOCS: ${INTERNAL_OAUTH_GROUP_POLLER_TOCS:-svc-poller-tocs}
+      INTERNAL_OAUTH_GROUP_POLLER_LDBWS: ${INTERNAL_OAUTH_GROUP_POLLER_LDBWS:-svc-poller-ldbws}
+      INTERNAL_OAUTH_GROUP_POLLER_TFL: ${INTERNAL_OAUTH_GROUP_POLLER_TFL:-svc-poller-tfl}
+      INTERNAL_OAUTH_GROUP_TRUST_CONSUMER: ${INTERNAL_OAUTH_GROUP_TRUST_CONSUMER:-svc-trust-consumer}
+      INTERNAL_OAUTH_GROUP_SCHEDULE_INGEST: ${INTERNAL_OAUTH_GROUP_SCHEDULE_INGEST:-svc-schedule-ingest}
+      INTERNAL_OAUTH_GROUP_SCHEDULE_REFERENCE: ${INTERNAL_OAUTH_GROUP_SCHEDULE_REFERENCE:-svc-schedule-reference}
       REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
       # All five are required by the binary with no defaults, so they use
@@ -152,7 +161,11 @@ services:
       # local.env.example).
       RDM_INCIDENTS_BASE_URL: ${RDM_INCIDENTS_BASE_URL}
       RDM_API_KEY: ${RDM_INCIDENTS_API_KEY}
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
+      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_INCIDENTS:?INTERNAL_OAUTH_USERNAME_INCIDENTS must be set}
+      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_INCIDENTS:?INTERNAL_OAUTH_PASSWORD_INCIDENTS must be set}
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_INCIDENTS:-300}
       RUST_LOG: ${RUST_LOG:-info}
       API_INGEST_URL: http://api:8080/private/incidents
@@ -173,7 +186,11 @@ services:
       # docs).
       RDM_STATIONS_BASE_URL: ${RDM_STATIONS_BASE_URL}
       RDM_API_KEY: ${RDM_STATIONS_API_KEY}
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
+      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_STATIONS:?INTERNAL_OAUTH_USERNAME_STATIONS must be set}
+      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_STATIONS:?INTERNAL_OAUTH_PASSWORD_STATIONS must be set}
       # Real-world cadence per RSPS5050 P-03-00 Rev A §6 is 86400s (24h);
       # shortened via dev.env for local verification of the poll loop.
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_STATIONS:-86400}
@@ -197,7 +214,11 @@ services:
       # local.env.example).
       RDM_TOCS_BASE_URL: ${RDM_TOCS_BASE_URL}
       RDM_API_KEY: ${RDM_TOCS_API_KEY}
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
+      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_TOCS:?INTERNAL_OAUTH_USERNAME_TOCS must be set}
+      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_TOCS:?INTERNAL_OAUTH_PASSWORD_TOCS must be set}
       # Real-world cadence per RSPS5050 P-03-00 Rev A §3 is 86400s (24h);
       # shortened via dev.env for local verification of the poll loop.
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_TOCS:-86400}
@@ -222,7 +243,11 @@ services:
       LDBWS_BASE_URL: ${LDBWS_BASE_URL}
       RDM_API_KEY: ${LDBWS_API_KEY}
       NUM_ROWS: ${LDBWS_NUM_ROWS:-10}
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
+      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_LDBWS:?INTERNAL_OAUTH_USERNAME_LDBWS must be set}
+      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_LDBWS:?INTERNAL_OAUTH_PASSWORD_LDBWS must be set}
       # DESIGN.md §4 target cadence is 30-60s; 60 is the conservative end
       # given this feed's rate limit is unconfirmed.
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_LDBWS:-60}
@@ -247,7 +272,11 @@ services:
       TFL_BASE_URL: ${TFL_BASE_URL:-https://api.tfl.gov.uk}
       TFL_APP_KEY: ${TFL_APP_KEY:?TFL_APP_KEY must be set — see api-portal.tfl.gov.uk}
       TFL_MODES: ${TFL_MODES:-tube,dlr,overground,elizabeth-line,tram}
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
+      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_TFL:?INTERNAL_OAUTH_USERNAME_TFL must be set}
+      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_TFL:?INTERNAL_OAUTH_PASSWORD_TFL must be set}
       # TfL publishes no recommended cadence and offers no push or
       # conditional requests; 300s mirrors poller-incidents.
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_TFL:-300}
@@ -328,7 +357,11 @@ services:
       KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM}
       API_INGEST_URL: http://api:8080/private/train-events
       API_TRACKED_TRAINS_URL: http://api:8080/private/tracked-trains
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
+      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_TRUST_CONSUMER:?INTERNAL_OAUTH_USERNAME_TRUST_CONSUMER must be set}
+      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_TRUST_CONSUMER:?INTERNAL_OAUTH_PASSWORD_TRUST_CONSUMER must be set}
       # Matches docker/trust-consumer.Dockerfile's COPY of reference-data/
       # into the image, same pattern as aggregator's/api's own explicit
       # LINES_DIR: /app/lines above.
@@ -486,7 +519,11 @@ services:
       CHECK_TIMES: ${SCHEDULE_FEED_CHECK_TIMES:-22:00,22:30,23:00,23:30,00:00,00:30,01:00,01:30,16:00}
       RETENTION_KEEP_SEQUENCES: ${RETENTION_KEEP_SEQUENCES:-2}
       STABILITY_CYCLES: ${SCHEDULE_FEED_STABILITY_CYCLES:-2}
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
+      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_SCHEDULE_INGEST:?INTERNAL_OAUTH_USERNAME_SCHEDULE_INGEST must be set}
+      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_SCHEDULE_INGEST:?INTERNAL_OAUTH_PASSWORD_SCHEDULE_INGEST must be set}
       RUST_LOG: ${RUST_LOG:-info}
       API_INGEST_URL: http://api:8080/private/schedule-feed-ingests
     volumes:
