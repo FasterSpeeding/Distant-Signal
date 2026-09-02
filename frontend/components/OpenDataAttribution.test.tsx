@@ -18,24 +18,33 @@ describe('OpenDataAttribution', () => {
     // lowercase "powered", one word "NationalRail" -- see
     // docs/superpowers/plans/2026-09-01-rdm-attribution-wording.md.
     // This wording is specific to the Darwin/LDBWS feed, not an umbrella
-    // NRE claim covering every RDM feed this app consumes.
+    // NRE claim covering every RDM feed this app consumes. Only this
+    // phrase is linked -- the Knowledgebase Stations text appended right
+    // after it (see below) carries no link requirement of its own.
     renderWithMantine(<OpenDataAttribution />);
     const link = screen.getByText('powered by NationalRail');
     expect(link).toBeInTheDocument();
     expect(link).toHaveAttribute('href', 'https://www.nationalrail.co.uk');
   });
 
-  it("carries the Knowledgebase Stations feed's required attribution verbatim", () => {
+  it("carries the Knowledgebase Stations feed's required attribution verbatim, concatenated onto the Darwin line", () => {
     // NationalRail Knowledgebase Stations (JSON)'s Schedule 1 §8 fixes
-    // this exact string, distinct from and not merged with the Darwin
-    // line above -- see the plan doc's "Design" section for why a single
-    // combined line isn't used. Conditional: the audit did not confirm
-    // this is the actual product this app's Stations subscription is
-    // provisioned under (vs. the differently-scoped, blank-attribution
-    // "Stations Reference Data" product) -- see the plan doc's Task 1,
-    // Step 2.
+    // this exact string. Revised 2026-09-02: appended directly after the
+    // Darwin line's "powered by NationalRail" rather than its own
+    // separate line -- the two required strings share the word
+    // "NationalRail", so concatenating them keeps BOTH verbatim strings
+    // intact and complete within the rendered text (see
+    // OpenDataAttribution.tsx's own comment for the exact substring
+    // argument). Asserting on the wrapping element's full text content,
+    // not a `getByText` exact match, since the required phrase now spans
+    // the linked node plus a trailing plain-text node. Conditional: the
+    // audit did not confirm this is the actual product this app's
+    // Stations subscription is provisioned under (vs. the
+    // differently-scoped, blank-attribution "Stations Reference Data"
+    // product) -- see the plan doc's Task 1, Step 2.
     renderWithMantine(<OpenDataAttribution />);
-    expect(screen.getByText('NationalRail (Train Information Services Ltd)')).toBeInTheDocument();
+    const link = screen.getByText('powered by NationalRail');
+    expect(link.parentElement).toHaveTextContent('powered by NationalRail (Train Information Services Ltd)');
   });
 
   it('is a landmark, so it is reachable rather than just visible', () => {

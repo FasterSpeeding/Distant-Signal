@@ -41,12 +41,18 @@ import { Box, Text } from '@mantine/core';
  *     conclusion (see the plan doc above, Task 1, Step 1).
  *   - Knowledgebase TOC data: Schedule 1 blank. Same "any reasonable
  *     manner" reasoning as Incidents applies; no line of its own here.
- * Two required strings that both name a National Rail entity are NOT
- * merged/paraphrased into one combined line -- see the plan doc's "Design"
- * section for why: they're independently negotiated Schedule 1 fields with
- * no textual overlap, and this file's own TfL precedent above ("wording is
- * fixed -- do not paraphrase it") already rules out inventing a hybrid
- * string that's verbatim to neither.
+ * The two required strings above ARE concatenated onto one line (revised
+ * 2026-09-02, superseding the original "keep them on separate lines"
+ * decision) -- but this is not the paraphrase/hybrid-wording move the TfL
+ * precedent above rules out. They share the word "NationalRail", so
+ * "powered by NationalRail (Train Information Services Ltd)" contains BOTH
+ * required strings intact and complete: "powered by NationalRail" as its
+ * first 24 characters, and "NationalRail (Train Information Services Ltd)"
+ * as the remainder starting right after "by ". Neither string is altered
+ * or reworded -- both are still present character-for-character, just
+ * without a redundant second occurrence of "NationalRail" between them.
+ * Only the "powered by NationalRail" portion is linked, matching the
+ * Darwin/LDBWS clause's own courtesy-link association from before.
  *
  * Network Rail Infrastructure Limited's own open-data feeds (the TRUST
  * movement feed powering individual train tracking) are a THIRD, distinct
@@ -84,9 +90,7 @@ export function OpenDataAttribution() {
         >
           powered by NationalRail
         </a>
-      </Text>
-      <Text size="xs" c="dimmed">
-        NationalRail (Train Information Services Ltd)
+        {' (Train Information Services Ltd)'}
       </Text>
       <Text size="xs" c="dimmed">
         Live train movement data from Network Rail&apos;s open data feeds
