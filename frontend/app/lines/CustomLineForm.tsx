@@ -7,7 +7,7 @@ import { Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseB
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { useNeedsLogin } from '@/components/useNeedsLogin';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginPromptModal } from '@/components/LoginPromptModal';
 import type { CustomLineDetail } from '@/lib/types';
 
 /** Posts to the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
@@ -218,11 +218,9 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         </Stack>
       </Collapse>
       {error && <Text c="red">{error}</Text>}
-      {needsLoginState.needsLogin && (
-        <LoginLink underline="always">
-          Log in to {existingLine ? 'edit' : 'create'} a line
-        </LoginLink>
-      )}
+      <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
+        Log in to {existingLine ? 'edit' : 'create'} a custom line.
+      </LoginPromptModal>
       {cancelHref ? (
         // Paired actions sit on one right-aligned row so the secondary
         // reads as a peer of the primary rather than an afterthought
