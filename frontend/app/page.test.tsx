@@ -51,6 +51,22 @@ describe('DashboardPage', () => {
     );
   });
 
+  // NotificationsToggle (Decision 6's single global toggle) renders itself
+  // unconditionally on this page -- both branches below -- but gates on
+  // browser capability (`'serviceWorker' in navigator && 'PushManager' in
+  // window`), which jsdom has neither of by default. No component mock is
+  // needed for this page's own tests as a result: the real component
+  // already degrades to rendering nothing here, same as it would in any
+  // browser lacking Push API support. See NotificationsToggle.test.tsx for
+  // the component's own behavior under a stubbed-supported browser.
+  it('renders no "Enable notifications" control under jsdom (no Push API support)', async () => {
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByRole('button', { name: /enable notifications/i })).not.toBeInTheDocument();
+  });
+
   it('anonymous, a line disrupted: lists it, worst-first', async () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });

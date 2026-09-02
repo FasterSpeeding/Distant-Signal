@@ -11,6 +11,7 @@ import {
 import { DISPLAYED_MODES_PARAM, MERGED_TFL_LINE_IDS } from '@/lib/modes';
 import { LineStatusCard } from '@/components/LineStatusCard';
 import { LoginLink } from '@/components/LoginLink';
+import { NotificationsToggle } from '@/components/NotificationsToggle';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank, worstStatus } from '@/lib/severity';
@@ -104,7 +105,14 @@ export default async function DashboardPage() {
     return (
       <Stack p="lg" gap="xl">
         <Stack gap="xs">
-          <Title order={1}>Distant Signal</Title>
+          <Group justify="space-between" align="flex-start">
+            <Title order={1}>Distant Signal</Title>
+            {/* Single global toggle (Decision 6), not per-line -- renders
+                for every visitor (Tier 2) regardless of pinned lines, so it
+                lives beside the page's own header rather than nested inside
+                either the anonymous or logged-in section below. */}
+            <NotificationsToggle />
+          </Group>
           <Text c="dimmed">
             Live UK rail line status, train tracking, and Delay Repay support — pin the lines and
             stations you care about once you&apos;re logged in.
@@ -186,6 +194,9 @@ export default async function DashboardPage() {
 
   return (
     <Stack p="lg" gap="xl">
+      <Group justify="flex-end">
+        <NotificationsToggle />
+      </Group>
       <Stack gap="md">
         <Group justify="space-between">
           <Title order={1}>Your Lines</Title>
