@@ -17,6 +17,11 @@ serde_json = "1.0.149"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# Same version/feature spec as `crates/api`'s existing direct dependency
+# (deflate-only, no default features) -- the real delivery zip uses
+# standard Deflate compression (confirmed via `unzip -v timetable_full.zip`
+# during this crate's research), so no other compression method is needed.
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3"

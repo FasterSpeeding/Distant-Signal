@@ -15,9 +15,9 @@ pub struct Config {
     #[arg(long, env, default_value = "/data/schedule-feed")]
     pub storage_dir: PathBuf,
 
-    /// How often to check `storage_dir` for a new complete sequence.
+    /// How often to check `storage_dir` for a new complete delivery.
     /// Independent of the underlying daily delivery cadence -- see
-    /// Decision 4: most checks find nothing new, since a fresh sequence
+    /// Decision 4: most checks find nothing new, since a fresh delivery
     /// only lands roughly once a day, but reading an already-local
     /// directory listing is cheap.
     #[arg(long, env, default_value_t = 1800)]

@@ -1,14 +1,16 @@
 //! `schedule-reference`: a sibling container in the `schedulefeed` Pod.
-//! Once `schedule-ingest` has moved a verified-complete delivery into
-//! `storage_dir/<n>/`, reads that sequence's `RJTTF<n>MCA.txt` (`TI`
-//! records) and `RJTTF<n>MSN.txt` (`A` records) directly off the
-//! already-local, read-only-mounted PVC, resolves a STANOX->CRS table, and
-//! POSTs it to `api`'s `/private/stanox-crs`. See
+//! Once `schedule-ingest` has extracted a verified-stable delivery into
+//! `storage_dir/<timestamp>/` (see
+//! `docs/superpowers/specs/2026-09-03-schedule-feed-zip-delivery-correction.md`),
+//! reads that delivery's `RJTTF*MCA.txt` (`TI` records) and `RJTTF*MSN.txt`
+//! (`A` records) directly off the already-local, read-only-mounted PVC,
+//! resolves a STANOX->CRS table, and POSTs it to `api`'s
+//! `/private/stanox-crs`. See
 //! docs/superpowers/specs/2026-09-01-schedule-ingest-stanox-crs-table-design.md.
 
 mod config;
+mod discovery;
 mod parser;
-mod sequence;
 
 use std::time::Duration;
 
@@ -39,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
             password: config.internal_oauth_password.clone(),
         });
     let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
-    let mut last_processed_sequence: Option<u32> = None;
+    let mut last_processed_delivery: Option<String> = None;
 
     loop {
         interval.tick().await;
@@ -47,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
         let result = poll_once(
             &client,
             &config,
-            &mut last_processed_sequence,
+            &mut last_processed_delivery,
             &internal_oauth,
         )
         .await;
@@ -81,44 +83,50 @@ fn read_prefixed_lines(path: &std::path::Path, prefix: &str) -> anyhow::Result<S
     Ok(out)
 }
 
-/// Scans for the highest new complete sequence, skips if unchanged since
-/// `last_processed_sequence`, else reads+parses+POSTs it and only advances
-/// `last_processed_sequence` on a successful POST.
+/// Scans for the most recent complete delivery, skips if unchanged since
+/// `last_processed_delivery`, else reads+parses+POSTs it and only advances
+/// `last_processed_delivery` on a successful POST.
 async fn poll_once(
     client: &Client,
     config: &Config,
-    last_processed_sequence: &mut Option<u32>,
+    last_processed_delivery: &mut Option<String>,
     internal_oauth: &common::oauth_client::OAuthTokenCache,
 ) -> anyhow::Result<()> {
-    let Some(sequence) = sequence::highest_complete_sequence(&config.storage_dir)? else {
-        tracing::debug!("no complete MCA+MSN sequence directory found yet");
+    let Some(delivery) = discovery::latest_complete_delivery(&config.storage_dir)? else {
+        tracing::debug!("no complete MCA+MSN delivery directory found yet");
         return Ok(());
     };
-    if Some(sequence) == *last_processed_sequence {
+    if Some(&delivery.dir_name) == last_processed_delivery.as_ref() {
         tracing::debug!(
-            sequence,
-            "no new sequence since last successful parse; nothing to do"
+            delivery = %delivery.dir_name,
+            "no new delivery since last successful parse; nothing to do"
         );
         return Ok(());
     }
 
-    let sequence_dir = config.storage_dir.join(sequence.to_string());
-    let mca_path = sequence_dir.join(format!("RJTTF{sequence}MCA.txt"));
-    let msn_path = sequence_dir.join(format!("RJTTF{sequence}MSN.txt"));
-
-    let ti_text = read_prefixed_lines(&mca_path, "TI")?;
-    let a_text = read_prefixed_lines(&msn_path, "A")?;
+    let ti_text = read_prefixed_lines(&delivery.mca_path, "TI")?;
+    let a_text = read_prefixed_lines(&delivery.msn_path, "A")?;
 
     let ti_records = parser::parse_ti_lines(&ti_text);
     let msn_crs = parser::parse_msn_a_lines(&a_text);
     let rows = parser::resolve(&ti_records, &msn_crs);
 
     tracing::info!(
-        sequence,
+        delivery = %delivery.dir_name,
         ti_records = ti_records.len(),
         resolved = rows.len(),
-        "parsed stanox/crs table from sequence"
+        "parsed stanox/crs table from delivery"
     );
+
+    // `common::StanoxCrsRecord::source_sequence` predates this crate's own
+    // zip/mtime-delivery rework and is shared with `crates/trust-consumer`
+    // -- out of this fix's scope to retype. Best-effort only: the embedded
+    // number in the MCA filename (e.g. the `942` in `RJTTF942MCA.txt`) is
+    // NOT relied on to decide which delivery is newest (see `discovery.rs`
+    // and this repo's 2026-09-03 correction note) -- it's used here purely
+    // as informational provenance for this one downstream table, falling
+    // back to `0` if the filename doesn't carry a parseable number.
+    let source_sequence = embedded_sequence_number(&delivery.mca_path).unwrap_or(0);
 
     let records: Vec<common::StanoxCrsRecord> = rows
         .into_iter()
@@ -127,7 +135,7 @@ async fn poll_once(
             crs: row.crs,
             tiploc: row.tiploc,
             station_name: row.station_name,
-            source_sequence: sequence as i32,
+            source_sequence,
         })
         .collect();
 
@@ -145,8 +153,21 @@ async fn poll_once(
     // still-local, unchanged files next cycle (cheap), matching the
     // spec's Error handling: "a failed POST just means the already-
     // computed in-memory table is discarded and rebuilt... next cycle".
-    *last_processed_sequence = Some(sequence);
+    *last_processed_delivery = Some(delivery.dir_name);
     Ok(())
+}
+
+/// Best-effort extraction of the digits embedded in a real delivery's own
+/// MCA filename (e.g. `942` from `RJTTF942MCA.txt`) -- see this function's
+/// one call site for why this is informational only, never used to decide
+/// delivery identity/recency.
+fn embedded_sequence_number(mca_path: &std::path::Path) -> Option<i32> {
+    let name = mca_path.file_name()?.to_str()?;
+    let digits = name.strip_prefix("RJTTF")?.strip_suffix("MCA.txt")?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 #[cfg(test)]
@@ -170,5 +191,29 @@ mod poll_once_tests {
         let records = parser::parse_ti_lines(&ti_text);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].tiploc, "EUSTON");
+    }
+
+    #[test]
+    fn embedded_sequence_number_parses_the_real_filename_shape() {
+        assert_eq!(
+            embedded_sequence_number(std::path::Path::new("RJTTF942MCA.txt")),
+            Some(942)
+        );
+        assert_eq!(
+            embedded_sequence_number(std::path::Path::new("/some/dir/RJTTF1MCA.txt")),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn embedded_sequence_number_is_none_for_a_non_matching_shape() {
+        assert_eq!(
+            embedded_sequence_number(std::path::Path::new("not-a-real-name.txt")),
+            None
+        );
+        assert_eq!(
+            embedded_sequence_number(std::path::Path::new("RJTTFabcMCA.txt")),
+            None
+        );
     }
 }

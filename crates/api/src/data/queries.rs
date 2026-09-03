@@ -532,38 +532,47 @@ pub async fn last_station_samples_fetch(
     Ok(polled_at)
 }
 
-/// Timestamp of the most recent recorded schedule-feed ingest, or `None` if
-/// `schedule_feed_ingests` has never been populated. Backs both
+/// Timestamp of the most recently *delivered* schedule feed (i.e.
+/// `MAX(delivered_at)`, the delivery zip's own mtime -- not
+/// `MAX(ingested_at)`, when this table happened to be written to), or
+/// `None` if `schedule_feed_ingests` has never been populated. Backs both
 /// `GET /private/schedule-feed-ingests` (the `schedule-ingest` crate's
-/// startup check, once it exists) and the public `/public/freshness`
-/// endpoint's `schedule_feed` field.
+/// startup check) and the public `/public/freshness` endpoint's
+/// `schedule_feed` field -- using `delivered_at` here is what makes that
+/// freshness signal mean "when did a real feed delivery last land", not
+/// "when did `schedule-ingest` last happen to run a cycle that processed
+/// one" (see
+/// docs/superpowers/specs/2026-09-03-schedule-feed-zip-delivery-correction.md).
 pub async fn last_schedule_feed_fetch(
     pool: &PgPool,
 ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-    let (ingested_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
-        sqlx::query_as("SELECT MAX(ingested_at) FROM schedule_feed_ingests")
+    let (delivered_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT MAX(delivered_at) FROM schedule_feed_ingests")
             .fetch_one(pool)
             .await?;
-    Ok(ingested_at)
+    Ok(delivered_at)
 }
 
-/// Records one verified schedule-feed delivery. `ON CONFLICT (sequence) DO
-/// NOTHING`, not an upsert -- a re-POST of an already-recorded sequence
-/// (e.g. after `schedule-ingest` restarts mid-cycle and re-observes a
-/// delivery it already recorded) is a harmless no-op, not an error,
+/// Records one verified schedule-feed delivery, keyed on `delivered_at` --
+/// the delivery zip's own mtime, the one stable identifier a plain-overwrite
+/// delivery has (there is no sequence number -- see this table's own
+/// migration). `ON CONFLICT (delivered_at) DO NOTHING`, not an upsert -- a
+/// re-POST of an already-recorded delivery (e.g. after `schedule-ingest`
+/// restarts and re-observes a delivery it already recorded, since it keeps
+/// no persistent state of its own) is a harmless no-op, not an error,
 /// matching this route's own idempotency needs -- `schedule-ingest` itself
 /// doesn't track "have I already POSTed this" locally (state lives here).
 pub async fn insert_schedule_feed_ingest(
     pool: &PgPool,
-    sequence: i32,
+    delivered_at: chrono::DateTime<chrono::Utc>,
     ingested_at: chrono::DateTime<chrono::Utc>,
     files: &serde_json::Value,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO schedule_feed_ingests (sequence, ingested_at, files) VALUES ($1, $2, $3) \
-         ON CONFLICT (sequence) DO NOTHING",
+        "INSERT INTO schedule_feed_ingests (delivered_at, ingested_at, files) VALUES ($1, $2, $3) \
+         ON CONFLICT (delivered_at) DO NOTHING",
     )
-    .bind(sequence)
+    .bind(delivered_at)
     .bind(ingested_at)
     .bind(files)
     .execute(pool)
@@ -1548,33 +1557,39 @@ mod schedule_feed_ingest_query_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                schedule_feed_insert_then_last_fetch_returns_the_ingested_at \
+                schedule_feed_insert_then_last_fetch_returns_the_delivered_at \
                 -- --ignored`"]
-    async fn schedule_feed_insert_then_last_fetch_returns_the_ingested_at() {
+    async fn schedule_feed_insert_then_last_fetch_returns_the_delivered_at() {
         use chrono::SubsecRound;
 
         let pool = test_pool().await;
-        // `schedule_feed_ingests.ingested_at` is `TIMESTAMPTZ`, which
-        // Postgres only ever stores at microsecond precision (it silently
-        // truncates, not rounds, anything finer) -- whereas
-        // `chrono::Utc::now()` captures nanosecond precision from the
-        // system clock. Truncate the in-memory expectation to the same
-        // microsecond precision the round trip through Postgres actually
-        // guarantees, rather than asserting bit-for-bit equality against a
-        // precision level the database can't preserve.
-        let ingested_at = chrono::Utc::now().trunc_subsecs(6);
+        // `schedule_feed_ingests.delivered_at`/`ingested_at` are both
+        // `TIMESTAMPTZ`, which Postgres only ever stores at microsecond
+        // precision (it silently truncates, not rounds, anything finer) --
+        // whereas `chrono::Utc::now()` captures nanosecond precision from
+        // the system clock. Truncate the in-memory expectations to the
+        // same microsecond precision the round trip through Postgres
+        // actually guarantees, rather than asserting bit-for-bit equality
+        // against a precision level the database can't preserve.
+        let delivered_at = chrono::Utc::now().trunc_subsecs(6);
+        let ingested_at = (delivered_at + chrono::Duration::minutes(5)).trunc_subsecs(6);
         let files = serde_json::json!([{"name": "TEST.DAT", "bytes": 123}]);
 
-        insert_schedule_feed_ingest(&pool, 900001, ingested_at, &files)
+        insert_schedule_feed_ingest(&pool, delivered_at, ingested_at, &files)
             .await
             .expect("insert schedule feed ingest");
 
         let last = last_schedule_feed_fetch(&pool)
             .await
             .expect("last_schedule_feed_fetch");
-        assert_eq!(last, Some(ingested_at));
+        assert_eq!(
+            last,
+            Some(delivered_at),
+            "freshness must reflect delivered_at, not ingested_at"
+        );
 
-        sqlx::query("DELETE FROM schedule_feed_ingests WHERE sequence = 900001")
+        sqlx::query("DELETE FROM schedule_feed_ingests WHERE delivered_at = $1")
+            .bind(delivered_at)
             .execute(&pool)
             .await
             .expect("cleanup fixture row");
@@ -1582,43 +1597,46 @@ mod schedule_feed_ingest_query_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
-                schedule_feed_reinserting_the_same_sequence_does_not_change_the_row \
+                schedule_feed_reinserting_the_same_delivered_at_does_not_change_the_row \
                 -- --ignored`"]
-    async fn schedule_feed_reinserting_the_same_sequence_does_not_change_the_row() {
+    async fn schedule_feed_reinserting_the_same_delivered_at_does_not_change_the_row() {
         use chrono::SubsecRound;
 
         let pool = test_pool().await;
         // See the trunc_subsecs(6) comment in
-        // `schedule_feed_insert_then_last_fetch_returns_the_ingested_at`
-        // above -- `ingested_at` is `TIMESTAMPTZ`, microsecond precision
-        // only, so the in-memory value must match that precision to
-        // compare equal after a round trip through Postgres.
-        let first_ingested_at = chrono::Utc::now().trunc_subsecs(6);
+        // `schedule_feed_insert_then_last_fetch_returns_the_delivered_at`
+        // above.
+        let delivered_at = chrono::Utc::now().trunc_subsecs(6);
+        let first_ingested_at = delivered_at.trunc_subsecs(6);
         let first_files = serde_json::json!([{"name": "TEST-A.DAT", "bytes": 111}]);
 
-        insert_schedule_feed_ingest(&pool, 900002, first_ingested_at, &first_files)
+        insert_schedule_feed_ingest(&pool, delivered_at, first_ingested_at, &first_files)
             .await
             .expect("insert schedule feed ingest");
 
-        // A different ingested_at and files -- ON CONFLICT DO NOTHING means
-        // this second insert must be a harmless no-op, not an upsert.
-        let second_ingested_at = first_ingested_at + chrono::Duration::hours(1);
+        // Same delivered_at (this is the whole point -- a re-POST of an
+        // already-recorded delivery, e.g. after schedule-ingest restarts),
+        // but a different ingested_at and files -- ON CONFLICT DO NOTHING
+        // means this second insert must be a harmless no-op, not an
+        // upsert.
+        let second_ingested_at = (first_ingested_at + chrono::Duration::hours(1)).trunc_subsecs(6);
         let second_files = serde_json::json!([{"name": "TEST-B.DAT", "bytes": 222}]);
-        insert_schedule_feed_ingest(&pool, 900002, second_ingested_at, &second_files)
+        insert_schedule_feed_ingest(&pool, delivered_at, second_ingested_at, &second_files)
             .await
-            .expect("re-insert schedule feed ingest with the same sequence");
+            .expect("re-insert schedule feed ingest with the same delivered_at");
 
         let last = last_schedule_feed_fetch(&pool)
             .await
             .expect("last_schedule_feed_fetch");
         assert_eq!(
             last,
-            Some(first_ingested_at),
+            Some(delivered_at),
             "the original row must survive unchanged"
         );
 
         let (stored_files,): (serde_json::Value,) =
-            sqlx::query_as("SELECT files FROM schedule_feed_ingests WHERE sequence = 900002")
+            sqlx::query_as("SELECT files FROM schedule_feed_ingests WHERE delivered_at = $1")
+                .bind(delivered_at)
                 .fetch_one(&pool)
                 .await
                 .expect("fetch stored row");
@@ -1627,7 +1645,8 @@ mod schedule_feed_ingest_query_tests {
             "the original files payload must survive unchanged"
         );
 
-        sqlx::query("DELETE FROM schedule_feed_ingests WHERE sequence = 900002")
+        sqlx::query("DELETE FROM schedule_feed_ingests WHERE delivered_at = $1")
+            .bind(delivered_at)
             .execute(&pool)
             .await
             .expect("cleanup fixture row");
@@ -1640,14 +1659,18 @@ mod schedule_feed_ingest_query_tests {
     async fn schedule_feed_last_fetch_against_an_empty_table_returns_none() {
         let pool = test_pool().await;
 
-        // No fixture row inserted/deleted here for this sequence -- this
+        // No fixture row inserted/deleted here for this timestamp -- this
         // asserts the zero-rows-for-this-value case, matching
         // `last_stations_fetch`'s own doc comment about `MAX(...)` over zero
         // rows returning one row with a NULL column.
-        sqlx::query("DELETE FROM schedule_feed_ingests WHERE sequence = 900003")
+        let sentinel_delivered_at = chrono::DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        sqlx::query("DELETE FROM schedule_feed_ingests WHERE delivered_at = $1")
+            .bind(sentinel_delivered_at)
             .execute(&pool)
             .await
-            .expect("ensure fixture sequence is absent");
+            .expect("ensure fixture delivered_at is absent");
 
         let last = last_schedule_feed_fetch(&pool)
             .await

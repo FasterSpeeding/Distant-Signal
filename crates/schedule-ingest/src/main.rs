@@ -1,51 +1,48 @@
 //! `schedule-ingest`: watches a locally mounted directory for a pushed CIF
-//! SCHEDULE feed delivery from Network Rail/RDG, verifies completeness
-//! against the delivery's own manifest, and forwards completed sequences to
-//! the `api` crate's ingestion endpoint.
+//! SCHEDULE feed delivery from Network Rail/RDG (a single `.zip` archive,
+//! overwritten in place on every new delivery), extracts it once stable,
+//! and forwards each new delivery to the `api` crate's ingestion endpoint.
 //!
 //! See `docs/superpowers/specs/2026-09-01-schedule-feed-push-design.md` for
-//! the full design and `docs/superpowers/plans/2026-09-01-schedule-feed-push-ingestion.md`
-//! for the implementation plan this crate is built against. This service
-//! never dials out itself — a sibling SFTPGo container receives the push
-//! and writes into `watch_dir`; this crate only reads what lands there (see
-//! `config.rs`).
+//! the original design and
+//! `docs/superpowers/specs/2026-09-03-schedule-feed-zip-delivery-correction.md`
+//! for the correction that reshaped this crate around the real delivery's
+//! actual outer shape: one zip, no manifest, no sequence number -- see
+//! `delivery.rs` for the replacement detection/dedup/extraction logic. This
+//! service never dials out itself -- a sibling SFTPGo container receives the
+//! push and writes into `watch_dir`; this crate only reads what lands there
+//! (see `config.rs`).
 //!
-//! ## The last-ingested-sequence gap (Task 5's own scoped limitation)
+//! ## The last-ingested-mtime gap (same shape as the old sequence gap)
 //!
 //! `GET /private/schedule-feed-ingests` (see `crates/api/src/routes/ingest.rs`)
-//! currently only returns `fetched_at` — the last ingest *timestamp* — not
-//! the last ingested *sequence number*. That means this crate cannot learn
-//! the last sequence from `api` on startup. Since `schedule-ingest` keeps no
-//! persistent state of its own (state lives in `api`, per the design), this
-//! is a real gap between what Task 4 built and what Task 5 needs.
-//!
-//! Resolved here by tracking the last-ingested sequence **in-memory only**
-//! (see `last_ingested_sequence` in [`main`]'s loop state). This is
-//! acceptable because [`manifest::SequenceRelation::Gap`] is a loud-log-
-//! and-still-proceed signal (RSPS5046 §7.4), never a hard blocker — a
-//! `None` (fresh process, no in-memory history yet) already correctly
-//! classifies as `Expected` via `classify_sequence(None, current)`. A
-//! process restart therefore just costs one cycle where a genuine gap
-//! wouldn't be logged/counted, which is an honestly-scoped limitation, not
-//! a silently swallowed one. Extending the route to also return the last
-//! sequence is a natural follow-up, but that's an `api` change and out of
-//! scope for this task, which owns `schedule-ingest` only.
+//! only returns `fetched_at` -- the last known-delivered timestamp -- not a
+//! value this process could seed `last_ingested_mtime` from cheaply without
+//! re-deriving state. Since `schedule-ingest` keeps no persistent state of
+//! its own (state lives in `api`, per the design), a process restart loses
+//! `last_ingested_mtime` and `known_stable`/`known_stray_files` -- the next
+//! cycle will find the same zip (still present in `watch_dir`, since this
+//! crate reads it in place and never deletes/moves it -- see `delivery.rs`)
+//! and re-extract + re-POST it. Extraction into the same timestamp-derived
+//! directory is idempotent, and the `api` insert is `ON CONFLICT (delivered_at)
+//! DO NOTHING`, so a restart costs one harmless redundant cycle, not a
+//! silently swallowed gap.
 
 mod config;
-mod manifest;
+mod delivery;
 mod scan;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{DateTime, NaiveTime, Utc};
 use chrono_tz::Europe::London;
 use clap::Parser;
 use config::Config;
-use manifest::SequenceRelation;
+use delivery::DeliveryRelation;
 use reqwest::Client;
-use scan::{DirSnapshot, StabilityTracker, scan_incoming};
+use scan::{StabilityTracker, scan_incoming};
 use serde::Serialize;
 
 /// Per-request timeout — matches the other pollers' identical rationale
@@ -101,18 +98,14 @@ async fn main() -> anyhow::Result<()> {
 
     let mut tracker = StabilityTracker::new();
     let mut known_stable: HashSet<String> = HashSet::new();
-    let mut last_ingested_sequence: Option<u32> = None;
+    let mut known_stray_files: HashSet<String> = HashSet::new();
+    let mut last_ingested_mtime: Option<SystemTime> = None;
     let mut pending_post: Option<ScheduleFeedIngestRequest> = None;
 
     // `tokio::time::interval`'s first `tick()` fires immediately (its
     // default `MissedTickBehavior::Burst`), so every run -- including the
     // very first -- scans right away with no special-cased bypass needed;
-    // subsequent ticks are `poll_interval_secs` apart. This replaces the
-    // old design's "sleep until the next of ~9 daily HH:MM check-time
-    // slots" scheduling, which could leave a delivery that lands outside
-    // every configured slot unprocessed for hours -- exactly the bug a
-    // real DTD delivery hit by landing mid-afternoon, at SFTP account
-    // provisioning time, well outside every slot.
+    // subsequent ticks are `poll_interval_secs` apart.
     let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
 
     loop {
@@ -137,7 +130,8 @@ async fn main() -> anyhow::Result<()> {
             &internal_oauth,
             &mut tracker,
             &mut known_stable,
-            &mut last_ingested_sequence,
+            &mut known_stray_files,
+            &mut last_ingested_mtime,
             &mut pending_post,
             is_final_check_of_day,
         )
@@ -153,16 +147,16 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// One poll interval's worth of work: scan `watch_dir`, feed the snapshot into
-/// the (process-lifetime) `StabilityTracker`, and if a manifest has landed
-/// and is fully stable — itself and every file it lists — move the
-/// delivery into `storage_dir` and record it with `api`.
+/// One poll interval's worth of work: scan `watch_dir`, feed the snapshot
+/// into the (process-lifetime) `StabilityTracker`, and if the newest `.zip`
+/// candidate is stable and represents a new delivery (per its mtime --
+/// see `delivery::classify_delivery`), extract it into `storage_dir` and
+/// record it with `api`.
 ///
 /// Returns `Err` only for genuinely unexpected failures (e.g. `watch_dir`
-/// itself unreadable); every "not ready yet" / "parse failed, try again
-/// next cycle" outcome is handled internally via logging and an early
-/// `Ok(())`, so a single bad cycle never crashes the process — see this
-/// module's doc comment and the plan's Task 5 Step 2.
+/// itself unreadable); every "not ready yet" / "already ingested" outcome
+/// is handled internally via logging and an early `Ok(())`, so a single bad
+/// cycle never crashes the process.
 #[allow(clippy::too_many_arguments)]
 async fn run_scan_cycle(
     client: &Client,
@@ -170,34 +164,34 @@ async fn run_scan_cycle(
     internal_oauth: &common::oauth_client::OAuthTokenCache,
     tracker: &mut StabilityTracker,
     known_stable: &mut HashSet<String>,
-    last_ingested_sequence: &mut Option<u32>,
+    known_stray_files: &mut HashSet<String>,
+    last_ingested_mtime: &mut Option<SystemTime>,
     pending_post: &mut Option<ScheduleFeedIngestRequest>,
     is_final_check_of_day: bool,
 ) -> anyhow::Result<()> {
-    // Retry a previously-moved-but-not-yet-successfully-posted delivery
-    // first. The files already live under `storage_dir/<nnn>/` (moved
-    // there once, never moved back on a failed POST — see this function's
-    // tail below) — this only retries the HTTP call, using the exact sizes
-    // observed at move time, not a re-stat. If this process restarts
-    // before a pending POST ever succeeds, that in-memory pending record
-    // is lost too (same class of limitation as the sequence-gap gap
-    // documented in this module's doc comment) — a real but narrow gap,
+    // Retry a previously-extracted-but-not-yet-successfully-posted delivery
+    // first. Its files already live under `storage_dir/<timestamp>/` (see
+    // this function's tail below) -- this only retries the HTTP call, using
+    // the exact sizes observed at extraction time, not a re-stat. If this
+    // process restarts before a pending POST ever succeeds, that in-memory
+    // pending record is lost too (same class of limitation as the mtime gap
+    // documented in this module's doc comment) -- a real but narrow gap,
     // not silently pretended away.
     if let Some(pending) = pending_post.take() {
         match post_ingest(client, config, internal_oauth, &pending).await {
             Ok(()) => {
                 tracing::info!(
-                    sequence = pending.sequence,
+                    delivered_at = %pending.delivered_at,
                     "retried and succeeded posting a previously-failed ingest record"
                 );
-                *last_ingested_sequence = Some(pending.sequence as u32);
+                *last_ingested_mtime = Some(SystemTime::from(pending.delivered_at));
                 metrics::gauge!(common::metrics::metric_name(
-                    "schedule_feed_last_ingest_sequence"
+                    "schedule_feed_last_ingest_delivered_at_seconds"
                 ))
-                .set(pending.sequence as f64);
+                .set(pending.delivered_at.timestamp() as f64);
             }
             Err(err) => {
-                tracing::error!(error = ?err, sequence = pending.sequence, "retry POST still failing; will retry again next cycle");
+                tracing::error!(error = ?err, delivered_at = %pending.delivered_at, "retry POST still failing; will retry again next cycle");
                 *pending_post = Some(pending);
             }
         }
@@ -212,99 +206,93 @@ async fn run_scan_cycle(
     // drop-and-restart-from-zero behavior for the same filenames.
     known_stable.retain(|name| snapshot.0.contains_key(name));
 
-    let mut candidates = find_manifest_candidates(&snapshot);
+    let mut candidates = delivery::find_zip_candidates(&snapshot);
     if candidates.len() > 1 {
-        tracing::warn!(candidates = ?candidates, "multiple manifest-shaped files present at once; using the lexicographically greatest");
+        tracing::warn!(
+            candidates = ?candidates.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>(),
+            "multiple .zip files present at once in watch_dir; using the most recently modified"
+        );
     }
-    let Some(manifest_filename) = candidates.pop() else {
-        tracing::debug!("no manifest file present in watch_dir yet");
-        return Ok(());
-    };
+    let winner = candidates.pop();
 
-    if !known_stable.contains(&manifest_filename) {
-        tracing::info!(manifest = %manifest_filename, "manifest file present but not yet stable");
-        return Ok(());
-    }
-
-    let manifest_path = config.watch_dir.join(&manifest_filename);
-    let content = match std::fs::read_to_string(&manifest_path) {
-        Ok(content) => content,
-        Err(err) => {
-            tracing::error!(error = ?err, manifest = %manifest_filename, "failed to read a stable manifest file; retrying next cycle");
-            return Ok(());
+    // Anything in `watch_dir` that isn't this cycle's winning zip candidate
+    // is unrecognized -- a stray file that would otherwise sit there
+    // completely silently (the exact gap that made the original
+    // zip-vs-manifest mismatch this crate was built to fix so hard to
+    // diagnose in production). Logged at `warn`, but only when the set of
+    // stray names actually changes since the last cycle -- otherwise a
+    // single leftover file would re-log every `poll_interval_secs` forever,
+    // drowning out the signal.
+    let stray: HashSet<String> = snapshot
+        .0
+        .keys()
+        .filter(|name| Some(name.as_str()) != winner.as_ref().map(|(name, _)| name.as_str()))
+        .cloned()
+        .collect();
+    if &stray != known_stray_files {
+        if !stray.is_empty() {
+            let mut names: Vec<&String> = stray.iter().collect();
+            names.sort();
+            tracing::warn!(files = ?names, "watch_dir contains file(s) not recognized as the current delivery candidate");
         }
-    };
-
-    // A manifest could theoretically still be mid-write despite mtime/size
-    // stability in a pathological case -- don't crash the process over one
-    // bad parse, just log and retry next cycle.
-    let parsed = match manifest::parse(&content) {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            tracing::error!(error = ?err, manifest = %manifest_filename, "failed to parse a stable manifest's content; retrying next cycle");
-            return Ok(());
-        }
-    };
-
-    match manifest::classify_sequence(*last_ingested_sequence, parsed.sequence) {
-        SequenceRelation::AlreadyIngested => {
-            tracing::info!(
-                sequence = parsed.sequence,
-                "manifest sequence already ingested; heartbeat only"
-            );
-            return Ok(());
-        }
-        SequenceRelation::Gap => {
-            tracing::error!(
-                last_sequence = ?*last_ingested_sequence,
-                current_sequence = parsed.sequence,
-                "non-contiguous schedule feed sequence number; proceeding to ingest anyway per RSPS5046 \u{a7}7.4"
-            );
-            metrics::counter!(common::metrics::metric_name(
-                "schedule_feed_sequence_gap_total"
-            ))
-            .increment(1);
-        }
-        SequenceRelation::Expected => {}
+        *known_stray_files = stray;
     }
 
-    let missing = missing_listed_files(&parsed.files, &snapshot, known_stable);
-    if !missing.is_empty() {
+    let Some((zip_filename, zip_mtime)) = winner else {
         if is_final_check_of_day {
             tracing::error!(
-                sequence = parsed.sequence,
-                missing = ?missing,
-                "delivery still incomplete after the day's final configured check time; likely a real delivery problem"
+                "no .zip delivery observed in watch_dir by the day's final configured check time; likely a real delivery problem"
             );
         } else {
-            tracing::info!(sequence = parsed.sequence, missing = ?missing, "delivery not yet complete; retrying next poll interval");
+            tracing::debug!("no .zip file present in watch_dir yet");
+        }
+        return Ok(());
+    };
+
+    if !known_stable.contains(&zip_filename) {
+        if is_final_check_of_day {
+            tracing::error!(
+                zip = %zip_filename,
+                "zip file present but still not stable by the day's final configured check time; may indicate a stalled or partial upload"
+            );
+        } else {
+            tracing::info!(zip = %zip_filename, "zip file present but not yet stable");
         }
         return Ok(());
     }
 
-    // Every listed file, plus the manifest itself, is present and stable --
-    // the delivery is complete. Move it into storage before recording it,
-    // so a POST failure never leaves a verified-complete delivery sitting
-    // in `watch_dir` where a future stability reset could re-churn it.
-    let sequence_dir = config.storage_dir.join(parsed.sequence.to_string());
-    std::fs::create_dir_all(&sequence_dir)?;
-
-    let mut files = Vec::with_capacity(parsed.files.len() + 1);
-    for name in std::iter::once(&manifest_filename).chain(parsed.files.iter()) {
-        // Use the size already observed by this cycle's snapshot/stability
-        // check -- do NOT re-stat after the move, per the plan.
-        let bytes = snapshot.0.get(name).map(|&(_, len)| len).ok_or_else(|| {
-            anyhow::anyhow!("file {name:?} vanished from the snapshot just before moving")
-        })?;
-        std::fs::rename(config.watch_dir.join(name), sequence_dir.join(name))?;
-        files.push(ScheduleFeedFile {
-            name: name.clone(),
-            bytes,
-        });
+    match delivery::classify_delivery(*last_ingested_mtime, zip_mtime) {
+        DeliveryRelation::AlreadyIngested => {
+            // Steady state for most of the day once today's delivery has
+            // been ingested -- never escalated by `is_final_check_of_day`,
+            // since "already done today" is the healthy outcome, not a
+            // problem.
+            tracing::info!(zip = %zip_filename, "zip delivery already ingested; heartbeat only");
+            return Ok(());
+        }
+        DeliveryRelation::New => {}
     }
 
+    let dir_name = delivery::delivery_dir_name(zip_mtime);
+    let delivery_dir = config.storage_dir.join(&dir_name);
+    let zip_path = config.watch_dir.join(&zip_filename);
+
+    let extracted = match delivery::extract_zip(&zip_path, &delivery_dir) {
+        Ok(extracted) => extracted,
+        Err(err) => {
+            tracing::error!(error = ?err, zip = %zip_filename, "failed to extract a stable zip delivery; retrying next cycle");
+            return Ok(());
+        }
+    };
+
+    let files = extracted
+        .into_iter()
+        .map(|(name, bytes)| ScheduleFeedFile { name, bytes })
+        .collect();
+
+    let delivered_at: DateTime<Utc> = DateTime::<Utc>::from(zip_mtime);
     let request = ScheduleFeedIngestRequest {
-        sequence: parsed.sequence as i32,
+        delivered_at,
         ingested_at: Utc::now(),
         files,
     };
@@ -312,26 +300,28 @@ async fn run_scan_cycle(
     match post_ingest(client, config, internal_oauth, &request).await {
         Ok(()) => {
             tracing::info!(
-                sequence = parsed.sequence,
-                "schedule feed delivery moved to storage and posted to api"
+                delivered_at = %delivered_at,
+                dir = %dir_name,
+                "schedule feed delivery extracted to storage and posted to api"
             );
-            *last_ingested_sequence = Some(parsed.sequence);
+            *last_ingested_mtime = Some(zip_mtime);
             metrics::gauge!(common::metrics::metric_name(
-                "schedule_feed_last_ingest_sequence"
+                "schedule_feed_last_ingest_delivered_at_seconds"
             ))
-            .set(parsed.sequence as f64);
+            .set(delivered_at.timestamp() as f64);
         }
         Err(err) => {
-            // The files stay in `storage_dir/<nnn>/` -- this is a locally-
-            // verified-complete delivery; a failed POST is a record-keeping
-            // problem to retry, not a reason to move files back. See
-            // `pending_post` handling at the top of this function.
-            tracing::error!(error = ?err, sequence = parsed.sequence, "files moved to storage but POST to api failed; will retry next cycle");
+            // The files stay in `storage_dir/<timestamp>/` -- this is a
+            // locally-verified-complete delivery; a failed POST is a
+            // record-keeping problem to retry, not a reason to remove the
+            // extracted files. See `pending_post` handling at the top of
+            // this function.
+            tracing::error!(error = ?err, delivered_at = %delivered_at, "files extracted to storage but POST to api failed; will retry next cycle");
             *pending_post = Some(request);
         }
     }
 
-    if let Err(err) = prune_old_sequences(&config.storage_dir, config.retention_keep_sequences) {
+    if let Err(err) = prune_old_deliveries(&config.storage_dir, config.retention_keep_deliveries) {
         tracing::error!(error = ?err, "retention pruning failed");
     }
 
@@ -365,7 +355,7 @@ async fn post_ingest(
 
     if response.status().is_success() {
         tracing::info!(
-            sequence = request.sequence,
+            delivered_at = %request.delivered_at,
             files = request.files.len(),
             "posted schedule feed ingest to api"
         );
@@ -385,9 +375,15 @@ async fn post_ingest(
 /// crate can't import them -- it only needs to produce matching JSON, not
 /// share a Rust type. If either crate's shape drifts, this comment is the
 /// first thing to check.
+///
+/// `delivered_at` is the delivery's *own* mtime (converted to UTC) -- the
+/// real identity of "which delivery is this", used as the primary key on
+/// the `api` side. `ingested_at` is when this process actually processed
+/// it, kept only as separate observability data (see the migration/query
+/// changes for why `delivered_at`, not `ingested_at`, now backs freshness).
 #[derive(Debug, Clone, Serialize)]
 struct ScheduleFeedIngestRequest {
-    sequence: i32,
+    delivered_at: DateTime<Utc>,
     ingested_at: DateTime<Utc>,
     files: Vec<ScheduleFeedFile>,
 }
@@ -428,11 +424,15 @@ fn parse_check_times(raw: &str) -> anyhow::Result<Vec<NaiveTime>> {
 ///
 /// This is the one remaining behavioral role `check_times` plays now that
 /// scanning itself runs on a fixed `poll_interval_secs` cadence rather than
-/// sleeping until specific slots (see `main`'s loop): gating whether a
-/// still-incomplete delivery logs at `error` (loud -- the window has closed,
-/// this is likely a real problem) or `info` (quiet -- still within an
-/// expected window, including a brand new delivery actively arriving right
-/// after `window_start_time`, try again next poll) severity.
+/// sleeping until specific slots (see `main`'s loop): gating whether "we're
+/// past today's realistic delivery window and still haven't seen a new
+/// stable zip" logs at `error` (loud -- the window has closed, this is
+/// likely a real problem) or `info`/`debug` (quiet -- still within an
+/// expected window, try again next poll) severity. Deliberately **not**
+/// applied to the "already ingested today" steady state (see
+/// `run_scan_cycle`'s `DeliveryRelation::AlreadyIngested` arm) -- that's the
+/// healthy outcome for most of the day after a successful ingest, not a
+/// problem `is_final_check_of_day` should ever escalate.
 ///
 /// **Deliberately bounded, not `now >= final_check_time` unbounded to
 /// midnight** -- an earlier version of this function compared only against
@@ -459,62 +459,18 @@ fn is_final_check_of_day(
     }
 }
 
-/// Whether `name` matches the `RJTTF<digits>DAT.txt` manifest filename
-/// shape (e.g. `RJTTF942DAT.txt`).
-fn is_manifest_filename(name: &str) -> bool {
-    const PREFIX: &str = "RJTTF";
-    const SUFFIX: &str = "DAT.txt";
-
-    if !name.starts_with(PREFIX)
-        || !name.ends_with(SUFFIX)
-        || name.len() < PREFIX.len() + SUFFIX.len()
-    {
-        return false;
-    }
-
-    let middle = &name[PREFIX.len()..name.len() - SUFFIX.len()];
-    !middle.is_empty() && middle.bytes().all(|b| b.is_ascii_digit())
-}
-
-/// Every filename in `snapshot` matching [`is_manifest_filename`], sorted
-/// ascending (so the caller can `pop()` the lexicographically greatest --
-/// normally there's at most one candidate at a time; a second is a
-/// pathological case the caller logs about).
-fn find_manifest_candidates(snapshot: &DirSnapshot) -> Vec<String> {
-    let mut names: Vec<String> = snapshot
-        .0
-        .keys()
-        .filter(|name| is_manifest_filename(name))
-        .cloned()
-        .collect();
-    names.sort();
-    names
-}
-
-/// Filenames from `files` that are either absent from `snapshot` or not
-/// yet a member of `known_stable` -- i.e. not yet safe to treat as part of
-/// a complete delivery.
-fn missing_listed_files(
-    files: &[String],
-    snapshot: &DirSnapshot,
-    known_stable: &HashSet<String>,
-) -> Vec<String> {
-    files
-        .iter()
-        .filter(|name| {
-            !(snapshot.0.contains_key(name.as_str()) && known_stable.contains(name.as_str()))
-        })
-        .cloned()
-        .collect()
-}
-
-/// Keeps only the `keep` highest-numbered immediate subdirectories of
-/// `storage_dir` whose name parses as a `u32`; removes the rest via
-/// `std::fs::remove_dir_all`. Non-numeric or malformed subdirectory names
-/// (and any plain files directly in `storage_dir`) are left untouched --
-/// they aren't this function's concern, and it never guesses about them.
-fn prune_old_sequences(storage_dir: &std::path::Path, keep: u32) -> anyhow::Result<()> {
-    let mut sequences: Vec<(u32, PathBuf)> = Vec::new();
+/// Keeps only the `keep` most-recent (by directory-name string, which sorts
+/// lexicographically == chronologically -- see `delivery::delivery_dir_name`)
+/// immediate subdirectories of `storage_dir` whose name matches
+/// [`delivery::is_delivery_dir_name`]; removes the rest via
+/// `std::fs::remove_dir_all`. Non-matching subdirectory names (and any
+/// plain files directly in `storage_dir`) are left untouched -- they aren't
+/// this function's concern, and it never guesses about them.
+///
+/// Renamed from the old `prune_old_sequences` -- there is no sequence
+/// number any more, just delivery timestamps.
+fn prune_old_deliveries(storage_dir: &std::path::Path, keep: u32) -> anyhow::Result<()> {
+    let mut dirs: Vec<(String, PathBuf)> = Vec::new();
 
     // Same "not-yet-existing is empty, not an error" reasoning as
     // `scan::scan_incoming` -- storage_dir defaults to the raw volume mount
@@ -535,18 +491,18 @@ fn prune_old_sequences(storage_dir: &std::path::Path, keep: u32) -> anyhow::Resu
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if let Ok(sequence) = name.parse::<u32>() {
-            sequences.push((sequence, entry.path()));
+        if delivery::is_delivery_dir_name(&name) {
+            dirs.push((name, entry.path()));
         }
     }
 
-    sequences.sort_by_key(|&(sequence, _)| sequence);
+    dirs.sort_by(|a, b| a.0.cmp(&b.0));
 
     let keep = keep as usize;
-    if sequences.len() > keep {
-        let remove_count = sequences.len() - keep;
-        for (sequence, path) in &sequences[..remove_count] {
-            tracing::info!(sequence = sequence, path = ?path, "pruning old schedule feed sequence directory");
+    if dirs.len() > keep {
+        let remove_count = dirs.len() - keep;
+        for (name, path) in &dirs[..remove_count] {
+            tracing::info!(dir = name, path = ?path, "pruning old schedule feed delivery directory");
             std::fs::remove_dir_all(path)?;
         }
     }
@@ -557,19 +513,6 @@ fn prune_old_sequences(storage_dir: &std::path::Path, keep: u32) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sample_manifest_files() -> Vec<String> {
-        vec![
-            "RJTTF942ZTR.txt".to_string(),
-            "RJTTF942REJ.txt".to_string(),
-            "RJTTF942SET.txt".to_string(),
-            "RJTTF942FLF.txt".to_string(),
-            "RJTTF942MCA.txt".to_string(),
-            "RJTTF942MSN.txt".to_string(),
-            "RJTTF942ALF.txt".to_string(),
-            "RJTTF942TSI.txt".to_string(),
-        ]
-    }
 
     #[test]
     fn parse_check_times_parses_and_preserves_configured_order() {
@@ -599,9 +542,6 @@ mod tests {
             final_check_time,
             window_start_time
         ));
-        // Still false in the overnight window before the day's final slot
-        // -- e.g. 00:30, one of the sparse slots that used to gate scanning
-        // itself, is well before 16:00 as a bare time-of-day comparison.
         assert!(!is_final_check_of_day(
             NaiveTime::from_hms_opt(0, 30, 0).unwrap(),
             final_check_time,
@@ -610,7 +550,8 @@ mod tests {
     }
 
     #[test]
-    fn is_final_check_of_day_true_only_in_the_gap_after_the_final_time_and_before_the_next_window() {
+    fn is_final_check_of_day_true_only_in_the_gap_after_the_final_time_and_before_the_next_window()
+    {
         let final_check_time = NaiveTime::from_hms_opt(16, 0, 0).unwrap();
         let window_start_time = NaiveTime::from_hms_opt(22, 0, 0).unwrap();
         assert!(is_final_check_of_day(
@@ -625,14 +566,6 @@ mod tests {
         ));
     }
 
-    /// Regression test for the exact bug caught before this change was
-    /// committed: an earlier version compared only `now >= final_check_time`
-    /// with no upper bound, which stayed `true` through the entire
-    /// `22:00`-`23:59` stretch -- exactly when a brand new delivery is
-    /// normally still uploading/stabilizing -- and would have logged
-    /// `error` on every poll cycle during completely normal, expected
-    /// in-progress delivery instead of the intended once-a-day fallback
-    /// check.
     #[test]
     fn is_final_check_of_day_false_once_the_next_window_has_reopened() {
         let final_check_time = NaiveTime::from_hms_opt(16, 0, 0).unwrap();
@@ -649,9 +582,6 @@ mod tests {
         ));
     }
 
-    /// A `check_times` shape where the fallback wraps past midnight before
-    /// the next window reopens (not the current default's shape, but a
-    /// legal configuration this function must still handle correctly).
     #[test]
     fn is_final_check_of_day_handles_a_gap_that_wraps_past_midnight() {
         let final_check_time = NaiveTime::from_hms_opt(23, 0, 0).unwrap();
@@ -674,76 +604,20 @@ mod tests {
     }
 
     #[test]
-    fn manifest_filename_matching() {
-        assert!(is_manifest_filename("RJTTF942DAT.txt"));
-        assert!(!is_manifest_filename("RJTTF942ZTR.txt"));
-        assert!(!is_manifest_filename("RJTTFDAT.txt"));
-        assert!(!is_manifest_filename("DAT.txt"));
-        assert!(!is_manifest_filename("RJTTF9a2DAT.txt"));
-    }
-
-    #[test]
-    fn complete_stable_nine_file_delivery_is_ready_to_move() {
+    fn prune_keeps_only_the_n_most_recent_delivery_dirs() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("RJTTF942DAT.txt"), b"manifest").unwrap();
-        for name in sample_manifest_files() {
-            std::fs::write(dir.path().join(&name), b"data").unwrap();
-        }
-
-        let mut tracker = StabilityTracker::new();
-        let mut known_stable = HashSet::new();
-
-        // Two polling cycles with nothing changing on disk reaches
-        // stability at stability_cycles = 2 (this crate's own default).
-        for _ in 0..2 {
-            let snapshot = scan_incoming(dir.path()).unwrap();
-            let just_stable = tracker.observe(&snapshot, 2);
-            known_stable.extend(just_stable);
-        }
-
-        let snapshot = scan_incoming(dir.path()).unwrap();
-        assert!(known_stable.contains("RJTTF942DAT.txt"));
-
-        let missing = missing_listed_files(&sample_manifest_files(), &snapshot, &known_stable);
-        assert!(
-            missing.is_empty(),
-            "expected a complete delivery to have no missing files, got {missing:?}"
-        );
-    }
-
-    #[test]
-    fn delivery_missing_one_listed_file_is_not_ready() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("RJTTF942DAT.txt"), b"manifest").unwrap();
-        let files = sample_manifest_files();
-        for name in &files[..files.len() - 1] {
-            std::fs::write(dir.path().join(name), b"data").unwrap();
-        }
-
-        let mut tracker = StabilityTracker::new();
-        let mut known_stable = HashSet::new();
-        for _ in 0..2 {
-            let snapshot = scan_incoming(dir.path()).unwrap();
-            let just_stable = tracker.observe(&snapshot, 2);
-            known_stable.extend(just_stable);
-        }
-
-        let snapshot = scan_incoming(dir.path()).unwrap();
-        let missing = missing_listed_files(&files, &snapshot, &known_stable);
-        assert_eq!(missing, vec![files.last().unwrap().clone()]);
-    }
-
-    #[test]
-    fn prune_keeps_only_the_n_highest_numeric_subdirectories() {
-        let dir = tempfile::tempdir().unwrap();
-        for name in ["1", "2", "3", "4", "not-a-number", "04a"] {
+        for name in [
+            "20260901T090000Z",
+            "20260902T090000Z",
+            "20260903T090000Z",
+            "not-a-delivery-dir",
+            "942",
+        ] {
             std::fs::create_dir_all(dir.path().join(name)).unwrap();
         }
-        // A stray file directly in storage_dir should be ignored entirely,
-        // not treated as (or crash on) a subdirectory.
         std::fs::write(dir.path().join("stray.txt"), b"x").unwrap();
 
-        prune_old_sequences(dir.path(), 2).unwrap();
+        prune_old_deliveries(dir.path(), 2).unwrap();
 
         let mut remaining: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -754,34 +628,30 @@ mod tests {
         assert_eq!(
             remaining,
             vec![
-                "04a".to_string(),
-                "3".to_string(),
-                "4".to_string(),
-                "not-a-number".to_string(),
-                "stray.txt".to_string()
+                "20260902T090000Z".to_string(),
+                "20260903T090000Z".to_string(),
+                "942".to_string(),
+                "not-a-delivery-dir".to_string(),
+                "stray.txt".to_string(),
             ]
         );
     }
 
-    /// Regression test, same shape as `scan::scan_incoming_on_nonexistent_
-    /// directory_returns_empty_snapshot_not_an_error`: a not-yet-existing
-    /// storage_dir must not error, since there is genuinely nothing to
-    /// prune.
     #[test]
     fn prune_on_nonexistent_storage_dir_is_a_noop_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("does-not-exist-yet");
-        prune_old_sequences(&missing, 2).unwrap();
+        prune_old_deliveries(&missing, 2).unwrap();
     }
 
     #[test]
     fn prune_is_a_noop_when_at_or_under_the_keep_count() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["1", "2"] {
+        for name in ["20260901T090000Z", "20260902T090000Z"] {
             std::fs::create_dir_all(dir.path().join(name)).unwrap();
         }
 
-        prune_old_sequences(dir.path(), 2).unwrap();
+        prune_old_deliveries(dir.path(), 2).unwrap();
 
         let mut remaining: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -789,6 +659,113 @@ mod tests {
             .collect();
         remaining.sort();
 
-        assert_eq!(remaining, vec!["1".to_string(), "2".to_string()]);
+        assert_eq!(
+            remaining,
+            vec![
+                "20260901T090000Z".to_string(),
+                "20260902T090000Z".to_string()
+            ]
+        );
+    }
+
+    /// End-to-end-ish integration test through `run_scan_cycle` itself,
+    /// using a real zip fixture built via `delivery::build_test_zip` --
+    /// covers zip detection, stability, mtime-dedup, and extraction all
+    /// wired together the way `main`'s loop actually calls them (an HTTP
+    /// POST is not exercised here -- `config.api_ingest_url` points at an
+    /// address nothing listens on, so the POST fails and the delivery is
+    /// left in `pending_post`, which is exactly what this test asserts).
+    #[tokio::test]
+    async fn a_stable_new_zip_is_extracted_into_a_timestamp_named_directory() {
+        let watch_dir = tempfile::tempdir().unwrap();
+        let storage_dir = tempfile::tempdir().unwrap();
+
+        let bytes = delivery::build_test_zip(&[
+            ("RJTTF942MCA.txt", b"mca content"),
+            ("RJTTF942MSN.txt", b"msn content"),
+        ]);
+        std::fs::write(watch_dir.path().join("timetable_full.zip"), &bytes).unwrap();
+
+        let config = test_config(watch_dir.path(), storage_dir.path());
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let internal_oauth = test_oauth();
+
+        let mut tracker = StabilityTracker::new();
+        let mut known_stable = HashSet::new();
+        let mut known_stray_files = HashSet::new();
+        let mut last_ingested_mtime = None;
+        let mut pending_post = None;
+
+        // stability_cycles = 2 by default in test_config -- two identical
+        // cycles reach stability.
+        for _ in 0..2 {
+            run_scan_cycle(
+                &client,
+                &config,
+                &internal_oauth,
+                &mut tracker,
+                &mut known_stable,
+                &mut known_stray_files,
+                &mut last_ingested_mtime,
+                &mut pending_post,
+                false,
+            )
+            .await
+            .unwrap();
+        }
+
+        // The POST attempt fails (nothing is listening), so the delivery
+        // is tracked as pending rather than advancing last_ingested_mtime
+        // -- but the files must already be extracted to storage_dir at
+        // this point (extraction happens before the POST attempt).
+        assert!(pending_post.is_some());
+
+        let entries: Vec<String> = std::fs::read_dir(storage_dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert!(delivery::is_delivery_dir_name(&entries[0]));
+
+        let delivery_dir = storage_dir.path().join(&entries[0]);
+        assert_eq!(
+            std::fs::read_to_string(delivery_dir.join("RJTTF942MCA.txt")).unwrap(),
+            "mca content"
+        );
+        assert_eq!(
+            std::fs::read_to_string(delivery_dir.join("RJTTF942MSN.txt")).unwrap(),
+            "msn content"
+        );
+    }
+
+    fn test_config(watch_dir: &std::path::Path, storage_dir: &std::path::Path) -> Config {
+        Config {
+            watch_dir: watch_dir.to_path_buf(),
+            storage_dir: storage_dir.to_path_buf(),
+            check_times: "22:00,16:00".to_string(),
+            poll_interval_secs: 120,
+            retention_keep_deliveries: 2,
+            stability_cycles: 2,
+            // Deliberately an address nothing listens on -- these tests
+            // only exercise up to the POST attempt, not a real server.
+            api_ingest_url: "http://127.0.0.1:1/schedule-feed-ingests".to_string(),
+            internal_oauth_token_url: "http://127.0.0.1:1/token".to_string(),
+            internal_oauth_client_id: "test-client".to_string(),
+            internal_oauth_scope: "groups".to_string(),
+            internal_oauth_username: "test-user".to_string(),
+            internal_oauth_password: "test-password".to_string(),
+            metrics_port: 0,
+            metrics_enabled: false,
+        }
+    }
+
+    fn test_oauth() -> common::oauth_client::OAuthTokenCache {
+        common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
+            token_url: "http://127.0.0.1:1/token".to_string(),
+            client_id: "test-client".to_string(),
+            scope: "groups".to_string(),
+            username: "test-user".to_string(),
+            password: "test-password".to_string(),
+        })
     }
 }
