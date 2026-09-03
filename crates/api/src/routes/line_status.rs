@@ -56,6 +56,20 @@ pub fn router() -> Router {
             "/Line/{id}/Stats/HalfHourly/{from}/to/{to}",
             axum::routing::get(get_line_half_hourly_stats),
         )
+        // Decision 4 scaffolding -- siblings of the two routes above,
+        // reading line_status_{daily,half_hourly}_coverage_stats instead.
+        // Always return `[]` today: nothing writes those tables until a
+        // future full-coverage producer exists. See
+        // docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
+        // Decision 4.
+        .route(
+            "/Line/{id}/Stats/Coverage/{from}/to/{to}",
+            axum::routing::get(get_line_daily_coverage_stats),
+        )
+        .route(
+            "/Line/{id}/Stats/Coverage/HalfHourly/{from}/to/{to}",
+            axum::routing::get(get_line_half_hourly_coverage_stats),
+        )
 }
 
 #[derive(Debug, Deserialize)]
@@ -452,6 +466,97 @@ async fn get_line_half_hourly_stats(
     Ok(Json(rows.into_iter().map(half_hourly_stats_to_json).collect()))
 }
 
+/// Full-coverage sibling of `daily_stats_to_json` -- identical
+/// rate-derivation logic, `resolvedWindows` in place of `sampleCycles`.
+/// See docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
+/// Decision 4.
+fn daily_coverage_stats_to_json(row: queries::DailyCoverageStatsRow) -> Value {
+    let avg_delay_minutes = if row.running_count > 0 {
+        row.delay_minutes_sum / row.running_count as f64
+    } else {
+        0.0
+    };
+    let rate = |numerator: i64| {
+        if row.total > 0 {
+            numerator as f64 / row.total as f64
+        } else {
+            0.0
+        }
+    };
+
+    serde_json::json!({
+        "day": row.day,
+        "resolvedWindows": row.resolved_windows,
+        "total": row.total,
+        "delayed": row.delayed,
+        "cancelled": row.cancelled,
+        "skipped": row.skipped,
+        "avgDelayMinutes": avg_delay_minutes,
+        "delayRate": rate(row.delayed),
+        "cancellationRate": rate(row.cancelled),
+        "skipRate": rate(row.skipped),
+    })
+}
+
+async fn get_line_daily_coverage_stats(
+    State(app): State<App>,
+    Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>,
+) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let rows = queries::daily_coverage_stats_for_range(&app.database, &id, from, to)
+        .await
+        .map_err(internal_error)?;
+
+    Ok(Json(
+        rows.into_iter().map(daily_coverage_stats_to_json).collect(),
+    ))
+}
+
+/// Half-hourly sibling of `daily_coverage_stats_to_json`, `halfHourStart`
+/// in place of `day` -- mirrors `half_hourly_stats_to_json`'s own
+/// relationship to `daily_stats_to_json`.
+fn half_hourly_coverage_stats_to_json(row: queries::HalfHourlyCoverageStatsRow) -> Value {
+    let avg_delay_minutes = if row.running_count > 0 {
+        row.delay_minutes_sum / row.running_count as f64
+    } else {
+        0.0
+    };
+    let rate = |numerator: i64| {
+        if row.total > 0 {
+            numerator as f64 / row.total as f64
+        } else {
+            0.0
+        }
+    };
+
+    serde_json::json!({
+        "halfHourStart": row.half_hour_start,
+        "resolvedWindows": row.resolved_windows,
+        "total": row.total,
+        "delayed": row.delayed,
+        "cancelled": row.cancelled,
+        "skipped": row.skipped,
+        "avgDelayMinutes": avg_delay_minutes,
+        "delayRate": rate(row.delayed),
+        "cancellationRate": rate(row.cancelled),
+        "skipRate": rate(row.skipped),
+    })
+}
+
+async fn get_line_half_hourly_coverage_stats(
+    State(app): State<App>,
+    Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let rows = queries::half_hourly_coverage_stats_for_range(&app.database, &id, from, to)
+        .await
+        .map_err(internal_error)?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(half_hourly_coverage_stats_to_json)
+            .collect(),
+    ))
+}
+
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "line status query failed");
     (
@@ -807,6 +912,188 @@ mod tests {
         assert_eq!(
             String::from_utf8(half_hourly_body.to_vec()).unwrap(),
             "half-hourly:northern|2026-08-31 00:00:00 UTC|2026-09-01 00:00:00 UTC",
+        );
+    }
+
+    // --- Decision 4 scaffolding: line_status_{daily,half_hourly}_coverage_stats routes ---
+
+    fn daily_coverage_stats_row(
+        total: i64,
+        delayed: i64,
+        cancelled: i64,
+        skipped: i64,
+        running_count: i64,
+        delay_minutes_sum: f64,
+    ) -> queries::DailyCoverageStatsRow {
+        queries::DailyCoverageStatsRow {
+            day: chrono::NaiveDate::from_ymd_opt(2026, 9, 3).unwrap(),
+            resolved_windows: 12,
+            total,
+            delayed,
+            cancelled,
+            skipped,
+            running_count,
+            delay_minutes_sum,
+        }
+    }
+
+    #[test]
+    fn daily_coverage_stats_to_json_computes_rates_for_a_normal_row() {
+        let row = daily_coverage_stats_row(100, 10, 5, 2, 95, 190.0);
+        let json = daily_coverage_stats_to_json(row);
+
+        assert_eq!(json["day"], serde_json::json!("2026-09-03"));
+        assert_eq!(json["resolvedWindows"], serde_json::json!(12));
+        assert_eq!(json["total"], serde_json::json!(100));
+        assert_eq!(json["delayed"], serde_json::json!(10));
+        assert_eq!(json["cancelled"], serde_json::json!(5));
+        assert_eq!(json["skipped"], serde_json::json!(2));
+        assert_eq!(json["avgDelayMinutes"], serde_json::json!(2.0)); // 190.0 / 95
+        assert_eq!(json["delayRate"], serde_json::json!(0.1)); // 10 / 100
+        assert_eq!(json["cancellationRate"], serde_json::json!(0.05)); // 5 / 100
+        assert_eq!(json["skipRate"], serde_json::json!(0.02)); // 2 / 100
+    }
+
+    #[test]
+    fn daily_coverage_stats_to_json_zero_total_and_running_count_never_produces_nan_or_infinity() {
+        let row = daily_coverage_stats_row(0, 0, 0, 0, 0, 0.0);
+        let json = daily_coverage_stats_to_json(row);
+
+        for field in [
+            "avgDelayMinutes",
+            "delayRate",
+            "cancellationRate",
+            "skipRate",
+        ] {
+            let value = json[field]
+                .as_f64()
+                .unwrap_or_else(|| panic!("{field} should be a JSON number"));
+            assert!(value.is_finite(), "{field} should be finite, got {value}");
+            assert_eq!(
+                value, 0.0,
+                "{field} should be exactly 0.0 for a zero-denominator row"
+            );
+        }
+    }
+
+    fn half_hourly_coverage_stats_row(
+        total: i64,
+        delayed: i64,
+        cancelled: i64,
+        skipped: i64,
+        running_count: i64,
+        delay_minutes_sum: f64,
+    ) -> queries::HalfHourlyCoverageStatsRow {
+        queries::HalfHourlyCoverageStatsRow {
+            half_hour_start: "2026-09-03T14:00:00Z".parse().unwrap(),
+            resolved_windows: 12,
+            total,
+            delayed,
+            cancelled,
+            skipped,
+            running_count,
+            delay_minutes_sum,
+        }
+    }
+
+    #[test]
+    fn half_hourly_coverage_stats_to_json_computes_rates_for_a_normal_row() {
+        let row = half_hourly_coverage_stats_row(100, 10, 5, 2, 95, 190.0);
+        let json = half_hourly_coverage_stats_to_json(row);
+
+        assert_eq!(
+            json["halfHourStart"],
+            serde_json::json!("2026-09-03T14:00:00Z")
+        );
+        assert_eq!(json["resolvedWindows"], serde_json::json!(12));
+        assert_eq!(json["avgDelayMinutes"], serde_json::json!(2.0));
+        assert_eq!(json["delayRate"], serde_json::json!(0.1));
+    }
+
+    #[test]
+    fn half_hourly_coverage_stats_to_json_zero_total_never_produces_nan_or_infinity() {
+        let row = half_hourly_coverage_stats_row(0, 0, 0, 0, 0, 0.0);
+        let json = half_hourly_coverage_stats_to_json(row);
+        for field in [
+            "avgDelayMinutes",
+            "delayRate",
+            "cancellationRate",
+            "skipRate",
+        ] {
+            let value = json[field].as_f64().unwrap();
+            assert!(value.is_finite());
+            assert_eq!(value, 0.0);
+        }
+    }
+
+    async fn coverage_probe(
+        Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>,
+    ) -> String {
+        format!("coverage-daily:{id}|{from}|{to}")
+    }
+
+    async fn coverage_half_hourly_probe(
+        Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+    ) -> String {
+        format!("coverage-half-hourly:{id}|{from}|{to}")
+    }
+
+    #[tokio::test]
+    async fn coverage_stats_route_paths_parse_the_expected_path_segments() {
+        // A lighter-weight, hand-rolled-router version of the test above,
+        // proving the exact path strings `router()` registers for the two
+        // new routes parse their path segments correctly -- mirrors
+        // get_line_daily_stats_route_mounts_and_parses_naive_date_path_segments's
+        // own probe pattern.
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app: axum::Router = axum::Router::new()
+            .route(
+                "/Line/{id}/Stats/Coverage/{from}/to/{to}",
+                axum::routing::get(coverage_probe),
+            )
+            .route(
+                "/Line/{id}/Stats/Coverage/HalfHourly/{from}/to/{to}",
+                axum::routing::get(coverage_half_hourly_probe),
+            );
+
+        let daily_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/Line/northern/Stats/Coverage/2026-08-01/to/2026-08-31")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(daily_response.status(), StatusCode::OK);
+        let daily_body = axum::body::to_bytes(daily_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(daily_body.to_vec()).unwrap(),
+            "coverage-daily:northern|2026-08-01|2026-08-31"
+        );
+
+        let half_hourly_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/Line/northern/Stats/Coverage/HalfHourly/2026-08-31T00:00:00Z/to/2026-09-01T00:00:00Z")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(half_hourly_response.status(), StatusCode::OK);
+        let half_hourly_body = axum::body::to_bytes(half_hourly_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(half_hourly_body.to_vec()).unwrap(),
+            "coverage-half-hourly:northern|2026-08-31 00:00:00 UTC|2026-09-01 00:00:00 UTC",
         );
     }
 }
@@ -1494,5 +1781,88 @@ mod db_tests {
         assert_eq!(body, Value::Array(vec![]));
 
         cleanup_line_status(&pool, "test-stop-point-good-service").await;
+    }
+
+    // --- GET /Line/{id}/Stats/Coverage{,/HalfHourly}/{from}/to/{to} (Decision 4 scaffolding) ---
+
+    async fn cleanup_daily_coverage_stats_row(pool: &PgPool, line_id: &str) {
+        sqlx::query("DELETE FROM line_status_daily_coverage_stats WHERE line_id = $1")
+            .bind(line_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture line_status_daily_coverage_stats row");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_daily_coverage_stats_an_unknown_line_returns_an_empty_array -- --ignored`"]
+    async fn get_line_daily_coverage_stats_an_unknown_line_returns_an_empty_array() {
+        // Mirrors daily_stats_for_range's own "empty vec for an unknown
+        // line_id, no error" contract -- this route never 404s.
+        let pool = connect().await;
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = request(
+            router,
+            "/Line/test-coverage-unknown-line/Stats/Coverage/2026-08-01/to/2026-08-31".to_string(),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, Value::Array(vec![]));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_daily_coverage_stats_renders_a_seeded_row_with_correct_camel_case_and_rates -- --ignored`"]
+    async fn get_line_daily_coverage_stats_renders_a_seeded_row_with_correct_camel_case_and_rates()
+    {
+        // Proves the whole round trip: a real row in
+        // line_status_daily_coverage_stats, read by
+        // daily_coverage_stats_for_range, rendered by
+        // daily_coverage_stats_to_json, served through the real router --
+        // including the one place `resolvedWindows`'s exact camelCase name
+        // actually gets proven end to end, not just asserted against a
+        // hand-built Value in the pure unit test above.
+        const LINE_ID: &str = "TEST-COVERAGE-DAILY-ROUTE";
+        let pool = connect().await;
+        cleanup_daily_coverage_stats_row(&pool, LINE_ID).await;
+
+        sqlx::query(
+            "INSERT INTO line_status_daily_coverage_stats \
+                (line_id, day, resolved_windows, total, delayed, cancelled, skipped, running_count, delay_minutes_sum) \
+             VALUES ($1, '2026-08-15', 12, 100, 10, 5, 2, 95, 190.0)",
+        )
+        .bind(LINE_ID)
+        .execute(&pool)
+        .await
+        .expect("seed fixture line_status_daily_coverage_stats row");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = request(
+            router,
+            format!("/Line/{LINE_ID}/Stats/Coverage/2026-08-01/to/2026-08-31"),
+            None,
+        )
+        .await;
+
+        cleanup_daily_coverage_stats_row(&pool, LINE_ID).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let rows = body.as_array().expect("response body should be an array");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row["day"], Value::String("2026-08-15".to_string()));
+        assert_eq!(row["resolvedWindows"], serde_json::json!(12));
+        assert_eq!(row["total"], serde_json::json!(100));
+        assert_eq!(row["delayed"], serde_json::json!(10));
+        assert_eq!(row["avgDelayMinutes"], serde_json::json!(2.0));
+        assert_eq!(row["delayRate"], serde_json::json!(0.1));
+        assert!(
+            row.get("sampleCycles").is_none(),
+            "must not leak the sample-stats field name"
+        );
     }
 }

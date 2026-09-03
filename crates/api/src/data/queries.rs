@@ -882,6 +882,109 @@ pub async fn half_hourly_stats_for_range(
         .collect()
 }
 
+// --- Decision 4 scaffolding: line_status_{daily,half_hourly}_coverage_stats reads ---
+
+pub struct DailyCoverageStatsRow {
+    pub day: chrono::NaiveDate,
+    pub resolved_windows: i64,
+    pub total: i64,
+    pub delayed: i64,
+    pub cancelled: i64,
+    pub skipped: i64,
+    pub running_count: i64,
+    pub delay_minutes_sum: f64,
+}
+
+/// Full-coverage sibling of `daily_stats_for_range` -- identical shape and
+/// "empty vec for an unknown line_id, no error" contract, reading
+/// `line_status_daily_coverage_stats` instead (`resolved_windows` in place
+/// of `sample_cycles`). See
+/// docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
+/// Decision 4.
+pub async fn daily_coverage_stats_for_range(
+    pool: &PgPool,
+    line_id: &str,
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+) -> Result<Vec<DailyCoverageStatsRow>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT day, resolved_windows, total, delayed, cancelled, skipped, running_count, delay_minutes_sum
+         FROM line_status_daily_coverage_stats
+         WHERE line_id = $1 AND day BETWEEN $2 AND $3
+         ORDER BY day",
+    )
+    .bind(line_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(DailyCoverageStatsRow {
+                day: row.try_get("day")?,
+                resolved_windows: row.try_get("resolved_windows")?,
+                total: row.try_get("total")?,
+                delayed: row.try_get("delayed")?,
+                cancelled: row.try_get("cancelled")?,
+                skipped: row.try_get("skipped")?,
+                running_count: row.try_get("running_count")?,
+                delay_minutes_sum: row.try_get("delay_minutes_sum")?,
+            })
+        })
+        .collect()
+}
+
+pub struct HalfHourlyCoverageStatsRow {
+    pub half_hour_start: chrono::DateTime<chrono::Utc>,
+    pub resolved_windows: i64,
+    pub total: i64,
+    pub delayed: i64,
+    pub cancelled: i64,
+    pub skipped: i64,
+    pub running_count: i64,
+    pub delay_minutes_sum: f64,
+}
+
+/// Half-hourly-granularity sibling of `daily_coverage_stats_for_range` --
+/// same relationship `half_hourly_stats_for_range` already has to
+/// `daily_stats_for_range`.
+pub async fn half_hourly_coverage_stats_for_range(
+    pool: &PgPool,
+    line_id: &str,
+    from: chrono::DateTime<chrono::Utc>,
+    to: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<HalfHourlyCoverageStatsRow>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT half_hour_start, resolved_windows, total, delayed, cancelled, skipped, running_count, delay_minutes_sum
+         FROM line_status_half_hourly_coverage_stats
+         WHERE line_id = $1 AND half_hour_start BETWEEN $2 AND $3
+         ORDER BY half_hour_start",
+    )
+    .bind(line_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(HalfHourlyCoverageStatsRow {
+                half_hour_start: row.try_get("half_hour_start")?,
+                resolved_windows: row.try_get("resolved_windows")?,
+                total: row.try_get("total")?,
+                delayed: row.try_get("delayed")?,
+                cancelled: row.try_get("cancelled")?,
+                skipped: row.try_get("skipped")?,
+                running_count: row.try_get("running_count")?,
+                delay_minutes_sum: row.try_get("delay_minutes_sum")?,
+            })
+        })
+        .collect()
+}
+
 /// One row from `incidents`, by primary key. `validity_periods` is kept as
 /// raw `serde_json::Value` here (not deserialized into
 /// `Vec<common::ValidityPeriod>`) because the route layer needs to
