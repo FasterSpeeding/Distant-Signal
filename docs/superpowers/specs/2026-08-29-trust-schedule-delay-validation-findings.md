@@ -51,6 +51,31 @@ itself.
 > appended at the end of this document. Nothing in this update changes or
 > softens anything above — it's additive.
 
+> **Update, 2026-09-03 — read this too.** Task 0 (a separate, one-off
+> exercise of the just-landed schedule-feed zip-delivery fix) is a full,
+> confirmed **success**: a real 73MB `timetable_full.zip` was pushed over
+> real SFTP to the live deployment's schedule-feed receiver and
+> `/public/freshness`'s `schedule_feed` field flipped from `null` to a
+> real delivery timestamp within ~5 minutes, empirically proving the
+> single-zip ingest pipeline works end-to-end in production for the first
+> time. **Task 4 onward could not be attempted at all** — the live
+> production Authentik instance (`https://sso.fox-prometheus.ts.net`,
+> `client_id=distant-signal`) does not offer the open, no-credential
+> self-signup flow this document's prior two sessions relied on
+> (`distant-signal-dev-enrollment` now 404s; the live identification
+> stage's own JSON carries no `enrollment_flow` at all, only a Discord
+> external-source login), and no human-usable login credential for this
+> specific SSO flow exists anywhere this session had access to (confirmed
+> by reading `dev-server.env` in full, plus every other credential-shaped
+> file at the repo root). Per this run's own explicit instruction not to
+> guess or bypass authentication, this was reported as a blocker rather
+> than worked around. **No pins were created. No monitoring window was
+> obtained. Task 8's verdict is unchanged from 2026-08-31/09-01: still
+> "not yet," still blocked on sample size** — this session added zero new
+> N-of-M data points, only closing off one specific way of getting there.
+> See the final section appended at the end of this document. Nothing in
+> this update changes or softens anything above — it's additive.
+
 ---
 
 ## Task 1: RDM licensing/access confirmation
@@ -1394,3 +1419,260 @@ Option B specifically, gated on Task 8 actually reaching "go," which it
 still has not — though, for the first time across three real execution
 sessions, the remaining gap is genuinely just sample size, not a broken
 mechanism.
+
+---
+
+# 2026-09-03 re-run: Task 0 (schedule-feed zip delivery) succeeds; Task 4 onward blocked by production SSO's missing self-signup, honestly not worked around
+
+**Status: a fourth real execution session**, dispatched with three inputs
+none of the prior three sessions had: a real, current `timetable_full.zip`
+already sitting at the repo root (no need to source one), a separate
+one-off exercise of the just-landed schedule-feed zip-delivery ingest fix
+(`docs/superpowers/specs/2026-09-03-schedule-feed-zip-delivery-correction.md`),
+and a fresh instruction to re-run Task 4 onward with a real,
+uninterrupted, multi-hour monitoring window — the 2026-08-31/09-01
+section's own stated next step. Everything below was checked directly
+against the live deployment, quoted not paraphrased, exactly as every
+earlier section of this document does.
+
+## Task 0: real SFTP push of the real timetable — confirmed working end-to-end
+
+Not part of the plan's own 8 tasks — a separate, explicitly-scoped
+exercise of a different, just-landed fix, done first because it was quick
+and because it was this deployment's first-ever real delivery.
+
+Uploaded the real, untracked `timetable_full.zip` (73,139,785 bytes,
+confirmed by `stat` after transfer) via real SFTP, using
+`dev-server.env`'s `SCHEDULE_SFTP_USERNAME`/`SCHEDULE_SFTP_PASSWORD`/
+`SCHEDULE_SFTP_PORT` (2022) against `konata.fox-prometheus.ts.net`, landing
+at the SFTP account's own chroot root (`/`) — confirmed correct by reading
+`charts/distant-signal/templates/schedulefeed-deployment.yaml`'s own
+comment: the account's `home_dir` **is** `WATCH_DIR`
+(`/data/schedule-feed/incoming`, per `SCHEDULE_FEED_DESTINATION_PATH=incoming`),
+so DTD (and this session) uploads to `/` directly, not to a subfolder
+named `incoming`. Confirmed via a `paramiko` one-off script (not
+committed): remote listing was empty before, `['timetable_full.zip']`
+after, with the correct byte count.
+
+Then polled the real, public `GET /api/freshness` route (the frontend's
+`/api/*` proxy correctly forwards this unprefixed path straight to the
+backend's `/public/freshness`, unlike the `/Line/.../Status` route this
+document's very first section found unreachable through the same proxy —
+this one is not nested under `/public` on the frontend side, so no
+correction was needed) every 2 minutes:
+
+```
+22:03:10Z schedule_feed: null
+22:05:11Z schedule_feed: null
+22:07:11Z schedule_feed: "2026-09-03T22:02:19.231290Z"
+22:09:11Z schedule_feed: "2026-09-03T22:02:19.231290Z"
+```
+
+**`schedule_feed` flipped from `null` to a real timestamp within ~5
+minutes of the upload finishing** — faster than the ~10-minute estimate
+implied by the deployed `poll_interval_secs`(120s)/`stability_cycles`(5)
+defaults, plausibly because the value stored is `delivered_at` (the
+delivery zip's own mtime, per the correction doc's own description of the
+rework), not the moment `schedule-ingest` finished processing it, and the
+scan/stability clock may have already been partway through a cycle when
+the upload landed. **This is a genuine, real, first-ever confirmation that
+the single-zip, no-manifest, no-sequence delivery shape works end-to-end
+against a live deployment** — SFTPGo received the file, `schedule-ingest`
+detected, stabilized, and extracted it, and `api` recorded a real
+`schedule_feed_ingests` row the public freshness route surfaced correctly.
+No further verification of the extracted contents was attempted (out of
+this task's stated scope) — the freshness signal alone was the ask.
+
+## Re-reading the required docs and this document's own established recipe
+
+Read, in full, in the order specified: the design spec, the plan, and
+this findings document (all ~1400 lines, all three prior dated sections).
+Nothing about the plan's Non-goals, the design spec's architecture
+options, or the mechanism itself (proven working as of 2026-08-31/09-01)
+needed re-deriving. What this session actually needed to redo, per the
+2026-08-31/09-01 section's own explicit final instruction, was: (1)
+re-establish the no-browser SSO procedure against the new production
+Authentik application discovered mid-way through that prior session, then
+(2) pin a dense set of real trains and monitor for real, uninterrupted,
+multi-hour wall-clock time.
+
+## Task 4: SSO re-diagnosis — the production instance has no self-signup path, confirmed by direct API probe, not assumed
+
+Repeated the exact opening steps of the prior sessions' proven recipe,
+fresh, against the current live instance:
+
+```
+$ curl -s -D - -o /dev/null -c cookies.txt "https://konata.fox-prometheus.ts.net/api/auth/login"
+HTTP/2 307
+location: https://sso.fox-prometheus.ts.net/application/o/authorize/?response_type=code&client_id=distant-signal&state=...&code_challenge=...&redirect_uri=https%3A%2F%2Fkonata.fox-prometheus.ts.net%2Fapi%2Fauth%2Fcallback&scope=openid+email+profile+groups&nonce=...
+set-cookie: distant_signal_login=...; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=900
+```
+
+Same topology the 2026-08-31/09-01 section found mid-session (production
+`sso.fox-prometheus.ts.net`, HTTPS, `client_id=distant-signal`, no port) —
+confirmed stable, not reverted. Following the authorize URL:
+
+```
+$ curl -s -D - -o /dev/null -c cookies.txt -b cookies.txt "$AUTHORIZE_URL"
+HTTP/2 302
+location: /if/flow/default-authentication-flow/?response_type=code&client_id=distant-signal&...
+set-cookie: authentik_session=...
+```
+
+No `Client ID Error` — the app-to-Authentik half of the flow is healthy,
+same as previously confirmed. Fetching the actual login stage via
+Authentik's own flow-executor JSON API (the exact no-browser mechanism
+this document's 2026-08-30 section established, reused verbatim):
+
+```
+$ curl -s -c cookies.txt -b cookies.txt "https://sso.fox-prometheus.ts.net/api/v3/flows/executor/default-authentication-flow/?query="
+{"flow_info": {..., "application_pre": "Distant Signal", ...},
+ "component": "ak-stage-identification", "user_fields": ["username", "email"],
+ "pending_user_identifier": null, "password_fields": false,
+ "primary_action": "Log in",
+ "sources": [{"name": "Discord", "icon_url": "/static/authentik/sources/discord.svg",
+              "promoted": true,
+              "challenge": {"component": "xak-flow-redirect", "to": "/source/oauth/login/discord/", "final_redirect": false}}],
+ "show_source_labels": false, "enable_remember_me": true, "passkey_challenge": null}
+```
+
+**This is the decisive, direct evidence, not an inference**: Authentik's
+own `ak-stage-identification` challenge payload has no `enroll_url` field
+at all — the exact field the prior two sessions' dev-instance login page
+carried and that this document's own recipe drove
+(`distant-signal-dev-enrollment`). The only login path this stage offers
+is (a) identify as an existing user by username/email, then a password
+stage, or (b) the promoted **Discord** external OAuth source. Confirmed
+directly, not assumed, that the specific flow this document's recipe used
+twice before is simply gone from production:
+
+```
+$ curl -s -D - -o /dev/null "https://sso.fox-prometheus.ts.net/api/v3/flows/executor/distant-signal-dev-enrollment/?query="
+HTTP/2 404
+```
+
+Also checked the one plausible alternative enrollment slug Authentik ships
+by default, `default-source-enrollment` — it does resolve (`200`), but its
+own challenge payload self-describes why it's not usable here:
+`{"component": "ak-stage-access-denied", ..., "error_message": "Flow does
+not apply to current user."}` — this flow is gated to users arriving via
+an external source redirect (exactly the trap this repo's own
+`open-signup.yaml` blueprint comment already names: *"the OBVIOUS
+candidate (default-source-enrollment) is a trap: it's gated by `return
+ak_is_sso_flow` and only fires for users arriving via an external
+source"*), not a general-purpose self-registration page.
+
+**Root cause, traced to real repo content, not guessed**: the open,
+no-credential self-signup blueprint this document's recipe has relied on
+twice (`charts/distant-signal/files/devauthentik-blueprints/open-signup.yaml`,
+and an identical top-level copy at `authentik-blueprints/open-signup.yaml`)
+is explicitly named and scoped as **dev-only** in its own header comment
+("Open, self-service signup for this app's local dev IdP") and is wired
+only into `devauthentik-*` chart resources — nothing in this chart applies
+it to a production-style Authentik instance. The 2026-08-31/09-01
+section's own environment-change note already predicted this exact
+outcome ("possibly no longer carrying the same open `*-dev-enrollment`
+self-signup flow"); this session confirms it directly rather than leaving
+it as a guess.
+
+## No human-usable login credential exists anywhere this session had access to
+
+Per this run's own explicit brief, this was investigated rather than
+worked around. Read `dev-server.env` in full (all ~285 lines): it holds
+real RDM API keys, real Kafka SASL credentials, real VAPID keys, real
+`SSO_CLIENT_ID`/`SSO_CLIENT_SECRET` (the **app's own confidential OIDC
+client** — usable to complete a token exchange *after* a real user has
+authenticated at Authentik, not a substitute for a human logging in), and
+8 `INTERNAL_OAUTH_USERNAME_*`/`INTERNAL_OAUTH_PASSWORD_*` pairs — explicitly
+documented in the file's own comments as **service-account** credentials
+for machine-to-machine `/private/*` calls (pollers, `trust-consumer`,
+`schedule-ingest`), authenticated via OAuth2 Client Credentials Grant
+against a *different* Authentik OAuth2 application than the human SSO
+login flow (`INTERNAL_OAUTH_ISSUER_URL` names `distant-signal-internal`,
+not `distant-signal`). None of these is a human login credential, and per
+this run's own explicit instruction, none was used as one.
+
+Also checked every other credential-shaped file at the repo root and in
+this chart for a human account: `dev.env` (a separate, local-dev-only file
+with placeholder `SSO_ISSUER_URL=http://sso.example.invalid` values, not
+live credentials), `local.env.example`/`dev.env.example` (templates, no
+real values by design), `docker-compose.authentik.yml` (its own comment
+states plainly `AUTHENTIK_BOOTSTRAP_PASSWORD`/`_HASH`/`_EMAIL` are
+"deliberately NOT set"), and the untracked `vault/` directory and
+`charts/distant-signal/files/devauthentik-blueprints/openbao-oauth2-client.yaml`
+(both confirmed, by reading their own header comments, to be a **local
+dev-only** OpenBao/secret-store integration against this repo's own
+**local dev** Authentik instance — unrelated to the live
+`sso.fox-prometheus.ts.net` production instance this task targets). No
+admin bootstrap credential, no seeded human test account, and no
+documented procedure for obtaining one was found anywhere.
+
+**Conclusion, stated exactly as the brief asked**: this session could not
+find or derive a way to complete the human SSO login step against the live
+production deployment. The mechanism this document's prior two sessions
+used (an open, no-credential dev-only self-signup flow) has been correctly
+removed from production between 2026-08-31/09-01 and now, and no
+replacement human credential or equivalent self-service path was provided
+or discoverable. Per the explicit brief, this is reported as a blocker,
+not worked around — no Discord account was available to test the external-
+source path, no username/password was guessed or brute-forced, and no
+service-account token was used to fabricate a session.
+
+## Consequence: Tasks 4-8 could not run this session
+
+**No pins were created. No monitoring window was obtained — real or
+otherwise.** Every downstream task (Task 5's per-train expected/actual
+delta table, Task 6's baseline pull, Task 7's three-way comparison, Task
+8's updated N-of-M) depends on Task 4 producing real
+`train_movement_events` rows for freshly-created pins, which requires an
+authenticated session this run could not obtain. Unlike the
+2026-08-29/2026-08-30 sessions, this is not an application bug (the
+2026-08-29 dead DNS redirect and the 2026-08-30 STANOX/CRS gap were both
+real, diagnosed, and since fixed) — it is a **deliberate, correct**
+production posture (no open self-signup) that this validation approach
+has no credentialed way around, and per this run's brief, was not
+supposed to be worked around.
+
+**Task 8's verdict is unchanged: still "not yet."** The 2026-08-31/09-01
+session's real, empirical **1 of 1** spot-checked disruption instance
+remains this document's only real data point — this session neither added
+to it nor cast any doubt on it. The mechanism is still proven (STANOX/CRS
+fix confirmed live, no-browser OIDC flow confirmed reproducible against a
+*non-production* login path twice); what's missing is still purely sample
+size, now compounded by a **new, separate access problem**: there is
+currently no way for an unattended/agentic session to authenticate against
+this live deployment's production SSO at all.
+
+## Concrete next step for whoever continues this
+
+Narrower than ever, but now blocked on something outside this validation
+plan's own scope to fix:
+
+1. **A human with real credentials for `https://sso.fox-prometheus.ts.net`
+   (or a legitimate way to provision a scoped test account there) needs to
+   either log in once and hand off a real `distant_signal_session` cookie
+   for a bounded validation window, or provision a real, disposable test
+   user directly in production Authentik** — this is a decision only a
+   human operator can make (the same "cannot be done by an agent" posture
+   this plan's own Task 1 already applied to RDM licensing, now applying
+   to production SSO access as well).
+2. **Once a real session is in hand, this document's own recipe from the
+   2026-08-30/2026-08-31 sections is otherwise unchanged and immediately
+   reusable**: `POST /Train/track` per chosen real train (drawn from
+   `timetable_full.zip`, streamed via `unzip -p`, cross-checked for
+   same-day STP overlays exactly as the 2026-08-31/09-01 section's Bank
+   Holiday complication already worked out), then `GET /Train/{id}` polled
+   periodically over a real, uninterrupted, multi-hour window.
+3. **Task 0's success removes one variable for that next session**: the
+   schedule-feed pipeline itself is now confirmed live and working, so a
+   future run reconstructing Task 5's expected-schedule table can, if it
+   wants, verify it against this session's real live delivery rather than
+   only ever reading the local zip file directly (though reading the local
+   file directly remains simpler and is still explicitly permitted by the
+   plan's own Non-goals).
+4. Only then re-run Task 8 with an actual **N of M** large enough to carry
+   a verdict.
+
+**If proceeding to Option B is eventually greenlit**, unchanged from every
+prior verdict in this document: gated on Task 8 reaching "go," which it
+still has not.
