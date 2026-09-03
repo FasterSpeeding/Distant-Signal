@@ -269,6 +269,24 @@ Its `Config.User` is empty — it starts as root and drops to `postgres` via
 admission before the entrypoint ever runs. See the PostgreSQL section for
 the security context that pod actually gets.
 
+**`redis:7` shares the same problem as postgres, for the same reason.**
+Confirmed by pulling this exact `repository:tag`'s real manifest/config
+from Docker Hub's registry API (2026-09-03): `redis:7`'s `Config.User` is
+also empty -- it runs as root and drops to a `redis` user via its own
+entrypoint, exactly like postgres's `gosu` step, except that `redis` user
+happens to be uid/gid 999 too (confirmed independently against
+docker-library/redis's own Dockerfile source, not assumed from the
+coincidence with postgres). A bare `runAsNonRoot: true` fails the same way
+it would for postgres -- "container has runAsNonRoot and image will run as
+root", a distinct kubelet message from the non-numeric-`USER` failure
+above, and the one a real 2026-09-03 incident hit for the `redis`,
+`frontend`, and (suspected, unconfirmed) `schedulefeed` workloads. Unlike
+postgres, redis's fix does not need its own inline pod spec: it uses the
+same `redis.podSecurityContext` value every other non-postgres workload
+already exposes, just with a non-empty default (`runAsUser: 999,
+runAsGroup: 999`) instead of `{}` -- see redis-deployment.yaml and
+values.yaml's `redis.podSecurityContext` comment.
+
 ### api
 
 `Deployment` + ClusterIP `Service` on 8080.
