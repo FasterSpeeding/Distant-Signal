@@ -81,7 +81,9 @@ describe('DataFreshnessNavItem', () => {
   it('renders the freshness it is given, without fetching', async () => {
     const { getDataFreshness } = await import('@/lib/api');
     renderWithMantine(
-      <DataFreshnessNavItem freshness={{ stations: null, tocs: null, incidents: null, tfl: null }} />,
+      <DataFreshnessNavItem
+        freshness={{ stations: null, tocs: null, incidents: null, tfl: null, schedule_feed: null }}
+      />,
     );
     expect(screen.getByRole('button', { name: 'Data freshness' })).toBeInTheDocument();
     // The whole point of Correction 1: this component no longer owns the
