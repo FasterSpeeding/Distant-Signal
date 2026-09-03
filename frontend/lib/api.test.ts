@@ -6,6 +6,8 @@ import {
   getLineStatusHistory,
   getLineDailyStats,
   getLineHalfHourlyStats,
+  getLineDailyCoverageStats,
+  getLineHalfHourlyCoverageStats,
   getPreferences,
   getAllLines,
   getAllTocs,
@@ -218,6 +220,52 @@ describe('api client', () => {
     await getLineHalfHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Line/wcml/Stats/HalfHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getLineDailyCoverageStats builds the correct range URL', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+    await getLineDailyCoverageStats('wcml', '2026-07-01', '2026-07-07');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Line/wcml/Stats/Coverage/2026-07-01/to/2026-07-07',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getLineDailyCoverageStats resolves a 200 with an array as-is', async () => {
+    const coverageStats = [
+      {
+        day: '2026-07-01',
+        resolvedWindows: 40,
+        total: 500,
+        delayed: 20,
+        cancelled: 5,
+        skipped: 1,
+        avgDelayMinutes: 3.1,
+        delayRate: 0.04,
+        cancellationRate: 0.01,
+        skipRate: 0.002,
+      },
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(coverageStats), { status: 200 })),
+    );
+    await expect(getLineDailyCoverageStats('wcml', '2026-07-01', '2026-07-07')).resolves.toEqual(coverageStats);
+  });
+
+  it('getLineHalfHourlyCoverageStats builds the correct URL', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+    await getLineHalfHourlyCoverageStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Line/wcml/Stats/Coverage/HalfHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });

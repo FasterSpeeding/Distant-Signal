@@ -7,6 +7,7 @@ import { groupHistoryByDay, resolveRange, retentionShortfallDays } from '@/lib/h
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { HistoryRangePicker } from './HistoryRangePicker';
 import { TrendsResults } from './TrendsResults';
+import { CoverageTrendsResults } from './CoverageTrendsResults';
 
 // Same `revalidate = 0` rationale as the other dynamic routes: without it
 // Next.js may treat this route as eligible for static generation and try to
@@ -137,6 +138,20 @@ export default async function LineHistoryPage({
           <Stack gap="md" pt="md">
             <Suspense key={range.preset ?? `${range.from}-${range.to}`} fallback={<Skeleton height={320} />}>
               <TrendsResults id={id} from={range.from} to={range.to} />
+            </Suspense>
+            {/* Decision 4's daily full-coverage series -- a second,
+                separate section under the existing sample-based one, always
+                attempted (not conditionally hidden behind a pre-check for
+                whether this line has any coverage rows). Judgment call: the
+                simplest of the three UI shapes the design doc's Open
+                Question 4 leaves open (separate series vs. one series with
+                a marked transition vs. hiding the sample series once
+                coverage exists) -- chosen because it needs no new
+                "does this line have coverage data at all" lookup and
+                degrades to an honest, harmless empty-state message today,
+                since nothing produces full-coverage data yet. */}
+            <Suspense key={range.preset ?? `${range.from}-${range.to}`} fallback={<Skeleton height={320} />}>
+              <CoverageTrendsResults id={id} from={range.from} to={range.to} />
             </Suspense>
           </Stack>
         </TabsPanel>

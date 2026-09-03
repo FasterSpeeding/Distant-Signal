@@ -14,6 +14,7 @@ vi.mock('@/lib/api', async () => {
     getLineStatusHistory: vi.fn(),
     getHistoryRetention: vi.fn(),
     getLineDailyStats: vi.fn(),
+    getLineDailyCoverageStats: vi.fn(),
   };
 });
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -80,6 +81,7 @@ describe('LineHistoryPage', () => {
     vi.mocked(api.getHistoryRetention).mockResolvedValue({ historyRetentionDays: 7 });
     vi.mocked(api.getLineStatusHistory).mockResolvedValue([]);
     vi.mocked(api.getLineDailyStats).mockResolvedValue([]);
+    vi.mocked(api.getLineDailyCoverageStats).mockResolvedValue([]);
   });
 
   it('renders both tabs, defaulting to Timeline, with no crash', async () => {
