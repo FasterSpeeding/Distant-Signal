@@ -1,6 +1,7 @@
 import { Badge, Stack, Title, SimpleGrid, Text, Group, Card } from '@mantine/core';
 import Link from 'next/link';
 import {
+  ApiNotFoundError,
   getLineStatusForMode,
   getMyTrackedTrains,
   getPreferences,
@@ -179,21 +180,39 @@ export default async function DashboardPage() {
     });
 
   const pinnedStationEntries = await Promise.all(
-    preferences.pinnedStations.map(async (crs) => ({
-      crs,
-      // The station detail page already shows "London Kings Cross (KGX)";
-      // there is no reason for the dashboard to show a bare code. Hour-cached
-      // reference data (see `getStationName`), and a failure here falls back
-      // to the code rather than taking the dashboard down.
-      name: await getStationName(crs).catch(() => null),
-      // Same guard as the name lookup on the line above: one pinned
-      // station's disruption call failing must not take the whole
-      // dashboard down. Stale-served first (it is public, read-only status
-      // data), and only degrades to an empty list if nothing is cached.
-      reports: await withStaleFallback(`stopPointDisruption:${crs}`, () =>
-        getStopPointDisruption(crs),
-      ).catch(() => []),
-    })),
+    preferences.pinnedStations.map(async (crs) => {
+      // `/StopPoint/{crs}/Disruption` 404s when no catalogue line covers
+      // this CRS at all (crates/api/src/routes/line_status.rs's
+      // `get_stop_point_disruption`) -- distinct from a real `200 []`
+      // meaning "covered, every line's fine." Told apart here the same way
+      // `/stations/[crs]/page.tsx`'s `fetchStationDisruptions` does, so a
+      // pinned-but-uncovered station doesn't silently render the same
+      // "Good Service" badge a genuinely fine one gets (the exact bug this
+      // task fixes, on a second surface). Any other failure keeps the
+      // previous fail-soft behavior: one pinned station's disruption call
+      // failing must not take the whole dashboard down. Stale-served first
+      // (it is public, read-only status data), and only degrades to an
+      // empty list if nothing is cached.
+      let reports: LineStatusReport[] = [];
+      let coverage: 'covered' | 'none' = 'covered';
+      try {
+        reports = await withStaleFallback(`stopPointDisruption:${crs}`, () => getStopPointDisruption(crs));
+      } catch (err) {
+        if (err instanceof ApiNotFoundError) {
+          coverage = 'none';
+        }
+      }
+      return {
+        crs,
+        // The station detail page already shows "London Kings Cross (KGX)";
+        // there is no reason for the dashboard to show a bare code. Hour-cached
+        // reference data (see `getStationName`), and a failure here falls back
+        // to the code rather than taking the dashboard down.
+        name: await getStationName(crs).catch(() => null),
+        reports,
+        coverage,
+      };
+    }),
   );
 
   // null (not logged in) collapses to [] -- the same "hide entirely"
@@ -237,7 +256,7 @@ export default async function DashboardPage() {
           </Text>
         ) : (
           <Stack gap="xs">
-            {pinnedStationEntries.map(({ crs, name, reports }) => {
+            {pinnedStationEntries.map(({ crs, name, reports, coverage }) => {
               const representative = representativeStatusAcrossReports(reports);
               return (
                 <Link key={crs} href={`/stations/${crs}`} style={{ textDecoration: 'none', color: 'inherit' }}>
@@ -245,12 +264,24 @@ export default async function DashboardPage() {
                     <Stack gap={4}>
                       <Group justify="space-between">
                         <Text fw={600}>{name ? `${name} (${crs})` : crs}</Text>
-                        <StatusBadge severity={worstSeverityAcrossReports(reports)} />
+                        {coverage === 'none' ? (
+                          <Badge color="gray" variant="light">
+                            Not tracked
+                          </Badge>
+                        ) : (
+                          <StatusBadge severity={worstSeverityAcrossReports(reports)} />
+                        )}
                       </Group>
-                      {representative && (
+                      {coverage === 'none' ? (
                         <Text size="xs" c="dimmed">
-                          {formatSampleSummary(representative)}
+                          Not covered by our line-status tracking yet.
                         </Text>
+                      ) : (
+                        representative && (
+                          <Text size="xs" c="dimmed">
+                            {formatSampleSummary(representative)}
+                          </Text>
+                        )
                       )}
                     </Stack>
                   </Card>

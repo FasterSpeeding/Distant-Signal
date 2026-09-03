@@ -3,6 +3,7 @@ import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import StationDisruptionPage from './page';
 import * as api from '@/lib/api';
+import { ApiNotFoundError } from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
 import type { LineStatusReport } from '@/lib/types';
 
@@ -104,5 +105,47 @@ describe('StationDisruptionPage -- outage behaviour', () => {
     expect(
       screen.getByRole('heading', { name: 'Disruptions at London Kings Cross (KGX)', level: 1 }),
     ).toBeInTheDocument();
+  });
+});
+
+describe('StationDisruptionPage -- line-coverage distinction', () => {
+  // The regression this task exists for: a station with zero line coverage
+  // must render honestly, not as though every covering line were confirmed
+  // fine -- see crates/api/src/routes/line_status.rs's
+  // get_stop_point_disruption, which now 404s (ApiNotFoundError) for this
+  // exact case instead of a `200 []` indistinguishable from good service.
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+    vi.stubGlobal('fetch', vi.fn());
+    vi.mocked(api.getStationName).mockResolvedValue('Raynes Park');
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+  });
+
+  it('renders the "not covered" copy, not "no disruptions", when the backend 404s for zero line coverage', async () => {
+    vi.mocked(api.getStopPointDisruption).mockRejectedValue(
+      new ApiNotFoundError('no line coverage for stop point: RAY'),
+    );
+
+    await renderPage('RAY');
+
+    expect(screen.getByText("This station isn't covered by our line-status tracking yet.")).toBeInTheDocument();
+    expect(screen.queryByText('No disruptions affecting this station.')).not.toBeInTheDocument();
+  });
+
+  it('still renders "no disruptions" (not the coverage copy) for a genuinely covered, currently-fine station', async () => {
+    vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
+
+    await renderPage('RAY');
+
+    expect(screen.getByText('No disruptions affecting this station.')).toBeInTheDocument();
+    expect(
+      screen.queryByText("This station isn't covered by our line-status tracking yet."),
+    ).not.toBeInTheDocument();
+  });
+
+  it('still throws (and is not swallowed as "no coverage") for a non-404 failure with nothing cached', async () => {
+    vi.mocked(api.getStopPointDisruption).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+    await expect(renderPage('RAY')).rejects.toThrow('connect ECONNREFUSED');
   });
 });

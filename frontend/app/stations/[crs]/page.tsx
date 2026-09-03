@@ -1,6 +1,6 @@
 import { Stack, Title, Text, Group, Divider } from '@mantine/core';
 import { notFound } from 'next/navigation';
-import { getStopPointDisruption, getPreferences, getStationName } from '@/lib/api';
+import { getStopPointDisruption, getPreferences, getStationName, ApiNotFoundError } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { StatusBadge } from '@/components/StatusBadge';
 import { IssueList } from '@/components/IssueList';
@@ -9,7 +9,7 @@ import { TextLink } from '@/components/TextLink';
 import { worstStatus, severityRank } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
-import type { Preferences } from '@/lib/types';
+import type { LineStatusReport, Preferences } from '@/lib/types';
 
 /** Three outcomes, not two. The previous version collapsed "there is no
  * such station" and "the name lookup failed" into a single `null`, so the
@@ -43,6 +43,32 @@ async function lookupStation(crs: string): Promise<StationLookup> {
   }
 }
 
+/** A real, curated-catalogue distinction, not a network one:
+ * `/StopPoint/{crs}/Disruption` now 404s when no line's `stations` list
+ * covers this CRS at all (crates/api/src/routes/line_status.rs's
+ * `get_stop_point_disruption`), which is a genuinely different fact from
+ * "covered, and every covering line is Good Service" (`200 []`). By the
+ * time this runs, `lookupStation` has already confirmed the CRS is a real,
+ * known station -- so this 404 can only mean "not covered by our line-status
+ * tracking," never "unknown station" (that's `notFound()`'s job, above).
+ * `withStaleFallback` already rethrows `ApiNotFoundError` rather than
+ * stale-serving it (see that function's own doc comment: it's "a
+ * meaningful application state," not a connectivity blip), so catching it
+ * here is exactly where that state should land. */
+type StationDisruptions = { reports: LineStatusReport[]; coverage: 'covered' | 'none' };
+
+async function fetchStationDisruptions(crs: string): Promise<StationDisruptions> {
+  try {
+    const reports = await withStaleFallback(`stopPointDisruption:${crs}`, () => getStopPointDisruption(crs));
+    return { reports, coverage: 'covered' };
+  } catch (err) {
+    if (err instanceof ApiNotFoundError) {
+      return { reports: [], coverage: 'none' };
+    }
+    throw err;
+  }
+}
+
 export default async function StationDisruptionPage({
   params,
 }: {
@@ -59,8 +85,8 @@ export default async function StationDisruptionPage({
     notFound();
   }
 
-  const [reports, preferences] = await Promise.all([
-    withStaleFallback(`stopPointDisruption:${crs}`, () => getStopPointDisruption(crs)),
+  const [{ reports, coverage }, preferences] = await Promise.all([
+    fetchStationDisruptions(crs),
     // Per-user, so it fails closed to "nothing pinned" (the shape a 401
     // already returns) rather than being stale-served -- design spec
     // Decision 5. The pin button reads as unpinned during an outage.
@@ -92,7 +118,16 @@ export default async function StationDisruptionPage({
         </Group>
       </Group>
 
-      {reports.length === 0 && <Text c="dimmed">No disruptions affecting this station.</Text>}
+      {/* Two different absences, said honestly rather than collapsed into
+          one cheerful "no disruptions" that would just as easily describe a
+          station we've never modelled at all -- the bug this task exists to
+          fix (see fetchStationDisruptions's doc comment above). */}
+      {coverage === 'none' && (
+        <Text c="dimmed">This station isn&apos;t covered by our line-status tracking yet.</Text>
+      )}
+      {coverage === 'covered' && reports.length === 0 && (
+        <Text c="dimmed">No disruptions affecting this station.</Text>
+      )}
 
       {orderedReports.length > 0 && (
         <>

@@ -256,6 +256,25 @@ async fn get_line_status(
     ))
 }
 
+/// `[]` is a real, meaningful response here -- every line covering this
+/// station currently reports Good Service -- so it must never also be what
+/// "we have no line coverage for this station at all" looks like. Those are
+/// different facts (a curated-catalogue gap vs. a genuinely quiet station)
+/// and this handler used to collapse them into the identical empty array,
+/// silently telling a user looking up an uncovered station "no disruptions"
+/// exactly as confidently as it tells a user looking up a fully-covered,
+/// genuinely-fine one. See
+/// docs/superpowers/specs/2026-08-31-station-catalogue-completeness-research.md
+/// ("Problem statement") for the original write-up of this exact gap.
+///
+/// Fixed the same way this file's sibling `get_line_status` already
+/// distinguishes "no matching line(s)" from "matched, nothing to report":
+/// a 404 with a message that names the CRS, rather than a shape change to
+/// the success body. This keeps every real 200 response (an array of
+/// TfL-shaped reports, possibly empty because every covering line is fine)
+/// completely unchanged, and reuses the exact `ApiNotFoundError` path the
+/// frontend already has for "this call came back not-found" -- no new
+/// wrapper type, no new response shape, on either side.
 async fn get_stop_point_disruption(
     State(app): State<App>,
     Path(crs): Path<String>,
@@ -269,7 +288,10 @@ async fn get_stop_point_disruption(
         .collect();
 
     if matching_line_ids.is_empty() {
-        return Ok(Json(vec![]));
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("no line coverage for stop point: {crs}"),
+        ));
     }
 
     let rows = queries::line_status_for_ids(&app.database, &matching_line_ids)
@@ -1411,5 +1433,63 @@ mod db_tests {
         cleanup_line_status(&pool, "test-stop-point-catalogue").await;
         cleanup_line_status(&pool, &custom.id).await;
         cleanup_user(&pool, "TEST-STOP-POINT-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_stop_point_disruption_a_station_with_no_line_coverage_404s_rather_than_looking_like_good_service -- --ignored`"]
+    async fn get_stop_point_disruption_a_station_with_no_line_coverage_404s_rather_than_looking_like_good_service()
+     {
+        // The regression this task exists for (see
+        // docs/superpowers/specs/2026-08-31-station-catalogue-completeness-research.md
+        // "Problem statement"): a CRS that isn't listed on any catalogue
+        // line's `stations` used to come back `200 []`, byte-for-byte
+        // identical to a station every one of whose covering lines is
+        // running a confirmed Good Service. No catalogue line at all here
+        // (an empty `lines` vec is the simplest way to guarantee zero
+        // coverage for any CRS, real or not) -- this must now 404, naming
+        // the CRS, mirroring `get_line_status`'s own established
+        // "no matching line(s)" 404 for an analogous "nothing matched" case
+        // in this same file.
+        let pool = connect().await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = request(router, "/StopPoint/RAY/Disruption".to_string(), None).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body,
+            Value::String("no line coverage for stop point: RAY".to_string())
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_stop_point_disruption_a_covered_station_with_only_good_service_still_200s_with_an_empty_array -- --ignored`"]
+    async fn get_stop_point_disruption_a_covered_station_with_only_good_service_still_200s_with_an_empty_array()
+     {
+        // The other half of the same distinction: a station that genuinely
+        // IS covered, by a line whose current statuses are all Good Service
+        // (`"[]"`, the same "no active statuses" fixture shape
+        // `get_mode_status_...`'s own test above uses), must keep its
+        // existing `200 []` -- this task changes what "no coverage" looks
+        // like, not what "covered and fine" looks like.
+        let pool = connect().await;
+
+        seed_line_status(&pool, "test-stop-point-good-service", "national-rail", "[]").await;
+
+        let catalogue_line = test_catalogue_line(
+            "test-stop-point-good-service",
+            "Test Stop Point Good Service",
+        );
+        let router = test_router(test_app(pool.clone(), vec![catalogue_line]));
+        let (status, body) = request(router, "/StopPoint/WOK/Disruption".to_string(), None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, Value::Array(vec![]));
+
+        cleanup_line_status(&pool, "test-stop-point-good-service").await;
     }
 }
