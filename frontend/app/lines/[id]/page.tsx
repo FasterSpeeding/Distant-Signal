@@ -13,6 +13,7 @@ import { TextLink } from '@/components/TextLink';
 import { worstStatus } from '@/lib/severity';
 import { resolveHalfHourlyRange } from '@/lib/history';
 import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
+import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
 
 // Same `revalidate = 0` rationale as `/lines/[id]/history` -- this page now
 // also computes a range off `Date.now()` (`resolveRange` below), so it must
@@ -198,6 +199,16 @@ export default async function LineDetailPage({
             data yet" text rather than leaving this section hanging. */}
         <Suspense fallback={<Skeleton height={280} />}>
           <HalfHourlyTrendsResults id={id} from={trendsRange.from} to={trendsRange.to} />
+        </Suspense>
+        {/* The half-hourly full-coverage series (Decision 1 of
+            docs/superpowers/specs/2026-09-03-half-hourly-coverage-trends-design.md)
+            -- a second, separate section under the sample-derived one
+            above, sharing the same trendsRange rather than computing its
+            own "now" a few milliseconds later. Its own, separate Suspense
+            boundary (Decision 4 of that design doc), so a slow coverage
+            fetch never blocks the sample chart above it, and vice versa. */}
+        <Suspense fallback={<Skeleton height={280} />}>
+          <HalfHourlyCoverageTrendsResults id={id} from={trendsRange.from} to={trendsRange.to} />
         </Suspense>
       </Stack>
     </Stack>

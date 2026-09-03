@@ -5,7 +5,13 @@ import LineDetailPage from './page';
 import * as api from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
 import { ApiNotFoundError } from '@/lib/api';
-import type { LineStatusReport, LineSummary, CustomLineDetail, LineHalfHourlyStats } from '@/lib/types';
+import type {
+  LineStatusReport,
+  LineSummary,
+  CustomLineDetail,
+  LineHalfHourlyStats,
+  LineHalfHourlyCoverageStats,
+} from '@/lib/types';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -16,6 +22,7 @@ vi.mock('@/lib/api', async () => {
     getLineDefinition: vi.fn(),
     getAllLines: vi.fn(),
     getLineHalfHourlyStats: vi.fn(),
+    getLineHalfHourlyCoverageStats: vi.fn(),
   };
 });
 // `withStaleFallback` (lib/liveDataCache.ts) reads the session cookie via
@@ -87,6 +94,24 @@ function halfHourlyStatsRow(overrides: Partial<LineHalfHourlyStats> = {}): LineH
   };
 }
 
+function halfHourlyCoverageStatsRow(
+  overrides: Partial<LineHalfHourlyCoverageStats> = {},
+): LineHalfHourlyCoverageStats {
+  return {
+    halfHourStart: '2026-08-30T14:00:00Z',
+    resolvedWindows: 25,
+    total: 100,
+    delayed: 10,
+    cancelled: 2,
+    skipped: 1,
+    avgDelayMinutes: 3.5,
+    delayRate: 0.1,
+    cancellationRate: 0.02,
+    skipRate: 0.01,
+    ...overrides,
+  };
+}
+
 async function renderPage(id = 'custom-my-commute') {
   const element = await LineDetailPage({ params: Promise.resolve({ id }) });
   return renderWithMantine(element);
@@ -98,6 +123,7 @@ describe('LineDetailPage Edit/Delete visibility', () => {
     vi.mocked(api.getAllLines).mockResolvedValue(lines);
     vi.mocked(api.getLineDefinition).mockResolvedValue({ stations: ['WOK', 'CLJ'], operators: ['SW'] });
     vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
+    vi.mocked(api.getLineHalfHourlyCoverageStats).mockResolvedValue([]);
   });
 
   it('a catalogue line (getCustomLine 404s) never shows Edit/Delete', async () => {
@@ -133,6 +159,7 @@ describe('LineDetailPage embedded trends', () => {
     vi.mocked(api.getAllLines).mockResolvedValue(lines);
     vi.mocked(api.getLineDefinition).mockResolvedValue({ stations: ['WOK', 'CLJ'], operators: ['SW'] });
     vi.mocked(api.getCustomLine).mockResolvedValue(customLine());
+    vi.mocked(api.getLineHalfHourlyCoverageStats).mockResolvedValue([]);
   });
 
   it('renders the trend charts when the line already has recent half-hourly stats', async () => {
@@ -167,6 +194,33 @@ describe('LineDetailPage embedded trends', () => {
     expect(await screen.findByText('Not enough sampled data yet for this line.')).toBeInTheDocument();
     expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
   });
+
+  // Regression guard for Task 2 of
+  // docs/superpowers/plans/2026-09-03-half-hourly-coverage-trends-plan.md --
+  // asserts the wiring actually landed on this page, not just that
+  // HalfHourlyCoverageTrendsResults works in isolation
+  // (HalfHourlyCoverageTrendsResults.test.tsx already covers that).
+  it('renders the "Full coverage" section underneath the sample-derived trend charts', async () => {
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
+    vi.mocked(api.getLineHalfHourlyCoverageStats).mockResolvedValue([
+      halfHourlyCoverageStatsRow({ halfHourStart: '2026-08-30T13:30:00Z' }),
+      halfHourlyCoverageStatsRow({ halfHourStart: '2026-08-30T14:00:00Z' }),
+    ]);
+    await renderPage();
+
+    expect(await screen.findByRole('heading', { name: 'Full coverage' })).toBeInTheDocument();
+    // Two charts from the "Full coverage" section on top of the sample
+    // series' own empty state (no chart).
+    expect(await screen.findAllByTestId('line-chart')).toHaveLength(2);
+  });
+
+  it('shows the "Full coverage" empty-state fallback for a line with no full-coverage data yet -- e.g. every line today, since no producer exists', async () => {
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
+    vi.mocked(api.getLineHalfHourlyCoverageStats).mockResolvedValue([]);
+    await renderPage();
+
+    expect(await screen.findByText('Not enough full-coverage data yet for this line.')).toBeInTheDocument();
+  });
 });
 
 describe('LineDetailPage -- outage behaviour', () => {
@@ -184,6 +238,7 @@ describe('LineDetailPage -- outage behaviour', () => {
     // Same: this is awaited inside a <Suspense> on the page, and Suspense
     // does not catch errors -- a resolved [] never exercised that path.
     vi.mocked(api.getLineHalfHourlyStats).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    vi.mocked(api.getLineHalfHourlyCoverageStats).mockResolvedValue([]);
   });
 
   it('keeps rendering the last-known status when the status fetch fails', async () => {
@@ -223,6 +278,7 @@ describe('LineDetailPage -- embedded fetches must not blank the page', () => {
     vi.mocked(api.getCustomLine).mockResolvedValue({} as never);
     vi.mocked(api.getLineDefinition).mockResolvedValue({ stations: ['WOK', 'CLJ'], operators: ['SW'] });
     vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
+    vi.mocked(api.getLineHalfHourlyCoverageStats).mockResolvedValue([]);
   });
 
   // getCustomLine maps only 401/404 to ApiNotFoundError; a rejected fetch
