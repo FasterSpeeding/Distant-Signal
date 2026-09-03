@@ -343,3 +343,43 @@ describe('DashboardPage -- outage behaviour', () => {
     expect(screen.getByText('KGX')).toBeInTheDocument();
   });
 });
+
+describe('DashboardPage -- pinned station line-coverage distinction', () => {
+  // The regression this task exists for, on the dashboard's own pinned-
+  // station card: before this fix, `.catch(() => [])` silently swallowed
+  // the backend's new "no line coverage" 404 the exact same way it already
+  // swallowed a real connectivity failure, so a pinned but uncovered
+  // station rendered `worstSeverityAcrossReports([])` -- a Good Service
+  // badge, indistinguishable from a genuinely fine, fully-covered pinned
+  // station. See crates/api/src/routes/line_status.rs's
+  // get_stop_point_disruption and app/stations/[crs]/page.tsx's
+  // fetchStationDisruptions for the same distinction made on the station
+  // detail page.
+  beforeEach(() => {
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.c', name: 'A' });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['RAY'] });
+    vi.mocked(api.getStationName).mockResolvedValue('Raynes Park');
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
+  });
+
+  it('shows a "Not tracked" badge, not "Good Service", for a pinned station the backend 404s as uncovered', async () => {
+    vi.mocked(api.getStopPointDisruption).mockRejectedValue(
+      new api.ApiNotFoundError('no line coverage for stop point: RAY'),
+    );
+
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText('Not tracked')).toBeInTheDocument();
+    expect(screen.getByText('Not covered by our line-status tracking yet.')).toBeInTheDocument();
+    expect(screen.queryByText('Good Service')).not.toBeInTheDocument();
+  });
+
+  it('still shows the real "Good Service" badge for a genuinely covered, currently-fine pinned station', async () => {
+    vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
+
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText('Good Service')).toBeInTheDocument();
+    expect(screen.queryByText('Not tracked')).not.toBeInTheDocument();
+  });
+});
