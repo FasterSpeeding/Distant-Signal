@@ -117,9 +117,15 @@ describe('TrackTrainForm', () => {
   });
 
   it('on a 400, shows the server error message inline', async () => {
+    // The exact copy is `crates/api/src/data/train_tracking.rs::validate_pin`'s
+    // source of truth -- this is testing the pass-through (the backend's
+    // 400 body is rendered verbatim), not owning the wording itself.
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(
-      new Response('scheduled_departure is too far in the past to track', { status: 400 }),
+      new Response(
+        'That departure time is more than 6 hours ago — trains can only be tracked within 6 hours of departure.',
+        { status: 400 },
+      ),
     );
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
@@ -128,7 +134,11 @@ describe('TrackTrainForm', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
-    expect(await screen.findByText('scheduled_departure is too far in the past to track')).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        'That departure time is more than 6 hours ago — trains can only be tracked within 6 hours of departure.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('on a 500, shows a generic error message', async () => {

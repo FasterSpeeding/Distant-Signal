@@ -237,6 +237,10 @@ export interface TrackedTrainState {
   serviceDate: string; // "YYYY-MM-DD"
   pinOriginCrs: string;
   pinDestinationCrs: string | null;
+  // `null` whenever the backend's `LEFT JOIN stations` found no reference
+  // row for the code -- see `lib/stationLabel.ts`'s fallback.
+  pinOriginName: string | null;
+  pinDestinationName: string | null;
   resolutionStatus: ResolutionStatus;
   trainUid: string | null;
   trainId: string | null;
@@ -261,6 +265,9 @@ export interface TrackedTrainListItem {
   serviceDate: string; // "YYYY-MM-DD"
   pinOriginCrs: string;
   pinDestinationCrs: string | null;
+  // See `TrackedTrainState.pinOriginName`'s comment -- same contract.
+  pinOriginName: string | null;
+  pinDestinationName: string | null;
   pinScheduledDeparture: string; // RFC3339
   resolutionStatus: ResolutionStatus;
   trainUid: string | null;
@@ -315,6 +322,10 @@ export interface TrackedTrainTicket {
   ticketType: string | null;
   originCrs: string | null;
   destinationCrs: string | null;
+  // Joined on THIS ticket's own origin/destination, not the pin route --
+  // see `lib/stationLabel.ts`'s fallback.
+  originName: string | null;
+  destinationName: string | null;
   source: TicketSource;
   createdAt: string; // RFC3339
 }
@@ -426,6 +437,9 @@ export interface TicketListItem {
   ticketType: string | null;
   originCrs: string | null;
   destinationCrs: string | null;
+  // See `TrackedTrainTicket.originName`'s comment -- same contract.
+  originName: string | null;
+  destinationName: string | null;
   source: TicketSource;
   createdAt: string; // RFC3339 -- list ordering key
   serviceDate: string | null; // "YYYY-MM-DD"

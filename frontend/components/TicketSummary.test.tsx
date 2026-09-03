@@ -12,6 +12,8 @@ describe('TicketSummary', () => {
           ticketType: 'Off-Peak Day Single',
           originCrs: null,
           destinationCrs: null,
+          originName: null,
+          destinationName: null,
           source: 'manual',
           createdAt: '2026-08-29T12:00:00Z',
         }}
@@ -28,6 +30,8 @@ describe('TicketSummary', () => {
           ticketType: null,
           originCrs: null,
           destinationCrs: null,
+          originName: null,
+          destinationName: null,
           source: 'manual',
           createdAt: '2026-08-29T12:00:00Z',
         }}
@@ -44,12 +48,32 @@ describe('TicketSummary', () => {
           ticketType: null,
           originCrs: 'KGX',
           destinationCrs: 'EDB',
+          originName: null,
+          destinationName: null,
           source: 'manual',
           createdAt: '2026-08-29T12:00:00Z',
         }}
       />,
     );
     expect(screen.getByText('KGX → EDB')).toBeInTheDocument();
+  });
+
+  it('renders station names in the route when the backend resolved them', () => {
+    renderWithMantine(
+      <TicketSummary
+        ticket={{
+          operator: 'LNER',
+          ticketType: null,
+          originCrs: 'KGX',
+          destinationCrs: 'EDB',
+          originName: 'London Kings Cross',
+          destinationName: 'Edinburgh Waverley',
+          source: 'manual',
+          createdAt: '2026-08-29T12:00:00Z',
+        }}
+      />,
+    );
+    expect(screen.getByText('London Kings Cross (KGX) → Edinburgh Waverley (EDB)')).toBeInTheDocument();
   });
 
   it('renders no route line when both origin and destination are null', () => {
@@ -60,6 +84,8 @@ describe('TicketSummary', () => {
           ticketType: null,
           originCrs: null,
           destinationCrs: null,
+          originName: null,
+          destinationName: null,
           source: 'manual',
           createdAt: '2026-08-29T12:00:00Z',
         }}
@@ -76,6 +102,8 @@ describe('TicketSummary', () => {
           ticketType: null,
           originCrs: null,
           destinationCrs: null,
+          originName: null,
+          destinationName: null,
           source: 'pkpass-semantics',
           createdAt: '2026-08-29T12:00:00Z',
         }}
@@ -92,6 +120,8 @@ describe('TicketSummary', () => {
           ticketType: null,
           originCrs: null,
           destinationCrs: null,
+          originName: null,
+          destinationName: null,
           source: 'manual',
           createdAt: '2026-08-29T12:00:00Z',
         }}

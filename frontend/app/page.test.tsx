@@ -38,6 +38,12 @@ function item(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListIt
     serviceDate: '2026-08-31',
     pinOriginCrs: 'WAT',
     pinDestinationCrs: 'WOK',
+    // Defaults to null (bare-code rendering) rather than a real name so
+    // every pre-existing assertion in this file that checks for the code
+    // itself keeps working unchanged -- the name-rendering path gets its
+    // own dedicated test below.
+    pinOriginName: null,
+    pinDestinationName: null,
     pinScheduledDeparture: '2026-08-31T18:32:00Z',
     resolutionStatus: 'resolved',
     trainUid: 'C21373',
@@ -118,8 +124,66 @@ describe('DashboardPage', () => {
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report({ id: 'central', name: 'Central' })]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByRole('heading', { name: 'Your Lines' })).toBeInTheDocument();
+    // Load-bearing specifically for the PINNED case (Task 7): this user has
+    // pinned a line, so "Right now" must stay absent even though the
+    // authenticated branch can now render it for a zero-pinned-lines user.
     expect(screen.queryByText(/Right now/)).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Log in to pin your lines and stations' })).not.toBeInTheDocument();
+  });
+
+  it('shows the live "Right now" module to a logged-in user with no pinned lines', async () => {
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({ id: 'central', name: 'Central', lineStatuses: [{ statusSeverity: 6, statusSeverityDescription: 'Severe Delays', reason: '', sampleAvailability: { state: 'no-coverage' } } as never] }),
+    ]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByRole('heading', { name: 'Right now' })).toBeInTheDocument();
+    expect(screen.getByText(/1 line not at Good Service right now/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Central/ })).toHaveAttribute('href', '/lines/central');
+  });
+
+  it('still shows it when they have pinned stations but no pinned lines', async () => {
+    // Gated on pinned LINES only: a user with pinned stations but no
+    // pinned lines still has a line-shaped hole on the dashboard.
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'] });
+    vi.mocked(api.getStationName).mockResolvedValue('Waterloo');
+    vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByRole('heading', { name: 'Right now' })).toBeInTheDocument();
+  });
+
+  it('hides it once they pin a line', async () => {
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: ['central'], pinnedStations: [] });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([report({ id: 'central', name: 'Central' })]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByRole('heading', { name: 'Right now' })).not.toBeInTheDocument();
+  });
+
+  it('renders the module at heading level 2 in the authenticated branch, no skip', async () => {
+    // h1 "Your Lines" -> h2 "Your Stations" -> h2 "Right now" -> h2 "Your
+    // Tracked Trains".
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByRole('heading', { name: 'Your Lines', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Right now', level: 2 })).toBeInTheDocument();
+  });
+
+  it('anonymous branch still renders "Right now" identically after the RightNowModule extraction', async () => {
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({ id: 'central', name: 'Central', lineStatuses: [{ statusSeverity: 6, statusSeverityDescription: 'Severe Delays', reason: '', sampleAvailability: { state: 'no-coverage' } } as never] }),
+    ]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByRole('heading', { name: 'Right now', level: 2 })).toBeInTheDocument();
+    expect(screen.getByText(/1 line not at Good Service right now/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Central/ })).toHaveAttribute('href', '/lines/central');
   });
 
   it('logged in, an auth glitch (getSession rejects): degrades to the anonymous branch, not a crash', async () => {
@@ -206,6 +270,21 @@ describe('DashboardPage -- Your Tracked Trains section', () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByRole('link', { name: /WAT → WOK/ })).toHaveAttribute('href', '/train/C21373/2026-08-31');
+  });
+
+  it('renders station names when the backend resolved them, not just bare codes', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      item({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' }),
+    ]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByText('London Waterloo (WAT) → Woking (WOK)')).toBeInTheDocument();
+  });
+
+  it('falls back to the bare code, not "null" or an empty label, when a name did not resolve', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ pinOriginName: null, pinDestinationName: null })]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByText('WAT → WOK')).toBeInTheDocument();
+    expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
   });
 
   it('pending train: links to the by-id detail route', async () => {

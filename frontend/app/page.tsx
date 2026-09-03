@@ -18,6 +18,7 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank, worstStatus } from '@/lib/severity';
 import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { formatDate, formatTime } from '@/lib/dateFormat';
+import { routeLabel } from '@/lib/stationLabel';
 import type { LineStatus, LineStatusReport, Preferences, TrackedTrainListItem } from '@/lib/types';
 
 // See app/lines/[id]/page.tsx-adjacent history page and this repo's other
@@ -118,8 +119,17 @@ export default async function DashboardPage() {
     getMyTrackedTrains().catch(() => null),
   ]);
 
+  // Hoisted above the anonymous/authenticated branch so both can read it:
+  // it's a pure function (see its own doc comment) of `allReports`, which
+  // is already fetched unconditionally above regardless of auth state, so
+  // this costs nothing extra -- no new fetch, no new endpoint, no extra
+  // latency. Previously computed only inside the anonymous branch, which is
+  // what left a logged-in user with zero pinned lines staring at a blank
+  // dashboard instead of this live module
+  // (docs/superpowers/specs/2026-09-02-frontend-ui-ux-review.md §F2).
+  const rightNow = notGoodServiceSummary(allReports);
+
   if (!session.authenticated) {
-    const { count, worst } = notGoodServiceSummary(allReports);
     return (
       <Stack p="lg" gap="xl">
         <Stack gap="xs">
@@ -137,30 +147,7 @@ export default async function DashboardPage() {
           </Text>
         </Stack>
 
-        <Stack gap="md">
-          <Title order={2}>Right now</Title>
-          {count === 0 ? (
-            <Text>Every line is running a Good Service.</Text>
-          ) : (
-            <>
-              <Text>
-                {count} line{count === 1 ? '' : 's'} not at Good Service right now:
-              </Text>
-              <Stack gap="xs">
-                {worst.map((report) => (
-                  <Link key={report.id} href={`/lines/${report.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-                    <Card withBorder>
-                      <Group justify="space-between">
-                        <Text fw={600}>{report.name}</Text>
-                        <StatusBadge severity={worstStatus(report).statusSeverity} />
-                      </Group>
-                    </Card>
-                  </Link>
-                ))}
-              </Stack>
-            </>
-          )}
-        </Stack>
+        <RightNowModule summary={rightNow} />
 
         <Group gap="lg">
           <TextLink href="/lines">Browse all lines</TextLink>
@@ -274,6 +261,21 @@ export default async function DashboardPage() {
         )}
       </Stack>
 
+      {/* The anonymous home gives a visitor a genuinely useful live-status
+          module; logging in used to REMOVE it, so a user's reward for the
+          single action this app most wants them to take was a blank page with
+          two "you haven't pinned anything" lines
+          (docs/superpowers/specs/2026-09-02-frontend-ui-ux-review.md §F2).
+          `2026-08-31-anonymous-user-ux-design.md` called that case "arguably
+          fine"; the rendered pages settled the argument the other way, and this
+          deliberately overrides that spec decision.
+
+          Gated on pinned LINES only, not on pins of any kind: a user with
+          pinned stations but no pinned lines still has a line-shaped hole here,
+          and this is a lines module. Costs nothing -- `allReports` is fetched
+          unconditionally above and `notGoodServiceSummary` is pure. */}
+      {pinnedLineReports.length === 0 && <RightNowModule summary={rightNow} />}
+
       {trackedTrains.length > 0 && (
         <Stack gap="md">
           <Group justify="space-between">
@@ -286,6 +288,42 @@ export default async function DashboardPage() {
             ))}
           </Stack>
         </Stack>
+      )}
+    </Stack>
+  );
+}
+
+// Local, not a new file under `components/`: it is used twice, in one file
+// (the anonymous branch and, as of Task 7, the authenticated branch with
+// zero pinned lines), and both uses are server-rendered. A new shared
+// component would be the right call only if a third page wanted it. Moved
+// verbatim out of the anonymous branch's inline JSX -- this extraction step
+// is not meant to restyle anything.
+function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodServiceSummary> }) {
+  const { count, worst } = summary;
+  return (
+    <Stack gap="md">
+      <Title order={2}>Right now</Title>
+      {count === 0 ? (
+        <Text>Every line is running a Good Service.</Text>
+      ) : (
+        <>
+          <Text>
+            {count} line{count === 1 ? '' : 's'} not at Good Service right now:
+          </Text>
+          <Stack gap="xs">
+            {worst.map((report) => (
+              <Link key={report.id} href={`/lines/${report.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+                <Card withBorder>
+                  <Group justify="space-between">
+                    <Text fw={600}>{report.name}</Text>
+                    <StatusBadge severity={worstStatus(report).statusSeverity} />
+                  </Group>
+                </Card>
+              </Link>
+            ))}
+          </Stack>
+        </>
       )}
     </Stack>
   );
@@ -311,7 +349,12 @@ function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem }) {
       ? `/train/${train.trainUid}/${train.serviceDate}`
       : `/train/by-id/${train.id}`;
 
-  const route = train.pinDestinationCrs ? `${train.pinOriginCrs} → ${train.pinDestinationCrs}` : train.pinOriginCrs;
+  const route = routeLabel(
+    train.pinOriginCrs,
+    train.pinOriginName,
+    train.pinDestinationCrs,
+    train.pinDestinationName,
+  );
 
   return (
     <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>

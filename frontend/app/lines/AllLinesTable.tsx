@@ -207,7 +207,18 @@ export function AllLinesTable({
                 <SortGlyph field="cancelled" sort={sort} />
               </UnstyledButton>
             </TableTh>
-            <TableTh visibleFrom="sm">Pin</TableTh>
+            {/* No `visibleFrom="sm"`, unlike the two numeric columns beside it.
+                Those are hidden on mobile only because they are re-surfaced in the
+                `hiddenFrom="sm"` sub-line under the line name (:225) -- Pin got the
+                hiding half of that pattern without the re-surfacing half in
+                bd4d739, and unlike a number it is an interactive control with no
+                other home: `PinToggle` exists in exactly two places in this app,
+                here and on the station detail page (`kind="station"`), so below the
+                sm breakpoint there was no way to pin or unpin a LINE anywhere in
+                the application, and a pinned row was visually identical to an
+                unpinned one. See
+                docs/superpowers/specs/2026-09-02-frontend-ui-ux-review.md §F4. */}
+            <TableTh>Pin</TableTh>
           </TableTr>
         </TableThead>
         <TableTbody>
@@ -257,7 +268,7 @@ export function AllLinesTable({
                   </Text>
                 )}
               </TableTd>
-              <TableTd visibleFrom="sm">
+              <TableTd>
                 <PinToggle kind="line" id={line.id} initiallyPinned={pinnedSet.has(line.id)} />
               </TableTd>
             </TableTr>

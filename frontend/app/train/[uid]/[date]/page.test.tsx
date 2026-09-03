@@ -46,6 +46,8 @@ function trackedTrainState(overrides: Partial<TrackedTrainState> = {}): TrackedT
     serviceDate: '2026-08-31',
     pinOriginCrs: 'WAT',
     pinDestinationCrs: 'WOK',
+    pinOriginName: null,
+    pinDestinationName: null,
     resolutionStatus: 'resolved',
     trainUid: 'W12345',
     trainId: '1A23',

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Group, Select, Text } from '@mantine/core';
 import { formatDate } from '@/lib/dateFormat';
+import { routeLabel } from '@/lib/stationLabel';
 import type { TrackedTrainListItem } from '@/lib/types';
 
 /** Attaches a standalone ticket (Part A of the upload-first plan --
@@ -63,9 +64,7 @@ export function AttachTicketAction({ ticketId, trains }: { ticketId: number; tra
 
   const options = trains.map((train) => ({
     value: String(train.id),
-    label: train.pinDestinationCrs
-      ? `${train.pinOriginCrs} → ${train.pinDestinationCrs} (${formatDate(train.serviceDate)})`
-      : `${train.pinOriginCrs} (${formatDate(train.serviceDate)})`,
+    label: `${routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName)} (${formatDate(train.serviceDate)})`,
   }));
 
   return (

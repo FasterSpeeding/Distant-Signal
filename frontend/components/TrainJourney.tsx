@@ -1,6 +1,7 @@
 import { Alert, Badge, Group, Loader, Stack, Text } from '@mantine/core';
 import { EtaBadge } from './EtaBadge';
 import { formatDate } from '@/lib/dateFormat';
+import { routeLabel } from '@/lib/stationLabel';
 import type { TrackedTrainState } from '@/lib/types';
 
 /** Renders one `TrackedTrainState` through every state the backend can
@@ -17,8 +18,8 @@ import type { TrackedTrainState } from '@/lib/types';
 export function TrainJourney({ state }: { state: TrackedTrainState }) {
   const pinSummary = (
     <Text size="sm" c="dimmed">
-      {state.pinOriginCrs}
-      {state.pinDestinationCrs ? ` → ${state.pinDestinationCrs}` : ''} · {formatDate(state.serviceDate)}
+      {routeLabel(state.pinOriginCrs, state.pinOriginName, state.pinDestinationCrs, state.pinDestinationName)} ·{' '}
+      {formatDate(state.serviceDate)}
     </Text>
   );
 

@@ -723,6 +723,8 @@ mod tests {
             ticket_type: Some("Off-Peak Day Single".to_string()),
             origin_crs: Some("KGX".to_string()),
             destination_crs: Some("EDB".to_string()),
+            origin_name: Some("London Kings Cross".to_string()),
+            destination_name: Some("Edinburgh Waverley".to_string()),
             source: "manual".to_string(),
             created_at: fixed_instant(),
         }
@@ -734,6 +736,8 @@ mod tests {
             service_date: "2026-08-29".parse().unwrap(),
             pin_origin_crs: "KGX".to_string(),
             pin_destination_crs: Some("EDB".to_string()),
+            pin_origin_name: Some("London Kings Cross".to_string()),
+            pin_destination_name: Some("Edinburgh Waverley".to_string()),
             resolution_status: "resolved".to_string(),
             train_uid: Some("A12345".to_string()),
             train_id: Some("1A23".to_string()),

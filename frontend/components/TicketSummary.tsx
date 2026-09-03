@@ -1,6 +1,7 @@
 import { Badge, Group, Stack, Text } from '@mantine/core';
 import type { TrackedTrainTicket, TicketListItem, TicketSource } from '@/lib/types';
 import { formatDateTime } from '@/lib/dateFormat';
+import { stationLabel } from '@/lib/stationLabel';
 
 /** Provenance labels for `TicketSummary`'s badge -- styled after
  * `IssueList.tsx`'s `DATA_QUALITY_LABELS` (`components/IssueList.tsx:38-44`),
@@ -34,11 +35,25 @@ export function TicketSummary({
 }: {
   ticket: Pick<
     TrackedTrainTicket | TicketListItem,
-    'operator' | 'ticketType' | 'originCrs' | 'destinationCrs' | 'source' | 'createdAt'
+    | 'operator'
+    | 'ticketType'
+    | 'originCrs'
+    | 'destinationCrs'
+    | 'originName'
+    | 'destinationName'
+    | 'source'
+    | 'createdAt'
   >;
 }) {
+  // Preserves the existing '?' fallback for whichever single end is
+  // missing on a ticket that has at least one CRS -- `routeLabel` assumes
+  // a non-null origin, which doesn't fit this component's looser shape.
   const route =
-    ticket.originCrs || ticket.destinationCrs ? `${ticket.originCrs ?? '?'} → ${ticket.destinationCrs ?? '?'}` : null;
+    ticket.originCrs || ticket.destinationCrs
+      ? `${ticket.originCrs ? stationLabel(ticket.originCrs, ticket.originName) : '?'} → ${
+          ticket.destinationCrs ? stationLabel(ticket.destinationCrs, ticket.destinationName) : '?'
+        }`
+      : null;
   return (
     <Stack gap={2}>
       <Text fw={500}>

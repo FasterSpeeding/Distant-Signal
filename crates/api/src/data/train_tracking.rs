@@ -37,15 +37,33 @@ const MAX_PIN_AGE: chrono::Duration = chrono::Duration::hours(6);
 /// what falls past this cap).
 const MINE_LIST_LIMIT: i64 = 100;
 
+/// These messages are USER-FACING COPY, not developer diagnostics. There is
+/// no error envelope anywhere in this API (`crates/api/src/routes/train.rs`
+/// returns `(StatusCode::BAD_REQUEST, String)` as plain text), and
+/// `frontend/components/TrackTrainForm.tsx` renders the body verbatim as
+/// the form's error `Alert` -- so a snake_case field name written here
+/// becomes a snake_case field name on a user's screen
+/// (docs/superpowers/specs/2026-09-02-frontend-ui-ux-review.md §F5).
 pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), String> {
     if pin.origin_crs.trim().is_empty() {
-        return Err("origin_crs must not be empty".to_string());
+        return Err("Enter the station you're departing from.".to_string());
     }
     if pin.origin_crs.len() != 3 {
-        return Err("origin_crs must be a 3-letter CRS code".to_string());
+        return Err(
+            "That doesn't look like a station code — CRS codes are three letters, like WOK \
+             or EUS."
+                .to_string(),
+        );
     }
     if now - pin.scheduled_departure > MAX_PIN_AGE {
-        return Err("scheduled_departure is too far in the past to track".to_string());
+        // Interpolated from MAX_PIN_AGE, not typed as prose, so this message
+        // can never drift from the constant it describes.
+        return Err(format!(
+            "That departure time is more than {} hours ago — trains can only be tracked \
+             within {} hours of departure.",
+            MAX_PIN_AGE.num_hours(),
+            MAX_PIN_AGE.num_hours(),
+        ));
     }
     Ok(())
 }
@@ -97,19 +115,34 @@ const TICKET_SOURCES: [&str; 4] = [
 /// non-3-letter value here means a `PartialTicket` preview resubmitted
 /// unedited is *guaranteed* to fail this check, forcing a human to correct
 /// it into a real code before anything is ever saved.
+/// Same user-facing-copy posture as [`validate_pin`]'s doc comment.
 pub fn validate_ticket_entry(entry: &TicketEntryRequest) -> Result<(), String> {
     if !TICKET_SOURCES.contains(&entry.source.as_str()) {
-        return Err(format!("source must be one of {TICKET_SOURCES:?}"));
+        // Not a `{TICKET_SOURCES:?}` Debug dump of the array (that used to
+        // render e.g. `source must be one of ["manual", "pkpass-semantics",
+        // "pkpass-heuristic", "pdf-heuristic"]` verbatim to a user). This
+        // path is unreachable from the app's own form, which always
+        // supplies `source` itself, so listing the valid values buys a
+        // direct-API caller nothing a 400 doesn't already tell them.
+        return Err("That's not a recognised ticket source.".to_string());
     }
     if let Some(crs) = &entry.origin_crs
         && crs.len() != 3
     {
-        return Err("origin_crs must be a 3-letter CRS code".to_string());
+        return Err(
+            "That doesn't look like a station code — CRS codes are three letters, like WOK \
+             or EUS."
+                .to_string(),
+        );
     }
     if let Some(crs) = &entry.destination_crs
         && crs.len() != 3
     {
-        return Err("destination_crs must be a 3-letter CRS code".to_string());
+        return Err(
+            "That doesn't look like a destination station code — CRS codes are three \
+             letters, like WOK or EUS."
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -165,6 +198,37 @@ mod ticket_entry_tests {
     #[test]
     fn an_unknown_source_is_rejected() {
         assert!(validate_ticket_entry(&entry(Some("KGX"), "barcode-decoded")).is_err());
+    }
+
+    #[test]
+    fn validation_messages_carry_no_internal_field_names_or_debug_dumps() {
+        // Same guard as train_tracking::tests -- these 400 bodies are
+        // rendered verbatim by TicketEntryForm.tsx. The old
+        // `format!("source must be one of {TICKET_SOURCES:?}")` failed this
+        // twice over: both an identifier AND a Rust Debug array dump.
+        let messages = [
+            validate_ticket_entry(&entry(Some("KGX"), "barcode-decoded")).unwrap_err(),
+            validate_ticket_entry(&entry(Some("Kings Cross"), "manual")).unwrap_err(),
+            validate_ticket_entry(&TicketEntryRequest {
+                operator: None,
+                ticket_type: None,
+                origin_crs: Some("KGX".to_string()),
+                destination_crs: Some("Edinburgh Waverley".to_string()),
+                source: "manual".to_string(),
+            })
+            .unwrap_err(),
+        ];
+        for message in messages {
+            assert!(!message.is_empty(), "validation message must not be empty");
+            assert!(
+                !message.contains('_'),
+                "user-facing copy leaked an identifier: {message}"
+            );
+            assert!(
+                !message.contains('['),
+                "user-facing copy leaked a Debug array dump: {message}"
+            );
+        }
     }
 }
 
@@ -311,6 +375,13 @@ pub struct TrackedTrainState {
     pub service_date: chrono::NaiveDate,
     pub pin_origin_crs: String,
     pub pin_destination_crs: Option<String>,
+    /// `None` whenever the `LEFT JOIN` below found no `stations` row for
+    /// `pin_origin_crs` (an unrecognised code, or reference data that
+    /// hasn't caught up) -- see Decision 3 of the plan this join
+    /// implements. Every frontend consumer must fall back to the bare CRS
+    /// code rather than assume this is always present.
+    pub pin_origin_name: Option<String>,
+    pub pin_destination_name: Option<String>,
     pub resolution_status: String,
     pub train_uid: Option<String>,
     pub train_id: Option<String>,
@@ -323,13 +394,27 @@ pub struct TrackedTrainState {
     pub eta_source: Option<String>,
 }
 
+// `LEFT JOIN`, never `JOIN`: a CRS with no reference row (a code the
+// stations feed doesn't carry) must still return the train, just with a
+// `None` name.
+//
+// `UPPER(...)` is mandatory, not defensive tidiness. `pin_origin_crs`/
+// `pin_destination_crs` are `TEXT` (`migrations/20260828120000_train_tracking.sql`)
+// and `validate_pin` never normalises their case, while `stations.crs` is
+// `CHAR(3)`. Without `UPPER`, a user who typed `kgx` would get `NULL` here
+// and fall back to the bare code -- the exact outcome this join exists to
+// remove, for the subset of users most likely to hit it (see Decision 3 of
+// docs/superpowers/plans/2026-09-02-frontend-ux-review-fixes.md).
 const TRACKED_TRAIN_STATE_SELECT: &str = "\
     SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
+           so.name AS pin_origin_name, sd.name AS pin_destination_name, \
            tt.resolution_status, tt.train_uid, tt.train_id, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
            cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source \
     FROM tracked_trains tt \
-    LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id";
+    LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
+    LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
+    LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs)";
 
 /// A user's own tracked-train list, lighter than `TrackedTrainState`
 /// (Decision 1 of the design spec) -- excludes live movement detail
@@ -347,6 +432,11 @@ pub struct TrackedTrainListItem {
     pub service_date: chrono::NaiveDate,
     pub pin_origin_crs: String,
     pub pin_destination_crs: Option<String>,
+    /// See `TrackedTrainState::pin_origin_name`'s doc comment -- same
+    /// `LEFT JOIN stations` mechanism, same `None`-means-no-reference-row
+    /// contract.
+    pub pin_origin_name: Option<String>,
+    pub pin_destination_name: Option<String>,
     pub pin_scheduled_departure: DateTime<Utc>,
     pub resolution_status: String,
     pub train_uid: Option<String>,
@@ -371,12 +461,19 @@ pub async fn list_tracked_trains_for_user(
     pool: &PgPool,
     user_id: &str,
 ) -> anyhow::Result<Vec<TrackedTrainListItem>> {
+    // Same `LEFT JOIN stations ... ON so.crs = UPPER(...)` mechanism as
+    // `TRACKED_TRAIN_STATE_SELECT` -- see its comment for why `UPPER` is
+    // mandatory. This feeds the home dashboard, `/track/mine`, and
+    // `AttachTicketAction`'s `Select` -- three of F3's six sites.
     let rows = sqlx::query_as::<_, TrackedTrainListItem>(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
+                so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 tt.pin_scheduled_departure, tt.resolution_status, tt.train_uid, \
                 cs.status, cs.delay_minutes, tt.tracked_at \
          FROM tracked_trains tt \
          LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
+         LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
+         LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs) \
          WHERE tt.user_id = $1 \
          ORDER BY tt.tracked_at DESC \
          LIMIT $2",
@@ -489,6 +586,29 @@ mod tests {
         let departure: DateTime<Utc> = "2026-06-15T02:00:00Z".parse().unwrap(); // 10h ago
         assert!(validate_pin(&pin("WAT", departure), now).is_err());
     }
+
+    #[test]
+    fn validation_messages_carry_no_internal_field_names() {
+        // The 400 body is rendered verbatim as the form's error Alert
+        // (frontend/components/TrackTrainForm.tsx), so a snake_case field
+        // name here lands on screen. See the review's §F5. A cheap, durable
+        // guard: no branch's message should ever contain `_`.
+        let now: DateTime<Utc> = "2026-06-15T12:00:00Z".parse().unwrap();
+        let stale_departure: DateTime<Utc> = "2026-06-15T02:00:00Z".parse().unwrap();
+
+        let messages = [
+            validate_pin(&pin("", now), now).unwrap_err(),
+            validate_pin(&pin("WATERLOO", now), now).unwrap_err(),
+            validate_pin(&pin("WAT", stale_departure), now).unwrap_err(),
+        ];
+        for message in messages {
+            assert!(!message.is_empty(), "validation message must not be empty");
+            assert!(
+                !message.contains('_'),
+                "user-facing copy leaked an identifier: {message}"
+            );
+        }
+    }
 }
 
 /// Returns the owning `user_id` for a tracked train, or `None` if no such
@@ -596,13 +716,26 @@ pub struct TrackedTrainTicket {
     pub ticket_type: Option<String>,
     pub origin_crs: Option<String>,
     pub destination_crs: Option<String>,
+    /// See `TrackedTrainState::pin_origin_name`'s doc comment -- same
+    /// `LEFT JOIN stations` mechanism, joined here on the TICKET's own
+    /// `origin_crs`/`destination_crs`, not the pin route (which
+    /// `TrackedTrainListItem` already covers).
+    pub origin_name: Option<String>,
+    pub destination_name: Option<String>,
     pub source: String,
     pub created_at: DateTime<Utc>,
 }
 
+// `format!`ed into two callers below (`list_tickets_for_tracked_train`,
+// `get_ticket_owned`), so the joins belong here once and both callers get
+// them. The base table is aliased `t` so each caller's appended `WHERE`
+// must qualify its columns -- see both callers.
 const TICKET_SELECT: &str = "\
-    SELECT id, tracked_train_id, operator, ticket_type, origin_crs, destination_crs, source, created_at \
-    FROM tracked_train_tickets";
+    SELECT t.id, t.tracked_train_id, t.operator, t.ticket_type, t.origin_crs, t.destination_crs, \
+           so.name AS origin_name, sd.name AS destination_name, t.source, t.created_at \
+    FROM tracked_train_tickets t \
+    LEFT JOIN stations so ON so.crs = UPPER(t.origin_crs) \
+    LEFT JOIN stations sd ON sd.crs = UPPER(t.destination_crs)";
 
 /// Filters directly on `(tracked_train_id, user_id)` -- no join needed,
 /// per this table's own ownership-redundancy design (see Task 1's migration
@@ -616,7 +749,7 @@ pub async fn list_tickets_for_tracked_train(
     user_id: &str,
 ) -> anyhow::Result<Vec<TrackedTrainTicket>> {
     let rows = sqlx::query_as::<_, TrackedTrainTicket>(&format!(
-        "{TICKET_SELECT} WHERE tracked_train_id = $1 AND user_id = $2 ORDER BY created_at"
+        "{TICKET_SELECT} WHERE t.tracked_train_id = $1 AND t.user_id = $2 ORDER BY t.created_at"
     ))
     .bind(tracking_id)
     .bind(user_id)
@@ -633,7 +766,7 @@ pub async fn get_ticket_owned(
     user_id: &str,
 ) -> anyhow::Result<Option<TrackedTrainTicket>> {
     let row = sqlx::query_as::<_, TrackedTrainTicket>(&format!(
-        "{TICKET_SELECT} WHERE id = $1 AND user_id = $2"
+        "{TICKET_SELECT} WHERE t.id = $1 AND t.user_id = $2"
     ))
     .bind(ticket_id)
     .bind(user_id)
@@ -700,6 +833,13 @@ struct TicketListRow {
     ticket_type: Option<String>,
     origin_crs: Option<String>,
     destination_crs: Option<String>,
+    /// Same `LEFT JOIN stations` mechanism as `TrackedTrainTicket`'s
+    /// fields, joined on THIS ticket's own origin/destination -- not the
+    /// pin route, which `TrackedTrainListItem` already covers, so this
+    /// query deliberately does not add two more joins for
+    /// `pin_origin_crs`/`pin_destination_crs`.
+    origin_name: Option<String>,
+    destination_name: Option<String>,
     source: String,
     created_at: DateTime<Utc>,
     service_date: Option<chrono::NaiveDate>,
@@ -746,6 +886,9 @@ pub struct TicketListItem {
     pub ticket_type: Option<String>,
     pub origin_crs: Option<String>,
     pub destination_crs: Option<String>,
+    /// See `TicketListRow::origin_name`'s doc comment.
+    pub origin_name: Option<String>,
+    pub destination_name: Option<String>,
     pub source: String,
     pub created_at: DateTime<Utc>,
     pub service_date: Option<chrono::NaiveDate>,
@@ -785,6 +928,8 @@ fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
         ticket_type: row.ticket_type,
         origin_crs: row.origin_crs,
         destination_crs: row.destination_crs,
+        origin_name: row.origin_name,
+        destination_name: row.destination_name,
         source: row.source,
         created_at: row.created_at,
         service_date: row.service_date,
@@ -825,6 +970,7 @@ pub async fn list_tickets_for_user(
 ) -> anyhow::Result<Vec<TicketListItem>> {
     let rows = sqlx::query_as::<_, TicketListRow>(
         "SELECT t.id, t.tracked_train_id, t.operator, t.ticket_type, t.origin_crs, t.destination_crs, \
+                so.name AS origin_name, sd.name AS destination_name, \
                 t.source, t.created_at, \
                 tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, tt.pin_scheduled_departure, \
                 tt.resolution_status, tt.train_uid, \
@@ -832,6 +978,8 @@ pub async fn list_tickets_for_user(
          FROM tracked_train_tickets t \
          LEFT JOIN tracked_trains tt ON tt.id = t.tracked_train_id \
          LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
+         LEFT JOIN stations so ON so.crs = UPPER(t.origin_crs) \
+         LEFT JOIN stations sd ON sd.crs = UPPER(t.destination_crs) \
          WHERE t.user_id = $1 \
          ORDER BY t.created_at DESC \
          LIMIT $2",
@@ -855,6 +1003,8 @@ mod ticket_list_tests {
             ticket_type: Some("Off-Peak Day Single".to_string()),
             origin_crs: Some("KGX".to_string()),
             destination_crs: Some("EDB".to_string()),
+            origin_name: Some("London Kings Cross".to_string()),
+            destination_name: Some("Edinburgh Waverley".to_string()),
             source: "manual".to_string(),
             created_at: "2026-08-29T12:00:00Z".parse().unwrap(),
             service_date: Some("2026-08-29".parse().unwrap()),
@@ -881,6 +1031,8 @@ mod ticket_list_tests {
             ticket_type: Some("Off-Peak Day Single".to_string()),
             origin_crs: Some("KGX".to_string()),
             destination_crs: Some("EDB".to_string()),
+            origin_name: Some("London Kings Cross".to_string()),
+            destination_name: Some("Edinburgh Waverley".to_string()),
             source: "pkpass-semantics".to_string(),
             created_at: "2026-08-29T12:00:00Z".parse().unwrap(),
             service_date: None,
@@ -1151,5 +1303,74 @@ mod db_tests {
         assert!(gone.is_none());
 
         cleanup_user(&pool, "TEST-TICKET-DELETE-STANDALONE").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_tracked_trains_for_user_resolves_the_station_name_join \
+                -- --ignored`"]
+    async fn list_tracked_trains_for_user_resolves_the_station_name_join() {
+        // Proves the `LEFT JOIN stations ... ON so.crs = UPPER(...)` join
+        // actually resolves -- and, critically, that it resolves for a
+        // LOWER-CASE stored CRS, which is the case that silently breaks
+        // without `UPPER` (Decision 3 of
+        // docs/superpowers/plans/2026-09-02-frontend-ux-review-fixes.md).
+        let pool = connect().await;
+        let user_id = "TEST-STATION-NAME-JOIN-USER";
+        seed_user(&pool, user_id).await;
+
+        sqlx::query(
+            "INSERT INTO stations (crs, name) VALUES ('ZQQ', 'Zedbury') \
+             ON CONFLICT (crs) DO UPDATE SET name = EXCLUDED.name",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture station");
+
+        async fn seed_with_origin(pool: &PgPool, user_id: &str, origin_crs: &str) -> i64 {
+            let (id,): (i64,) = sqlx::query_as(
+                "INSERT INTO tracked_trains (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+                 VALUES ($1, $2, $3, $4) RETURNING id",
+            )
+            .bind(user_id)
+            .bind("2026-09-02".parse::<chrono::NaiveDate>().unwrap())
+            .bind(origin_crs)
+            .bind("2026-09-02T09:00:00Z".parse::<DateTime<Utc>>().unwrap())
+            .fetch_one(pool)
+            .await
+            .expect("insert fixture tracked_trains row");
+            id
+        }
+
+        let uppercase_id = seed_with_origin(&pool, user_id, "ZQQ").await;
+        let lowercase_id = seed_with_origin(&pool, user_id, "zqq").await;
+        // No `stations` row for this code at all -- proves the `LEFT JOIN`,
+        // not `JOIN`, guarantee: the train must still come back, just with
+        // `pin_origin_name: None`.
+        let unrecognised_id = seed_with_origin(&pool, user_id, "ZZQ").await;
+
+        let rows = list_tracked_trains_for_user(&pool, user_id)
+            .await
+            .expect("list tracked trains");
+        let by_id = |id: i64| rows.iter().find(|r| r.id == id).expect("row present");
+
+        assert_eq!(
+            by_id(uppercase_id).pin_origin_name,
+            Some("Zedbury".to_string())
+        );
+        assert_eq!(
+            by_id(lowercase_id).pin_origin_name,
+            Some("Zedbury".to_string()),
+            "a lower-case stored CRS must still resolve a name -- this is exactly what UPPER() \
+             guards against silently breaking"
+        );
+        assert_eq!(by_id(unrecognised_id).pin_origin_name, None);
+
+        sqlx::query("DELETE FROM stations WHERE crs = 'ZQQ'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture station");
+        cleanup_user(&pool, user_id).await;
     }
 }

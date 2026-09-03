@@ -220,6 +220,29 @@ describe('TextLink underline affordance', () => {
   });
 });
 
+describe('links inside sanitized incident HTML', () => {
+  const rule = css.match(/\[data-rich-text\]\s+a\s*\{[^}]*\}/);
+
+  it('themes in-content anchors with the shared anchor colour', () => {
+    expect(rule).not.toBeNull();
+    // The token, not a grape shade: it resolves to grape 7 in light (the
+    // override at the top of globals.css) and Mantine's grape 4 in dark,
+    // so both schemes are correct from one rule. The two contrast facts
+    // this relies on are already asserted above -- grape 7 on white at
+    // 4.85:1 and grape 4 on #242424 at 5.84:1 -- and are deliberately not
+    // restated here.
+    expect(rule![0]).toContain('color: var(--mantine-color-anchor)');
+  });
+
+  it('leaves the underline in place, unlike the chrome link treatment', () => {
+    // WCAG 1.4.1: these anchors sit mid-paragraph in prose, so colour
+    // alone cannot be what distinguishes them from the body text around
+    // them. `a[data-text-link]` above deliberately does remove the
+    // underline; copying that here would be the wrong tidy-up.
+    expect(rule![0]).not.toContain('text-decoration');
+  });
+});
+
 describe('status badge truncation opt-out', () => {
   // Mantine's Badge root carries `overflow: hidden` + `text-overflow:
   // ellipsis`, which clipped "Good Service" to "G…" in the All Lines table

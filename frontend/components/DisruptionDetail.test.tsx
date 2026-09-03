@@ -19,6 +19,11 @@ describe('DisruptionDetail', () => {
     expect(screen.getByText('Signal failure at Woking')).toBeInTheDocument();
   });
 
+  it('marks the sanitized-HTML container so globals.css can theme its links', () => {
+    const { container } = renderWithMantine(<DisruptionDetail disruption={sample} />);
+    expect(container.querySelector('[data-rich-text]')).not.toBeNull();
+  });
+
   it('renders each affected stop', () => {
     renderWithMantine(<DisruptionDetail disruption={sample} />);
     expect(screen.getByText('WOK')).toBeInTheDocument();
@@ -37,9 +42,13 @@ describe('DisruptionDetail', () => {
     expect(screen.queryByText(/→/)).not.toBeInTheDocument();
   });
 
-  it('renders the source when present', () => {
+  it('renders a human label for the source, not the raw provenance string', () => {
     renderWithMantine(<DisruptionDetail disruption={sample} />);
-    expect(screen.getByText('Source: knowledgebase-incident-123')).toBeInTheDocument();
+    expect(screen.getByText('Source: National Rail Knowledgebase')).toBeInTheDocument();
+    // The actual regression guard: the raw internal id must not leak into
+    // body copy, even though it's still reachable via `title=` for
+    // debugging.
+    expect(screen.queryByText(/knowledgebase-incident-/)).not.toBeInTheDocument();
   });
 
   it('renders nothing extra when source is null', () => {

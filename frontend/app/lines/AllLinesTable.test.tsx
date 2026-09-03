@@ -330,9 +330,9 @@ describe('AllLinesTable responsive columns', () => {
     },
   ];
 
-  function renderMobileTable() {
+  function renderMobileTable(pinnedLineIds: string[] = []) {
     return renderWithMantine(
-      <AllLinesTable lines={mobileLines} reports={mobileReports} pinnedLineIds={[]} tocs={[]} />,
+      <AllLinesTable lines={mobileLines} reports={mobileReports} pinnedLineIds={pinnedLineIds} tocs={[]} />,
     );
   }
 
@@ -349,11 +349,27 @@ describe('AllLinesTable responsive columns', () => {
     expect(text.some((t) => t?.includes('Cancelled'))).toBe(true);
   });
 
-  it('hides the Pin column below the sm breakpoint too', () => {
+  it('keeps the Pin column at every width, unlike the numeric columns', () => {
     const { container } = renderMobileTable();
     const hidden = Array.from(container.querySelectorAll('.mantine-visible-from-sm'));
-    const text = hidden.map((el) => el.textContent);
-    expect(text.some((t) => t?.includes('Pin'))).toBe(true);
+    // The numeric columns above this test are legitimately hidden below sm
+    // because they reappear in the sub-line; Pin has no such fallback, so it
+    // must never carry the class. Asserted on the class rather than on
+    // visibility because jsdom has no layout and vitest.setup.ts stubs
+    // matchMedia to `matches: false`.
+    expect(hidden.map((el) => el.textContent).some((t) => t?.includes('Pin'))).toBe(false);
+  });
+
+  it('renders a usable pin control in every row at mobile width', () => {
+    renderMobileTable();
+    expect(screen.getByRole('button', { name: 'Pin (currently not pinned)' })).toBeInTheDocument();
+  });
+
+  it('shows the pinned state at mobile width too, not just above sm', () => {
+    // Covers the second half of F4: at mobile width an already-pinned row
+    // was indistinguishable from an unpinned one.
+    renderMobileTable(['northern']);
+    expect(screen.getByRole('button', { name: 'Unpin (currently pinned)' })).toBeInTheDocument();
   });
 
   it('re-surfaces the numbers under the line name for the widths that lose the columns', () => {
