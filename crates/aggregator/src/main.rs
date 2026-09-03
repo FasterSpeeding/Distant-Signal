@@ -179,7 +179,17 @@ async fn run_cycle(
     let incidents = queries::load_incidents(pool).await?;
     let samples = queries::load_station_samples(pool).await?;
 
-    let reports = aggregation::aggregate(&lines, &incidents, &samples, &registry, defaults);
+    let mut reports = aggregation::aggregate(&lines, &incidents, &samples, &registry, defaults);
+    // Layer 3 (Decision 3 scaffolding): merges a per-line materialized
+    // full-coverage signal onto the reports Layer 1/2 already built. The
+    // `&HashMap::new()` below is a placeholder -- no dedicated
+    // TRUST-vs-schedule consumer ("Option B") exists yet to populate it;
+    // building one is a separate, later, not-yet-planned task. This call
+    // site is where that future consumer's own per-line materialized rows
+    // would be handed in once it exists. See
+    // docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
+    // Decision 3 and `aggregation::merge_full_coverage`'s own doc comment.
+    aggregation::merge_full_coverage(&mut reports, &lines, &HashMap::new(), defaults);
 
     // Batched into `WRITE_CHUNK_SIZE`-sized transactions rather than one
     // autocommitted statement per line -- see `WRITE_CHUNK_SIZE`'s doc
