@@ -82,11 +82,20 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --no-create-home --shell /usr/sbin/nologin api
+    && groupadd --system --gid 1000 api \
+    && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 1000 --gid 1000 api
 
 COPY --from=builder /usr/local/bin/api /usr/local/bin/api
 COPY --chown=api:api lines/ /app/lines/
 
-USER api
+# Numeric USER, not the `api` name useradd created above: Kubernetes'
+# runAsNonRoot admission check (this chart's podSecurityContext sets
+# runAsNonRoot: true with no explicit runAsUser) resolves the image's
+# config purely from its manifest -- it does NOT read /etc/passwd inside
+# the image -- so a symbolic USER fails admission with "container has
+# runAsNonRoot and image has non-numeric user, cannot verify user is
+# non-root". Pinned to the same uid/gid useradd was given above so this
+# stays in sync with the group ownership set via COPY --chown/groupadd.
+USER 1000:1000
 
 ENTRYPOINT ["/usr/local/bin/api"]

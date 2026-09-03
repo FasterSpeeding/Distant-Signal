@@ -439,10 +439,12 @@ services:
   #
   # `chmod -R g+rwX` (not just `chown`) plus schedule-ingest's own
   # `group_add: ["1000"]` below matters for a second, distinct reason:
-  # schedule-ingest's own container runs as its Dockerfile's `poller` user
-  # (a `useradd --system`-assigned uid, NOT 1000 -- confirmed different
-  # from sftpgo's fixed 1000 by checking docker/schedule-ingest.Dockerfile),
-  # and it also needs write access to this same volume (moving files
+  # schedule-ingest's own container runs as its Dockerfile's `poller` user,
+  # pinned to uid/gid 1001 (docker/schedule-ingest.Dockerfile's `useradd
+  # --uid 1001 --gid 1001`) -- deliberately NOT 1000, so it stays distinct
+  # from sftpgo's fixed 1000 and keeps relying on the 1000 *group* below
+  # rather than uid-level ownership -- and it also needs write access to
+  # this same volume (moving files
   # between WATCH_DIR/STORAGE_DIR). Owner-only permissions for uid 1000
   # would fix sftpgo's mkdir but leave schedule-ingest hitting the identical
   # permission-denied error the moment a real delivery arrives -- group-

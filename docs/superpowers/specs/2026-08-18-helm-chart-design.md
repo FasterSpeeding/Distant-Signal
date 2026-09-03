@@ -251,7 +251,17 @@ Kubernetes API server), and per-workload `replicaCount`, `resources`,
 All seven application images (`api`, `aggregator`, the four pollers, and
 `frontend`) declare a non-root `USER` in their Dockerfiles, so for those
 workloads `runAsNonRoot` is satisfied without the chart pinning a
-`runAsUser` UID.
+`runAsUser` UID -- **the `USER` directive must be numeric** (`USER
+1000:1000`, not `USER <name>`) for this to actually hold: the kubelet
+verifies `runAsNonRoot` purely from the image's `Config.User` manifest
+field, and does not resolve a symbolic username against `/etc/passwd`
+inside the image. A symbolic `USER` fails admission with "container has
+runAsNonRoot and image has non-numeric user, cannot verify user is
+non-root" -- a real incident on 2026-09-01/02 that every one of this
+chart's own Dockerfiles hit (they used `useradd --system` with no pinned
+uid, so their `USER <name>` lines resolved to a name, not a number; fixed
+by pinning `useradd --uid/--gid` and switching every one of these
+Dockerfiles' final `USER` line to numeric).
 
 **`postgres:16` is the exception** and does not share this security context.
 Its `Config.User` is empty — it starts as root and drops to `postgres` via
