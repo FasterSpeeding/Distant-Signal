@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { Stack, Title, Text, Group, Button, Skeleton } from '@mantine/core';
 import Link from 'next/link';
 import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition, getAllLines } from '@/lib/api';
+import { withStaleFallback } from '@/lib/liveDataCache';
 import { StatusBadge } from '@/components/StatusBadge';
 import { RepresentativeInfo } from '@/components/RepresentativeInfo';
 import { IssueList } from '@/components/IssueList';
@@ -25,9 +26,13 @@ export default async function LineDetailPage({
 }) {
   const { id } = await params;
 
+  // Composed with the existing ApiNotFoundError catch rather than
+  // replacing it: withStaleFallback rethrows ApiNotFoundError
+  // unconditionally (a deleted line is a real application state, not a
+  // connectivity failure), so the notFound() branch keeps working.
   let reports;
   try {
-    reports = await getLineStatus([id], true);
+    reports = await withStaleFallback(`lineStatus:${id}`, () => getLineStatus([id], true));
   } catch (err) {
     if (err instanceof ApiNotFoundError) {
       notFound();
@@ -41,7 +46,8 @@ export default async function LineDetailPage({
   // Category only exists on `LineSummary` (from `getAllLines`), not on the
   // `LineStatusReport` this page otherwise relies on -- fetched here, after
   // the notFound() check above, so an unknown line id still 404s cleanly.
-  const lines = await getAllLines();
+  // Same 'allLines' key as /lines -- one shared entry for one shared request.
+  const lines = await withStaleFallback('allLines', () => getAllLines());
   const category = lines.find((line) => line.id === id)?.category;
 
   // `getCustomLine` 404s for a catalogue-line id (the endpoint only ever
@@ -67,15 +73,21 @@ export default async function LineDetailPage({
   // reason to think they own, so folding both "anonymous" and "not the
   // owner" into one plain 404-shaped "no controls for you" is the better
   // default here, not an inconsistency to fix.
+  //
+  // Every failure mode collapses to `isCustom = false`, not just
+  // ApiNotFoundError. `getCustomLine` maps only 401/404 to that class
+  // (lib/api.ts) -- a rejected fetch or a 5xx arrives as a plain Error, and
+  // rethrowing it here sent this page straight to app/error.tsx, blanking
+  // it during exactly the backend outage this feature exists to survive.
+  // Failing closed is also the safe direction on its own terms: the only
+  // thing `isCustom` gates is the Edit/Delete pair, so "we could not
+  // confirm you own this" must never render owner controls -- the same
+  // posture the ownership reasoning above already depends on.
   let isCustom = true;
   try {
     await getCustomLine(id);
-  } catch (err) {
-    if (err instanceof ApiNotFoundError) {
-      isCustom = false;
-    } else {
-      throw err;
-    }
+  } catch {
+    isCustom = false;
   }
 
   // A tooltip showing stations/operators is a nice-to-have, not core page

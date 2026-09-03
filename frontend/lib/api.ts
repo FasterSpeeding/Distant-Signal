@@ -303,9 +303,14 @@ export async function getLineDefinition(id: string): Promise<LineDefinitionSumma
   });
 }
 
-export async function getDataFreshness(): Promise<DataFreshness> {
+/** `init` is optional and additive so existing call sites are unchanged.
+ * It exists for `app/layout.tsx`, which awaits this call before emitting
+ * any HTML and therefore needs to bound it -- see that call site's comment
+ * for why an unbounded wait there is worse than no call at all. */
+export async function getDataFreshness(init?: Pick<RequestInit, 'signal'>): Promise<DataFreshness> {
   return fetchJson<DataFreshness>(`${baseUrl()}/public/freshness`, {
     cache: 'no-store',
+    ...init,
   });
 }
 

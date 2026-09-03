@@ -54,6 +54,20 @@ html:root[data-mantine-color-scheme='light'] {
   --mantine-color-dimmed: var(--mantine-color-gray-7);
 }
 
+/* Exactly the same defect as `--mantine-color-dimmed` above, in a place
+   that variable doesn't reach: when a `Notification` has a `title`, Mantine
+   hardcodes its description to gray 6 (`.m_3d733a3a:where([data-with-title])`
+   in @mantine/core/styles.css) rather than reading
+   `--mantine-color-dimmed` -- so ConnectivityMonitor's "Reconnecting..."
+   banner shipped at 3.32:1 on white. Caught by running axe against the
+   banner-visible state (this feature's Task 6 Step 2), which the route-level
+   sweep in e2e/accessibility.spec.ts can't see, since the banner only exists
+   while the backend is unreachable. Same gray 7 (8.18:1) and same reasoning
+   as above; dark mode is left alone, where it resolves to dark 2. */
+:where([data-mantine-color-scheme='light']) .mantine-Notification-description:where([data-with-title]) {
+  color: var(--mantine-color-gray-7);
+}
+
 /* `components/TextLink.tsx` opts in via `data-text-link`. The colour above
    is the only thing that used to distinguish these links from the text
    around them, which is a WCAG 1.4.1 (Use of Color) failure — hence an
