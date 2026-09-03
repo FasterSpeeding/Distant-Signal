@@ -19,6 +19,7 @@ const report: LineStatusReport = {
       dataQuality: 'knowledgebase',
       validityPeriods: [{ fromDate: '2026-07-07T10:00:00Z', toDate: null, isNow: true }],
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
     },
   ],
 };
@@ -58,6 +59,7 @@ describe('LineStatusCard', () => {
           dataQuality: 'knowledgebase',
           validityPeriods: [],
           sampleAvailability: { state: 'no-coverage' },
+          fullCoverageAvailability: { state: 'not-enabled' },
         },
         {
           statusSeverity: 21,
@@ -66,6 +68,7 @@ describe('LineStatusCard', () => {
           dataQuality: 'knowledgebase',
           validityPeriods: [{ fromDate: '2026-07-07T10:00:00Z', toDate: null, isNow: true }],
           sampleAvailability: { state: 'no-coverage' },
+          fullCoverageAvailability: { state: 'not-enabled' },
         },
       ],
     };

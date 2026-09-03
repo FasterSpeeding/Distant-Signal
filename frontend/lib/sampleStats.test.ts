@@ -1,8 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { cancelledPercent, firstSampleStats, formatSampleSummary, representativeStatus, sampleUnavailableReason } from './sampleStats';
+import {
+  cancelledPercent,
+  coverageProvenanceNote,
+  firstSampleStats,
+  formatSampleSummary,
+  pendingCoverageNote,
+  representativeStatus,
+  sampleUnavailableReason,
+} from './sampleStats';
 import type { LineStatus, SampleStats } from './types';
 
 const stats: SampleStats = { total: 160, delayed: 142, cancelled: 8, skipped: 1, avgDelayMinutes: 12.44 };
+const coverageStats: SampleStats = { total: 500, delayed: 20, cancelled: 5, skipped: 2, avgDelayMinutes: 3.1 };
 
 function status(overrides: Partial<LineStatus> = {}): LineStatus {
   return {
@@ -12,6 +21,7 @@ function status(overrides: Partial<LineStatus> = {}): LineStatus {
     dataQuality: 'knowledgebase',
     validityPeriods: [],
     sampleAvailability: { state: 'no-coverage' },
+    fullCoverageAvailability: { state: 'not-enabled' },
     ...overrides,
   };
 }
@@ -39,6 +49,20 @@ describe('representativeStatus', () => {
 
   it('returns undefined only for an empty array', () => {
     expect(representativeStatus([])).toBeUndefined();
+  });
+
+  it('prefers a status carrying fullCoverageStats over one carrying only sampleStats (Decision 3)', () => {
+    const sampleOnly = status({ sampleStats: stats, reason: 'sample-only' });
+    const fullCoverage = status({ fullCoverageStats: coverageStats, reason: 'full-coverage' });
+    expect(representativeStatus([sampleOnly, fullCoverage])).toBe(fullCoverage);
+    // Order-independent: full coverage still wins even listed first.
+    expect(representativeStatus([fullCoverage, sampleOnly])).toBe(fullCoverage);
+  });
+
+  it('falls back to sampleStats when nothing carries fullCoverageStats', () => {
+    const first = status({ reason: 'plain' });
+    const sampleOnly = status({ sampleStats: stats, reason: 'sample-only' });
+    expect(representativeStatus([first, sampleOnly])).toBe(sampleOnly);
   });
 });
 
@@ -76,6 +100,10 @@ describe('sampleUnavailableReason', () => {
     expect(
       sampleUnavailableReason(status({ sampleAvailability: { state: 'below-threshold', observed: 2, required: 3 } })),
     ).toBe('Too few live departures sampled to report a rate right now.');
+  });
+
+  it('returns null when only fullCoverageStats is present (Decision 1/2 -- most confident, checked first)', () => {
+    expect(sampleUnavailableReason(status({ fullCoverageStats: coverageStats }))).toBeNull();
   });
 });
 
@@ -121,5 +149,52 @@ describe('formatSampleSummary', () => {
 
   it('renders the no-coverage reason when there is a status but no stats', () => {
     expect(formatSampleSummary(status())).toBe('No live departure data received for this line yet.');
+  });
+
+  it('prefers fullCoverageStats over sampleStats when both are present on the same status (Decision 1)', () => {
+    const both = status({ sampleStats: stats, fullCoverageStats: coverageStats });
+    // coverageStats: 5/500 = 1% cancelled, avg 3.1 -- distinct from stats'
+    // 5% cancelled/12.4 avg, so this proves which one actually rendered.
+    expect(formatSampleSummary(both)).toBe('Avg delay 3.1 min · 1% cancelled');
+  });
+
+  it('renders real numbers from fullCoverageStats alone, with no sampleStats present', () => {
+    expect(formatSampleSummary(status({ fullCoverageStats: coverageStats }))).toBe(
+      'Avg delay 3.1 min · 1% cancelled',
+    );
+  });
+});
+
+describe('coverageProvenanceNote', () => {
+  it('returns the confident provenance sentence when fullCoverageStats is present', () => {
+    expect(coverageProvenanceNote(status({ fullCoverageStats: coverageStats }))).toBe(
+      'Based on real train-movement data for every scheduled service on this line — not a live-departure sample.',
+    );
+  });
+
+  it('returns null when fullCoverageStats is absent, even with real sampleStats', () => {
+    expect(coverageProvenanceNote(status({ sampleStats: stats }))).toBeNull();
+  });
+
+  it('returns null for a bare carrier with neither field', () => {
+    expect(coverageProvenanceNote({ sampleAvailability: { state: 'no-coverage' } })).toBeNull();
+  });
+});
+
+describe('pendingCoverageNote', () => {
+  it('returns the "still resolving" sentence only when fullCoverageAvailability is pending', () => {
+    expect(pendingCoverageNote(status({ fullCoverageAvailability: { state: 'pending' } }))).toBe(
+      'Full train-movement data is being resolved for this line — showing the live sample in the meantime.',
+    );
+  });
+
+  it('returns null for not-enabled (the default, overwhelming majority case)', () => {
+    expect(pendingCoverageNote(status())).toBeNull();
+  });
+
+  it('returns null for available -- that case gets coverageProvenanceNote instead, not this', () => {
+    expect(
+      pendingCoverageNote(status({ fullCoverageAvailability: { state: 'available' } })),
+    ).toBeNull();
   });
 });

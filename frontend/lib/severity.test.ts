@@ -78,6 +78,7 @@ describe('worstStatus', () => {
           dataQuality: 'knowledgebase',
           validityPeriods: [],
           sampleAvailability: { state: 'no-coverage' },
+          fullCoverageAvailability: { state: 'not-enabled' },
         },
         {
           statusSeverity: 21,
@@ -86,6 +87,7 @@ describe('worstStatus', () => {
           dataQuality: 'knowledgebase',
           validityPeriods: [],
           sampleAvailability: { state: 'no-coverage' },
+          fullCoverageAvailability: { state: 'not-enabled' },
         },
       ],
     };

@@ -12,6 +12,7 @@ function baseStatus(overrides: Partial<LineStatus> = {}): LineStatus {
     dataQuality: 'knowledgebase',
     validityPeriods: [],
     sampleAvailability: { state: 'no-coverage' },
+    fullCoverageAvailability: { state: 'not-enabled' },
     ...overrides,
   };
 }

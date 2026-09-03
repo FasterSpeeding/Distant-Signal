@@ -17,6 +17,7 @@ function status(periods: ValidityPeriod[]): LineStatus {
     dataQuality: 'planned',
     validityPeriods: periods,
     sampleAvailability: { state: 'no-coverage' },
+    fullCoverageAvailability: { state: 'not-enabled' },
   };
 }
 

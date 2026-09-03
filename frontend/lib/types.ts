@@ -78,6 +78,21 @@ export type SampleAvailability =
   | { state: 'below-threshold'; observed: number; required: number }
   | { state: 'available' };
 
+/** Why `fullCoverageStats` is (or isn't) populated on a given `LineStatus`
+ * this cycle -- the full-coverage analog of `SampleAvailability`,
+ * deliberately a SIBLING type, not a reuse of it (see
+ * `common::FullCoverageAvailability`'s own doc comment,
+ * `crates/common/src/lib.rs`, and
+ * docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
+ * Decision 1). Always present, like `sampleAvailability`. `'not-enabled'` is
+ * the default and, as of this app's current line catalogue, the ONLY value
+ * this can take -- nothing sets `full_coverage_enabled` on any line yet, and
+ * no producer exists to resolve `'pending'`/`'available'`. */
+export type FullCoverageAvailability =
+  | { state: 'not-enabled' }
+  | { state: 'pending' }
+  | { state: 'available' };
+
 export interface LineStatus {
   statusSeverity: number;
   statusSeverityDescription: string;
@@ -87,6 +102,12 @@ export interface LineStatus {
   disruption?: Disruption;
   sampleStats?: SampleStats;
   sampleAvailability: SampleAvailability;
+  /** Full-coverage analog of `sampleStats` -- see `FullCoverageAvailability`'s
+   * own doc comment. `undefined` for every line today (nothing produces this
+   * yet); permanent, additive scaffolding, not a replacement for
+   * `sampleStats` -- see the design doc's Decision 3. */
+  fullCoverageStats?: SampleStats;
+  fullCoverageAvailability: FullCoverageAvailability;
 }
 
 export interface LineStatusReport {
@@ -158,6 +179,47 @@ export interface LineDailyStats {
 export interface LineHalfHourlyStats {
   halfHourStart: string; // RFC3339 UTC instant, start of the 30-minute bucket
   sampleCycles: number;
+  total: number;
+  delayed: number;
+  cancelled: number;
+  skipped: number;
+  avgDelayMinutes: number;
+  delayRate: number;
+  cancellationRate: number;
+  skipRate: number;
+}
+
+/** `GET /Line/{id}/Stats/Coverage/{from}/to/{to}`'s per-day response shape --
+ * the full-coverage sibling of `LineDailyStats` (`resolvedWindows` in place
+ * of `sampleCycles`). Rates shown cover every scheduled service on the
+ * line, cross-referenced against real train-movement data -- not a sample
+ * of live departures at a handful of stations. `resolvedWindows` is the
+ * coverage/gap-rendering signal here, the full-coverage analog of
+ * `sampleCycles` -- how many cycles this day saw a genuinely resolved
+ * (not pending) population, not merely "any raw coverage at all". Always
+ * an empty array today: no full-coverage producer exists yet to populate
+ * the underlying table. See
+ * docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
+ * Decision 4. */
+export interface LineDailyCoverageStats {
+  day: string; // "YYYY-MM-DD", Europe/London calendar day
+  resolvedWindows: number;
+  total: number;
+  delayed: number;
+  cancelled: number;
+  skipped: number;
+  avgDelayMinutes: number;
+  delayRate: number;
+  cancellationRate: number;
+  skipRate: number;
+}
+
+/** `GET /Line/{id}/Stats/Coverage/HalfHourly/{from}/to/{to}`'s per-bucket
+ * response shape -- half-hourly sibling of `LineDailyCoverageStats`, same
+ * relationship `LineHalfHourlyStats` already has to `LineDailyStats`. */
+export interface LineHalfHourlyCoverageStats {
+  halfHourStart: string; // RFC3339 UTC instant, start of the 30-minute bucket
+  resolvedWindows: number;
   total: number;
   delayed: number;
   cancelled: number;

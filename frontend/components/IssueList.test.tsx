@@ -25,6 +25,7 @@ const minorNow: LineStatus = {
   reason: 'Signal failure',
   dataQuality: 'knowledgebase',
   sampleAvailability: { state: 'no-coverage' },
+  fullCoverageAvailability: { state: 'not-enabled' },
   validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
 };
 
@@ -34,6 +35,7 @@ const severePlanned: LineStatus = {
   reason: 'Engineering works',
   dataQuality: 'planned',
   sampleAvailability: { state: 'no-coverage' },
+  fullCoverageAvailability: { state: 'not-enabled' },
   validityPeriods: [{ fromDate: future, toDate: null, isNow: false }],
 };
 
@@ -43,6 +45,7 @@ const inferredNow: LineStatus = {
   reason: '10 of 12 sampled services delayed.',
   dataQuality: 'ldbws-inferred',
   sampleAvailability: { state: 'no-coverage' },
+  fullCoverageAvailability: { state: 'not-enabled' },
   validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
 };
 
@@ -52,6 +55,7 @@ const plannedRange: LineStatus = {
   reason: 'Scheduled maintenance',
   dataQuality: 'planned',
   sampleAvailability: { state: 'no-coverage' },
+  fullCoverageAvailability: { state: 'not-enabled' },
   validityPeriods: [{ fromDate: now, toDate: future, isNow: false }],
 };
 
@@ -439,6 +443,7 @@ describe('IssueList', () => {
       reason: 'Station improvement work',
       dataQuality: 'planned',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [
         {
           fromDate: new Date(NOW - 86400000).toISOString(),
@@ -459,6 +464,7 @@ describe('IssueList', () => {
       reason: 'Finished works',
       dataQuality: 'planned',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [
         {
           fromDate: new Date(NOW - 2 * 86400000).toISOString(),
@@ -486,6 +492,7 @@ describe('IssueList', () => {
       reason: 'Station improvement work',
       dataQuality: 'planned',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [
         { fromDate: '2026-05-10T00:00:00Z', toDate: '2026-10-11T00:00:00Z', isNow: false },
       ],
@@ -532,6 +539,7 @@ describe('IssueList', () => {
       reason: 'Good Service',
       dataQuality: 'ldbws-inferred',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [{ fromDate: new Date(NOW).toISOString(), toDate: null, isNow: true }],
     };
     renderWithMantine(<IssueList items={[{ status: goodService }]} now={NOW} />);
@@ -552,6 +560,7 @@ describe('IssueList', () => {
       reason: 'No Issues',
       dataQuality: 'tfl',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [{ fromDate: new Date(NOW).toISOString(), toDate: null, isNow: true }],
     };
     renderWithMantine(<IssueList items={[{ status: noIssues }]} now={NOW} />);
@@ -573,6 +582,7 @@ describe('IssueList', () => {
       reason: 'Good Service',
       dataQuality: 'ldbws-inferred',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [{ fromDate: new Date(NOW).toISOString(), toDate: null, isNow: true }],
     };
     renderWithMantine(<IssueList items={[{ status: goodService }]} now={NOW} subject="station" />);
@@ -653,6 +663,7 @@ describe('IssueList', () => {
       reason: 'Good Service',
       dataQuality: 'ldbws-inferred',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
     };
     const { rerender } = renderWithMantine(<IssueList items={toItems([goodService])} now={NOW} />);
@@ -674,6 +685,7 @@ describe('IssueList', () => {
       reason: 'Good Service',
       dataQuality: 'ldbws-inferred',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
     };
     const { rerender } = renderWithMantine(
