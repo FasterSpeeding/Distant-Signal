@@ -16,9 +16,11 @@ pub struct Config {
     #[arg(long, env, default_value = "/data/schedule-feed/incoming")]
     pub watch_dir: PathBuf,
 
-    /// Root of the shared PVC. Verified-complete sequences move to
-    /// `storage_dir/<nnn>/`; retention pruning operates on this directory's
-    /// immediate numeric subdirectories.
+    /// Root of the shared PVC. Each verified-stable delivery is extracted
+    /// into `storage_dir/<timestamp>/` (a compact sortable UTC rendering of
+    /// the delivery zip's own mtime -- see `delivery::delivery_dir_name`);
+    /// retention pruning operates on this directory's immediate
+    /// timestamp-shaped subdirectories.
     #[arg(long, env, default_value = "/data/schedule-feed")]
     pub storage_dir: PathBuf,
 
@@ -55,16 +57,21 @@ pub struct Config {
     #[arg(long, env, default_value_t = 120)]
     pub poll_interval_secs: u64,
 
-    /// How many complete sequences to retain on disk (current + fallback).
+    /// How many complete deliveries to retain on disk (current + fallback).
+    /// Renamed from the old `retention_keep_sequences` -- there is no
+    /// sequence number any more, just delivery timestamps (see
+    /// `main::prune_old_deliveries`). No history/retention requirement
+    /// beyond this exists today -- a future "also copy elsewhere for
+    /// long-term retention" need should be a separate, purposefully-called
+    /// copy step, not a change to this simple keep-N-most-recent behavior.
     #[arg(long, env, default_value_t = 2)]
-    pub retention_keep_sequences: u32,
+    pub retention_keep_deliveries: u32,
 
-    /// How many consecutive polling cycles a manifest-listed file's mtime
-    /// and size must be unchanged before it's treated as a completeness
-    /// candidate — see Task 3. RSPS5046's manifest carries no per-file size
-    /// field (confirmed directly against the real sample in this plan's
-    /// own research), so this stability check is the only completeness
-    /// signal available, not a fallback.
+    /// How many consecutive polling cycles the delivery zip's mtime and
+    /// size must be unchanged before it's treated as stable/complete —
+    /// see `scan.rs`. There is no manifest-declared size any more (there is
+    /// no manifest at all), so this stability check remains the only
+    /// completeness signal available, not a fallback.
     ///
     /// Raised from this crate's original default of `2` alongside
     /// shrinking the scan cadence to `poll_interval_secs` (120s default).
