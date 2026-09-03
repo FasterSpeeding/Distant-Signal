@@ -63,10 +63,25 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --no-create-home --shell /usr/sbin/nologin poller
+    && groupadd --system --gid 1001 poller \
+    && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 1001 --gid 1001 poller
 
 COPY --from=builder /usr/local/bin/schedule-ingest /usr/local/bin/schedule-ingest
 
-USER poller
+# Numeric USER, not `poller`: Kubernetes' runAsNonRoot admission check
+# (this chart's podSecurityContext sets runAsNonRoot: true with no
+# explicit runAsUser) resolves the image's config purely from its
+# manifest -- it does NOT read /etc/passwd inside the image -- so a
+# symbolic USER fails admission with "container has runAsNonRoot and
+# image has non-numeric user, cannot verify user is non-root". Pinned to
+# 1001, deliberately NOT 1000: this container shares
+# scheduleFeed's PVC with the `sftp` container, whose drakkan/sftpgo
+# image runs as a fixed non-root USER 1000:1000 of its own -- see
+# docker-compose.yml's schedule-feed-volume-permissions comment and the
+# chart's scheduleFeed.podSecurityContext (fsGroup: 1000), both of which
+# rely on `ingest` reaching the shared volume via the 1000 *group*
+# (fsGroup/group_add), not by being uid 1000 itself. Keeping this uid off
+# 1000 keeps that separation intact.
+USER 1001:1001
 
 ENTRYPOINT ["/usr/local/bin/schedule-ingest"]
