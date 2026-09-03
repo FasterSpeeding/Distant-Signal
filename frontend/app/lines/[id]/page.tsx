@@ -73,15 +73,21 @@ export default async function LineDetailPage({
   // reason to think they own, so folding both "anonymous" and "not the
   // owner" into one plain 404-shaped "no controls for you" is the better
   // default here, not an inconsistency to fix.
+  //
+  // Every failure mode collapses to `isCustom = false`, not just
+  // ApiNotFoundError. `getCustomLine` maps only 401/404 to that class
+  // (lib/api.ts) -- a rejected fetch or a 5xx arrives as a plain Error, and
+  // rethrowing it here sent this page straight to app/error.tsx, blanking
+  // it during exactly the backend outage this feature exists to survive.
+  // Failing closed is also the safe direction on its own terms: the only
+  // thing `isCustom` gates is the Edit/Delete pair, so "we could not
+  // confirm you own this" must never render owner controls -- the same
+  // posture the ownership reasoning above already depends on.
   let isCustom = true;
   try {
     await getCustomLine(id);
-  } catch (err) {
-    if (err instanceof ApiNotFoundError) {
-      isCustom = false;
-    } else {
-      throw err;
-    }
+  } catch {
+    isCustom = false;
   }
 
   // A tooltip showing stations/operators is a nice-to-have, not core page

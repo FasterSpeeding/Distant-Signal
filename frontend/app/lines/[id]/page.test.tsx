@@ -174,9 +174,16 @@ describe('LineDetailPage -- outage behaviour', () => {
     __resetStaleCacheForTests();
     vi.mocked(api.getLineStatus).mockResolvedValue([report('custom-my-commute', 'My Commute')]);
     vi.mocked(api.getAllLines).mockResolvedValue(lines);
-    vi.mocked(api.getCustomLine).mockRejectedValue(new ApiNotFoundError('not found'));
-    vi.mocked(api.getLineDefinition).mockResolvedValue({ stations: ['WOK', 'CLJ'], operators: ['SW'] });
-    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
+    // A plain Error, NOT ApiNotFoundError: getCustomLine maps only 401/404
+    // to that class, so a rejected fetch or a 5xx -- what an outage
+    // actually produces -- arrives as a generic Error. Asserting with
+    // ApiNotFoundError here passed while the page still blanked in the
+    // real failure mode.
+    vi.mocked(api.getCustomLine).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    vi.mocked(api.getLineDefinition).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    // Same: this is awaited inside a <Suspense> on the page, and Suspense
+    // does not catch errors -- a resolved [] never exercised that path.
+    vi.mocked(api.getLineHalfHourlyStats).mockRejectedValue(new Error('connect ECONNREFUSED'));
   });
 
   it('keeps rendering the last-known status when the status fetch fails', async () => {
@@ -205,5 +212,38 @@ describe('LineDetailPage -- outage behaviour', () => {
     // 404 branch was taken rather than a stale entry being served.
     await expect(renderPage()).rejects.toThrow('not found');
     expect(notFound).toHaveBeenCalled();
+  });
+});
+
+describe('LineDetailPage -- embedded fetches must not blank the page', () => {
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+    vi.mocked(api.getLineStatus).mockResolvedValue([report('custom-my-commute', 'My Commute')]);
+    vi.mocked(api.getAllLines).mockResolvedValue(lines);
+    vi.mocked(api.getCustomLine).mockResolvedValue({} as never);
+    vi.mocked(api.getLineDefinition).mockResolvedValue({ stations: ['WOK', 'CLJ'], operators: ['SW'] });
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
+  });
+
+  // getCustomLine maps only 401/404 to ApiNotFoundError; a rejected fetch
+  // or 5xx is a plain Error, which used to be rethrown straight to
+  // app/error.tsx.
+  it('renders when the custom-line ownership probe fails with a connectivity error', async () => {
+    vi.mocked(api.getCustomLine).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+    await renderPage();
+    expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
+    // Failed closed: ownership could not be confirmed, so no owner controls.
+    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+  });
+
+  // Rendered inside <Suspense>, which catches suspension but not errors.
+  it('renders when the embedded trends fetch fails', async () => {
+    vi.mocked(api.getLineHalfHourlyStats).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+    await renderPage();
+    expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
+    expect(await screen.findByText("Trend data isn't available right now.")).toBeInTheDocument();
   });
 });
