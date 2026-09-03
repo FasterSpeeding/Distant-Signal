@@ -33,6 +33,7 @@ export function DataFreshnessInfo({ freshness }: { freshness: DataFreshness }) {
           {freshnessRow('TOCs', freshness.tocs)}
           {freshnessRow('Incidents', freshness.incidents)}
           {freshnessRow('TfL', freshness.tfl)}
+          {freshnessRow('Schedule feed', freshness.schedule_feed)}
         </Stack>
       }
       multiline

@@ -188,6 +188,13 @@ export interface DataFreshness {
   tocs: string | null;
   incidents: string | null;
   tfl: string | null;
+  // Deliberately snake_case, unlike every other field in this file's
+  // camelCase types: `crates/api/src/routes/freshness.rs`'s `DataFreshness`
+  // has no `#[serde(rename_all = ...)]`, so this field serializes on the
+  // wire as literally `schedule_feed` -- when a CIF SCHEDULE feed delivery
+  // was last recorded by `schedule-ingest`'s push to
+  // `/private/schedule-feed-ingests`.
+  schedule_feed: string | null;
 }
 
 /** `GET /public/history-retention`'s response: how many days of

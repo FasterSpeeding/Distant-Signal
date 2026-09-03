@@ -9,6 +9,7 @@ const freshness: DataFreshness = {
   tocs: '2026-07-15T08:00:00Z',
   incidents: null,
   tfl: '2026-08-22T03:00:00Z',
+  schedule_feed: '2026-08-30T04:00:00Z',
 };
 
 describe('DataFreshnessInfo', () => {
@@ -46,6 +47,18 @@ describe('DataFreshnessInfo', () => {
     renderWithMantine(<DataFreshnessInfo freshness={freshness} />);
     fireEvent.mouseEnter(screen.getByRole('button', { name: 'Data freshness' }));
     expect(await screen.findByText(/^TfL:/)).toBeInTheDocument();
+  });
+
+  it('shows a row for the schedule feed', async () => {
+    renderWithMantine(<DataFreshnessInfo freshness={freshness} />);
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Data freshness' }));
+    expect(await screen.findByText(/^Schedule feed:/)).toBeInTheDocument();
+  });
+
+  it('shows "never fetched" for a null schedule feed timestamp', async () => {
+    renderWithMantine(<DataFreshnessInfo freshness={{ ...freshness, schedule_feed: null }} />);
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Data freshness' }));
+    expect(await screen.findByText(/^Schedule feed: never fetched/)).toBeInTheDocument();
   });
 
   it('shows the freshness rows on a touch tap, not just mouse hover', async () => {
