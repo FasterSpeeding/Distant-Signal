@@ -53,20 +53,19 @@ describe('AutoRefresh', () => {
 
   it('calls router.refresh() on a 30s interval', () => {
     renderWithMantine(<AutoRefresh />);
-    // One immediate call on becoming visible, which mount counts as; the
-    // interval-driven calls are asserted relative to it.
-    const onMount = refreshMock.mock.calls.length;
-    expect(onMount).toBe(1);
+    // Mount is not a hidden->visible transition, so it must not refresh a
+    // page the server rendered milliseconds ago.
+    expect(refreshMock).not.toHaveBeenCalled();
 
     act(() => {
       vi.advanceTimersByTime(30_000);
     });
-    expect(refreshMock).toHaveBeenCalledTimes(onMount + 1);
+    expect(refreshMock).toHaveBeenCalledTimes(1);
 
     act(() => {
       vi.advanceTimersByTime(30_000);
     });
-    expect(refreshMock).toHaveBeenCalledTimes(onMount + 2);
+    expect(refreshMock).toHaveBeenCalledTimes(2);
   });
 
   it('stops refreshing once unmounted', () => {
@@ -119,13 +118,13 @@ describe('AutoRefresh', () => {
   // every render and fire router.refresh() in a loop.
   it('does not refresh again on a re-render with unchanged visibility', () => {
     renderWithMantine(<Harness />);
-    expect(refreshMock).toHaveBeenCalledTimes(1);
+    expect(refreshMock).not.toHaveBeenCalled();
 
     act(() => {
       rerenderParent();
       rerenderParent();
       rerenderParent();
     });
-    expect(refreshMock).toHaveBeenCalledTimes(1);
+    expect(refreshMock).not.toHaveBeenCalled();
   });
 });

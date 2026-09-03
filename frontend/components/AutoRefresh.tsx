@@ -40,15 +40,31 @@ export function AutoRefresh() {
   const latest = useRef({ router, interval });
   latest.current = { router, interval };
 
+  // Mount is not a transition. The immediate refresh below is for a
+  // visitor coming *back* to a tab that went stale while hidden; firing it
+  // on the first run too would re-fetch a page the server rendered
+  // milliseconds earlier, roughly doubling render load per full page load
+  // -- including against an already-failing backend, which is the opposite
+  // of what pausing while hidden is for (design spec Decision 4, which
+  // says "on transitioning back to 'visible'"). The previous
+  // `{ autoInvoke: true }` did not do this: it only started the timer, it
+  // never invoked the callback.
+  const firstRun = useRef(true);
+
   useEffect(() => {
     if (visibility !== 'visible') {
+      firstRun.current = false;
       latest.current.interval.stop();
       return undefined;
     }
-    // Refresh once immediately on becoming visible rather than making a
-    // returning visitor wait up to 30s: whatever is on screen is by
-    // definition as stale as the time they spent away.
-    latest.current.router.refresh();
+    if (firstRun.current) {
+      firstRun.current = false;
+    } else {
+      // Refresh once immediately on becoming visible rather than making a
+      // returning visitor wait up to 30s: whatever is on screen is by
+      // definition as stale as the time they spent away.
+      latest.current.router.refresh();
+    }
     latest.current.interval.start();
     return () => latest.current.interval.stop();
   }, [visibility]);
