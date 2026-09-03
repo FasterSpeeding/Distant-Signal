@@ -131,6 +131,8 @@ mod tests {
                 data_quality: DataQuality::Knowledgebase,
                 sample_stats: None,
                 sample_availability: SampleAvailability::NoCoverage,
+                full_coverage_stats: None,
+                full_coverage_availability: common::FullCoverageAvailability::NotEnabled,
             }],
         }
     }
@@ -320,6 +322,8 @@ mod tests {
             data_quality: DataQuality::Tfl,
             sample_stats: None,
             sample_availability: SampleAvailability::NoCoverage,
+            full_coverage_stats: None,
+            full_coverage_availability: common::FullCoverageAvailability::NotEnabled,
         }
     }
 

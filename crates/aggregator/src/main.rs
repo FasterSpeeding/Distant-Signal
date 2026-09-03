@@ -357,6 +357,7 @@ mod tests {
             exclusive_segments: vec![],
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
+            full_coverage_enabled: false,
         }
     }
 
@@ -373,6 +374,8 @@ mod tests {
             data_quality: DataQuality::default(),
             sample_stats: stats,
             sample_availability: SampleAvailability::NoCoverage,
+            full_coverage_stats: None,
+            full_coverage_availability: common::FullCoverageAvailability::NotEnabled,
         }
     }
 

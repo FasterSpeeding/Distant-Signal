@@ -797,6 +797,7 @@ mod tests {
             exclusive_segments: vec![],
             destination_crs_filter: vec!["AON".to_string()],
             headcode_prefixes: vec![],
+            full_coverage_enabled: false,
         };
         let mut lines = HashMap::new();
         lines.insert(LINE_ID.to_string(), line);
@@ -977,6 +978,8 @@ mod tests {
                     data_quality: DataQuality::default(),
                     sample_stats: None,
                     sample_availability: SampleAvailability::NoCoverage,
+                    full_coverage_stats: None,
+                    full_coverage_availability: common::FullCoverageAvailability::NotEnabled,
                 }],
             }
         }
@@ -1115,6 +1118,8 @@ mod tests {
                     data_quality: DataQuality::default(),
                     sample_stats: None,
                     sample_availability: SampleAvailability::NoCoverage,
+                    full_coverage_stats: None,
+                    full_coverage_availability: common::FullCoverageAvailability::NotEnabled,
                 }],
             }
         }

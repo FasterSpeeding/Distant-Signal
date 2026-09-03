@@ -17,9 +17,9 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Datelike, Duration, NaiveTime, TimeZone, Utc};
 use common::{
-    AffectedRoute, CustomLine, DataQuality, Defaults, Disruption, IncidentMessage, LineDefinition,
-    LineStatus, LineStatusReport, SampleAvailability, SampleStats, Severity, StationDeparture,
-    StationSample, ValidityPeriod, severity_rank, thresholds_for,
+    AffectedRoute, CustomLine, DataQuality, Defaults, Disruption, FullCoverageAvailability,
+    IncidentMessage, LineDefinition, LineStatus, LineStatusReport, SampleAvailability, SampleStats,
+    Severity, StationDeparture, StationSample, ValidityPeriod, severity_rank, thresholds_for,
 };
 use serde::Deserialize;
 
@@ -169,6 +169,11 @@ fn status_from_incident(m: &Match, loaded: &LoadedIncident, now: DateTime<Utc>) 
         },
         sample_stats: None,
         sample_availability: SampleAvailability::NoCoverage, // always overwritten by aggregate()'s Layer 2, immediately after construction
+        full_coverage_stats: None,
+        // Overwritten by merge_full_coverage's post-aggregate() pass when
+        // this line's LineDefinition.full_coverage_enabled is set;
+        // NotEnabled is the correct value for every other line.
+        full_coverage_availability: FullCoverageAvailability::NotEnabled,
     }
 }
 
@@ -951,6 +956,8 @@ fn infer_from_samples(
         data_quality: DataQuality::LdbwsInferred,
         sample_stats: Some(stats),
         sample_availability: availability,
+        full_coverage_stats: None,
+        full_coverage_availability: FullCoverageAvailability::NotEnabled,
     }
 }
 
@@ -1117,6 +1124,8 @@ fn good_service() -> LineStatus {
         data_quality: DataQuality::LdbwsInferred,
         sample_stats: None,
         sample_availability: SampleAvailability::NoCoverage, // placeholder; always overwritten by every caller
+        full_coverage_stats: None,
+        full_coverage_availability: FullCoverageAvailability::NotEnabled, // placeholder; overwritten by merge_full_coverage for an enabled line
     }
 }
 
