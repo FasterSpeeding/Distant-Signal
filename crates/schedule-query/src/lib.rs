@@ -70,3 +70,5 @@ pub mod tiploc;
 
 pub use parse::parse_schedule_records;
 pub use records::{BasicSchedule, CallingPoint, CallingPointKind, RawSchedule, StpIndicator};
+pub use resolve::{ResolvedSchedule, ScheduleIndex, resolve_for_date, schedules_touching};
+pub use tiploc::normalize_tiploc;
