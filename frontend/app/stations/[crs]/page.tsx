@@ -1,6 +1,13 @@
 import { Stack, Title, Text, Group, Divider } from '@mantine/core';
 import { notFound } from 'next/navigation';
-import { getStopPointDisruption, getPreferences, getStationName, ApiNotFoundError } from '@/lib/api';
+import {
+  getStopPointDisruption,
+  getPreferences,
+  getStationName,
+  getStationSampleStats,
+  getAllTocs,
+  ApiNotFoundError,
+} from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { StatusBadge } from '@/components/StatusBadge';
 import { IssueList } from '@/components/IssueList';
@@ -9,7 +16,7 @@ import { TextLink } from '@/components/TextLink';
 import { worstStatus, severityRank } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
-import type { LineStatusReport, Preferences } from '@/lib/types';
+import type { LineStatusReport, Preferences, StationOperatorSampleStats } from '@/lib/types';
 
 /** Three outcomes, not two. The previous version collapsed "there is no
  * such station" and "the name lookup failed" into a single `null`, so the
@@ -69,6 +76,26 @@ async function fetchStationDisruptions(crs: string): Promise<StationDisruptions>
   }
 }
 
+/** A separate, orthogonal coverage question from `StationDisruptions`
+ * above -- LDBWS live-sampling coverage, not line-status-catalogue
+ * coverage, so a station can independently be `covered`/`none` for
+ * disruptions and `sampled`/`not-sampled` for stats. Structurally mirrors
+ * `fetchStationDisruptions`'s own 404-vs-other-failure split. See
+ * docs/superpowers/specs/2026-09-03-per-station-stats-design.md Decision 9. */
+type StationSampleStatsResult =
+  | { coverage: 'not-sampled' }
+  | { coverage: 'sampled'; operatorStats: StationOperatorSampleStats[] };
+
+async function fetchStationSampleStats(crs: string): Promise<StationSampleStatsResult> {
+  try {
+    const operatorStats = await withStaleFallback(`stationSampleStats:${crs}`, () => getStationSampleStats(crs));
+    return { coverage: 'sampled', operatorStats };
+  } catch (err) {
+    if (err instanceof ApiNotFoundError) return { coverage: 'not-sampled' };
+    throw err;
+  }
+}
+
 export default async function StationDisruptionPage({
   params,
 }: {
@@ -85,12 +112,18 @@ export default async function StationDisruptionPage({
     notFound();
   }
 
-  const [{ reports, coverage }, preferences] = await Promise.all([
+  const [{ reports, coverage }, preferences, sampleStatsResult, tocs] = await Promise.all([
     fetchStationDisruptions(crs),
     // Per-user, so it fails closed to "nothing pinned" (the shape a 401
     // already returns) rather than being stale-served -- design spec
     // Decision 5. The pin button reads as unpinned during an outage.
     getPreferences().catch(() => NO_PREFERENCES),
+    fetchStationSampleStats(crs),
+    // Hour-cached reference data used only to label operator rows in the
+    // sample-stats section below; an empty list degrades to bare ATOC
+    // codes rather than the whole page -- same pattern as
+    // app/lines/page.tsx's own getAllTocs() call.
+    getAllTocs().catch(() => []),
   ]);
   const heading = lookup.outcome === 'found' ? `${lookup.name} (${crs})` : crs;
 
@@ -107,6 +140,11 @@ export default async function StationDisruptionPage({
     const rankDiff = severityRank(worstStatus(b).statusSeverity) - severityRank(worstStatus(a).statusSeverity);
     return rankDiff !== 0 ? rankDiff : a.name.localeCompare(b.name);
   });
+
+  // Same code-to-name resolution AllLinesTable.tsx:81 already establishes,
+  // falling back to the bare ATOC code when `tocs` (hour-cached, fed by an
+  // independent poller from `station_samples`) has no match.
+  const tocNameByCode = new Map(tocs.map((toc) => [toc.code, toc.name]));
 
   return (
     <Stack p="lg" gap="md">
@@ -156,6 +194,33 @@ export default async function StationDisruptionPage({
           <IssueList items={items} now={now} subject="station" />
         </>
       )}
+
+      {/* Sample stats by operator -- an independent block from the
+          disruption section above, keyed by LDBWS live-sampling coverage
+          rather than line-status-catalogue coverage (Decision 9). Three
+          honest states, mirroring the disruption section's own
+          coverage-vs-empty split immediately above. */}
+      <Divider />
+      <Stack gap="xs">
+        <Title order={2} size="h4">
+          Sample stats by operator
+        </Title>
+        {sampleStatsResult.coverage === 'not-sampled' && (
+          <Text c="dimmed">This station isn&apos;t part of our live departure sampling.</Text>
+        )}
+        {sampleStatsResult.coverage === 'sampled' && sampleStatsResult.operatorStats.length === 0 && (
+          <Text c="dimmed">No live departures currently recorded at this station.</Text>
+        )}
+        {sampleStatsResult.coverage === 'sampled' &&
+          sampleStatsResult.operatorStats.map((entry) => (
+            <Group key={entry.operator} justify="space-between" wrap="nowrap" gap="sm">
+              <Text size="sm">{tocNameByCode.get(entry.operator) ?? entry.operator}</Text>
+              <Text size="xs" c="dimmed">
+                {formatSampleSummary(entry)}
+              </Text>
+            </Group>
+          ))}
+      </Stack>
     </Stack>
   );
 }

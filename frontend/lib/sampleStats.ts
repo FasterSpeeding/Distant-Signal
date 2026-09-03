@@ -1,4 +1,20 @@
-import type { LineStatus, SampleStats } from './types';
+import type { LineStatus, SampleAvailability, SampleStats } from './types';
+
+/** Structural supertype of anything `sampleUnavailableReason`/
+ * `formatSampleSummary` can render a reason for -- the existing per-line
+ * `LineStatus` callers and the new per-(station, operator)
+ * `StationOperatorSampleStats` rows both satisfy this without a cast
+ * (`StationOperatorSampleStats` simply has no `dataQuality` field, which
+ * TypeScript treats as `undefined`). Widened, not renamed -- see
+ * docs/superpowers/specs/2026-09-03-per-station-stats-design.md Decision 9
+ * for why the eventual source-agnostic rename flagged by
+ * docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
+ * stays a separate, later step. */
+type SampleStatsCarrier = {
+  sampleStats?: SampleStats;
+  sampleAvailability: SampleAvailability;
+  dataQuality?: LineStatus['dataQuality'];
+};
 
 /** The aggregator attaches the same sample-derived stats to every status on
  * a line's report, so the first one found is representative of all of them
@@ -31,7 +47,7 @@ export function cancelledPercent(stats: SampleStats | undefined): number | null 
  * signal. See this app's plan/spec docs for
  * docs/superpowers/specs/2026-09-01-line-status-sample-coverage-design.md's
  * Decision 1/4. */
-export function sampleUnavailableReason(status: LineStatus): string | null {
+export function sampleUnavailableReason(status: SampleStatsCarrier): string | null {
   if (status.sampleStats) return null;
   if (status.dataQuality === 'tfl') {
     return "Not measured by this app — status is TfL's own.";
@@ -42,7 +58,7 @@ export function sampleUnavailableReason(status: LineStatus): string | null {
   return 'Too few live departures sampled to report a rate right now.';
 }
 
-export function formatSampleSummary(status: LineStatus | undefined): string {
+export function formatSampleSummary(status: SampleStatsCarrier | undefined): string {
   if (!status) return 'No sample data'; // defensive; should not occur in practice
   const reason = sampleUnavailableReason(status);
   if (reason) return reason;

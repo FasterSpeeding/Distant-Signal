@@ -79,6 +79,37 @@ describe('sampleUnavailableReason', () => {
   });
 });
 
+describe('sampleUnavailableReason with a dataQuality-less carrier (StationOperatorSampleStats-shaped)', () => {
+  // Widened signature (Decision 9): a per-operator station row has no
+  // `dataQuality` field at all -- TypeScript sees it as `undefined`, so the
+  // `'tfl'` branch can never fire for it in practice. `'no-coverage'` is
+  // documented-unreachable through the real /sample-stats route (Decision 7),
+  // but TypeScript can't enforce that invariant, so this proves the type
+  // still accepts it structurally and renders *some* sensible string rather
+  // than crashing.
+
+  it('never takes the tfl branch when dataQuality is absent', () => {
+    const carrier = { sampleAvailability: { state: 'below-threshold' as const, observed: 1, required: 3 } };
+    expect(sampleUnavailableReason(carrier)).toBe('Too few live departures sampled to report a rate right now.');
+  });
+
+  it('renders real stats when present, with no dataQuality field at all', () => {
+    const carrier = { sampleStats: stats, sampleAvailability: { state: 'available' as const } };
+    expect(sampleUnavailableReason(carrier)).toBeNull();
+    expect(formatSampleSummary(carrier)).toBe('Avg delay 12.4 min · 5% cancelled');
+  });
+
+  it('still renders a sensible string for the type-accepted-but-documented-unreachable no-coverage state', () => {
+    const carrier = { sampleAvailability: { state: 'no-coverage' as const } };
+    expect(sampleUnavailableReason(carrier)).toBe('No live departure data received for this line yet.');
+  });
+
+  it('below-threshold carrier formats through formatSampleSummary the same as a LineStatus would', () => {
+    const carrier = { sampleAvailability: { state: 'below-threshold' as const, observed: 0, required: 3 } };
+    expect(formatSampleSummary(carrier)).toBe('Too few live departures sampled to report a rate right now.');
+  });
+});
+
 describe('formatSampleSummary', () => {
   it('renders the one-line summary used across cards, rows and tables', () => {
     expect(formatSampleSummary(status({ sampleStats: stats }))).toBe('Avg delay 12.4 min · 5% cancelled');
