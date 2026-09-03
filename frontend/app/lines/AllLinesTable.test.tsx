@@ -426,6 +426,39 @@ describe('AllLinesTable responsive columns', () => {
   });
 });
 
+describe('AllLinesTable full-coverage precedence (Decision 1)', () => {
+  it('renders fullCoverageStats numbers, not sampleStats, in the Avg Delay/Cancelled columns when both are present', () => {
+    const coverageReports: LineStatusReport[] = [
+      {
+        $type: 'DistantSignal.LineStatusReport',
+        id: 'wcml',
+        name: 'West Coast Main Line',
+        modeName: 'national-rail',
+        operators: ['VT'],
+        computedAt: '2026-08-21T12:00:00Z',
+        lineStatuses: [
+          {
+            statusSeverity: 10,
+            statusSeverityDescription: 'Good Service',
+            reason: '',
+            dataQuality: 'trust-inferred',
+            sampleAvailability: { state: 'no-coverage' },
+            fullCoverageAvailability: { state: 'available' },
+            validityPeriods: [],
+            sampleStats: { total: 160, delayed: 142, cancelled: 8, skipped: 1, avgDelayMinutes: 12.4 },
+            fullCoverageStats: { total: 500, delayed: 10, cancelled: 5, skipped: 0, avgDelayMinutes: 2.0 },
+          },
+        ],
+      },
+    ];
+    renderWithMantine(<AllLinesTable lines={lines} reports={coverageReports} pinnedLineIds={[]} tocs={tocs} />);
+    expect(screen.getByText('2.0 min')).toBeInTheDocument();
+    expect(screen.getByText('1%')).toBeInTheDocument();
+    expect(screen.queryByText('12.4 min')).not.toBeInTheDocument();
+    expect(screen.queryByText('5%')).not.toBeInTheDocument();
+  });
+});
+
 describe('expandOperatorForFiltering', () => {
   it('expands "TfL" to also include London Overground (LO) and the Elizabeth line (XR)', () => {
     expect(expandOperatorForFiltering('TfL')).toEqual(['TfL', 'LO', 'XR']);

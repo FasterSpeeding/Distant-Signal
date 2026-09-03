@@ -382,4 +382,35 @@ describe('DashboardPage -- pinned station line-coverage distinction', () => {
     expect(screen.getByText('Good Service')).toBeInTheDocument();
     expect(screen.queryByText('Not tracked')).not.toBeInTheDocument();
   });
+
+  it('prefers fullCoverageStats over sampleStats in the pinned-station card subtitle (Decision 3)', async () => {
+    vi.mocked(api.getStopPointDisruption).mockResolvedValue([
+      {
+        $type: 'x',
+        id: 'swr-alton',
+        name: 'Alton',
+        modeName: 'national-rail',
+        operators: [],
+        computedAt: '2026-09-03T00:00:00Z',
+        lineStatuses: [
+          {
+            statusSeverity: 10,
+            statusSeverityDescription: 'Good Service',
+            reason: '',
+            dataQuality: 'trust-inferred',
+            validityPeriods: [],
+            sampleAvailability: { state: 'no-coverage' },
+            fullCoverageAvailability: { state: 'available' },
+            sampleStats: { total: 20, delayed: 5, cancelled: 1, skipped: 0, avgDelayMinutes: 4.0 },
+            fullCoverageStats: { total: 500, delayed: 10, cancelled: 5, skipped: 0, avgDelayMinutes: 2.0 },
+          },
+        ],
+      },
+    ]);
+
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText(/Avg delay 2\.0 min/)).toBeInTheDocument();
+    expect(screen.queryByText(/Avg delay 4\.0 min/)).not.toBeInTheDocument();
+  });
 });

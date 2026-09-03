@@ -103,6 +103,22 @@ describe('LineStatusCard', () => {
     expect(screen.getByText('No live departure data received for this line yet.')).toBeInTheDocument();
   });
 
+  it('renders real numbers from fullCoverageStats alone, not a hedge, when only that field is present (Decision 1)', () => {
+    const withCoverage: LineStatusReport = {
+      ...report,
+      lineStatuses: [
+        {
+          ...report.lineStatuses[0],
+          fullCoverageStats: { total: 500, delayed: 10, cancelled: 5, skipped: 0, avgDelayMinutes: 2.0 },
+        },
+      ],
+    };
+    renderWithMantine(<LineStatusCard report={withCoverage} />);
+    expect(screen.getByText(/Avg delay 2\.0 min/)).toBeInTheDocument();
+    expect(screen.getByText(/1% cancelled/)).toBeInTheDocument();
+    expect(screen.queryByText('No live departure data received for this line yet.')).not.toBeInTheDocument();
+  });
+
   it('clamps a long reason rather than letting it fill the card', () => {
     const wall = 'Station improvement work: '.repeat(40);
     const { container } = renderWithMantine(

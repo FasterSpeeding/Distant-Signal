@@ -13,6 +13,7 @@ import {
   SegmentedControl,
   Stack,
   Text,
+  Tooltip,
 } from '@mantine/core';
 import { StatusBadge } from './StatusBadge';
 import { DisruptionDetail } from './DisruptionDetail';
@@ -22,6 +23,7 @@ import { bucketFor, governingPeriod, periodIsActive, type IssueBucket } from '@/
 import { formatDate, formatDateTime } from '@/lib/dateFormat';
 import { isGoodSeverity } from '@/lib/severity';
 import { impactTypeLabel } from '@/lib/impactType';
+import { coverageProvenanceNote } from '@/lib/sampleStats';
 
 type ActiveFilter = 'all' | IssueBucket;
 
@@ -370,9 +372,24 @@ export function IssueList({
                     already how `informational` severity is treated in
                     lib/severity.ts's GROUP_COLOR.
                   */}
-                  <Badge variant="outline" size="sm" color="gray">
-                    {DATA_QUALITY_LABELS[status.dataQuality]}
-                  </Badge>
+                  {/*
+                    Decision 2: where the confident third copy branch plugs
+                    into DataQuality badge rendering. Per-status attachment
+                    already makes this a per-status decision, not a
+                    per-line one -- mirrors this file's own existing
+                    mixed-state correctness (Decision 3's "IssueList.tsx...
+                    already correct... no design work needed beyond that"),
+                    so a line with one full-coverage-confirmed status and
+                    one still-sampled status shows the confident tooltip on
+                    only the former. `undefined` (no tooltip) for every
+                    status today, since nothing carries `fullCoverageStats`
+                    yet -- forward-looking scaffolding.
+                  */}
+                  <Tooltip label={coverageProvenanceNote(status) ?? ''} disabled={!coverageProvenanceNote(status)}>
+                    <Badge variant="outline" size="sm" color="gray">
+                      {DATA_QUALITY_LABELS[status.dataQuality]}
+                    </Badge>
+                  </Tooltip>
                 </div>
               </div>
             </AccordionControl>

@@ -18,7 +18,7 @@ import { PinToggle } from '@/components/PinToggle';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
 import { worstStatus, severityRank } from '@/lib/severity';
-import { firstSampleStats, cancelledPercent, formatSampleSummary, representativeStatus, sampleUnavailableReason } from '@/lib/sampleStats';
+import { cancelledPercent, formatSampleSummary, representativeStatus, sampleUnavailableReason } from '@/lib/sampleStats';
 import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
 type SortField = 'name' | 'status' | 'avgDelay' | 'cancelled';
@@ -101,9 +101,14 @@ export function AllLinesTable({
       lines.map((line) => {
         const report = reportsById.get(line.id);
         const worst = report ? worstStatus(report) : undefined;
-        const stats = firstSampleStats(report?.lineStatuses ?? []);
-        const cancelledPct = cancelledPercent(stats);
         const representative = representativeStatus(report?.lineStatuses ?? []);
+        // Decision 1: prefer full-coverage numbers over sample numbers when
+        // both exist -- derived from the SAME `representative` status used
+        // for the subtitle/tooltip below, not a separate scan, so "which
+        // status is representative" and "which numbers render" never
+        // disagree.
+        const stats = representative?.fullCoverageStats ?? representative?.sampleStats;
+        const cancelledPct = cancelledPercent(stats);
         return { line, worst, stats, cancelledPct, representative };
       }),
     [lines, reportsById],

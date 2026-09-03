@@ -377,6 +377,35 @@ describe('IssueList', () => {
     expect(badge.getAttribute('style')).not.toContain('--mantine-color-grape-outline');
   });
 
+  it('shows no tooltip on the data-quality badge when fullCoverageStats is absent (the overwhelming majority case today)', async () => {
+    renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
+    const description = screen.getByText('Signal failure');
+    const control = description.closest('button') as HTMLElement;
+    const badge = within(control).getByText('Knowledgebase').closest('.mantine-Badge-root') as HTMLElement;
+    fireEvent.mouseEnter(badge);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText(/Based on real train-movement data/)).not.toBeInTheDocument();
+  });
+
+  it('shows the confident provenance tooltip on the data-quality badge once fullCoverageStats exists (Decision 2)', async () => {
+    const withCoverage: LineStatus = {
+      ...minorNow,
+      dataQuality: 'trust-inferred',
+      fullCoverageStats: { total: 500, delayed: 10, cancelled: 1, skipped: 0, avgDelayMinutes: 2.0 },
+      fullCoverageAvailability: { state: 'available' },
+    };
+    renderWithMantine(<IssueList items={toItems([withCoverage])} now={NOW} />);
+    const description = screen.getByText('Signal failure');
+    const control = description.closest('button') as HTMLElement;
+    const badge = within(control).getByText('Trust-inferred').closest('.mantine-Badge-root') as HTMLElement;
+    fireEvent.mouseEnter(badge);
+    expect(
+      await screen.findByText(
+        'Based on real train-movement data for every scheduled service on this line — not a live-departure sample.',
+      ),
+    ).toBeInTheDocument();
+  });
+
   it('renders the impact-type badge on the collapsed row when set', () => {
     const withImpactType: LineStatus = {
       ...minorNow,
