@@ -67,3 +67,6 @@ pub mod parse;
 pub mod records;
 pub mod resolve;
 pub mod tiploc;
+
+pub use parse::parse_schedule_records;
+pub use records::{BasicSchedule, CallingPoint, CallingPointKind, RawSchedule, StpIndicator};
