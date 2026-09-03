@@ -173,12 +173,17 @@ doesn't exist/isn't validated yet), applied to a lower, purer layer.
    future consumer is a guess**, per the scoping doc's own Open Question 2
    — accepted as a bounded risk since the parsing/resolution logic
    underneath it is the expensive part and is reusable regardless.
-2. **Byte offsets are pinned against the specific real lines quoted in the
-   findings doc, not against the full extract** — a very small chance a
-   different real `BS` line elsewhere in the file uses a field this plan's
-   fixtures don't happen to exercise (e.g. a genuinely blank days-of-week
-   bitmask, or a UID format this plan's fixtures don't cover). Task 6's
-   manual smoke-test binary exists specifically so a human with the real
-   file can cheaply check this before anyone builds on top of this crate,
-   without that check being a hard requirement of this plan's own
-   `cargo test` gate.
+2. ~~Byte offsets are pinned against the specific real lines quoted in the
+   findings doc, not against the full extract~~ **Resolved 2026-09-03,
+   post-merge**: ran Task 6's `examples/inspect.rs` against the real,
+   local `timetable_full.zip` (`RJTTF948MCA.txt`, a later real delivery
+   than the `RJTTF942MCA.txt` sample this crate's fixtures were quoted
+   from). Clean parse across the entire file — 463,947 real `BS` records,
+   234,941 distinct UIDs, zero parse errors/panics — and a `touching`
+   query against the real WCML TIPLOCs
+   (`EUSTON,MKNSCEN,CREWE,PRSTON,CARLILE`) on a real date returned 1227
+   real, well-formed schedules with plausible calling-point sequences
+   (e.g. `KGMRJCN` → `CARLCJN` → `CARLILE`, correct `Terminate` kind and
+   arrival time). This confirms the byte offsets hold against the full
+   real extract, not just the quoted fixture lines — the residual risk
+   this open question named is closed.
