@@ -193,6 +193,15 @@ fn normalize_entry_for_diff(entry: &serde_json::Value) -> serde_json::Value {
     if let Some(obj) = entry.as_object_mut() {
         obj.remove("sample_stats");
         obj.remove("sample_availability");
+        // Same reasoning as the pair above, extended to the Decision-1
+        // full-coverage fields: nothing produces these yet, but once
+        // something does they will fluctuate every cycle independent of
+        // real disruption state, exactly like sample_stats/sample_availability
+        // already do -- see
+        // docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
+        // Decision 1.
+        obj.remove("full_coverage_stats");
+        obj.remove("full_coverage_availability");
     }
     if let Some(reason) = entry.get_mut("reason")
         && let Some(text) = reason.as_str()
@@ -1204,6 +1213,47 @@ mod tests {
                     "cancelled": 1,
                     "avg_delay_minutes": 4.2
                 }
+            }
+        ]);
+
+        assert_eq!(normalize_for_diff(&a), normalize_for_diff(&b));
+    }
+
+    #[test]
+    fn normalize_for_diff_ignores_full_coverage_field_changes() {
+        // Decision 1's two new fields must be stripped the same way
+        // sample_stats/sample_availability already are -- see
+        // normalize_entry_for_diff's own doc comment for why.
+        let a = serde_json::json!([
+            {
+                "severity": "good-service",
+                "reason": "Good service",
+                "validity": {"from_date": "2026-07-09T10:00:00Z"},
+                "data_quality": "live",
+                "full_coverage_stats": {
+                    "total": 10,
+                    "delayed": 2,
+                    "cancelled": 0,
+                    "skipped": 0,
+                    "avg_delay_minutes": 1.5
+                },
+                "full_coverage_availability": {"state": "available"}
+            }
+        ]);
+        let b = serde_json::json!([
+            {
+                "severity": "good-service",
+                "reason": "Good service",
+                "validity": {"from_date": "2026-07-09T10:01:00Z"},
+                "data_quality": "live",
+                "full_coverage_stats": {
+                    "total": 12,
+                    "delayed": 3,
+                    "cancelled": 1,
+                    "skipped": 0,
+                    "avg_delay_minutes": 2.1
+                },
+                "full_coverage_availability": {"state": "pending"}
             }
         ]);
 

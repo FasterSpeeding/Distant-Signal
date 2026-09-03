@@ -66,6 +66,13 @@ fn status_to_json(status: &LineStatus, detail: bool) -> Value {
 
     out["sampleAvailability"] = sample_availability_json(&status.sample_availability);
 
+    if let Some(stats) = &status.full_coverage_stats {
+        out["fullCoverageStats"] = sample_stats_json(stats);
+    }
+
+    out["fullCoverageAvailability"] =
+        full_coverage_availability_json(&status.full_coverage_availability);
+
     if detail && let Some(disruption) = &status.disruption {
         out["disruption"] = json!({
             "category": disruption.category,
@@ -104,6 +111,19 @@ pub(crate) fn sample_availability_json(availability: &common::SampleAvailability
             json!({ "state": "below-threshold", "observed": observed, "required": required })
         }
         common::SampleAvailability::Available(_) => json!({ "state": "available" }),
+    }
+}
+
+/// Full-coverage analog of `sample_availability_json` -- same "never
+/// duplicate the SampleStats payload a second time on the wire" posture
+/// (`full_coverage_stats` above already carries it when present).
+pub(crate) fn full_coverage_availability_json(
+    availability: &common::FullCoverageAvailability,
+) -> Value {
+    match availability {
+        common::FullCoverageAvailability::NotEnabled => json!({ "state": "not-enabled" }),
+        common::FullCoverageAvailability::Pending => json!({ "state": "pending" }),
+        common::FullCoverageAvailability::Available(_) => json!({ "state": "available" }),
     }
 }
 
@@ -303,6 +323,79 @@ mod tests {
         );
         assert!(
             json["lineStatuses"][0]["sampleAvailability"]
+                .get("total")
+                .is_none(),
+            "Available must not re-embed SampleStats fields"
+        );
+    }
+
+    #[test]
+    fn full_coverage_stats_included_when_present() {
+        let mut report = sample_report(None);
+        report.statuses[0].full_coverage_stats = Some(SampleStats {
+            total: 20,
+            delayed: 3,
+            cancelled: 0,
+            skipped: 1,
+            avg_delay_minutes: 2.5,
+        });
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
+        let stats = &json["lineStatuses"][0]["fullCoverageStats"];
+        assert_eq!(stats["total"], 20);
+        assert_eq!(stats["delayed"], 3);
+        assert_eq!(stats["cancelled"], 0);
+        assert_eq!(stats["skipped"], 1);
+        assert_eq!(stats["avgDelayMinutes"], 2.5);
+    }
+
+    #[test]
+    fn full_coverage_stats_omitted_when_absent() {
+        let report = sample_report(None);
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
+        assert!(json["lineStatuses"][0].get("fullCoverageStats").is_none());
+    }
+
+    #[test]
+    fn full_coverage_availability_is_always_present_unlike_full_coverage_stats() {
+        let report = sample_report(None); // full_coverage_stats is None
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
+        assert_eq!(
+            json["lineStatuses"][0]["fullCoverageAvailability"],
+            serde_json::json!({"state": "not-enabled"})
+        );
+    }
+
+    #[test]
+    fn full_coverage_availability_pending_shape() {
+        let mut report = sample_report(None);
+        report.statuses[0].full_coverage_availability = common::FullCoverageAvailability::Pending;
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
+        assert_eq!(
+            json["lineStatuses"][0]["fullCoverageAvailability"],
+            serde_json::json!({"state": "pending"})
+        );
+    }
+
+    #[test]
+    fn full_coverage_availability_available_case_does_not_duplicate_stats_fields() {
+        let mut report = sample_report(None);
+        let stats = SampleStats {
+            total: 20,
+            delayed: 3,
+            cancelled: 0,
+            skipped: 1,
+            avg_delay_minutes: 2.5,
+        };
+        report.statuses[0].full_coverage_stats = Some(stats.clone());
+        report.statuses[0].full_coverage_availability =
+            common::FullCoverageAvailability::Available(stats);
+        let json = to_tfl_shape(&report, sample_computed_at(), false);
+        assert_eq!(
+            json["lineStatuses"][0]["fullCoverageAvailability"],
+            serde_json::json!({"state": "available"})
+        );
+        assert!(
+            json["lineStatuses"][0]["fullCoverageAvailability"]
                 .get("total")
                 .is_none(),
             "Available must not re-embed SampleStats fields"

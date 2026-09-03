@@ -306,8 +306,14 @@ fn tfl_statuses_changed(
     }
 }
 
-/// Strips `sample_stats`/`sample_availability` from every status entry
-/// before comparison. See `tfl_statuses_changed`.
+/// Strips `sample_stats`/`sample_availability` (and their Decision-1
+/// full-coverage siblings, `full_coverage_stats`/`full_coverage_availability`)
+/// from every status entry before comparison. See `tfl_statuses_changed`.
+/// The full-coverage pair is stripped symmetrically even though no TfL line
+/// populates it today (Decision 5: full coverage is scoped to national-rail
+/// lines only, out of scope for TfL) -- matching this function's own stated
+/// rationale for `sample_stats`: strip on principle so a future producer
+/// doesn't silently reintroduce spurious `line_status_history` churn.
 fn normalize_for_diff(statuses: &serde_json::Value) -> serde_json::Value {
     let mut statuses = statuses.clone();
     if let Some(entries) = statuses.as_array_mut() {
@@ -315,6 +321,8 @@ fn normalize_for_diff(statuses: &serde_json::Value) -> serde_json::Value {
             if let Some(obj) = entry.as_object_mut() {
                 obj.remove("sample_stats");
                 obj.remove("sample_availability");
+                obj.remove("full_coverage_stats");
+                obj.remove("full_coverage_availability");
             }
         }
     }
@@ -1176,6 +1184,27 @@ mod tests {
             "validity": { "from_date": "2026-08-22T02:00:00Z", "to_date": null, "is_now": true },
             "data_quality": "tfl",
             "sample_availability": { "state": "below-threshold", "observed": 0, "required": 1 }
+        }]);
+        assert!(!tfl_statuses_changed(Some(&existing), &incoming));
+    }
+
+    #[test]
+    fn tfl_statuses_changed_ignores_full_coverage_field_only_differences() {
+        let existing = serde_json::json!([{
+            "severity": "GoodService",
+            "reason": "Good Service",
+            "validity": { "from_date": "2026-08-22T02:00:00Z", "to_date": null, "is_now": true },
+            "data_quality": "tfl",
+            "full_coverage_stats": { "total": 40, "delayed": 3, "cancelled": 0, "skipped": 0, "avg_delay_minutes": 1.2 },
+            "full_coverage_availability": { "state": "available" }
+        }]);
+        let incoming = serde_json::json!([{
+            "severity": "GoodService",
+            "reason": "Good Service",
+            "validity": { "from_date": "2026-08-22T02:00:00Z", "to_date": null, "is_now": true },
+            "data_quality": "tfl",
+            "full_coverage_stats": { "total": 41, "delayed": 5, "cancelled": 1, "skipped": 0, "avg_delay_minutes": 2.4 },
+            "full_coverage_availability": { "state": "pending" }
         }]);
         assert!(!tfl_statuses_changed(Some(&existing), &incoming));
     }
