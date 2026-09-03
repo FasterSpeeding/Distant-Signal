@@ -569,6 +569,63 @@ services:
     volumes:
       - schedule_feed_data:/data/schedule-feed
 
+  # schedule-reference: the third sibling in the Helm chart's `schedulefeed`
+  # Pod (charts/distant-signal/templates/schedulefeed-deployment.yaml's
+  # `reference` container) -- reads whatever schedule-ingest above has
+  # already verified and moved into storage_dir/<n>/, resolves a STANOX/CRS
+  # table from it, and POSTs that to api. See
+  # crates/schedule-reference/src/main.rs's own header comment and
+  # docs/superpowers/specs/2026-09-01-schedule-ingest-stanox-crs-table-design.md.
+  # This service block was missing entirely from this file until now --
+  # docker-compose.yml never got updated when schedule-reference was added
+  # as a later sibling to schedule-ingest, so local dev had no way to run
+  # it at all.
+  schedule-reference:
+    build:
+      context: .
+      dockerfile: docker/schedule-reference.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      schedule-feed-volume-permissions:
+        condition: service_completed_successfully
+    # No dependency on schedule-sftp, unlike schedule-ingest above: this
+    # service only ever reads storage_dir/<n>/, the already-local sequence
+    # directory schedule-ingest moves a verified-complete delivery into --
+    # never WATCH_DIR, the raw incoming SFTP drop schedule-sftp receives
+    # (confirmed against crates/schedule-reference/src/main.rs's header
+    # comment: "Once schedule-ingest has moved a verified-complete
+    # delivery into storage_dir/<n>/, reads that sequence's ... files
+    # directly off the already-local, read-only-mounted PVC"). It still
+    # needs schedule-feed-volume-permissions, the same as schedule-ingest,
+    # since that step is what makes the shared volume readable at all.
+    #
+    # No group_add either: schedule-ingest's `group_add: ["1000"]` above
+    # exists purely for WRITE access to the group-writable volume (see its
+    # own comment) -- this container's mount below is read-only, so it
+    # never needs to join that group.
+    environment:
+      # crates/schedule-reference/src/config.rs: Config
+      STORAGE_DIR: /data/schedule-feed
+      POLL_INTERVAL_SECS: ${SCHEDULE_FEED_REFERENCE_POLL_INTERVAL_SECS:-1800}
+      API_INGEST_URL: http://api:8080/private/stanox-crs
+      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
+      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_SCHEDULE_REFERENCE:?INTERNAL_OAUTH_USERNAME_SCHEDULE_REFERENCE must be set}
+      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_SCHEDULE_REFERENCE:?INTERNAL_OAUTH_PASSWORD_SCHEDULE_REFERENCE must be set}
+      RUST_LOG: ${RUST_LOG:-info}
+    # READ-ONLY, unlike schedule-ingest's read-write mount above: this
+    # container never writes to the shared volume (see
+    # crates/schedule-reference/src/config.rs's own header comment, "Never
+    # writes to storage_dir") -- matches the Helm chart's `reference`
+    # container volumeMount, which is likewise `readOnly: true`.
+    volumes:
+      - schedule_feed_data:/data/schedule-feed:ro
+
   rail-mcp:
     # Externally-built image -- this repo's own CI does not build the
     # derived MCP service's source (a fork of train-mcp living in its own
