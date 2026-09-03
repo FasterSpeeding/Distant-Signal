@@ -2,11 +2,13 @@
 
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, Group, Stack, TextInput } from '@mantine/core';
+import { Alert, Autocomplete, Button, Group, Stack } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
+import { searchStations, searchTocs } from '@/lib/suggestions';
+import { useSuggestions } from '@/lib/useSuggestions';
 import type { TrackPinRequest, TrackPinResponse } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
@@ -56,6 +58,11 @@ export function TrackTrainForm({
   const [submitting, setSubmitting] = useState(false);
   const needsLoginState = useNeedsLogin();
   const [fieldError, setFieldError] = useState<string | null>(null);
+
+  const { suggestions: originSuggestions } = useSuggestions(originCrs, searchStations);
+  const { suggestions: destinationSuggestions } = useSuggestions(destinationCrs, searchStations);
+  const { suggestions: operatorSuggestions } = useSuggestions(operator, searchTocs);
+  const [originTouched, setOriginTouched] = useState(false);
 
   const originValid = CRS_PATTERN.test(originCrs.trim());
   const canSubmit = originValid && scheduledDeparture !== null && !submitting;
@@ -134,12 +141,19 @@ export function TrackTrainForm({
 
   return (
     <Stack gap="md" component="form" onSubmit={handleSubmit}>
-      <TextInput
+      <Autocomplete
         label="Origin CRS code"
-        placeholder="e.g. WAT"
+        placeholder="e.g. Woking or WOK"
         value={originCrs}
-        onChange={(event) => setOriginCrs(event.currentTarget.value)}
-        error={originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
+        onChange={setOriginCrs}
+        onBlur={() => setOriginTouched(true)}
+        data={originSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+        filter={({ options }) => options}
+        renderOption={({ option }) => {
+          const match = originSuggestions.find((s) => s.code === option.value);
+          return match ? `${match.code} — ${match.name}` : option.value;
+        }}
+        error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
         required
       />
       <Group align="flex-end" gap="xs">
@@ -171,17 +185,29 @@ export function TrackTrainForm({
           Now
         </Button>
       </Group>
-      <TextInput
+      <Autocomplete
         label="Destination CRS code (optional)"
-        placeholder="e.g. WOK"
+        placeholder="e.g. Woking or WOK"
         value={destinationCrs}
-        onChange={(event) => setDestinationCrs(event.currentTarget.value)}
+        onChange={setDestinationCrs}
+        data={destinationSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+        filter={({ options }) => options}
+        renderOption={({ option }) => {
+          const match = destinationSuggestions.find((s) => s.code === option.value);
+          return match ? `${match.code} — ${match.name}` : option.value;
+        }}
       />
-      <TextInput
+      <Autocomplete
         label="Operator (optional)"
         placeholder="e.g. SW"
         value={operator}
-        onChange={(event) => setOperator(event.currentTarget.value)}
+        onChange={setOperator}
+        data={operatorSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+        filter={({ options }) => options}
+        renderOption={({ option }) => {
+          const match = operatorSuggestions.find((s) => s.code === option.value);
+          return match ? `${match.code} — ${match.name}` : option.value;
+        }}
       />
       {fieldError && (
         <Alert color="red" title="Couldn't track this train">

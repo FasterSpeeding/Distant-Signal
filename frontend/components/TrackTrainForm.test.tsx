@@ -59,7 +59,7 @@ describe('TrackTrainForm', () => {
 
   it('pre-fills the origin field from initialOrigin', () => {
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
-    expect(screen.getByLabelText(/Origin CRS code/)).toHaveValue('WAT');
+    expect(screen.getByRole('combobox', { name: /Origin CRS code/ })).toHaveValue('WAT');
   });
 
   it('disables submit until the origin is a valid 3-letter code and a departure is picked', () => {
@@ -69,8 +69,66 @@ describe('TrackTrainForm', () => {
 
   it('shows a field error for a non-3-letter origin code', () => {
     renderWithMantine(<TrackTrainForm />);
-    fireEvent.change(screen.getByLabelText(/Origin CRS code/), { target: { value: 'WATERLOO' } });
+    const field = screen.getByRole('combobox', { name: /Origin CRS code/ });
+    fireEvent.change(field, { target: { value: 'WATERLOO' } });
+    fireEvent.blur(field);
     expect(screen.getByText('Must be a 3-letter CRS code')).toBeInTheDocument();
+  });
+
+  it('does not show the origin error while still typing (no blur fired)', () => {
+    renderWithMantine(<TrackTrainForm />);
+    fireEvent.change(screen.getByRole('combobox', { name: /Origin CRS code/ }), { target: { value: 'Wok' } });
+    expect(screen.queryByText('Must be a 3-letter CRS code')).not.toBeInTheDocument();
+  });
+
+  it('shows no error on blur when the origin is a valid 3-letter code', () => {
+    renderWithMantine(<TrackTrainForm />);
+    const field = screen.getByRole('combobox', { name: /Origin CRS code/ });
+    fireEvent.change(field, { target: { value: 'WAT' } });
+    fireEvent.blur(field);
+    expect(screen.queryByText('Must be a 3-letter CRS code')).not.toBeInTheDocument();
+  });
+
+  it('selecting an origin suggestion (via onChange) still submits the resolved origin_crs', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }),
+    );
+
+    renderWithMantine(<TrackTrainForm />);
+    fireEvent.change(screen.getByRole('combobox', { name: /Origin CRS code/ }), { target: { value: 'WOK' } });
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-28 18:32:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+    });
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init!.body as string);
+    expect(body.origin_crs).toBe('WOK');
+  });
+
+  it('leaving Destination and Operator empty omits both keys from the submitted body', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }),
+    );
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-28 18:32:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+    });
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init!.body as string);
+    expect(body).not.toHaveProperty('destination_crs');
+    expect(body).not.toHaveProperty('operator');
   });
 
   it('on success, POSTs to /api/Train/track and redirects to /train/by-id/{trackingId}', async () => {
@@ -98,7 +156,7 @@ describe('TrackTrainForm', () => {
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
-    fireEvent.change(screen.getByLabelText(/Destination CRS code/), { target: { value: 'WOK' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /Destination CRS code/ }), { target: { value: 'WOK' } });
     fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
       target: { value: '2026-08-28 18:32:00' },
     });
@@ -112,8 +170,8 @@ describe('TrackTrainForm', () => {
     // Unlike PinToggle's toggle-and-forget click, the form's own input
     // must survive a 401 -- Decision 4's explicit "preserve typed values"
     // call.
-    expect(screen.getByLabelText(/Origin CRS code/)).toHaveValue('WAT');
-    expect(screen.getByLabelText(/Destination CRS code/)).toHaveValue('WOK');
+    expect(screen.getByRole('combobox', { name: /Origin CRS code/ })).toHaveValue('WAT');
+    expect(screen.getByRole('combobox', { name: /Destination CRS code/ })).toHaveValue('WOK');
   });
 
   it('on a 400, shows the server error message inline', async () => {
