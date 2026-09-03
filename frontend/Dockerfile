@@ -68,12 +68,27 @@ FROM node:22-bookworm-slim AS runtime-prod
 # stage starts a fresh base image rather than building FROM builder-base.
 ENV NEXT_TELEMETRY_DISABLED=1
 
-RUN useradd --system --no-create-home --shell /usr/sbin/nologin frontend
-
+# NOT a `useradd`-created `frontend` user (this stage's previous
+# approach): node:22-bookworm-slim already ships a built-in `node` user at
+# a fixed uid/gid 1000 -- confirmed 2026-09-03 against nodejs/docker-node's
+# own Dockerfile source for the exact revision this base image tag's
+# manifest was built from (22/bookworm-slim/Dockerfile:
+# `groupadd --gid 1000 node && useradd --uid 1000 --gid node ... node`) --
+# so reusing it is both the idiomatic choice for this Debian-based variant
+# (unlike some alpine tags, bookworm-slim's `node` user is guaranteed
+# present) and avoids a uid collision: `useradd --uid 1000` for a NEW
+# `frontend` user would fail outright, since 1000 is already taken by
+# `node`. This mirrors what the runtime-dev stage below already does.
+#
+# WORKDIR creates /app as root before any COPY runs, and --chown on a COPY
+# only affects the copied entries -- not a pre-existing directory -- so
+# there is no bare `chown` step here the way runtime-dev needs one:
+# runtime-prod's `next start` only reads the prebuilt output copied in
+# below, it never needs to write into /app itself.
 WORKDIR /app
-COPY --from=builder-prod --chown=frontend:frontend /app/.next ./.next
-COPY --from=builder-prod --chown=frontend:frontend /app/node_modules ./node_modules
-COPY --from=builder-prod --chown=frontend:frontend /app/package.json ./package.json
+COPY --from=builder-prod --chown=node:node /app/.next ./.next
+COPY --from=builder-prod --chown=node:node /app/node_modules ./node_modules
+COPY --from=builder-prod --chown=node:node /app/package.json ./package.json
 # public/ now holds real, load-bearing static assets: the PWA manifest
 # icons (icon-192.png/icon-512.png, commit 86b26b6) and, as of
 # docs/superpowers/plans/2026-09-02-pwa-service-worker.md, sw.js/
@@ -85,9 +100,20 @@ COPY --from=builder-prod --chown=frontend:frontend /app/package.json ./package.j
 # regardless of this Dockerfile). See
 # docs/superpowers/specs/2026-09-02-pwa-service-worker-design.md's
 # "Current relevant state," last bullet.
-COPY --from=builder-prod --chown=frontend:frontend /app/public ./public
+COPY --from=builder-prod --chown=node:node /app/public ./public
 
-USER frontend
+# Numeric USER, not `node`: Kubernetes' runAsNonRoot admission check (this
+# chart's podSecurityContext sets runAsNonRoot: true with no explicit
+# runAsUser for frontend) resolves the image's config purely from its
+# manifest -- it does NOT read /etc/passwd inside the image -- so even a
+# symbolic USER that names a real, existing account (as the previous
+# `USER frontend` did, and `USER node` would too) fails admission with
+# "container has runAsNonRoot and image has non-numeric user, cannot
+# verify user is non-root", the same failure class the chart's 12 custom
+# Rust images hit before their own Dockerfiles were pinned to numeric
+# USER lines. 1000:1000 here is the real, verified uid/gid of the base
+# image's built-in `node` user/group (see above), not an arbitrary choice.
+USER 1000:1000
 
 EXPOSE 3000
 ENTRYPOINT ["npm", "run", "start"]
