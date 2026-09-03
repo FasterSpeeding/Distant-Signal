@@ -12,7 +12,7 @@ import type { LineStatus, SampleAvailability, SampleStats } from './types';
  * docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
  * stays a separate, later step. `fullCoverageStats` widened onto this same
  * carrier for Decision 1: only `LineStatus` ever carries it in practice
- * (`StationOverriderSampleStats` never does, per that design doc's own
+ * (`StationOperatorSampleStats` never does, per that design doc's own
  * "line-level scope only" statement), but the type stays structural rather
  * than a union, matching this type's existing shape. */
 type SampleStatsCarrier = {
