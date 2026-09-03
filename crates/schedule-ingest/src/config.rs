@@ -25,12 +25,35 @@ pub struct Config {
     /// Comma-separated HH:MM times, Europe/London — reused directly from
     /// the (now-superseded) pull design's Scheduling section: the window
     /// describes when DTD *produces* the feed, not which party connects.
+    ///
+    /// No longer controls *when* `watch_dir` gets scanned (see
+    /// `poll_interval_secs` for that) — a real delivery once landed outside
+    /// every configured slot (mid-afternoon, at DTD SFTP account
+    /// provisioning time) and sat unprocessed for hours because the old
+    /// design only scanned at these ~9 daily slots. What's left of this
+    /// field's job: its *last configured entry* still marks "today's final
+    /// realistic chance the production window described by RSPS5046 has to
+    /// deliver", used only to decide whether a still-incomplete delivery
+    /// logs at `error` vs `info` severity — see `main`'s
+    /// `is_final_check_of_day`.
     #[arg(
         long,
         env,
         default_value = "22:00,22:30,23:00,23:30,00:00,00:30,01:00,01:30,16:00"
     )]
     pub check_times: String,
+
+    /// How often to scan `watch_dir`, in seconds. `scan_incoming` (see
+    /// `scan.rs`) is a cheap local `std::fs::read_dir` + per-file `stat` —
+    /// no network call, no external rate limit to respect — so there is no
+    /// real cost concern scanning far more often than the old design's
+    /// sparse `check_times` slots did. This is what actually fixes the
+    /// stuck-delivery bug described on `check_times`: every delivery,
+    /// whenever it lands, is picked up within roughly one interval instead
+    /// of potentially waiting until the next of ~9 daily slots (which could
+    /// be many hours away).
+    #[arg(long, env, default_value_t = 120)]
+    pub poll_interval_secs: u64,
 
     /// How many complete sequences to retain on disk (current + fallback).
     #[arg(long, env, default_value_t = 2)]
@@ -42,7 +65,19 @@ pub struct Config {
     /// field (confirmed directly against the real sample in this plan's
     /// own research), so this stability check is the only completeness
     /// signal available, not a fallback.
-    #[arg(long, env, default_value_t = 2)]
+    ///
+    /// Raised from this crate's original default of `2` alongside
+    /// shrinking the scan cadence to `poll_interval_secs` (120s default).
+    /// At the old sparse cadence (30 minutes apart during the busiest part
+    /// of the overnight window, and up to ~14.5 hours apart between the
+    /// 01:30 and 16:00 slots), "2 consecutive stable polls" was already a
+    /// strong — if wildly inconsistent — time-based signal. At a 2-minute
+    /// cadence, 2 consecutive stable polls is only 4 minutes, which a
+    /// brief mid-transfer pause could satisfy by accident. `5` at the new
+    /// default interval gives a 10-minute unchanged-on-disk window, which
+    /// comfortably covers a transient pause without reintroducing anywhere
+    /// near the old design's multi-hour worst-case detection latency.
+    #[arg(long, env, default_value_t = 5)]
     pub stability_cycles: u32,
 
     /// The `api` crate's ingestion endpoint for completed schedule feed

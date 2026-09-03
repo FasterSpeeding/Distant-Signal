@@ -39,9 +39,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveTime, Utc};
 use chrono_tz::Europe::London;
-use chrono_tz::Tz;
 use clap::Parser;
 use config::Config;
 use manifest::SequenceRelation;
@@ -50,8 +49,8 @@ use scan::{DirSnapshot, StabilityTracker, scan_incoming};
 use serde::Serialize;
 
 /// Per-request timeout — matches the other pollers' identical rationale
-/// (comfortably short relative to how infrequently this crate actually
-/// polls: every tens of minutes at worst, per `check_times`).
+/// (comfortably short relative to `poll_interval_secs`'s default of two
+/// minutes between scans).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::main]
@@ -79,6 +78,16 @@ async fn main() -> anyhow::Result<()> {
     let final_check_time = *check_times
         .last()
         .expect("parse_check_times guarantees a non-empty list");
+    // The *first* configured entry marks when today's overnight production
+    // window generically reopens (`22:00` by default) -- used alongside
+    // `final_check_time` to bound "final check of day" to the gap between
+    // the fallback deadline and the next window's start, rather than
+    // leaving it open-ended for the rest of the day. See
+    // `is_final_check_of_day`'s own doc comment for why an open-ended
+    // comparison is wrong here.
+    let window_start_time = *check_times
+        .first()
+        .expect("parse_check_times guarantees a non-empty list");
 
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
     let internal_oauth =
@@ -94,33 +103,32 @@ async fn main() -> anyhow::Result<()> {
     let mut known_stable: HashSet<String> = HashSet::new();
     let mut last_ingested_sequence: Option<u32> = None;
     let mut pending_post: Option<ScheduleFeedIngestRequest> = None;
-    let mut first_run = true;
+
+    // `tokio::time::interval`'s first `tick()` fires immediately (its
+    // default `MissedTickBehavior::Burst`), so every run -- including the
+    // very first -- scans right away with no special-cased bypass needed;
+    // subsequent ticks are `poll_interval_secs` apart. This replaces the
+    // old design's "sleep until the next of ~9 daily HH:MM check-time
+    // slots" scheduling, which could leave a delivery that lands outside
+    // every configured slot unprocessed for hours -- exactly the bug a
+    // real DTD delivery hit by landing mid-afternoon, at SFTP account
+    // provisioning time, well outside every slot.
+    let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
 
     loop {
-        // First run bypasses the check-time gate and scans immediately —
-        // matching RSPS5046 §7.6.1's "new recipients get a full refresh
-        // regardless of when they start", and this repo's existing
-        // `common::ingest::time_until_next_poll` "no prior fetch -> poll
-        // now" precedent (cited for that rationale only; its exact shape
-        // -- a single fixed interval, not a list of daily check-times --
-        // doesn't fit this scheduler, so it isn't called directly here).
-        let current_slot = if first_run {
-            first_run = false;
-            tracing::info!("first run: bypassing the check-time gate for an immediate scan");
-            None
-        } else {
-            let now_london = Utc::now().with_timezone(&London);
-            let (target, slot) = next_check_time(now_london, &check_times);
-            let sleep_for = target
-                .signed_duration_since(now_london)
-                .to_std()
-                .unwrap_or(Duration::ZERO);
-            tracing::info!(sleep_secs = sleep_for.as_secs(), slot = %slot, "sleeping until next check time");
-            tokio::time::sleep(sleep_for).await;
-            Some(slot)
-        };
+        interval.tick().await;
 
-        let is_final_check_of_day = current_slot == Some(final_check_time);
+        // `check_times`/`final_check_time` no longer drive *when* a scan
+        // happens (that's `poll_interval_secs` now) -- their one remaining
+        // job is this severity gate: has today's last configured check
+        // time (the day's final realistic chance per RSPS5046) already
+        // passed? Compared directly against the current wall-clock time
+        // rather than derived from "did the scheduler just wake for that
+        // exact slot", since scanning is no longer tied to waking at
+        // specific slots.
+        let now_london = Utc::now().with_timezone(&London);
+        let is_final_check_of_day =
+            is_final_check_of_day(now_london.time(), final_check_time, window_start_time);
         let cycle_start = Instant::now();
 
         if let Err(err) = run_scan_cycle(
@@ -135,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .await
         {
-            tracing::error!(error = ?err, "scan cycle failed unexpectedly; will retry next check time");
+            tracing::error!(error = ?err, "scan cycle failed unexpectedly; will retry next poll interval");
         }
 
         metrics::histogram!(common::metrics::metric_name(
@@ -145,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// One check-time's worth of work: scan `watch_dir`, feed the snapshot into
+/// One poll interval's worth of work: scan `watch_dir`, feed the snapshot into
 /// the (process-lifetime) `StabilityTracker`, and if a manifest has landed
 /// and is fully stable — itself and every file it lists — move the
 /// delivery into `storage_dir` and record it with `api`.
@@ -269,7 +277,7 @@ async fn run_scan_cycle(
                 "delivery still incomplete after the day's final configured check time; likely a real delivery problem"
             );
         } else {
-            tracing::info!(sequence = parsed.sequence, missing = ?missing, "delivery not yet complete; retrying next check time");
+            tracing::info!(sequence = parsed.sequence, missing = ?missing, "delivery not yet complete; retrying next poll interval");
         }
         return Ok(());
     }
@@ -411,43 +419,44 @@ fn parse_check_times(raw: &str) -> anyhow::Result<Vec<NaiveTime>> {
     Ok(times)
 }
 
-/// Resolves a naive Europe/London datetime to a concrete offset, handling
-/// the two DST edge cases without panicking: an ambiguous (fall-back fold)
-/// local time resolves to its earlier occurrence, and a nonexistent
-/// (spring-forward gap) local time is nudged forward by an hour. Both are
-/// rare (one hour, once a year each) and only affect which exact instant a
-/// sleep targets by at most an hour -- never which slot's logic runs.
-fn resolve_london(naive: chrono::NaiveDateTime) -> DateTime<Tz> {
-    match London.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(dt) => dt,
-        chrono::LocalResult::Ambiguous(earliest, _latest) => earliest,
-        chrono::LocalResult::None => London
-            .from_local_datetime(&(naive + chrono::Duration::hours(1)))
-            .single()
-            .unwrap_or_else(|| Utc::now().with_timezone(&London)),
+/// Whether `now` (a Europe/London wall-clock time-of-day) falls in the gap
+/// between today's final configured `check_times` fallback
+/// (`final_check_time`, `16:00` by default) and the next overnight
+/// production window reopening (`window_start_time`, the *first* configured
+/// entry, `22:00` by default) -- i.e. whether RSPS5046's production window
+/// has fully closed for today with no new window yet open.
+///
+/// This is the one remaining behavioral role `check_times` plays now that
+/// scanning itself runs on a fixed `poll_interval_secs` cadence rather than
+/// sleeping until specific slots (see `main`'s loop): gating whether a
+/// still-incomplete delivery logs at `error` (loud -- the window has closed,
+/// this is likely a real problem) or `info` (quiet -- still within an
+/// expected window, including a brand new delivery actively arriving right
+/// after `window_start_time`, try again next poll) severity.
+///
+/// **Deliberately bounded, not `now >= final_check_time` unbounded to
+/// midnight** -- an earlier version of this function compared only against
+/// `final_check_time`, which stayed `true` from `16:00` all the way through
+/// `23:59:59`, including the `22:00`-`23:59` stretch when a brand new
+/// delivery is normally still uploading/stabilizing. That version would have
+/// logged `error` every poll cycle during completely normal, expected
+/// in-progress delivery -- a real regression from the old design's single
+/// once-a-day check right at the `16:00` slot, not just a style change.
+/// Bounding the window to `[final_check_time, window_start_time)` restores
+/// that "only loud once the fallback has passed AND no new window has
+/// opened" intent. Handles the case where the gap wraps past midnight (not
+/// true for the current default, where `16:00 < 22:00` same-day, but kept
+/// correct for any operator-configured `check_times` shape).
+fn is_final_check_of_day(
+    now: NaiveTime,
+    final_check_time: NaiveTime,
+    window_start_time: NaiveTime,
+) -> bool {
+    if final_check_time <= window_start_time {
+        now >= final_check_time && now < window_start_time
+    } else {
+        now >= final_check_time || now < window_start_time
     }
-}
-
-/// Computes the next occurrence (today or tomorrow, whichever is sooner)
-/// of each time in `check_times` after `now`, and returns the earliest one
-/// together with which configured time it corresponds to. Order within
-/// `check_times` doesn't matter for this computation (unlike
-/// `final_check_time` in [`main`], which cares about list position, not
-/// chronological order).
-fn next_check_time(now: DateTime<Tz>, check_times: &[NaiveTime]) -> (DateTime<Tz>, NaiveTime) {
-    check_times
-        .iter()
-        .map(|&time| {
-            let today = resolve_london(now.date_naive().and_time(time));
-            let target = if today > now {
-                today
-            } else {
-                resolve_london((now.date_naive() + chrono::Duration::days(1)).and_time(time))
-            };
-            (target, time)
-        })
-        .min_by_key(|&(dt, _)| dt)
-        .expect("check_times is validated non-empty by parse_check_times")
 }
 
 /// Whether `name` matches the `RJTTF<digits>DAT.txt` manifest filename
@@ -582,30 +591,86 @@ mod tests {
     }
 
     #[test]
-    fn next_check_time_picks_the_soonest_upcoming_slot_today() {
-        let now = London.with_ymd_and_hms(2026, 9, 1, 10, 0, 0).unwrap();
-        let check_times = vec![
-            NaiveTime::from_hms_opt(9, 0, 0).unwrap(), // already passed today
-            NaiveTime::from_hms_opt(16, 0, 0).unwrap(), // later today -- soonest
-            NaiveTime::from_hms_opt(22, 0, 0).unwrap(), // later today
-        ];
-
-        let (target, slot) = next_check_time(now, &check_times);
-        assert_eq!(slot, NaiveTime::from_hms_opt(16, 0, 0).unwrap());
-        assert_eq!(target.date_naive(), now.date_naive());
+    fn is_final_check_of_day_false_before_the_final_time() {
+        let final_check_time = NaiveTime::from_hms_opt(16, 0, 0).unwrap();
+        let window_start_time = NaiveTime::from_hms_opt(22, 0, 0).unwrap();
+        assert!(!is_final_check_of_day(
+            NaiveTime::from_hms_opt(15, 59, 59).unwrap(),
+            final_check_time,
+            window_start_time
+        ));
+        // Still false in the overnight window before the day's final slot
+        // -- e.g. 00:30, one of the sparse slots that used to gate scanning
+        // itself, is well before 16:00 as a bare time-of-day comparison.
+        assert!(!is_final_check_of_day(
+            NaiveTime::from_hms_opt(0, 30, 0).unwrap(),
+            final_check_time,
+            window_start_time
+        ));
     }
 
     #[test]
-    fn next_check_time_wraps_to_tomorrow_once_every_slot_today_has_passed() {
-        let now = London.with_ymd_and_hms(2026, 9, 1, 23, 0, 0).unwrap();
-        let check_times = vec![NaiveTime::from_hms_opt(16, 0, 0).unwrap()];
+    fn is_final_check_of_day_true_only_in_the_gap_after_the_final_time_and_before_the_next_window() {
+        let final_check_time = NaiveTime::from_hms_opt(16, 0, 0).unwrap();
+        let window_start_time = NaiveTime::from_hms_opt(22, 0, 0).unwrap();
+        assert!(is_final_check_of_day(
+            final_check_time,
+            final_check_time,
+            window_start_time
+        ));
+        assert!(is_final_check_of_day(
+            NaiveTime::from_hms_opt(21, 59, 59).unwrap(),
+            final_check_time,
+            window_start_time
+        ));
+    }
 
-        let (target, slot) = next_check_time(now, &check_times);
-        assert_eq!(slot, NaiveTime::from_hms_opt(16, 0, 0).unwrap());
-        assert_eq!(
-            target.date_naive(),
-            now.date_naive() + chrono::Duration::days(1)
-        );
+    /// Regression test for the exact bug caught before this change was
+    /// committed: an earlier version compared only `now >= final_check_time`
+    /// with no upper bound, which stayed `true` through the entire
+    /// `22:00`-`23:59` stretch -- exactly when a brand new delivery is
+    /// normally still uploading/stabilizing -- and would have logged
+    /// `error` on every poll cycle during completely normal, expected
+    /// in-progress delivery instead of the intended once-a-day fallback
+    /// check.
+    #[test]
+    fn is_final_check_of_day_false_once_the_next_window_has_reopened() {
+        let final_check_time = NaiveTime::from_hms_opt(16, 0, 0).unwrap();
+        let window_start_time = NaiveTime::from_hms_opt(22, 0, 0).unwrap();
+        assert!(!is_final_check_of_day(
+            window_start_time,
+            final_check_time,
+            window_start_time
+        ));
+        assert!(!is_final_check_of_day(
+            NaiveTime::from_hms_opt(23, 59, 59).unwrap(),
+            final_check_time,
+            window_start_time
+        ));
+    }
+
+    /// A `check_times` shape where the fallback wraps past midnight before
+    /// the next window reopens (not the current default's shape, but a
+    /// legal configuration this function must still handle correctly).
+    #[test]
+    fn is_final_check_of_day_handles_a_gap_that_wraps_past_midnight() {
+        let final_check_time = NaiveTime::from_hms_opt(23, 0, 0).unwrap();
+        let window_start_time = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
+        assert!(is_final_check_of_day(
+            NaiveTime::from_hms_opt(23, 30, 0).unwrap(),
+            final_check_time,
+            window_start_time
+        ));
+        assert!(is_final_check_of_day(
+            NaiveTime::from_hms_opt(1, 0, 0).unwrap(),
+            final_check_time,
+            window_start_time
+        ));
+        assert!(!is_final_check_of_day(
+            NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            final_check_time,
+            window_start_time
+        ));
     }
 
     #[test]
