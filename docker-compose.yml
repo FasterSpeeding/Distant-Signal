@@ -460,8 +460,14 @@ services:
     restart: "no"
 
   schedule-sftp:
-    image: drakkan/sftpgo:latest   # tag pinning is an implementation-time
-                                    # decision, not sketched further here
+    # Pinned to the same v2.7.5 tag as charts/distant-signal/values.yaml's
+    # scheduleFeed.sftp.image.tag (that value's own comment has the full
+    # verification/citation) -- "tag pinning is an implementation-time
+    # decision" from this comment's earlier revision is now resolved:
+    # the chart's equivalent empty-tag default resolved to this chart's
+    # own 0.1.0 appVersion, a tag drakkan/sftpgo never published, which is
+    # what forced pinning a real version rather than deferring it further.
+    image: drakkan/sftpgo:v2.7.5
     restart: unless-stopped
     depends_on:
       schedule-feed-volume-permissions:
@@ -667,9 +673,11 @@ services:
     # actually gated behind `--profile rail-mcp`, resolving this image only
     # happens when someone has explicitly opted in -- at that point failing
     # loudly with "invalid reference format" until RAIL_MCP_IMAGE is set to
-    # a real image is the desired behaviour (same posture as
-    # schedule-sftp's `image:` comment on tag pinning being an
-    # implementation-time decision), not a bug to paper over here.
+    # a real image is the desired behaviour, not a bug to paper over here.
+    # Unlike schedule-sftp below, there's no real published tag to pin
+    # in its place: CHANGE-ME is a placeholder repo, not an upstream
+    # image this repo can look up and verify (see the chart's own
+    # railMcp.image.tag comment for the equivalent note).
     image: ${RAIL_MCP_IMAGE:-ghcr.io/CHANGE-ME/distant-signal-mcp:latest}
     restart: unless-stopped
     depends_on:
