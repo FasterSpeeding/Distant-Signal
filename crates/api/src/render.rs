@@ -127,6 +127,31 @@ pub(crate) fn full_coverage_availability_json(
     }
 }
 
+/// Hand-built camelCase JSON for one `common::StationDeparture` row, backing
+/// `GET /public/stations/{crs}/departures`
+/// (`docs/superpowers/specs/2026-09-03-trip-search-design.md` Decision 2).
+/// Same rationale as `sample_stats_json`/`sample_availability_json` above:
+/// a `#[serde(rename_all = "camelCase")]` wrapper around `StationDeparture`
+/// directly would still emit its own un-renamed field names one level down
+/// (`incidents.rs:53-59`'s documented pitfall). `headcode` is deliberately
+/// omitted -- always `None` at the source
+/// (`poller-ldbws/src/schema.rs:104-105`), and `TrackPinRequest` has no
+/// field for it anyway.
+pub(crate) fn station_departure_json(d: &common::StationDeparture) -> Value {
+    json!({
+        "serviceId": d.service_id,
+        "operator": d.operator,
+        "destinationCrs": d.destination_crs,
+        "scheduled": d.scheduled,
+        "estimated": d.estimated,
+        "isCancelled": d.is_cancelled,
+        "delayMinutes": d.delay_minutes,
+        "cancelReason": d.cancel_reason,
+        "delayReason": d.delay_reason,
+        "skippedStations": d.skipped_stations,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,5 +497,75 @@ mod tests {
             first["tflStatus"][0]["reason"],
             "Severe delays between Paddington and Heathrow"
         );
+    }
+
+    #[test]
+    fn station_departure_json_maps_every_field_to_camel_case() {
+        let departure = common::StationDeparture {
+            service_id: "svc-1".to_string(),
+            operator: "SW".to_string(),
+            destination_crs: "BSK".to_string(),
+            scheduled: "14:40".to_string(),
+            estimated: "14:47".to_string(),
+            is_cancelled: false,
+            delay_minutes: 7,
+            cancel_reason: None,
+            delay_reason: Some("signalling problem".to_string()),
+            headcode: None,
+            skipped_stations: vec!["ZQT".to_string()],
+        };
+        let json = station_departure_json(&departure);
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "serviceId": "svc-1",
+                "operator": "SW",
+                "destinationCrs": "BSK",
+                "scheduled": "14:40",
+                "estimated": "14:47",
+                "isCancelled": false,
+                "delayMinutes": 7,
+                "cancelReason": null,
+                "delayReason": "signalling problem",
+                "skippedStations": ["ZQT"],
+            })
+        );
+        // No stray snake_case field survives alongside the camelCase one.
+        assert!(json.get("destination_crs").is_none());
+        assert!(json.get("delay_minutes").is_none());
+        assert!(json.get("is_cancelled").is_none());
+        assert!(json.get("cancel_reason").is_none());
+        assert!(json.get("delay_reason").is_none());
+        assert!(json.get("skipped_stations").is_none());
+        assert!(
+            json.get("headcode").is_none(),
+            "headcode is never carried through"
+        );
+    }
+
+    #[test]
+    fn station_departure_json_none_fields_serialize_to_null_not_omitted() {
+        let departure = common::StationDeparture {
+            service_id: "svc-2".to_string(),
+            operator: "ZA".to_string(),
+            destination_crs: "WAT".to_string(),
+            scheduled: "10:00".to_string(),
+            estimated: "On time".to_string(),
+            is_cancelled: true,
+            delay_minutes: 0,
+            cancel_reason: Some("fleet issue".to_string()),
+            delay_reason: None,
+            headcode: None,
+            skipped_stations: vec![],
+        };
+        let json = station_departure_json(&departure);
+        assert_eq!(json["cancelReason"], "fleet issue");
+        // `delay_reason: None` must serialize as JSON `null` -- a present
+        // key with a null value, not an omitted key -- because this is a
+        // plain hand-built `json!`, unlike `TrackPinRequest`'s
+        // `skip_serializing_if` on the request side.
+        assert!(json.get("delayReason").is_some(), "key must be present");
+        assert!(json["delayReason"].is_null());
+        assert_eq!(json["skippedStations"], serde_json::json!([]));
     }
 }
