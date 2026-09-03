@@ -1090,7 +1090,10 @@ frontend:
   # internally consistent and no stale data crosses users (entries are
   # session-scoped), so this is a degraded-experience caveat, not a
   # correctness one -- deliberately documented rather than blocked, unlike
-  # postgresql.replicaCount above.
+  # postgresql.replicaCount above. (helm-docs `# --` here rather than the
+  # plain `#` at :72 and :563: those two document the *absence* of a
+  # replicaCount key and so have no table row to annotate, whereas this one
+  # does -- see charts/distant-signal/README.md.)
   replicaCount: 1
   service:
     type: ClusterIP
