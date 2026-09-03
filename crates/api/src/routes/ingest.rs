@@ -200,12 +200,18 @@ async fn get_active_tracked_trains(
 
 /// `schedule-ingest`'s per-delivery record of one successfully-verified CIF
 /// SCHEDULE feed delivery. Unlike the other ingest routes this isn't a
-/// per-poll-cycle batch of reference data -- it's one row per delivery
-/// sequence, recorded once the whole delivery has been confirmed stable and
-/// complete (see `crates/schedule-ingest`).
+/// per-poll-cycle batch of reference data -- it's one row per delivery,
+/// recorded once a stable `.zip` delivery has been extracted (see
+/// `crates/schedule-ingest`).
+///
+/// `delivered_at` is the delivery zip's own mtime -- the real identity of
+/// "which delivery is this" now that there is no sequence number (see
+/// `docs/superpowers/specs/2026-09-03-schedule-feed-zip-delivery-correction.md`).
+/// `ingested_at` is when this process actually happened to be processed,
+/// kept only as separate observability data.
 #[derive(Debug, Deserialize)]
 struct ScheduleFeedIngestRequest {
-    sequence: i32,
+    delivered_at: chrono::DateTime<chrono::Utc>,
     ingested_at: chrono::DateTime<chrono::Utc>,
     files: Vec<ScheduleFeedFile>,
 }
@@ -233,7 +239,7 @@ async fn post_schedule_feed_ingest(
     Json(req): Json<ScheduleFeedIngestRequest>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
     let files = serde_json::to_value(&req.files).map_err(|e| internal_error(e.into()))?;
-    queries::insert_schedule_feed_ingest(&app.database, req.sequence, req.ingested_at, &files)
+    queries::insert_schedule_feed_ingest(&app.database, req.delivered_at, req.ingested_at, &files)
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted: 1 }))
