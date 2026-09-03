@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import LineDetailPage from './page';
 import * as api from '@/lib/api';
+import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
 import { ApiNotFoundError } from '@/lib/api';
 import type { LineStatusReport, LineSummary, CustomLineDetail, LineHalfHourlyStats } from '@/lib/types';
 
@@ -17,6 +18,14 @@ vi.mock('@/lib/api', async () => {
     getLineHalfHourlyStats: vi.fn(),
   };
 });
+// `withStaleFallback` (lib/liveDataCache.ts) reads the session cookie via
+// `next/headers` to scope its cache per visitor, and there is no Next
+// request context in a unit test. Same stub shape lib/api.test.ts uses,
+// plus the `.get()` the cache needs.
+vi.mock('next/headers', () => ({
+  cookies: async () => ({ toString: () => '', get: () => undefined }),
+}));
+
 // DeleteLineButton (rendered whenever Edit/Delete render) calls useRouter()
 // from next/navigation, which throws outside a real Next.js App Router
 // tree -- same workaround PinToggle.test.tsx/TicketPanel.test.tsx use.
@@ -157,5 +166,84 @@ describe('LineDetailPage embedded trends', () => {
     expect(await screen.findByRole('heading', { name: 'Recent trends (last 24 hours)' })).toBeInTheDocument();
     expect(await screen.findByText('Not enough sampled data yet for this line.')).toBeInTheDocument();
     expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
+  });
+});
+
+describe('LineDetailPage -- outage behaviour', () => {
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+    vi.mocked(api.getLineStatus).mockResolvedValue([report('custom-my-commute', 'My Commute')]);
+    vi.mocked(api.getAllLines).mockResolvedValue(lines);
+    // A plain Error, NOT ApiNotFoundError: getCustomLine maps only 401/404
+    // to that class, so a rejected fetch or a 5xx -- what an outage
+    // actually produces -- arrives as a generic Error. Asserting with
+    // ApiNotFoundError here passed while the page still blanked in the
+    // real failure mode.
+    vi.mocked(api.getCustomLine).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    vi.mocked(api.getLineDefinition).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    // Same: this is awaited inside a <Suspense> on the page, and Suspense
+    // does not catch errors -- a resolved [] never exercised that path.
+    vi.mocked(api.getLineHalfHourlyStats).mockRejectedValue(new Error('connect ECONNREFUSED'));
+  });
+
+  it('keeps rendering the last-known status when the status fetch fails', async () => {
+    await renderPage();
+    cleanup();
+
+    vi.mocked(api.getLineStatus).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    vi.mocked(api.getAllLines).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+    await renderPage();
+    expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
+  });
+
+  // withStaleFallback rethrows ApiNotFoundError unconditionally, so the
+  // notFound() branch must keep working even with a warm cache entry.
+  it('still 404s for an unknown line rather than serving a stale entry', async () => {
+    await renderPage();
+    cleanup();
+
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    vi.mocked(api.getLineStatus).mockRejectedValue(new ApiNotFoundError('not found'));
+
+    // `notFound` is mocked as a no-op here (the real one throws), so the
+    // page falls through to its own rethrow -- what matters is that the
+    // 404 branch was taken rather than a stale entry being served.
+    await expect(renderPage()).rejects.toThrow('not found');
+    expect(notFound).toHaveBeenCalled();
+  });
+});
+
+describe('LineDetailPage -- embedded fetches must not blank the page', () => {
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+    vi.mocked(api.getLineStatus).mockResolvedValue([report('custom-my-commute', 'My Commute')]);
+    vi.mocked(api.getAllLines).mockResolvedValue(lines);
+    vi.mocked(api.getCustomLine).mockResolvedValue({} as never);
+    vi.mocked(api.getLineDefinition).mockResolvedValue({ stations: ['WOK', 'CLJ'], operators: ['SW'] });
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
+  });
+
+  // getCustomLine maps only 401/404 to ApiNotFoundError; a rejected fetch
+  // or 5xx is a plain Error, which used to be rethrown straight to
+  // app/error.tsx.
+  it('renders when the custom-line ownership probe fails with a connectivity error', async () => {
+    vi.mocked(api.getCustomLine).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+    await renderPage();
+    expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
+    // Failed closed: ownership could not be confirmed, so no owner controls.
+    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+  });
+
+  // Rendered inside <Suspense>, which catches suspension but not errors.
+  it('renders when the embedded trends fetch fails', async () => {
+    vi.mocked(api.getLineHalfHourlyStats).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+    await renderPage();
+    expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
+    expect(await screen.findByText("Trend data isn't available right now.")).toBeInTheDocument();
   });
 });

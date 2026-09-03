@@ -49,7 +49,28 @@ export function toHalfHourlyChartPoints(stats: LineHalfHourlyStats[]): ChartPoin
  * (component, file, and every helper below) when the bucket size was
  * halved to 30 minutes; see git history for the hourly-era version. */
 export async function HalfHourlyTrendsResults({ id, from, to }: { id: string; from: string; to: string }) {
-  const stats = await getLineHalfHourlyStats(id, from, to);
+  // This component is rendered inside a <Suspense> on /lines/[id]
+  // (page.tsx). Suspense catches *suspension*, not errors -- an unhandled
+  // rejection here propagates to app/error.tsx and replaces the entire
+  // line page, so a backend outage would blank a page the rest of this
+  // feature works to keep on screen. Deliberately NOT stale-served through
+  // withStaleFallback: this is a secondary, decorative panel, and a
+  // wrong-but-plausible trend chart is worse than an honest absence.
+  //
+  // Kept distinct from the "Not enough sampled data yet" branch below on
+  // the same honesty grounds the copy in this file already observes: that
+  // sentence is a claim about the *data*, and it would be a false one when
+  // what actually happened is that we could not reach the service at all.
+  let stats: LineHalfHourlyStats[];
+  try {
+    stats = await getLineHalfHourlyStats(id, from, to);
+  } catch {
+    return (
+      <Paper withBorder p="md">
+        <Text c="dimmed">Trend data isn&apos;t available right now.</Text>
+      </Paper>
+    );
+  }
 
   if (stats.length === 0) {
     return (

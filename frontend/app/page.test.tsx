@@ -1,11 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import DashboardPage from './page';
 import * as api from '@/lib/api';
+import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
 import type { LineStatusReport, TrackedTrainListItem } from '@/lib/types';
 
 vi.mock('@/lib/api');
+// `withStaleFallback` (lib/liveDataCache.ts) reads the session cookie via
+// `next/headers` to scope its cache per visitor, and there is no Next
+// request context in a unit test. Same stub shape lib/api.test.ts uses,
+// plus the `.get()` the cache needs.
+vi.mock('next/headers', () => ({
+  cookies: async () => ({ toString: () => '', get: () => undefined }),
+}));
+
 // The anonymous branch's login nudge is now LoginLink (Task 1), which calls
 // usePathname()/useSearchParams() -- same stub AuthStatus.test.tsx and
 // TicketPanel.test.tsx use for the same reason.
@@ -38,6 +47,20 @@ function item(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListIt
     ...overrides,
   };
 }
+
+// `vi.mock('@/lib/api')` automocks every export to a vi.fn() returning
+// undefined. The page now calls `.catch()` on several of these promises, so
+// each needs at least a resolved default; individual tests override what
+// they care about. The stale cache is real module state, so it is reset too.
+beforeEach(() => {
+  __resetStaleCacheForTests();
+  vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+  vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+  vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
+  vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
+  vi.mocked(api.getStationName).mockResolvedValue(null);
+  vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
+});
 
 describe('DashboardPage', () => {
   it('anonymous, all lines good: shows the no-disruption message, not a raw empty state', async () => {
@@ -191,5 +214,53 @@ describe('DashboardPage -- Your Tracked Trains section', () => {
     ]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByRole('link', { name: /WAT → WOK/ })).toHaveAttribute('href', '/train/by-id/1');
+  });
+});
+
+describe('DashboardPage -- outage behaviour', () => {
+  // Outage behaviour (design spec Decision 5 / plan Task 5).
+  it('keeps rendering the last-known line status when the status fetch fails', async () => {
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({ id: 'central', name: 'Central' }),
+    ]);
+    renderWithMantine(await DashboardPage());
+    cleanup();
+
+    vi.mocked(api.getLineStatusForMode).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    renderWithMantine(await DashboardPage());
+
+    // Still the real page, not a throw up to app/error.tsx.
+    expect(screen.getByRole('heading', { name: 'Distant Signal', level: 1 })).toBeInTheDocument();
+  });
+
+  it('renders with nothing pinned rather than throwing when getPreferences fails', async () => {
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.c', name: 'A' });
+    vi.mocked(api.getPreferences).mockRejectedValue(new Error('500'));
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
+
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByRole('heading', { name: 'Your Lines', level: 1 })).toBeInTheDocument();
+    expect(screen.getByText(/haven't pinned any lines yet/)).toBeInTheDocument();
+  });
+
+  it('renders rather than throwing when getMyTrackedTrains fails', async () => {
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.c', name: 'A' });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
+    vi.mocked(api.getMyTrackedTrains).mockRejectedValue(new Error('500'));
+
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByRole('heading', { name: 'Your Lines', level: 1 })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Your Tracked Trains' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the dashboard up when a pinned station\'s disruption fetch fails', async () => {
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.c', name: 'A' });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['KGX'] });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
+    vi.mocked(api.getStopPointDisruption).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByRole('heading', { name: 'Your Stations', level: 2 })).toBeInTheDocument();
+    expect(screen.getByText('KGX')).toBeInTheDocument();
   });
 });
