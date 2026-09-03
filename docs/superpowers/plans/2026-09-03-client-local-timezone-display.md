@@ -436,7 +436,11 @@ site. Don't.
   `ThemeToggle` and `LastUpdated` already ship, on a lower-stakes value
   (a dimmed `size="xs"` provenance line, not a control). Accepted.
   For UK viewers — the designed audience — there is no visible flash at
-  all, because the two strings are identical.
+  all, because the two strings are identical. Note it is slightly broader
+  than "pre-hydration": `useMounted()` starts `false` on *every* mount, so
+  a non-UK viewer also sees the flip on client-side soft navigations into
+  `/track/mine`, not only on the initial SSR load. Same magnitude, same
+  trade-off, just more often than the SSR framing implies.
 - **Someone later "tidies" `formatLocalDateTime` into a module-level
   constant**, silently freezing it to the server's UTC. Mitigated by D2
   being written into the function's own doc comment, not just this plan.

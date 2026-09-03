@@ -16,10 +16,18 @@ const INSTANT = '2026-08-19T18:56:01Z';
 const IN_LONDON = '19 Aug 2026, 19:56';
 const IN_TOKYO = '20 Aug 2026, 03:56';
 
+// `delete` rather than assignment when `TZ` was unset to begin with (it is,
+// both in this container and in CI): `process.env` coerces its values to
+// strings, so `process.env.TZ = undefined` writes the literal string
+// "undefined", which Node resolves to UTC instead of back to the host zone.
 const originalTz = process.env.TZ;
 
 afterEach(() => {
-  process.env.TZ = originalTz;
+  if (originalTz === undefined) {
+    delete process.env.TZ;
+  } else {
+    process.env.TZ = originalTz;
+  }
 });
 
 /** Hydrates `element` onto `serverHtml` and reports every channel React 19
@@ -60,6 +68,11 @@ async function hydrateAndCollect(serverHtml: string, element: React.ReactNode) {
     .mockImplementation((...args) => void consoleWarns.push(String(args[0])));
 
   let root: ReturnType<typeof hydrateRoot> | undefined;
+  let text = '';
+  // Everything after the hydrate is teardown, so it all belongs in the
+  // `finally`: a throw out of `act`/`hydrateRoot` would otherwise leave the
+  // console spies installed, `IS_REACT_ACT_ENVIRONMENT` stuck true and the
+  // container still attached to `document.body` for whatever runs next.
   try {
     await act(async () => {
       root = hydrateRoot(container, element, {
@@ -71,12 +84,11 @@ async function hydrateAndCollect(serverHtml: string, element: React.ReactNode) {
   } finally {
     errorSpy.mockRestore();
     warnSpy.mockRestore();
+    text = container.textContent ?? '';
+    act(() => root?.unmount());
+    container.remove();
+    (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
   }
-
-  const text = container.textContent ?? '';
-  act(() => root?.unmount());
-  container.remove();
-  (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
 
   return { consoleErrors, consoleWarns, recoverableErrors, text };
 }

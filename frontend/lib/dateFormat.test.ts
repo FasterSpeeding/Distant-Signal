@@ -44,15 +44,23 @@ describe('formatLocalDateTime', () => {
   // comment) -- verified on this repo's Node 24. Saved and restored around
   // each case because the surrounding blocks in this file assert against
   // the ambient zone/locale being non-UK.
+  //
+  // Restored by `delete`, not by assignment, when `TZ` was unset to begin
+  // with (it is, both in this container and in CI -- `.github/workflows/
+  // ci.yml` sets no `TZ`): `process.env` coerces its values to strings, so
+  // `process.env.TZ = undefined` writes the literal string "undefined",
+  // which Node then resolves to UTC rather than back to the host zone.
   const originalTz = process.env.TZ;
+  const restoreTz = () => {
+    if (originalTz === undefined) {
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = originalTz;
+    }
+  };
 
-  beforeEach(() => {
-    process.env.TZ = originalTz;
-  });
-
-  afterEach(() => {
-    process.env.TZ = originalTz;
-  });
+  beforeEach(restoreTz);
+  afterEach(restoreTz);
 
   it('matches formatDateTime when the host zone is London', () => {
     process.env.TZ = 'Europe/London';
