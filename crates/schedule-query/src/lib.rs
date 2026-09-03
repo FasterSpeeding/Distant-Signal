@@ -62,6 +62,15 @@
 //!   queries cheap.
 //! - `tiploc`: `normalize_tiploc`, the fixed 7-character space-padding
 //!   gotcha every schedule-body TIPLOC field carries.
+//!
+//! `tests/real_cif_fixtures.rs` and each module's own inline `#[cfg(test)]`
+//! block exercise all of the above against real, byte-verbatim CIF lines
+//! quoted in the findings/verification docs above, plus a handful of
+//! lines clearly commented as synthetic where those docs only quote a
+//! value in paraphrased form. `examples/inspect.rs` is a separate,
+//! explicitly-labeled dev-only tool (not part of this crate's `cargo test`
+//! gate) for a human to re-check this crate's byte offsets against the
+//! real, full, untracked `timetable_full.zip` extract by hand.
 
 pub mod parse;
 pub mod records;
