@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use clap::Parser;
-use common::{Defaults, LineDefinition, LineStatusReport};
+use common::{Defaults, LineDefinition, LineStatus, LineStatusReport};
 use config::Config;
 use dedup::SeenServiceLedger;
 use segments::SegmentRegistry;
@@ -266,6 +266,45 @@ async fn run_cycle(
     let daily_stats_pruned = queries::prune_daily_stats(pool, daily_stats_retention_days).await?;
     let half_hourly_stats_pruned = queries::prune_half_hourly_stats(pool, half_hourly_stats_retention_hours).await?;
 
+    // Decision 4 scaffolding: the full-coverage sibling of the dedup/
+    // daily-stats pass above. Unlike that pass, this one is fed each
+    // status's raw `full_coverage_stats` directly, NOT run through a
+    // dedup step -- see `queries::record_daily_coverage_stats`'s own
+    // module doc comment for why (no defined per-service dedup analog
+    // exists yet for a full-coverage producer). Always a no-op today
+    // (`lines_with_full_coverage` finds nothing, since `merge_full_coverage`
+    // above is always called with an empty signal map) -- this is the
+    // write-path half of the same scaffolding `merge_full_coverage`
+    // documents.
+    let coverage_lines = lines_with_full_coverage(&reports);
+    let mut coverage_stats_recorded = 0u64;
+    for chunk in coverage_lines.chunks(WRITE_CHUNK_SIZE) {
+        let mut tx = pool.begin().await?;
+        for &(line_id, status) in chunk {
+            queries::record_daily_coverage_stats(
+                &mut *tx,
+                line_id,
+                today,
+                status.full_coverage_stats.as_ref(),
+            )
+            .await?;
+            queries::record_half_hourly_coverage_stats(
+                &mut *tx,
+                line_id,
+                half_hour_start,
+                status.full_coverage_stats.as_ref(),
+            )
+            .await?;
+            coverage_stats_recorded += 1;
+        }
+        tx.commit().await?;
+    }
+
+    let daily_coverage_stats_pruned =
+        queries::prune_daily_coverage_stats(pool, daily_stats_retention_days).await?;
+    let half_hourly_coverage_stats_pruned =
+        queries::prune_half_hourly_coverage_stats(pool, half_hourly_stats_retention_hours).await?;
+
     metrics::gauge!(common::metrics::metric_name("aggregator_lines_total"))
         .set(reports.len() as f64);
     metrics::gauge!(common::metrics::metric_name("aggregator_incidents_loaded"))
@@ -294,6 +333,14 @@ async fn run_cycle(
         "aggregator_half_hourly_stats_pruned_total"
     ))
     .increment(half_hourly_stats_pruned);
+    metrics::counter!(common::metrics::metric_name(
+        "aggregator_coverage_stats_recorded_total"
+    ))
+    .increment(coverage_stats_recorded);
+    metrics::counter!(common::metrics::metric_name(
+        "aggregator_coverage_stats_pruned_total"
+    ))
+    .increment(daily_coverage_stats_pruned + half_hourly_coverage_stats_pruned);
 
     tracing::info!(
         lines = reports.len(),
@@ -305,6 +352,9 @@ async fn run_cycle(
         daily_stats_pruned = daily_stats_pruned,
         half_hourly_stats_recorded = half_hourly_stats_recorded,
         half_hourly_stats_pruned = half_hourly_stats_pruned,
+        coverage_stats_recorded = coverage_stats_recorded,
+        daily_coverage_stats_pruned = daily_coverage_stats_pruned,
+        half_hourly_coverage_stats_pruned = half_hourly_coverage_stats_pruned,
         "aggregation cycle complete"
     );
 
@@ -341,6 +391,35 @@ fn lines_with_sample_coverage<'a>(
         })
         .filter_map(|report| lines.get_key_value(report.id.as_str()))
         .map(|(id, line)| (id.as_str(), line))
+        .collect()
+}
+
+/// Decision 4 scaffolding: the full-coverage analog of
+/// `lines_with_sample_coverage`, selecting which lines qualify for a
+/// `record_daily_coverage_stats`/`record_half_hourly_coverage_stats`
+/// write this cycle. Same "check only `report.statuses.first()`" pattern
+/// and the same reasoning: `merge_full_coverage_stats`
+/// (`crates/aggregator/src/aggregation.rs`) sets an identical
+/// `full_coverage_stats` clone on every status of a report it touches, so
+/// checking the first status is correct and sufficient, and avoids
+/// double-counting a line with more than one concurrent status. Returns
+/// the line id paired with that first status (not the `LineDefinition`
+/// the sample-coverage sibling returns) -- the write path below needs the
+/// status's `full_coverage_stats` value itself, not anything from the
+/// line's own TOML definition. Always empty in production today, since
+/// `merge_full_coverage`'s only call site passes an empty signal map.
+fn lines_with_full_coverage(
+    reports: &HashMap<String, LineStatusReport>,
+) -> Vec<(&str, &LineStatus)> {
+    reports
+        .values()
+        .filter_map(|report| {
+            report
+                .statuses
+                .first()
+                .filter(|s| s.full_coverage_stats.is_some())
+                .map(|status| (report.id.as_str(), status))
+        })
         .collect()
 }
 
@@ -386,6 +465,27 @@ mod tests {
             sample_availability: SampleAvailability::NoCoverage,
             full_coverage_stats: None,
             full_coverage_availability: common::FullCoverageAvailability::NotEnabled,
+        }
+    }
+
+    fn status_with_full_coverage_stats(stats: Option<SampleStats>) -> LineStatus {
+        LineStatus {
+            severity: Severity::GoodService,
+            reason: "Good Service".to_string(),
+            validity: ValidityPeriod {
+                from_date: chrono::Utc::now(),
+                to_date: None,
+                is_now: true,
+            },
+            disruption: None,
+            data_quality: DataQuality::default(),
+            sample_stats: None,
+            sample_availability: SampleAvailability::NoCoverage,
+            full_coverage_availability: match &stats {
+                Some(s) => common::FullCoverageAvailability::Available(s.clone()),
+                None => common::FullCoverageAvailability::NotEnabled,
+            },
+            full_coverage_stats: stats,
         }
     }
 
@@ -482,6 +582,78 @@ mod tests {
         let reports: HashMap<String, LineStatusReport> = HashMap::new();
 
         let selected = lines_with_sample_coverage(&reports, &lines);
+
+        assert!(selected.is_empty());
+    }
+
+    // --- lines_with_full_coverage (Decision 4 scaffolding) ---
+
+    #[test]
+    fn lines_with_full_coverage_counts_a_line_with_two_concurrent_statuses_exactly_once() {
+        let reports: HashMap<String, LineStatusReport> = [(
+            "central".to_string(),
+            LineStatusReport {
+                id: "central".to_string(),
+                name: "Central".to_string(),
+                mode_name: "tube".to_string(),
+                operators: vec![],
+                statuses: vec![
+                    status_with_full_coverage_stats(Some(sample_stats())),
+                    status_with_full_coverage_stats(Some(sample_stats())),
+                ],
+            },
+        )]
+        .into();
+
+        let selected = lines_with_full_coverage(&reports);
+
+        assert_eq!(
+            selected.len(),
+            1,
+            "expected exactly one entry per line regardless of status count"
+        );
+        assert_eq!(selected[0].0, "central");
+    }
+
+    #[test]
+    fn lines_with_full_coverage_excludes_a_line_with_no_full_coverage_stats_on_any_status() {
+        let reports: HashMap<String, LineStatusReport> = [(
+            "victoria".to_string(),
+            LineStatusReport {
+                id: "victoria".to_string(),
+                name: "Victoria".to_string(),
+                mode_name: "tube".to_string(),
+                operators: vec![],
+                statuses: vec![
+                    status_with_full_coverage_stats(None),
+                    status_with_full_coverage_stats(None),
+                ],
+            },
+        )]
+        .into();
+
+        let selected = lines_with_full_coverage(&reports);
+
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn lines_with_full_coverage_is_independent_of_sample_stats_presence() {
+        // A line can have real sample_stats but no full_coverage_stats (the
+        // overwhelming majority case today) -- must not be selected.
+        let reports: HashMap<String, LineStatusReport> = [(
+            "jubilee".to_string(),
+            LineStatusReport {
+                id: "jubilee".to_string(),
+                name: "Jubilee".to_string(),
+                mode_name: "tube".to_string(),
+                operators: vec![],
+                statuses: vec![status_with_stats(Some(sample_stats()))],
+            },
+        )]
+        .into();
+
+        let selected = lines_with_full_coverage(&reports);
 
         assert!(selected.is_empty());
     }

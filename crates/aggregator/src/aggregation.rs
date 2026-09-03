@@ -3537,7 +3537,10 @@ mod tests {
             name: "Alton".to_string(),
             mode_name: "national-rail".to_string(),
             operators: vec![],
-            statuses: vec![ldbws_status(Severity::GoodService), ldbws_status(Severity::GoodService)],
+            statuses: vec![
+                ldbws_status(Severity::GoodService),
+                ldbws_status(Severity::GoodService),
+            ],
         };
         let stats = coverage_stats(10, 0, 0);
 
