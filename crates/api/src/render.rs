@@ -61,22 +61,10 @@ fn status_to_json(status: &LineStatus, detail: bool) -> Value {
     });
 
     if let Some(stats) = &status.sample_stats {
-        out["sampleStats"] = json!({
-            "total": stats.total,
-            "delayed": stats.delayed,
-            "cancelled": stats.cancelled,
-            "skipped": stats.skipped,
-            "avgDelayMinutes": stats.avg_delay_minutes,
-        });
+        out["sampleStats"] = sample_stats_json(stats);
     }
 
-    out["sampleAvailability"] = match &status.sample_availability {
-        common::SampleAvailability::NoCoverage => json!({ "state": "no-coverage" }),
-        common::SampleAvailability::BelowThreshold { observed, required } => {
-            json!({ "state": "below-threshold", "observed": observed, "required": required })
-        }
-        common::SampleAvailability::Available(_) => json!({ "state": "available" }),
-    };
+    out["sampleAvailability"] = sample_availability_json(&status.sample_availability);
 
     if detail && let Some(disruption) = &status.disruption {
         out["disruption"] = json!({
@@ -97,6 +85,26 @@ fn status_to_json(status: &LineStatus, detail: bool) -> Value {
 
 fn severity_description(severity: Severity) -> &'static str {
     severity.description()
+}
+
+pub(crate) fn sample_stats_json(stats: &common::SampleStats) -> Value {
+    json!({
+        "total": stats.total,
+        "delayed": stats.delayed,
+        "cancelled": stats.cancelled,
+        "skipped": stats.skipped,
+        "avgDelayMinutes": stats.avg_delay_minutes,
+    })
+}
+
+pub(crate) fn sample_availability_json(availability: &common::SampleAvailability) -> Value {
+    match availability {
+        common::SampleAvailability::NoCoverage => json!({ "state": "no-coverage" }),
+        common::SampleAvailability::BelowThreshold { observed, required } => {
+            json!({ "state": "below-threshold", "observed": observed, "required": required })
+        }
+        common::SampleAvailability::Available(_) => json!({ "state": "available" }),
+    }
 }
 
 #[cfg(test)]

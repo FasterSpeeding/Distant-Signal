@@ -18,6 +18,7 @@ import type {
   DelayRepayEstimateResponse,
   TicketListItem,
   IncidentDetail,
+  StationOperatorSampleStats,
 } from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
@@ -98,6 +99,19 @@ export async function getLineStatus(ids: string[], detail: boolean): Promise<Lin
 
 export async function getStopPointDisruption(crs: string): Promise<LineStatusReport[]> {
   return fetchJson<LineStatusReport[]>(`${baseUrl()}/StopPoint/${crs}/Disruption`, {
+    cache: 'no-store',
+  });
+}
+
+/** `GET /public/stations/{crs}/sample-stats` -- per-(station, operator)
+ * delay/cancellation stats, computed on demand by
+ * `crates/api/src/routes/station_stats.rs`. Public, unauthenticated read,
+ * same `no-store` convention as `getStopPointDisruption`. Throws
+ * `ApiNotFoundError` on a 404 (station isn't part of live sampling at
+ * all) via `errorForResponse`, same as every other `fetchJson` caller --
+ * `fetchStationSampleStats` in `app/stations/[crs]/page.tsx` catches it. */
+export async function getStationSampleStats(crs: string): Promise<StationOperatorSampleStats[]> {
+  return fetchJson<StationOperatorSampleStats[]>(`${baseUrl()}/public/stations/${crs}/sample-stats`, {
     cache: 'no-store',
   });
 }

@@ -5,7 +5,7 @@ import StationDisruptionPage from './page';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
-import type { LineStatusReport } from '@/lib/types';
+import type { LineStatusReport, StationOperatorSampleStats } from '@/lib/types';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -14,6 +14,8 @@ vi.mock('@/lib/api', async () => {
     getStopPointDisruption: vi.fn(),
     getPreferences: vi.fn(),
     getStationName: vi.fn(),
+    getStationSampleStats: vi.fn(),
+    getAllTocs: vi.fn(),
   };
 });
 
@@ -67,6 +69,8 @@ describe('StationDisruptionPage -- outage behaviour', () => {
     vi.mocked(api.getStationName).mockResolvedValue('London Kings Cross');
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
     vi.mocked(api.getStopPointDisruption).mockResolvedValue([report('ecml', 'East Coast Main Line')]);
+    vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
+    vi.mocked(api.getAllTocs).mockResolvedValue([]);
   });
 
   it('renders the station\'s disruptions normally', async () => {
@@ -119,6 +123,8 @@ describe('StationDisruptionPage -- line-coverage distinction', () => {
     vi.stubGlobal('fetch', vi.fn());
     vi.mocked(api.getStationName).mockResolvedValue('Raynes Park');
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
+    vi.mocked(api.getAllTocs).mockResolvedValue([]);
   });
 
   it('renders the "not covered" copy, not "no disruptions", when the backend 404s for zero line coverage', async () => {
@@ -147,5 +153,62 @@ describe('StationDisruptionPage -- line-coverage distinction', () => {
     vi.mocked(api.getStopPointDisruption).mockRejectedValue(new Error('connect ECONNREFUSED'));
 
     await expect(renderPage('RAY')).rejects.toThrow('connect ECONNREFUSED');
+  });
+});
+
+describe('StationDisruptionPage -- sample stats by operator', () => {
+  // Independent of the disruption-coverage tests above: this station has
+  // ordinary line coverage throughout, so only `getStationSampleStats`
+  // varies per test -- design spec Decision 9's three honest states.
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+    vi.stubGlobal('fetch', vi.fn());
+    vi.mocked(api.getStationName).mockResolvedValue('London Kings Cross');
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
+  });
+
+  it('renders the "not part of our live departure sampling" copy when the route 404s', async () => {
+    vi.mocked(api.getStationSampleStats).mockRejectedValue(
+      new ApiNotFoundError('no sample data collected for station: KGX'),
+    );
+    vi.mocked(api.getAllTocs).mockResolvedValue([]);
+
+    await renderPage();
+
+    expect(screen.getByText("This station isn't part of our live departure sampling.")).toBeInTheDocument();
+  });
+
+  it('renders the "no live departures currently recorded" copy for a covered-but-quiet board', async () => {
+    vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
+    vi.mocked(api.getAllTocs).mockResolvedValue([]);
+
+    await renderPage();
+
+    expect(screen.getByText('No live departures currently recorded at this station.')).toBeInTheDocument();
+  });
+
+  it('renders one row per operator in the order returned, resolving names via tocs with a bare-code fallback', async () => {
+    const operatorStats: StationOperatorSampleStats[] = [
+      {
+        operator: 'GR',
+        sampleAvailability: { state: 'available' },
+        sampleStats: { total: 10, delayed: 2, cancelled: 0, skipped: 0, avgDelayMinutes: 3.5 },
+      },
+      {
+        operator: 'SR',
+        sampleAvailability: { state: 'below-threshold', observed: 1, required: 3 },
+      },
+    ];
+    vi.mocked(api.getStationSampleStats).mockResolvedValue(operatorStats);
+    // Only GR is named -- SR should fall back to the bare code.
+    vi.mocked(api.getAllTocs).mockResolvedValue([{ code: 'GR', name: 'LNER' }]);
+
+    await renderPage();
+
+    const rows = screen.getAllByText(/LNER|^SR$/);
+    expect(rows.map((el) => el.textContent)).toEqual(['LNER', 'SR']);
+    expect(screen.getByText('Avg delay 3.5 min · 0% cancelled')).toBeInTheDocument();
+    expect(screen.getByText('Too few live departures sampled to report a rate right now.')).toBeInTheDocument();
   });
 });

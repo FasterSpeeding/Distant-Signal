@@ -22,6 +22,7 @@ import {
   getMyTickets,
   getIncident,
   getChatbotAccess,
+  getStationSampleStats,
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from './api';
@@ -126,6 +127,14 @@ describe('api client', () => {
     await getStopPointDisruption('WOK');
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/StopPoint/WOK/Disruption',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getStationSampleStats fetches the correct URL with no caching', async () => {
+    await getStationSampleStats('EDB');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/stations/EDB/sample-stats',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });
