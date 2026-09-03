@@ -306,8 +306,14 @@ fn tfl_statuses_changed(
     }
 }
 
-/// Strips `sample_stats`/`sample_availability` from every status entry
-/// before comparison. See `tfl_statuses_changed`.
+/// Strips `sample_stats`/`sample_availability` (and their Decision-1
+/// full-coverage siblings, `full_coverage_stats`/`full_coverage_availability`)
+/// from every status entry before comparison. See `tfl_statuses_changed`.
+/// The full-coverage pair is stripped symmetrically even though no TfL line
+/// populates it today (Decision 5: full coverage is scoped to national-rail
+/// lines only, out of scope for TfL) -- matching this function's own stated
+/// rationale for `sample_stats`: strip on principle so a future producer
+/// doesn't silently reintroduce spurious `line_status_history` churn.
 fn normalize_for_diff(statuses: &serde_json::Value) -> serde_json::Value {
     let mut statuses = statuses.clone();
     if let Some(entries) = statuses.as_array_mut() {
@@ -315,6 +321,8 @@ fn normalize_for_diff(statuses: &serde_json::Value) -> serde_json::Value {
             if let Some(obj) = entry.as_object_mut() {
                 obj.remove("sample_stats");
                 obj.remove("sample_availability");
+                obj.remove("full_coverage_stats");
+                obj.remove("full_coverage_availability");
             }
         }
     }
@@ -874,6 +882,109 @@ pub async fn half_hourly_stats_for_range(
         .collect()
 }
 
+// --- Decision 4 scaffolding: line_status_{daily,half_hourly}_coverage_stats reads ---
+
+pub struct DailyCoverageStatsRow {
+    pub day: chrono::NaiveDate,
+    pub resolved_windows: i64,
+    pub total: i64,
+    pub delayed: i64,
+    pub cancelled: i64,
+    pub skipped: i64,
+    pub running_count: i64,
+    pub delay_minutes_sum: f64,
+}
+
+/// Full-coverage sibling of `daily_stats_for_range` -- identical shape and
+/// "empty vec for an unknown line_id, no error" contract, reading
+/// `line_status_daily_coverage_stats` instead (`resolved_windows` in place
+/// of `sample_cycles`). See
+/// docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
+/// Decision 4.
+pub async fn daily_coverage_stats_for_range(
+    pool: &PgPool,
+    line_id: &str,
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+) -> Result<Vec<DailyCoverageStatsRow>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT day, resolved_windows, total, delayed, cancelled, skipped, running_count, delay_minutes_sum
+         FROM line_status_daily_coverage_stats
+         WHERE line_id = $1 AND day BETWEEN $2 AND $3
+         ORDER BY day",
+    )
+    .bind(line_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(DailyCoverageStatsRow {
+                day: row.try_get("day")?,
+                resolved_windows: row.try_get("resolved_windows")?,
+                total: row.try_get("total")?,
+                delayed: row.try_get("delayed")?,
+                cancelled: row.try_get("cancelled")?,
+                skipped: row.try_get("skipped")?,
+                running_count: row.try_get("running_count")?,
+                delay_minutes_sum: row.try_get("delay_minutes_sum")?,
+            })
+        })
+        .collect()
+}
+
+pub struct HalfHourlyCoverageStatsRow {
+    pub half_hour_start: chrono::DateTime<chrono::Utc>,
+    pub resolved_windows: i64,
+    pub total: i64,
+    pub delayed: i64,
+    pub cancelled: i64,
+    pub skipped: i64,
+    pub running_count: i64,
+    pub delay_minutes_sum: f64,
+}
+
+/// Half-hourly-granularity sibling of `daily_coverage_stats_for_range` --
+/// same relationship `half_hourly_stats_for_range` already has to
+/// `daily_stats_for_range`.
+pub async fn half_hourly_coverage_stats_for_range(
+    pool: &PgPool,
+    line_id: &str,
+    from: chrono::DateTime<chrono::Utc>,
+    to: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<HalfHourlyCoverageStatsRow>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT half_hour_start, resolved_windows, total, delayed, cancelled, skipped, running_count, delay_minutes_sum
+         FROM line_status_half_hourly_coverage_stats
+         WHERE line_id = $1 AND half_hour_start BETWEEN $2 AND $3
+         ORDER BY half_hour_start",
+    )
+    .bind(line_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(HalfHourlyCoverageStatsRow {
+                half_hour_start: row.try_get("half_hour_start")?,
+                resolved_windows: row.try_get("resolved_windows")?,
+                total: row.try_get("total")?,
+                delayed: row.try_get("delayed")?,
+                cancelled: row.try_get("cancelled")?,
+                skipped: row.try_get("skipped")?,
+                running_count: row.try_get("running_count")?,
+                delay_minutes_sum: row.try_get("delay_minutes_sum")?,
+            })
+        })
+        .collect()
+}
+
 /// One row from `incidents`, by primary key. `validity_periods` is kept as
 /// raw `serde_json::Value` here (not deserialized into
 /// `Vec<common::ValidityPeriod>`) because the route layer needs to
@@ -1176,6 +1287,27 @@ mod tests {
             "validity": { "from_date": "2026-08-22T02:00:00Z", "to_date": null, "is_now": true },
             "data_quality": "tfl",
             "sample_availability": { "state": "below-threshold", "observed": 0, "required": 1 }
+        }]);
+        assert!(!tfl_statuses_changed(Some(&existing), &incoming));
+    }
+
+    #[test]
+    fn tfl_statuses_changed_ignores_full_coverage_field_only_differences() {
+        let existing = serde_json::json!([{
+            "severity": "GoodService",
+            "reason": "Good Service",
+            "validity": { "from_date": "2026-08-22T02:00:00Z", "to_date": null, "is_now": true },
+            "data_quality": "tfl",
+            "full_coverage_stats": { "total": 40, "delayed": 3, "cancelled": 0, "skipped": 0, "avg_delay_minutes": 1.2 },
+            "full_coverage_availability": { "state": "available" }
+        }]);
+        let incoming = serde_json::json!([{
+            "severity": "GoodService",
+            "reason": "Good Service",
+            "validity": { "from_date": "2026-08-22T02:00:00Z", "to_date": null, "is_now": true },
+            "data_quality": "tfl",
+            "full_coverage_stats": { "total": 41, "delayed": 5, "cancelled": 1, "skipped": 0, "avg_delay_minutes": 2.4 },
+            "full_coverage_availability": { "state": "pending" }
         }]);
         assert!(!tfl_statuses_changed(Some(&existing), &incoming));
     }

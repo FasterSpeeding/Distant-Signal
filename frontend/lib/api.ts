@@ -4,6 +4,8 @@ import type {
   LineStatusHistoryEntry,
   LineDailyStats,
   LineHalfHourlyStats,
+  LineDailyCoverageStats,
+  LineHalfHourlyCoverageStats,
   Preferences,
   LineSummary,
   CustomLineDetail,
@@ -182,6 +184,39 @@ export async function getLineHalfHourlyStats(
 ): Promise<LineHalfHourlyStats[]> {
   return fetchJson<LineHalfHourlyStats[]>(
     `${baseUrl()}/Line/${id}/Stats/HalfHourly/${from}/to/${to}`,
+    { cache: 'no-store' },
+  );
+}
+
+/** `GET /Line/{id}/Stats/Coverage/{from}/to/{to}` -- the full-coverage
+ * sibling of `getLineDailyStats` (Decision 4). Same `YYYY-MM-DD`/no-store/
+ * no-cookie-forwarding shape. Always resolves `[]` today: no full-coverage
+ * producer exists yet to populate `line_status_daily_coverage_stats`. See
+ * docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
+ * Decision 4. */
+export async function getLineDailyCoverageStats(
+  id: string,
+  from: string,
+  to: string,
+): Promise<LineDailyCoverageStats[]> {
+  return fetchJson<LineDailyCoverageStats[]>(
+    `${baseUrl()}/Line/${id}/Stats/Coverage/${from}/to/${to}`,
+    { cache: 'no-store' },
+  );
+}
+
+/** `GET /Line/{id}/Stats/Coverage/HalfHourly/{from}/to/{to}` -- the
+ * full-coverage sibling of `getLineHalfHourlyStats`. Added for backend
+ * symmetry with the daily route above (Decision 4); no frontend chart
+ * consumes it yet -- see `CoverageTrendsResults.tsx`'s own doc comment for
+ * why only the daily series has a chart in this pass. */
+export async function getLineHalfHourlyCoverageStats(
+  id: string,
+  from: string,
+  to: string,
+): Promise<LineHalfHourlyCoverageStats[]> {
+  return fetchJson<LineHalfHourlyCoverageStats[]>(
+    `${baseUrl()}/Line/${id}/Stats/Coverage/HalfHourly/${from}/to/${to}`,
     { cache: 'no-store' },
   );
 }

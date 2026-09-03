@@ -45,6 +45,7 @@ const reports: LineStatusReport[] = [
         reason: '',
         dataQuality: 'knowledgebase',
         sampleAvailability: { state: 'no-coverage' },
+        fullCoverageAvailability: { state: 'not-enabled' },
         validityPeriods: [],
         sampleStats: { total: 10, delayed: 2, cancelled: 1, skipped: 0, avgDelayMinutes: 5 },
       },
@@ -60,6 +61,7 @@ const reports: LineStatusReport[] = [
         reason: '',
         dataQuality: 'knowledgebase',
         sampleAvailability: { state: 'no-coverage' },
+        fullCoverageAvailability: { state: 'not-enabled' },
         validityPeriods: [],
         sampleStats: { total: 10, delayed: 5, cancelled: 3, skipped: 0, avgDelayMinutes: 20 },
       },
@@ -250,6 +252,7 @@ describe('AllLinesTable dash tooltip', () => {
           reason: '',
           dataQuality: 'knowledgebase',
           sampleAvailability: { state: 'no-coverage' },
+          fullCoverageAvailability: { state: 'not-enabled' },
           validityPeriods: [],
           ...status,
         },
@@ -323,6 +326,7 @@ describe('AllLinesTable responsive columns', () => {
           reason: 'Signalling failure',
           dataQuality: 'ldbws-inferred',
           sampleAvailability: { state: 'no-coverage' },
+          fullCoverageAvailability: { state: 'not-enabled' },
           validityPeriods: [{ fromDate: '2026-08-21T09:00:00Z', toDate: null, isNow: true }],
           sampleStats: { total: 10, delayed: 4, cancelled: 2, skipped: 0, avgDelayMinutes: 7.5 },
         },
@@ -406,6 +410,7 @@ describe('AllLinesTable responsive columns', () => {
             reason: '',
             dataQuality: 'ldbws-inferred',
             sampleAvailability: { state: 'no-coverage' },
+            fullCoverageAvailability: { state: 'not-enabled' },
             validityPeriods: [],
             sampleStats: { total: 0, delayed: 0, cancelled: 0, skipped: 0, avgDelayMinutes: 0 },
           },
@@ -418,6 +423,39 @@ describe('AllLinesTable responsive columns', () => {
     const mobileOnly = container.querySelector('.mantine-hidden-from-sm');
     expect(mobileOnly).not.toBeNull();
     expect(mobileOnly!.textContent).not.toContain('null');
+  });
+});
+
+describe('AllLinesTable full-coverage precedence (Decision 1)', () => {
+  it('renders fullCoverageStats numbers, not sampleStats, in the Avg Delay/Cancelled columns when both are present', () => {
+    const coverageReports: LineStatusReport[] = [
+      {
+        $type: 'DistantSignal.LineStatusReport',
+        id: 'wcml',
+        name: 'West Coast Main Line',
+        modeName: 'national-rail',
+        operators: ['VT'],
+        computedAt: '2026-08-21T12:00:00Z',
+        lineStatuses: [
+          {
+            statusSeverity: 10,
+            statusSeverityDescription: 'Good Service',
+            reason: '',
+            dataQuality: 'trust-inferred',
+            sampleAvailability: { state: 'no-coverage' },
+            fullCoverageAvailability: { state: 'available' },
+            validityPeriods: [],
+            sampleStats: { total: 160, delayed: 142, cancelled: 8, skipped: 1, avgDelayMinutes: 12.4 },
+            fullCoverageStats: { total: 500, delayed: 10, cancelled: 5, skipped: 0, avgDelayMinutes: 2.0 },
+          },
+        ],
+      },
+    ];
+    renderWithMantine(<AllLinesTable lines={lines} reports={coverageReports} pinnedLineIds={[]} tocs={tocs} />);
+    expect(screen.getByText('2.0 min')).toBeInTheDocument();
+    expect(screen.getByText('1%')).toBeInTheDocument();
+    expect(screen.queryByText('12.4 min')).not.toBeInTheDocument();
+    expect(screen.queryByText('5%')).not.toBeInTheDocument();
   });
 });
 

@@ -25,6 +25,7 @@ const minorNow: LineStatus = {
   reason: 'Signal failure',
   dataQuality: 'knowledgebase',
   sampleAvailability: { state: 'no-coverage' },
+  fullCoverageAvailability: { state: 'not-enabled' },
   validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
 };
 
@@ -34,6 +35,7 @@ const severePlanned: LineStatus = {
   reason: 'Engineering works',
   dataQuality: 'planned',
   sampleAvailability: { state: 'no-coverage' },
+  fullCoverageAvailability: { state: 'not-enabled' },
   validityPeriods: [{ fromDate: future, toDate: null, isNow: false }],
 };
 
@@ -43,6 +45,7 @@ const inferredNow: LineStatus = {
   reason: '10 of 12 sampled services delayed.',
   dataQuality: 'ldbws-inferred',
   sampleAvailability: { state: 'no-coverage' },
+  fullCoverageAvailability: { state: 'not-enabled' },
   validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
 };
 
@@ -52,6 +55,7 @@ const plannedRange: LineStatus = {
   reason: 'Scheduled maintenance',
   dataQuality: 'planned',
   sampleAvailability: { state: 'no-coverage' },
+  fullCoverageAvailability: { state: 'not-enabled' },
   validityPeriods: [{ fromDate: now, toDate: future, isNow: false }],
 };
 
@@ -373,6 +377,35 @@ describe('IssueList', () => {
     expect(badge.getAttribute('style')).not.toContain('--mantine-color-grape-outline');
   });
 
+  it('shows no tooltip on the data-quality badge when fullCoverageStats is absent (the overwhelming majority case today)', async () => {
+    renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
+    const description = screen.getByText('Signal failure');
+    const control = description.closest('button') as HTMLElement;
+    const badge = within(control).getByText('Knowledgebase').closest('.mantine-Badge-root') as HTMLElement;
+    fireEvent.mouseEnter(badge);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText(/Based on real train-movement data/)).not.toBeInTheDocument();
+  });
+
+  it('shows the confident provenance tooltip on the data-quality badge once fullCoverageStats exists (Decision 2)', async () => {
+    const withCoverage: LineStatus = {
+      ...minorNow,
+      dataQuality: 'trust-inferred',
+      fullCoverageStats: { total: 500, delayed: 10, cancelled: 1, skipped: 0, avgDelayMinutes: 2.0 },
+      fullCoverageAvailability: { state: 'available' },
+    };
+    renderWithMantine(<IssueList items={toItems([withCoverage])} now={NOW} />);
+    const description = screen.getByText('Signal failure');
+    const control = description.closest('button') as HTMLElement;
+    const badge = within(control).getByText('Trust-inferred').closest('.mantine-Badge-root') as HTMLElement;
+    fireEvent.mouseEnter(badge);
+    expect(
+      await screen.findByText(
+        'Based on real train-movement data for every scheduled service on this line — not a live-departure sample.',
+      ),
+    ).toBeInTheDocument();
+  });
+
   it('renders the impact-type badge on the collapsed row when set', () => {
     const withImpactType: LineStatus = {
       ...minorNow,
@@ -439,6 +472,7 @@ describe('IssueList', () => {
       reason: 'Station improvement work',
       dataQuality: 'planned',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [
         {
           fromDate: new Date(NOW - 86400000).toISOString(),
@@ -459,6 +493,7 @@ describe('IssueList', () => {
       reason: 'Finished works',
       dataQuality: 'planned',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [
         {
           fromDate: new Date(NOW - 2 * 86400000).toISOString(),
@@ -486,6 +521,7 @@ describe('IssueList', () => {
       reason: 'Station improvement work',
       dataQuality: 'planned',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [
         { fromDate: '2026-05-10T00:00:00Z', toDate: '2026-10-11T00:00:00Z', isNow: false },
       ],
@@ -532,6 +568,7 @@ describe('IssueList', () => {
       reason: 'Good Service',
       dataQuality: 'ldbws-inferred',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [{ fromDate: new Date(NOW).toISOString(), toDate: null, isNow: true }],
     };
     renderWithMantine(<IssueList items={[{ status: goodService }]} now={NOW} />);
@@ -552,6 +589,7 @@ describe('IssueList', () => {
       reason: 'No Issues',
       dataQuality: 'tfl',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [{ fromDate: new Date(NOW).toISOString(), toDate: null, isNow: true }],
     };
     renderWithMantine(<IssueList items={[{ status: noIssues }]} now={NOW} />);
@@ -573,6 +611,7 @@ describe('IssueList', () => {
       reason: 'Good Service',
       dataQuality: 'ldbws-inferred',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [{ fromDate: new Date(NOW).toISOString(), toDate: null, isNow: true }],
     };
     renderWithMantine(<IssueList items={[{ status: goodService }]} now={NOW} subject="station" />);
@@ -653,6 +692,7 @@ describe('IssueList', () => {
       reason: 'Good Service',
       dataQuality: 'ldbws-inferred',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
     };
     const { rerender } = renderWithMantine(<IssueList items={toItems([goodService])} now={NOW} />);
@@ -674,6 +714,7 @@ describe('IssueList', () => {
       reason: 'Good Service',
       dataQuality: 'ldbws-inferred',
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
       validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
     };
     const { rerender } = renderWithMantine(

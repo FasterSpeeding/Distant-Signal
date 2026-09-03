@@ -19,6 +19,7 @@ const report: LineStatusReport = {
       dataQuality: 'knowledgebase',
       validityPeriods: [{ fromDate: '2026-07-07T10:00:00Z', toDate: null, isNow: true }],
       sampleAvailability: { state: 'no-coverage' },
+      fullCoverageAvailability: { state: 'not-enabled' },
     },
   ],
 };
@@ -58,6 +59,7 @@ describe('LineStatusCard', () => {
           dataQuality: 'knowledgebase',
           validityPeriods: [],
           sampleAvailability: { state: 'no-coverage' },
+          fullCoverageAvailability: { state: 'not-enabled' },
         },
         {
           statusSeverity: 21,
@@ -66,6 +68,7 @@ describe('LineStatusCard', () => {
           dataQuality: 'knowledgebase',
           validityPeriods: [{ fromDate: '2026-07-07T10:00:00Z', toDate: null, isNow: true }],
           sampleAvailability: { state: 'no-coverage' },
+          fullCoverageAvailability: { state: 'not-enabled' },
         },
       ],
     };
@@ -98,6 +101,22 @@ describe('LineStatusCard', () => {
   it('renders the reason instead of omitting the block when no status carries sample stats', () => {
     renderWithMantine(<LineStatusCard report={report} />);
     expect(screen.getByText('No live departure data received for this line yet.')).toBeInTheDocument();
+  });
+
+  it('renders real numbers from fullCoverageStats alone, not a hedge, when only that field is present (Decision 1)', () => {
+    const withCoverage: LineStatusReport = {
+      ...report,
+      lineStatuses: [
+        {
+          ...report.lineStatuses[0],
+          fullCoverageStats: { total: 500, delayed: 10, cancelled: 5, skipped: 0, avgDelayMinutes: 2.0 },
+        },
+      ],
+    };
+    renderWithMantine(<LineStatusCard report={withCoverage} />);
+    expect(screen.getByText(/Avg delay 2\.0 min/)).toBeInTheDocument();
+    expect(screen.getByText(/1% cancelled/)).toBeInTheDocument();
+    expect(screen.queryByText('No live departure data received for this line yet.')).not.toBeInTheDocument();
   });
 
   it('clamps a long reason rather than letting it fill the card', () => {

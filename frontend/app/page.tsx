@@ -51,9 +51,16 @@ function worstSeverityAcrossReports(reports: LineStatusReport[]): number {
  * report, if any does, else the first status overall — mirrors
  * `representativeStatus`'s own fallback, extended across a station's
  * several affected lines the same way `sampleStatsAcrossReports` extended
- * `firstSampleStats`. */
+ * `firstSampleStats`.
+ *
+ * Decision 3's "pinned-station dashboard row" case: extends the same
+ * fullCoverageStats-first precedence `representativeStatus` itself already
+ * applies per-line, one level further, across every report this dashboard
+ * row spans. */
 function representativeStatusAcrossReports(reports: LineStatusReport[]): LineStatus | undefined {
-  const withStats = reports.map((r) => representativeStatus(r.lineStatuses)).find((s) => s?.sampleStats);
+  const perReportRepresentatives = reports.map((r) => representativeStatus(r.lineStatuses));
+  const withFullCoverage = perReportRepresentatives.find((s) => s?.fullCoverageStats);
+  const withStats = withFullCoverage ?? perReportRepresentatives.find((s) => s?.sampleStats);
   return withStats ?? reports[0]?.lineStatuses[0];
 }
 

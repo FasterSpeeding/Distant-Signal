@@ -820,6 +820,7 @@ mod db_tests {
             exclusive_segments: vec![],
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
+            full_coverage_enabled: false,
         };
 
         let router = test_router(test_app(pool.clone(), vec![catalogue_line]));
@@ -869,6 +870,7 @@ mod db_tests {
             exclusive_segments: vec![],
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
+            full_coverage_enabled: false,
         }
     }
 
