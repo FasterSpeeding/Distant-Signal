@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { formatLocalDateTime } from '@/lib/dateFormat';
 import { TicketSummary } from './TicketSummary';
 
 describe('TicketSummary', () => {
@@ -112,7 +113,15 @@ describe('TicketSummary', () => {
     expect(screen.getByText('From Wallet pass')).toBeInTheDocument();
   });
 
-  it('renders the added-on date via formatDateTime', () => {
+  it('renders the added-on date in the viewer\'s own timezone, not London', () => {
+    // "Added" is the app's one viewer-relative timestamp (TicketSummary.tsx's
+    // comment at the swap site), so post-mount it renders in whatever zone
+    // this test process is in -- expected via `formatLocalDateTime` rather
+    // than a literal, which would make the assertion machine-dependent.
+    // `renderWithMantine` mounts, so the `useMounted()` gate inside
+    // `LocalDateTime` has already flipped by the time this asserts; the
+    // pre-mount London fallback is covered in LocalDateTime.test.tsx.
+    const createdAt = '2026-08-29T12:00:00Z';
     renderWithMantine(
       <TicketSummary
         ticket={{
@@ -123,10 +132,10 @@ describe('TicketSummary', () => {
           originName: null,
           destinationName: null,
           source: 'manual',
-          createdAt: '2026-08-29T12:00:00Z',
+          createdAt,
         }}
       />,
     );
-    expect(screen.getByText(/Added/)).toBeInTheDocument();
+    expect(screen.getByText(`Added ${formatLocalDateTime(createdAt)}`)).toBeInTheDocument();
   });
 });
