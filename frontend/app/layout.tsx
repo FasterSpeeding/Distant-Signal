@@ -119,6 +119,26 @@ export function TrackedTrainsNavItem() {
   return <TextLink href="/track/mine">My Trains &amp; Tickets</TextLink>;
 }
 
+/** Because the call below is awaited before RootLayout emits any HTML, an
+ * unbounded one would hang *every* route for as long as the network takes
+ * to give up. A refused connection fails instantly, so the common outage
+ * is unaffected -- but a black-holed backend (a pod NotReady behind a
+ * Service, a NetworkPolicy drop, a hung upstream) would otherwise stall
+ * first paint on the OS TCP connect timeout, which is minutes. That is
+ * strictly worse than before this fetch was hoisted, and in precisely the
+ * failure mode this feature exists to handle, so the wait is bounded here.
+ *
+ * 2s: an order of magnitude above a healthy in-cluster round trip to the
+ * same-network `api` service (single-digit to low-hundreds of ms), so it
+ * cannot fire on a normal request or a brief GC pause; and low enough that
+ * a broken backend costs one noticeable pause rather than a hung tab. A
+ * freshness tooltip that takes longer than 2s to answer is not worth
+ * holding first paint for -- timing out here is not a lost cause, it is
+ * the "backend unreachable" signal, which is exactly what
+ * ConnectivityMonitor needs and what the nav's "never fetched" fallback
+ * already renders honestly. */
+const FRESHNESS_TIMEOUT_MS = 2_000;
+
 const UNAVAILABLE_FRESHNESS: DataFreshness = {
   stations: null,
   tocs: null,
@@ -137,7 +157,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   let freshness: DataFreshness;
   let backendReachable: boolean;
   try {
-    freshness = await getDataFreshness();
+    freshness = await getDataFreshness({ signal: AbortSignal.timeout(FRESHNESS_TIMEOUT_MS) });
     backendReachable = true;
   } catch {
     freshness = UNAVAILABLE_FRESHNESS;
