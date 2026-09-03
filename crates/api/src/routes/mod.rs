@@ -17,6 +17,7 @@ pub mod notifications;
 pub mod preferences;
 pub mod reference;
 pub mod samples;
+pub mod station_stats;
 pub mod train;
 
 pub fn public_router() -> Router {
@@ -52,6 +53,7 @@ pub fn public_router() -> Router {
         .merge(reference::router())
         .merge(auth::router())
         .merge(chatbot::router())
+        .merge(station_stats::router())
 }
 
 /// Takes the app state directly (rather than picking it up later via
