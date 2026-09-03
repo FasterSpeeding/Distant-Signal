@@ -1,7 +1,7 @@
 import { Badge, Group, Stack, Text } from '@mantine/core';
 import type { TrackedTrainTicket, TicketListItem, TicketSource } from '@/lib/types';
-import { formatDateTime } from '@/lib/dateFormat';
 import { stationLabel } from '@/lib/stationLabel';
+import { LocalDateTime } from './LocalDateTime';
 
 /** Provenance labels for `TicketSummary`'s badge -- styled after
  * `IssueList.tsx`'s `DATA_QUALITY_LABELS` (`components/IssueList.tsx:38-44`),
@@ -69,8 +69,21 @@ export function TicketSummary({
         <Badge variant="outline" size="sm" color="gray">
           {SOURCE_LABELS[ticket.source]}
         </Badge>
+        {/* The one viewer-local timestamp in the app, and deliberately so:
+            "Added" records something *this viewer* did, so their own clock
+            is what answers it -- the same convention an email or
+            notification timestamp follows. It reads next to London-pinned
+            service dates (`AttachTicketAction.tsx:67-68` on the merged
+            /track/mine page) on purpose, not by oversight: a train's
+            service date is a fact about the train and stays London wall-
+            clock, like a departure board. Don't "fix" the inconsistency by
+            converting either one. See
+            docs/superpowers/specs/2026-09-02-client-local-timezone-display-research.md's
+            Finding 1 and Recommendation. `LocalDateTime` is a client leaf
+            so this component stays a Server Component -- only the one
+            string needs the browser's zone, not the layout around it. */}
         <Text size="xs" c="dimmed">
-          Added {formatDateTime(ticket.createdAt)}
+          Added <LocalDateTime value={ticket.createdAt} />
         </Text>
       </Group>
     </Stack>
