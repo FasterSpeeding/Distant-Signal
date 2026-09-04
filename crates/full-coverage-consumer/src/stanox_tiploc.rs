@@ -7,10 +7,6 @@
 //! docs/superpowers/specs/2026-09-04-option-b-live-consumer-design.md's
 //! "Current relevant state" section, the `common::StanoxCrsRecord`
 //! finding.
-//!
-//! Not yet wired into `main.rs`'s loop (that's Task 13) -- `#![allow(dead_code)]`
-//! here is temporary, same posture as `config::Config::shadow_line_ids`.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

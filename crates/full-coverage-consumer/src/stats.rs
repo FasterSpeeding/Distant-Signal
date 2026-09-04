@@ -1,9 +1,5 @@
 //! Decision 2f/2g's SampleStats synthesis and Decision 2e's
 //! Resolved-vs-Pending rail-day gating, per line.
-//!
-//! Not yet wired into `main.rs`'s loop (that's Task 13) -- `#![allow(dead_code)]`
-//! here is temporary, same posture as `config::Config::shadow_line_ids`.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

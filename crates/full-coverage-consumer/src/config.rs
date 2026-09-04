@@ -126,9 +126,6 @@ impl Config {
     /// operator typo here should degrade to "shadow fewer lines than
     /// intended", never crash-loop the consumer).
     ///
-    /// Unused until Task 13 wires the main loop -- allowed dead code
-    /// until then, same as every other Task 8-12 module stub.
-    #[allow(dead_code)]
     pub fn shadow_line_ids(&self) -> Vec<String> {
         if self.shadow_lines.trim() == "*" {
             return self

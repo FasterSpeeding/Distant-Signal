@@ -3,10 +3,6 @@
 //! trust-consumer does, keyed differently (per-(line_id, uid) here vs.
 //! per-train_id there) -- confirmed compatible with zero generalization
 //! by Task 1's own grounding pass.
-//!
-//! Not yet wired into `main.rs`'s loop (that's Task 13) -- `#![allow(dead_code)]`
-//! here is temporary, same posture as `config::Config::shadow_line_ids`.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

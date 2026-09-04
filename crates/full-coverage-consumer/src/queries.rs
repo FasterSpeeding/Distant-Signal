@@ -1,10 +1,6 @@
 //! Thin HTTP client wrappers -- deliberately separate from correlation
 //! logic, same reasoning as trust-consumer's own queries.rs module doc:
 //! keeps correlation logic unit-testable without a live api.
-//!
-//! Not yet wired into `main.rs`'s loop (that's Task 13) -- `#![allow(dead_code)]`
-//! here is temporary, same posture as `config::Config::shadow_line_ids`.
-#![allow(dead_code)]
 
 pub async fn fetch_line_population(
     client: &reqwest::Client,

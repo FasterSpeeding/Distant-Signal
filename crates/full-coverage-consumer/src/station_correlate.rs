@@ -5,9 +5,6 @@
 //! genuinely new correctness property -- see this module's own doc on
 //! `StationCorrelationState::activations_by_uid`.
 //!
-//! Not yet wired into `main.rs`'s loop (that's Task 13) -- `#![allow(dead_code)]`
-//! here is temporary, same posture as `config::Config::shadow_line_ids`.
-//!
 //! **Merge-order note on this module's write path** (`build_station_rows`,
 //! `queries::post_station_full_coverage_samples`): per this plan's own
 //! Non-goals, `common::StationFullCoverageSample` is owned and added by
@@ -24,8 +21,6 @@
 //! `common::StationFullCoverageSample` once the other branch merges is a
 //! one-line type-alias change (delete this struct, `use common::StationFullCoverageSample as StationFullCoverageSampleRow;`
 //! or just rename call sites), not a logic change.
-
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

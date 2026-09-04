@@ -1,10 +1,6 @@
 //! Decision 2b's in-memory population map and Decision 2c's reverse
 //! tiploc->line index, built from `schedule_query::LinePopulationEntry`
 //! rows fetched via `GET /private/schedule-line-population`.
-//!
-//! Not yet wired into `main.rs`'s loop (that's Task 13) -- `#![allow(dead_code)]`
-//! here is temporary, same posture as `config::Config::shadow_line_ids`.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 
@@ -44,6 +40,12 @@ impl Population {
             .unwrap_or_default()
     }
 
+    /// Unused by `main.rs`'s loop today -- `stats::synthesize_departure`
+    /// doesn't consult a UID's own calling points yet (Decision 2g's
+    /// PASS-to-skipped mapping is unresolved, per that module's own doc
+    /// comment), but this accessor is real, tested API surface for that
+    /// future pass, not speculative.
+    #[allow(dead_code)]
     pub fn calling_points(
         &self,
         line_id: &str,
