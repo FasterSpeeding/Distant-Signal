@@ -10,11 +10,11 @@
 //! design doc's binding condition).
 
 mod config;
+mod correlate;
 mod health;
 mod population;
 mod queries;
 mod stanox_tiploc;
-// mod correlate;       -- Task 10
 // mod station_correlate; -- Task 12
 // mod stats;            -- Task 11
 
