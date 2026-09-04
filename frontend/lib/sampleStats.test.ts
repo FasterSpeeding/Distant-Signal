@@ -138,6 +138,41 @@ describe('sampleUnavailableReason with a dataQuality-less carrier (StationOperat
   });
 });
 
+describe('a StationOperatorSampleStats-shaped carrier with fullCoverage fields (Decision 3)', () => {
+  // These carriers have no `dataQuality` field at all, matching the real
+  // wire shape `GET /public/stations/{crs}/sample-stats` now sends.
+
+  it('prefers fullCoverageStats over sampleStats when both are present, with no dataQuality field at all', () => {
+    const carrier = {
+      sampleAvailability: { state: 'available' as const },
+      sampleStats: stats,
+      fullCoverageStats: coverageStats,
+      fullCoverageAvailability: { state: 'available' as const },
+    };
+    // coverageStats: 5/500 = 1% cancelled, avg 3.1 -- distinct from stats'
+    // 5% cancelled/12.4 avg, so this proves which one actually rendered.
+    expect(formatSampleSummary(carrier)).toBe('Avg delay 3.1 min · 1% cancelled');
+  });
+
+  it('renders correctly with only fullCoverageStats set -- no sampleStats at all, no crash, no undefined in the output', () => {
+    const carrier = {
+      sampleAvailability: { state: 'below-threshold' as const, observed: 0, required: 3 },
+      fullCoverageStats: coverageStats,
+      fullCoverageAvailability: { state: 'available' as const },
+    };
+    expect(formatSampleSummary(carrier)).toBe('Avg delay 3.1 min · 1% cancelled');
+    expect(formatSampleSummary(carrier)).not.toContain('undefined');
+  });
+
+  it('falls through to the existing no-coverage/hedge branches when neither field is set', () => {
+    const carrier = {
+      sampleAvailability: { state: 'no-coverage' as const },
+      fullCoverageAvailability: { state: 'not-enabled' as const },
+    };
+    expect(sampleUnavailableReason(carrier)).toBe('No live departure data received for this line yet.');
+  });
+});
+
 describe('formatSampleSummary', () => {
   it('renders the one-line summary used across cards, rows and tables', () => {
     expect(formatSampleSummary(status({ sampleStats: stats }))).toBe('Avg delay 12.4 min · 5% cancelled');

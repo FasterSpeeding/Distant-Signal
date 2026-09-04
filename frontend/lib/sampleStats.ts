@@ -1,25 +1,28 @@
-import type { LineStatus, SampleAvailability, SampleStats } from './types';
+import type { FullCoverageAvailability, LineStatus, SampleAvailability, SampleStats } from './types';
 
 /** Structural supertype of anything `sampleUnavailableReason`/
  * `formatSampleSummary` can render a reason for -- the existing per-line
- * `LineStatus` callers and the new per-(station, operator)
- * `StationOperatorSampleStats` rows both satisfy this without a cast
- * (`StationOperatorSampleStats` simply has no `dataQuality`/
- * `fullCoverageStats` field, which TypeScript treats as `undefined`).
+ * `LineStatus` callers and the per-(station, operator)
+ * `StationOperatorSampleStats` rows both satisfy this without a cast.
  * Widened, not renamed -- see
  * docs/superpowers/specs/2026-09-03-per-station-stats-design.md Decision 9
  * for why the eventual source-agnostic rename flagged by
  * docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
- * stays a separate, later step. `fullCoverageStats` widened onto this same
- * carrier for Decision 1: only `LineStatus` ever carries it in practice
- * (`StationOperatorSampleStats` never does, per that design doc's own
- * "line-level scope only" statement), but the type stays structural rather
- * than a union, matching this type's existing shape. */
+ * stays a separate, later step. `fullCoverageStats`/`fullCoverageAvailability`
+ * are carried by BOTH `LineStatus` and (as of
+ * docs/superpowers/specs/2026-09-04-per-station-full-coverage-stats-design.md
+ * Decision 3) `StationOperatorSampleStats` -- the earlier "line-level scope
+ * only" note here was accurate when written and is now stale; both real
+ * callers structurally satisfy this field as of this update.
+ * `fullCoverageAvailability` stays optional on this shared type (rather
+ * than required) only so a hypothetical future caller with neither field
+ * still satisfies it structurally. */
 type SampleStatsCarrier = {
   sampleStats?: SampleStats;
   sampleAvailability: SampleAvailability;
   dataQuality?: LineStatus['dataQuality'];
   fullCoverageStats?: SampleStats;
+  fullCoverageAvailability?: FullCoverageAvailability;
 };
 
 /** The aggregator attaches the same sample-derived stats to every status on

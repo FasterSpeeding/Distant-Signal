@@ -131,14 +131,20 @@ export type LineStatusHistoryEntry = LineStatusReport;
 
 /** One operator's row from `GET /public/stations/{crs}/sample-stats`
  * (`crates/api/src/routes/station_stats.rs`) --
- * docs/superpowers/specs/2026-09-03-per-station-stats-design.md Decision 9.
- * `sampleAvailability.state` is never `'no-coverage'` through this route (a
- * documented invariant of the route handler, not type-enforced -- see that
- * design doc's Open Questions #4). */
+ * docs/superpowers/specs/2026-09-03-per-station-stats-design.md Decision 9,
+ * extended per
+ * docs/superpowers/specs/2026-09-04-per-station-full-coverage-stats-design.md
+ * Decision 3. `sampleAvailability.state` is never `'no-coverage'` through
+ * this route (a documented invariant of the route handler, not
+ * type-enforced). `fullCoverageAvailability` is always present, like
+ * `LineStatus`'s own field of the same name -- `'not-enabled'` for every
+ * real operator today, since no line has `full_coverage_enabled` set. */
 export interface StationOperatorSampleStats {
   operator: string;
   sampleAvailability: SampleAvailability;
   sampleStats?: SampleStats;
+  fullCoverageStats?: SampleStats;
+  fullCoverageAvailability: FullCoverageAvailability;
 }
 
 /** `GET /Line/{id}/Stats/{from}/to/{to}`'s per-day response shape.

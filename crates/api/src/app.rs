@@ -155,6 +155,16 @@ pub(crate) fn build_internal_oauth_routes(
             Method::POST,
             vec![config.internal_oauth_group_schedule_reference.clone()],
         ),
+        (
+            "/station-full-coverage-samples",
+            Method::GET,
+            vec![config.internal_oauth_group_full_coverage.clone()],
+        ),
+        (
+            "/station-full-coverage-samples",
+            Method::POST,
+            vec![config.internal_oauth_group_full_coverage.clone()],
+        ),
     ]
 }
 
@@ -270,6 +280,10 @@ impl AppState {
             (
                 "internal_oauth_group_schedule_reference",
                 &config.internal_oauth_group_schedule_reference,
+            ),
+            (
+                "internal_oauth_group_full_coverage",
+                &config.internal_oauth_group_full_coverage,
             ),
         ] {
             ensure!(

@@ -11,7 +11,10 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use common::{IncidentMessage, LineStatusReport, StationReference, StationSample, TocReference};
+use common::{
+    IncidentMessage, LineStatusReport, StationFullCoverageSample, StationReference, StationSample,
+    TocReference,
+};
 use sqlx::PgPool;
 
 /// Incidents are upserted in chunks of this size, each as its own
@@ -284,6 +287,45 @@ pub async fn upsert_station_samples(pool: &PgPool, samples: &[StationSample]) ->
     Ok(count)
 }
 
+/// Upserts a batch of per-(crs, operator) full-coverage rows. No
+/// history -- wholesale-replaced per producer resolution cycle, same
+/// rationale as `upsert_station_samples`. Written by
+/// `post_station_full_coverage_samples` (Task 5), a future
+/// full-coverage-consumer's real caller once it exists (not built by this
+/// plan).
+pub async fn upsert_station_full_coverage_samples(
+    pool: &PgPool,
+    samples: &[StationFullCoverageSample],
+) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+    let mut count = 0u64;
+
+    for sample in samples {
+        let stats_json = serde_json::to_value(&sample.stats)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (crs, operator) DO UPDATE SET
+                resolved_at = EXCLUDED.resolved_at,
+                stats       = EXCLUDED.stats
+            "#,
+        )
+        .bind(&sample.crs)
+        .bind(&sample.operator)
+        .bind(sample.resolved_at)
+        .bind(&stats_json)
+        .execute(&mut *tx)
+        .await?;
+
+        count += 1;
+    }
+
+    tx.commit().await?;
+    Ok(count)
+}
+
 /// Pure diff check, factored out of `upsert_tfl_line_status` so it's
 /// testable without a database: a TfL line's statuses are "changed" if the
 /// line is new to us, or if the incoming `statuses` JSON differs from what
@@ -540,6 +582,16 @@ pub async fn last_station_samples_fetch(
     Ok(polled_at)
 }
 
+pub async fn last_station_full_coverage_samples_fetch(
+    pool: &PgPool,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let (fetched_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT MAX(resolved_at) FROM station_full_coverage_samples")
+            .fetch_one(pool)
+            .await?;
+    Ok(fetched_at)
+}
+
 /// Timestamp of the most recently *delivered* schedule feed (i.e.
 /// `MAX(delivered_at)`, the delivery zip's own mtime -- not
 /// `MAX(ingested_at)`, when this table happened to be written to), or
@@ -694,6 +746,35 @@ pub async fn latest_station_sample(pool: &PgPool, crs: &str) -> Result<Option<St
         })
     })
     .transpose()
+}
+
+/// Every `station_full_coverage_samples` row for one CRS, one per
+/// operator that has resolved this cycle. Full-coverage analog of
+/// `latest_station_sample`, one level finer -- design doc Decision 2.
+/// Empty `Vec` for every station today: no producer writes this table yet.
+pub async fn latest_station_full_coverage_samples(
+    pool: &PgPool,
+    crs: &str,
+) -> Result<Vec<StationFullCoverageSample>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT crs, operator, resolved_at, stats FROM station_full_coverage_samples WHERE crs = $1",
+    )
+    .bind(crs)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let stats_json: serde_json::Value = row.try_get("stats")?;
+            Ok(StationFullCoverageSample {
+                crs: row.try_get("crs")?,
+                operator: row.try_get("operator")?,
+                resolved_at: row.try_get("resolved_at")?,
+                stats: serde_json::from_value(stats_json)?,
+            })
+        })
+        .collect()
 }
 
 /// One row from `line_status`, deserialized into the shape `render.rs`
