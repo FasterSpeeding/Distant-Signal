@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Autocomplete, Button, Group, Stack } from '@mantine/core';
+import { Alert, Autocomplete, Badge, Button, Group, ScrollArea, Stack, Text } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -12,6 +12,24 @@ import { useSuggestions } from '@/lib/useSuggestions';
 import type { TrackPinRequest, TrackPinResponse } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
+
+/** Wire shape of `GET /public/stations/{crs}/departures`
+ * (`crates/api/src/render.rs::station_departure_json`) -- camelCase
+ * mirror of `common::StationDeparture`'s own fields, minus `headcode`
+ * (always `None` at the source, never carried through). See
+ * docs/superpowers/specs/2026-09-03-trip-search-design.md Decision 2/5. */
+interface DepartureRow {
+  serviceId: string;
+  operator: string;
+  destinationCrs: string;
+  scheduled: string;
+  estimated: string;
+  isCancelled: boolean;
+  delayMinutes: number;
+  cancelReason: string | null;
+  delayReason: string | null;
+  skippedStations: string[];
+}
 
 /** The v1 entry point for individual train tracking -- a manual form, not
  * a per-departure "track this train" action, per
@@ -63,9 +81,47 @@ export function TrackTrainForm({
   const { suggestions: destinationSuggestions } = useSuggestions(destinationCrs, searchStations);
   const { suggestions: operatorSuggestions } = useSuggestions(operator, searchTocs);
   const [originTouched, setOriginTouched] = useState(false);
+  const [departures, setDepartures] = useState<DepartureRow[] | 'not-sampled' | null>(null);
 
   const originValid = CRS_PATTERN.test(originCrs.trim());
   const canSubmit = originValid && scheduledDeparture !== null && !submitting;
+
+  // Fetch the live departures picker whenever the origin resolves to a
+  // syntactically valid CRS -- same same-origin `/api/*` proxy pattern
+  // `searchStations`/`searchTocs` already use (client-safe, no `baseUrl()`
+  // import). Per docs/superpowers/specs/2026-09-03-trip-search-design.md
+  // Decision 4.
+  useEffect(() => {
+    if (!originValid) {
+      setDepartures(null);
+      return;
+    }
+    const controller = new AbortController();
+    fetch(`/api/stations/${originCrs.trim().toUpperCase()}/departures`, { signal: controller.signal })
+      .then((res) => {
+        if (res.status === 404) return setDepartures('not-sampled');
+        if (!res.ok) return setDepartures(null);
+        return res.json().then(setDepartures);
+      })
+      .catch(() => {}); // aborted or network blip -- leave prior state, same posture as useSuggestions
+    return () => controller.abort();
+  }, [originCrs, originValid]);
+
+  /** Fills Destination/Operator/Scheduled-departure from a picked, real
+   * live departure -- without submitting, so the user can still review/
+   * edit before tracking. Combines the departure's `"HH:MM"` with *today's*
+   * browser-local date into the exact `'YYYY-MM-DD HH:mm:ss'` string shape
+   * `scheduledDeparture` already expects -- same construction as the "Now"
+   * button above (`dayjs().format('YYYY-MM-DD HH:mm:ss')`), and the same
+   * browser-local-date assumption it already makes (not Europe/London
+   * specifically) -- not a new limitation this picker introduces. */
+  function pickDeparture(row: DepartureRow) {
+    setDestinationCrs(row.destinationCrs);
+    setOperator(row.operator);
+    const [hh, mm] = row.scheduled.split(':');
+    const today = dayjs().format('YYYY-MM-DD');
+    setScheduledDeparture(`${today} ${hh}:${mm}:00`);
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -156,6 +212,55 @@ export function TrackTrainForm({
         error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
         required
       />
+      {departures === 'not-sampled' && (
+        <Text size="sm" c="dimmed">
+          Live departures aren&apos;t available to browse for this station — enter the details below.
+        </Text>
+      )}
+      {Array.isArray(departures) && departures.length === 0 && (
+        <Text size="sm" c="dimmed">
+          No live departures currently on the board for this station right now.
+        </Text>
+      )}
+      {Array.isArray(departures) && departures.length > 0 && (
+        <ScrollArea mah={220} offsetScrollbars>
+          <Stack gap="xs">
+            {departures.map((row) => {
+              const clickable = !row.isCancelled;
+              const badge = row.isCancelled ? (
+                <Badge color="red">Cancelled</Badge>
+              ) : row.delayMinutes > 0 ? (
+                <Badge color="orange">+{row.delayMinutes} min</Badge>
+              ) : (
+                <Badge color="green">On time</Badge>
+              );
+              return (
+                <Group
+                  key={row.serviceId}
+                  justify="space-between"
+                  wrap="nowrap"
+                  role={clickable ? 'button' : undefined}
+                  tabIndex={clickable ? 0 : undefined}
+                  onClick={clickable ? () => pickDeparture(row) : undefined}
+                  onKeyDown={
+                    clickable
+                      ? (event) => {
+                          if (event.key === 'Enter' || event.key === ' ') pickDeparture(row);
+                        }
+                      : undefined
+                  }
+                  style={{ cursor: clickable ? 'pointer' : 'default', opacity: clickable ? 1 : 0.6 }}
+                >
+                  <Text size="sm">
+                    {row.scheduled} · {row.destinationCrs} · {row.operator}
+                  </Text>
+                  {badge}
+                </Group>
+              );
+            })}
+          </Stack>
+        </ScrollArea>
+      )}
       <Group align="flex-end" gap="xs">
         <DateTimePicker
           label="Scheduled departure"
