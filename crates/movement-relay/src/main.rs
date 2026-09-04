@@ -11,6 +11,7 @@
 
 mod config;
 mod health;
+mod kafka_source;
 
 fn main() {
     unimplemented!(
