@@ -43,6 +43,26 @@ scoping doc"),
   and its shape is **not renegotiated here** — this document designs a real
   producer for its one remaining placeholder, not a replacement for it.
 
+## Relationship to the concurrent per-station full-coverage design
+
+**Revision (2026-09-04, post-initial-publish)**: this document originally
+listed "per-station full-coverage stats" as out of scope, deferring to a
+concurrent workstream and flagging the resulting coupling as an open risk
+(the original Open Question 7). That workstream has since landed
+`docs/superpowers/specs/2026-09-04-per-station-full-coverage-stats-design.md`
+("the per-station doc," in `worktree-per-station-full-coverage`), which
+needed a concrete producer contract from this document and, in its absence,
+built its own best-grounded guess (its Decision 2): a table
+`station_full_coverage_samples(crs, operator, resolved_at, stats)`, written
+by "Option B's future consumer" to a new `POST
+/private/station-full-coverage-samples`, read via a `latest_station_full_coverage_samples(pool, crs)`
+query. **This revision resolves that gap by extending this consumer's own
+design to be exactly that producer**, converging on the per-station doc's
+own table/endpoint naming rather than inventing a second, competing shape
+— see the new Decision 2h and the station-level half of Decision 3 below.
+This is a real, non-trivial addition to this consumer's surface area, not
+a free extension — see the cost note at the end of Decision 2h.
+
 ## Current relevant state (verified against code, not re-derived)
 
 **The placeholder this document exists to replace**, confirmed directly:
@@ -229,11 +249,13 @@ crates/full-coverage-consumer/  # NEW — this document's subject
     main.rs                   # Kafka consume loop, own consumer group
     config.rs                 # clap Config, mirrors trust-consumer's shape
     correlate.rs               # per-line population matching (Decision 2)
+    station_correlate.rs       # per-(crs, operator) grouping (Decision 2h)
     population.rs              # in-memory per-line UID population, reload
-    stanox_tiploc.rs           # STANOX->TIPLOC table (keeps tiploc, unlike
-                                # trust-consumer's stanox_crs.rs)
+    stanox_tiploc.rs           # STANOX->TIPLOC *and* STANOX->CRS table
+                                # (keeps both fields, unlike
+                                # trust-consumer's stanox_crs.rs -- Decision 2h)
     stats.rs                   # SampleStats synthesis via compute_sample_stats
-    queries.rs                 # HTTP calls to api (population reload, write)
+    queries.rs                 # HTTP calls to api (population reload, both writes)
     health.rs                  # mirrors trust-consumer's health.rs verbatim
 ```
 
@@ -411,6 +433,90 @@ booked as an `Intermediate` stop is the plausible mapping, populated into
 `outcome.passed_without_stopping`, but unverified against a real observed
 case. Flagged again in Open Questions below, not newly discovered here.
 
+**2h. Station-level aggregation — the producer contract the per-station
+full-coverage workstream needs, resolved here rather than left as a
+coupling risk.** Every matched Movement/Cancellation this consumer already
+processes (2d) carries exactly what a per-`(crs, operator)` grouping needs,
+already in hand, with no new correlation problem:
+
+- **Station identity**: the event's own `loc_stanox`, already translated
+  (2c) — but to **CRS**, not TIPLOC, for this purpose. The same live
+  `/private/stanox-crs` feed this consumer already reloads for its
+  STANOX→TIPLOC table (2c, `stanox_tiploc.rs`) carries `crs` on the
+  identical `common::StanoxCrsRecord` row (`crates/common/src/lib.rs:721-730`)
+  — `stanox_tiploc.rs` is extended to also keep a `stanox -> crs` map
+  alongside `stanox -> tiploc`, one more field retained from a record this
+  consumer already parses in full, not a second reload or a second feed.
+- **Operator identity**: TRUST's own self-declared `toc_id` —
+  `Activation.toc_id: String` (`crates/trust-consumer/src/schema.rs:41`)
+  and `Movement.toc_id: Option<String>` (`schema.rs:66`) — exactly the
+  field the per-station doc's own Decision 4 already names as the right
+  source ("TRUST's own `Activation.toc_id`/`Movement.toc_id`... a future
+  consumer does not need a CIF schedule join just to learn which operator
+  ran a given train"). `schedule-query`'s `BasicSchedule`
+  (`crates/schedule-query/src/records.rs`) does not decode a TOC field at
+  all — confirmed by reading its full field list, `uid`/`stp_indicator`/
+  `date_from`/`date_to`/`days_of_week` only, per the first-slice plan's own
+  "no invented API details" discipline — so operator identity for station
+  grouping is **necessarily** TRUST-sourced, not CIF-sourced, unlike line
+  membership (which is purely CIF-driven, per 2a/2b). This asymmetry has a
+  real, honest consequence, below.
+
+Per matched Movement/Cancellation, this consumer accumulates a second,
+parallel running record, keyed `(crs, toc_id)` (not `(line_id, uid)`),
+alongside the existing per-line one — the two groupings share the same
+event stream and the same `apply_movement`/`apply_cancellation`-derived
+delay/cancellation facts (`trust-schema::journey`, Decision 1), so this is
+one pass over the feed producing two outputs, not two passes.
+
+**The population/"total" count is asymmetric between the two groupings —
+stated plainly, not smoothed over.** A line's population (2a/2b) is known
+purely from CIF ahead of time: every UID `schedule_query::schedules_touching`
+returns for a line counts toward that line's `total`, whether or not TRUST
+ever reports on it (an unconfirmed UID becomes a `cancelled` entry per 2d,
+but it's still counted). A station-operator bucket has no such guarantee:
+a population UID's scheduled calling points (from the same
+`ResolvedSchedule.calling_points`, resolved TIPLOC→CRS the same way
+Decision 2c resolves STANOX→TIPLOC) tell this consumer *which* `(crs,
+uid)` pairs to expect, but **not** which operator to file that expectation
+under — that mapping only exists once a real Activation for that UID's
+`train_id` has actually been observed this rail day. **Decision**: a
+population UID only contributes to a `(crs, operator)` bucket once its
+`toc_id` has been learned from a real Activation; a UID whose Activation is
+never observed by window close still correctly inflates its *line's*
+`cancelled` count (2d, unchanged) but is **excluded** from every
+station-level bucket entirely, rather than guessed into one. This is a
+real, asymmetric limitation of the station-level output relative to the
+line-level output — a "confirmed by TRUST" precondition the line-level
+grouping doesn't need — flagged in Open Questions, not silently absorbed
+into the numbers.
+
+`SampleStats` synthesis for a `(crs, operator)` bucket reuses
+`compute_sample_stats` exactly as 2f does for lines — one synthetic
+`StationDeparture` per attributed UID, `is_skip` unresolved for the
+identical reason 2g already names (TRUST `PASS`-to-`skipped` mapping,
+unconfirmed).
+
+**Resolved vs. Pending, at station grain, mirrors 2e exactly**: a `(crs,
+operator)` bucket is `Pending` until the rail day closes for every line
+whose population contributed a calling point at that CRS, `Available`
+once it has — the same literal, once-per-day semantic, for the same
+reasoning (honesty over liveness, zero cost while this stays shadow-only).
+
+**Cost, stated plainly per the task brief's own instruction not to
+downplay it**: this roughly doubles this consumer's own internal
+bookkeeping (two running-record maps instead of one, keyed differently,
+both fed off the same event stream), adds a second POST call per cycle
+(2h's write path, Decision 3), and adds a second, genuinely new failure
+mode this consumer didn't have before (a UID correctly counted at line
+grain but silently dropped at station grain for lack of an observed
+Activation — 2h's asymmetric-population finding above). None of this
+changes Decision 1's Kafka-consumer-group cost or Decision 4's shadow-scope
+answer — it is additional in-process work on data this consumer is already
+consuming, not a second consumer or a second subscription — but it is real,
+additional design and implementation surface, not a free byproduct of the
+line-level design.
+
 ### 3. Persistence and the aggregator integration point
 
 **A new table, owned by `api`, one row per line, upserted every cycle —
@@ -493,6 +599,82 @@ every real catalogued line, per the binding condition. This safety
 property requires no new code in `aggregator`; it already shipped with the
 scaffolding. Feeding it a real map instead of an empty one changes nothing
 about which lines it's allowed to touch.
+
+**A second, sibling table for Decision 2h's station-level output — adopting
+the per-station doc's own schema/endpoint naming verbatim, not a
+competing shape.** The per-station doc's Decision 2 already sketched this
+table by analogy, absent this document; that sketch converges cleanly with
+what Decision 2h actually produces, so this document adopts it directly
+rather than inventing a second name for the same thing:
+
+```sql
+-- crates/api/migrations/YYYYMMDDHHMMSS_station_full_coverage_samples.sql
+-- sketch, not final. Matches
+-- docs/superpowers/specs/2026-09-04-per-station-full-coverage-stats-design.md
+-- Decision 2's own sketch verbatim -- one row per (crs, operator),
+-- wholesale-replaced per resolution cycle, same "live snapshot, not
+-- history" posture as full_coverage_line_stats above and as
+-- station_samples itself (the sample-stats sibling this mirrors).
+CREATE TABLE station_full_coverage_samples (
+    crs         CHAR(3)     NOT NULL,
+    operator    TEXT        NOT NULL,
+    resolved_at TIMESTAMPTZ NOT NULL,
+    stats       JSONB       NOT NULL,
+    PRIMARY KEY (crs, operator)
+);
+```
+
+**Write path**: `full-coverage-consumer` POSTs this table's rows at the end
+of every correlation cycle, alongside (not instead of) the line-level POST
+above — a second HTTP call per cycle, to a second endpoint, matching the
+per-station doc's own assumed shape exactly:
+
+```
+POST /private/station-full-coverage-samples
+  [{ crs, operator, resolvedAt, stats: { total, delayed, cancelled, skipped, avgDelayMinutes } }, ...]
+```
+
+Only `(crs, operator)` pairs that actually resolved this cycle (2h: at
+least one population UID whose `toc_id` was learned) are included — a
+`Pending` per-station state is expressed the same way the line-level
+table expresses it (2e), by the row's absence for that day, not by a
+row carrying a sentinel.
+
+**No shared database transaction across the two POSTs.** `full-coverage-consumer`
+holds no direct database connection at all — like every other producer in
+this repo (`trust-consumer`, `poller-ldbws`, `schedule-reference`), it only
+ever reaches `api` over HTTP, and this repo has no existing precedent for
+a cross-endpoint transaction spanning two producer-owned tables written by
+one caller (`station_samples` and `line_status`/its rollups are already
+written by different producers on different cycles with no such
+coordination). The two POSTs are independent, best-effort calls; a partial
+failure (line POST succeeds, station POST fails, or vice versa) leaves the
+two tables briefly inconsistent for one cycle — a harmless, self-healing
+gap, the same kind of transient inconsistency this app already tolerates
+elsewhere (e.g. `stanox_crs`'s own reload cadence racing pin resolution,
+`crates/trust-consumer/src/process.rs`'s documented "failed post recovered
+by a restart, not by an in-process retry" posture). If a stronger
+consistency guarantee is ever wanted, it belongs in a single `api`-side
+handler accepting both payloads in one request/transaction — not designed
+here, since nothing in either document's current scope needs it.
+
+**Read path, gating, and rendering are the per-station doc's job, not
+this one's.** This document only designs the producer (the write side);
+`latest_station_full_coverage_samples`, the `(station, operator)`
+`full_coverage_enabled_for` gate, `compute_station_operator_stats`'s
+station-level merge, the route handler's 404-widening, and every frontend
+change are the per-station doc's Decisions 1/3/4/5/6 — unchanged by this
+revision, now resting on a real (if still-shadow-only) producer contract
+instead of a guess. The per-station doc's own Open Question 1 ("does the
+live consumer's actual persistence shape produce per-(station, operator)
+rows at all... what table/schema does it actually write them into... does
+it POST to `crates/api`") is answered by this section: yes, this exact
+table, this exact endpoint, POST, matching its own guessed shape almost
+exactly (this document's `stats` column is `JSONB`, matching its sketch;
+field names match). Its Open Question 4 (which internal-OAuth group gates
+the new endpoint) is answered by Decision 5 below: the same group/credential
+that gates `/private/full-coverage-stats`, since both endpoints are written
+by the same service.
 
 ### 4. Shadow-mode scope: what gets computed, and why the single flag doesn't need splitting
 
@@ -615,7 +797,18 @@ default for brokers/topic/mechanism, matching that file's own honest
 "unconfirmed" posture, `config.rs:11-20`), the shared+distinct OAuth2
 fields, `population_reload_secs` (mirrors `reference_reload_secs`),
 `shadow_lines` (Decision 4), `full_coverage_stats_url`/
-`line_population_url` (`api` endpoint URLs), `health_bind_url`.
+`station_full_coverage_stats_url`/`line_population_url` (`api` endpoint
+URLs — the second new per Decision 3's station-level write path),
+`health_bind_url`. Both `/private/full-coverage-stats` and
+`/private/station-full-coverage-samples` are gated by the **same** new
+internal-OAuth group (e.g. `internal_oauth_group_full_coverage` on `api`'s
+own `app.rs`, mirroring `internal_oauth_group_ldbws`'s existing
+one-group-per-producer convention,
+`crates/api/src/app.rs:91-100`) — one service, one credential, two
+endpoints it's allowed to write to, the same shape `schedule-reference`
+already uses for its own single credential against `/private/stanox-crs`,
+generalized to two endpoints since this producer writes two tables. This
+resolves the per-station doc's own Open Question 4 directly.
 
 **Metrics**: unlike `trust-consumer` (which notably has **no**
 `common::metrics::install` call at all — confirmed absent from its
@@ -626,7 +819,13 @@ every `poller-*`): `common::metrics::install(config.metrics_port)` behind a
 `metrics_enabled` flag, with new counters —
 `full_coverage_consumer_events_matched_total{line_id}`,
 `full_coverage_consumer_lines_available_total`/`_pending_total` (a per-cycle
-gauge pair), `full_coverage_consumer_cycle_duration_seconds` — genuinely new
+gauge pair), `full_coverage_consumer_stations_available_total`/`_pending_total`
+(Decision 2h's station-grain analog), `full_coverage_consumer_station_buckets_dropped_total`
+(Decision 2h's asymmetric-population case: a population UID whose
+Activation was never observed, so it inflated a line's `cancelled` count
+but was excluded from every station bucket — worth watching on its own,
+since a persistently high rate here would suggest a real Activation-visibility
+gap, not just an inherent per-day tail), `full_coverage_consumer_cycle_duration_seconds` — genuinely new
 operational surface this repo has never run before (a shadow producer with
 no live-severity blast radius, but real cost/correctness worth watching
 closely during the exact continuous-comparison period the binding condition
@@ -656,10 +855,14 @@ persistent Kafka consumer needs real liveness signal, the same reasoning
   scaffolding spec's Decision 5 "scoping stays identical" note.
 - **The `trust-schema` extraction refactor's own implementation.** Named as
   a real prerequisite in Decision 1, not performed by this design document.
-- **Per-station full-coverage stats.** A separate, concurrent workstream
-  (per this task's own briefing) — this document stays scoped to the
-  line-level `LineStatus` surfaces, matching the scaffolding spec's own
-  explicit line-level scoping.
+- **Per-station full-coverage *reading, gating, or rendering*.** Per the
+  2026-09-04 revision (Decision 2h, Decision 3's station-level half), this
+  consumer now **does** produce and write per-`(crs, operator)` data — but
+  the read query, the `LineDefinition.full_coverage_enabled`-derived
+  per-station gate, `compute_station_operator_stats`'s merge, the route
+  handler, and every frontend change remain entirely the per-station doc's
+  own scope (`docs/superpowers/specs/2026-09-04-per-station-full-coverage-stats-design.md`,
+  Decisions 1/3/4/5/6), unchanged by this document.
 - **A UI or comparison dashboard for reading shadow-mode data against live
   sampling.** This document designs the persistence layer
   (`full_coverage_line_stats`) that such a comparison would read from, not
@@ -712,8 +915,40 @@ persistent Kafka consumer needs real liveness signal, the same reasoning
    per-`(line_id, uid)` records vs. `trust-consumer`'s per-`train_id`
    records) is real design work for whichever implementation plan follows
    this document, not resolved here.
-7. **Whether `schedule-reference` gaining a second responsibility (Decision
-   2a) is the right long-term call, versus a dedicated crate, depends on
-   how the concurrent per-station full-coverage workstream's own needs
-   shake out** — flagged as a real, live coupling risk between two
-   in-flight design efforts, not something this document alone can settle.
+7. ~~Whether `schedule-reference` gaining a second responsibility (Decision
+   2a) is the right long-term call... depends on how the concurrent
+   per-station full-coverage workstream's own needs shake out~~ **Resolved
+   2026-09-04**: the per-station doc's own producer-contract need (its
+   Open Question 1) is now answered by this document's Decision 2h/3
+   directly — `schedule-reference`'s second responsibility (publishing
+   per-line CIF populations) is unaffected, since station-level output is
+   derived entirely from the *live TRUST stream* this consumer already
+   processes (2h), not from a second CIF-derived product `schedule-reference`
+   would need to publish. No coupling risk remains between the two
+   documents' producer-side designs; they converge on one write path.
+8. **The asymmetric-population finding (Decision 2h): a population UID
+   whose Activation is never observed inflates its line's `cancelled`
+   count but is silently excluded from every station bucket.** This is a
+   real, structural difference between the line-level and station-level
+   outputs, not a bug to fix in this pass — but it means a line's
+   full-coverage `cancelled` rate and the sum of its constituent stations'
+   `cancelled` rates will not reconcile exactly, which could be surprising
+   to a future reader comparing the two tables without having read this
+   section. Worth a code comment cross-referencing this doc at both write
+   sites, not just documented here.
+9. **Whether `(crs, operator)` is the right station-level key, versus
+   `(tiploc, operator)` or a segment-aware key, is inherited from the
+   per-station doc's own choice, not independently re-derived here** — this
+   document adopts `crs` because that's what the per-station doc's Decision
+   2 already committed to (matching `station_samples`'s own CRS-keyed
+   convention), and because CRS is what this consumer's STANOX translation
+   already produces without a second lookup (2c/2h). If the per-station
+   doc's own key choice changes before implementation, this document's
+   write path needs to change with it.
+10. **No shared transaction across the two POSTs (Decision 3) means a
+    line and its stations can briefly disagree on availability state for
+    one cycle** (e.g. the line POST succeeds and reads `Available` while a
+    station POST for the same line fails and still reads the prior cycle's
+    `Pending`/stale row). Judged an acceptable, self-healing gap given this
+    repo's existing tolerance for equivalent transient inconsistencies
+    elsewhere (Decision 3's own citations) — flagged, not eliminated.
