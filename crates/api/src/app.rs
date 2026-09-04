@@ -265,10 +265,7 @@ impl AppState {
                 "internal_oauth_group_ldbws",
                 &config.internal_oauth_group_ldbws,
             ),
-            (
-                "internal_oauth_group_tfl",
-                &config.internal_oauth_group_tfl,
-            ),
+            ("internal_oauth_group_tfl", &config.internal_oauth_group_tfl),
             (
                 "internal_oauth_group_trust_consumer",
                 &config.internal_oauth_group_trust_consumer,
