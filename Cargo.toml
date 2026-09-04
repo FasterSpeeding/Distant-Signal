@@ -18,4 +18,5 @@ members = [
     "crates/trust-schema",
     "crates/full-coverage-consumer",
     "crates/movement-feed",
+    "crates/movement-relay",
 ]
