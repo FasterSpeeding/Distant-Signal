@@ -3721,11 +3721,13 @@ name = "schedule-reference"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "common",
  "dotenv",
  "metrics",
  "reqwest 0.13.4",
+ "schedule-query",
  "serde",
  "serde_json",
  "tempfile",
