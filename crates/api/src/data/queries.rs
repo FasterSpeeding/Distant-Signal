@@ -774,6 +774,62 @@ pub async fn get_schedule_line_population(
         .map_err(Into::into)
 }
 
+/// Upserts one line's full-coverage stats row -- wholesale replaces any
+/// existing row for that `line_id` (a live snapshot, never merged/append).
+pub async fn upsert_full_coverage_line_stats(
+    pool: &PgPool,
+    rows: &[common::FullCoverageLineStatsRow],
+) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+    let mut count = 0u64;
+    for row in rows {
+        sqlx::query(
+            r#"
+            INSERT INTO full_coverage_line_stats
+                (line_id, service_date, availability, total, delayed, cancelled, skipped, avg_delay_minutes, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+            ON CONFLICT (line_id) DO UPDATE SET
+                service_date      = EXCLUDED.service_date,
+                availability      = EXCLUDED.availability,
+                total             = EXCLUDED.total,
+                delayed           = EXCLUDED.delayed,
+                cancelled         = EXCLUDED.cancelled,
+                skipped           = EXCLUDED.skipped,
+                avg_delay_minutes = EXCLUDED.avg_delay_minutes,
+                updated_at        = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(&row.line_id)
+        .bind(row.service_date)
+        .bind(&row.availability)
+        .bind(row.stats.total as i32)
+        .bind(row.stats.delayed as i32)
+        .bind(row.stats.cancelled as i32)
+        .bind(row.stats.skipped as i32)
+        .bind(row.stats.avg_delay_minutes)
+        .execute(&mut *tx)
+        .await?;
+        count += 1;
+    }
+    tx.commit().await?;
+    Ok(count)
+}
+
+/// The most recent `updated_at` across every `full_coverage_line_stats`
+/// row -- the freshness-only GET shape (Correction 2), mirroring
+/// `last_station_samples_fetch`'s own shape. The real reader of the rows
+/// themselves is `aggregator`'s own direct SQL
+/// (`load_full_coverage_line_stats`, Task 14), not this route.
+pub async fn last_full_coverage_line_stats_fetch(
+    pool: &PgPool,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let (fetched_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT MAX(updated_at) FROM full_coverage_line_stats")
+            .fetch_one(pool)
+            .await?;
+    Ok(fetched_at)
+}
+
 /// The latest `StationSample` polled for a single station, or `None` if
 /// `station_samples` has no row for that CRS yet. `station_samples` is
 /// wholesale-replaced per poll (one row per station, no history -- see

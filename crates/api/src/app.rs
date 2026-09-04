@@ -179,6 +179,18 @@ pub(crate) fn build_internal_oauth_routes(
             Method::GET,
             vec![config.internal_oauth_group_full_coverage.clone()],
         ),
+        // Same group, both methods -- this producer reading back its own
+        // last write, not a second caller (see Correction 2).
+        (
+            "/full-coverage-stats",
+            Method::POST,
+            vec![config.internal_oauth_group_full_coverage.clone()],
+        ),
+        (
+            "/full-coverage-stats",
+            Method::GET,
+            vec![config.internal_oauth_group_full_coverage.clone()],
+        ),
     ]
 }
 

@@ -72,6 +72,10 @@ pub fn router() -> Router {
             "/schedule-line-population",
             axum::routing::get(get_schedule_line_population).post(post_schedule_line_population),
         )
+        .route(
+            "/full-coverage-stats",
+            axum::routing::get(get_full_coverage_stats_last_fetched).post(post_full_coverage_stats),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -347,6 +351,32 @@ async fn get_schedule_line_population(
             .await
             .map_err(internal_error)?;
     Ok(Json(population))
+}
+
+/// `full-coverage-consumer`'s own periodic snapshot write/read-back --
+/// unlike `/schedule-line-population`, both methods here share the SAME
+/// group (`internal_oauth_group_full_coverage`), matching `/incidents`'s
+/// "one producer, one group, both methods" shape rather than
+/// `/stanox-crs`'s split, since this GET is only ever this producer
+/// re-checking its own last write, not a second, different caller (see
+/// Correction 2).
+async fn post_full_coverage_stats(
+    State(app): State<App>,
+    Json(rows): Json<Vec<common::FullCoverageLineStatsRow>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = queries::upsert_full_coverage_line_stats(&app.database, &rows)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+async fn get_full_coverage_stats_last_fetched(
+    State(app): State<App>,
+) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
+    let fetched_at = queries::last_full_coverage_line_stats_fetch(&app.database)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(LastFetchedResponse { fetched_at }))
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
@@ -798,5 +828,101 @@ mod db_tests {
         );
 
         delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+    }
+
+    async fn delete_full_coverage_fixture(pool: &PgPool, line_id: &str) {
+        sqlx::query("DELETE FROM full_coverage_line_stats WHERE line_id = $1")
+            .bind(line_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture full_coverage_line_stats row");
+    }
+
+    fn fixture_row(line_id: &str, availability: &str) -> common::FullCoverageLineStatsRow {
+        common::FullCoverageLineStatsRow {
+            line_id: line_id.to_string(),
+            service_date: "2026-09-04".parse().unwrap(),
+            availability: availability.to_string(),
+            stats: common::SampleStats {
+                total: 10,
+                delayed: 2,
+                cancelled: 1,
+                skipped: 0,
+                avg_delay_minutes: 3.5,
+            },
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                full_coverage_line_stats -- --ignored --test-threads=1`"]
+    async fn post_then_last_fetch_is_non_null_and_recent() {
+        let pool = connect().await;
+        delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
+
+        let before = queries::last_full_coverage_line_stats_fetch(&pool)
+            .await
+            .expect("query last fetch");
+
+        queries::upsert_full_coverage_line_stats(&pool, &[fixture_row(FIXTURE_LINE_ID, "pending")])
+            .await
+            .expect("seed full_coverage_line_stats row");
+
+        let after = queries::last_full_coverage_line_stats_fetch(&pool)
+            .await
+            .expect("query last fetch")
+            .expect("a row now exists");
+        if let Some(before) = before {
+            assert!(after >= before);
+        }
+        assert!(chrono::Utc::now() - after < chrono::Duration::minutes(1));
+
+        delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                full_coverage_line_stats -- --ignored --test-threads=1`"]
+    async fn a_second_post_for_the_same_line_updates_the_row_in_place() {
+        let pool = connect().await;
+        delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
+
+        queries::upsert_full_coverage_line_stats(&pool, &[fixture_row(FIXTURE_LINE_ID, "pending")])
+            .await
+            .expect("seed first row");
+        queries::upsert_full_coverage_line_stats(
+            &pool,
+            &[fixture_row(FIXTURE_LINE_ID, "available")],
+        )
+        .await
+        .expect("seed second row");
+
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT availability FROM full_coverage_line_stats WHERE line_id = $1")
+                .bind(FIXTURE_LINE_ID)
+                .fetch_all(&pool)
+                .await
+                .expect("select fixture rows");
+
+        assert_eq!(rows.len(), 1, "wholesale replace, not a second row");
+        assert_eq!(rows[0].0, "available");
+
+        delete_full_coverage_fixture(&pool, FIXTURE_LINE_ID).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                full_coverage_line_stats -- --ignored --test-threads=1`"]
+    async fn last_fetch_against_an_empty_table_is_null() {
+        let pool = connect().await;
+        sqlx::query("DELETE FROM full_coverage_line_stats")
+            .execute(&pool)
+            .await
+            .expect("clear the whole table for this test");
+
+        let fetched_at = queries::last_full_coverage_line_stats_fetch(&pool)
+            .await
+            .expect("query should succeed against an empty table");
+        assert_eq!(fetched_at, None);
     }
 }
