@@ -42,9 +42,26 @@ pub struct OperatorSampleStats {
 /// scheduled service on the line," not the curated 2-5-station LDBWS
 /// subset, so gating on the curated list would under-scope exactly the
 /// stations full coverage is meant to newly reach.
-fn full_coverage_enabled_for(crs: &str, operator: &str, lines: &[LineDefinition]) -> bool {
+///
+/// `full_coverage_enabled_default` is the global runtime override
+/// (`ServiceArguments::full_coverage_enabled_default`,
+/// `crates/api/src/data/config.rs`) -- the SAME flag name/semantics as
+/// `crates/aggregator`'s own line-level override, threaded down to this
+/// pure function rather than read from config directly so its existing
+/// callers (this module's own tests) keep calling it with an explicit,
+/// literal bool and stay pure-unit-testable. When `true`, a line covering
+/// this (crs, operator) counts as enabled regardless of its own
+/// `full_coverage_enabled` value. Defaults to `false` at the config layer,
+/// so passing it through changes nothing for a deployment that never set
+/// it.
+fn full_coverage_enabled_for(
+    crs: &str,
+    operator: &str,
+    lines: &[LineDefinition],
+    full_coverage_enabled_default: bool,
+) -> bool {
     lines.iter().any(|line| {
-        line.full_coverage_enabled
+        (line.full_coverage_enabled || full_coverage_enabled_default)
             && line.operators.iter().any(|op| op == operator)
             && line.stations.iter().any(|s| s.crs == crs)
     })
@@ -67,6 +84,7 @@ pub fn compute_station_operator_stats(
     defaults: &Defaults,
     full_coverage_rows: &[StationFullCoverageSample],
     lines: &[LineDefinition],
+    full_coverage_enabled_default: bool,
 ) -> Vec<OperatorSampleStats> {
     let operators: BTreeSet<&str> = sample
         .departures
@@ -97,15 +115,19 @@ pub fn compute_station_operator_stats(
                 SampleAvailability::Available(stats)
             };
 
-            let full_coverage_availability =
-                if !full_coverage_enabled_for(&sample.crs, operator, lines) {
-                    FullCoverageAvailability::NotEnabled
-                } else {
-                    match full_coverage_rows.iter().find(|r| r.operator == operator) {
-                        Some(row) => FullCoverageAvailability::Available(row.stats.clone()),
-                        None => FullCoverageAvailability::Pending,
-                    }
-                };
+            let full_coverage_availability = if !full_coverage_enabled_for(
+                &sample.crs,
+                operator,
+                lines,
+                full_coverage_enabled_default,
+            ) {
+                FullCoverageAvailability::NotEnabled
+            } else {
+                match full_coverage_rows.iter().find(|r| r.operator == operator) {
+                    Some(row) => FullCoverageAvailability::Available(row.stats.clone()),
+                    None => FullCoverageAvailability::Pending,
+                }
+            };
             // Reuses the existing accessor (lib.rs:858-863) rather than
             // re-deriving the same match a second time.
             let full_coverage_stats = full_coverage_availability.full_coverage_stats();
@@ -172,7 +194,7 @@ mod tests {
             ],
         );
 
-        let stats = compute_station_operator_stats(&sample, &defaults, &[], &[]);
+        let stats = compute_station_operator_stats(&sample, &defaults, &[], &[], false);
 
         assert_eq!(stats.len(), 2);
         // Alphabetical: GR before SR.
@@ -196,7 +218,7 @@ mod tests {
         let defaults = Defaults::default();
         let sample = sample("EDB", vec![]);
 
-        let stats = compute_station_operator_stats(&sample, &defaults, &[], &[]);
+        let stats = compute_station_operator_stats(&sample, &defaults, &[], &[], false);
 
         assert!(stats.is_empty());
     }
@@ -209,7 +231,7 @@ mod tests {
         };
         let sample = sample("EDB", vec![departure("GR", 0, false, vec!["EDB"])]);
 
-        let stats = compute_station_operator_stats(&sample, &defaults, &[], &[]);
+        let stats = compute_station_operator_stats(&sample, &defaults, &[], &[], false);
 
         assert_eq!(stats.len(), 1);
         match &stats[0].availability {
@@ -229,7 +251,7 @@ mod tests {
         // per-route) definition means this must not count as skipped.
         let sample = sample("EDB", vec![departure("GR", 0, false, vec!["HYM"])]);
 
-        let stats = compute_station_operator_stats(&sample, &defaults, &[], &[]);
+        let stats = compute_station_operator_stats(&sample, &defaults, &[], &[], false);
 
         assert_eq!(stats.len(), 1);
         match &stats[0].availability {
@@ -246,7 +268,7 @@ mod tests {
         };
         let sample = sample("EDB", vec![departure("GR", 0, true, vec!["EDB"])]);
 
-        let stats = compute_station_operator_stats(&sample, &defaults, &[], &[]);
+        let stats = compute_station_operator_stats(&sample, &defaults, &[], &[], false);
 
         assert_eq!(stats.len(), 1);
         match &stats[0].availability {
@@ -317,11 +339,11 @@ mod tests {
     fn full_coverage_enabled_for_true_only_when_a_line_covers_both_the_crs_and_the_operator() {
         // Covers this CRS but not this operator -> false.
         let lines = vec![line("L1", &["SR"], &["EDB"], true)];
-        assert!(!full_coverage_enabled_for("EDB", "GR", &lines));
+        assert!(!full_coverage_enabled_for("EDB", "GR", &lines, false));
 
         // Covers this operator but at a different station -> false.
         let lines = vec![line("L1", &["GR"], &["WAT"], true)];
-        assert!(!full_coverage_enabled_for("EDB", "GR", &lines));
+        assert!(!full_coverage_enabled_for("EDB", "GR", &lines, false));
 
         // Two lines cover this (crs, operator); only one is enabled -> true
         // (union over every covering line).
@@ -329,7 +351,36 @@ mod tests {
             line("L1", &["GR"], &["EDB"], false),
             line("L2", &["GR"], &["EDB"], true),
         ];
-        assert!(full_coverage_enabled_for("EDB", "GR", &lines));
+        assert!(full_coverage_enabled_for("EDB", "GR", &lines, false));
+    }
+
+    /// The four-way OR-gate matrix `full_coverage_enabled_for` must satisfy:
+    /// (default flag, line's own flag) -> enabled. Only (false, false) is
+    /// disabled; the other three are enabled, including the NEW case this
+    /// task adds -- (true, false) -- where the global override alone turns
+    /// a line on.
+    #[test]
+    fn full_coverage_enabled_for_default_false_own_false_is_disabled_unchanged_behavior() {
+        let lines = vec![line("L1", &["GR"], &["EDB"], false)];
+        assert!(!full_coverage_enabled_for("EDB", "GR", &lines, false));
+    }
+
+    #[test]
+    fn full_coverage_enabled_for_default_false_own_true_is_enabled_unchanged_behavior() {
+        let lines = vec![line("L1", &["GR"], &["EDB"], true)];
+        assert!(full_coverage_enabled_for("EDB", "GR", &lines, false));
+    }
+
+    #[test]
+    fn full_coverage_enabled_for_default_true_own_false_is_enabled_new_override_case() {
+        let lines = vec![line("L1", &["GR"], &["EDB"], false)];
+        assert!(full_coverage_enabled_for("EDB", "GR", &lines, true));
+    }
+
+    #[test]
+    fn full_coverage_enabled_for_default_true_own_true_is_enabled_redundant_but_not_broken() {
+        let lines = vec![line("L1", &["GR"], &["EDB"], true)];
+        assert!(full_coverage_enabled_for("EDB", "GR", &lines, true));
     }
 
     #[test]
@@ -341,7 +392,7 @@ mod tests {
         let sample = sample("EDB", vec![departure("GR", 0, false, vec![])]);
         let lines = vec![line("L1", &["GR"], &["EDB"], true)];
 
-        let stats = compute_station_operator_stats(&sample, &defaults, &[], &lines);
+        let stats = compute_station_operator_stats(&sample, &defaults, &[], &lines, false);
 
         assert_eq!(stats.len(), 1);
         assert_eq!(
@@ -362,7 +413,7 @@ mod tests {
         let row_stats = sample_stats(52);
         let rows = vec![full_coverage_row("EDB", "GR", row_stats.clone())];
 
-        let stats = compute_station_operator_stats(&sample, &defaults, &rows, &lines);
+        let stats = compute_station_operator_stats(&sample, &defaults, &rows, &lines, false);
 
         assert_eq!(stats.len(), 1);
         assert_eq!(
@@ -385,7 +436,7 @@ mod tests {
         // A stray full-coverage row exists anyway -- must not flip the gate.
         let rows = vec![full_coverage_row("EDB", "GR", sample_stats(10))];
 
-        let stats = compute_station_operator_stats(&sample, &defaults, &rows, &lines);
+        let stats = compute_station_operator_stats(&sample, &defaults, &rows, &lines, false);
 
         assert_eq!(stats.len(), 1);
         assert_eq!(
@@ -393,6 +444,32 @@ mod tests {
             FullCoverageAvailability::NotEnabled
         );
         assert!(stats[0].full_coverage_stats.is_none());
+    }
+
+    #[test]
+    fn full_coverage_enabled_default_true_enables_a_line_whose_own_flag_is_false() {
+        let defaults = Defaults {
+            min_sample_size: 1,
+            ..Defaults::default()
+        };
+        let sample = sample("EDB", vec![departure("GR", 0, false, vec![])]);
+        // Same setup as the test above (a line covering this (crs,
+        // operator) with its own flag false, plus a stray row) -- the
+        // only difference is `full_coverage_enabled_default: true` this
+        // time, which must flip the gate on despite the line's own flag
+        // staying false (the new OR-gate case this task adds).
+        let lines = vec![line("L1", &["GR"], &["EDB"], false)];
+        let row_stats = sample_stats(10);
+        let rows = vec![full_coverage_row("EDB", "GR", row_stats.clone())];
+
+        let stats = compute_station_operator_stats(&sample, &defaults, &rows, &lines, true);
+
+        assert_eq!(stats.len(), 1);
+        assert_eq!(
+            stats[0].full_coverage_availability,
+            FullCoverageAvailability::Available(row_stats.clone())
+        );
+        assert_eq!(stats[0].full_coverage_stats, Some(row_stats));
     }
 
     #[test]
@@ -404,7 +481,7 @@ mod tests {
         let lines = vec![line("L1", &["GR"], &["EDB"], true)];
         let rows = vec![full_coverage_row("EDB", "GR", sample_stats(30))];
 
-        let stats = compute_station_operator_stats(&sample, &defaults, &rows, &lines);
+        let stats = compute_station_operator_stats(&sample, &defaults, &rows, &lines, false);
 
         assert_eq!(stats.len(), 1);
         assert_eq!(stats[0].operator, "GR");
