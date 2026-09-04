@@ -18,7 +18,10 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use common::ingest::LastFetchedResponse;
-use common::{IncidentMessage, LineStatusReport, StationReference, StationSample, TocReference};
+use common::{
+    IncidentMessage, LineStatusReport, StationFullCoverageSample, StationReference, StationSample,
+    TocReference,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
@@ -42,6 +45,11 @@ pub fn router() -> Router {
         .route(
             "/station-samples",
             axum::routing::get(get_station_samples_last_fetched).post(post_station_samples),
+        )
+        .route(
+            "/station-full-coverage-samples",
+            axum::routing::get(get_station_full_coverage_samples_last_fetched)
+                .post(post_station_full_coverage_samples),
         )
         .route(
             "/tfl-line-status",
@@ -137,6 +145,25 @@ async fn post_station_samples(
     Json(samples): Json<Vec<StationSample>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
     let upserted = queries::upsert_station_samples(&app.database, &samples)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+async fn get_station_full_coverage_samples_last_fetched(
+    State(app): State<App>,
+) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
+    let fetched_at = queries::last_station_full_coverage_samples_fetch(&app.database)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(LastFetchedResponse { fetched_at }))
+}
+
+async fn post_station_full_coverage_samples(
+    State(app): State<App>,
+    Json(samples): Json<Vec<StationFullCoverageSample>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = queries::upsert_station_full_coverage_samples(&app.database, &samples)
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
@@ -276,4 +303,319 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
         StatusCode::INTERNAL_SERVER_ERROR,
         "ingestion failed".to_string(),
     )
+}
+
+/// HTTP-layer tests for the new `/station-full-coverage-samples` pair,
+/// exercised against a live database -- first test module in this file,
+/// mirrors `routes::station_stats::db_tests`'s exact `test_app`/`connect`/
+/// fixture-CRS-cleanup pattern, including its own colocated `test_app`
+/// helper (this repo's convention is "colocated per-file rather than
+/// shared, until a third file needs it too" -- see that module's own doc
+/// comment). Uses the reserved `Z…` fixture CRS namespace so cleanup can
+/// never touch real data.
+#[cfg(test)]
+mod db_tests {
+    use axum::body::Body;
+    use axum::http::Request;
+    use serde_json::{Value, json};
+    use sqlx::PgPool;
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::app::{App, AppState};
+    use crate::auth::oidc::{OidcClient, OidcConfig};
+    use crate::data::config::{LineCatalogue, ServiceArguments};
+
+    /// Copied from `routes::station_stats::db_tests::test_app` (that
+    /// module's own doc comment: colocated per-file rather than shared,
+    /// until a third file needs it too). Every field an inert placeholder
+    /// except `database`, which the caller supplies -- this route touches
+    /// nothing else on `App`.
+    fn test_app(pool: PgPool) -> App {
+        let config = ServiceArguments {
+            bind_url: "0.0.0.0:0".to_string(),
+            database_url: String::new(),
+            redis_url: "redis://127.0.0.1:0".to_string(),
+            internal_oauth_issuer_url: "https://example.invalid".to_string(),
+            internal_oauth_client_id: "test-internal-oauth-client".to_string(),
+            internal_oauth_group_incidents: "svc-poller-incidents".to_string(),
+            internal_oauth_group_stations: "svc-poller-stations".to_string(),
+            internal_oauth_group_tocs: "svc-poller-tocs".to_string(),
+            internal_oauth_group_ldbws: "svc-poller-ldbws".to_string(),
+            internal_oauth_group_tfl: "svc-poller-tfl".to_string(),
+            internal_oauth_group_trust_consumer: "svc-trust-consumer".to_string(),
+            internal_oauth_group_schedule_ingest: "svc-schedule-ingest".to_string(),
+            internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
+            internal_oauth_group_full_coverage: "svc-full-coverage-consumer".to_string(),
+            sso_issuer_url: "https://example.invalid".to_string(),
+            sso_client_id: "test-client".to_string(),
+            sso_client_secret: "test-secret".to_string(),
+            sso_redirect_url: "https://example.invalid/callback".to_string(),
+            sso_post_login_redirect_url: "https://example.invalid/".to_string(),
+            session_ttl_days: 14,
+            history_retention_days: 7,
+            metrics_enabled: false,
+            defaults_file: None,
+            lines: LineCatalogue(vec![]),
+            vapid_public_key: "test-vapid-public-key".to_string(),
+        };
+
+        std::sync::Arc::new(AppState {
+            config,
+            database: pool,
+            redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
+            oidc: OidcClient::new(OidcConfig {
+                issuer_url: "https://example.invalid".to_string(),
+                client_id: "test-client".to_string(),
+                client_secret: "test-secret".to_string(),
+                redirect_url: "https://example.invalid/callback".to_string(),
+            })
+            .expect("construct placeholder oidc client"),
+            internal_oauth_verifier: crate::auth::internal_oauth::ServiceTokenVerifier::new(
+                "https://example.invalid".to_string(),
+                "test-internal-oauth-client".to_string(),
+            )
+            .expect("construct placeholder internal-oauth verifier"),
+            internal_oauth_routes: Vec::new(),
+        })
+    }
+
+    async fn connect() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    async fn delete_fixture(pool: &PgPool, crs: &str, operator: &str) {
+        sqlx::query("DELETE FROM station_full_coverage_samples WHERE crs = $1 AND operator = $2")
+            .bind(crs)
+            .bind(operator)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture station_full_coverage_samples row");
+    }
+
+    fn sample_body(crs: &str, operator: &str, resolved_at: chrono::DateTime<chrono::Utc>) -> Value {
+        json!([{
+            "crs": crs,
+            "operator": operator,
+            "resolved_at": resolved_at,
+            "stats": {
+                "total": 10, "delayed": 2, "cancelled": 1, "skipped": 0, "avgDelayMinutes": 3.5
+            }
+        }])
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                station_full_coverage_samples -- --ignored --test-threads=1`"]
+    async fn station_full_coverage_samples_post_one_row_upserts_and_lands_with_the_right_shape() {
+        let pool = connect().await;
+        delete_fixture(&pool, "ZFA", "ZA").await;
+
+        let resolved_at = chrono::Utc::now();
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/station-full-coverage-samples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&sample_body("ZFA", "ZA", resolved_at)).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json, serde_json::json!({"upserted": 1}));
+
+        let stats: serde_json::Value = sqlx::query_scalar(
+            "SELECT stats FROM station_full_coverage_samples WHERE crs = 'ZFA' AND operator = 'ZA'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("row landed");
+        assert_eq!(
+            stats,
+            serde_json::json!({
+                "total": 10, "delayed": 2, "cancelled": 1, "skipped": 0, "avgDelayMinutes": 3.5
+            })
+        );
+
+        delete_fixture(&pool, "ZFA", "ZA").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                station_full_coverage_samples -- --ignored --test-threads=1`"]
+    async fn station_full_coverage_samples_repeat_post_updates_in_place_not_duplicated() {
+        let pool = connect().await;
+        delete_fixture(&pool, "ZFB", "ZB").await;
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+
+        let first_resolved_at = chrono::Utc::now();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/station-full-coverage-samples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&sample_body("ZFB", "ZB", first_resolved_at)).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let second_resolved_at = first_resolved_at + chrono::Duration::minutes(1);
+        let second_body = json!([{
+            "crs": "ZFB",
+            "operator": "ZB",
+            "resolved_at": second_resolved_at,
+            "stats": {
+                "total": 20, "delayed": 5, "cancelled": 0, "skipped": 1, "avgDelayMinutes": 1.0
+            }
+        }]);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/station-full-coverage-samples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&second_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT crs, operator FROM station_full_coverage_samples WHERE crs = 'ZFB' AND operator = 'ZB'",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("query rows");
+        assert_eq!(
+            rows.len(),
+            1,
+            "row should be updated in place, not duplicated"
+        );
+
+        let stats: serde_json::Value = sqlx::query_scalar(
+            "SELECT stats FROM station_full_coverage_samples WHERE crs = 'ZFB' AND operator = 'ZB'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("row present");
+        assert_eq!(
+            stats,
+            serde_json::json!({
+                "total": 20, "delayed": 5, "cancelled": 0, "skipped": 1, "avgDelayMinutes": 1.0
+            })
+        );
+
+        delete_fixture(&pool, "ZFB", "ZB").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                station_full_coverage_samples -- --ignored --test-threads=1`"]
+    async fn station_full_coverage_samples_get_last_fetched_after_seeding_is_not_null() {
+        let pool = connect().await;
+        delete_fixture(&pool, "ZFC", "ZC").await;
+
+        let resolved_at = chrono::Utc::now();
+        sqlx::query(
+            "INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats) \
+             VALUES ('ZFC', 'ZC', $1, '{\"total\":1,\"delayed\":0,\"cancelled\":0,\"skipped\":0,\"avgDelayMinutes\":0.0}')",
+        )
+        .bind(resolved_at)
+        .execute(&pool)
+        .await
+        .expect("seed fixture row");
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/station-full-coverage-samples")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        let fetched_at = json["fetchedAt"]
+            .as_str()
+            .expect("fetchedAt should be a non-null timestamp string");
+        let fetched_at: chrono::DateTime<chrono::Utc> = fetched_at.parse().unwrap();
+        assert!(
+            (fetched_at - resolved_at).num_seconds().abs() < 5,
+            "fetchedAt {fetched_at} should be close to the seeded resolved_at {resolved_at}"
+        );
+
+        delete_fixture(&pool, "ZFC", "ZC").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                station_full_coverage_samples -- --ignored --test-threads=1`"]
+    async fn station_full_coverage_samples_get_last_fetched_on_an_empty_table_is_null() {
+        // No fixture row is seeded by this test at all, on either the CRS
+        // this test uses or otherwise -- `last_station_full_coverage_samples_fetch`
+        // is a bare `MAX(resolved_at)` over the whole table (unlike every
+        // other query in this module, it isn't scoped by CRS), so this
+        // assertion relies on the plan's own binding Non-goal that no real
+        // producer writes any row into this table yet (see the plan's
+        // Non-goals section) -- in any test/CI database this table is
+        // therefore expected to be genuinely empty, not forced empty by a
+        // destructive TRUNCATE against a real deployment's table.
+        let pool = connect().await;
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/station-full-coverage-samples")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json, serde_json::json!({"fetchedAt": null}));
+    }
 }
