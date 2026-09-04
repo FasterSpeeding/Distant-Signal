@@ -90,6 +90,18 @@ pub struct ServiceArguments {
     pub internal_oauth_group_schedule_ingest: String,
     #[arg(long, env, default_value = "svc-schedule-reference")]
     pub internal_oauth_group_schedule_reference: String,
+    /// Gates both `POST/GET /private/station-full-coverage-samples`
+    /// (Task 5, this plan) and a separate, not-yet-built
+    /// `/private/full-coverage-stats` (the per-line counterpart, a different
+    /// chain's own future task) -- one producer service
+    /// (`full-coverage-consumer`, not yet built), one credential, two
+    /// endpoints it may write to. Resolves
+    /// docs/superpowers/specs/2026-09-04-per-station-full-coverage-stats-design.md
+    /// Open Question #4 per
+    /// docs/superpowers/specs/2026-09-04-option-b-live-consumer-design.md
+    /// Decision 5.
+    #[arg(long, env, default_value = "svc-full-coverage-consumer")]
+    pub internal_oauth_group_full_coverage: String,
     /// OIDC issuer base URL (e.g. `https://sso.example.com/realms/rail`).
     /// `crates/api` discovers every other endpoint (authorization, token,
     /// JWKS) from this single URL's `.well-known/openid-configuration`

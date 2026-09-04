@@ -463,7 +463,9 @@ async fn get_line_half_hourly_stats(
         .await
         .map_err(internal_error)?;
 
-    Ok(Json(rows.into_iter().map(half_hourly_stats_to_json).collect()))
+    Ok(Json(
+        rows.into_iter().map(half_hourly_stats_to_json).collect(),
+    ))
 }
 
 /// Full-coverage sibling of `daily_stats_to_json` -- identical
@@ -817,7 +819,10 @@ mod tests {
         let row = half_hourly_stats_row(100, 10, 5, 2, 95, 190.0);
         let json = half_hourly_stats_to_json(row);
 
-        assert_eq!(json["halfHourStart"], serde_json::json!("2026-08-15T14:00:00Z"));
+        assert_eq!(
+            json["halfHourStart"],
+            serde_json::json!("2026-08-15T14:00:00Z")
+        );
         assert_eq!(json["avgDelayMinutes"], serde_json::json!(2.0));
         assert_eq!(json["delayRate"], serde_json::json!(0.1));
     }
@@ -1145,6 +1150,7 @@ mod db_tests {
             internal_oauth_group_trust_consumer: "svc-trust-consumer".to_string(),
             internal_oauth_group_schedule_ingest: "svc-schedule-ingest".to_string(),
             internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
+            internal_oauth_group_full_coverage: "svc-full-coverage-consumer".to_string(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),
             sso_client_secret: "test-secret".to_string(),
