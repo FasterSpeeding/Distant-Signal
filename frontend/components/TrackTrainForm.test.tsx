@@ -118,7 +118,7 @@ describe('TrackTrainForm', () => {
 
   it('pre-fills the origin field from initialOrigin', async () => {
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
-    expect(screen.getByRole('combobox', { name: /Origin CRS code/ })).toHaveValue('WAT');
+    expect(screen.getByRole('combobox', { name: /Origin station/ })).toHaveValue('WAT');
     // A valid `initialOrigin` fires the departures effect on mount --
     // `waitFor` lets that resolve within `act(...)` before the test ends,
     // avoiding a spurious "not wrapped in act" warning.
@@ -132,7 +132,7 @@ describe('TrackTrainForm', () => {
 
   it('shows a field error for a non-3-letter origin code', () => {
     renderWithMantine(<TrackTrainForm />);
-    const field = screen.getByRole('combobox', { name: /Origin CRS code/ });
+    const field = screen.getByRole('combobox', { name: /Origin station/ });
     fireEvent.change(field, { target: { value: 'WATERLOO' } });
     fireEvent.blur(field);
     expect(screen.getByText('Must be a 3-letter CRS code')).toBeInTheDocument();
@@ -140,7 +140,7 @@ describe('TrackTrainForm', () => {
 
   it('does not show the origin error while still typing (no blur fired)', async () => {
     renderWithMantine(<TrackTrainForm />);
-    fireEvent.change(screen.getByRole('combobox', { name: /Origin CRS code/ }), { target: { value: 'Wok' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /Origin station/ }), { target: { value: 'Wok' } });
     expect(screen.queryByText('Must be a 3-letter CRS code')).not.toBeInTheDocument();
     // 'Wok' is a valid CRS -- see the previous test's comment on why this
     // awaits the departures effect before the test ends.
@@ -149,7 +149,7 @@ describe('TrackTrainForm', () => {
 
   it('shows no error on blur when the origin is a valid 3-letter code', async () => {
     renderWithMantine(<TrackTrainForm />);
-    const field = screen.getByRole('combobox', { name: /Origin CRS code/ });
+    const field = screen.getByRole('combobox', { name: /Origin station/ });
     fireEvent.change(field, { target: { value: 'WAT' } });
     fireEvent.blur(field);
     expect(screen.queryByText('Must be a 3-letter CRS code')).not.toBeInTheDocument();
@@ -159,19 +159,20 @@ describe('TrackTrainForm', () => {
   });
 
   it('selecting an origin suggestion (via onChange) still submits the resolved origin_crs', async () => {
-    const fetchMock = vi.mocked(fetch);
-    // `mockImplementation`, not `mockResolvedValue`: this picker's own
-    // departures effect and the eventual `/api/Train/track` POST both read
-    // a `Response` body in this test, and a `Response` body can only be
-    // consumed once -- `mockResolvedValue` would hand out the *same*
-    // instance to both calls. A factory gives each `fetch` call its own
-    // fresh, unconsumed `Response`.
-    fetchMock.mockImplementation(() =>
-      Promise.resolve(new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 })),
-    );
+    // `mockFetchByUrl`, not a blanket `mockImplementation`: this picker's
+    // own departures effect (fired once Origin resolves to 'WOK' below)
+    // and the eventual `/api/Train/track` POST both read a `Response`
+    // body, and a `Response` body can only be consumed once -- a blanket
+    // factory handing back the SAME track-response shape for every URL
+    // would also hand the departures fetch a non-array `rows`, which the
+    // picker's own filtering now dereferences (`.filter`), so it must be
+    // routed by URL instead. Each call still gets its own fresh,
+    // unconsumed `Response`.
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
 
     renderWithMantine(<TrackTrainForm />);
-    fireEvent.change(screen.getByRole('combobox', { name: /Origin CRS code/ }), { target: { value: 'WOK' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /Origin station/ }), { target: { value: 'WOK' } });
     fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
       target: { value: '2026-08-28 18:32:00' },
     });
@@ -185,12 +186,11 @@ describe('TrackTrainForm', () => {
   });
 
   it('leaving Destination and Operator empty omits both keys from the submitted body', async () => {
-    const fetchMock = vi.mocked(fetch);
-    // See the previous test's comment: a fresh `Response` per call, since
-    // the departures effect and the submit POST both read a body.
-    fetchMock.mockImplementation(() =>
-      Promise.resolve(new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 })),
-    );
+    // See the previous test's comment: routed by URL, not a blanket mock,
+    // since the departures effect and the submit POST both read a body
+    // and the picker now dereferences `rows` as an array.
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
     fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
@@ -207,13 +207,10 @@ describe('TrackTrainForm', () => {
   });
 
   it('on success, POSTs to /api/Train/track and redirects to /train/by-id/{trackingId}', async () => {
-    const fetchMock = vi.mocked(fetch);
-    // See the earlier "selecting an origin suggestion" test's comment: a
-    // fresh `Response` per call, since the departures effect and the
-    // submit POST both read a body.
-    fetchMock.mockImplementation(() =>
-      Promise.resolve(new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 })),
-    );
+    // See the earlier "selecting an origin suggestion" test's comment:
+    // routed by URL, not a blanket mock.
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
     fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
@@ -234,7 +231,7 @@ describe('TrackTrainForm', () => {
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
-    fireEvent.change(screen.getByRole('combobox', { name: /Destination CRS code/ }), { target: { value: 'WOK' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /Destination station/ }), { target: { value: 'WOK' } });
     fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
       target: { value: '2026-08-28 18:32:00' },
     });
@@ -248,8 +245,8 @@ describe('TrackTrainForm', () => {
     // Unlike PinToggle's toggle-and-forget click, the form's own input
     // must survive a 401 -- Decision 4's explicit "preserve typed values"
     // call.
-    expect(screen.getByRole('combobox', { name: /Origin CRS code/ })).toHaveValue('WAT');
-    expect(screen.getByRole('combobox', { name: /Destination CRS code/ })).toHaveValue('WOK');
+    expect(screen.getByRole('combobox', { name: /Origin station/ })).toHaveValue('WAT');
+    expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('WOK');
   });
 
   it('on a 400, shows the server error message inline', async () => {
@@ -325,6 +322,13 @@ describe('TrackTrainForm', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
+      // The picker's own departures effect (fired for `initialOrigin="WAT"`
+      // below) also goes through this mock -- routed to an inert empty
+      // array first, same reasoning as `mockFetchByUrl`'s own default,
+      // since the picker now dereferences `rows` as an array.
+      if (/\/api\/stations\/[A-Za-z]{3}\/departures$/.test(url)) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      }
       if (url === '/api/Train/track') {
         return Promise.resolve(new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }));
       }
@@ -352,6 +356,11 @@ describe('TrackTrainForm', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
+      // See the previous test's comment on why the departures fetch is
+      // routed separately, to an inert empty array.
+      if (/\/api\/stations\/[A-Za-z]{3}\/departures$/.test(url)) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      }
       if (url === '/api/Train/track') {
         return Promise.resolve(new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }));
       }
@@ -370,13 +379,10 @@ describe('TrackTrainForm', () => {
   });
 
   it('without attachTicketId: never calls the attach route', async () => {
-    const fetchMock = vi.mocked(fetch);
-    // See the earlier "selecting an origin suggestion" test's comment: a
-    // fresh `Response` per call, since the departures effect and the
-    // submit POST both read a body.
-    fetchMock.mockImplementation(() =>
-      Promise.resolve(new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 })),
-    );
+    // See the earlier "selecting an origin suggestion" test's comment:
+    // routed by URL, not a blanket mock.
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
     fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
@@ -395,13 +401,10 @@ describe('TrackTrainForm', () => {
     // during BST, UTC+1): the naive `new Date(...).toISOString().slice(0,
     // 10)` approach would roll this back to '2026-08-28', the WRONG
     // calendar date the user actually picked.
-    const fetchMock = vi.mocked(fetch);
-    // See the earlier "selecting an origin suggestion" test's comment: a
-    // fresh `Response` per call, since the departures effect and the
-    // submit POST both read a body.
-    fetchMock.mockImplementation(() =>
-      Promise.resolve(new Response(JSON.stringify({ trackingId: 7, resolutionStatus: 'pending' }), { status: 200 })),
-    );
+    // See the earlier "selecting an origin suggestion" test's comment:
+    // routed by URL, not a blanket mock.
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
     fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
@@ -434,12 +437,18 @@ describe('TrackTrainForm', () => {
 
   it('submits successfully after clicking Now, sending a well-formed ISO scheduled_departure', async () => {
     const fetchMock = vi.mocked(fetch);
-    // See the earlier "selecting an origin suggestion" test's comment: a
-    // fresh `Response` per call, since the departures effect and the
-    // submit POST both read a body.
-    fetchMock.mockImplementation(() =>
-      Promise.resolve(new Response(JSON.stringify({ trackingId: 99, resolutionStatus: 'pending' }), { status: 200 })),
-    );
+    // See the earlier "selecting an origin suggestion" test's comment on
+    // why the departures fetch must be routed separately from the submit
+    // POST -- this test additionally needs a specific `trackingId` (99)
+    // in the submit response, so it routes explicitly rather than reusing
+    // `mockFetchByUrl`'s fixed 42.
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/api\/stations\/[A-Za-z]{3}\/departures$/.test(url)) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ trackingId: 99, resolutionStatus: 'pending' }), { status: 200 }));
+    });
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Now' }));
@@ -489,7 +498,7 @@ describe('TrackTrainForm', () => {
       vi.stubGlobal('fetch', fetchMock);
 
       renderWithMantine(<TrackTrainForm />);
-      fireEvent.change(screen.getByRole('combobox', { name: /Origin CRS code/ }), { target: { value: 'WAT' } });
+      fireEvent.change(screen.getByRole('combobox', { name: /Origin station/ }), { target: { value: 'WAT' } });
 
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith('/api/stations/WAT/departures', expect.anything());
@@ -537,7 +546,7 @@ describe('TrackTrainForm', () => {
 
       // Clicking the cancelled row's text does not fill any field.
       fireEvent.click(screen.getByText(/10:15/));
-      expect(screen.getByRole('combobox', { name: /Destination CRS code/ })).toHaveValue('');
+      expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('');
     });
 
     it('clicking a non-cancelled row fills destinationCrs/operator/scheduledDeparture', async () => {
@@ -555,7 +564,7 @@ describe('TrackTrainForm', () => {
       const today = dayjs().format('YYYY-MM-DD');
       fireEvent.click(onTimeRow);
 
-      expect(screen.getByRole('combobox', { name: /Destination CRS code/ })).toHaveValue('BSK');
+      expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('BSK');
       expect(screen.getByRole('combobox', { name: /Operator/ })).toHaveValue('SW');
       const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
       expect(picker.value).toBe(`${today} 10:40:00`);
@@ -569,16 +578,16 @@ describe('TrackTrainForm', () => {
 
       const onTimeRow = await screen.findByRole('button', { name: /10:40/ });
       fireEvent.click(onTimeRow);
-      expect(screen.getByRole('combobox', { name: /Destination CRS code/ })).toHaveValue('BSK');
+      expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('BSK');
 
-      fireEvent.change(screen.getByRole('combobox', { name: /Origin CRS code/ }), { target: { value: 'EDB' } });
+      fireEvent.change(screen.getByRole('combobox', { name: /Origin station/ }), { target: { value: 'EDB' } });
       // 'EDB' re-fires the departures effect for the new origin -- await
       // its resolution before asserting, so the assertions below observe
       // settled state and the pending state update doesn't leak past this
       // test's end (see the "pre-fills the origin field" test's comment).
       await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/stations/EDB/departures', expect.anything()));
 
-      expect(screen.getByRole('combobox', { name: /Destination CRS code/ })).toHaveValue('BSK');
+      expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('BSK');
       expect(screen.getByRole('combobox', { name: /Operator/ })).toHaveValue('SW');
       const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
       expect(picker.value).toMatch(/^\d{4}-\d{2}-\d{2} 10:40:00$/);
@@ -647,7 +656,7 @@ describe('TrackTrainForm', () => {
       const today = dayjs().format('YYYY-MM-DD');
       fireEvent.click(row);
 
-      expect(screen.getByRole('combobox', { name: /Destination CRS code/ })).toHaveValue('CRE');
+      expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('CRE');
       expect(screen.getByRole('combobox', { name: /Operator/ })).toHaveValue('');
       const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
       expect(picker.value).toBe(`${today} 08:22:00`);
@@ -661,7 +670,7 @@ describe('TrackTrainForm', () => {
       vi.stubGlobal('fetch', fetchMock);
 
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
-      const destinationField = screen.getByRole('combobox', { name: /Destination CRS code/ });
+      const destinationField = screen.getByRole('combobox', { name: /Destination station/ });
       fireEvent.change(destinationField, { target: { value: 'EXISTING' } });
 
       const row = await screen.findByRole('button', { name: /09:00/ });
@@ -670,6 +679,106 @@ describe('TrackTrainForm', () => {
       expect(destinationField).toHaveValue('EXISTING');
       const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
       expect(picker.value).toMatch(/09:00:00$/);
+    });
+
+    it('shows the picker container with a prompt before Origin is filled in', () => {
+      renderWithMantine(<TrackTrainForm />);
+      expect(screen.getByText('Enter an origin station above to see upcoming departures.')).toBeInTheDocument();
+    });
+
+    it('filters LDBWS rows by a resolved Destination code, but not by still-partial text', async () => {
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await screen.findByRole('button', { name: /10:40/ });
+
+      // Partial, unresolved text -- both rows still shown, per Decision 1's
+      // "no filtering while the field still holds partial/typed-name text".
+      fireEvent.change(screen.getByRole('combobox', { name: /Destination station/ }), { target: { value: 'Bo' } });
+      expect(screen.getByText(/10:15/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /10:40/ })).toBeInTheDocument();
+
+      // A resolved 3-letter code narrows to the row whose destinationCrs
+      // matches it, case-insensitively.
+      fireEvent.change(screen.getByRole('combobox', { name: /Destination station/ }), { target: { value: 'bsk' } });
+      expect(screen.queryByText(/10:15/)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /10:40/ })).toBeInTheDocument();
+    });
+
+    it('filters LDBWS rows by a resolved Operator code', async () => {
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await screen.findByRole('button', { name: /10:40/ });
+
+      fireEvent.change(screen.getByRole('combobox', { name: /Operator/ }), { target: { value: 'SW' } });
+
+      // svc-cancelled's operator is 'ZA' -- filtered out; svc-on-time's is
+      // 'SW' -- still shown.
+      expect(screen.queryByText(/10:15/)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /10:40/ })).toBeInTheDocument();
+    });
+
+    it('a Destination filter that matches no LDBWS row shows its own "no match" text, not the generic empty-board text', async () => {
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await screen.findByRole('button', { name: /10:40/ });
+
+      fireEvent.change(screen.getByRole('combobox', { name: /Destination station/ }), { target: { value: 'ZZZ' } });
+
+      expect(
+        await screen.findByText("No upcoming departures match the destination and/or operator you've entered."),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/10:15/)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /10:40/ })).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('No live departures currently on the board for this station right now.'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('an Operator filter does not eliminate CIF rows -- CIF has no operator field to filter on', async () => {
+      const fetchMock = mockFetchByUrl({
+        departures: () => new Response('not found', { status: 404 }),
+        scheduleDepartures: () => new Response(JSON.stringify(scheduleDepartures), { status: 200 }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await screen.findByRole('button', { name: /08:22/ });
+
+      fireEvent.change(screen.getByRole('combobox', { name: /Operator/ }), { target: { value: 'SW' } });
+
+      // Both CIF rows remain visible -- an Operator filter simply never
+      // applies to a source that has no operator field at all.
+      expect(screen.getByRole('button', { name: /08:22/ })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /09:00/ })).toBeInTheDocument();
+    });
+
+    it('a Destination filter can legitimately empty the CIF list, with its own "no match" text', async () => {
+      const fetchMock = mockFetchByUrl({
+        departures: () => new Response('not found', { status: 404 }),
+        scheduleDepartures: () => new Response(JSON.stringify(scheduleDepartures), { status: 200 }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await screen.findByRole('button', { name: /08:22/ });
+
+      // Matches neither 'CRE' nor the null-destination row.
+      fireEvent.change(screen.getByRole('combobox', { name: /Destination station/ }), { target: { value: 'ZZZ' } });
+
+      expect(
+        await screen.findByText("No upcoming scheduled departures match the destination you've entered."),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /08:22/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /09:00/ })).not.toBeInTheDocument();
+      // The staleness disclaimer is a property of the source, not of how
+      // many rows survived filtering -- it still renders.
+      expect(screen.getByText(/Live departure boards aren't available for this station/)).toBeInTheDocument();
     });
   });
 });
