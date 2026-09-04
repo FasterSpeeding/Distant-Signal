@@ -66,6 +66,7 @@ async fn get_station_sample_stats(
         &defaults,
         &full_coverage_rows,
         &lines,
+        app.config.full_coverage_enabled_default,
     );
 
     Ok(Json(
@@ -178,6 +179,17 @@ mod db_tests {
     /// this), corrected here to use the mechanism the gate actually reads:
     /// `app.config.lines`, the static catalogue.
     fn test_app_with_lines(pool: PgPool, lines: Vec<common::LineDefinition>) -> App {
+        test_app_with_lines_and_full_coverage_default(pool, lines, false)
+    }
+
+    /// Like `test_app_with_lines`, but with an explicit
+    /// `full_coverage_enabled_default` -- needed by the global-override
+    /// gating test below.
+    fn test_app_with_lines_and_full_coverage_default(
+        pool: PgPool,
+        lines: Vec<common::LineDefinition>,
+        full_coverage_enabled_default: bool,
+    ) -> App {
         let config = ServiceArguments {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
@@ -204,6 +216,7 @@ mod db_tests {
             defaults_file: None,
             lines: LineCatalogue(lines),
             vapid_public_key: "test-vapid-public-key".to_string(),
+            full_coverage_enabled_default,
         };
 
         std::sync::Arc::new(AppState {
@@ -549,6 +562,69 @@ mod db_tests {
 
         delete_fixture(&pool, "ZQG").await;
         delete_full_coverage_fixture(&pool, "ZQG", "ZG").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                station_sample_stats -- --ignored --test-threads=1`"]
+    async fn station_sample_stats_full_coverage_enabled_default_true_enables_a_gate_disabled_line()
+    {
+        let pool = connect().await;
+        delete_fixture(&pool, "ZQJ").await;
+        delete_full_coverage_fixture(&pool, "ZQJ", "ZJ").await;
+
+        sqlx::query(
+            "INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats) \
+             VALUES ('ZQJ', 'ZJ', NOW(), \
+             '{\"total\":40,\"delayed\":4,\"cancelled\":1,\"skipped\":0,\"avgDelayMinutes\":2.5}')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed full-coverage-only fixture row");
+
+        // Same fixture as the gate-disabled test above (the line's own
+        // full_coverage_enabled stays false), but this app is built with
+        // full_coverage_enabled_default: true -- proves the global
+        // override alone is enough to flip the wire output on, the new
+        // case this task adds.
+        let router: axum::Router = crate::app::Router::new().merge(router()).with_state(
+            test_app_with_lines_and_full_coverage_default(
+                pool.clone(),
+                vec![gating_line("ZQJ", "ZJ", false)],
+                true,
+            ),
+        );
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/stations/ZQJ/sample-stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["operator"], "ZJ");
+        assert_eq!(
+            json[0]["fullCoverageAvailability"],
+            serde_json::json!({"state": "available"})
+        );
+        assert_eq!(
+            json[0]["fullCoverageStats"],
+            serde_json::json!({
+                "total": 40, "delayed": 4, "cancelled": 1, "skipped": 0, "avgDelayMinutes": 2.5
+            })
+        );
+
+        delete_fixture(&pool, "ZQJ").await;
+        delete_full_coverage_fixture(&pool, "ZQJ", "ZJ").await;
     }
 
     #[tokio::test]

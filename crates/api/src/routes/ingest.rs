@@ -457,6 +457,7 @@ mod db_tests {
             defaults_file: None,
             lines: LineCatalogue(vec![]),
             vapid_public_key: "test-vapid-public-key".to_string(),
+            full_coverage_enabled_default: false,
         };
 
         std::sync::Arc::new(AppState {

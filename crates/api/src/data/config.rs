@@ -208,4 +208,21 @@ pub struct ServiceArguments {
     /// subscriptions, it never sends to them.
     #[arg(long, env)]
     pub vapid_public_key: String,
+
+    /// Global override for `LineDefinition.full_coverage_enabled`
+    /// (Decision 3's per-line TOML rollout gate, `crates/common/src/lib.rs`).
+    /// When `true`, `data::station_stats::full_coverage_enabled_for`
+    /// treats EVERY catalogued line as full-coverage-enabled, regardless
+    /// of what its own `lines/*.toml` entry sets -- the SAME global flag
+    /// name/semantics as `crates/aggregator`'s own
+    /// `full_coverage_enabled_default` (both services independently gate
+    /// on `LineDefinition.full_coverage_enabled`, so both need the
+    /// override). Default `false` is deliberate: this flag must never
+    /// silently change behavior for a deployment that doesn't explicitly
+    /// set it, and `true` is never baked in here as the default (that
+    /// would require a rebuild to ever revert) -- an operator opts in via
+    /// this env var / the Helm chart's `api.fullCoverageEnabledDefault`
+    /// value.
+    #[arg(long, env, default_value_t = false)]
+    pub full_coverage_enabled_default: bool,
 }
