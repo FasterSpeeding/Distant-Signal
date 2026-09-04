@@ -179,6 +179,16 @@ pub(crate) fn build_internal_oauth_routes(
             Method::GET,
             vec![config.internal_oauth_group_full_coverage.clone()],
         ),
+        // POST-only: no GET pair, unlike /schedule-line-population -- see
+        // Corrections/Task 2's own note in
+        // docs/superpowers/plans/2026-09-04-whole-network-trip-search-plan.md.
+        // Reuses schedule-reference's EXISTING writer credential, the same one
+        // /stanox-crs and /schedule-line-population's own POST already use.
+        (
+            "/schedule-network-departures",
+            Method::POST,
+            vec![config.internal_oauth_group_schedule_reference.clone()],
+        ),
         // Same group, both methods -- this producer reading back its own
         // last write, not a second caller (see Correction 2).
         (

@@ -152,6 +152,34 @@ pub(crate) fn station_departure_json(d: &common::StationDeparture) -> Value {
     })
 }
 
+/// Hand-built camelCase JSON for one CIF-derived schedule departure entry,
+/// backing `GET /public/stations/{crs}/schedule-departures`. Operates on
+/// the already-opaque `serde_json::Value` this table stores rather than
+/// `schedule_query::ScheduleDeparture` -- `crates/api` deliberately does
+/// NOT depend on `schedule-query` (a leaf parsing crate), the same
+/// "opaque JSONB, never deserialized into the producer's own Rust type"
+/// posture `schedule_line_population` already established (see this
+/// plan's own Corrections section for why this departs from the design
+/// doc's `&schedule_query::ScheduleDeparture` sketch). Missing/mistyped
+/// fields fall back to `Value::Null`/`None` rather than panicking --
+/// defensive against this table's producer and this function ever
+/// silently drifting out of sync, matching this module's general
+/// avoidance of `.unwrap()` on data that crossed a process boundary.
+/// `scheduled` is stored as chrono's default `NaiveTime` JSON
+/// serialization (`"HH:MM:SS"`); this trims it to `"HH:MM"`, matching the
+/// design doc's own documented wire shape for this field.
+pub(crate) fn schedule_departure_json(d: &Value) -> Value {
+    let scheduled = d
+        .get("scheduled")
+        .and_then(Value::as_str)
+        .map(|s| s.chars().take(5).collect::<String>());
+    json!({
+        "uid": d.get("uid").cloned().unwrap_or(Value::Null),
+        "scheduled": scheduled,
+        "destinationCrs": d.get("destination_crs").cloned().unwrap_or(Value::Null),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,5 +595,34 @@ mod tests {
         assert!(json.get("delayReason").is_some(), "key must be present");
         assert!(json["delayReason"].is_null());
         assert_eq!(json["skippedStations"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn schedule_departure_json_maps_snake_case_to_camel_case_and_trims_seconds() {
+        let raw = serde_json::json!({
+            "uid": "C11052",
+            "scheduled": "08:22:00",
+            "destination_crs": "CRE",
+        });
+        let json = schedule_departure_json(&raw);
+        assert_eq!(
+            json,
+            serde_json::json!({ "uid": "C11052", "scheduled": "08:22", "destinationCrs": "CRE" })
+        );
+        assert!(
+            json.get("destination_crs").is_none(),
+            "no stray snake_case field"
+        );
+    }
+
+    #[test]
+    fn schedule_departure_json_null_destination_crs_stays_null() {
+        let raw = serde_json::json!({
+            "uid": "C99999",
+            "scheduled": "14:05:00",
+            "destination_crs": null,
+        });
+        let json = schedule_departure_json(&raw);
+        assert!(json["destinationCrs"].is_null());
     }
 }

@@ -14,13 +14,18 @@ use serde_json::Value;
 
 use crate::app::{App, Router};
 use crate::data::queries;
-use crate::render::station_departure_json;
+use crate::render::{schedule_departure_json, station_departure_json};
 
 pub fn router() -> Router {
-    Router::new().route(
-        "/stations/{crs}/departures",
-        axum::routing::get(get_station_departures),
-    )
+    Router::new()
+        .route(
+            "/stations/{crs}/departures",
+            axum::routing::get(get_station_departures),
+        )
+        .route(
+            "/stations/{crs}/schedule-departures",
+            axum::routing::get(get_station_schedule_departures),
+        )
 }
 
 /// 404 when `station_samples` has no row for `crs` at all -- identical
@@ -51,6 +56,35 @@ async fn get_station_departures(
             .map(station_departure_json)
             .collect(),
     ))
+}
+
+/// `GET /public/stations/{crs}/schedule-departures`: today's CIF
+/// SCHEDULE-derived scheduled departures for `crs` -- the whole-network
+/// trip-search fallback picker's backing route, see
+/// docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
+/// Decision 1. Reads `schedule_network_departures` directly for today's
+/// date, server-side -- same "always now" posture as
+/// `get_station_departures` above, and the same 404-vs-`200 []` honesty
+/// split: 404 when no row exists for `(crs, today)` at all (this station
+/// isn't in `stanox_crs`, or today's cycle simply hasn't published yet);
+/// `200 []` when a row exists but its `now`-forward filter left nothing.
+async fn get_station_schedule_departures(
+    State(app): State<App>,
+    Path(crs): Path<String>,
+) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let today = chrono::Utc::now().date_naive();
+    let Some(departures) = queries::latest_schedule_network_departures(&app.database, &crs, today)
+        .await
+        .map_err(internal_error)?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("no CIF-derived schedule data for station: {crs}"),
+        ));
+    };
+
+    let rows = departures.as_array().cloned().unwrap_or_default();
+    Ok(Json(rows.iter().map(schedule_departure_json).collect()))
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
@@ -325,5 +359,169 @@ mod db_tests {
         assert_eq!(json[1]["cancelReason"], "fleet issue");
 
         delete_fixture(&pool, "ZQU").await;
+    }
+
+    async fn delete_schedule_departures_fixture(pool: &PgPool, crs: &str) {
+        sqlx::query("DELETE FROM schedule_network_departures WHERE crs = $1")
+            .bind(crs)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture schedule_network_departures rows");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_departures -- --ignored --test-threads=1`"]
+    async fn schedule_departures_no_row_for_crs_today_is_404_naming_the_crs() {
+        let pool = connect().await;
+        delete_schedule_departures_fixture(&pool, "ZQX").await;
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/stations/ZQX/schedule-departures")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8(body.to_vec()).unwrap().contains("ZQX"));
+
+        delete_schedule_departures_fixture(&pool, "ZQX").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_departures -- --ignored --test-threads=1`"]
+    async fn schedule_departures_a_row_only_for_a_different_date_is_still_404_today() {
+        // Proves the route's "always today, server-side" date scoping -- a
+        // stale row from a different service_date must never leak through.
+        let pool = connect().await;
+        delete_schedule_departures_fixture(&pool, "ZQY").await;
+
+        let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+        sqlx::query(
+            "INSERT INTO schedule_network_departures (crs, service_date, departures) VALUES ('ZQY', $1, '[]')",
+        )
+        .bind(yesterday)
+        .execute(&pool)
+        .await
+        .expect("seed a stale fixture row");
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/stations/ZQY/schedule-departures")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        delete_schedule_departures_fixture(&pool, "ZQY").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_departures -- --ignored --test-threads=1`"]
+    async fn schedule_departures_a_row_for_today_with_empty_departures_is_200_empty_array() {
+        let pool = connect().await;
+        delete_schedule_departures_fixture(&pool, "ZQZ").await;
+
+        let today = chrono::Utc::now().date_naive();
+        sqlx::query(
+            "INSERT INTO schedule_network_departures (crs, service_date, departures) VALUES ('ZQZ', $1, '[]')",
+        )
+        .bind(today)
+        .execute(&pool)
+        .await
+        .expect("seed empty-departures fixture row");
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/stations/ZQZ/schedule-departures")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json, serde_json::json!([]));
+
+        delete_schedule_departures_fixture(&pool, "ZQZ").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_departures -- --ignored --test-threads=1`"]
+    async fn schedule_departures_two_rows_render_camel_case_with_trimmed_time() {
+        let pool = connect().await;
+        delete_schedule_departures_fixture(&pool, "ZRA").await;
+
+        let today = chrono::Utc::now().date_naive();
+        let departures = serde_json::json!([
+            {"uid": "C11052", "scheduled": "08:22:00", "destination_crs": "CRE"},
+            {"uid": "C99999", "scheduled": "09:00:00", "destination_crs": null},
+        ]);
+        sqlx::query(
+            "INSERT INTO schedule_network_departures (crs, service_date, departures) VALUES ('ZRA', $1, $2)",
+        )
+        .bind(today)
+        .bind(departures)
+        .execute(&pool)
+        .await
+        .expect("seed two-departure fixture row");
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/stations/ZRA/schedule-departures")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json.as_array().unwrap().len(), 2);
+        assert_eq!(json[0]["uid"], "C11052");
+        assert_eq!(json[0]["scheduled"], "08:22");
+        assert_eq!(json[0]["destinationCrs"], "CRE");
+        assert!(json[1]["destinationCrs"].is_null());
+        assert!(
+            json[0].get("destination_crs").is_none(),
+            "no stray snake_case field"
+        );
+
+        delete_schedule_departures_fixture(&pool, "ZRA").await;
     }
 }
