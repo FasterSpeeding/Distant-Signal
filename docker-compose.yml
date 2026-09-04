@@ -409,6 +409,15 @@ services:
       REFERENCE_RELOAD_SECS: ${REFERENCE_RELOAD_SECS:-60}
       RETENTION_DAYS: ${RETENTION_DAYS_TRAIN_EVENTS:-90}
       HEALTH_BIND_URL: 0.0.0.0:8081
+      # docs/superpowers/plans/2026-09-04-movement-relay-plan.md Task 4/11:
+      # this crate keeps reading Kafka directly by default in local dev too,
+      # same as production, unless a developer explicitly opts into
+      # exercising the Redis Streams path via MOVEMENT_FEED_BACKEND in their
+      # own .env -- movement-relay is NOT added to this service's
+      # depends_on, since it publishes nothing unless the developer also
+      # starts it (compose up movement-relay) and sets this.
+      MOVEMENT_FEED_BACKEND: ${MOVEMENT_FEED_BACKEND:-kafka}
+      REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/healthz"]
@@ -461,9 +470,56 @@ services:
       # into the image, same pattern as aggregator's own LINES_DIR above.
       LINES_DIR: /app/lines
       HEALTH_BIND_URL: 0.0.0.0:8082
+      # See trust-consumer's own identical comment above -- same opt-in
+      # posture, this crate's own separate backend toggle.
+      MOVEMENT_FEED_BACKEND: ${MOVEMENT_FEED_BACKEND_FULL_COVERAGE:-kafka}
+      REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8082/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  # movement-relay: the sole real Kafka client against RDM's Train
+  # Movements product from Deploy B onward (docs/superpowers/specs/2026-09-04-movement-relay-design.md),
+  # fanning out into the movement-events Redis Stream both trust-consumer
+  # and full-coverage-consumer above can optionally read from (see their
+  # own MOVEMENT_FEED_BACKEND opt-in comments). NOT started by default via
+  # any depends_on above -- a developer who wants to exercise the Redis
+  # Streams path locally runs `docker compose up movement-relay` alongside
+  # setting MOVEMENT_FEED_BACKEND=redis-stream for whichever consumer(s)
+  # they want reading from it.
+  movement-relay:
+    build:
+      context: .
+      dockerfile: docker/movement-relay.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_started
+    environment:
+      # crates/movement-relay/src/config.rs: Config. GAP: same
+      # unconfirmed-against-a-live-RDM-catalogue placeholders as
+      # trust-consumer's own KAFKA_* vars above -- see that service's own
+      # comment. KAFKA_CONSUMER_GROUP has no safe fallback here (unlike
+      # trust-consumer's own KAFKA_CONSUMER_GROUP default) -- the real
+      # RDM-issued group id has no sensible default, see
+      # crates/movement-relay/src/config.rs's own doc comment.
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      KAFKA_CONSUMER_GROUP: ${MOVEMENT_RELAY_KAFKA_CONSUMER_GROUP:?MOVEMENT_RELAY_KAFKA_CONSUMER_GROUP must be set -- this has no safe default, unlike KAFKA_CONSUMER_GROUP above}
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
+      KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM}
+      REDIS_URL: redis://redis:6379
+      HEALTH_BIND_URL: 0.0.0.0:8083
+      RUST_LOG: ${RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/healthz"]
       interval: 10s
       timeout: 3s
       retries: 5
