@@ -515,7 +515,7 @@ mod db_tests {
             "operator": operator,
             "resolved_at": resolved_at,
             "stats": {
-                "total": 10, "delayed": 2, "cancelled": 1, "skipped": 0, "avgDelayMinutes": 3.5
+                "total": 10, "delayed": 2, "cancelled": 1, "skipped": 0, "avg_delay_minutes": 3.5
             }
         }])
     }
@@ -561,7 +561,7 @@ mod db_tests {
         assert_eq!(
             stats,
             serde_json::json!({
-                "total": 10, "delayed": 2, "cancelled": 1, "skipped": 0, "avgDelayMinutes": 3.5
+                "total": 10, "delayed": 2, "cancelled": 1, "skipped": 0, "avg_delay_minutes": 3.5
             })
         );
 
@@ -602,7 +602,7 @@ mod db_tests {
             "operator": "ZB",
             "resolved_at": second_resolved_at,
             "stats": {
-                "total": 20, "delayed": 5, "cancelled": 0, "skipped": 1, "avgDelayMinutes": 1.0
+                "total": 20, "delayed": 5, "cancelled": 0, "skipped": 1, "avg_delay_minutes": 1.0
             }
         }]);
         let response = router
@@ -639,7 +639,7 @@ mod db_tests {
         assert_eq!(
             stats,
             serde_json::json!({
-                "total": 20, "delayed": 5, "cancelled": 0, "skipped": 1, "avgDelayMinutes": 1.0
+                "total": 20, "delayed": 5, "cancelled": 0, "skipped": 1, "avg_delay_minutes": 1.0
             })
         );
 
@@ -656,7 +656,7 @@ mod db_tests {
         let resolved_at = chrono::Utc::now();
         sqlx::query(
             "INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats) \
-             VALUES ('ZFC', 'ZC', $1, '{\"total\":1,\"delayed\":0,\"cancelled\":0,\"skipped\":0,\"avgDelayMinutes\":0.0}')",
+             VALUES ('ZFC', 'ZC', $1, '{\"total\":1,\"delayed\":0,\"cancelled\":0,\"skipped\":0,\"avg_delay_minutes\":0.0}')",
         )
         .bind(resolved_at)
         .execute(&pool)

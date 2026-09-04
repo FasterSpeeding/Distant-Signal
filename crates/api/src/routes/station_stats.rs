@@ -460,7 +460,7 @@ mod db_tests {
         sqlx::query(
             "INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats) \
              VALUES ('ZQF', 'ZF', NOW(), \
-             '{\"total\":40,\"delayed\":4,\"cancelled\":1,\"skipped\":0,\"avgDelayMinutes\":2.5}')",
+             '{\"total\":40,\"delayed\":4,\"cancelled\":1,\"skipped\":0,\"avg_delay_minutes\":2.5}')",
         )
         .execute(&pool)
         .await
@@ -521,7 +521,7 @@ mod db_tests {
         sqlx::query(
             "INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats) \
              VALUES ('ZQG', 'ZG', NOW(), \
-             '{\"total\":40,\"delayed\":4,\"cancelled\":1,\"skipped\":0,\"avgDelayMinutes\":2.5}')",
+             '{\"total\":40,\"delayed\":4,\"cancelled\":1,\"skipped\":0,\"avg_delay_minutes\":2.5}')",
         )
         .execute(&pool)
         .await
@@ -576,7 +576,7 @@ mod db_tests {
         sqlx::query(
             "INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats) \
              VALUES ('ZQJ', 'ZJ', NOW(), \
-             '{\"total\":40,\"delayed\":4,\"cancelled\":1,\"skipped\":0,\"avgDelayMinutes\":2.5}')",
+             '{\"total\":40,\"delayed\":4,\"cancelled\":1,\"skipped\":0,\"avg_delay_minutes\":2.5}')",
         )
         .execute(&pool)
         .await
@@ -663,7 +663,7 @@ mod db_tests {
         sqlx::query(
             "INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats) \
              VALUES ('ZQH', 'ZH', NOW(), \
-             '{\"total\":50,\"delayed\":6,\"cancelled\":1,\"skipped\":0,\"avgDelayMinutes\":2.1}')",
+             '{\"total\":50,\"delayed\":6,\"cancelled\":1,\"skipped\":0,\"avg_delay_minutes\":2.1}')",
         )
         .execute(&pool)
         .await
