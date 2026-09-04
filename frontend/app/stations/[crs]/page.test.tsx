@@ -194,10 +194,12 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
         operator: 'GR',
         sampleAvailability: { state: 'available' },
         sampleStats: { total: 10, delayed: 2, cancelled: 0, skipped: 0, avgDelayMinutes: 3.5 },
+        fullCoverageAvailability: { state: 'not-enabled' },
       },
       {
         operator: 'SR',
         sampleAvailability: { state: 'below-threshold', observed: 1, required: 3 },
+        fullCoverageAvailability: { state: 'not-enabled' },
       },
     ];
     vi.mocked(api.getStationSampleStats).mockResolvedValue(operatorStats);
@@ -210,5 +212,32 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
     expect(rows.map((el) => el.textContent)).toEqual(['LNER', 'SR']);
     expect(screen.getByText('Avg delay 3.5 min · 0% cancelled')).toBeInTheDocument();
     expect(screen.getByText('Too few live departures sampled to report a rate right now.')).toBeInTheDocument();
+  });
+
+  it('prefers fullCoverageStats over sampleStats for a row that carries both, end to end through the real component tree', async () => {
+    const operatorStats: StationOperatorSampleStats[] = [
+      {
+        operator: 'GR',
+        sampleAvailability: { state: 'available' },
+        sampleStats: { total: 10, delayed: 2, cancelled: 0, skipped: 0, avgDelayMinutes: 3.5 },
+        fullCoverageStats: { total: 52, delayed: 6, cancelled: 1, skipped: 0, avgDelayMinutes: 2.1 },
+        fullCoverageAvailability: { state: 'available' },
+      },
+      {
+        operator: 'SR',
+        sampleAvailability: { state: 'below-threshold', observed: 1, required: 3 },
+        fullCoverageAvailability: { state: 'not-enabled' },
+      },
+    ];
+    vi.mocked(api.getStationSampleStats).mockResolvedValue(operatorStats);
+    vi.mocked(api.getAllTocs).mockResolvedValue([{ code: 'GR', name: 'LNER' }]);
+
+    await renderPage();
+
+    // 1/52 = 2% cancelled, avg 2.1 -- distinct from sampleStats' 0%/3.5,
+    // so this proves the full-coverage numbers actually rendered, not the
+    // sample ones, via formatSampleSummary's existing precedence chain.
+    expect(screen.getByText('Avg delay 2.1 min · 2% cancelled')).toBeInTheDocument();
+    expect(screen.queryByText('Avg delay 3.5 min · 0% cancelled')).not.toBeInTheDocument();
   });
 });
