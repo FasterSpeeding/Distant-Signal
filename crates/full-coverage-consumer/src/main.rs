@@ -15,8 +15,8 @@ mod health;
 mod population;
 mod queries;
 mod stanox_tiploc;
+mod station_correlate;
 mod stats;
-// mod station_correlate; -- Task 12
 
 use clap::Parser;
 use config::Config;

@@ -57,3 +57,41 @@ pub async fn post_full_coverage_stats(
     }
     common::ingest::post_batch(client, url, tokens, rows, "full-coverage line stats").await
 }
+
+/// Posts to the OTHER chain's own endpoint (`POST /private/station-full-coverage-samples`),
+/// owned by `docs/superpowers/plans/2026-09-04-per-station-full-coverage-stats-plan.md`
+/// -- this crate is only ever an HTTP client of it, never its
+/// route/migration owner (see this plan's Non-goals). Takes
+/// `station_correlate::StationFullCoverageSampleRow` -- see that module's
+/// own doc comment for why this is a local placeholder rather than
+/// `common::StationFullCoverageSample` directly in this worktree, and
+/// derives `Serialize` only for this one call site's own local
+/// wire-encoding, kept separate from the type's definition (which has no
+/// other reason to depend on `serde` derives itself).
+pub async fn post_station_full_coverage_samples(
+    client: &reqwest::Client,
+    url: &str,
+    tokens: &common::oauth_client::OAuthTokenCache,
+    samples: &[crate::station_correlate::StationFullCoverageSampleRow],
+) -> anyhow::Result<()> {
+    if samples.is_empty() {
+        return Ok(());
+    }
+    #[derive(serde::Serialize)]
+    struct Wire<'a> {
+        crs: &'a str,
+        operator: &'a str,
+        resolved_at: chrono::DateTime<chrono::Utc>,
+        stats: &'a common::SampleStats,
+    }
+    let wire: Vec<Wire> = samples
+        .iter()
+        .map(|s| Wire {
+            crs: &s.crs,
+            operator: &s.operator,
+            resolved_at: s.resolved_at,
+            stats: &s.stats,
+        })
+        .collect();
+    common::ingest::post_batch(client, url, tokens, &wire, "station full-coverage samples").await
+}
