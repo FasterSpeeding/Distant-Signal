@@ -417,6 +417,58 @@ services:
       retries: 5
       start_period: 15s
 
+  # A second, independent Kafka consumer against the SAME RDM Train
+  # Movements feed trust-consumer reads above -- reuses the same
+  # KAFKA_BROKERS/KAFKA_TOPIC/KAFKA_SASL_MECHANISM/KAFKA_SASL_USERNAME/
+  # KAFKA_SASL_PASSWORD env values (same connection, per Decision 1's
+  # "connection vs. group membership" reasoning), with its own
+  # KAFKA_CONSUMER_GROUP. See
+  # docs/superpowers/plans/2026-09-04-option-b-live-consumer-plan.md.
+  full-coverage-consumer:
+    build:
+      context: .
+      dockerfile: docker/full-coverage-consumer.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # crates/full-coverage-consumer/src/config.rs: Config
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP_FULL_COVERAGE:-distant-signal-full-coverage-consumer}
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
+      # Same no-fallback posture as trust-consumer's own KAFKA_SASL_MECHANISM
+      # above, and for the same reason -- RDM's mechanism is still a GAP.
+      KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM}
+      SCHEDULE_LINE_POPULATION_URL: http://api:8080/private/schedule-line-population
+      FULL_COVERAGE_STATS_URL: http://api:8080/private/full-coverage-stats
+      STATION_FULL_COVERAGE_STATS_URL: http://api:8080/private/station-full-coverage-samples
+      STANOX_CRS_URL: http://api:8080/private/stanox-crs
+      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
+      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_FULL_COVERAGE_CONSUMER:?INTERNAL_OAUTH_USERNAME_FULL_COVERAGE_CONSUMER must be set}
+      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_FULL_COVERAGE_CONSUMER:?INTERNAL_OAUTH_PASSWORD_FULL_COVERAGE_CONSUMER must be set}
+      POPULATION_RELOAD_SECS: ${POPULATION_RELOAD_SECS:-300}
+      STANOX_CRS_RELOAD_SECS: ${STANOX_CRS_RELOAD_SECS_FULL_COVERAGE:-3600}
+      STATS_WRITE_INTERVAL_SECS: ${STATS_WRITE_INTERVAL_SECS:-60}
+      SHADOW_LINES: ${SHADOW_LINES:-*}
+      # Matches docker/full-coverage-consumer.Dockerfile's COPY of lines/
+      # into the image, same pattern as aggregator's own LINES_DIR above.
+      LINES_DIR: /app/lines
+      HEALTH_BIND_URL: 0.0.0.0:8082
+      RUST_LOG: ${RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
   # schedule-sftp + schedule-ingest: the local-dev equivalent of the Helm
   # chart's single Pod with two containers sharing one PVC (see
   # charts/distant-signal/templates/schedulefeed-deployment.yaml). Compose
