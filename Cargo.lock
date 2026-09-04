@@ -4875,10 +4875,21 @@ dependencies = [
  "reqwest 0.13.4",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "trust-schema",
+]
+
+[[package]]
+name = "trust-schema"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tracing",
 ]
 
 [[package]]

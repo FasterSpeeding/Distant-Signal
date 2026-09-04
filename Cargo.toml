@@ -15,4 +15,5 @@ members = [
     "crates/schedule-reference",
     "crates/schedule-query",
     "crates/notifier",
+    "crates/trust-schema",
 ]
