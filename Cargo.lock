@@ -1371,6 +1371,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "full-coverage-consumer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "common",
+ "dotenv",
+ "metrics",
+ "rdkafka",
+ "reqwest 0.13.4",
+ "schedule-query",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "trust-schema",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"

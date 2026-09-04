@@ -16,4 +16,5 @@ members = [
     "crates/schedule-query",
     "crates/notifier",
     "crates/trust-schema",
+    "crates/full-coverage-consumer",
 ]
