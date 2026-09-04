@@ -68,6 +68,10 @@ pub fn router() -> Router {
             "/stanox-crs",
             axum::routing::get(get_stanox_crs).post(post_stanox_crs),
         )
+        .route(
+            "/schedule-line-population",
+            axum::routing::get(get_schedule_line_population).post(post_schedule_line_population),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -297,6 +301,54 @@ async fn get_stanox_crs(
     Ok(Json(rows))
 }
 
+/// `crates/schedule-reference`'s per-line CIF SCHEDULE population publish
+/// (POST, its own existing writer credential) and
+/// `crates/full-coverage-consumer`'s reload (GET, a new credential) --
+/// see `queries::{upsert,get}_schedule_line_population`. Unlike every
+/// other GET in this file, this one returns the actual current row for one
+/// `(line_id, service_date)`, not a freshness timestamp -- its real reader
+/// needs the rows themselves, mirroring `/stanox-crs`'s shape (see
+/// docs/superpowers/plans/2026-09-04-option-b-live-consumer-plan.md's
+/// Correction 2).
+#[derive(Debug, Deserialize)]
+struct SchedulePopulationParams {
+    line_id: String,
+    service_date: chrono::NaiveDate,
+}
+
+#[derive(Debug, Deserialize)]
+struct SchedulePopulationBody {
+    line_id: String,
+    service_date: chrono::NaiveDate,
+    population: serde_json::Value,
+}
+
+async fn post_schedule_line_population(
+    State(app): State<App>,
+    Json(body): Json<SchedulePopulationBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    queries::upsert_schedule_line_population(
+        &app.database,
+        &body.line_id,
+        body.service_date,
+        &body.population,
+    )
+    .await
+    .map_err(internal_error)?;
+    Ok(StatusCode::OK)
+}
+
+async fn get_schedule_line_population(
+    State(app): State<App>,
+    axum::extract::Query(params): axum::extract::Query<SchedulePopulationParams>,
+) -> Result<Json<Option<serde_json::Value>>, (StatusCode, String)> {
+    let population =
+        queries::get_schedule_line_population(&app.database, &params.line_id, params.service_date)
+            .await
+            .map_err(internal_error)?;
+    Ok(Json(population))
+}
+
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "ingestion upsert failed");
     (
@@ -305,14 +357,6 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     )
 }
 
-/// HTTP-layer tests for the new `/station-full-coverage-samples` pair,
-/// exercised against a live database -- first test module in this file,
-/// mirrors `routes::station_stats::db_tests`'s exact `test_app`/`connect`/
-/// fixture-CRS-cleanup pattern, including its own colocated `test_app`
-/// helper (this repo's convention is "colocated per-file rather than
-/// shared, until a third file needs it too" -- see that module's own doc
-/// comment). Uses the reserved `Z…` fixture CRS namespace so cleanup can
-/// never touch real data.
 #[cfg(test)]
 mod db_tests {
     use axum::body::Body;
@@ -327,10 +371,12 @@ mod db_tests {
     use crate::auth::oidc::{OidcClient, OidcConfig};
     use crate::data::config::{LineCatalogue, ServiceArguments};
 
+    const FIXTURE_LINE_ID: &str = "ZTEST";
+
     /// Copied from `routes::station_stats::db_tests::test_app` (that
     /// module's own doc comment: colocated per-file rather than shared,
     /// until a third file needs it too). Every field an inert placeholder
-    /// except `database`, which the caller supplies -- this route touches
+    /// except `database`, which the caller supplies -- these tests touch
     /// nothing else on `App`.
     fn test_app(pool: PgPool) -> App {
         let config = ServiceArguments {
@@ -397,6 +443,17 @@ mod db_tests {
             .execute(pool)
             .await
             .expect("cleanup fixture station_full_coverage_samples row");
+    }
+
+    /// Distinct name from `delete_fixture` above -- same "reserved
+    /// fixture namespace" spirit, applied to `schedule_line_population`'s
+    /// own `line_id` key instead of a (crs, operator) pair.
+    async fn delete_population_fixture(pool: &PgPool, line_id: &str) {
+        sqlx::query("DELETE FROM schedule_line_population WHERE line_id = $1")
+            .bind(line_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture schedule_line_population rows");
     }
 
     fn sample_body(crs: &str, operator: &str, resolved_at: chrono::DateTime<chrono::Utc>) -> Value {
@@ -617,5 +674,129 @@ mod db_tests {
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json, serde_json::json!({"fetchedAt": null}));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_line_population -- --ignored --test-threads=1`"]
+    async fn post_then_get_round_trips_the_exact_population_json() {
+        let pool = connect().await;
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+
+        let service_date: chrono::NaiveDate = "2026-09-04".parse().unwrap();
+        let population = serde_json::json!([
+            {"uid": "C11052", "calling_points": []},
+        ]);
+        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &population)
+            .await
+            .expect("seed population");
+
+        let fetched = queries::get_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date)
+            .await
+            .expect("fetch population");
+        assert_eq!(fetched, Some(population));
+
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_line_population -- --ignored --test-threads=1`"]
+    async fn a_second_post_for_the_same_key_wholesale_replaces_not_merges() {
+        let pool = connect().await;
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+
+        let service_date: chrono::NaiveDate = "2026-09-04".parse().unwrap();
+        let first = serde_json::json!([{"uid": "C11052", "calling_points": []}]);
+        let second = serde_json::json!([{"uid": "C99999", "calling_points": []}]);
+
+        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &first)
+            .await
+            .expect("seed first population");
+        queries::upsert_schedule_line_population(&pool, FIXTURE_LINE_ID, service_date, &second)
+            .await
+            .expect("seed second population");
+
+        let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
+            "SELECT population FROM schedule_line_population WHERE line_id = $1 AND service_date = $2",
+        )
+        .bind(FIXTURE_LINE_ID)
+        .bind(service_date)
+        .fetch_all(&pool)
+        .await
+        .expect("select fixture rows");
+
+        assert_eq!(rows.len(), 1, "wholesale replace, not a second row");
+        assert_eq!(rows[0].0, second);
+
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_line_population -- --ignored --test-threads=1`"]
+    async fn get_for_a_key_never_posted_is_none_not_an_error() {
+        let pool = connect().await;
+        delete_population_fixture(&pool, "ZNEVER").await;
+
+        let service_date: chrono::NaiveDate = "2026-09-04".parse().unwrap();
+        let fetched = queries::get_schedule_line_population(&pool, "ZNEVER", service_date)
+            .await
+            .expect("query should succeed even with no row");
+        assert_eq!(fetched, None);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_line_population -- --ignored --test-threads=1`"]
+    async fn http_post_then_get_round_trip_through_the_router() {
+        let pool = connect().await;
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+
+        let post_body = serde_json::json!({
+            "line_id": FIXTURE_LINE_ID,
+            "service_date": "2026-09-04",
+            "population": [{"uid": "C11052", "calling_points": []}],
+        });
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/schedule-line-population")
+                    .header("content-type", "application/json")
+                    .body(Body::from(post_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/schedule-line-population?line_id={FIXTURE_LINE_ID}&service_date=2026-09-04"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!([{"uid": "C11052", "calling_points": []}])
+        );
+
+        delete_population_fixture(&pool, FIXTURE_LINE_ID).await;
     }
 }
