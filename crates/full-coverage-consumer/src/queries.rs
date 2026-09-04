@@ -45,3 +45,15 @@ pub async fn fetch_stanox_crs(
         .error_for_status()?;
     Ok(response.json().await?)
 }
+
+pub async fn post_full_coverage_stats(
+    client: &reqwest::Client,
+    url: &str,
+    tokens: &common::oauth_client::OAuthTokenCache,
+    rows: &[common::FullCoverageLineStatsRow],
+) -> anyhow::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    common::ingest::post_batch(client, url, tokens, rows, "full-coverage line stats").await
+}
