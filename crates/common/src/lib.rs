@@ -11,6 +11,7 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 pub mod ingest;
 pub mod metrics;
 pub mod oauth_client;
+pub mod rail_day;
 
 /// Status severity scale. Mirrors TfL's `statusSeverity` codes 0–14 where the
 /// meanings carry over, with NR-specific extensions above 14. Lower is worse,
