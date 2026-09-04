@@ -1574,19 +1574,11 @@ mod tests {
                 half_hourly_stats_for_range_filters_orders_and_handles_unknown_lines -- --ignored` \
                 against docker compose's postgres"]
     async fn half_hourly_stats_for_range_filters_orders_and_handles_unknown_lines() {
-        let database_url =
-            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect(&database_url)
-            .await
-            .expect("connect to postgres");
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = sqlx::postgres::PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
         const LINE_ID: &str = "TEST-HALF-HOURLY-RANGE";
 
-        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1")
-            .bind(LINE_ID)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1").bind(LINE_ID).execute(&pool).await.unwrap();
 
         let h1: chrono::DateTime<chrono::Utc> = "2026-08-31T12:00:00Z".parse().unwrap();
         let h2: chrono::DateTime<chrono::Utc> = "2026-08-31T14:30:00Z".parse().unwrap();
@@ -1600,35 +1592,22 @@ mod tests {
         .execute(&pool).await.expect("seed rows");
 
         let rows = half_hourly_stats_for_range(
-            &pool,
-            LINE_ID,
+            &pool, LINE_ID,
             "2026-08-31T00:00:00Z".parse().unwrap(),
             "2026-09-01T00:00:00Z".parse().unwrap(),
-        )
-        .await
-        .expect("half_hourly_stats_for_range");
+        ).await.expect("half_hourly_stats_for_range");
 
-        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1")
-            .bind(LINE_ID)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1").bind(LINE_ID).execute(&pool).await.unwrap();
 
         assert_eq!(rows.len(), 2, "the out-of-range row must be excluded");
-        assert_eq!(
-            rows[0].half_hour_start, h1,
-            "results must be ordered ascending by half_hour_start"
-        );
+        assert_eq!(rows[0].half_hour_start, h1, "results must be ordered ascending by half_hour_start");
         assert_eq!(rows[1].half_hour_start, h2);
 
         let unknown = half_hourly_stats_for_range(
-            &pool,
-            "TEST-HALF-HOURLY-RANGE-UNKNOWN",
+            &pool, "TEST-HALF-HOURLY-RANGE-UNKNOWN",
             "2026-08-31T00:00:00Z".parse().unwrap(),
             "2026-09-01T00:00:00Z".parse().unwrap(),
-        )
-        .await
-        .expect("half_hourly_stats_for_range for an unknown line_id");
+        ).await.expect("half_hourly_stats_for_range for an unknown line_id");
         assert!(unknown.is_empty());
     }
 }

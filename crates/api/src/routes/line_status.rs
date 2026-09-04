@@ -463,9 +463,7 @@ async fn get_line_half_hourly_stats(
         .await
         .map_err(internal_error)?;
 
-    Ok(Json(
-        rows.into_iter().map(half_hourly_stats_to_json).collect(),
-    ))
+    Ok(Json(rows.into_iter().map(half_hourly_stats_to_json).collect()))
 }
 
 /// Full-coverage sibling of `daily_stats_to_json` -- identical
@@ -819,10 +817,7 @@ mod tests {
         let row = half_hourly_stats_row(100, 10, 5, 2, 95, 190.0);
         let json = half_hourly_stats_to_json(row);
 
-        assert_eq!(
-            json["halfHourStart"],
-            serde_json::json!("2026-08-15T14:00:00Z")
-        );
+        assert_eq!(json["halfHourStart"], serde_json::json!("2026-08-15T14:00:00Z"));
         assert_eq!(json["avgDelayMinutes"], serde_json::json!(2.0));
         assert_eq!(json["delayRate"], serde_json::json!(0.1));
     }
