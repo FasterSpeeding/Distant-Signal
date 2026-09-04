@@ -12,6 +12,34 @@ import { useSuggestions } from '@/lib/useSuggestions';
 import type { TrackPinRequest, TrackPinResponse } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
+const OPERATOR_PATTERN = /^[A-Za-z]{2}$/;
+
+/** True unless `destinationCrs` looks like a resolved 3-letter code AND
+ * the row's own destination doesn't case-insensitively match it. While
+ * the field still holds partial/typed-name text (or is empty), every row
+ * matches -- there is nothing on a row to honestly match partial text
+ * against (rows carry a CRS code, never a station name). A `null` row
+ * destination (CIF only) never matches an *active* filter: "unknown" is
+ * not "assume it matches". See
+ * docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
+ * Decision 1. */
+function matchesDestination(rowDestinationCrs: string | null, destinationCrs: string): boolean {
+  const trimmed = destinationCrs.trim();
+  if (!CRS_PATTERN.test(trimmed)) return true;
+  return rowDestinationCrs !== null && rowDestinationCrs.toUpperCase() === trimmed.toUpperCase();
+}
+
+/** Same idea for Operator, LDBWS rows only -- CIF rows have no `operator`
+ * field at all (the CIF SCHEDULE feed doesn't carry one), so call sites
+ * for CIF rows never call this at all, exempting those rows from the
+ * Operator filter entirely rather than having them always fail it (which
+ * would silently defeat the whole point of the CIF fallback). See the
+ * design doc's Decision 1, "CIF/Operator schema asymmetry". */
+function matchesOperator(rowOperator: string, operator: string): boolean {
+  const trimmed = operator.trim();
+  if (!OPERATOR_PATTERN.test(trimmed)) return true;
+  return rowOperator.toUpperCase() === trimmed.toUpperCase();
+}
 
 /** Wire shape of `GET /public/stations/{crs}/departures`
  * (`crates/api/src/render.rs::station_departure_json`) -- camelCase
@@ -105,6 +133,13 @@ export function TrackTrainForm({
   const { suggestions: operatorSuggestions } = useSuggestions(operator, searchTocs);
   const [originTouched, setOriginTouched] = useState(false);
   const [picker, setPicker] = useState<Picker>(null);
+  // Initialized from `initialOrigin` (not `false`) so a form mounted with
+  // an already-valid pre-filled origin shows "Checking for departures…"
+  // on the very first paint rather than flashing the `picker === null`
+  // "couldn't load" sentence for one render before the effect below runs.
+  // Per docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
+  // Decision 5.
+  const [pickerLoading, setPickerLoading] = useState(() => CRS_PATTERN.test(initialOrigin.trim()));
 
   const originValid = CRS_PATTERN.test(originCrs.trim());
   const canSubmit = originValid && scheduledDeparture !== null && !submitting;
@@ -120,10 +155,12 @@ export function TrackTrainForm({
   useEffect(() => {
     if (!originValid) {
       setPicker(null);
+      setPickerLoading(false);
       return;
     }
     const controller = new AbortController();
     const crs = originCrs.trim().toUpperCase();
+    setPickerLoading(true);
 
     fetch(`/api/stations/${crs}/departures`, { signal: controller.signal })
       .then((res) => {
@@ -136,16 +173,39 @@ export function TrackTrainForm({
           // Decision 3.
           return fetch(`/api/stations/${crs}/schedule-departures`, { signal: controller.signal }).then(
             (cifRes) => {
-              if (cifRes.status === 404) return setPicker('unavailable');
-              if (!cifRes.ok) return setPicker(null);
-              return cifRes.json().then((rows: ScheduleDepartureRow[]) => setPicker({ source: 'cif', rows }));
+              if (cifRes.status === 404) {
+                setPickerLoading(false);
+                return setPicker('unavailable');
+              }
+              if (!cifRes.ok) {
+                setPickerLoading(false);
+                return setPicker(null);
+              }
+              return cifRes.json().then((rows: ScheduleDepartureRow[]) => {
+                setPickerLoading(false);
+                setPicker({ source: 'cif', rows });
+              });
             },
           );
         }
-        if (!res.ok) return setPicker(null);
-        return res.json().then((rows: DepartureRow[]) => setPicker({ source: 'ldbws', rows }));
+        if (!res.ok) {
+          setPickerLoading(false);
+          return setPicker(null);
+        }
+        return res.json().then((rows: DepartureRow[]) => {
+          setPickerLoading(false);
+          setPicker({ source: 'ldbws', rows });
+        });
       })
-      .catch(() => {}); // aborted or network blip -- leave prior state, same posture as useSuggestions
+      .catch(() => {
+        // Aborted (superseded by a newer origin change) or a genuine
+        // network blip -- either way, leave prior `picker` state, same
+        // posture as `useSuggestions`. Only flip `pickerLoading` off for a
+        // genuine failure of *this* request; an aborted one is about to be
+        // superseded by a new effect run that has already set it back to
+        // `true`, and unconditionally clearing it here would race that.
+        if (!controller.signal.aborted) setPickerLoading(false);
+      });
     return () => controller.abort();
   }, [originCrs, originValid]);
 
@@ -251,37 +311,66 @@ export function TrackTrainForm({
     }
   }
 
-  return (
-    <Stack gap="md" component="form" onSubmit={handleSubmit}>
-      <Autocomplete
-        label="Origin CRS code"
-        placeholder="e.g. Woking or WOK"
-        value={originCrs}
-        onChange={setOriginCrs}
-        onBlur={() => setOriginTouched(true)}
-        data={originSuggestions.map((s) => ({ value: s.code, label: s.code }))}
-        filter={({ options }) => options}
-        renderOption={({ option }) => {
-          const match = originSuggestions.find((s) => s.code === option.value);
-          return match ? `${match.code} — ${match.name}` : option.value;
-        }}
-        error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
-        required
-      />
-      {picker === 'unavailable' && (
+  /** The picker container's content, in the priority order documented in
+   * docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
+   * Decision 4 -- exactly one of six mutually-exclusive states, checked
+   * top to bottom. Rows are filtered by `matchesDestination`/
+   * `matchesOperator` (Decision 1) before rendering; a source whose
+   * *unfiltered* result was already empty (state 5 below) is
+   * distinguished from one that had rows but none survived filtering
+   * (the two new sentences inside the `'ldbws'`/`'cif'` branches) --
+   * different honest meanings, different copy. */
+  function pickerContent() {
+    if (!originValid) {
+      return (
+        <Text size="sm" c="dimmed">
+          Enter an origin station above to see upcoming departures.
+        </Text>
+      );
+    }
+    if (pickerLoading) {
+      return (
+        <Text size="sm" c="dimmed">
+          Checking for departures…
+        </Text>
+      );
+    }
+    if (picker === null) {
+      return (
+        <Text size="sm" c="dimmed">
+          Couldn&apos;t load departures for this station right now — enter the details below.
+        </Text>
+      );
+    }
+    if (picker === 'unavailable') {
+      return (
         <Text size="sm" c="dimmed">
           No departure information is available for this station — enter the details below.
         </Text>
-      )}
-      {picker !== null && picker !== 'unavailable' && picker.rows.length === 0 && (
+      );
+    }
+    if (picker.rows.length === 0) {
+      return (
         <Text size="sm" c="dimmed">
           No live departures currently on the board for this station right now.
         </Text>
-      )}
-      {picker !== null && picker !== 'unavailable' && picker.rows.length > 0 && picker.source === 'ldbws' && (
+      );
+    }
+    if (picker.source === 'ldbws') {
+      const filtered = picker.rows.filter(
+        (row) => matchesDestination(row.destinationCrs, destinationCrs) && matchesOperator(row.operator, operator),
+      );
+      if (filtered.length === 0) {
+        return (
+          <Text size="sm" c="dimmed">
+            No upcoming departures match the destination and/or operator you&apos;ve entered.
+          </Text>
+        );
+      }
+      return (
         <ScrollArea mah={220} offsetScrollbars>
           <Stack gap="xs">
-            {picker.rows.map((row) => {
+            {filtered.map((row) => {
               const clickable = !row.isCancelled;
               const badge = row.isCancelled ? (
                 <Badge color="red">Cancelled</Badge>
@@ -316,16 +405,26 @@ export function TrackTrainForm({
             })}
           </Stack>
         </ScrollArea>
-      )}
-      {picker !== null && picker !== 'unavailable' && picker.rows.length > 0 && picker.source === 'cif' && (
-        <>
+      );
+    }
+    // picker.source === 'cif' -- Operator never filters this source
+    // (Decision 1's CIF/Operator asymmetry): `matchesOperator` is simply
+    // never called here.
+    const filtered = picker.rows.filter((row) => matchesDestination(row.destinationCrs, destinationCrs));
+    return (
+      <>
+        <Text size="sm" c="dimmed">
+          Live departure boards aren&apos;t available for this station. Showing the scheduled timetable instead
+          — this is not live running information and may be up to 30 minutes out of date.
+        </Text>
+        {filtered.length === 0 ? (
           <Text size="sm" c="dimmed">
-            Live departure boards aren&apos;t available for this station. Showing the scheduled timetable
-            instead — this is not live running information and may be up to 30 minutes out of date.
+            No upcoming scheduled departures match the destination you&apos;ve entered.
           </Text>
+        ) : (
           <ScrollArea mah={220} offsetScrollbars>
             <Stack gap="xs">
-              {picker.rows.map((row) => (
+              {filtered.map((row) => (
                 <Group
                   key={row.uid}
                   justify="space-between"
@@ -346,8 +445,28 @@ export function TrackTrainForm({
               ))}
             </Stack>
           </ScrollArea>
-        </>
-      )}
+        )}
+      </>
+    );
+  }
+
+  return (
+    <Stack gap="md" component="form" onSubmit={handleSubmit}>
+      <Autocomplete
+        label="Origin station"
+        placeholder="e.g. Woking or WOK"
+        value={originCrs}
+        onChange={setOriginCrs}
+        onBlur={() => setOriginTouched(true)}
+        data={originSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+        filter={({ options }) => options}
+        renderOption={({ option }) => {
+          const match = originSuggestions.find((s) => s.code === option.value);
+          return match ? `${match.code} — ${match.name}` : option.value;
+        }}
+        error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
+        required
+      />
       <Group align="flex-end" gap="xs">
         <DateTimePicker
           label="Scheduled departure"
@@ -378,7 +497,7 @@ export function TrackTrainForm({
         </Button>
       </Group>
       <Autocomplete
-        label="Destination CRS code (optional)"
+        label="Destination station (optional)"
         placeholder="e.g. Woking or WOK"
         value={destinationCrs}
         onChange={setDestinationCrs}
@@ -401,6 +520,15 @@ export function TrackTrainForm({
           return match ? `${match.code} — ${match.name}` : option.value;
         }}
       />
+      {/* Always present -- never absent from the DOM, per
+          docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
+          Decision 4. `mih={72}` blunts the size jump between the
+          one/two-line text states; row-list states remain bounded by
+          `ScrollArea`'s own `mah={220}` and can legitimately grow past
+          the minimum. */}
+      <Stack gap="xs" mih={72}>
+        {pickerContent()}
+      </Stack>
       {fieldError && (
         <Alert color="red" title="Couldn't track this train">
           {fieldError}
