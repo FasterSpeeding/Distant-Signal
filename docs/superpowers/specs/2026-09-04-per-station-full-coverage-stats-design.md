@@ -19,16 +19,22 @@ sketch below (types, schema, routes) is marked as a sketch, not final code.
 
 ## Relationship to the parallel live-consumer design
 
-Per this task's brief, a second, concurrent document —
+**Update (2026-09-04, post-initial-publish): resolved.** Per this task's
+brief, a second, concurrent document —
 `docs/superpowers/specs/2026-09-04-option-b-live-consumer-design.md`,
 covering Option B's actual live consumer and the settled producer contract
-the deferred doc's Reason 2 said didn't exist yet — may or may not have
-landed before this one. **Checked directly at the start of this pass**:
-`ls docs/superpowers/specs/ | grep option-b-live` returns nothing; the file
-does not exist in this worktree as of this writing. This document therefore
-proceeds on its own best-grounded judgment (Decision 2, below) rather than
-against that document's actual persistence/data shape, and names precisely
-what to re-check once it lands (Open questions #1).
+the deferred doc's Reason 2 said didn't exist yet — had not landed as of
+this document's first pass (`ls docs/superpowers/specs/ | grep
+option-b-live` returned nothing at the time). This document proceeded on
+its own best-grounded judgment (Decision 2, below) rather than against that
+document's actual persistence/data shape, and named precisely what to
+re-check once it landed (Open questions #1). **It has since landed** (in
+`worktree-option-b-live`), and its own 2026-09-04 revision explicitly
+converges on this document's guess rather than proposing a competing one —
+same table name, same columns, same primary key, same endpoint path,
+verbatim. Open questions #1, below, is now marked resolved with the full
+detail; nothing else in this document changes as a result, since the
+producer contract landed exactly as guessed.
 
 ## Goal
 
@@ -688,23 +694,40 @@ frontend: StationOperatorSampleStats (extended) → statsUnavailableReason /
 
 ## Open questions / risks
 
-1. **This document's entire producer contract (Decision 2: a
-   `station_full_coverage_samples` table, keyed `(crs, operator)`, written
-   directly by Option B's consumer to a new private endpoint, read live) is
-   an assumption, not a confirmed design.** It was built because
+1. **RESOLVED (2026-09-04).** This document's entire producer contract
+   (Decision 2: a `station_full_coverage_samples` table, keyed `(crs,
+   operator)`, written directly by Option B's consumer to a new private
+   endpoint, read live) was originally flagged as an assumption, not a
+   confirmed design, because
    `docs/superpowers/specs/2026-09-04-option-b-live-consumer-design.md` did
-   not exist in this worktree as of this pass (confirmed by direct `ls`).
-   **Once that document lands, re-check specifically**: (a) does the live
-   consumer's actual persistence shape produce per-(station, operator)
-   rows at all, or only a per-line materialized signal (in which case this
-   document's entire Decision 2 needs replacing, not just tuning); (b) if
-   it does produce per-station rows, what table/schema does it actually
-   write them into, and does `crates/api` read them directly (as this
-   document assumes) or through some other intermediary; (c) does it POST
-   to `crates/api` the way `poller-ldbws`/`trust-consumer` do, or use a
-   different ingestion shape (direct DB write from a shared schema,
-   `aggregator`-mediated, something else) — this document's private-endpoint
-   sketch in Decision 2 is a guess by analogy, not a confirmed shape.
+   not exist in this worktree at the time this document was first written
+   (confirmed then by direct `ls`). **It has since landed, and its
+   2026-09-04 revision (Decision 2h and the extended Decision 3 — the
+   "Relationship to the concurrent per-station full-coverage design"
+   section, read in full from `worktree-option-b-live`) resolves this
+   question directly, converging on this document's own guess rather than
+   proposing a competing shape**: (a) yes — the live consumer's persistence
+   shape does produce per-`(crs, operator)` rows, via a second,
+   parallel accumulation pass (Decision 2h) alongside its per-line output,
+   not only a per-line materialized signal; (b) the table is
+   `station_full_coverage_samples(crs, operator, resolved_at, stats
+   JSONB)`, `PRIMARY KEY (crs, operator)` — byte-for-byte this document's
+   own Decision 2 sketch, adopted verbatim rather than reinvented, and
+   `crates/api` reads it directly (no intermediary), exactly as assumed;
+   (c) yes — it POSTs to `crates/api`, specifically `POST
+   /private/station-full-coverage-samples`, the exact endpoint name this
+   document's Decision 2 sketch guessed, one call per correlation cycle
+   alongside (not instead of) a second POST to the line-level
+   `/private/full-coverage-stats` endpoint. One real, non-trivial
+   consequence worth restating from the Option B document's own honesty
+   about it: a station-level bucket only fills once a population UID's
+   `toc_id` has actually been learned from a real TRUST Activation (its
+   Decision 2h's "asymmetric population" finding) — a UID whose Activation
+   is never observed still correctly inflates its *line's* `cancelled`
+   count but is silently absent from every station bucket. This is a
+   property of the producer's data, not of this document's read/gating
+   design, and needs no change here — flagged for awareness when a real
+   producer eventually starts writing rows.
 2. **Whether Decision 1's route-membership gate (`line.stations`, not
    `line.sample_stations`) is the right membership check** — reasoned from
    first principles ("full coverage sees every calling point, not the
