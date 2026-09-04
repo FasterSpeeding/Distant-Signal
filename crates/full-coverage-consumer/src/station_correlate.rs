@@ -6,21 +6,13 @@
 //! `StationCorrelationState::activations_by_uid`.
 //!
 //! **Merge-order note on this module's write path** (`build_station_rows`,
-//! `queries::post_station_full_coverage_samples`): per this plan's own
-//! Non-goals, `common::StationFullCoverageSample` is owned and added by
-//! the separate `per-station-full-coverage-stats` plan/branch, not this
-//! one -- it does not exist in this worktree. The plan's own Task 12 Step
-//! 3 already documents that this specific function "doesn't compile until
-//! common::StationFullCoverageSample exists." Since this branch is
-//! developed and verified standalone in this sandbox (the other branch's
-//! worktree is a separate, parallel checkout this plan never touches),
-//! `StationFullCoverageSampleRow` below is a LOCAL placeholder with the
-//! exact shape the design doc's own sketch gives `common::StationFullCoverageSample`
-//! (`crs`, `operator`, `resolved_at`, `stats`) -- so this crate builds and
-//! its tests run standalone now. Swapping it for the real
-//! `common::StationFullCoverageSample` once the other branch merges is a
-//! one-line type-alias change (delete this struct, `use common::StationFullCoverageSample as StationFullCoverageSampleRow;`
-//! or just rename call sites), not a logic change.
+//! `queries::post_station_full_coverage_samples`), now resolved: this was
+//! developed against a local placeholder (`StationFullCoverageSampleRow`)
+//! while the separate `per-station-full-coverage-stats` branch, which owns
+//! `common::StationFullCoverageSample`, hadn't merged yet. Both branches
+//! are now merged, so this module uses the real type directly -- same
+//! field shape (`crs`, `operator`, `resolved_at`, `stats`) the placeholder
+//! always had, no logic change.
 
 use std::collections::HashMap;
 
@@ -69,17 +61,6 @@ pub fn apply_movement_station(
     true
 }
 
-/// See this module's own doc comment: a temporary stand-in for
-/// `common::StationFullCoverageSample` until the per-station chain's
-/// branch merges. Same field shape.
-#[derive(Debug, Clone, PartialEq)]
-pub struct StationFullCoverageSampleRow {
-    pub crs: String,
-    pub operator: String,
-    pub resolved_at: chrono::DateTime<chrono::Utc>,
-    pub stats: common::SampleStats,
-}
-
 /// Mirrors Task 11's `build_line_row`/`post_full_coverage_stats` shape,
 /// but producing one row per `(crs, toc_id)` bucket with at least one
 /// `derived` entry -- Decision 2h's own "only pairs that actually
@@ -88,7 +69,7 @@ pub fn build_station_rows(
     state: &StationCorrelationState,
     resolved_at: chrono::DateTime<chrono::Utc>,
     defaults: &common::Defaults,
-) -> Vec<StationFullCoverageSampleRow> {
+) -> Vec<common::StationFullCoverageSample> {
     state
         .derived
         .iter()
@@ -102,7 +83,7 @@ pub fn build_station_rows(
                 common::compute_sample_stats(&refs, defaults.delay_threshold_minutes, |d| {
                     !d.skipped_stations.is_empty()
                 });
-            StationFullCoverageSampleRow {
+            common::StationFullCoverageSample {
                 crs: crs.clone(),
                 operator: operator.clone(),
                 resolved_at,

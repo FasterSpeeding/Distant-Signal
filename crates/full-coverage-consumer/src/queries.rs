@@ -57,18 +57,16 @@ pub async fn post_full_coverage_stats(
 /// Posts to the OTHER chain's own endpoint (`POST /private/station-full-coverage-samples`),
 /// owned by `docs/superpowers/plans/2026-09-04-per-station-full-coverage-stats-plan.md`
 /// -- this crate is only ever an HTTP client of it, never its
-/// route/migration owner (see this plan's Non-goals). Takes
-/// `station_correlate::StationFullCoverageSampleRow` -- see that module's
-/// own doc comment for why this is a local placeholder rather than
-/// `common::StationFullCoverageSample` directly in this worktree, and
-/// derives `Serialize` only for this one call site's own local
-/// wire-encoding, kept separate from the type's definition (which has no
-/// other reason to depend on `serde` derives itself).
+/// route/migration owner (see this plan's Non-goals). Takes the real
+/// `common::StationFullCoverageSample` (both branches are now merged).
+/// Encodes via a local `Wire` struct rather than deriving `Serialize`
+/// directly on `common::StationFullCoverageSample`, since that type has no
+/// other reason to depend on `serde` derives itself.
 pub async fn post_station_full_coverage_samples(
     client: &reqwest::Client,
     url: &str,
     tokens: &common::oauth_client::OAuthTokenCache,
-    samples: &[crate::station_correlate::StationFullCoverageSampleRow],
+    samples: &[common::StationFullCoverageSample],
 ) -> anyhow::Result<()> {
     if samples.is_empty() {
         return Ok(());
