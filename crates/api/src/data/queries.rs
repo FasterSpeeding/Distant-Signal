@@ -15,6 +15,7 @@ use common::{
     IncidentMessage, LineStatusReport, StationFullCoverageSample, StationReference, StationSample,
     TocReference,
 };
+use serde::Deserialize;
 use sqlx::PgPool;
 
 /// Incidents are upserted in chunks of this size, each as its own
@@ -770,6 +771,82 @@ pub async fn get_schedule_line_population(
     .fetch_optional(pool)
     .await?;
     row.map(|r| r.try_get("population"))
+        .transpose()
+        .map_err(Into::into)
+}
+
+/// One `POST /private/schedule-network-departures` batch element --
+/// query-scoped, deserialized straight off the request body by
+/// `routes::ingest::post_schedule_network_departures`. Defined here
+/// (the data layer), not in `routes/ingest.rs`, so the data layer never
+/// depends on a route-layer type -- same direction as every other
+/// dependency between these two files. `departures` stays an opaque
+/// `serde_json::Value` -- see this table's own migration comment for why.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScheduleNetworkDeparturesRow {
+    pub crs: String,
+    pub service_date: chrono::NaiveDate,
+    pub departures: serde_json::Value,
+}
+
+/// Upserts one cycle's batch of per-station CIF-derived departures --
+/// wholesale replaces any existing row for each `(crs, service_date)` (a
+/// fresh cycle's grouping pass supersedes the prior one entirely, never
+/// merged), same shape as `upsert_full_coverage_line_stats`/
+/// `upsert_stanox_crs`: one transaction, one `INSERT ... ON CONFLICT` per
+/// row.
+pub async fn upsert_schedule_network_departures(
+    pool: &PgPool,
+    rows: &[ScheduleNetworkDeparturesRow],
+) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+    let mut count = 0u64;
+
+    for row in rows {
+        sqlx::query(
+            r#"
+            INSERT INTO schedule_network_departures (crs, service_date, departures, updated_at)
+            VALUES ($1, $2, $3, now())
+            ON CONFLICT (crs, service_date) DO UPDATE SET
+                departures = EXCLUDED.departures,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(&row.crs)
+        .bind(row.service_date)
+        .bind(&row.departures)
+        .execute(&mut *tx)
+        .await?;
+
+        count += 1;
+    }
+
+    tx.commit().await?;
+    Ok(count)
+}
+
+/// Reads one station's CIF-derived departures for one service date, if
+/// published. `None` when no `schedule-reference` cycle has published for
+/// this `(crs, service_date)` yet -- either the station never appears in
+/// `stanox_crs` at all, or (far more likely in practice) the current
+/// service date's cycle just hasn't run yet. The caller
+/// (`routes::departures::get_station_schedule_departures`) maps this to a
+/// `404`, the same honesty split `get_station_departures` already uses for
+/// `station_samples`.
+pub async fn latest_schedule_network_departures(
+    pool: &PgPool,
+    crs: &str,
+    service_date: chrono::NaiveDate,
+) -> Result<Option<serde_json::Value>> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT departures FROM schedule_network_departures WHERE crs = $1 AND service_date = $2",
+    )
+    .bind(crs)
+    .bind(service_date)
+    .fetch_optional(pool)
+    .await?;
+    row.map(|r| r.try_get("departures"))
         .transpose()
         .map_err(Into::into)
 }

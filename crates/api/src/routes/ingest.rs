@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
 use crate::data::queries;
+use crate::data::queries::ScheduleNetworkDeparturesRow;
 use crate::data::train_tracking as queries_train_tracking;
 
 pub fn router() -> Router {
@@ -75,6 +76,10 @@ pub fn router() -> Router {
         .route(
             "/full-coverage-stats",
             axum::routing::get(get_full_coverage_stats_last_fetched).post(post_full_coverage_stats),
+        )
+        .route(
+            "/schedule-network-departures",
+            axum::routing::post(post_schedule_network_departures),
         )
 }
 
@@ -351,6 +356,23 @@ async fn get_schedule_line_population(
             .await
             .map_err(internal_error)?;
     Ok(Json(population))
+}
+
+/// `crates/schedule-reference`'s per-cycle batch of CIF-derived per-station
+/// departures -- see `queries::upsert_schedule_network_departures`. POST
+/// only: unlike `/schedule-line-population`, no service reads this table
+/// back over HTTP -- `api` serves it straight off Postgres via
+/// `routes::departures::get_station_schedule_departures`. See
+/// docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
+/// Decision 1.
+async fn post_schedule_network_departures(
+    State(app): State<App>,
+    Json(rows): Json<Vec<ScheduleNetworkDeparturesRow>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = queries::upsert_schedule_network_departures(&app.database, &rows)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
 }
 
 /// `full-coverage-consumer`'s own periodic snapshot write/read-back --
@@ -924,5 +946,103 @@ mod db_tests {
             .await
             .expect("query should succeed against an empty table");
         assert_eq!(fetched_at, None);
+    }
+
+    async fn delete_network_departures_fixture(pool: &PgPool, crs: &str) {
+        sqlx::query("DELETE FROM schedule_network_departures WHERE crs = $1")
+            .bind(crs)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture schedule_network_departures rows");
+    }
+
+    fn network_departures_body(crs: &str, service_date: &str) -> Value {
+        json!([{
+            "crs": crs,
+            "service_date": service_date,
+            "departures": [{"uid": "C11052", "scheduled": "08:22:00", "destination_crs": "CRE"}],
+        }])
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_network_departures -- --ignored --test-threads=1`"]
+    async fn post_schedule_network_departures_upserts_the_row() {
+        let pool = connect().await;
+        delete_network_departures_fixture(&pool, "ZQV").await;
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/schedule-network-departures")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        network_departures_body("ZQV", "2026-09-04").to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json, serde_json::json!({"upserted": 1}));
+
+        let departures: serde_json::Value = sqlx::query_scalar(
+            "SELECT departures FROM schedule_network_departures WHERE crs = 'ZQV' AND service_date = '2026-09-04'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("row landed");
+        assert_eq!(departures[0]["uid"], "C11052");
+
+        delete_network_departures_fixture(&pool, "ZQV").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_network_departures -- --ignored --test-threads=1`"]
+    async fn a_second_network_departures_post_for_the_same_key_wholesale_replaces_not_merges() {
+        let pool = connect().await;
+        delete_network_departures_fixture(&pool, "ZQW").await;
+
+        queries::upsert_schedule_network_departures(
+            &pool,
+            &[ScheduleNetworkDeparturesRow {
+                crs: "ZQW".to_string(),
+                service_date: "2026-09-04".parse().unwrap(),
+                departures: serde_json::json!([{"uid": "C11052", "scheduled": "08:22:00", "destination_crs": "CRE"}]),
+            }],
+        )
+        .await
+        .expect("seed first row");
+        queries::upsert_schedule_network_departures(
+            &pool,
+            &[ScheduleNetworkDeparturesRow {
+                crs: "ZQW".to_string(),
+                service_date: "2026-09-04".parse().unwrap(),
+                departures: serde_json::json!([{"uid": "C99999", "scheduled": "09:00:00", "destination_crs": null}]),
+            }],
+        )
+        .await
+        .expect("seed second row");
+
+        let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
+            "SELECT departures FROM schedule_network_departures WHERE crs = 'ZQW' AND service_date = '2026-09-04'",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("select fixture rows");
+        assert_eq!(rows.len(), 1, "wholesale replace, not a second row");
+        assert_eq!(rows[0].0[0]["uid"], "C99999");
+
+        delete_network_departures_fixture(&pool, "ZQW").await;
     }
 }

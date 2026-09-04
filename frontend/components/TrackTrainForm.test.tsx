@@ -4,19 +4,32 @@ import dayjs from 'dayjs';
 import { renderWithMantine } from '@/test/render';
 import { TrackTrainForm } from './TrackTrainForm';
 
-/** Routes a mocked `fetch` call by URL, defaulting suggestion-fetch
- * (`/api/stations?q=...`, `/api/tocs?q=...`) and departures-fetch
- * (`/api/stations/{crs}/departures`) calls to an inert empty response so
- * a test only needs to override the branch it actually cares about. Both
- * kinds of fetch can now be in flight at once for a valid origin CRS
- * (`useSuggestions`'s debounced suggestion fetch, and this component's own
- * un-debounced departures effect), so every test that types a valid origin
- * needs a mock that can tell them apart. */
-function mockFetchByUrl(departuresResponse: () => Response) {
+/** Routes a mocked `fetch` call by URL: `/api/stations/{crs}/departures`
+ * (LDBWS), `/api/stations/{crs}/schedule-departures` (the CIF fallback,
+ * this task), suggestion fetches, and everything else (the track-submit
+ * call). `departures` defaults to an inert empty-array 200 so a test only
+ * needs to override the branch it actually cares about; `scheduleDeparatures`
+ * has no default -- a test that expects the CIF fallback to fire but
+ * doesn't configure it will throw loudly rather than silently returning
+ * something misleading, since most tests never expect a 404 from the
+ * `departures` fetch at all. */
+function mockFetchByUrl(
+  options: {
+    departures?: () => Response;
+    scheduleDepartures?: () => Response;
+  } = {},
+) {
+  const { departures = () => new Response(JSON.stringify([]), { status: 200 }), scheduleDepartures } = options;
   return vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
+    if (/\/api\/stations\/[A-Za-z]{3}\/schedule-departures$/.test(url)) {
+      if (!scheduleDepartures) {
+        throw new Error(`unexpected schedule-departures fetch for ${url} -- this test did not configure one`);
+      }
+      return Promise.resolve(scheduleDepartures());
+    }
     if (/\/api\/stations\/[A-Za-z]{3}\/departures$/.test(url)) {
-      return Promise.resolve(departuresResponse());
+      return Promise.resolve(departures());
     }
     if (url.startsWith('/api/stations?') || url.startsWith('/api/tocs?')) {
       return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
@@ -472,7 +485,7 @@ describe('TrackTrainForm', () => {
     ];
 
     it('typing a valid origin CRS triggers a departures fetch to /api/stations/{ORIGIN}/departures', async () => {
-      const fetchMock = mockFetchByUrl(() => new Response(JSON.stringify([]), { status: 200 }));
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify([]), { status: 200 }) });
       vi.stubGlobal('fetch', fetchMock);
 
       renderWithMantine(<TrackTrainForm />);
@@ -483,21 +496,22 @@ describe('TrackTrainForm', () => {
       });
     });
 
-    it('a 404 response renders the "not available to browse" text', async () => {
-      const fetchMock = mockFetchByUrl(() => new Response('not found', { status: 404 }));
+    it('a 404 from both LDBWS and CIF renders the "no departure information" unavailable text', async () => {
+      const fetchMock = mockFetchByUrl({
+        departures: () => new Response('not found', { status: 404 }),
+        scheduleDepartures: () => new Response('not found', { status: 404 }),
+      });
       vi.stubGlobal('fetch', fetchMock);
 
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
 
       expect(
-        await screen.findByText(
-          "Live departures aren't available to browse for this station — enter the details below.",
-        ),
+        await screen.findByText('No departure information is available for this station — enter the details below.'),
       ).toBeInTheDocument();
     });
 
     it('a 200 [] response renders the "no live departures right now" text', async () => {
-      const fetchMock = mockFetchByUrl(() => new Response(JSON.stringify([]), { status: 200 }));
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify([]), { status: 200 }) });
       vi.stubGlobal('fetch', fetchMock);
 
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
@@ -508,7 +522,7 @@ describe('TrackTrainForm', () => {
     });
 
     it('renders a cancelled and an on-time departure, with the cancelled row not clickable', async () => {
-      const fetchMock = mockFetchByUrl(() => new Response(JSON.stringify(departures), { status: 200 }));
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
       vi.stubGlobal('fetch', fetchMock);
 
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
@@ -527,7 +541,7 @@ describe('TrackTrainForm', () => {
     });
 
     it('clicking a non-cancelled row fills destinationCrs/operator/scheduledDeparture', async () => {
-      const fetchMock = mockFetchByUrl(() => new Response(JSON.stringify(departures), { status: 200 }));
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
       vi.stubGlobal('fetch', fetchMock);
 
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
@@ -548,7 +562,7 @@ describe('TrackTrainForm', () => {
     });
 
     it('changing the origin away from a previously-picked value does not clear already-filled fields', async () => {
-      const fetchMock = mockFetchByUrl(() => new Response(JSON.stringify(departures), { status: 200 }));
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
       vi.stubGlobal('fetch', fetchMock);
 
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
@@ -568,6 +582,94 @@ describe('TrackTrainForm', () => {
       expect(screen.getByRole('combobox', { name: /Operator/ })).toHaveValue('SW');
       const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
       expect(picker.value).toMatch(/^\d{4}-\d{2}-\d{2} 10:40:00$/);
+    });
+
+    const scheduleDepartures: { uid: string; scheduled: string; destinationCrs: string | null }[] = [
+      { uid: 'C11052', scheduled: '08:22', destinationCrs: 'CRE' },
+      { uid: 'C99999', scheduled: '09:00', destinationCrs: null },
+    ];
+
+    it('a 404 from LDBWS followed by a CIF 200 renders the CIF picker with its staleness disclaimer, no badges', async () => {
+      const fetchMock = mockFetchByUrl({
+        departures: () => new Response('not found', { status: 404 }),
+        scheduleDepartures: () => new Response(JSON.stringify(scheduleDepartures), { status: 200 }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+
+      expect(
+        await screen.findByText(
+          /Live departure boards aren't available for this station\. Showing the scheduled timetable/,
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /08:22/ })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /09:00/ })).toBeInTheDocument();
+      expect(screen.queryByText('On time')).not.toBeInTheDocument();
+      expect(screen.queryByText('Cancelled')).not.toBeInTheDocument();
+    });
+
+    it('a 404 from LDBWS followed by a CIF 200 [] renders the shared "no live departures right now" text', async () => {
+      const fetchMock = mockFetchByUrl({
+        departures: () => new Response('not found', { status: 404 }),
+        scheduleDepartures: () => new Response(JSON.stringify([]), { status: 200 }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+
+      expect(
+        await screen.findByText('No live departures currently on the board for this station right now.'),
+      ).toBeInTheDocument();
+    });
+
+    it('a non-404, non-ok LDBWS response does not fall back to CIF at all', async () => {
+      const fetchMock = mockFetchByUrl({ departures: () => new Response('server error', { status: 500 }) });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(screen.queryByText('No departure information is available for this station — enter the details below.')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Showing the scheduled timetable/)).not.toBeInTheDocument();
+      expect(screen.queryByText('No live departures currently on the board for this station right now.')).not.toBeInTheDocument();
+    });
+
+    it('clicking a CIF row with a real destinationCrs fills destination and scheduled departure, leaving operator untouched', async () => {
+      const fetchMock = mockFetchByUrl({
+        departures: () => new Response('not found', { status: 404 }),
+        scheduleDepartures: () => new Response(JSON.stringify(scheduleDepartures), { status: 200 }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      const row = await screen.findByRole('button', { name: /08:22/ });
+      const today = dayjs().format('YYYY-MM-DD');
+      fireEvent.click(row);
+
+      expect(screen.getByRole('combobox', { name: /Destination CRS code/ })).toHaveValue('CRE');
+      expect(screen.getByRole('combobox', { name: /Operator/ })).toHaveValue('');
+      const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+      expect(picker.value).toBe(`${today} 08:22:00`);
+    });
+
+    it('clicking a CIF row with a null destinationCrs leaves any existing destination untouched', async () => {
+      const fetchMock = mockFetchByUrl({
+        departures: () => new Response('not found', { status: 404 }),
+        scheduleDepartures: () => new Response(JSON.stringify(scheduleDepartures), { status: 200 }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      const destinationField = screen.getByRole('combobox', { name: /Destination CRS code/ });
+      fireEvent.change(destinationField, { target: { value: 'EXISTING' } });
+
+      const row = await screen.findByRole('button', { name: /09:00/ });
+      fireEvent.click(row);
+
+      expect(destinationField).toHaveValue('EXISTING');
+      const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+      expect(picker.value).toMatch(/09:00:00$/);
     });
   });
 });

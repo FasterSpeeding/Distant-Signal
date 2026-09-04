@@ -60,6 +60,19 @@ pub struct Config {
     )]
     pub schedule_line_population_url: String,
 
+    /// The `api` crate's ingestion endpoint for this service's third
+    /// responsibility: the whole-network trip-search fallback's per-CRS,
+    /// CIF-derived "next 10 scheduled departures" publish. See
+    /// docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
+    /// Decision 1. POST-only, no GET pair -- see that decision's own note on
+    /// why this differs from `schedule_line_population_url`'s route shape.
+    #[arg(
+        long,
+        env,
+        default_value = "http://api:8080/private/schedule-network-departures"
+    )]
+    pub schedule_network_departures_url: String,
+
     /// The static line catalogue -- same `--lines-dir`/`LINES_DIR`
     /// value_parser pattern as `crates/aggregator/src/config.rs`'s own
     /// field of the same name. Used to build the per-line TIPLOC set this

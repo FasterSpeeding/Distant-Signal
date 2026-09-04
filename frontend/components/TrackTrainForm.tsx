@@ -31,6 +31,29 @@ interface DepartureRow {
   skippedStations: string[];
 }
 
+/** Wire shape of `GET /public/stations/{crs}/schedule-departures`
+ * (`crates/api/src/render.rs::schedule_departure_json`) -- deliberately
+ * NOT `DepartureRow`: no `operator`, no live running-status fields at all
+ * (`isCancelled`/`delayMinutes`/`estimated`/`cancelReason`/`delayReason`),
+ * because the CIF SCHEDULE feed genuinely has none of that -- see
+ * docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
+ * Decision 2/5. `destinationCrs` is nullable: `null` when the terminating
+ * TIPLOC has no `stanox_crs` row (a real, if rare, gap). */
+interface ScheduleDepartureRow {
+  uid: string;
+  scheduled: string;
+  destinationCrs: string | null;
+}
+
+/** `'unavailable'` replaces the old `'not-sampled'` name: it now means
+ * neither the LDBWS live board NOR the CIF-derived timetable had data for
+ * this station -- see Decision 3/5. */
+type Picker =
+  | { source: 'ldbws'; rows: DepartureRow[] }
+  | { source: 'cif'; rows: ScheduleDepartureRow[] }
+  | 'unavailable'
+  | null;
+
 /** The v1 entry point for individual train tracking -- a manual form, not
  * a per-departure "track this train" action, per
  * docs/superpowers/specs/2026-08-29-train-tracking-frontend-design.md
@@ -81,7 +104,7 @@ export function TrackTrainForm({
   const { suggestions: destinationSuggestions } = useSuggestions(destinationCrs, searchStations);
   const { suggestions: operatorSuggestions } = useSuggestions(operator, searchTocs);
   const [originTouched, setOriginTouched] = useState(false);
-  const [departures, setDepartures] = useState<DepartureRow[] | 'not-sampled' | null>(null);
+  const [picker, setPicker] = useState<Picker>(null);
 
   const originValid = CRS_PATTERN.test(originCrs.trim());
   const canSubmit = originValid && scheduledDeparture !== null && !submitting;
@@ -90,18 +113,37 @@ export function TrackTrainForm({
   // syntactically valid CRS -- same same-origin `/api/*` proxy pattern
   // `searchStations`/`searchTocs` already use (client-safe, no `baseUrl()`
   // import). Per docs/superpowers/specs/2026-09-03-trip-search-design.md
-  // Decision 4.
+  // Decision 4. Falls back to the CIF-derived schedule-departures picker on
+  // a 404, per
+  // docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
+  // Decision 3.
   useEffect(() => {
     if (!originValid) {
-      setDepartures(null);
+      setPicker(null);
       return;
     }
     const controller = new AbortController();
-    fetch(`/api/stations/${originCrs.trim().toUpperCase()}/departures`, { signal: controller.signal })
+    const crs = originCrs.trim().toUpperCase();
+
+    fetch(`/api/stations/${crs}/departures`, { signal: controller.signal })
       .then((res) => {
-        if (res.status === 404) return setDepartures('not-sampled');
-        if (!res.ok) return setDepartures(null);
-        return res.json().then(setDepartures);
+        if (res.status === 404) {
+          // Fallback ONLY on 404 -- an LDBWS network blip or 500 must NOT
+          // silently swap in the CIF picker; `!res.ok` still maps to `null`
+          // exactly as today, leaving the picker absent rather than
+          // switching sources on an error condition. Per
+          // docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
+          // Decision 3.
+          return fetch(`/api/stations/${crs}/schedule-departures`, { signal: controller.signal }).then(
+            (cifRes) => {
+              if (cifRes.status === 404) return setPicker('unavailable');
+              if (!cifRes.ok) return setPicker(null);
+              return cifRes.json().then((rows: ScheduleDepartureRow[]) => setPicker({ source: 'cif', rows }));
+            },
+          );
+        }
+        if (!res.ok) return setPicker(null);
+        return res.json().then((rows: DepartureRow[]) => setPicker({ source: 'ldbws', rows }));
       })
       .catch(() => {}); // aborted or network blip -- leave prior state, same posture as useSuggestions
     return () => controller.abort();
@@ -118,6 +160,20 @@ export function TrackTrainForm({
   function pickDeparture(row: DepartureRow) {
     setDestinationCrs(row.destinationCrs);
     setOperator(row.operator);
+    const [hh, mm] = row.scheduled.split(':');
+    const today = dayjs().format('YYYY-MM-DD');
+    setScheduledDeparture(`${today} ${hh}:${mm}:00`);
+  }
+
+  /** CIF-derived sibling of `pickDeparture` -- fills only
+   * Destination/Scheduled-departure. `operator` is left exactly as the user
+   * already typed it, never cleared, never guessed -- the CIF SCHEDULE feed
+   * has no operator field at all (Decision 2). If `row.destinationCrs` is
+   * `null` (the terminating TIPLOC has no `stanox_crs` row), the existing
+   * Destination field is left untouched too, for the same "never guess,
+   * never clobber with a blank" reason. */
+  function pickCifDeparture(row: ScheduleDepartureRow) {
+    if (row.destinationCrs !== null) setDestinationCrs(row.destinationCrs);
     const [hh, mm] = row.scheduled.split(':');
     const today = dayjs().format('YYYY-MM-DD');
     setScheduledDeparture(`${today} ${hh}:${mm}:00`);
@@ -212,20 +268,20 @@ export function TrackTrainForm({
         error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
         required
       />
-      {departures === 'not-sampled' && (
+      {picker === 'unavailable' && (
         <Text size="sm" c="dimmed">
-          Live departures aren&apos;t available to browse for this station — enter the details below.
+          No departure information is available for this station — enter the details below.
         </Text>
       )}
-      {Array.isArray(departures) && departures.length === 0 && (
+      {picker !== null && picker !== 'unavailable' && picker.rows.length === 0 && (
         <Text size="sm" c="dimmed">
           No live departures currently on the board for this station right now.
         </Text>
       )}
-      {Array.isArray(departures) && departures.length > 0 && (
+      {picker !== null && picker !== 'unavailable' && picker.rows.length > 0 && picker.source === 'ldbws' && (
         <ScrollArea mah={220} offsetScrollbars>
           <Stack gap="xs">
-            {departures.map((row) => {
+            {picker.rows.map((row) => {
               const clickable = !row.isCancelled;
               const badge = row.isCancelled ? (
                 <Badge color="red">Cancelled</Badge>
@@ -260,6 +316,37 @@ export function TrackTrainForm({
             })}
           </Stack>
         </ScrollArea>
+      )}
+      {picker !== null && picker !== 'unavailable' && picker.rows.length > 0 && picker.source === 'cif' && (
+        <>
+          <Text size="sm" c="dimmed">
+            Live departure boards aren&apos;t available for this station. Showing the scheduled timetable
+            instead — this is not live running information and may be up to 30 minutes out of date.
+          </Text>
+          <ScrollArea mah={220} offsetScrollbars>
+            <Stack gap="xs">
+              {picker.rows.map((row) => (
+                <Group
+                  key={row.uid}
+                  justify="space-between"
+                  wrap="nowrap"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => pickCifDeparture(row)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') pickCifDeparture(row);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <Text size="sm">
+                    {row.scheduled}
+                    {row.destinationCrs ? ` · ${row.destinationCrs}` : ''}
+                  </Text>
+                </Group>
+              ))}
+            </Stack>
+          </ScrollArea>
+        </>
       )}
       <Group align="flex-end" gap="xs">
         <DateTimePicker
