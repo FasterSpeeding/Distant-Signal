@@ -33,6 +33,11 @@ RUN apt-get update \
     && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 1000 --gid 1000 poller
 
 COPY --from=builder /usr/local/bin/schedule-reference /usr/local/bin/schedule-reference
+# Task 7's second responsibility (per-line CIF SCHEDULE population publish)
+# reads the same static line catalogue `aggregator`/`api` already bake in
+# the same way (see those Dockerfiles' own identical COPY step) -- this
+# crate had no use for `lines/` before Task 7.
+COPY --chown=poller:poller lines/ /app/lines/
 
 # Numeric USER, not the `poller` name useradd created above: Kubernetes'
 # runAsNonRoot admission check (this chart's podSecurityContext sets

@@ -722,6 +722,114 @@ pub async fn list_stanox_crs(pool: &PgPool) -> Result<Vec<common::StanoxCrsRecor
         .collect())
 }
 
+/// Upserts one line's population for one service date -- wholesale
+/// replaces any existing row for that `(line_id, service_date)` (a fresh
+/// CIF read supersedes the prior one entirely, never merged). `population`
+/// is stored opaquely; `api` never deserializes it into
+/// `schedule_query::LinePopulationEntry` -- only `schedule-reference`
+/// (writer) and `full-coverage-consumer` (reader) need that shape.
+pub async fn upsert_schedule_line_population(
+    pool: &PgPool,
+    line_id: &str,
+    service_date: chrono::NaiveDate,
+    population: &serde_json::Value,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO schedule_line_population (line_id, service_date, population, updated_at)
+        VALUES ($1, $2, $3, now())
+        ON CONFLICT (line_id, service_date) DO UPDATE SET
+            population = EXCLUDED.population,
+            updated_at = EXCLUDED.updated_at
+        "#,
+    )
+    .bind(line_id)
+    .bind(service_date)
+    .bind(population)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Reads one line's population for one service date, if published.
+/// `None` when `full-coverage-consumer` reloads before `schedule-reference`
+/// has ever published that day's population yet (a real, expected startup
+/// race, not an error -- the caller treats it the same as "empty
+/// population," per Decision 2e's own Pending semantics).
+pub async fn get_schedule_line_population(
+    pool: &PgPool,
+    line_id: &str,
+    service_date: chrono::NaiveDate,
+) -> Result<Option<serde_json::Value>> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT population FROM schedule_line_population WHERE line_id = $1 AND service_date = $2",
+    )
+    .bind(line_id)
+    .bind(service_date)
+    .fetch_optional(pool)
+    .await?;
+    row.map(|r| r.try_get("population"))
+        .transpose()
+        .map_err(Into::into)
+}
+
+/// Upserts one line's full-coverage stats row -- wholesale replaces any
+/// existing row for that `line_id` (a live snapshot, never merged/append).
+pub async fn upsert_full_coverage_line_stats(
+    pool: &PgPool,
+    rows: &[common::FullCoverageLineStatsRow],
+) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+    let mut count = 0u64;
+    for row in rows {
+        sqlx::query(
+            r#"
+            INSERT INTO full_coverage_line_stats
+                (line_id, service_date, availability, total, delayed, cancelled, skipped, avg_delay_minutes, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+            ON CONFLICT (line_id) DO UPDATE SET
+                service_date      = EXCLUDED.service_date,
+                availability      = EXCLUDED.availability,
+                total             = EXCLUDED.total,
+                delayed           = EXCLUDED.delayed,
+                cancelled         = EXCLUDED.cancelled,
+                skipped           = EXCLUDED.skipped,
+                avg_delay_minutes = EXCLUDED.avg_delay_minutes,
+                updated_at        = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(&row.line_id)
+        .bind(row.service_date)
+        .bind(&row.availability)
+        .bind(row.stats.total as i32)
+        .bind(row.stats.delayed as i32)
+        .bind(row.stats.cancelled as i32)
+        .bind(row.stats.skipped as i32)
+        .bind(row.stats.avg_delay_minutes)
+        .execute(&mut *tx)
+        .await?;
+        count += 1;
+    }
+    tx.commit().await?;
+    Ok(count)
+}
+
+/// The most recent `updated_at` across every `full_coverage_line_stats`
+/// row -- the freshness-only GET shape (Correction 2), mirroring
+/// `last_station_samples_fetch`'s own shape. The real reader of the rows
+/// themselves is `aggregator`'s own direct SQL
+/// (`load_full_coverage_line_stats`, Task 14), not this route.
+pub async fn last_full_coverage_line_stats_fetch(
+    pool: &PgPool,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let (fetched_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT MAX(updated_at) FROM full_coverage_line_stats")
+            .fetch_one(pool)
+            .await?;
+    Ok(fetched_at)
+}
+
 /// The latest `StationSample` polled for a single station, or `None` if
 /// `station_samples` has no row for that CRS yet. `station_samples` is
 /// wholesale-replaced per poll (one row per station, no history -- see
@@ -1574,11 +1682,19 @@ mod tests {
                 half_hourly_stats_for_range_filters_orders_and_handles_unknown_lines -- --ignored` \
                 against docker compose's postgres"]
     async fn half_hourly_stats_for_range_filters_orders_and_handles_unknown_lines() {
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-        let pool = sqlx::postgres::PgPoolOptions::new().connect(&database_url).await.expect("connect to postgres");
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
         const LINE_ID: &str = "TEST-HALF-HOURLY-RANGE";
 
-        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1").bind(LINE_ID).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1")
+            .bind(LINE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let h1: chrono::DateTime<chrono::Utc> = "2026-08-31T12:00:00Z".parse().unwrap();
         let h2: chrono::DateTime<chrono::Utc> = "2026-08-31T14:30:00Z".parse().unwrap();
@@ -1592,22 +1708,35 @@ mod tests {
         .execute(&pool).await.expect("seed rows");
 
         let rows = half_hourly_stats_for_range(
-            &pool, LINE_ID,
+            &pool,
+            LINE_ID,
             "2026-08-31T00:00:00Z".parse().unwrap(),
             "2026-09-01T00:00:00Z".parse().unwrap(),
-        ).await.expect("half_hourly_stats_for_range");
+        )
+        .await
+        .expect("half_hourly_stats_for_range");
 
-        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1").bind(LINE_ID).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1")
+            .bind(LINE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         assert_eq!(rows.len(), 2, "the out-of-range row must be excluded");
-        assert_eq!(rows[0].half_hour_start, h1, "results must be ordered ascending by half_hour_start");
+        assert_eq!(
+            rows[0].half_hour_start, h1,
+            "results must be ordered ascending by half_hour_start"
+        );
         assert_eq!(rows[1].half_hour_start, h2);
 
         let unknown = half_hourly_stats_for_range(
-            &pool, "TEST-HALF-HOURLY-RANGE-UNKNOWN",
+            &pool,
+            "TEST-HALF-HOURLY-RANGE-UNKNOWN",
             "2026-08-31T00:00:00Z".parse().unwrap(),
             "2026-09-01T00:00:00Z".parse().unwrap(),
-        ).await.expect("half_hourly_stats_for_range for an unknown line_id");
+        )
+        .await
+        .expect("half_hourly_stats_for_range for an unknown line_id");
         assert!(unknown.is_empty());
     }
 }

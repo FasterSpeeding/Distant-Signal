@@ -1,6 +1,28 @@
 use std::path::PathBuf;
 
+use anyhow::Result;
 use clap::Parser;
+use common::LineDefinition;
+
+fn parse_lines(path: &str) -> Result<LineCatalogue> {
+    LineDefinition::from_dir(&PathBuf::from(path)).map(LineCatalogue)
+}
+
+/// Newtype around the parsed line catalogue -- same shape (and same
+/// `clap_derive` gotcha it works around) as `crates/aggregator/src/config.rs::LineCatalogue`
+/// and `crates/api/src/data/config.rs`'s identical `--lines-dir` field.
+/// Needed here (Task 7) to build the reverse tiploc->line index this
+/// crate's own per-line CIF SCHEDULE population publish requires -- see
+/// docs/superpowers/plans/2026-09-04-option-b-live-consumer-plan.md Task 7.
+#[derive(Debug, Clone, Default)]
+pub struct LineCatalogue(pub Vec<LineDefinition>);
+
+impl std::ops::Deref for LineCatalogue {
+    type Target = Vec<LineDefinition>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// CLI/env configuration for the `schedule-reference` service.
 ///
@@ -26,6 +48,25 @@ pub struct Config {
     /// The `api` crate's ingestion endpoint for resolved STANOX/CRS rows.
     #[arg(long, env, default_value = "http://api:8080/private/stanox-crs")]
     pub api_ingest_url: String,
+
+    /// The `api` crate's ingestion endpoint for this service's second
+    /// responsibility (Task 7): per-line CIF SCHEDULE population publish.
+    /// See docs/superpowers/specs/2026-09-04-option-b-live-consumer-design.md
+    /// Decision 2a/2b.
+    #[arg(
+        long,
+        env,
+        default_value = "http://api:8080/private/schedule-line-population"
+    )]
+    pub schedule_line_population_url: String,
+
+    /// The static line catalogue -- same `--lines-dir`/`LINES_DIR`
+    /// value_parser pattern as `crates/aggregator/src/config.rs`'s own
+    /// field of the same name. Used to build the per-line TIPLOC set this
+    /// service's own `schedules_touching` query needs (Task 7) -- a
+    /// responsibility this crate did not have before Task 7.
+    #[arg(long = "lines-dir", env = "LINES_DIR", default_value = "/app/lines", value_parser = parse_lines)]
+    pub lines: LineCatalogue,
 
     /// Shared, non-secret OAuth2 client-credentials config (same value
     /// across all 8 real callers) -- see

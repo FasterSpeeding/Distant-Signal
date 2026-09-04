@@ -165,6 +165,32 @@ pub(crate) fn build_internal_oauth_routes(
             Method::POST,
             vec![config.internal_oauth_group_full_coverage.clone()],
         ),
+        // Also split by method: schedule-reference publishes (POST),
+        // full-coverage-consumer reads the real rows back (GET) -- same
+        // "different services, different groups" shape as /stanox-crs
+        // above, per Correction 2.
+        (
+            "/schedule-line-population",
+            Method::POST,
+            vec![config.internal_oauth_group_schedule_reference.clone()],
+        ),
+        (
+            "/schedule-line-population",
+            Method::GET,
+            vec![config.internal_oauth_group_full_coverage.clone()],
+        ),
+        // Same group, both methods -- this producer reading back its own
+        // last write, not a second caller (see Correction 2).
+        (
+            "/full-coverage-stats",
+            Method::POST,
+            vec![config.internal_oauth_group_full_coverage.clone()],
+        ),
+        (
+            "/full-coverage-stats",
+            Method::GET,
+            vec![config.internal_oauth_group_full_coverage.clone()],
+        ),
     ]
 }
 
@@ -265,10 +291,7 @@ impl AppState {
                 "internal_oauth_group_ldbws",
                 &config.internal_oauth_group_ldbws,
             ),
-            (
-                "internal_oauth_group_tfl",
-                &config.internal_oauth_group_tfl,
-            ),
+            ("internal_oauth_group_tfl", &config.internal_oauth_group_tfl),
             (
                 "internal_oauth_group_trust_consumer",
                 &config.internal_oauth_group_trust_consumer,
