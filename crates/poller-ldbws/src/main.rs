@@ -63,18 +63,11 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::parse();
-    if config.metrics_enabled {
+    if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
-    let internal_oauth =
-        common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
-            token_url: config.internal_oauth_token_url.clone(),
-            client_id: config.internal_oauth_client_id.clone(),
-            scope: config.internal_oauth_scope.clone(),
-            username: config.internal_oauth_username.clone(),
-            password: config.internal_oauth_password.clone(),
-        });
+    let internal_oauth = config.internal_oauth.token_cache();
 
     let poll_interval = Duration::from_secs(config.poll_interval_secs);
     let delay = ingest::time_until_next_poll(
@@ -301,13 +294,12 @@ async fn fetch_departures(
             }
             Err(FetchError::Other(err)) => return Err(err),
             Err(FetchError::Status(status, body)) => {
-                let next_num_rows = if attempt < MAX_NUMROWS_ATTEMPTS
-                    && should_retry_with_smaller_rows(status)
-                {
-                    numrows_step_down(num_rows)
-                } else {
-                    None
-                };
+                let next_num_rows =
+                    if attempt < MAX_NUMROWS_ATTEMPTS && should_retry_with_smaller_rows(status) {
+                        numrows_step_down(num_rows)
+                    } else {
+                        None
+                    };
 
                 let Some(next_num_rows) = next_num_rows else {
                     if fell_back {
@@ -357,7 +349,9 @@ mod tests {
 
     #[test]
     fn only_server_errors_trigger_a_numrows_retry() {
-        assert!(should_retry_with_smaller_rows(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(should_retry_with_smaller_rows(
+            StatusCode::INTERNAL_SERVER_ERROR
+        ));
         assert!(should_retry_with_smaller_rows(StatusCode::BAD_GATEWAY));
         assert!(should_retry_with_smaller_rows(
             StatusCode::SERVICE_UNAVAILABLE
@@ -387,14 +381,18 @@ mod tests {
             num_rows,
             api_sample_stations_url: "http://api:8080/private/sample-stations".to_string(),
             api_ingest_url: "http://api:8080/private/station-samples".to_string(),
-            internal_oauth_token_url: "http://auth.invalid/token".to_string(),
-            internal_oauth_client_id: "distant-signal-internal".to_string(),
-            internal_oauth_scope: "groups".to_string(),
-            internal_oauth_username: "svc-poller-ldbws".to_string(),
-            internal_oauth_password: "app-password".to_string(),
+            internal_oauth: common::oauth_client::InternalOAuthArgs {
+                internal_oauth_token_url: "http://auth.invalid/token".to_string(),
+                internal_oauth_client_id: "distant-signal-internal".to_string(),
+                internal_oauth_scope: "groups".to_string(),
+                internal_oauth_username: "svc-poller-ldbws".to_string(),
+                internal_oauth_password: "app-password".to_string(),
+            },
             poll_interval_secs: 60,
             metrics_port: 9091,
-            metrics_enabled: false,
+            metrics: common::service_args::MetricsArgs {
+                metrics_enabled: false,
+            },
         }
     }
 
