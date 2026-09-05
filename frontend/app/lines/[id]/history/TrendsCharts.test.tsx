@@ -1,5 +1,17 @@
-import { describe, it, expect } from 'vitest';
-import { gapSpans } from './TrendsCharts';
+import { describe, it, expect, vi } from 'vitest';
+import { screen } from '@testing-library/react';
+import { renderWithMantine } from '@/test/render';
+import { gapSpans, TrendsCharts } from './TrendsCharts';
+import type { ChartPoint } from './chartPoint';
+
+vi.mock('@mantine/charts', () => ({
+  LineChart: (props: { xAxisProps?: { tickFormatter?: (value: string) => string } }) => (
+    <div
+      data-testid="line-chart"
+      data-has-tick-formatter={String(typeof props.xAxisProps?.tickFormatter === 'function')}
+    />
+  ),
+}));
 
 function point(bucketKey: string, delayRate: number | null) {
   return { bucketKey, delayRate };
@@ -107,5 +119,24 @@ describe('gapSpans (half-hourly buckets)', () => {
     const spans = gapSpans(points);
     expect(spans).toEqual([{ startKey: '2026-08-31T14:00:00Z', endKey: '2026-08-31T14:00:00Z' }]);
     expect(spans[0].startKey).not.toBe(spans[0].endKey === points[0].bucketKey ? points[0].bucketKey : undefined);
+  });
+});
+
+describe('TrendsCharts granularity prop', () => {
+  const points: ChartPoint[] = [
+    { bucketKey: '2026-08-01T12:00:00Z', delayRate: 0.1, cancellationRate: 0, skipRate: 0, avgDelayMinutes: 1, sampleCycles: 50 },
+  ];
+
+  it.each(['halfHour', 'hour', 'sixHour'] as const)(
+    'gives the x-axis a tickFormatter for the %s granularity',
+    (granularity) => {
+      renderWithMantine(<TrendsCharts points={points} granularity={granularity} order={2} />);
+      expect(screen.getAllByTestId('line-chart')[0]).toHaveAttribute('data-has-tick-formatter', 'true');
+    },
+  );
+
+  it('gives the x-axis no tickFormatter for the day granularity', () => {
+    renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} />);
+    expect(screen.getAllByTestId('line-chart')[0]).toHaveAttribute('data-has-tick-formatter', 'false');
   });
 });

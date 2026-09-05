@@ -4,6 +4,7 @@ import { LineChart } from '@mantine/charts';
 import { Stack, Title, type TitleOrder } from '@mantine/core';
 import { ReferenceArea } from 'recharts';
 import { formatTime } from '@/lib/dateFormat';
+import type { TrendGranularity } from '@/lib/history';
 import type { ChartPoint } from './chartPoint';
 
 /** A contiguous run of one or more buckets where every rate/delay field is
@@ -58,12 +59,13 @@ function referenceAreaBounds(
  * See git history for the full incident this originally fixed --
  * unchanged by this generalization.
  *
- * `granularity` is new: a plain, serializable `'day' | 'halfHour'` string
+ * `granularity` is new: a plain, serializable `TrendGranularity` string
+ * (`'halfHour' | 'hour' | 'sixHour' | 'day'`, `frontend/lib/history.ts`)
  * (never a function, so it crosses the Server/Client boundary safely from
  * either caller) that controls ONLY the x-axis tick label formatting.
  * `points[].bucketKey` stays the raw, always-unique category identity for
- * BOTH granularities (a "YYYY-MM-DD" day string, or an RFC3339
- * half-hour-start instant) -- `granularity === 'halfHour'` additionally
+ * EVERY granularity (a "YYYY-MM-DD" day string, or an RFC3339
+ * bucket-start instant) -- any non-`'day'` value additionally
  * renders each tick through `formatTime` (e.g. "14:30") for a legible
  * axis, without changing what Recharts uses as the category key. This
  * split matters because a rolling 24-hour window's wall-clock
@@ -80,7 +82,7 @@ export function TrendsCharts({
   order,
 }: {
   points: ChartPoint[];
-  granularity: 'day' | 'halfHour';
+  granularity: TrendGranularity;
   /** Heading level for the two chart titles. Required, deliberately
    * undefaulted: this component is mounted at two different depths
    * (h2 on /lines/[id]/history's Trends tab, h3 under "Recent trends" on
@@ -93,7 +95,7 @@ export function TrendsCharts({
 }) {
   const xAxisProps = {
     padding: { right: 12 },
-    ...(granularity === 'halfHour' ? { tickFormatter: (value: string) => formatTime(value) } : {}),
+    ...(granularity !== 'day' ? { tickFormatter: (value: string) => formatTime(value) } : {}),
   };
 
   return (
