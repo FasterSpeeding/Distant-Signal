@@ -135,6 +135,11 @@ services:
       # crates/api/src/data/config.rs's history_retention_days doc comment.
       # Same variable, same default, read from the one env file.
       HISTORY_RETENTION_DAYS: ${HISTORY_RETENTION_DAYS:-7}
+      # Must be kept equal to the aggregator service's own
+      # DAILY_STATS_RETENTION_DAYS/HALF_HOURLY_STATS_RETENTION_HOURS -- see
+      # crates/api/src/data/config.rs's doc comments on these two fields.
+      DAILY_STATS_RETENTION_DAYS: ${DAILY_STATS_RETENTION_DAYS:-300}
+      HALF_HOURLY_STATS_RETENTION_HOURS: ${HALF_HOURLY_STATS_RETENTION_HOURS:-840}
       # Public VAPID key served (unauthenticated) at
       # GET /public/notifications/vapid-public-key for the browser's
       # PushManager.subscribe() call -- same value the notifier service

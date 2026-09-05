@@ -186,6 +186,27 @@ pub struct ServiceArguments {
     #[arg(long, env, default_value_t = 7)]
     pub history_retention_days: i64,
 
+    /// How many days of `line_status_daily_stats` rows the aggregator
+    /// actually keeps before `queries::prune_daily_stats` deletes them.
+    /// This crate never reads or prunes that table itself -- the only
+    /// reason this field exists here is so `/public/history-retention`
+    /// (`routes/history_retention.rs`) can hand the frontend's Trends-tab
+    /// granularity control the real ceiling. Deployments MUST set this to
+    /// the same value they give the aggregator's own
+    /// `DAILY_STATS_RETENTION_DAYS` -- same convention as
+    /// `history_retention_days`, above.
+    #[arg(long, env, default_value_t = 300)]
+    pub daily_stats_retention_days: i64,
+
+    /// How many hours of `line_status_half_hourly_stats` rows the
+    /// aggregator actually keeps before `queries::prune_half_hourly_stats`
+    /// deletes them. Same "static config echo, never enforced here"
+    /// posture as `history_retention_days`/`daily_stats_retention_days`
+    /// above. Deployments MUST set this to the same value they give the
+    /// aggregator's own `HALF_HOURLY_STATS_RETENTION_HOURS`.
+    #[arg(long, env, default_value_t = 840)]
+    pub half_hourly_stats_retention_hours: i64,
+
     /// Whether to expose the `/metrics` route and its request-metrics
     /// middleware. Unlike the other 7 binaries, `api`'s own HTTP listener
     /// stays up regardless (it's the main service) -- this only controls

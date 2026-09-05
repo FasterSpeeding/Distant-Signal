@@ -1342,6 +1342,8 @@ mod db_tests {
             sso_post_login_redirect_url: "https://example.invalid/".to_string(),
             session_ttl_days: 14,
             history_retention_days: 7,
+            daily_stats_retention_days: 300,
+            half_hourly_stats_retention_hours: 840,
             metrics_enabled: false,
             defaults_file: None,
             lines: LineCatalogue(lines),
