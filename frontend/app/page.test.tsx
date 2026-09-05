@@ -51,6 +51,7 @@ function item(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListIt
     delayMinutes: 4,
     trackedAt: '2026-08-31T12:00:00Z',
     ...overrides,
+    customName: overrides.customName ?? null,
   };
 }
 

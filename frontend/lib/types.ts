@@ -385,6 +385,11 @@ export interface TrackedTrainState {
   nextCallingPoint: string | null;
   etaNext: string | null; // RFC3339
   etaSource: EtaSource | null;
+  // User-authored display label, or `null` for the computed default -- see
+  // `lib/trackingName.ts`'s `trackedTrainDisplayName`. Never inferred from
+  // any parsed document (`crates/api/src/data/ticket_extraction.rs`), only
+  // ever set via `RenameTrainButton`.
+  customName: string | null;
 }
 
 /** `GET /Train/mine`'s per-item response shape
@@ -408,6 +413,8 @@ export interface TrackedTrainListItem {
   status: JourneyStatus | null;
   delayMinutes: number | null;
   trackedAt: string; // RFC3339 -- list ordering key
+  // See `TrackedTrainState.customName`'s comment -- same contract.
+  customName: string | null;
 }
 
 /** `POST /Train/track`'s request body (`common::TrackPinRequest`). Plain
@@ -462,6 +469,9 @@ export interface TrackedTrainTicket {
   destinationName: string | null;
   source: TicketSource;
   createdAt: string; // RFC3339
+  // User-authored display label, or `null` for the computed default -- see
+  // `TicketSummary.tsx`. Never inferred from an uploaded `.pkpass`/PDF.
+  customName: string | null;
 }
 
 /** `POST /Train/{trackingId}/tickets`'s request body
@@ -587,6 +597,8 @@ export interface TicketListItem {
   estimate: DelayRepayEstimate | null;
   claimUrl: string;
   disclaimer: string;
+  // See `TrackedTrainTicket.customName`'s comment -- same contract.
+  customName: string | null;
 }
 
 // ---------------------------------------------------------------------------
