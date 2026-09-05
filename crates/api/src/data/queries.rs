@@ -723,6 +723,46 @@ pub async fn list_stanox_crs(pool: &PgPool) -> Result<Vec<common::StanoxCrsRecor
         .collect())
 }
 
+/// Every `stanox_crs` row for one CRS -- the "which TIPLOCs does this
+/// station's code cover" lookup Decision 3 step 3 of
+/// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md
+/// calls for (`list_stanox_crs`'s existing `WHERE`-less shape returns
+/// everything; this is its `WHERE crs = $1` sibling). `UPPER(...)` on both
+/// sides, matching `TRACKED_TRAIN_STATE_SELECT`'s own established
+/// convention -- `tracked_trains.pin_origin_crs` is never
+/// case-normalized at write time (`validate_pin` doesn't uppercase it),
+/// so a case-insensitive compare here is load-bearing, not defensive
+/// tidiness.
+pub async fn list_stanox_crs_for_crs(pool: &PgPool, crs: &str) -> Result<Vec<common::StanoxCrsRecord>> {
+    let rows = sqlx::query_as::<_, StanoxCrsRow>(
+        "SELECT stanox, crs, tiploc, station_name, source_sequence FROM stanox_crs \
+         WHERE UPPER(crs) = UPPER($1)",
+    )
+    .bind(crs)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(common::StanoxCrsRecord::from).collect())
+}
+
+/// Reverse of the above: one CRS for a TIPLOC, or `None` if unmapped.
+/// Used to resolve a matched schedule's own terminus CRS
+/// (`schedule_destination_crs`) from its last calling point's TIPLOC.
+/// `LIMIT 1`: a TIPLOC maps to at most one real station in practice, but
+/// this doesn't assume uniqueness at the SQL level (no `UNIQUE`
+/// constraint on `stanox_crs.tiploc` -- multiple STANOX rows can share a
+/// TIPLOC, e.g. different platforms/areas of one physical location), so
+/// this is "a plausible one," not "the guaranteed only one."
+pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT crs FROM stanox_crs WHERE UPPER(tiploc) = UPPER($1) LIMIT 1",
+    )
+    .bind(tiploc)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(crs,)| crs))
+}
+
 /// Upserts one line's population for one service date -- wholesale
 /// replaces any existing row for that `(line_id, service_date)` (a fresh
 /// CIF read supersedes the prior one entirely, never merged). `population`
@@ -2318,5 +2358,92 @@ mod schedule_feed_ingest_query_tests {
         if count == 0 {
             assert_eq!(last, None);
         }
+    }
+}
+
+/// DB-gated tests for `list_stanox_crs_for_crs`/`crs_for_tiploc` (Task 5 of
+/// docs/superpowers/plans/2026-09-05-schedule-first-train-tracking-plan.md).
+/// Named and shaped like `schedule_feed_ingest_query_tests` above --
+/// this file's own local convention for grouping one query area's
+/// DB-gated tests, rather than `train_tracking.rs`'s `db_tests` shape --
+/// so this file's own test-module naming stays internally consistent.
+#[cfg(test)]
+mod stanox_crs_lookup_query_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_stanox_crs_for_crs -- --ignored`"]
+    async fn list_stanox_crs_for_crs_returns_only_matching_rows_case_insensitively() {
+        let pool = test_pool().await;
+        upsert_stanox_crs(
+            &pool,
+            &[
+                common::StanoxCrsRecord {
+                    stanox: "TEST-EUS".to_string(),
+                    crs: "EUS".to_string(),
+                    tiploc: "EUSTON".to_string(),
+                    station_name: "LONDON EUSTON".to_string(),
+                    source_sequence: 1,
+                },
+                common::StanoxCrsRecord {
+                    stanox: "TEST-WAT".to_string(),
+                    crs: "WAT".to_string(),
+                    tiploc: "WATRLMN".to_string(),
+                    station_name: "LONDON WATERLOO".to_string(),
+                    source_sequence: 1,
+                },
+            ],
+        )
+        .await
+        .expect("seed stanox_crs");
+
+        let rows = list_stanox_crs_for_crs(&pool, "eus").await.expect("query");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tiploc, "EUSTON");
+
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox IN ('TEST-EUS', 'TEST-WAT')")
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                crs_for_tiploc -- --ignored`"]
+    async fn crs_for_tiploc_resolves_a_known_tiploc_and_none_for_an_unknown_one() {
+        let pool = test_pool().await;
+        upsert_stanox_crs(
+            &pool,
+            &[common::StanoxCrsRecord {
+                stanox: "TEST-CRE".to_string(),
+                crs: "CRE".to_string(),
+                tiploc: "CREWE".to_string(),
+                station_name: "CREWE".to_string(),
+                source_sequence: 1,
+            }],
+        )
+        .await
+        .expect("seed stanox_crs");
+
+        assert_eq!(crs_for_tiploc(&pool, "crewe").await.unwrap(), Some("CRE".to_string()));
+        assert_eq!(crs_for_tiploc(&pool, "NOWHERE").await.unwrap(), None);
+
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-CRE'")
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 }
