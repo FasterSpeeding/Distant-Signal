@@ -1,45 +1,13 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
 use clap::ValueHint;
-use serde::de::DeserializeOwned;
-
-use crate::data::LineDefinition;
-
 pub use common::Defaults;
+pub use common::config::LineCatalogue;
+use common::config::parse_lines;
+use serde::de::DeserializeOwned;
 
 fn parse_toml_path<T: DeserializeOwned>(path: &'_ str) -> Result<T> {
     let text = std::fs::read_to_string(path)?;
     Ok(toml::from_str(&text)?)
-}
-
-fn parse_lines(path: &str) -> Result<LineCatalogue> {
-    LineDefinition::from_dir(&PathBuf::from(path)).map(LineCatalogue)
-}
-
-/// Newtype around the parsed line catalogue.
-///
-/// `clap_derive` infers the type it downcasts an `ArgMatches` entry to from
-/// the field's *syntactic* shape, not from the `value_parser`'s `Value`
-/// type: a bare `Vec<LineDefinition>` field is always treated as "one
-/// `LineDefinition` per CLI occurrence, collected via `ArgAction::Append`" —
-/// confirmed by a runtime panic ("Mismatch between definition and access of
-/// `lines`") the moment `--lines-dir`/`LINES_DIR`/`default_value` actually
-/// supplied a value, which nothing did before this field had a default.
-/// `parse_lines` instead produces the *entire* vec from a single
-/// `--lines-dir` occurrence, so the field type must not look like `Vec<T>`
-/// to the derive macro. This newtype (plus `Deref`) sidesteps that:
-/// `app.config.lines` still coerces to `&[LineDefinition]` at every existing
-/// call site (`crate::routes::samples`, `data::samples::dedup_sample_stations`)
-/// with no changes needed there.
-#[derive(Debug, Clone, Default)]
-pub struct LineCatalogue(pub Vec<LineDefinition>);
-
-impl std::ops::Deref for LineCatalogue {
-    type Target = Vec<LineDefinition>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
 }
 
 #[derive(Debug, clap::Parser)]
