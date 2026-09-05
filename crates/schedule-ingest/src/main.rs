@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::parse();
-    if config.metrics_enabled {
+    if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
 
@@ -87,14 +87,7 @@ async fn main() -> anyhow::Result<()> {
         .expect("parse_check_times guarantees a non-empty list");
 
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
-    let internal_oauth =
-        common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
-            token_url: config.internal_oauth_token_url.clone(),
-            client_id: config.internal_oauth_client_id.clone(),
-            scope: config.internal_oauth_scope.clone(),
-            username: config.internal_oauth_username.clone(),
-            password: config.internal_oauth_password.clone(),
-        });
+    let internal_oauth = config.internal_oauth.token_cache();
 
     let mut tracker = StabilityTracker::new();
     let mut known_stable: HashSet<String> = HashSet::new();
@@ -749,13 +742,17 @@ mod tests {
             // Deliberately an address nothing listens on -- these tests
             // only exercise up to the POST attempt, not a real server.
             api_ingest_url: "http://127.0.0.1:1/schedule-feed-ingests".to_string(),
-            internal_oauth_token_url: "http://127.0.0.1:1/token".to_string(),
-            internal_oauth_client_id: "test-client".to_string(),
-            internal_oauth_scope: "groups".to_string(),
-            internal_oauth_username: "test-user".to_string(),
-            internal_oauth_password: "test-password".to_string(),
+            internal_oauth: common::oauth_client::InternalOAuthArgs {
+                internal_oauth_token_url: "http://127.0.0.1:1/token".to_string(),
+                internal_oauth_client_id: "test-client".to_string(),
+                internal_oauth_scope: "groups".to_string(),
+                internal_oauth_username: "test-user".to_string(),
+                internal_oauth_password: "test-password".to_string(),
+            },
             metrics_port: 0,
-            metrics_enabled: false,
+            metrics: common::service_args::MetricsArgs {
+                metrics_enabled: false,
+            },
         }
     }
 
