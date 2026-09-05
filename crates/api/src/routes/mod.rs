@@ -12,6 +12,7 @@ pub mod health;
 pub mod history_retention;
 pub mod incidents;
 pub mod ingest;
+pub mod island_of_ireland;
 pub mod line_status;
 pub mod lines;
 pub mod notifications;
@@ -52,6 +53,7 @@ pub fn public_router() -> Router {
         .merge(notifications::router())
         .merge(preferences::router())
         .merge(reference::router())
+        .merge(island_of_ireland::router())
         .merge(auth::router())
         .merge(chatbot::router())
         .merge(station_stats::router())

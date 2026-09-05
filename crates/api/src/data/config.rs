@@ -100,6 +100,12 @@ pub struct ServiceArguments {
     /// Decision 5.
     #[arg(long, env, default_value = "svc-full-coverage-consumer")]
     pub internal_oauth_group_full_coverage: String,
+    /// Gates `POST`/`GET /private/island-of-ireland-stations` and
+    /// `/island-of-ireland-lines` -- the new `poller-irish-rail-gtfs`
+    /// crate's own credential. See
+    /// docs/superpowers/plans/2026-09-05-ireland-rail-support-plan.md Task A3.
+    #[arg(long, env, default_value = "svc-poller-irish-rail-gtfs")]
+    pub internal_oauth_group_irish_rail_gtfs: String,
     /// OIDC issuer base URL (e.g. `https://sso.example.com/realms/rail`).
     /// `crates/api` discovers every other endpoint (authorization, token,
     /// JWKS) from this single URL's `.well-known/openid-configuration`

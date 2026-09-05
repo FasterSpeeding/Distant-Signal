@@ -216,6 +216,26 @@ pub(crate) fn build_internal_oauth_routes(
             Method::GET,
             vec![config.internal_oauth_group_full_coverage.clone()],
         ),
+        (
+            "/island-of-ireland-stations",
+            Method::GET,
+            vec![config.internal_oauth_group_irish_rail_gtfs.clone()],
+        ),
+        (
+            "/island-of-ireland-stations",
+            Method::POST,
+            vec![config.internal_oauth_group_irish_rail_gtfs.clone()],
+        ),
+        (
+            "/island-of-ireland-lines",
+            Method::GET,
+            vec![config.internal_oauth_group_irish_rail_gtfs.clone()],
+        ),
+        (
+            "/island-of-ireland-lines",
+            Method::POST,
+            vec![config.internal_oauth_group_irish_rail_gtfs.clone()],
+        ),
     ]
 }
 
@@ -332,6 +352,10 @@ impl AppState {
             (
                 "internal_oauth_group_full_coverage",
                 &config.internal_oauth_group_full_coverage,
+            ),
+            (
+                "internal_oauth_group_irish_rail_gtfs",
+                &config.internal_oauth_group_irish_rail_gtfs,
             ),
         ] {
             ensure!(

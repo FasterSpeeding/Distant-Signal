@@ -2,6 +2,7 @@ pub mod config;
 pub mod custom_lines;
 pub mod delay_repay_rules;
 pub mod eta_blend;
+pub mod island_of_ireland;
 pub mod notifications;
 pub mod preferences;
 pub mod queries;
