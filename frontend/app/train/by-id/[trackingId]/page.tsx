@@ -6,6 +6,8 @@ import { TicketPanel } from '@/components/TicketPanel';
 import { LoginLink } from '@/components/LoginLink';
 import { TextLink } from '@/components/TextLink';
 import { DeleteTrainButton } from '@/components/DeleteTrainButton';
+import { RenameTrainButton } from '@/components/RenameTrainButton';
+import { trackedTrainDisplayName } from '@/lib/trackingName';
 
 export default async function TrackedTrainByIdPage({
   params,
@@ -51,7 +53,14 @@ export default async function TrackedTrainByIdPage({
     <Stack p="lg" gap="md">
       <Group justify="space-between">
         <Title order={1}>Tracking Train {trackingId}</Title>
-        <DeleteTrainButton trackingId={state.id} />
+        <Group gap="xs">
+          <RenameTrainButton
+            trackingId={state.id}
+            customName={state.customName}
+            defaultName={trackedTrainDisplayName(state)}
+          />
+          <DeleteTrainButton trackingId={state.id} />
+        </Group>
       </Group>
       <TrainJourney state={state} />
       <TicketPanel trackingId={state.id} />
