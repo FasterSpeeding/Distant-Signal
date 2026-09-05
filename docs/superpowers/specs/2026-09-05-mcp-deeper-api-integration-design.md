@@ -656,3 +656,20 @@ takes, not final field-level detail.
    size the way the integration doc flagged (and left unmeasured) DS's
    line-catalogue size in its own Open questions/risks #1. Likely small
    (one row per GB TIPLOC), not verified this session.
+6. **`train_movement_events`/`tracked_trains` have no retention or
+   pruning job of any kind, confirmed directly in the code's own
+   comment**: `crates/api/src/data/train_tracking.rs:24-38` states
+   plainly *"No retention or pruning job exists anywhere in this
+   codebase for `tracked_trains` (grepped for `DELETE FROM
+   tracked_trains`/`prune`/`expire`/`retention` -- only `ON DELETE
+   CASCADE` foreign keys and unrelated matches turned up), so this table
+   grows without bound"* — `list_tracked_trains_for_user` already caps
+   its own response at `MINE_LIST_LIMIT = 100` (`:38`) for exactly this
+   reason, and the child `train_movement_events` table shares the same
+   unbounded-growth profile (cascade-deleted only if the owning pin is
+   itself deleted). This is a real, pre-existing gap this document
+   didn't create, but it's directly load-bearing for Phase 3a's
+   `get_train_movement_history(trackingId)` tool: that route's own query
+   should take the same defensive posture (an explicit `LIMIT`,
+   most-recent-first) rather than assuming an unbounded per-event log is
+   already a solved problem elsewhere in this codebase — it isn't.
