@@ -47,63 +47,9 @@ use clap::Parser;
 use config::{Config, MovementFeedBackend};
 use feed::MovementFeed;
 use feed::kafka::KafkaMovementFeed;
-use movement_feed::redis_stream::{GapInfo, RedisStreamMovementFeed};
+use movement_feed::ActiveFeed;
+use movement_feed::redis_stream::RedisStreamMovementFeed;
 use trust_schema::schema::TrustMessage;
-
-/// Wraps whichever concrete `MovementFeed` this deployment selected. See
-/// `trust-consumer/src/main.rs`'s identical type for the full reasoning on
-/// why this is a manual enum rather than `Box<dyn MovementFeed>`
-/// (`check_gap` is a `RedisStreamMovementFeed`-only inherent method, not
-/// reachable through the trait object).
-enum ActiveFeed {
-    Kafka(KafkaMovementFeed),
-    // Boxed: RedisStreamMovementFeed is meaningfully larger than
-    // KafkaMovementFeed (clippy::large_enum_variant) -- see
-    // trust-consumer/src/main.rs's identical note. The second field is the
-    // same bug fix as that crate's identical type: RedisStreamMovementFeed::connect
-    // never received connection_state, so /healthz stayed permanently
-    // SERVICE_UNAVAILABLE under this backend -- confirmed live on
-    // trust-consumer during Deploy B's B3 step (restart-looped on a
-    // failing liveness probe despite genuinely healthy Redis Streams
-    // reads). Updated at the ActiveFeed::next_batch call site below,
-    // mirroring KafkaMovementFeed's own internal update
-    // (feed/kafka.rs:76-95).
-    RedisStream(Box<RedisStreamMovementFeed>, health_http::ConnectionState),
-}
-
-#[async_trait::async_trait]
-impl MovementFeed for ActiveFeed {
-    async fn next_batch(&mut self) -> anyhow::Result<Vec<String>> {
-        match self {
-            ActiveFeed::Kafka(feed) => feed.next_batch().await,
-            ActiveFeed::RedisStream(feed, connection_state) => {
-                let result = feed.next_batch().await;
-                health_http::set_connected(
-                    connection_state,
-                    "full_coverage_consumer_ready",
-                    result.is_ok(),
-                );
-                result
-            }
-        }
-    }
-
-    async fn commit(&mut self) -> anyhow::Result<()> {
-        match self {
-            ActiveFeed::Kafka(feed) => feed.commit().await,
-            ActiveFeed::RedisStream(feed, _) => feed.commit().await,
-        }
-    }
-}
-
-impl ActiveFeed {
-    async fn check_gap(&mut self) -> anyhow::Result<Option<GapInfo>> {
-        match self {
-            ActiveFeed::Kafka(_) => Ok(None),
-            ActiveFeed::RedisStream(feed, _) => feed.check_gap().await,
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -135,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
                 .await?,
             ),
             connection_state,
+            "full_coverage_consumer_ready",
         ),
     };
     let redis_gap_check_interval = Duration::from_secs(config.redis_gap_check_secs);
