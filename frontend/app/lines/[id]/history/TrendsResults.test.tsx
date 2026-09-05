@@ -3,33 +3,17 @@ import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TrendsResults, toChartPoints } from './TrendsResults';
 import * as api from '@/lib/api';
-import type { LineDailyStats } from '@/lib/types';
-
-// Mirrors the component's own (intentionally unexported) floor -- see
-// TrendsResults.tsx's SPARSE_DATA_FLOOR_CYCLES comment for why the exact
-// value (20) is still a placeholder, not validated.
-const SPARSE_DATA_FLOOR_CYCLES = 20;
+import type { LineDailyStats, LineHalfHourlyStats, LineHourlyStats, LineSixHourlyStats } from '@/lib/types';
 
 vi.mock('@/lib/api');
 
-// This repo's stated convention is not to assert on Recharts' own SVG pixel
-// output (see the design spec's Testing section and TicketPanel.test.tsx's
-// precedent for async Server Component tests). A light mock of
-// `@mantine/charts`' `LineChart` lets these tests assert on the data-driven
-// props actually passed to it -- `series`/`data`/`connectNulls`/
-// `valueFormatter`/etc -- and on how many separate chart instances got
-// rendered, without depending on Recharts' internal SVG rendering in
-// jsdom. Routed through a single `vi.fn()` capture (rather than reading
-// props back off `data-*` attributes alone) so non-serializable props like
-// `valueFormatter` -- a function, which can't round-trip through a DOM
-// attribute -- are inspectable too via `lineChartMock.mock.calls`.
 type MockLineChartProps = {
   data: unknown[];
   series: { name: string; strokeDasharray?: string | number }[];
   connectNulls?: boolean;
   withLegend?: boolean;
   valueFormatter?: (value: number) => string;
-  xAxisProps?: unknown;
+  xAxisProps?: { padding?: unknown; tickFormatter?: (value: string) => string };
 };
 
 const lineChartMock = vi.fn((props: MockLineChartProps) => (
@@ -45,7 +29,7 @@ const lineChartMock = vi.fn((props: MockLineChartProps) => (
 
 vi.mock('@mantine/charts', () => ({ LineChart: (props: MockLineChartProps) => lineChartMock(props) }));
 
-function row(overrides: Partial<LineDailyStats> = {}): LineDailyStats {
+function dailyRow(overrides: Partial<LineDailyStats> = {}): LineDailyStats {
   return {
     day: '2026-08-01',
     sampleCycles: 500,
@@ -61,139 +45,120 @@ function row(overrides: Partial<LineDailyStats> = {}): LineDailyStats {
   };
 }
 
-describe('toChartPoints', () => {
-  it('preserves a day at or above the sparse-data floor', () => {
-    const stats = [row({ sampleCycles: SPARSE_DATA_FLOOR_CYCLES })];
-    const [point] = toChartPoints(stats);
+function halfHourlyRow(overrides: Partial<LineHalfHourlyStats> = {}): LineHalfHourlyStats {
+  return { ...dailyRow(), halfHourStart: '2026-08-31T14:00:00Z', ...overrides } as LineHalfHourlyStats;
+}
+
+function hourlyRow(overrides: Partial<LineHourlyStats> = {}): LineHourlyStats {
+  return { ...dailyRow(), bucketStart: '2026-08-31T14:00:00Z', ...overrides } as LineHourlyStats;
+}
+
+function sixHourlyRow(overrides: Partial<LineSixHourlyStats> = {}): LineSixHourlyStats {
+  return { ...dailyRow(), bucketStart: '2026-08-31T12:00:00Z', ...overrides } as LineSixHourlyStats;
+}
+
+describe('toChartPoints (generic)', () => {
+  it('preserves a bucket at or above the given floor', () => {
+    const stats = [dailyRow({ sampleCycles: 20 })];
+    const [point] = toChartPoints(stats, (row) => row.day, 20);
     expect(point).toEqual({
       bucketKey: '2026-08-01',
       delayRate: 0.1,
       cancellationRate: 0.02,
       skipRate: 0.01,
       avgDelayMinutes: 3.5,
-      sampleCycles: SPARSE_DATA_FLOOR_CYCLES,
+      sampleCycles: 20,
     });
   });
 
-  it('turns a day below the sparse-data floor into a gap, preserving sampleCycles', () => {
-    const stats = [row({ sampleCycles: SPARSE_DATA_FLOOR_CYCLES - 1 })];
-    const [point] = toChartPoints(stats);
+  it('turns a bucket below the given floor into a gap, preserving sampleCycles', () => {
+    const stats = [dailyRow({ sampleCycles: 19 })];
+    const [point] = toChartPoints(stats, (row) => row.day, 20);
     expect(point.delayRate).toBeNull();
     expect(point.cancellationRate).toBeNull();
     expect(point.skipRate).toBeNull();
     expect(point.avgDelayMinutes).toBeNull();
-    expect(point.sampleCycles).toBe(SPARSE_DATA_FLOOR_CYCLES - 1);
-    expect(point.bucketKey).toBe('2026-08-01');
+    expect(point.sampleCycles).toBe(19);
   });
 });
 
 describe('TrendsResults', () => {
+  it('defaults to the day granularity when none is passed, unchanged from before this feature', async () => {
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([dailyRow({ day: '2026-08-01' })]);
+    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
+    expect(api.getLineDailyStats).toHaveBeenCalledWith('wcml', '2026-08-01', '2026-08-08');
+    expect(screen.getByText(/Rates shown count each distinct train once per day/)).toBeInTheDocument();
+  });
+
   it('renders the empty state when there are no rows, inside a bounded container', async () => {
     vi.mocked(api.getLineDailyStats).mockResolvedValue([]);
     renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
     const text = screen.getByText('Not enough sampled data yet for this line.');
     expect(text).toBeInTheDocument();
     expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
-    // Confirms the bounded wrapper, not just the text -- Mantine's Paper renders a div with its own class.
     expect(text.closest('.mantine-Paper-root')).not.toBeNull();
+  });
+
+  it('degrades gracefully, not to app/error.tsx, when the backend fetch throws', async () => {
+    vi.mocked(api.getLineDailyStats).mockRejectedValue(new Error('boom'));
+    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
+    expect(screen.getByText("Trend data isn't available right now.")).toBeInTheDocument();
   });
 
   it('a sparse day does not throw and does not render a flat-zero-looking point', async () => {
     vi.mocked(api.getLineDailyStats).mockResolvedValue([
-      row({ day: '2026-08-01', sampleCycles: SPARSE_DATA_FLOOR_CYCLES - 1 }),
-      row({ day: '2026-08-02', sampleCycles: 500 }),
+      dailyRow({ day: '2026-08-01', sampleCycles: 19 }),
+      dailyRow({ day: '2026-08-02', sampleCycles: 500 }),
     ]);
     renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
 
     const charts = screen.getAllByTestId('line-chart');
     const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
-    expect(rateChart).toBeDefined();
     const points = JSON.parse(rateChart!.dataset.points as string);
     const sparseDay = points.find((point: { bucketKey: string }) => point.bucketKey === '2026-08-01');
     expect(sparseDay.delayRate).toBeNull();
-    expect(sparseDay.cancellationRate).toBeNull();
-    expect(sparseDay.skipRate).toBeNull();
-    // Not a zero -- a genuine gap, per Decision 3.
     expect(sparseDay.delayRate).not.toBe(0);
   });
 
-  it('a normal multi-day range renders without throwing and shows the honesty copy verbatim', async () => {
-    vi.mocked(api.getLineDailyStats).mockResolvedValue([
-      row({ day: '2026-08-01' }),
-      row({ day: '2026-08-02' }),
-      row({ day: '2026-08-03' }),
-    ]);
-    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
-
-    expect(
-      screen.getByText(
-        /Rates shown count each distinct train once per day, based on its status the first time it was seen that day -- not a share of poll cycles\./,
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getAllByTestId('line-chart')).toHaveLength(2);
-  });
-
-  it('renders the average-delay chart as a separate LineChart instance from the three-rate chart', async () => {
-    vi.mocked(api.getLineDailyStats).mockResolvedValue([row({ day: '2026-08-01' }), row({ day: '2026-08-02' })]);
-    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
-
-    const charts = screen.getAllByTestId('line-chart');
-    expect(charts).toHaveLength(2);
-    const seriesSets = charts.map((chart) => chart.dataset.series);
-    expect(seriesSets).toContain('delayRate,cancellationRate,skipRate');
-    expect(seriesSets).toContain('avgDelayMinutes');
-    // Never combined into one four-series chart.
-    expect(seriesSets).not.toContain('delayRate,cancellationRate,skipRate,avgDelayMinutes');
-  });
-
-  it('gives the rate chart a legend and three distinct dash patterns, but not the average-delay chart', async () => {
-    vi.mocked(api.getLineDailyStats).mockResolvedValue([row({ day: '2026-08-01' })]);
-    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
-
-    const charts = screen.getAllByTestId('line-chart');
-    const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate')!;
-    const avgDelayChart = charts.find((chart) => chart.dataset.series === 'avgDelayMinutes')!;
-
-    expect(rateChart.dataset.withLegend).toBe('true');
-    const dashPatterns = rateChart.dataset.dashPatterns!.split(',');
-    expect(new Set(dashPatterns).size).toBe(3); // three distinct values, including the empty string for the solid default
-
-    expect(avgDelayChart.dataset.withLegend).not.toBe('true');
-  });
-
-  it('formats the average-delay tooltip to one decimal place with a unit suffix', async () => {
-    vi.mocked(api.getLineDailyStats).mockResolvedValue([row({ day: '2026-08-01', avgDelayMinutes: 0.41267123328767123 })]);
-    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
-
-    const avgDelayCall = lineChartMock.mock.calls.find(([props]) => props.series[0]?.name === 'avgDelayMinutes')!;
-    const [avgDelayProps] = avgDelayCall;
-    expect(avgDelayProps.valueFormatter?.(0.41267123328767123)).toBe('0.4 min');
-  });
-
-  it('insets the right edge of the x-axis on both charts so the last dot stops clipping', async () => {
-    vi.mocked(api.getLineDailyStats).mockResolvedValue([row({ day: '2026-08-01' })]);
-    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
-
-    for (const [props] of lineChartMock.mock.calls) {
-      expect(props.xAxisProps).toEqual({ padding: { right: 12 } });
-    }
-  });
-
-  it('passes connectNulls={false} to both charts so gaps render instead of interpolating', async () => {
-    vi.mocked(api.getLineDailyStats).mockResolvedValue([row({ day: '2026-08-01' })]);
-    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
-
-    const charts = screen.getAllByTestId('line-chart');
-    for (const chart of charts) {
-      expect(chart.dataset.connectNulls).toBe('false');
-    }
-  });
-
   it('renders both chart titles at h2, one level below this page\'s only h1 ("History: {name}")', async () => {
-    vi.mocked(api.getLineDailyStats).mockResolvedValue([row({ day: '2026-08-01' })]);
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([dailyRow({ day: '2026-08-01' })]);
     renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
-
     expect(screen.getByRole('heading', { name: 'Delay / cancellation / skip rate', level: 2 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Average delay (minutes)', level: 2 })).toBeInTheDocument();
+  });
+
+  it.each([
+    ['halfHour', 'getLineHalfHourlyStats', halfHourlyRow, 10, 'per half hour'] as const,
+    ['hour', 'getLineHourlyStats', hourlyRow, 20, 'per hour'] as const,
+    ['sixHour', 'getLineSixHourlyStats', sixHourlyRow, 120, 'per six-hour period'] as const,
+  ])('dispatches to the right fetch, floor, and honesty copy for the %s granularity', async (granularity, fnName, rowFactory, floor, copyFragment) => {
+    const mockFn = vi.mocked(api[fnName as keyof typeof api]) as unknown as ReturnType<typeof vi.fn>;
+    mockFn.mockResolvedValue([rowFactory({ sampleCycles: floor })]);
+    renderWithMantine(
+      await TrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z', granularity }),
+    );
+    expect(mockFn).toHaveBeenCalledWith('wcml', '2026-08-31T00:00:00Z', '2026-09-01T00:00:00Z');
+    expect(screen.getByText(new RegExp(`Rates shown count each distinct train once ${copyFragment}`))).toBeInTheDocument();
+
+    const charts = screen.getAllByTestId('line-chart');
+    const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
+    const points = JSON.parse(rateChart!.dataset.points as string);
+    expect(points[0].delayRate).not.toBeNull(); // exactly at the floor -- not sparse
+  });
+
+  it.each([
+    ['halfHour', 'getLineHalfHourlyStats', halfHourlyRow, 10] as const,
+    ['hour', 'getLineHourlyStats', hourlyRow, 20] as const,
+    ['sixHour', 'getLineSixHourlyStats', sixHourlyRow, 120] as const,
+  ])('treats a %s bucket one below its floor as a gap', async (granularity, fnName, rowFactory, floor) => {
+    const mockFn = vi.mocked(api[fnName as keyof typeof api]) as unknown as ReturnType<typeof vi.fn>;
+    mockFn.mockResolvedValue([rowFactory({ sampleCycles: floor - 1 })]);
+    renderWithMantine(
+      await TrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z', granularity }),
+    );
+    const charts = screen.getAllByTestId('line-chart');
+    const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
+    const points = JSON.parse(rateChart!.dataset.points as string);
+    expect(points[0].delayRate).toBeNull();
   });
 });

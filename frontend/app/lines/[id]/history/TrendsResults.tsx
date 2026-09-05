@@ -1,30 +1,59 @@
 import { Paper, Stack, Text, Title } from '@mantine/core';
-import { getLineDailyStats } from '@/lib/api';
+import { getLineDailyStats, getLineHalfHourlyStats, getLineHourlyStats, getLineSixHourlyStats } from '@/lib/api';
 import { londonDayKey } from '@/lib/dateFormat';
-import type { LineDailyStats } from '@/lib/types';
+import type { TrendGranularity } from '@/lib/history';
 import { TrendsCharts } from './TrendsCharts';
 import type { ChartPoint } from './chartPoint';
 
-// Placeholder, not a validated number -- see this plan's own "Open
-// judgment calls" section and
-// docs/superpowers/specs/2026-08-31-line-history-graphics-design.md Open
-// question 3. Revisit against real sample_cycles distributions once this
-// has been running in production for a while.
-const SPARSE_DATA_FLOOR_CYCLES = 20;
+// Placeholders, not validated numbers -- see
+// docs/superpowers/specs/2026-09-05-configurable-trend-granularity-design.md
+// Decision 5. `day`/`halfHour` are unchanged from their prior standalone
+// constants (`SPARSE_DATA_FLOOR_CYCLES`/`SPARSE_DATA_FLOOR_CYCLES_HALF_HOURLY`
+// in this file's and HalfHourlyTrendsResults.tsx's git history);
+// `hour`/`sixHour` are newly derived by the same "~third of the bucket's
+// max possible poll-cycle coverage" rule.
+const SPARSE_FLOOR: Record<TrendGranularity, number> = {
+  halfHour: 10,
+  hour: 20,
+  sixHour: 120,
+  day: 20,
+};
 
-// Turns a day with too little poll coverage into a gap rather than a
-// misleading flat/zero line -- Decision 3 of
-// docs/superpowers/specs/2026-08-31-line-history-graphics-design.md. Recharts
-// (which @mantine/charts' LineChart wraps) renders a genuine break in the
-// line across a `null` data point when `connectNulls={false}` is set on the
-// chart, rather than interpolating across it -- verified against the real,
-// installed `@mantine/charts`/`recharts` types and the live Mantine docs,
-// not assumed; see this task's report for the specifics.
-export function toChartPoints(stats: LineDailyStats[]): ChartPoint[] {
+// One honesty-copy sentence per granularity (Ruling A,
+// .superpowers/sdd/2026-08-31-line-history-graphics/progress.md, extended
+// to the two new tiers by the same template) -- must not be softened or
+// dropped, same as this file's pre-existing `day` copy.
+const HONESTY_COPY: Record<TrendGranularity, string> = {
+  day: 'Rates shown count each distinct train once per day, based on its status the first time it was seen that day -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Days with too little coverage show as a gap rather than a misleading flat line.',
+  halfHour: 'Rates shown count each distinct train once per half hour, based on its status the first time it was seen that half hour -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Half-hour periods with too little coverage show as a gap rather than a misleading flat line.',
+  hour: 'Rates shown count each distinct train once per hour, based on its status the first time it was seen that hour -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Hours with too little coverage show as a gap rather than a misleading flat line.',
+  sixHour: 'Rates shown count each distinct train once per six-hour period, based on its status the first time it was seen in that period -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Six-hour periods with too little coverage show as a gap rather than a misleading flat line.',
+};
+
+interface StatsRow {
+  sampleCycles: number;
+  delayRate: number;
+  cancellationRate: number;
+  skipRate: number;
+  avgDelayMinutes: number;
+}
+
+// Generalized from the original day-only toChartPoints: same
+// null-all-four-fields-together gap logic (Decision 3 of
+// docs/superpowers/specs/2026-08-31-line-history-graphics-design.md), now
+// parameterized over which row field supplies `bucketKey` and which floor
+// applies, so one function serves all four granularities' differently-shaped
+// row types (LineDailyStats.day, LineHalfHourlyStats.halfHourStart,
+// LineHourlyStats/LineSixHourlyStats.bucketStart).
+export function toChartPoints<T extends StatsRow>(
+  stats: T[],
+  bucketKeyOf: (row: T) => string,
+  floor: number,
+): ChartPoint[] {
   return stats.map((row) => {
-    const sparse = row.sampleCycles < SPARSE_DATA_FLOOR_CYCLES;
+    const sparse = row.sampleCycles < floor;
     return {
-      bucketKey: row.day,
+      bucketKey: bucketKeyOf(row),
       delayRate: sparse ? null : row.delayRate,
       cancellationRate: sparse ? null : row.cancellationRate,
       skipRate: sparse ? null : row.skipRate,
@@ -34,23 +63,71 @@ export function toChartPoints(stats: LineDailyStats[]): ChartPoint[] {
   });
 }
 
-export async function TrendsResults({ id, from, to }: { id: string; from: string; to: string }) {
-  const stats = await getLineDailyStats(id, londonDayKey(from), londonDayKey(to));
+// Dispatches to the right fetch + floor + bucket-key field for the
+// selected tier (Decision 4's own sketch). `day` still converts its
+// RFC3339 `from`/`to` to London calendar-day keys first, exactly as
+// before -- the only granularity whose route takes NaiveDate path segments.
+async function fetchPoints(id: string, granularity: TrendGranularity, from: string, to: string): Promise<ChartPoint[]> {
+  switch (granularity) {
+    case 'day': {
+      const stats = await getLineDailyStats(id, londonDayKey(from), londonDayKey(to));
+      return toChartPoints(stats, (row) => row.day, SPARSE_FLOOR.day);
+    }
+    case 'halfHour': {
+      const stats = await getLineHalfHourlyStats(id, from, to);
+      return toChartPoints(stats, (row) => row.halfHourStart, SPARSE_FLOOR.halfHour);
+    }
+    case 'hour': {
+      const stats = await getLineHourlyStats(id, from, to);
+      return toChartPoints(stats, (row) => row.bucketStart, SPARSE_FLOOR.hour);
+    }
+    case 'sixHour': {
+      const stats = await getLineSixHourlyStats(id, from, to);
+      return toChartPoints(stats, (row) => row.bucketStart, SPARSE_FLOOR.sixHour);
+    }
+  }
+}
 
-  if (stats.length === 0) {
+export async function TrendsResults({
+  id,
+  from,
+  to,
+  granularity = 'day',
+}: {
+  id: string;
+  from: string;
+  to: string;
+  /** Defaults to `'day'` -- the existing, always-safe behavior, unchanged
+   * for any call site that doesn't pass this yet (Decision 6). */
+  granularity?: TrendGranularity;
+}) {
+  // Reversing Decision 4 of
+  // docs/superpowers/specs/2026-09-05-configurable-trend-granularity-design.md
+  // also means this component now serves the same backend table the
+  // line-info page's HalfHourlyTrendsResults reads for three of its four
+  // tiers -- adopting that component's own try/catch degrade-gracefully
+  // posture here too (previously this file had none, and an unhandled
+  // rejection would have propagated to app/error.tsx, blanking the whole
+  // page over a secondary chart) makes error handling consistent across
+  // all four tiers rather than arbitrarily different for `day` alone.
+  let points: ChartPoint[];
+  try {
+    points = await fetchPoints(id, granularity, from, to);
+  } catch {
+    return (
+      <Paper withBorder p="md">
+        <Text c="dimmed">Trend data isn&apos;t available right now.</Text>
+      </Paper>
+    );
+  }
+
+  if (points.length === 0) {
     // Live-investigated (docs/superpowers/plans/2026-09-02-line-history-chart-fixes.md
-    // Task 6 Step 1, design spec Open question 3): the reported "dead
-    // whitespace below the footer" is a genuine but transient Suspense
-    // loading-flash artifact, not a persistent layout bug -- confirmed
-    // against a real dev server by artificially delaying this fetch and
-    // screenshotting mid-flight (the route's `<Skeleton height={320}>`
-    // fallback, `history/page.tsx`, briefly occupies far more vertical
-    // space than this short resolved text ever will) versus after full
-    // resolution (no lingering gap remains; the footer sits immediately
-    // below this text). Wrapped in a bounded `Paper` anyway, since that
-    // fix is worth making regardless of the flash outcome -- it reads as
-    // a deliberately-finished component rather than a chart that failed
-    // to render, not because it shrinks whitespace below it.
+    // Task 6 Step 1): the reported "dead whitespace below the footer" is a
+    // transient Suspense loading-flash artifact, not a persistent layout
+    // bug. Wrapped in a bounded `Paper` regardless -- it reads as a
+    // deliberately-finished component rather than a chart that failed to
+    // render.
     return (
       <Paper withBorder p="md">
         <Text c="dimmed">Not enough sampled data yet for this line.</Text>
@@ -58,35 +135,19 @@ export async function TrendsResults({ id, from, to }: { id: string; from: string
     );
   }
 
-  const points = toChartPoints(stats);
-
   return (
     <Stack gap="lg">
-      {/* Honesty copy for the dedup-driven daily rollup (Ruling A,
-          .superpowers/sdd/2026-08-31-line-history-graphics/progress.md):
-          record_daily_stats now sums dedup::dedup_new_sample_stats's DEDUPED
-          output, so each distinct train (by Darwin service_id) is counted
-          once per day, not once per poll cycle it stayed visible. But
-          SeenServiceLedger.mark_seen classifies a train by whichever cycle
-          FIRST observed it -- a train seen on-time first and delayed later
-          in the same visit is never re-classified. This is a deliberate
-          accuracy tradeoff against a persisted "last known state" ledger,
-          which would need a bigger redesign than this rollup -- not
-          something to build here. Must not be softened or dropped. */}
       <Text size="sm" c="dimmed">
-        Rates shown count each distinct train once per day, based on its status the first time it was seen that
-        day -- not a share of poll cycles. A train that starts on time and only becomes delayed later while
-        still in view will still show here as on time. Days with too little coverage show as a gap rather than a
-        misleading flat line.
+        {HONESTY_COPY[granularity]}
       </Text>
-      {/* Both charts (including their `valueFormatter`) live in this
-          Client Component -- see its own doc comment for why: a plain
-          function prop like `valueFormatter` can't cross the Server-to-
-          Client boundary straight out of this `async` Server Component. */}
+      {/* Both charts (including their `valueFormatter`) live in TrendsCharts,
+          a Client Component -- see its own doc comment for why: a plain
+          function prop can't cross the Server-to-Client boundary straight
+          out of this `async` Server Component. */}
       {/* order={2}: this sits directly under /lines/[id]/history's only
           h1 ("History: {name}"), with nothing between -- h2 keeps the
           chart titles one level below that h1, with no skip. */}
-      <TrendsCharts points={points} granularity="day" order={2} />
+      <TrendsCharts points={points} granularity={granularity} order={2} />
     </Stack>
   );
 }
