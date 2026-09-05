@@ -93,12 +93,15 @@ export async function HalfHourlyTrendsResults({ id, from, to }: { id: string; fr
         Rates shown count each distinct train once per half hour, based on its status the first time it was seen
         that half hour -- not a share of poll cycles. A train that starts on time and only becomes delayed later
         while still in view will still show here as on time. Half-hour periods with too little coverage show as a
-        gap rather than a misleading flat line.
+        gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for
+        half hours too sparse to trust for a rate -- a low number there is exactly why a half hour may show as a gap
+        above; it counts each train once, in the half hour it was first seen, not how many were simultaneously
+        running.
       </Text>
       {/* order={3}: this sits under /lines/[id]'s h1 line name -> h2
           "Recent trends (last 24 hours)" -- h3 keeps the chart titles one
           level below that h2, with no skip. */}
-      <TrendsCharts points={points} granularity="halfHour" order={3} />
+      <TrendsCharts points={points} granularity="halfHour" order={3} showVolume />
     </Stack>
   );
 }
