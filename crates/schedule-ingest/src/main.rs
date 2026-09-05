@@ -338,26 +338,15 @@ async fn post_ingest(
     tokens: &common::oauth_client::OAuthTokenCache,
     request: &ScheduleFeedIngestRequest,
 ) -> anyhow::Result<()> {
-    let token = tokens.get_token(client).await?;
-    let response = client
-        .post(&config.api_ingest_url)
-        .bearer_auth(&token)
-        .json(request)
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        tracing::info!(
-            delivered_at = %request.delivered_at,
-            files = request.files.len(),
-            "posted schedule feed ingest to api"
-        );
-        Ok(())
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        anyhow::bail!("schedule feed ingest POST failed: {status} {text}");
-    }
+    common::ingest::post_json(client, &config.api_ingest_url, tokens, request)
+        .await
+        .map_err(|err| anyhow::anyhow!("schedule feed ingest POST failed: {err}"))?;
+    tracing::info!(
+        delivered_at = %request.delivered_at,
+        files = request.files.len(),
+        "posted schedule feed ingest to api"
+    );
+    Ok(())
 }
 
 /// Mirrors `crates/api/src/routes/ingest.rs`'s private
