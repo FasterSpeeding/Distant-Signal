@@ -32,6 +32,7 @@ const HONESTY_COPY: Record<TrendGranularity, string> = {
 
 interface StatsRow {
   sampleCycles: number;
+  total: number;
   delayRate: number;
   cancellationRate: number;
   skipRate: number;
@@ -58,6 +59,7 @@ export function toChartPoints<T extends StatsRow>(
       cancellationRate: sparse ? null : row.cancellationRate,
       skipRate: sparse ? null : row.skipRate,
       avgDelayMinutes: sparse ? null : row.avgDelayMinutes,
+      total: row.total,
       sampleCycles: row.sampleCycles,
     };
   });

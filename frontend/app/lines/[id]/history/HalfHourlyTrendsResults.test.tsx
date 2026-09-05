@@ -64,6 +64,7 @@ describe('toHalfHourlyChartPoints', () => {
       cancellationRate: 0.02,
       skipRate: 0.01,
       avgDelayMinutes: 3.5,
+      total: 100,
       sampleCycles: SPARSE_DATA_FLOOR_CYCLES_HALF_HOURLY,
     });
   });
@@ -75,6 +76,7 @@ describe('toHalfHourlyChartPoints', () => {
     expect(point.cancellationRate).toBeNull();
     expect(point.skipRate).toBeNull();
     expect(point.avgDelayMinutes).toBeNull();
+    expect(point.total).toBe(100); // never nulled, even when sparse
     expect(point.sampleCycles).toBe(SPARSE_DATA_FLOOR_CYCLES_HALF_HOURLY - 1);
     expect(point.bucketKey).toBe('2026-08-31T14:00:00Z');
   });

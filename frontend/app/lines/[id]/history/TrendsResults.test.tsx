@@ -67,6 +67,7 @@ describe('toChartPoints (generic)', () => {
       cancellationRate: 0.02,
       skipRate: 0.01,
       avgDelayMinutes: 3.5,
+      total: 100,
       sampleCycles: 20,
     });
   });
@@ -78,6 +79,7 @@ describe('toChartPoints (generic)', () => {
     expect(point.cancellationRate).toBeNull();
     expect(point.skipRate).toBeNull();
     expect(point.avgDelayMinutes).toBeNull();
+    expect(point.total).toBe(100); // never nulled, even when sparse
     expect(point.sampleCycles).toBe(19);
   });
 });

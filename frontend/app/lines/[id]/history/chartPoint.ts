@@ -23,5 +23,14 @@ export interface ChartPoint {
   cancellationRate: number | null;
   skipRate: number | null;
   avgDelayMinutes: number | null;
+  /** How many distinct trains (LDBWS `service_id`s, deduplicated) were
+   * first observed during this bucket -- NOT how many were concurrently
+   * running (see the design doc's Decision 1 caveat, and each caller's own
+   * honesty-copy paragraph). Never `null`, unlike the four fields above:
+   * deliberately NOT gated by the sparse-data floor a mapper applies to
+   * those -- a low `total` for a sparse bucket is exactly why that
+   * bucket's rate fields are null, and hiding it here would defeat the
+   * point of showing it at all. */
+  total: number;
   sampleCycles: number;
 }
