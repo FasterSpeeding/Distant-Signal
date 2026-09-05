@@ -368,21 +368,9 @@ async fn post_schedule_line_population(
     tokens: &common::oauth_client::OAuthTokenCache,
     body: &serde_json::Value,
 ) -> anyhow::Result<()> {
-    let token = tokens.get_token(client).await?;
-    let response = client
-        .post(url)
-        .bearer_auth(&token)
-        .json(body)
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        anyhow::bail!("schedule-line-population POST failed: {status} {text}");
-    }
+    common::ingest::post_json(client, url, tokens, body)
+        .await
+        .map_err(|err| anyhow::anyhow!("schedule-line-population POST failed: {err}"))
 }
 
 /// Best-effort extraction of the digits embedded in a real delivery's own
