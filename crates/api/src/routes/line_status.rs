@@ -56,6 +56,14 @@ pub fn router() -> Router {
             "/Line/{id}/Stats/HalfHourly/{from}/to/{to}",
             axum::routing::get(get_line_half_hourly_stats),
         )
+        .route(
+            "/Line/{id}/Stats/Hourly/{from}/to/{to}",
+            axum::routing::get(get_line_hourly_stats),
+        )
+        .route(
+            "/Line/{id}/Stats/SixHourly/{from}/to/{to}",
+            axum::routing::get(get_line_six_hourly_stats),
+        )
         // Decision 4 scaffolding -- siblings of the two routes above,
         // reading line_status_{daily,half_hourly}_coverage_stats instead.
         // Always return `[]` today: nothing writes those tables until a
@@ -465,6 +473,66 @@ async fn get_line_half_hourly_stats(
 
     Ok(Json(
         rows.into_iter().map(half_hourly_stats_to_json).collect(),
+    ))
+}
+
+/// Sub-daily sibling of `half_hourly_stats_to_json` -- identical
+/// rate-derivation logic, `bucketStart` in place of `halfHourStart`. A
+/// distinct field name is deliberate: reusing "halfHourStart" here would
+/// misname a 1-hour or 6-hour bucket's start instant. Backs BOTH new
+/// sub-daily routes (`get_line_hourly_stats`/`get_line_six_hourly_stats`)
+/// -- they share this one function the same way they share
+/// `queries::sub_daily_stats_for_range` itself (Decision 2 of
+/// docs/superpowers/specs/2026-09-05-configurable-trend-granularity-design.md).
+fn sub_daily_stats_to_json(row: queries::HalfHourlyStatsRow) -> Value {
+    let avg_delay_minutes = if row.running_count > 0 {
+        row.delay_minutes_sum / row.running_count as f64
+    } else {
+        0.0
+    };
+    let rate = |numerator: i64| {
+        if row.total > 0 {
+            numerator as f64 / row.total as f64
+        } else {
+            0.0
+        }
+    };
+
+    serde_json::json!({
+        "bucketStart": row.half_hour_start,
+        "sampleCycles": row.sample_cycles,
+        "total": row.total,
+        "delayed": row.delayed,
+        "cancelled": row.cancelled,
+        "skipped": row.skipped,
+        "avgDelayMinutes": avg_delay_minutes,
+        "delayRate": rate(row.delayed),
+        "cancellationRate": rate(row.cancelled),
+        "skipRate": rate(row.skipped),
+    })
+}
+
+async fn get_line_hourly_stats(
+    State(app): State<App>,
+    Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let rows = queries::sub_daily_stats_for_range(&app.database, &id, from, to, 60)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(
+        rows.into_iter().map(sub_daily_stats_to_json).collect(),
+    ))
+}
+
+async fn get_line_six_hourly_stats(
+    State(app): State<App>,
+    Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let rows = queries::sub_daily_stats_for_range(&app.database, &id, from, to, 360)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(
+        rows.into_iter().map(sub_daily_stats_to_json).collect(),
     ))
 }
 
@@ -920,6 +988,122 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sub_daily_stats_to_json_uses_bucket_start_not_half_hour_start() {
+        let row = half_hourly_stats_row(100, 10, 5, 2, 95, 190.0);
+        let json = sub_daily_stats_to_json(row);
+
+        assert_eq!(
+            json["bucketStart"],
+            serde_json::json!("2026-08-15T14:00:00Z")
+        );
+        assert!(
+            json.get("halfHourStart").is_none(),
+            "must not also expose the half-hour-specific field name"
+        );
+        assert_eq!(json["avgDelayMinutes"], serde_json::json!(2.0));
+        assert_eq!(json["delayRate"], serde_json::json!(0.1));
+    }
+
+    #[test]
+    fn sub_daily_stats_to_json_zero_total_never_produces_nan_or_infinity() {
+        let row = half_hourly_stats_row(0, 0, 0, 0, 0, 0.0);
+        let json = sub_daily_stats_to_json(row);
+        for field in [
+            "avgDelayMinutes",
+            "delayRate",
+            "cancellationRate",
+            "skipRate",
+        ] {
+            let value = json[field].as_f64().unwrap();
+            assert!(value.is_finite());
+            assert_eq!(value, 0.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn hourly_and_six_hourly_routes_are_not_shadowed_by_the_daily_or_half_hourly_routes() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        async fn hourly_probe(
+            Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+        ) -> String {
+            format!("hourly:{id}|{from}|{to}")
+        }
+        async fn six_hourly_probe(
+            Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+        ) -> String {
+            format!("six-hourly:{id}|{from}|{to}")
+        }
+        async fn daily_probe(
+            Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>,
+        ) -> String {
+            format!("daily:{id}|{from}|{to}")
+        }
+
+        let app: axum::Router = axum::Router::new()
+            .route(
+                "/Line/{id}/Stats/{from}/to/{to}",
+                axum::routing::get(daily_probe),
+            )
+            .route(
+                "/Line/{id}/Stats/Hourly/{from}/to/{to}",
+                axum::routing::get(hourly_probe),
+            )
+            .route(
+                "/Line/{id}/Stats/SixHourly/{from}/to/{to}",
+                axum::routing::get(six_hourly_probe),
+            );
+
+        let hourly_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/Line/northern/Stats/Hourly/2026-08-31T00:00:00Z/to/2026-09-01T00:00:00Z")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(hourly_response.status(), StatusCode::OK);
+        let hourly_body = axum::body::to_bytes(hourly_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(hourly_body.to_vec()).unwrap(),
+            "hourly:northern|2026-08-31 00:00:00 UTC|2026-09-01 00:00:00 UTC"
+        );
+
+        let six_hourly_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/Line/northern/Stats/SixHourly/2026-08-31T00:00:00Z/to/2026-09-01T00:00:00Z")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(six_hourly_response.status(), StatusCode::OK);
+
+        let daily_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/Line/northern/Stats/2026-08-01/to/2026-08-31")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            daily_response.status(),
+            StatusCode::OK,
+            "the daily NaiveDate route must still work alongside the two new literal-segment routes"
+        );
+    }
+
     // --- Decision 4 scaffolding: line_status_{daily,half_hourly}_coverage_stats routes ---
 
     fn daily_coverage_stats_row(
@@ -1159,6 +1343,8 @@ mod db_tests {
             sso_post_login_redirect_url: "https://example.invalid/".to_string(),
             session_ttl_days: 14,
             history_retention_days: 7,
+            daily_stats_retention_days: 300,
+            half_hourly_stats_retention_hours: 840,
             metrics_enabled: false,
             defaults_file: None,
             lines: LineCatalogue(lines),

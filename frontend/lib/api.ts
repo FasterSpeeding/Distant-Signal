@@ -4,6 +4,8 @@ import type {
   LineStatusHistoryEntry,
   LineDailyStats,
   LineHalfHourlyStats,
+  LineHourlyStats,
+  LineSixHourlyStats,
   LineDailyCoverageStats,
   LineHalfHourlyCoverageStats,
   Preferences,
@@ -184,6 +186,35 @@ export async function getLineHalfHourlyStats(
 ): Promise<LineHalfHourlyStats[]> {
   return fetchJson<LineHalfHourlyStats[]>(
     `${baseUrl()}/Line/${id}/Stats/HalfHourly/${from}/to/${to}`,
+    { cache: 'no-store' },
+  );
+}
+
+/** `GET /Line/{id}/Stats/Hourly/{from}/to/{to}` -- the 1-hour sub-daily
+ * rollup route (Decision 2 of
+ * docs/superpowers/specs/2026-09-05-configurable-trend-granularity-design.md).
+ * Same RFC3339-instant/public/no-store/no-cookie-forwarding shape as
+ * `getLineHalfHourlyStats`. */
+export async function getLineHourlyStats(
+  id: string,
+  from: string,
+  to: string,
+): Promise<LineHourlyStats[]> {
+  return fetchJson<LineHourlyStats[]>(
+    `${baseUrl()}/Line/${id}/Stats/Hourly/${from}/to/${to}`,
+    { cache: 'no-store' },
+  );
+}
+
+/** `GET /Line/{id}/Stats/SixHourly/{from}/to/{to}` -- the 6-hour sub-daily
+ * rollup route, sibling of `getLineHourlyStats`. */
+export async function getLineSixHourlyStats(
+  id: string,
+  from: string,
+  to: string,
+): Promise<LineSixHourlyStats[]> {
+  return fetchJson<LineSixHourlyStats[]>(
+    `${baseUrl()}/Line/${id}/Stats/SixHourly/${from}/to/${to}`,
     { cache: 'no-store' },
   );
 }

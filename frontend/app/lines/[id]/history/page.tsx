@@ -3,8 +3,16 @@ import { Alert, Divider, Skeleton, Stack, Tabs, TabsList, TabsPanel, TabsTab, Te
 import { getHistoryRetention, getLineStatus, getLineStatusHistory } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TextLink } from '@/components/TextLink';
-import { groupHistoryByDay, resolveRange, retentionShortfallDays } from '@/lib/history';
+import {
+  availableGranularities,
+  granularityShortfallDays,
+  groupHistoryByDay,
+  resolveGranularity,
+  resolveRange,
+  retentionShortfallDays,
+} from '@/lib/history';
 import { formatDate, formatTime } from '@/lib/dateFormat';
+import { GranularityControl } from './GranularityControl';
 import { HistoryRangePicker } from './HistoryRangePicker';
 import { TrendsResults } from './TrendsResults';
 import { CoverageTrendsResults } from './CoverageTrendsResults';
@@ -34,18 +42,33 @@ async function resolveLineName(id: string): Promise<string> {
   }
 }
 
-/** The real `line_status_history` retention ceiling, or `null` if it
- * couldn't be fetched. `null` means "unknown" — `retentionShortfallDays`
- * treats that as "nothing to warn about" rather than guessing a number,
- * same fallback posture as `resolveLineName` above (degrade quietly rather
- * than take the whole page down over a non-essential value). */
-async function resolveHistoryRetentionDays(): Promise<number | null> {
+/** The three real retention ceilings the Timeline/Trends tabs need, or
+ * safe fallbacks if the fetch fails. `historyRetentionDays` keeps its
+ * existing `null`-means-unknown/hide-the-banner semantics for the Timeline
+ * tab (unchanged -- Non-goal of
+ * docs/superpowers/specs/2026-09-05-configurable-trend-granularity-design.md).
+ * The two new fields (Decision 8) default to `0` on failure rather than
+ * `null`: `resolveGranularity`/`availableGranularities` need concrete
+ * numbers, and `0` (combined with `'day'` always being exempt from both
+ * checks -- see `frontend/lib/history.ts`) collapses safely to "only Daily
+ * is offered" -- the same "don't guess, degrade to the least you can
+ * promise" posture the Timeline banner already takes, extended one step
+ * further here (hide the choice too, not just the notice). */
+async function resolveRetention(): Promise<{
+  historyRetentionDays: number | null;
+  dailyStatsRetentionDays: number;
+  halfHourlyStatsRetentionHours: number;
+}> {
   try {
-    const { historyRetentionDays } = await getHistoryRetention();
-    return historyRetentionDays;
+    const retention = await getHistoryRetention();
+    return {
+      historyRetentionDays: retention.historyRetentionDays,
+      dailyStatsRetentionDays: retention.dailyStatsRetentionDays,
+      halfHourlyStatsRetentionHours: retention.halfHourlyStatsRetentionHours,
+    };
   } catch (err) {
-    console.warn('Could not resolve the history retention window; hiding the retention notice.', err);
-    return null;
+    console.warn('Could not resolve retention ceilings; hiding the retention notice and offering only Daily.', err);
+    return { historyRetentionDays: null, dailyStatsRetentionDays: 0, halfHourlyStatsRetentionHours: 0 };
   }
 }
 
@@ -54,18 +77,29 @@ export default async function LineHistoryPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ from?: string; to?: string; range?: string }>;
+  searchParams: Promise<{ from?: string; to?: string; range?: string; granularity?: string }>;
 }) {
   const { id } = await params;
   const query = await searchParams;
 
   const now = Date.now();
-  const [name, retentionDays] = await Promise.all([
+  const [name, retention] = await Promise.all([
     resolveLineName(id),
-    resolveHistoryRetentionDays(),
+    resolveRetention(),
   ]);
   const range = resolveRange(query, now);
-  const shortfallDays = retentionShortfallDays(range, retentionDays, now);
+  const shortfallDays = retentionShortfallDays(range, retention.historyRetentionDays, now);
+
+  const rangeWidthMs = Date.parse(range.to) - Date.parse(range.from);
+  const ceilings = {
+    dailyStatsRetentionDays: retention.dailyStatsRetentionDays,
+    halfHourlyStatsRetentionHours: retention.halfHourlyStatsRetentionHours,
+  };
+  const available = availableGranularities(rangeWidthMs, ceilings);
+  const granularity = resolveGranularity(query, rangeWidthMs, ceilings);
+  const granularityShortfall = granularityShortfallDays(range, granularity, ceilings, now);
+  const retentionDaysForGranularity =
+    granularity === 'day' ? retention.dailyStatsRetentionDays : Math.floor(retention.halfHourlyStatsRetentionHours / 24);
 
   return (
     <Stack p="lg" gap="md">
@@ -109,7 +143,8 @@ export default async function LineHistoryPage({
                 guess. See `lib/history.ts`'s `retentionShortfallDays`. */}
             {shortfallDays !== null && (
               <Alert color="yellow" variant="light" title="Some of this range isn't available">
-                This server only keeps {retentionDays} {retentionDays === 1 ? 'day' : 'days'} of line
+                This server only keeps {retention.historyRetentionDays}{' '}
+                {retention.historyRetentionDays === 1 ? 'day' : 'days'} of line
                 history. The oldest {shortfallDays} {shortfallDays === 1 ? 'day' : 'days'} of the range you
                 picked has already been removed — if this range looks empty or short, that may be why,
                 not because nothing happened.
@@ -136,8 +171,36 @@ export default async function LineHistoryPage({
         </TabsPanel>
         <TabsPanel value="trends">
           <Stack gap="md" pt="md">
-            <Suspense key={range.preset ?? `${range.from}-${range.to}`} fallback={<Skeleton height={320} />}>
-              <TrendsResults id={id} from={range.from} to={range.to} />
+            <GranularityControl
+              lineId={id}
+              preset={range.preset}
+              from={range.from}
+              to={range.to}
+              granularity={granularity}
+              available={available}
+            />
+            {/* Sub-daily-aware sibling of the Timeline tab's own shortfall
+                banner (Decision 8) -- only non-null when the CURRENTLY
+                SELECTED tier's own real retention ceiling doesn't reach
+                back to range.from. A custom range can still outrun a
+                35-day sub-daily retention or a 300-day daily one even
+                though GranularityControl already hides tiers that can't
+                cover the FULL range -- this covers the case where the
+                selected tier partially, not fully, exceeds its ceiling. */}
+            {granularityShortfall !== null && (
+              <Alert color="yellow" variant="light" title="Some of this range isn't available at this granularity">
+                This server only keeps {retentionDaysForGranularity}{' '}
+                {retentionDaysForGranularity === 1 ? 'day' : 'days'} of data at this granularity. The oldest{' '}
+                {granularityShortfall} {granularityShortfall === 1 ? 'day' : 'days'} of the range you picked has
+                already been removed — if this range looks empty or short, that may be why, not because nothing
+                happened.
+              </Alert>
+            )}
+            <Suspense
+              key={`${granularity}-${range.preset ?? `${range.from}-${range.to}`}`}
+              fallback={<Skeleton height={320} />}
+            >
+              <TrendsResults id={id} from={range.from} to={range.to} granularity={granularity} />
             </Suspense>
             {/* Decision 4's daily full-coverage series -- a second,
                 separate section under the existing sample-based one, always

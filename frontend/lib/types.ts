@@ -195,6 +195,44 @@ export interface LineHalfHourlyStats {
   skipRate: number;
 }
 
+/** `GET /Line/{id}/Stats/Hourly/{from}/to/{to}`'s per-bucket response shape
+ * -- same fields as `LineHalfHourlyStats`, but `bucketStart` in place of
+ * `halfHourStart`: this is the start of a 1-hour bucket, derived at READ
+ * time by grouping `line_status_half_hourly_stats` rows
+ * (`crates/api/src/data/queries.rs`'s `sub_daily_stats_for_range`) --
+ * reusing "halfHourStart" for a 1-hour bucket would be a misleading field
+ * name. Always an RFC3339 UTC instant; render it through
+ * `frontend/lib/dateFormat.ts`'s `formatTime` before display, same
+ * convention `LineHalfHourlyStats.halfHourStart` follows. */
+export interface LineHourlyStats {
+  bucketStart: string; // RFC3339 UTC instant, start of the 1-hour bucket
+  sampleCycles: number;
+  total: number;
+  delayed: number;
+  cancelled: number;
+  skipped: number;
+  avgDelayMinutes: number;
+  delayRate: number;
+  cancellationRate: number;
+  skipRate: number;
+}
+
+/** `GET /Line/{id}/Stats/SixHourly/{from}/to/{to}`'s per-bucket response
+ * shape -- identical to `LineHourlyStats` except the bucket is 6 hours
+ * wide, not 1. */
+export interface LineSixHourlyStats {
+  bucketStart: string; // RFC3339 UTC instant, start of the 6-hour bucket
+  sampleCycles: number;
+  total: number;
+  delayed: number;
+  cancelled: number;
+  skipped: number;
+  avgDelayMinutes: number;
+  delayRate: number;
+  cancellationRate: number;
+  skipRate: number;
+}
+
 /** `GET /Line/{id}/Stats/Coverage/{from}/to/{to}`'s per-day response shape --
  * the full-coverage sibling of `LineDailyStats` (`resolvedWindows` in place
  * of `sampleCycles`). Rates shown cover every scheduled service on the
@@ -282,9 +320,18 @@ export interface DataFreshness {
  * aggregator's own `HISTORY_RETENTION_DAYS` (see
  * `crates/api/src/routes/history_retention.rs`). Used by the
  * `/lines/[id]/history` page to tell a genuinely-pruned range apart from a
- * genuinely-quiet line. */
+ * genuinely-quiet line.
+ *
+ * `dailyStatsRetentionDays`/`halfHourlyStatsRetentionHours` (Decision 8 of
+ * docs/superpowers/specs/2026-09-05-configurable-trend-granularity-design.md)
+ * extend this same echo to the two other retention ceilings the Trends
+ * tab's `GranularityControl` needs -- see `frontend/lib/history.ts`'s
+ * `GranularityRetentionCeilings`/`availableGranularities`/
+ * `resolveGranularity`. */
 export interface HistoryRetention {
   historyRetentionDays: number;
+  dailyStatsRetentionDays: number;
+  halfHourlyStatsRetentionHours: number;
 }
 
 /** A code/name pair from the `/public/stations` and `/public/tocs`

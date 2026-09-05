@@ -78,7 +78,11 @@ async function renderPage(searchParams: { from?: string; to?: string; range?: st
 describe('LineHistoryPage', () => {
   beforeEach(() => {
     vi.mocked(api.getLineStatus).mockResolvedValue([report('c2c', 'c2c (London, Tilbury & Southend line)')]);
-    vi.mocked(api.getHistoryRetention).mockResolvedValue({ historyRetentionDays: 7 });
+    vi.mocked(api.getHistoryRetention).mockResolvedValue({
+      historyRetentionDays: 7,
+      dailyStatsRetentionDays: 300,
+      halfHourlyStatsRetentionHours: 840,
+    });
     vi.mocked(api.getLineStatusHistory).mockResolvedValue([]);
     vi.mocked(api.getLineDailyStats).mockResolvedValue([]);
     vi.mocked(api.getLineDailyCoverageStats).mockResolvedValue([]);
@@ -98,6 +102,36 @@ describe('LineHistoryPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Trends' }));
 
     expect(await screen.findAllByTestId('line-chart')).toHaveLength(2);
+  });
+
+  // NB deviating from the plan's own literal fixture here: the plan's Task
+  // 10 test asserted this against `renderPage()`'s bare DEFAULT range (the
+  // "Last 7 days" preset, no query params), but that's inconsistent with
+  // Task 6's own already-committed, already-tested `availableGranularities`
+  // point-budget math (`frontend/lib/history.ts`) -- a 7-day range is
+  // 7*48=336 half-hour buckets, over the MAX_CHART_POINTS=200 ceiling, so
+  // `halfHour` is correctly EXCLUDED for the default preset (confirmed by
+  // `history.test.ts`'s own "excludes half-hourly and hourly ... for a
+  // 10-day range" case, same formula, smaller range). Using a narrow
+  // 12-hour custom range instead -- the same width `history.test.ts`'s own
+  // "offers all four tiers for a narrow (12-hour) range" case uses -- to
+  // exercise a range where all four really are available.
+  it('the Trends tab shows a granularity control offering all four tiers for a narrow range', async () => {
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([dailyStatsRow({ day: '2026-08-30' })]);
+    await renderPage({ from: '2026-08-31T00:00:00Z', to: '2026-08-31T12:00:00Z' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Trends' }));
+    for (const label of ['30 min', 'Hourly', '6-hourly', 'Daily']) {
+      expect(await screen.findByText(label)).toBeInTheDocument();
+    }
+  });
+
+  it('a very wide custom range hides the sub-daily tiers and still renders the daily chart', async () => {
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([dailyStatsRow({ day: '2026-01-01' })]);
+    await renderPage({ from: '2025-01-01T00:00:00Z', to: '2026-08-21T00:00:00Z' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Trends' }));
+    expect(await screen.findByText('Daily')).toBeInTheDocument();
+    expect(screen.queryByText('30 min')).not.toBeInTheDocument();
+    expect(screen.getByText(/are not shown for this range/)).toBeInTheDocument();
   });
 
   it('switching to the Trends tab with no daily stats yet shows the sane fallback, not a crash', async () => {

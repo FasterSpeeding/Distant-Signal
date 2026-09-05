@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { groupHistoryByDay, resolveRange, resolveHalfHourlyRange, retentionShortfallDays } from './history';
+import {
+  groupHistoryByDay,
+  resolveRange,
+  resolveHalfHourlyRange,
+  retentionShortfallDays,
+  availableGranularities,
+  resolveGranularity,
+  granularityShortfallDays,
+} from './history';
 import type { LineStatusHistoryEntry } from './types';
 
 function entry(computedAt: string, statuses: Array<[number, string]>): LineStatusHistoryEntry {
@@ -249,5 +257,86 @@ describe('retentionShortfallDays', () => {
 
   it('is null for an unparseable from value rather than throwing', () => {
     expect(retentionShortfallDays({ from: 'nonsense' }, 7, NOW)).toBeNull();
+  });
+});
+
+describe('availableGranularities', () => {
+  const GENEROUS = { dailyStatsRetentionDays: 300, halfHourlyStatsRetentionHours: 840 };
+
+  it('offers all four tiers for a narrow (12-hour) range', () => {
+    expect(availableGranularities(12 * 3_600_000, GENEROUS)).toEqual(['halfHour', 'hour', 'sixHour', 'day']);
+  });
+
+  it('excludes half-hourly and hourly (point budget) but keeps six-hourly and daily for a 10-day range', () => {
+    // 10 days: halfHour -> 480 points, hour -> 240 points (both over 200);
+    // sixHour -> 40 points (under 200); all three are still within the
+    // 840-hour (35-day) retention ceiling, so only the point budget excludes them.
+    const tenDaysMs = 10 * 86_400_000;
+    expect(availableGranularities(tenDaysMs, GENEROUS)).toEqual(['sixHour', 'day']);
+  });
+
+  it('excludes every sub-daily tier (retention) for a range wider than the shared 35-day ceiling, leaving only day', () => {
+    const fortyDaysMs = 40 * 86_400_000;
+    expect(availableGranularities(fortyDaysMs, GENEROUS)).toEqual(['day']);
+  });
+
+  it('never returns an empty array, even with zero ceilings', () => {
+    expect(
+      availableGranularities(365 * 86_400_000, { dailyStatsRetentionDays: 0, halfHourlyStatsRetentionHours: 0 }),
+    ).toEqual(['day']);
+  });
+});
+
+describe('resolveGranularity', () => {
+  const GENEROUS = { dailyStatsRetentionDays: 300, halfHourlyStatsRetentionHours: 840 };
+  const ONE_DAY_MS = 86_400_000;
+
+  it('defaults to day when unset', () => {
+    expect(resolveGranularity({}, ONE_DAY_MS, GENEROUS)).toBe('day');
+  });
+
+  it('falls back to day for junk input', () => {
+    expect(resolveGranularity({ granularity: 'fortnightly' }, ONE_DAY_MS, GENEROUS)).toBe('day');
+  });
+
+  it('honours a requested tier that is available', () => {
+    expect(resolveGranularity({ granularity: 'hour' }, ONE_DAY_MS, GENEROUS)).toBe('hour');
+  });
+
+  it('falls back to the next coarser available tier when the requested one is not available', () => {
+    // 10 days: hour is unavailable (point budget), sixHour is the next coarser available tier.
+    const tenDaysMs = 10 * 86_400_000;
+    expect(resolveGranularity({ granularity: 'hour' }, tenDaysMs, GENEROUS)).toBe('sixHour');
+  });
+
+  it('falls all the way back to day when nothing finer is available', () => {
+    const fortyDaysMs = 40 * 86_400_000;
+    expect(resolveGranularity({ granularity: 'halfHour' }, fortyDaysMs, GENEROUS)).toBe('day');
+  });
+});
+
+describe('granularityShortfallDays', () => {
+  const NOW = Date.parse('2026-08-21T12:00:00Z');
+  const CEILINGS = { dailyStatsRetentionDays: 300, halfHourlyStatsRetentionHours: 840 };
+
+  it('is null for the day tier when the range fits within dailyStatsRetentionDays', () => {
+    const range = { from: new Date(NOW - 30 * 86_400_000).toISOString() };
+    expect(granularityShortfallDays(range, 'day', CEILINGS, NOW)).toBeNull();
+  });
+
+  it('reports the shortfall for the day tier when the range exceeds dailyStatsRetentionDays', () => {
+    const range = { from: new Date(NOW - 310 * 86_400_000).toISOString() };
+    expect(granularityShortfallDays(range, 'day', CEILINGS, NOW)).toBe(10);
+  });
+
+  it('is null for a sub-daily tier when the range fits within the hours-derived ceiling', () => {
+    const range = { from: new Date(NOW - 30 * 86_400_000).toISOString() };
+    expect(granularityShortfallDays(range, 'hour', CEILINGS, NOW)).toBeNull();
+  });
+
+  it('reports the shortfall for a sub-daily tier converted from hours to days', () => {
+    // 840 hours = 35 days; a 40-day-old range is 5 days beyond that.
+    const range = { from: new Date(NOW - 40 * 86_400_000).toISOString() };
+    expect(granularityShortfallDays(range, 'halfHour', CEILINGS, NOW)).toBe(5);
   });
 });
