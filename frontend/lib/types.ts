@@ -195,6 +195,44 @@ export interface LineHalfHourlyStats {
   skipRate: number;
 }
 
+/** `GET /Line/{id}/Stats/Hourly/{from}/to/{to}`'s per-bucket response shape
+ * -- same fields as `LineHalfHourlyStats`, but `bucketStart` in place of
+ * `halfHourStart`: this is the start of a 1-hour bucket, derived at READ
+ * time by grouping `line_status_half_hourly_stats` rows
+ * (`crates/api/src/data/queries.rs`'s `sub_daily_stats_for_range`) --
+ * reusing "halfHourStart" for a 1-hour bucket would be a misleading field
+ * name. Always an RFC3339 UTC instant; render it through
+ * `frontend/lib/dateFormat.ts`'s `formatTime` before display, same
+ * convention `LineHalfHourlyStats.halfHourStart` follows. */
+export interface LineHourlyStats {
+  bucketStart: string; // RFC3339 UTC instant, start of the 1-hour bucket
+  sampleCycles: number;
+  total: number;
+  delayed: number;
+  cancelled: number;
+  skipped: number;
+  avgDelayMinutes: number;
+  delayRate: number;
+  cancellationRate: number;
+  skipRate: number;
+}
+
+/** `GET /Line/{id}/Stats/SixHourly/{from}/to/{to}`'s per-bucket response
+ * shape -- identical to `LineHourlyStats` except the bucket is 6 hours
+ * wide, not 1. */
+export interface LineSixHourlyStats {
+  bucketStart: string; // RFC3339 UTC instant, start of the 6-hour bucket
+  sampleCycles: number;
+  total: number;
+  delayed: number;
+  cancelled: number;
+  skipped: number;
+  avgDelayMinutes: number;
+  delayRate: number;
+  cancellationRate: number;
+  skipRate: number;
+}
+
 /** `GET /Line/{id}/Stats/Coverage/{from}/to/{to}`'s per-day response shape --
  * the full-coverage sibling of `LineDailyStats` (`resolvedWindows` in place
  * of `sampleCycles`). Rates shown cover every scheduled service on the

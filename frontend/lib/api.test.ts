@@ -6,6 +6,8 @@ import {
   getLineStatusHistory,
   getLineDailyStats,
   getLineHalfHourlyStats,
+  getLineHourlyStats,
+  getLineSixHourlyStats,
   getLineDailyCoverageStats,
   getLineHalfHourlyCoverageStats,
   getPreferences,
@@ -220,6 +222,24 @@ describe('api client', () => {
     await getLineHalfHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Line/wcml/Stats/HalfHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getLineHourlyStats builds the correct URL', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+    await getLineHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Line/wcml/Stats/Hourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getLineSixHourlyStats builds the correct URL', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+    await getLineSixHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/Line/wcml/Stats/SixHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });
