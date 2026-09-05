@@ -821,6 +821,7 @@ mod tests {
             destination_name: Some("Edinburgh Waverley".to_string()),
             source: "manual".to_string(),
             created_at: fixed_instant(),
+            custom_name: None,
         }
     }
 
@@ -842,6 +843,7 @@ mod tests {
             next_calling_point: Some("Newcastle".to_string()),
             eta_next: Some(fixed_instant()),
             eta_source: Some("darwin-estimated".to_string()),
+            custom_name: None,
         }
     }
 

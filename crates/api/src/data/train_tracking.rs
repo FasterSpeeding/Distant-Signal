@@ -491,6 +491,7 @@ pub struct TrackedTrainState {
     pub next_calling_point: Option<String>,
     pub eta_next: Option<DateTime<Utc>>,
     pub eta_source: Option<String>,
+    pub custom_name: Option<String>,
 }
 
 // `LEFT JOIN`, never `JOIN`: a CRS with no reference row (a code the
@@ -509,7 +510,8 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
            so.name AS pin_origin_name, sd.name AS pin_destination_name, \
            tt.resolution_status, tt.train_uid, tt.train_id, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
-           cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source \
+           cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source, \
+           tt.custom_name \
     FROM tracked_trains tt \
     LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
     LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
@@ -542,6 +544,7 @@ pub struct TrackedTrainListItem {
     pub status: Option<String>,
     pub delay_minutes: Option<i32>,
     pub tracked_at: DateTime<Utc>,
+    pub custom_name: Option<String>,
 }
 
 /// A user's own tracked trains, most-recently-tracked first (`tracked_at
@@ -568,7 +571,7 @@ pub async fn list_tracked_trains_for_user(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 tt.pin_scheduled_departure, tt.resolution_status, tt.train_uid, \
-                cs.status, cs.delay_minutes, tt.tracked_at \
+                cs.status, cs.delay_minutes, tt.tracked_at, tt.custom_name \
          FROM tracked_trains tt \
          LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
          LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
@@ -853,6 +856,7 @@ pub struct TrackedTrainTicket {
     pub destination_name: Option<String>,
     pub source: String,
     pub created_at: DateTime<Utc>,
+    pub custom_name: Option<String>,
 }
 
 // `format!`ed into two callers below (`list_tickets_for_tracked_train`,
@@ -861,7 +865,8 @@ pub struct TrackedTrainTicket {
 // must qualify its columns -- see both callers.
 const TICKET_SELECT: &str = "\
     SELECT t.id, t.tracked_train_id, t.operator, t.ticket_type, t.origin_crs, t.destination_crs, \
-           so.name AS origin_name, sd.name AS destination_name, t.source, t.created_at \
+           so.name AS origin_name, sd.name AS destination_name, t.source, t.created_at, \
+           t.custom_name \
     FROM tracked_train_tickets t \
     LEFT JOIN stations so ON so.crs = UPPER(t.origin_crs) \
     LEFT JOIN stations sd ON sd.crs = UPPER(t.destination_crs)";
@@ -1005,6 +1010,7 @@ struct TicketListRow {
     train_uid: Option<String>,
     status: Option<String>,
     delay_minutes: Option<i32>,
+    custom_name: Option<String>,
 }
 
 /// A user's own tickets, across every tracked train they have -- the
@@ -1057,6 +1063,7 @@ pub struct TicketListItem {
     pub estimate: Option<delay_repay_rules::DelayRepayEstimate>,
     pub claim_url: String,
     pub disclaimer: &'static str,
+    pub custom_name: Option<String>,
 }
 
 /// Mirrors `routes/train.rs`'s `build_delay_repay_response` exactly (same
@@ -1098,6 +1105,7 @@ fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
         estimate,
         claim_url: claim_url.to_string(),
         disclaimer: delay_repay_rules::ROUTE_DISCLAIMER,
+        custom_name: row.custom_name,
     }
 }
 
@@ -1129,7 +1137,7 @@ pub async fn list_tickets_for_user(
                 t.source, t.created_at, \
                 tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, tt.pin_scheduled_departure, \
                 tt.resolution_status, tt.train_uid, \
-                cs.status, cs.delay_minutes \
+                cs.status, cs.delay_minutes, t.custom_name \
          FROM tracked_train_tickets t \
          LEFT JOIN tracked_trains tt ON tt.id = t.tracked_train_id \
          LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
@@ -1170,6 +1178,7 @@ mod ticket_list_tests {
             train_uid: Some("A12345".to_string()),
             status: Some("late".to_string()),
             delay_minutes,
+            custom_name: None,
         }
     }
 
@@ -1198,6 +1207,7 @@ mod ticket_list_tests {
             train_uid: None,
             status: None,
             delay_minutes: None,
+            custom_name: None,
         }
     }
 
