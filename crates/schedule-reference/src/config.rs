@@ -1,28 +1,7 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
 use clap::Parser;
-use common::LineDefinition;
-
-fn parse_lines(path: &str) -> Result<LineCatalogue> {
-    LineDefinition::from_dir(&PathBuf::from(path)).map(LineCatalogue)
-}
-
-/// Newtype around the parsed line catalogue -- same shape (and same
-/// `clap_derive` gotcha it works around) as `crates/aggregator/src/config.rs::LineCatalogue`
-/// and `crates/api/src/data/config.rs`'s identical `--lines-dir` field.
-/// Needed here (Task 7) to build the reverse tiploc->line index this
-/// crate's own per-line CIF SCHEDULE population publish requires -- see
-/// docs/superpowers/plans/2026-09-04-option-b-live-consumer-plan.md Task 7.
-#[derive(Debug, Clone, Default)]
-pub struct LineCatalogue(pub Vec<LineDefinition>);
-
-impl std::ops::Deref for LineCatalogue {
-    type Target = Vec<LineDefinition>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+use common::config::{LineCatalogue, parse_lines};
 
 /// CLI/env configuration for the `schedule-reference` service.
 ///
@@ -82,23 +61,9 @@ pub struct Config {
     pub lines: LineCatalogue,
 
     /// Shared, non-secret OAuth2 client-credentials config (same value
-    /// across all 8 real callers) -- see
-    /// docs/superpowers/specs/2026-09-02-internal-service-oauth2-design.md
-    /// Decision 6.
-    #[arg(long, env)]
-    pub internal_oauth_token_url: String,
-    #[arg(long, env)]
-    pub internal_oauth_client_id: String,
-    #[arg(long, env, default_value = "groups")]
-    pub internal_oauth_scope: String,
-    /// This service's own Authentik service-account credential --
-    /// per-service, distinct from every other caller's. `username` is
-    /// identifying, not itself the secret; `password` (an Authentik
-    /// app-password) is the actual secret.
-    #[arg(long, env)]
-    pub internal_oauth_username: String,
-    #[arg(long, env)]
-    pub internal_oauth_password: String,
+    /// across all 9 real callers).
+    #[command(flatten)]
+    pub internal_oauth: common::oauth_client::InternalOAuthArgs,
 
     /// Port for this service's Prometheus `/metrics` endpoint. MUST differ
     /// from the `ingest` sibling container's own metrics port -- both
@@ -107,6 +72,6 @@ pub struct Config {
     #[arg(long, env, default_value_t = 9092)]
     pub metrics_port: u16,
 
-    #[arg(long, env, default_value_t = true)]
-    pub metrics_enabled: bool,
+    #[command(flatten)]
+    pub metrics: common::service_args::MetricsArgs,
 }
