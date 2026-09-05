@@ -41,6 +41,33 @@ function matchesOperator(rowOperator: string, operator: string): boolean {
   return rowOperator.toUpperCase() === trimmed.toUpperCase();
 }
 
+/** True unless `scheduledDeparture` is resolved AND the row's own
+ * departure time is strictly before it -- filters out departures that
+ * have already passed relative to whatever the user has typed/picked,
+ * additive alongside `matchesDestination`/`matchesOperator`. Applies to
+ * BOTH sources identically (unlike the Destination/Operator split): both
+ * `DepartureRow.scheduled` and `ScheduleDepartureRow.scheduled` are the
+ * same `"HH:MM"` shape, and neither row type carries its own date (both
+ * pickers are always "today", server-side). Combines the row's `"HH:MM"`
+ * with *today's* browser-local date into the exact same
+ * `'YYYY-MM-DD HH:mm:ss'` string shape `scheduledDeparture` itself holds
+ * -- same construction `pickDeparture`/`pickCifDeparture`/the "Now" button
+ * already use -- so the two can be compared with a plain string comparison
+ * rather than round-tripping through `Date`/UTC (this format sorts
+ * lexicographically identical to chronologically, and a round-trip through
+ * `Date` risks exactly the kind of local-midnight/DST day-off-by-one this
+ * file's `handleSubmit` comment already warns about). A `null`
+ * `scheduledDeparture` (not yet resolved) never filters -- matches every
+ * row, same "unknown means don't filter" posture as the other two
+ * matchers. */
+function matchesScheduledDeparture(rowScheduled: string, scheduledDeparture: string | null): boolean {
+  if (scheduledDeparture === null) return true;
+  const [hh, mm] = rowScheduled.split(':');
+  const today = dayjs().format('YYYY-MM-DD');
+  const rowDateTime = `${today} ${hh}:${mm}:00`;
+  return rowDateTime >= scheduledDeparture;
+}
+
 /** Wire shape of `GET /public/stations/{crs}/departures`
  * (`crates/api/src/render.rs::station_departure_json`) -- camelCase
  * mirror of `common::StationDeparture`'s own fields, minus `headcode`
@@ -123,7 +150,15 @@ export function TrackTrainForm({
   const [originCrs, setOriginCrs] = useState(initialOrigin);
   const [destinationCrs, setDestinationCrs] = useState('');
   const [operator, setOperator] = useState('');
-  const [scheduledDeparture, setScheduledDeparture] = useState<string | null>(null);
+  // Defaults to "now" (the repo owner's own stated expectation), not
+  // `null` -- computed once via lazy `useState` initializer, in the exact
+  // local-wall-clock `'YYYY-MM-DD HH:mm:ss'` string shape the "Now" button
+  // (below) and `pickDeparture`/`pickCifDeparture` already construct, so
+  // it round-trips through `handleSubmit`'s own parsing identically to a
+  // value the user picked by hand.
+  const [scheduledDeparture, setScheduledDeparture] = useState<string | null>(() =>
+    dayjs().format('YYYY-MM-DD HH:mm:ss'),
+  );
   const [submitting, setSubmitting] = useState(false);
   const needsLoginState = useNeedsLogin();
   const [fieldError, setFieldError] = useState<string | null>(null);
@@ -315,11 +350,13 @@ export function TrackTrainForm({
    * docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
    * Decision 4 -- exactly one of six mutually-exclusive states, checked
    * top to bottom. Rows are filtered by `matchesDestination`/
-   * `matchesOperator` (Decision 1) before rendering; a source whose
-   * *unfiltered* result was already empty (state 5 below) is
-   * distinguished from one that had rows but none survived filtering
-   * (the two new sentences inside the `'ldbws'`/`'cif'` branches) --
-   * different honest meanings, different copy. */
+   * `matchesOperator` (Decision 1), and additionally by
+   * `matchesScheduledDeparture` (both sources -- see that function's own
+   * doc comment) before rendering; a source whose *unfiltered* result was
+   * already empty (state 5 below) is distinguished from one that had rows
+   * but none survived filtering (the two new sentences inside the
+   * `'ldbws'`/`'cif'` branches) -- different honest meanings, different
+   * copy. */
   function pickerContent() {
     if (!originValid) {
       return (
@@ -358,7 +395,10 @@ export function TrackTrainForm({
     }
     if (picker.source === 'ldbws') {
       const filtered = picker.rows.filter(
-        (row) => matchesDestination(row.destinationCrs, destinationCrs) && matchesOperator(row.operator, operator),
+        (row) =>
+          matchesDestination(row.destinationCrs, destinationCrs) &&
+          matchesOperator(row.operator, operator) &&
+          matchesScheduledDeparture(row.scheduled, scheduledDeparture),
       );
       if (filtered.length === 0) {
         return (
@@ -410,7 +450,11 @@ export function TrackTrainForm({
     // picker.source === 'cif' -- Operator never filters this source
     // (Decision 1's CIF/Operator asymmetry): `matchesOperator` is simply
     // never called here.
-    const filtered = picker.rows.filter((row) => matchesDestination(row.destinationCrs, destinationCrs));
+    const filtered = picker.rows.filter(
+      (row) =>
+        matchesDestination(row.destinationCrs, destinationCrs) &&
+        matchesScheduledDeparture(row.scheduled, scheduledDeparture),
+    );
     return (
       <>
         <Text size="sm" c="dimmed">
