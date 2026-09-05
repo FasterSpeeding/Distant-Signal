@@ -96,8 +96,23 @@ vi.mock('@mantine/dates', () => ({
   ),
 }));
 
+// A fixed "now" well before every fixture departure time used below
+// (earliest is '08:22') -- `scheduledDeparture` now defaults to `dayjs()`
+// at mount (this task's own "default to now" fix), and the picker now
+// filters rows by it (`matchesScheduledDeparture`), so every test that
+// asserts a fixture row is visible without itself setting
+// `scheduledDeparture` needs the real wall-clock time pinned to something
+// earlier than all of them -- otherwise these tests would pass or fail
+// depending on what time of day the suite happens to run. `shouldAdvanceTime`
+// (same option `AutoRefresh.test.tsx` already uses) lets real `setTimeout`-driven
+// async machinery (`waitFor`/`findBy*`) keep working normally while `Date`
+// itself stays pinned near this fixed point.
+const FIXED_NOW = '2026-09-05T00:01:00.000Z';
+
 describe('TrackTrainForm', () => {
   beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(FIXED_NOW));
     // A resolved, empty-array 200 by default (not a bare `vi.fn()`, which
     // returns `undefined`) -- this picker's own departures effect now
     // fires a real `fetch` call for any test with a syntactically valid
@@ -114,6 +129,7 @@ describe('TrackTrainForm', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it('pre-fills the origin field from initialOrigin', async () => {
@@ -128,6 +144,16 @@ describe('TrackTrainForm', () => {
   it('disables submit until the origin is a valid 3-letter code and a departure is picked', () => {
     renderWithMantine(<TrackTrainForm />);
     expect(screen.getByRole('button', { name: /Track this train/ })).toBeDisabled();
+  });
+
+  it('defaults the scheduled-departure field to the current time on mount, not null', () => {
+    // Per the repo owner's own stated expectation ("which should be
+    // defaulting to now tbh") -- `FIXED_NOW` is pinned above, so this
+    // compares against the exact same `dayjs()` read the component's own
+    // lazy `useState` initializer makes, not a fuzzy "close to now" check.
+    renderWithMantine(<TrackTrainForm />);
+    const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+    expect(picker.value).toBe(dayjs().format('YYYY-MM-DD HH:mm:ss'));
   });
 
   it('shows a field error for a non-3-letter origin code', () => {
@@ -717,6 +743,91 @@ describe('TrackTrainForm', () => {
 
       // svc-cancelled's operator is 'ZA' -- filtered out; svc-on-time's is
       // 'SW' -- still shown.
+      expect(screen.queryByText(/10:15/)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /10:40/ })).toBeInTheDocument();
+    });
+
+    it('selecting a real operator suggestion from the dropdown filters the picker by its bare code', async () => {
+      // This is the exact interaction the bug report describes ("the
+      // selected operator" isn't accounted for) -- typing a partial name
+      // and clicking the rendered suggestion, not typing the bare code
+      // directly (already covered by the previous test). `Autocomplete`'s
+      // `data` for Operator is built as `{ value: s.code, label: s.code }`
+      // (`TrackTrainForm.tsx`'s Operator field) -- `label` deliberately
+      // equals the bare code, not the display name, so Mantine's own
+      // `onOptionSubmit` (which inserts `optionsLockup[val].label`) fills
+      // the field with `'SW'`, not `'South Western Railway'`, and the
+      // existing `OPERATOR_PATTERN` match already applies -- no separate
+      // fix was needed for this path, but it's the one the report actually
+      // describes, so it gets its own direct coverage rather than relying
+      // on the bare-code-typed test above to stand in for it.
+      //
+      // Real timers only for this one test: the debounced suggestion
+      // fetch inside `useSuggestions` needs its `setTimeout` -> `fetch` ->
+      // `.then` chain to actually flush, which fake timers (even with
+      // `shouldAdvanceTime`) don't reliably drive end to end. Since real
+      // timers mean `scheduledDeparture`'s "now" default is the real
+      // wall-clock time (not the pinned `FIXED_NOW`), the departure time
+      // is explicitly overridden below to today's midnight, right after
+      // mount and before anything awaits, so the fixture rows stay visible
+      // regardless of what time of day this test happens to run.
+      vi.useRealTimers();
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (/\/api\/stations\/[A-Za-z]{3}\/departures$/.test(url)) {
+          return Promise.resolve(new Response(JSON.stringify(departures), { status: 200 }));
+        }
+        if (url.startsWith('/api/tocs?')) {
+          return Promise.resolve(
+            new Response(JSON.stringify([{ code: 'SW', name: 'South Western Railway' }]), { status: 200 }),
+          );
+        }
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+        target: { value: `${dayjs().format('YYYY-MM-DD')} 00:00:00` },
+      });
+      await screen.findByRole('button', { name: /10:40/ });
+
+      const operatorField = screen.getByRole('combobox', { name: /Operator/ });
+      fireEvent.change(operatorField, { target: { value: 'south' } });
+
+      // `hidden: true` -- same jsdom-only workaround `CustomLineForm.test.tsx`/
+      // `StationSearchForm.test.tsx` already use for this exact Autocomplete
+      // dropdown: jsdom's stubbed `ResizeObserver` (`vitest.setup.ts`) never
+      // fires, so Floating UI never flips the dropdown's `display: none`
+      // even once its data is non-empty -- a jsdom rendering limitation, not
+      // a real browser behavior (`aria-expanded` is already `true` by this
+      // point) or a bug in this component.
+      const option = await screen.findByRole('option', { name: /South Western Railway/, hidden: true });
+      fireEvent.click(option);
+
+      expect(operatorField).toHaveValue('SW');
+      // svc-cancelled's operator is 'ZA' -- filtered out by the now-resolved
+      // Operator selection; svc-on-time's is 'SW' -- still shown.
+      expect(screen.queryByText(/10:15/)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /10:40/ })).toBeInTheDocument();
+    });
+
+    it('changing the scheduled-departure time filters out earlier departures from the picker', async () => {
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await screen.findByRole('button', { name: /10:40/ });
+      // `FIXED_NOW` (00:01) is well before either fixture departure, so
+      // both are visible before narrowing the departure time at all.
+      expect(screen.getByText(/10:15/)).toBeInTheDocument();
+
+      // Narrow to a time between the two rows' scheduled times -- the
+      // 10:15 departure has already left by 10:20, the 10:40 one hasn't.
+      fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+        target: { value: '2026-09-05 10:20:00' },
+      });
+
       expect(screen.queryByText(/10:15/)).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: /10:40/ })).toBeInTheDocument();
     });
