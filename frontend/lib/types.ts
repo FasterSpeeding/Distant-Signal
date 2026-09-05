@@ -320,9 +320,18 @@ export interface DataFreshness {
  * aggregator's own `HISTORY_RETENTION_DAYS` (see
  * `crates/api/src/routes/history_retention.rs`). Used by the
  * `/lines/[id]/history` page to tell a genuinely-pruned range apart from a
- * genuinely-quiet line. */
+ * genuinely-quiet line.
+ *
+ * `dailyStatsRetentionDays`/`halfHourlyStatsRetentionHours` (Decision 8 of
+ * docs/superpowers/specs/2026-09-05-configurable-trend-granularity-design.md)
+ * extend this same echo to the two other retention ceilings the Trends
+ * tab's `GranularityControl` needs -- see `frontend/lib/history.ts`'s
+ * `GranularityRetentionCeilings`/`availableGranularities`/
+ * `resolveGranularity`. */
 export interface HistoryRetention {
   historyRetentionDays: number;
+  dailyStatsRetentionDays: number;
+  halfHourlyStatsRetentionHours: number;
 }
 
 /** A code/name pair from the `/public/stations` and `/public/tocs`

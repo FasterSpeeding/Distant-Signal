@@ -245,8 +245,8 @@ export function resolveHalfHourlyRange(now: number): { from: string; to: string 
  *
  * Returns `null` when the requested range is fully within what's retained
  * (nothing to warn about) or when `retentionDays` is unknown (the caller
- * couldn't fetch it — see `resolveHistoryRetentionDays` in `page.tsx`, which
- * degrades to `null` on fetch failure rather than guessing).
+ * couldn't fetch it — see `resolveRetention` in `page.tsx`, which
+ * degrades to `null` (for this field) on fetch failure rather than guessing).
  *
  * This exists because a truncated result and a genuinely quiet line are
  * otherwise indistinguishable to a user: `resolveRange`'s "Last 30 days"
