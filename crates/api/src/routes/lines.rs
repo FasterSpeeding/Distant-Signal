@@ -14,7 +14,7 @@
 //! from this endpoint is by construction the real owner's own line.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +37,10 @@ pub fn router() -> Router {
         .route(
             "/lines/{id}/definition",
             axum::routing::get(get_line_definition),
+        )
+        .route(
+            "/lines/{id}/schedule",
+            axum::routing::get(get_line_schedule),
         )
 }
 
@@ -86,6 +90,98 @@ struct CustomLineDetail {
 struct LineDefinitionSummary {
     stations: Vec<String>,
     operators: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScheduleQuery {
+    date: Option<chrono::NaiveDate>,
+}
+
+/// Resolves the effective service date for `GET /lines/{id}/schedule`:
+/// the caller's explicit `?date=`, or `today` if omitted. Factored out as
+/// a pure function so the "default to today" decision is testable without
+/// a clock or a database -- same rationale as
+/// `routes::reference::sanitize_query`.
+fn resolve_schedule_date(
+    requested: Option<chrono::NaiveDate>,
+    today: chrono::NaiveDate,
+) -> chrono::NaiveDate {
+    requested.unwrap_or(today)
+}
+
+/// `GET /public/lines/{id}/schedule?date=`: the full CIF-derived stopping
+/// pattern for every service on line `id`, for one rail day -- read
+/// straight off `schedule_line_population` (`queries::get_schedule_line_population`).
+/// See docs/superpowers/specs/2026-09-05-mcp-deeper-api-integration-design.md
+/// Decision 3.
+///
+/// Deliberately does NOT check `app.config.lines`/`custom_lines` first the
+/// way `get_line_definition` does: `schedule_line_population` is keyed
+/// purely by whatever `line_id` string `schedule-reference` published
+/// under, with no foreign key to either catalogue or custom lines, so
+/// there is nothing to disambiguate here -- an unknown, custom, or
+/// not-yet-published catalogue `id` alike simply 404 for the same reason
+/// ("no row for this key"), which is the same honesty split
+/// `get_station_schedule_departures` already draws for
+/// `schedule_network_departures`.
+///
+/// The response body is `schedule_line_population.population` relayed
+/// completely unprocessed: `api` has no dependency on the `schedule-query`
+/// crate (the crate that defines `LinePopulationEntry`/`CallingPoint`) at
+/// all, so its JSON keys are that crate's own snake_case field names
+/// (`uid`, `calling_points`, `booked_arrival`, `booked_departure`,
+/// `is_half_minute_arrival`, `is_half_minute_departure`, `tiploc`, `kind`),
+/// NOT this crate's usual camelCase convention.
+///
+/// This is a deliberate choice, reconsidered (not just carried over
+/// unquestioned) at implementation time: this crate's `render.rs::schedule_departure_json`
+/// shows there IS a precedent for hand-renaming an opaque, undeserialized
+/// JSON value's known fields to camelCase before responding (it does this
+/// for `ScheduleDeparture`'s 3 flat fields). That precedent was rejected
+/// here for two reasons specific to `LinePopulationEntry`, not out of
+/// convenience:
+///
+/// 1. `LinePopulationEntry` is a nested structure (`calling_points` is an
+///    array of `CallingPoint`, itself 6 fields, one of which -- `kind` --
+///    is a bare enum with no `#[serde(rename_all)]`, so it already
+///    serializes as `"Origin"`/`"Intermediate"`/`"Terminate"`, not
+///    camelCase, and would need its own hand-rolled string mapping too if
+///    full consistency were the goal). A hand-written recursive
+///    `serde_json::Value` transform for that shape is real, untyped,
+///    error-prone code -- unlike `schedule_departure_json`'s 3-field flat
+///    case, there's no compiler checking the mapping stays exhaustive.
+/// 2. A hand-rolled field-rename mapper silently drops any field
+///    `schedule-reference` adds to `CallingPoint`/`LinePopulationEntry` in
+///    the future (exactly the failure mode `schedule_departure_json`
+///    already accepts for its own narrow 3-field case) -- for the
+///    "complete, unprocessed CIF stopping pattern" this route promises,
+///    silently losing new fields is worse than a documented snake_case
+///    wart. A raw pass-through survives schema growth in `schedule-query`
+///    with zero changes needed here, which is the actual, durable version
+///    of Decision 3's "avoid coupling `api` to `schedule-query`'s shape"
+///    reasoning -- true whether or not the field names get renamed on the
+///    way out.
+///
+/// So: raw pass-through, snake_case, matching this plan's own Global
+/// Constraints (`GET /public/stanox-crs` is also snake_case, for its own,
+/// different reason -- see `routes::stanox_crs`).
+async fn get_line_schedule(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(query): Query<ScheduleQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let service_date = resolve_schedule_date(query.date, chrono::Utc::now().date_naive());
+    let Some(population) = queries::get_schedule_line_population(&app.database, &id, service_date)
+        .await
+        .map_err(internal_error)?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("no CIF-derived schedule population for line {id} on {service_date}"),
+        ));
+    };
+
+    Ok(Json(population))
 }
 
 async fn get_line_definition(
@@ -436,6 +532,19 @@ mod tests {
     #[test]
     fn a_tfl_line_with_no_nr_counterpart_is_not_suppressed() {
         assert!(!is_merged_into_nr_line("tfl-northern"));
+    }
+
+    #[test]
+    fn resolve_schedule_date_uses_the_explicit_date_when_given() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 5).unwrap();
+        let requested = chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
+        assert_eq!(resolve_schedule_date(Some(requested), today), requested);
+    }
+
+    #[test]
+    fn resolve_schedule_date_defaults_to_today_when_absent() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 5).unwrap();
+        assert_eq!(resolve_schedule_date(None, today), today);
     }
 }
 
@@ -1353,5 +1462,164 @@ mod db_tests {
 
         cleanup_tfl_line(&pool, "test-list-lines-session-tfl").await;
         cleanup_user(&pool, "TEST-LIST-LINES-SESSION-STATE").await;
+    }
+
+    async fn delete_schedule_population_fixture(pool: &PgPool, line_id: &str) {
+        sqlx::query("DELETE FROM schedule_line_population WHERE line_id = $1")
+            .bind(line_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture schedule_line_population rows");
+    }
+
+    /// Issues `GET /public/lines/{id}/schedule`, with an optional
+    /// `?date=` query string. Mirrors `get_line_definition`'s own
+    /// request-building/body-shape handling.
+    async fn get_line_schedule(
+        router: axum::Router,
+        id: &str,
+        date: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let uri = match date {
+            Some(date) => format!("/public/lines/{id}/schedule?date={date}"),
+            None => format!("/public/lines/{id}/schedule"),
+        };
+        let request = Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .expect("build request");
+        let response = router.oneshot(request).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+        });
+        (status, value)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                schedule_no_row_for_the_line_and_date_is_404_naming_both -- --ignored`"]
+    async fn schedule_no_row_for_the_line_and_date_is_404_naming_both() {
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, "test-schedule-2a-missing").await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = get_line_schedule(router, "test-schedule-2a-missing", None).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let body = body
+            .as_str()
+            .expect("404 body is a plain string")
+            .to_string();
+        assert!(body.contains("test-schedule-2a-missing"), "body: {body}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                schedule_a_row_for_today_returns_the_raw_population_json_unchanged -- --ignored`"]
+    async fn schedule_a_row_for_today_returns_the_raw_population_json_unchanged() {
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, "test-schedule-2a-today").await;
+
+        let today = chrono::Utc::now().date_naive();
+        let population = serde_json::json!([
+            {
+                "uid": "C12345",
+                "calling_points": [
+                    {
+                        "tiploc": "WATRLMN",
+                        "kind": "origin",
+                        "booked_arrival": null,
+                        "booked_departure": "08:15:00",
+                        "is_half_minute_arrival": false,
+                        "is_half_minute_departure": false
+                    }
+                ]
+            }
+        ]);
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind("test-schedule-2a-today")
+        .bind(today)
+        .bind(&population)
+        .execute(&pool)
+        .await
+        .expect("seed fixture population row");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = get_line_schedule(router, "test-schedule-2a-today", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        // Byte-for-byte the same JSON that was stored -- including its
+        // snake_case keys, unchanged -- proving this route is a true
+        // pass-through, not a re-shaping.
+        assert_eq!(body, population);
+
+        delete_schedule_population_fixture(&pool, "test-schedule-2a-today").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                schedule_an_explicit_date_query_param_selects_that_date_not_today -- --ignored`"]
+    async fn schedule_an_explicit_date_query_param_selects_that_date_not_today() {
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, "test-schedule-2a-explicit-date").await;
+
+        let requested = chrono::NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
+        let population = serde_json::json!([{"uid": "C99999", "calling_points": []}]);
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind("test-schedule-2a-explicit-date")
+        .bind(requested)
+        .bind(&population)
+        .execute(&pool)
+        .await
+        .expect("seed fixture population row");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) =
+            get_line_schedule(router, "test-schedule-2a-explicit-date", Some("2026-01-02")).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, population);
+
+        delete_schedule_population_fixture(&pool, "test-schedule-2a-explicit-date").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                schedule_a_row_only_for_a_different_date_is_still_404_today -- --ignored`"]
+    async fn schedule_a_row_only_for_a_different_date_is_still_404_today() {
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, "test-schedule-2a-stale").await;
+
+        let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ($1, $2, '[]')",
+        )
+        .bind("test-schedule-2a-stale")
+        .bind(yesterday)
+        .execute(&pool)
+        .await
+        .expect("seed a stale fixture row");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, _) = get_line_schedule(router, "test-schedule-2a-stale", None).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        delete_schedule_population_fixture(&pool, "test-schedule-2a-stale").await;
     }
 }
