@@ -1148,6 +1148,84 @@ pub async fn half_hourly_stats_for_range(
         .collect()
 }
 
+/// Sub-daily sibling of `half_hourly_stats_for_range`, for the two
+/// intermediate granularities (Decision 1 of
+/// docs/superpowers/specs/2026-09-05-configurable-trend-granularity-design.md):
+/// 1-hour and 6-hour buckets, derived at READ time by grouping
+/// `line_status_half_hourly_stats` rows via `date_bin` -- no new table, no
+/// new aggregator write path (Decision 2; every column here is a SUM, and
+/// summing sums is lossless per that decision's Correction 4).
+///
+/// `bucket_minutes` is NEVER taken from raw request input: it is a plain
+/// bound parameter, always one of exactly two caller-supplied literals (60
+/// or 360) from this crate's two thin route handlers
+/// (`routes::line_status::get_line_hourly_stats`/`get_line_six_hourly_stats`)
+/// -- never string-interpolated into the query text, so there is no
+/// SQL-injection surface despite selecting the bucket width dynamically.
+///
+/// The `date_bin` origin (`2000-01-01T00:00:00Z`, a UTC midnight) is
+/// arbitrary but load-bearing: `utc_half_hour_start`
+/// (`crates/aggregator/src/queries.rs`) only ever produces `:00`/`:30` UTC
+/// timestamps, and any UTC midnight divides evenly into 30-minute, 1-hour,
+/// AND 6-hour buckets alike, so this origin aligns every bucket boundary
+/// to whole hours regardless of which `bucket_minutes` value is requested
+/// -- no origin-dependent edge case to get wrong. `date_bin` requires
+/// PostgreSQL 14+; this deployment runs Postgres 16
+/// (`docker-compose.yml`'s `postgres:16` image), confirmed, not assumed.
+///
+/// Returns the same `HalfHourlyStatsRow` shape `half_hourly_stats_for_range`
+/// does (Decision 2's own sketch: "reuses the existing row shape
+/// verbatim") -- its `half_hour_start` field here is the START OF
+/// WHATEVER BUCKET WIDTH WAS REQUESTED, not literally a half hour.
+/// Callers must not re-expose this field name to JSON unchanged for this
+/// function's results -- see `routes::line_status::sub_daily_stats_to_json`,
+/// which renames it to `bucketStart` for exactly this reason.
+pub async fn sub_daily_stats_for_range(
+    pool: &PgPool,
+    line_id: &str,
+    from: chrono::DateTime<chrono::Utc>,
+    to: chrono::DateTime<chrono::Utc>,
+    bucket_minutes: i64,
+) -> Result<Vec<HalfHourlyStatsRow>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT
+            date_bin($4 * INTERVAL '1 minute', half_hour_start, TIMESTAMPTZ '2000-01-01T00:00:00Z') AS half_hour_start,
+            SUM(sample_cycles)::bigint AS sample_cycles,
+            SUM(total)::bigint AS total,
+            SUM(delayed)::bigint AS delayed,
+            SUM(cancelled)::bigint AS cancelled,
+            SUM(skipped)::bigint AS skipped,
+            SUM(running_count)::bigint AS running_count,
+            SUM(delay_minutes_sum)::double precision AS delay_minutes_sum
+         FROM line_status_half_hourly_stats
+         WHERE line_id = $1 AND half_hour_start BETWEEN $2 AND $3
+         GROUP BY 1
+         ORDER BY 1",
+    )
+    .bind(line_id)
+    .bind(from)
+    .bind(to)
+    .bind(bucket_minutes)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(HalfHourlyStatsRow {
+                half_hour_start: row.try_get("half_hour_start")?,
+                sample_cycles: row.try_get("sample_cycles")?,
+                total: row.try_get("total")?,
+                delayed: row.try_get("delayed")?,
+                cancelled: row.try_get("cancelled")?,
+                skipped: row.try_get("skipped")?,
+                running_count: row.try_get("running_count")?,
+                delay_minutes_sum: row.try_get("delay_minutes_sum")?,
+            })
+        })
+        .collect()
+}
+
 // --- Decision 4 scaffolding: line_status_{daily,half_hourly}_coverage_stats reads ---
 
 pub struct DailyCoverageStatsRow {
@@ -1815,6 +1893,142 @@ mod tests {
         .await
         .expect("half_hourly_stats_for_range for an unknown line_id");
         assert!(unknown.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                sub_daily_stats_for_range_groups_half_hourly_rows_into_hourly_buckets -- --ignored` \
+                against docker compose's postgres"]
+    async fn sub_daily_stats_for_range_groups_half_hourly_rows_into_hourly_buckets() {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+        const LINE_ID: &str = "TEST-SUB-DAILY-HOURLY";
+
+        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1")
+            .bind(LINE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Two half-hourly rows in the same 1-hour bucket (12:00, 12:30), one in
+        // the next hour (13:00) -- summed columns must add losslessly
+        // (Correction 4 of the design spec).
+        sqlx::query(
+            "INSERT INTO line_status_half_hourly_stats
+                (line_id, half_hour_start, sample_cycles, total, delayed, cancelled, skipped, running_count, delay_minutes_sum)
+             VALUES
+                ($1, '2026-08-31T12:00:00Z', 10, 100, 10, 2, 1, 98, 50.0),
+                ($1, '2026-08-31T12:30:00Z', 12, 120, 12, 0, 2, 118, 60.0),
+                ($1, '2026-08-31T13:00:00Z', 5, 50, 5, 1, 0, 49, 20.0)",
+        )
+        .bind(LINE_ID)
+        .execute(&pool)
+        .await
+        .expect("seed fixture rows");
+
+        let rows = sub_daily_stats_for_range(
+            &pool,
+            LINE_ID,
+            "2026-08-31T00:00:00Z".parse().unwrap(),
+            "2026-09-01T00:00:00Z".parse().unwrap(),
+            60,
+        )
+        .await
+        .expect("sub_daily_stats_for_range");
+
+        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1")
+            .bind(LINE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "two hourly buckets: 12:00-13:00 and 13:00-14:00"
+        );
+        assert_eq!(
+            rows[0].half_hour_start,
+            "2026-08-31T12:00:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+        );
+        assert_eq!(
+            rows[0].sample_cycles, 22,
+            "10 + 12, the two half-hour rows binned into the same hour"
+        );
+        assert_eq!(rows[0].total, 220);
+        assert_eq!(rows[0].delayed, 22);
+        assert_eq!(rows[0].delay_minutes_sum, 110.0);
+        assert_eq!(
+            rows[1].half_hour_start,
+            "2026-08-31T13:00:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+        );
+        assert_eq!(rows[1].sample_cycles, 5);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                sub_daily_stats_for_range_with_360_minute_buckets_groups_six_hours_together -- --ignored` \
+                against docker compose's postgres"]
+    async fn sub_daily_stats_for_range_with_360_minute_buckets_groups_six_hours_together() {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+        const LINE_ID: &str = "TEST-SUB-DAILY-SIX-HOURLY";
+
+        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1")
+            .bind(LINE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "INSERT INTO line_status_half_hourly_stats (line_id, half_hour_start, sample_cycles, total) VALUES
+                ($1, '2026-08-31T00:00:00Z', 1, 10),
+                ($1, '2026-08-31T05:30:00Z', 1, 10),
+                ($1, '2026-08-31T06:00:00Z', 1, 10)",
+        )
+        .bind(LINE_ID)
+        .execute(&pool)
+        .await
+        .expect("seed fixture rows");
+
+        let rows = sub_daily_stats_for_range(
+            &pool,
+            LINE_ID,
+            "2026-08-31T00:00:00Z".parse().unwrap(),
+            "2026-09-01T00:00:00Z".parse().unwrap(),
+            360,
+        )
+        .await
+        .expect("sub_daily_stats_for_range");
+
+        sqlx::query("DELETE FROM line_status_half_hourly_stats WHERE line_id = $1")
+            .bind(LINE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "00:00-06:00 and 06:00-12:00 six-hour buckets"
+        );
+        assert_eq!(
+            rows[0].sample_cycles, 2,
+            "the 00:00 and 05:30 rows both fall in the first six-hour bucket"
+        );
+        assert_eq!(rows[1].sample_cycles, 1);
     }
 }
 
