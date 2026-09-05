@@ -17,6 +17,32 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
+// Injects exactly one synthetic non-GB modeName mapping, on top of the
+// real (today: empty) MODE_TO_COUNTRY -- see
+// docs/superpowers/plans/2026-09-05-country-filtering-plan.md Judgment
+// Call 2 for why this is the only way to exercise the "two countries
+// present" path without a real Ireland Tier C poller. Mirrors the
+// importOriginal partial-mock pattern already used in
+// components/AutoRefresh.test.tsx:15-18. Harmless to every pre-existing
+// test in this file: none of their fixtures use this modeName.
+//
+// Mutates the real, already-exported MODE_TO_COUNTRY object in place
+// rather than replacing it with a spread copy: countryForMode/
+// countryForReport are real (unmocked) functions whose `table` default
+// parameter closes over that exact object binding inside modes.ts's own
+// module scope. Returning a *new* object under the same export name here
+// would only change what AllLinesTable.tsx itself sees when it imports
+// MODE_TO_COUNTRY directly -- it would not change what the default
+// parameter inside the real countryForMode/countryForReport resolves to,
+// since those functions still close over modes.ts's original binding, not
+// this mock's replacement. In-place mutation keeps the object identity so
+// both call paths see the same table.
+vi.mock('@/lib/modes', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/modes')>();
+  Object.assign(actual.MODE_TO_COUNTRY, { 'synthetic-ni-mode': 'NorthernIreland' });
+  return actual;
+});
+
 function report(overrides: Partial<LineStatusReport> & { id: string; name: string }): LineStatusReport {
   return {
     $type: 'DistantSignal.LineStatusReport',
@@ -556,5 +582,76 @@ describe('AllLinesTable sorting affordance', () => {
     expect(header).toHaveAttribute('aria-sort', 'ascending');
     fireEvent.click(screen.getByRole('button', { name: /Name/ }));
     expect(header).toHaveAttribute('aria-sort', 'descending');
+  });
+});
+
+describe('AllLinesTable country filter', () => {
+  it("does not render when every present line resolves to a single country (today's real state)", () => {
+    renderTable(); // existing top-of-file fixture: every report is modeName: 'national-rail' -> Gb only
+    expect(screen.queryByText(/^Country/)).not.toBeInTheDocument();
+  });
+
+  it('renders once a second country is present, and filters correctly', async () => {
+    const countryLines: LineSummary[] = [
+      { id: 'wcml', name: 'West Coast Main Line', category: 'Long Distance', operators: ['VT'], source: 'catalogue' },
+      { id: 'synthetic-ni-line', name: 'Synthetic NI Line', category: 'Regional', operators: ['NI'], source: 'catalogue' },
+    ];
+    const countryReports: LineStatusReport[] = [
+      report({ id: 'wcml', name: 'West Coast Main Line' }), // modeName defaults to 'national-rail' -> Gb
+      report({ id: 'synthetic-ni-line', name: 'Synthetic NI Line', modeName: 'synthetic-ni-mode' }), // -> NorthernIreland, via the mock above
+    ];
+    renderWithMantine(
+      <AllLinesTable lines={countryLines} reports={countryReports} pinnedLineIds={[]} tocs={[]} />,
+    );
+
+    expect(screen.getByText('Country — showing all')).toBeInTheDocument();
+    // Mantine's Chip in `multiple` mode renders as an accessible checkbox,
+    // not a button (verified against this repo's own IssueList.test.tsx,
+    // which exercises the identical ChipGroup-multiple pattern) -- see
+    // docs/superpowers/plans/2026-09-05-country-filtering-plan.md's own
+    // note on Step 8 flagging this as needing verification, not assumption.
+    const gbChip = screen.getByRole('checkbox', { name: 'GB' });
+    const niChip = screen.getByRole('checkbox', { name: 'Northern Ireland' });
+
+    fireEvent.click(niChip);
+    expect(screen.getByText('Synthetic NI Line')).toBeInTheDocument();
+    expect(screen.queryByText('West Coast Main Line')).not.toBeInTheDocument();
+    expect(screen.getByText('Country — 1 selected')).toBeInTheDocument();
+
+    fireEvent.click(gbChip);
+    expect(screen.getByText('Synthetic NI Line')).toBeInTheDocument();
+    expect(screen.getByText('West Coast Main Line')).toBeInTheDocument();
+    expect(screen.getByText('Country — 2 selected')).toBeInTheDocument();
+
+    fireEvent.click(niChip); // toggle off, leaving only GB selected
+    expect(screen.queryByText('Synthetic NI Line')).not.toBeInTheDocument();
+    expect(screen.getByText('West Coast Main Line')).toBeInTheDocument();
+  });
+
+  it('AND-combines with the operator filter rather than replacing it', async () => {
+    const countryLines: LineSummary[] = [
+      { id: 'wcml', name: 'West Coast Main Line', category: 'Long Distance', operators: ['VT'], source: 'catalogue' },
+      { id: 'gwr', name: 'Great Western Railway', category: 'Long Distance', operators: ['GW'], source: 'catalogue' },
+      { id: 'synthetic-ni-line', name: 'Synthetic NI Line', category: 'Regional', operators: ['VT'], source: 'catalogue' },
+    ];
+    const countryReports: LineStatusReport[] = [
+      report({ id: 'wcml', name: 'West Coast Main Line' }),
+      report({ id: 'gwr', name: 'Great Western Railway' }),
+      report({ id: 'synthetic-ni-line', name: 'Synthetic NI Line', modeName: 'synthetic-ni-mode' }),
+    ];
+    renderWithMantine(
+      <AllLinesTable lines={countryLines} reports={countryReports} pinnedLineIds={[]} tocs={[]} />,
+    );
+
+    // Filter to operator "VT" (matches wcml and synthetic-ni-line) AND
+    // country "Gb" (matches wcml and gwr) -- intersection is wcml alone.
+    const operatorInput = screen.getByRole('combobox', { name: 'Filter by operator' });
+    fireEvent.click(operatorInput);
+    fireEvent.click(await screen.findByRole('option', { name: 'VT' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'GB' }));
+
+    expect(screen.getByText('West Coast Main Line')).toBeInTheDocument();
+    expect(screen.queryByText('Great Western Railway')).not.toBeInTheDocument();
+    expect(screen.queryByText('Synthetic NI Line')).not.toBeInTheDocument();
   });
 });
