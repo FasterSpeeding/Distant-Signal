@@ -64,9 +64,14 @@ export function GranularityControl({
       />
       {unavailable.length > 0 && (
         <Text size="xs" c="dimmed">
-          {unavailable.map((g) => LABELS[g]).join(', ')} {unavailable.length === 1 ? 'is' : 'are'} not shown for this
-          range -- it&apos;s wider than what&apos;s retained at that granularity, or would render too many points to
-          read clearly.
+          {/* Built as a single template literal, not line-wrapped JSX text, deliberately: line-wrapped
+              text immediately after a `{expr}` collapses inconsistently between this repo's two JSX
+              transforms -- Next's SWC (the real dev/prod bundler) drops the space right after the
+              ternary below ("isnot shown"/"arenot shown"), while Vitest's esbuild-based transform kept
+              it, so the bug passed every unit test and only showed up live (confirmed via a real dev
+              server, textContent, not just the accessibility-tree snapshot). One template literal has
+              no line-wrap boundary for either transform to collapse differently. */}
+          {`${unavailable.map((g) => LABELS[g]).join(', ')} ${unavailable.length === 1 ? 'is' : 'are'} not shown for this range -- it's wider than what's retained at that granularity, or would render too many points to read clearly.`}
         </Text>
       )}
     </Stack>
