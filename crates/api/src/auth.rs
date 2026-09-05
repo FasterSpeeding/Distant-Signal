@@ -738,6 +738,45 @@ mod route_scoping_tests {
     }
 
     #[tokio::test]
+    async fn full_coverage_consumers_token_is_accepted_on_get_stanox_crs() {
+        // full-coverage-consumer is the second legitimate GET caller on
+        // this path (alongside trust-consumer) -- confirmed live 2026-09-05:
+        // its otherwise-correctly-scoped token 403'd here because this
+        // route's group list never included it, despite its config.rs
+        // carrying a stanox_crs_url since Deploy A.
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let token = token_for(
+            &server.uri(),
+            "svc-full-coverage-consumer-1",
+            &["svc-full-coverage-consumer"],
+        );
+
+        assert_eq!(
+            send(&router, Method::GET, "/stanox-crs", Some(&token)).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn full_coverage_consumers_token_is_rejected_on_post_stanox_crs() {
+        // Same read-only boundary as trust-consumer's own token: being an
+        // accepted GET caller must not also authorize the write.
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let token = token_for(
+            &server.uri(),
+            "svc-full-coverage-consumer-1",
+            &["svc-full-coverage-consumer"],
+        );
+
+        assert_eq!(
+            send(&router, Method::POST, "/stanox-crs", Some(&token)).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
     async fn trust_consumers_token_is_rejected_on_post_stanox_crs() {
         // The bug this whole suite exists to pin: before the fix, a
         // route-scoping table keyed on path alone let trust-consumer's
@@ -841,33 +880,37 @@ mod route_scoping_tests {
     /// Regression coverage for every OTHER route the fix touched: for
     /// each `(path, method, groups)` entry in the REAL production table
     /// (`build_internal_oauth_routes`, not a hand-copied list here), a
-    /// token carrying that entry's own required group must still be
-    /// accepted on that exact method. Every entry in the fixed table
-    /// carries exactly one group (the `/stanox-crs` split was the only
-    /// multi-group entry that ever existed), so this loop can mint one
-    /// token per entry without needing per-route special-casing. This is
-    /// the check that "nothing else broke" -- if a future edit to
+    /// token carrying ANY ONE of that entry's own required groups must
+    /// still be accepted on that exact method -- tested individually per
+    /// group (not just the union), since the whole point of a caller
+    /// being listed is that ITS OWN token, alone, is sufficient. GET
+    /// /stanox-crs is now the one entry with more than one group
+    /// (trust-consumer and full-coverage-consumer both read it); every
+    /// other entry still carries exactly one. This is the check that
+    /// "nothing else broke" -- if a future edit to
     /// `build_internal_oauth_routes` drops or mis-scopes any entry, this
-    /// test fails alongside the two explicit `/stanox-crs` tests above.
+    /// test fails alongside the explicit `/stanox-crs` tests above.
     #[tokio::test]
-    async fn every_production_route_entry_is_reachable_by_its_own_caller_on_its_own_method() {
+    async fn every_production_route_entry_is_reachable_by_each_of_its_own_callers_on_its_own_method()
+     {
         let (server, app, routes) = test_app().await;
         let router = test_router(app.clone());
 
         for (path, method, groups) in &routes {
-            assert_eq!(
-                groups.len(),
-                1,
-                "expected exactly one group per route entry post-fix: {path} {method}"
+            assert!(
+                !groups.is_empty(),
+                "route entry has no required groups at all: {path} {method}"
             );
-            let token = token_for(&server.uri(), "svc-under-test", &[groups[0].as_str()]);
+            for group in groups {
+                let token = token_for(&server.uri(), "svc-under-test", &[group.as_str()]);
 
-            let status = send(&router, method.clone(), path, Some(&token)).await;
-            assert_eq!(
-                status,
-                StatusCode::OK,
-                "expected {method} {path} to accept its own caller's token"
-            );
+                let status = send(&router, method.clone(), path, Some(&token)).await;
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "expected {method} {path} to accept caller group {group}'s token"
+                );
+            }
         }
     }
 }

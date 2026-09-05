@@ -140,15 +140,30 @@ pub(crate) fn build_internal_oauth_routes(
             vec![config.internal_oauth_group_schedule_ingest.clone()],
         ),
         // Split by method, NOT a shared two-group entry: trust-consumer
-        // only ever GETs (read-only reload), schedule-reference only
-        // ever POSTs (its write) -- see this field's own doc comment on
-        // `AppState::internal_oauth_routes` for why a merged entry here
-        // was the actual security gap this table's method dimension
-        // fixes.
+        // and full-coverage-consumer only ever GET (read-only reload),
+        // schedule-reference only ever POSTs (its write) -- see this
+        // field's own doc comment on `AppState::internal_oauth_routes`
+        // for why a merged entry here was the actual security gap this
+        // table's method dimension fixes.
+        //
+        // full-coverage-consumer's own group was missing here entirely
+        // until now, even though its config.rs has carried a
+        // stanox_crs_url since Deploy A -- confirmed live: its GET
+        // requests 403'd on a genuinely valid, correctly-scoped token
+        // (right group for every OTHER route it calls, e.g.
+        // /station-full-coverage-samples and /full-coverage-stats),
+        // because this one entry never listed its group as an accepted
+        // caller. Both GET callers share this entry (the `groups.iter().any`
+        // check in auth.rs) rather than getting split rows, since neither
+        // is granted write access here -- only /stanox-crs POST (below,
+        // schedule-reference only) is a write.
         (
             "/stanox-crs",
             Method::GET,
-            vec![config.internal_oauth_group_trust_consumer.clone()],
+            vec![
+                config.internal_oauth_group_trust_consumer.clone(),
+                config.internal_oauth_group_full_coverage.clone(),
+            ],
         ),
         (
             "/stanox-crs",
