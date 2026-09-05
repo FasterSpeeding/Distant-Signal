@@ -13,6 +13,7 @@ pub mod ingest;
 pub mod island_of_ireland;
 pub mod metrics;
 pub mod oauth_client;
+pub mod poller_loop;
 pub mod rail_day;
 pub mod service_args;
 
