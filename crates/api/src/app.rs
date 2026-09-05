@@ -397,7 +397,8 @@ impl AppState {
 
         let internal_oauth_routes = build_internal_oauth_routes(&config);
 
-        let schedule_crs_line_index = crate::data::schedule_matching::crs_to_line_ids(&config.lines);
+        let schedule_crs_line_index =
+            crate::data::schedule_matching::crs_to_line_ids(&config.lines);
 
         Ok(Arc::new(Self {
             config,

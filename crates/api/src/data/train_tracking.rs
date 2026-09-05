@@ -461,6 +461,68 @@ pub async fn upsert_train_event(
     Ok(())
 }
 
+/// Writes a successful schedule match (Decision 3 step 4 of
+/// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md):
+/// sets `train_uid` (never `train_id` -- that stays exclusively
+/// TRUST-sourced, per this plan's Global Constraints) and moves
+/// `resolution_status` to the new `'schedule_matched'` waypoint. Guarded
+/// by `WHERE train_uid IS NULL AND resolution_status = 'pending'` so this
+/// is safe to call from BOTH the synchronous pin-creation path and the
+/// periodic sweep without a race clobbering a row that has since moved on
+/// (a live TRUST Movement resolved it first, or an earlier sweep tick
+/// already matched it) -- `rows_affected() == 0` in either of those cases
+/// is not an error, just a no-op, which is why this returns `bool` rather
+/// than erroring on zero rows affected.
+pub async fn apply_schedule_match(
+    pool: &PgPool,
+    tracked_train_id: i64,
+    train_uid: &str,
+    matched_line_id: &str,
+    schedule_calling_points: &serde_json::Value,
+    schedule_destination_crs: Option<&str>,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE tracked_trains \
+         SET train_uid = $2, resolution_status = 'schedule_matched', matched_line_id = $3, \
+             schedule_calling_points = $4, schedule_destination_crs = $5, schedule_matched_at = NOW() \
+         WHERE id = $1 AND train_uid IS NULL AND resolution_status = 'pending'",
+    )
+    .bind(tracked_train_id)
+    .bind(train_uid)
+    .bind(matched_line_id)
+    .bind(schedule_calling_points)
+    .bind(schedule_destination_crs)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Row shape for `list_pending_pins_for_schedule_match`'s query -- every
+/// still-`pending`, never-schedule-matched row, the periodic sweep's own
+/// input set (Decision 3's "also run this same attempt periodically").
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PendingSchedulePin {
+    pub id: i64,
+    pub service_date: chrono::NaiveDate,
+    pub pin_origin_crs: String,
+    pub pin_scheduled_departure: DateTime<Utc>,
+}
+
+/// Every row the periodic schedule-match sweep should retry: still
+/// `pending` AND still lacking a `train_uid` -- a `schedule_matched` row
+/// already has one and is excluded, same as a `resolved`/`unresolved` row.
+pub async fn list_pending_pins_for_schedule_match(
+    pool: &PgPool,
+) -> anyhow::Result<Vec<PendingSchedulePin>> {
+    let rows = sqlx::query_as::<_, PendingSchedulePin>(
+        "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure \
+         FROM tracked_trains WHERE train_uid IS NULL AND resolution_status = 'pending'",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// The public read-model for a tracked train, returned directly as JSON by
 /// `crates/api/src/routes/train.rs`'s `GET /Train/{trackingId}` and
 /// `GET /Train/by-uid/{train_uid}/{date}`. Unlike `TrackedTrainRow`/

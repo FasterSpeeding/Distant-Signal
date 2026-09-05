@@ -733,7 +733,10 @@ pub async fn list_stanox_crs(pool: &PgPool) -> Result<Vec<common::StanoxCrsRecor
 /// case-normalized at write time (`validate_pin` doesn't uppercase it),
 /// so a case-insensitive compare here is load-bearing, not defensive
 /// tidiness.
-pub async fn list_stanox_crs_for_crs(pool: &PgPool, crs: &str) -> Result<Vec<common::StanoxCrsRecord>> {
+pub async fn list_stanox_crs_for_crs(
+    pool: &PgPool,
+    crs: &str,
+) -> Result<Vec<common::StanoxCrsRecord>> {
     let rows = sqlx::query_as::<_, StanoxCrsRow>(
         "SELECT stanox, crs, tiploc, station_name, source_sequence FROM stanox_crs \
          WHERE UPPER(crs) = UPPER($1)",
@@ -742,7 +745,10 @@ pub async fn list_stanox_crs_for_crs(pool: &PgPool, crs: &str) -> Result<Vec<com
     .fetch_all(pool)
     .await?;
 
-    Ok(rows.into_iter().map(common::StanoxCrsRecord::from).collect())
+    Ok(rows
+        .into_iter()
+        .map(common::StanoxCrsRecord::from)
+        .collect())
 }
 
 /// Reverse of the above: one CRS for a TIPLOC, or `None` if unmapped.
@@ -754,12 +760,11 @@ pub async fn list_stanox_crs_for_crs(pool: &PgPool, crs: &str) -> Result<Vec<com
 /// TIPLOC, e.g. different platforms/areas of one physical location), so
 /// this is "a plausible one," not "the guaranteed only one."
 pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String>> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT crs FROM stanox_crs WHERE UPPER(tiploc) = UPPER($1) LIMIT 1",
-    )
-    .bind(tiploc)
-    .fetch_optional(pool)
-    .await?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT crs FROM stanox_crs WHERE UPPER(tiploc) = UPPER($1) LIMIT 1")
+            .bind(tiploc)
+            .fetch_optional(pool)
+            .await?;
     Ok(row.map(|(crs,)| crs))
 }
 
@@ -2438,7 +2443,10 @@ mod stanox_crs_lookup_query_tests {
         .await
         .expect("seed stanox_crs");
 
-        assert_eq!(crs_for_tiploc(&pool, "crewe").await.unwrap(), Some("CRE".to_string()));
+        assert_eq!(
+            crs_for_tiploc(&pool, "crewe").await.unwrap(),
+            Some("CRE".to_string())
+        );
         assert_eq!(crs_for_tiploc(&pool, "NOWHERE").await.unwrap(), None);
 
         sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-CRE'")
