@@ -27,14 +27,22 @@ pub struct MetricsArgs {
 /// about defaultedness or requiredness.
 #[derive(Debug, Clone, clap::Args)]
 pub struct KafkaConnectionArgs {
+    /// RDM Kafka broker address(es), comma-separated, e.g.
+    /// `kafka.raildata.org.uk:9094`. GAP: unconfirmed hostname.
     #[arg(long, env)]
     pub kafka_brokers: String,
+    /// GAP: unconfirmed exact topic name for the Train Movements product.
     #[arg(long, env)]
     pub kafka_topic: String,
     #[arg(long, env)]
     pub kafka_sasl_username: String,
+    /// RDM's "Consumer secret" for this product (SASL password).
     #[arg(long, env)]
     pub kafka_sasl_password: String,
+    /// GAP: unconfirmed whether RDM's Kafka product uses PLAIN or a SCRAM
+    /// variant. PLAIN is `librdkafka`'s simplest, most common default for
+    /// managed Kafka-as-a-service offerings, but this is an assumption,
+    /// not a confirmed fact.
     #[arg(long, env)]
     pub kafka_sasl_mechanism: String,
 }
