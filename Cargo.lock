@@ -2783,10 +2783,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
  "clap",
  "common",
  "dotenv",
+ "health-http",
  "metrics",
  "rdkafka",
  "redis",
