@@ -28,18 +28,11 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::parse();
-    if config.metrics_enabled {
+    if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
-    let internal_oauth =
-        common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
-            token_url: config.internal_oauth_token_url.clone(),
-            client_id: config.internal_oauth_client_id.clone(),
-            scope: config.internal_oauth_scope.clone(),
-            username: config.internal_oauth_username.clone(),
-            password: config.internal_oauth_password.clone(),
-        });
+    let internal_oauth = config.internal_oauth.token_cache();
     let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
     let mut last_processed_delivery: Option<String> = None;
 
