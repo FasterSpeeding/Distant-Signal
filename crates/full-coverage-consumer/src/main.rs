@@ -34,7 +34,6 @@
 mod config;
 mod correlate;
 mod feed;
-mod health;
 mod population;
 mod queries;
 mod stanox_tiploc;
@@ -69,7 +68,7 @@ enum ActiveFeed {
     // reads). Updated at the ActiveFeed::next_batch call site below,
     // mirroring KafkaMovementFeed's own internal update
     // (feed/kafka.rs:76-95).
-    RedisStream(Box<RedisStreamMovementFeed>, health::ConnectionState),
+    RedisStream(Box<RedisStreamMovementFeed>, health_http::ConnectionState),
 }
 
 #[async_trait::async_trait]
@@ -79,7 +78,11 @@ impl MovementFeed for ActiveFeed {
             ActiveFeed::Kafka(feed) => feed.next_batch().await,
             ActiveFeed::RedisStream(feed, connection_state) => {
                 let result = feed.next_batch().await;
-                health::set_connected(connection_state, result.is_ok());
+                health_http::set_connected(
+                    connection_state,
+                    "full_coverage_consumer_ready",
+                    result.is_ok(),
+                );
                 result
             }
         }
@@ -112,7 +115,8 @@ async fn main() -> anyhow::Result<()> {
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
-    let connection_state = health::spawn(config.health_bind_url.clone());
+    let connection_state =
+        health_http::spawn(config.health_bind_url.clone(), "connected", "disconnected");
     let http = reqwest::Client::new();
     let internal_oauth = config.internal_oauth.token_cache();
 
