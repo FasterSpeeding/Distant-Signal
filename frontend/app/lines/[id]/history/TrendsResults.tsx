@@ -24,10 +24,10 @@ const SPARSE_FLOOR: Record<TrendGranularity, number> = {
 // to the two new tiers by the same template) -- must not be softened or
 // dropped, same as this file's pre-existing `day` copy.
 const HONESTY_COPY: Record<TrendGranularity, string> = {
-  day: 'Rates shown count each distinct train once per day, based on its status the first time it was seen that day -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Days with too little coverage show as a gap rather than a misleading flat line.',
-  halfHour: 'Rates shown count each distinct train once per half hour, based on its status the first time it was seen that half hour -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Half-hour periods with too little coverage show as a gap rather than a misleading flat line.',
-  hour: 'Rates shown count each distinct train once per hour, based on its status the first time it was seen that hour -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Hours with too little coverage show as a gap rather than a misleading flat line.',
-  sixHour: 'Rates shown count each distinct train once per six-hour period, based on its status the first time it was seen in that period -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Six-hour periods with too little coverage show as a gap rather than a misleading flat line.',
+  day: 'Rates shown count each distinct train once per day, based on its status the first time it was seen that day -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Days with too little coverage show as a gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for days too sparse to trust for a rate -- a low number there is exactly why a day may show as a gap above; it counts each train once, in the day it was first seen, not how many were simultaneously running.',
+  halfHour: 'Rates shown count each distinct train once per half hour, based on its status the first time it was seen that half hour -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Half-hour periods with too little coverage show as a gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for half hours too sparse to trust for a rate -- a low number there is exactly why a half hour may show as a gap above; it counts each train once, in the half hour it was first seen, not how many were simultaneously running.',
+  hour: 'Rates shown count each distinct train once per hour, based on its status the first time it was seen that hour -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Hours with too little coverage show as a gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for hours too sparse to trust for a rate -- a low number there is exactly why an hour may show as a gap above; it counts each train once, in the hour it was first seen, not how many were simultaneously running.',
+  sixHour: 'Rates shown count each distinct train once per six-hour period, based on its status the first time it was seen in that period -- not a share of poll cycles. A train that starts on time and only becomes delayed later while still in view will still show here as on time. Six-hour periods with too little coverage show as a gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for six-hour periods too sparse to trust for a rate -- a low number there is exactly why a period may show as a gap above; it counts each train once, in the period it was first seen, not how many were simultaneously running.',
 };
 
 interface StatsRow {
@@ -149,7 +149,7 @@ export async function TrendsResults({
       {/* order={2}: this sits directly under /lines/[id]/history's only
           h1 ("History: {name}"), with nothing between -- h2 keeps the
           chart titles one level below that h1, with no skip. */}
-      <TrendsCharts points={points} granularity={granularity} order={2} />
+      <TrendsCharts points={points} granularity={granularity} order={2} showVolume />
     </Stack>
   );
 }
