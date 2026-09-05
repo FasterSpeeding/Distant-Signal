@@ -674,6 +674,7 @@ mod route_scoping_tests {
             .expect("construct placeholder oidc client"),
             internal_oauth_verifier: verifier,
             internal_oauth_routes,
+            schedule_crs_line_index: std::collections::HashMap::new(),
         });
 
         (server, app, expected_routes)

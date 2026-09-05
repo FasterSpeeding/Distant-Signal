@@ -45,6 +45,14 @@ pub struct AppState {
     /// carries only that caller's group regardless -- see
     /// `build_internal_oauth_routes`.
     pub internal_oauth_routes: Vec<(&'static str, axum::http::Method, Vec<String>)>,
+    /// CRS -> candidate line_ids, built once here from `config.lines`
+    /// (Decision 2 of
+    /// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md).
+    /// Consulted by `routes::train::post_track` and the periodic
+    /// schedule-match sweep (`main.rs`) -- never mutated after startup,
+    /// same "load once, refresh only on process restart" posture as
+    /// `config.lines` itself already has.
+    pub schedule_crs_line_index: std::collections::HashMap<String, Vec<String>>,
 }
 
 /// Builds `AppState::internal_oauth_routes` from config. Factored out of
@@ -277,6 +285,7 @@ impl std::fmt::Debug for AppState {
             .field("oidc", &"OidcClient { .. }")
             .field("internal_oauth_verifier", &"ServiceTokenVerifier { .. }")
             .field("internal_oauth_routes", &self.internal_oauth_routes)
+            .field("schedule_crs_line_index", &self.schedule_crs_line_index)
             .finish()
     }
 }
@@ -388,6 +397,8 @@ impl AppState {
 
         let internal_oauth_routes = build_internal_oauth_routes(&config);
 
+        let schedule_crs_line_index = crate::data::schedule_matching::crs_to_line_ids(&config.lines);
+
         Ok(Arc::new(Self {
             config,
             database: db,
@@ -395,6 +406,7 @@ impl AppState {
             oidc,
             internal_oauth_verifier,
             internal_oauth_routes,
+            schedule_crs_line_index,
         }))
     }
 }

@@ -660,6 +660,7 @@ mod db_tests {
             )
             .expect("construct placeholder internal-oauth verifier"),
             internal_oauth_routes: Vec::new(),
+            schedule_crs_line_index: std::collections::HashMap::new(),
         })
     }
 
