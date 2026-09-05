@@ -36,7 +36,12 @@ const lineChartMock = vi.fn((props: MockLineChartProps) => (
   />
 ));
 
-vi.mock('@mantine/charts', () => ({ LineChart: (props: MockLineChartProps) => lineChartMock(props) }));
+vi.mock('@mantine/charts', () => ({
+  LineChart: (props: MockLineChartProps) => lineChartMock(props),
+  BarChart: (props: { data: unknown[]; series: { name: string }[] }) => (
+    <div data-testid="bar-chart" data-series={props.series.map((s) => s.name).join(',')} data-points={JSON.stringify(props.data)} />
+  ),
+}));
 
 function halfHourlyRow(overrides: Partial<LineHalfHourlyStats> = {}): LineHalfHourlyStats {
   return {
@@ -64,6 +69,7 @@ describe('toHalfHourlyChartPoints', () => {
       cancellationRate: 0.02,
       skipRate: 0.01,
       avgDelayMinutes: 3.5,
+      total: 100,
       sampleCycles: SPARSE_DATA_FLOOR_CYCLES_HALF_HOURLY,
     });
   });
@@ -75,6 +81,7 @@ describe('toHalfHourlyChartPoints', () => {
     expect(point.cancellationRate).toBeNull();
     expect(point.skipRate).toBeNull();
     expect(point.avgDelayMinutes).toBeNull();
+    expect(point.total).toBe(100); // never nulled, even when sparse
     expect(point.sampleCycles).toBe(SPARSE_DATA_FLOOR_CYCLES_HALF_HOURLY - 1);
     expect(point.bucketKey).toBe('2026-08-31T14:00:00Z');
   });
@@ -153,5 +160,30 @@ describe('HalfHourlyTrendsResults', () => {
 
     expect(screen.getByRole('heading', { name: 'Delay / cancellation / skip rate', level: 3 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Average delay (minutes)', level: 3 })).toBeInTheDocument();
+  });
+
+  it('renders the trains-counted bar chart', async () => {
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([halfHourlyRow({ halfHourStart: '2026-08-31T14:00:00Z', total: 9 })]);
+    renderWithMantine(
+      await HalfHourlyTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
+    );
+    expect(screen.getByRole('heading', { name: 'Trains counted' })).toBeInTheDocument();
+    const barChart = screen.getByTestId('bar-chart');
+    const points = JSON.parse(barChart.dataset.points as string);
+    expect(points[0].total).toBe(9);
+  });
+
+  it('a sparse half hour keeps its real total in the bar chart even though its rate is gapped', async () => {
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([
+      halfHourlyRow({ halfHourStart: '2026-08-31T13:30:00Z', sampleCycles: SPARSE_DATA_FLOOR_CYCLES_HALF_HOURLY - 1, total: 2 }),
+      halfHourlyRow({ halfHourStart: '2026-08-31T14:00:00Z', sampleCycles: 25, total: 30 }),
+    ]);
+    renderWithMantine(
+      await HalfHourlyTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
+    );
+    const barChart = screen.getByTestId('bar-chart');
+    const points = JSON.parse(barChart.dataset.points as string);
+    const sparse = points.find((p: { bucketKey: string }) => p.bucketKey === '2026-08-31T13:30:00Z');
+    expect(sparse.total).toBe(2);
   });
 });

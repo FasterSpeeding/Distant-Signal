@@ -1,6 +1,6 @@
 'use client';
 
-import { LineChart } from '@mantine/charts';
+import { BarChart, LineChart } from '@mantine/charts';
 import { Stack, Title, type TitleOrder } from '@mantine/core';
 import { ReferenceArea } from 'recharts';
 import { formatTime } from '@/lib/dateFormat';
@@ -75,11 +75,18 @@ function referenceAreaBounds(
  * collide two distinct buckets. (Originally `'day' | 'hour'`, for a
  * 1-hour bucket -- renamed to `'halfHour'` alongside the rest of this
  * feature when the bucket size was halved; the collision risk and its
- * fix are unchanged, just at double the bucket count.) */
+ * fix are unchanged, just at double the bucket count.)
+ *
+ * `showVolume` is a third, independent prop: when `true`, an additional
+ * "Trains counted" `<BarChart>` panel renders first, above the rate
+ * chart, reading `points[].total` directly -- see this file's own render
+ * logic and
+ * docs/superpowers/plans/2026-09-05-trend-sample-volume-chart-plan.md. */
 export function TrendsCharts({
   points,
   granularity,
   order,
+  showVolume = false,
 }: {
   points: ChartPoint[];
   granularity: TrendGranularity;
@@ -92,6 +99,15 @@ export function TrendsCharts({
    * pinned at both call sites, so changing the level changes the tag only,
    * never the rendered font size. */
   order: TitleOrder;
+  /** Renders the "Trains counted" bar-chart panel above the rate chart
+   * when `true`. Defaults to `false` -- only the two LDBWS-sample-backed
+   * callers (`TrendsResults`, `HalfHourlyTrendsResults`) pass `true`. The
+   * full-coverage callers (`CoverageTrendsResults`,
+   * `HalfHourlyCoverageTrendsResults`) deliberately do not, since that
+   * rollup's `total` isn't deduplicated yet -- see
+   * docs/superpowers/plans/2026-09-05-trend-sample-volume-chart-plan.md's
+   * "Scope decision: full-coverage". */
+  showVolume?: boolean;
 }) {
   const xAxisProps = {
     padding: { right: 12 },
@@ -100,6 +116,29 @@ export function TrendsCharts({
 
   return (
     <>
+      {showVolume && (
+        <Stack gap={4}>
+          <Title order={order} size="h6">
+            Trains counted
+          </Title>
+          {/* Single flat series, never a stack of delayed/cancelled/skipped
+              against total -- those three are independently-computed,
+              overlapping filters over total (crates/common/src/lib.rs's
+              compute_sample_stats), not a partition of it; stacking them
+              would visually exceed total and mislead. No gapSpans/
+              ReferenceArea here (unlike the two panels below): `total` is
+              never null for a bucket with a real row -- see this plan's
+              "Judgment call" section for why a low bar for a sparse bucket
+              is the informative signal, not something to hide. */}
+          <BarChart
+            h={180}
+            data={points}
+            dataKey="bucketKey"
+            series={[{ name: 'total', label: 'Trains counted', color: 'teal.6' }]}
+            xAxisProps={xAxisProps}
+          />
+        </Stack>
+      )}
       <Stack gap={4}>
         <Title order={order} size="h6">
           Delay / cancellation / skip rate

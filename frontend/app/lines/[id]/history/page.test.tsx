@@ -22,6 +22,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 // convention is not to assert on Recharts' SVG output.
 vi.mock('@mantine/charts', () => ({
   LineChart: () => <div data-testid="line-chart" />,
+  BarChart: () => <div data-testid="bar-chart" />,
 }));
 
 function report(id: string, name: string): LineStatusReport {

@@ -48,6 +48,9 @@ vi.mock('@mantine/charts', () => ({
   LineChart: (props: { data: unknown[]; series: { name: string }[] }) => (
     <div data-testid="line-chart" data-series={props.series.map((series) => series.name).join(',')} />
   ),
+  BarChart: (props: { data: unknown[]; series: { name: string }[] }) => (
+    <div data-testid="bar-chart" data-series={props.series.map((series) => series.name).join(',')} />
+  ),
 }));
 
 function report(id: string, name: string): LineStatusReport {

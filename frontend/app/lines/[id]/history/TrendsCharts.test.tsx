@@ -11,6 +11,9 @@ vi.mock('@mantine/charts', () => ({
       data-has-tick-formatter={String(typeof props.xAxisProps?.tickFormatter === 'function')}
     />
   ),
+  BarChart: (props: { data: unknown[]; series: { name: string }[] }) => (
+    <div data-testid="bar-chart" data-series={props.series.map((s) => s.name).join(',')} data-points={JSON.stringify(props.data)} />
+  ),
 }));
 
 function point(bucketKey: string, delayRate: number | null) {
@@ -124,7 +127,7 @@ describe('gapSpans (half-hourly buckets)', () => {
 
 describe('TrendsCharts granularity prop', () => {
   const points: ChartPoint[] = [
-    { bucketKey: '2026-08-01T12:00:00Z', delayRate: 0.1, cancellationRate: 0, skipRate: 0, avgDelayMinutes: 1, sampleCycles: 50 },
+    { bucketKey: '2026-08-01T12:00:00Z', delayRate: 0.1, cancellationRate: 0, skipRate: 0, avgDelayMinutes: 1, total: 42, sampleCycles: 50 },
   ];
 
   it.each(['halfHour', 'hour', 'sixHour'] as const)(
@@ -138,5 +141,36 @@ describe('TrendsCharts granularity prop', () => {
   it('gives the x-axis no tickFormatter for the day granularity', () => {
     renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} />);
     expect(screen.getAllByTestId('line-chart')[0]).toHaveAttribute('data-has-tick-formatter', 'false');
+  });
+});
+
+describe('TrendsCharts showVolume prop', () => {
+  const points: ChartPoint[] = [
+    { bucketKey: '2026-08-01T12:00:00Z', delayRate: 0.1, cancellationRate: 0, skipRate: 0, avgDelayMinutes: 1, total: 42, sampleCycles: 50 },
+  ];
+
+  it('does not render the bar chart by default', () => {
+    renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} />);
+    expect(screen.queryByTestId('bar-chart')).not.toBeInTheDocument();
+  });
+
+  it('renders the bar chart, reading total, when showVolume is true', () => {
+    renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} showVolume />);
+    const barChart = screen.getByTestId('bar-chart');
+    expect(barChart).toHaveAttribute('data-series', 'total');
+    const barPoints = JSON.parse(barChart.dataset.points as string);
+    expect(barPoints[0].total).toBe(42);
+  });
+
+  it('renders the bar chart above (before) the rate line chart in document order', () => {
+    renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} showVolume />);
+    const barChart = screen.getByTestId('bar-chart');
+    const lineCharts = screen.getAllByTestId('line-chart');
+    expect(barChart.compareDocumentPosition(lineCharts[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('still renders the two rate/delay line charts unchanged when showVolume is true', () => {
+    renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} showVolume />);
+    expect(screen.getAllByTestId('line-chart')).toHaveLength(2);
   });
 });

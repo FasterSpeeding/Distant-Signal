@@ -27,7 +27,12 @@ const lineChartMock = vi.fn((props: MockLineChartProps) => (
   />
 ));
 
-vi.mock('@mantine/charts', () => ({ LineChart: (props: MockLineChartProps) => lineChartMock(props) }));
+vi.mock('@mantine/charts', () => ({
+  LineChart: (props: MockLineChartProps) => lineChartMock(props),
+  BarChart: (props: { data: unknown[]; series: { name: string }[] }) => (
+    <div data-testid="bar-chart" data-series={props.series.map((s) => s.name).join(',')} data-points={JSON.stringify(props.data)} />
+  ),
+}));
 
 function dailyRow(overrides: Partial<LineDailyStats> = {}): LineDailyStats {
   return {
@@ -67,6 +72,7 @@ describe('toChartPoints (generic)', () => {
       cancellationRate: 0.02,
       skipRate: 0.01,
       avgDelayMinutes: 3.5,
+      total: 100,
       sampleCycles: 20,
     });
   });
@@ -78,6 +84,7 @@ describe('toChartPoints (generic)', () => {
     expect(point.cancellationRate).toBeNull();
     expect(point.skipRate).toBeNull();
     expect(point.avgDelayMinutes).toBeNull();
+    expect(point.total).toBe(100); // never nulled, even when sparse
     expect(point.sampleCycles).toBe(19);
   });
 });
@@ -160,5 +167,45 @@ describe('TrendsResults', () => {
     const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
     const points = JSON.parse(rateChart!.dataset.points as string);
     expect(points[0].delayRate).toBeNull();
+  });
+
+  it('renders the trains-counted bar chart for the default day granularity', async () => {
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([dailyRow({ day: '2026-08-01', total: 42 })]);
+    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
+    expect(screen.getByRole('heading', { name: 'Trains counted' })).toBeInTheDocument();
+  });
+
+  it('a sparse day still shows its real total in the bar chart while its rate is a gap', async () => {
+    vi.mocked(api.getLineDailyStats).mockResolvedValue([
+      dailyRow({ day: '2026-08-01', sampleCycles: 19, total: 3 }),
+      dailyRow({ day: '2026-08-02', sampleCycles: 500, total: 150 }),
+    ]);
+    renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
+
+    const barChart = screen.getByTestId('bar-chart');
+    const points = JSON.parse(barChart.dataset.points as string);
+    const sparseDay = points.find((point: { bucketKey: string }) => point.bucketKey === '2026-08-01');
+    expect(sparseDay.total).toBe(3); // real value, never hidden or zeroed
+
+    const charts = screen.getAllByTestId('line-chart');
+    const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
+    const ratePoints = JSON.parse(rateChart!.dataset.points as string);
+    const sparseRatePoint = ratePoints.find((point: { bucketKey: string }) => point.bucketKey === '2026-08-01');
+    expect(sparseRatePoint.delayRate).toBeNull(); // rate IS gapped for the same bucket
+  });
+
+  it.each([
+    ['halfHour', 'getLineHalfHourlyStats', halfHourlyRow] as const,
+    ['hour', 'getLineHourlyStats', hourlyRow] as const,
+    ['sixHour', 'getLineSixHourlyStats', sixHourlyRow] as const,
+  ])('renders the trains-counted bar chart for the %s granularity too', async (granularity, fnName, rowFactory) => {
+    const mockFn = vi.mocked(api[fnName as keyof typeof api]) as unknown as ReturnType<typeof vi.fn>;
+    mockFn.mockResolvedValue([rowFactory({ total: 7 })]);
+    renderWithMantine(
+      await TrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z', granularity }),
+    );
+    const barChart = screen.getByTestId('bar-chart');
+    const points = JSON.parse(barChart.dataset.points as string);
+    expect(points[0].total).toBe(7);
   });
 });

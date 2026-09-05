@@ -31,6 +31,7 @@ export function toHalfHourlyCoverageChartPoints(stats: LineHalfHourlyCoverageSta
       cancellationRate: sparse ? null : row.cancellationRate,
       skipRate: sparse ? null : row.skipRate,
       avgDelayMinutes: sparse ? null : row.avgDelayMinutes,
+      total: row.total,
       sampleCycles: row.resolvedWindows,
     };
   });
