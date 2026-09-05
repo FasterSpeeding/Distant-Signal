@@ -60,12 +60,20 @@ pub fn router() -> Router {
             axum::routing::post(post_attach_ticket),
         )
         .route(
+            "/Train/tickets/{ticket_id}/name",
+            axum::routing::post(post_ticket_name),
+        )
+        .route(
             "/Train/tickets/{ticket_id}",
             axum::routing::delete(delete_ticket),
         )
         .route(
             "/Train/{tracking_id}",
             axum::routing::get(get_by_tracking_id).delete(delete_tracked_train),
+        )
+        .route(
+            "/Train/{tracking_id}/name",
+            axum::routing::post(post_tracked_train_name),
         )
         .route(
             "/Train/by-uid/{train_uid}/{date}",
@@ -108,6 +116,24 @@ struct TrackPinResponse {
 #[serde(rename_all = "camelCase")]
 struct TicketCreatedResponse {
     ticket_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameRequest {
+    /// Absent, JSON `null`, or an empty/whitespace-only string all mean
+    /// "clear the custom name" -- see `train_tracking::validate_custom_name`.
+    #[serde(default)]
+    custom_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameResponse {
+    /// The normalized value actually stored -- `None` if the name was
+    /// cleared, `Some(trimmed)` otherwise. Never echoes back an
+    /// un-normalized value the caller sent.
+    custom_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -278,6 +304,36 @@ async fn delete_ticket(
         return Err((StatusCode::NOT_FOUND, "no ticket with that id".to_string()));
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /Train/tickets/{ticketId}/name` -- sets or clears a ticket's
+/// display name. Same shape as `post_tracked_train_name` below, against
+/// `train_tracking::rename_ticket` instead. Deliberately flat
+/// (`/Train/tickets/{ticket_id}/name`, not nested under a
+/// `{tracking_id}`), matching `delete_ticket`'s own reasoning immediately
+/// above it: a ticket may have no owning tracked train at all (a
+/// STANDALONE ticket), so a route shape requiring a `tracking_id` in its
+/// path cannot express renaming one.
+async fn post_ticket_name(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(ticket_id): Path<i64>,
+    Json(body): Json<RenameRequest>,
+) -> Result<Json<RenameResponse>, (StatusCode, String)> {
+    let normalized = train_tracking::validate_custom_name(body.custom_name.as_deref())
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
+    let renamed =
+        train_tracking::rename_ticket(&app.database, ticket_id, &user.id, normalized.as_deref())
+            .await
+            .map_err(internal_error("rename ticket"))?;
+    if !renamed {
+        return Err((StatusCode::NOT_FOUND, "no ticket with that id".to_string()));
+    }
+
+    Ok(Json(RenameResponse {
+        custom_name: normalized,
+    }))
 }
 
 async fn get_tickets(
@@ -466,6 +522,44 @@ async fn delete_tracked_train(
         ));
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /Train/{trackingId}/name` -- sets or clears a tracked train's
+/// display name. `POST` to a narrow `/name` sub-path, not `PATCH` or a
+/// bare `PUT /Train/{trackingId}`: this router has zero existing `PATCH`
+/// routes, and every other narrow single-field mutation here (e.g.
+/// `POST /Train/tickets/{ticket_id}/attach`) already follows this exact
+/// shape -- see this plan's Judgment Call 2 for the full reasoning.
+/// Ownership is folded directly into `train_tracking::rename_tracked_train`'s
+/// own `WHERE id = $1 AND user_id = $2` -- same 404-never-403 convention as
+/// `delete_tracked_train` immediately above.
+async fn post_tracked_train_name(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(tracking_id): Path<i64>,
+    Json(body): Json<RenameRequest>,
+) -> Result<Json<RenameResponse>, (StatusCode, String)> {
+    let normalized = train_tracking::validate_custom_name(body.custom_name.as_deref())
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
+    let renamed = train_tracking::rename_tracked_train(
+        &app.database,
+        tracking_id,
+        &user.id,
+        normalized.as_deref(),
+    )
+    .await
+    .map_err(internal_error("rename tracked train"))?;
+    if !renamed {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no tracked train with that id".to_string(),
+        ));
+    }
+
+    Ok(Json(RenameResponse {
+        custom_name: normalized,
+    }))
 }
 
 async fn get_by_uid_and_date(
@@ -1384,6 +1478,153 @@ mod db_tests {
         );
 
         cleanup_user(&pool, "TEST-ATTACH-CONFLICT").await;
+    }
+
+    // --- post_tracked_train_name / post_ticket_name -------------------------
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_tracked_train_name -- --ignored --test-threads=1`"]
+    async fn post_tracked_train_name_the_owner_can_rename_and_clear() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-RENAME-TRAIN-OWNER").await;
+        let router = test_router(test_app(pool.clone()));
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-ROUTE-RENAME-TRAIN-OWNER",
+            None,
+            "2026-09-05".parse().unwrap(),
+        )
+        .await;
+
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Train/{tracking_id}/name"),
+            Some(&token),
+            serde_json::json!({ "customName": "  My commute  " }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "rename response: {body:?}");
+        assert_eq!(
+            body.get("customName").and_then(Value::as_str),
+            Some("My commute")
+        );
+
+        let (status, body) = post_json(
+            router,
+            format!("/Train/{tracking_id}/name"),
+            Some(&token),
+            serde_json::json!({ "customName": null }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "clear response: {body:?}");
+        assert_eq!(body.get("customName"), Some(&Value::Null));
+
+        cleanup_user(&pool, "TEST-ROUTE-RENAME-TRAIN-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_tracked_train_name -- --ignored --test-threads=1`"]
+    async fn post_tracked_train_name_a_tracked_train_owned_by_someone_else_is_404_not_403() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-RENAME-TRAIN-BYSTANDER").await;
+        seed_session(&pool, "TEST-ROUTE-RENAME-TRAIN-REAL-OWNER").await;
+        let router = test_router(test_app(pool.clone()));
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-ROUTE-RENAME-TRAIN-REAL-OWNER",
+            None,
+            "2026-09-05".parse().unwrap(),
+        )
+        .await;
+
+        let (status, body) = post_json(
+            router,
+            format!("/Train/{tracking_id}/name"),
+            Some(&owner_token),
+            serde_json::json!({ "customName": "Hijacked" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body,
+            Value::String("no tracked train with that id".to_string())
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-RENAME-TRAIN-BYSTANDER").await;
+        cleanup_user(&pool, "TEST-ROUTE-RENAME-TRAIN-REAL-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_tracked_train_name -- --ignored --test-threads=1`"]
+    async fn post_tracked_train_name_a_too_long_name_is_400() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-RENAME-TRAIN-TOOLONG").await;
+        let router = test_router(test_app(pool.clone()));
+        let tracking_id = seed_tracked_train(
+            &pool,
+            "TEST-ROUTE-RENAME-TRAIN-TOOLONG",
+            None,
+            "2026-09-05".parse().unwrap(),
+        )
+        .await;
+
+        let (status, body) = post_json(
+            router,
+            format!("/Train/{tracking_id}/name"),
+            Some(&token),
+            serde_json::json!({ "customName": "a".repeat(101) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.as_str().is_some_and(|s| !s.contains('_')),
+            "400 body leaked an identifier: {body:?}"
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-RENAME-TRAIN-TOOLONG").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_ticket_name -- --ignored --test-threads=1`"]
+    async fn post_ticket_name_the_owner_can_rename_a_standalone_ticket() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-RENAME-TICKET-OWNER").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Train/tickets".to_string(),
+            Some(&token),
+            serde_json::json!({ "source": "manual" }),
+        )
+        .await;
+        let ticket_id = created
+            .get("ticketId")
+            .and_then(Value::as_i64)
+            .expect("ticketId present");
+
+        let (status, body) = post_json(
+            router,
+            format!("/Train/tickets/{ticket_id}/name"),
+            Some(&token),
+            serde_json::json!({ "customName": "Mum's ticket to Leeds" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "rename response: {body:?}");
+        assert_eq!(
+            body.get("customName").and_then(Value::as_str),
+            Some("Mum's ticket to Leeds")
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-RENAME-TICKET-OWNER").await;
     }
 
     // --- get_by_tracking_id -------------------------------------------------
