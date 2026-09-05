@@ -1,7 +1,10 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import {
+  Chip,
+  ChipGroup,
+  Group,
   Stack,
   Table,
   TableThead,
@@ -19,6 +22,7 @@ import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
 import { worstStatus, severityRank } from '@/lib/severity';
 import { cancelledPercent, formatSampleSummary, representativeStatus, sampleUnavailableReason } from '@/lib/sampleStats';
+import { countryForReport, type Country } from '@/lib/modes';
 import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
 type SortField = 'name' | 'status' | 'avgDelay' | 'cancelled';
@@ -62,6 +66,23 @@ export function expandOperatorForFiltering(operator: string): string[] {
   return operator === 'TfL' ? [operator, ...TFL_ADJACENT_OPERATORS] : [operator];
 }
 
+const COUNTRY_LABELS: Record<Country, string> = {
+  Gb: 'GB',
+  NorthernIreland: 'Northern Ireland',
+  RepublicOfIreland: 'Republic of Ireland',
+};
+
+/** Mirrors `chipRowLabel` in `components/IssueList.tsx:131-133` --
+ * duplicated rather than imported since that function isn't exported and
+ * this is a one-line, component-local concern in both places (same as
+ * `expandOperatorForFiltering` being its own component-local helper
+ * rather than shared). States explicitly that an empty selection filters
+ * nothing, not "filters to nothing" -- the exact confusion that file's own
+ * comment names. */
+function countryChipLabel(selected: number): string {
+  return selected === 0 ? 'Country — showing all' : `Country — ${selected} selected`;
+}
+
 export function AllLinesTable({
   lines,
   reports,
@@ -74,7 +95,9 @@ export function AllLinesTable({
   tocs: Suggestion[];
 }) {
   const [selectedOperators, setSelectedOperators] = useState<string[]>([]);
+  const [selectedCountries, setSelectedCountries] = useState<Country[]>([]);
   const [sort, setSort] = useState<SortState | null>(null);
+  const countryLabelId = useId();
 
   const reportsById = useMemo(() => new Map(reports.map((report) => [report.id, report])), [reports]);
   const pinnedSet = useMemo(() => new Set(pinnedLineIds), [pinnedLineIds]);
@@ -109,19 +132,43 @@ export function AllLinesTable({
         // disagree.
         const stats = representative?.fullCoverageStats ?? representative?.sampleStats;
         const cancelledPct = cancelledPercent(stats);
-        return { line, worst, stats, cancelledPct, representative };
+        // A line with no report at all has no modeName to derive a country
+        // from; every such line today is GB by construction (see
+        // docs/superpowers/plans/2026-09-05-country-filtering-plan.md
+        // Judgment Call 3 -- no non-GB LineSummary is reachable through
+        // GET /public/lines yet), so it defaults the same way
+        // countryForReport itself defaults an unrecognised modeName.
+        const country: Country = report ? countryForReport(report) : 'Gb';
+        return { line, worst, stats, cancelledPct, representative, country };
       }),
     [lines, reportsById],
   );
 
+  // Mirrors operatorOptions's own "derive the option set from what's
+  // actually present" pattern above, over `rows` rather than raw `lines`
+  // since country is only knowable once a line is joined to its report.
+  // This is also this feature's self-hiding gate (Decision 4/5): a length
+  // of 1 (today, always exactly ['Gb']) means the filter control below does
+  // not render at all.
+  const countryOptions = useMemo(() => Array.from(new Set(rows.map((row) => row.country))).sort(), [rows]);
+
   const filteredRows = useMemo(() => {
-    if (selectedOperators.length === 0) return rows;
-    // Expand the selection (e.g. "TfL" -> "TfL"/"LO"/"XR"), not each row's
-    // own `operators` -- the option list and a line's own displayed code
-    // must stay exact, only what a selection matches against widens.
-    const expandedSelection = new Set(selectedOperators.flatMap(expandOperatorForFiltering));
-    return rows.filter((row) => row.line.operators.some((op) => expandedSelection.has(op)));
-  }, [rows, selectedOperators]);
+    let result = rows;
+    if (selectedOperators.length > 0) {
+      // Expand the selection (e.g. "TfL" -> "TfL"/"LO"/"XR"), not each row's
+      // own `operators` -- the option list and a line's own displayed code
+      // must stay exact, only what a selection matches against widens.
+      const expandedSelection = new Set(selectedOperators.flatMap(expandOperatorForFiltering));
+      result = result.filter((row) => row.line.operators.some((op) => expandedSelection.has(op)));
+    }
+    // AND-combined with the operator filter, not folded into it (Decision
+    // 4): operator and country answer different questions, and a line has
+    // exactly one country but potentially several operators.
+    if (selectedCountries.length > 0) {
+      result = result.filter((row) => selectedCountries.includes(row.country));
+    }
+    return result;
+  }, [rows, selectedOperators, selectedCountries]);
 
   // Missing values (no report, no sample stats) always sort to the end,
   // regardless of direction -- flipping direction shouldn't make "unknown"
@@ -176,6 +223,32 @@ export function AllLinesTable({
         clearable
         clearButtonProps={{ 'aria-label': 'Clear operator filter' }}
       />
+      {/* Self-hiding per Decision 4/5: with fewer than two countries present
+          (today, always exactly ['Gb']) there is nothing meaningful to
+          filter by, and a one-option control is worse than no control at
+          all -- see
+          docs/superpowers/specs/2026-09-05-country-filtering-design.md §5. */}
+      {countryOptions.length > 1 && (
+        <Stack gap={4}>
+          <Text id={countryLabelId} size="xs" fw={600} c="dimmed">
+            {countryChipLabel(selectedCountries.length)}
+          </Text>
+          <ChipGroup multiple value={selectedCountries} onChange={(value) => setSelectedCountries(value as Country[])}>
+            <Group gap="xs" role="group" aria-labelledby={countryLabelId}>
+              {countryOptions.map((country) => (
+                <Chip
+                  key={country}
+                  value={country}
+                  size="xs"
+                  variant={selectedCountries.includes(country) ? 'filled' : 'outline'}
+                >
+                  {COUNTRY_LABELS[country]}
+                </Chip>
+              ))}
+            </Group>
+          </ChipGroup>
+        </Stack>
+      )}
       <Table>
         {/* Flat `TableThead`/`TableTr`/... named exports, not the
             `Table.Thead` dot-notation compound API -- kept consistent with
