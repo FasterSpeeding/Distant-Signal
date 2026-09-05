@@ -59,6 +59,7 @@ function trackedTrainState(overrides: Partial<TrackedTrainState> = {}): TrackedT
     etaNext: null,
     etaSource: null,
     ...overrides,
+    customName: overrides.customName ?? null,
   };
 }
 

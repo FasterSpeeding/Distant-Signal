@@ -37,6 +37,7 @@ function train(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListI
     delayMinutes: 4,
     trackedAt: '2026-08-31T12:00:00Z',
     ...overrides,
+    customName: overrides.customName ?? null,
   };
 }
 
@@ -64,6 +65,7 @@ function ticket(overrides: Partial<TicketListItem> = {}): TicketListItem {
     claimUrl: 'https://delayrepay.lner.co.uk/delayrepayV2/',
     disclaimer: 'This is a rough, community-sourced estimate...',
     ...overrides,
+    customName: overrides.customName ?? null,
   };
 }
 
@@ -226,14 +228,14 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     ]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText('London Waterloo (WAT) → Woking (WOK)')).toBeInTheDocument();
+    expect(screen.getByText(/London Waterloo \(WAT\) → Woking \(WOK\)/)).toBeInTheDocument();
   });
 
   it('falls back to the bare code, not "null" or an empty label, when a name did not resolve', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ pinOriginName: null, pinDestinationName: null })]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText('WAT → WOK')).toBeInTheDocument();
+    expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
     expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
   });
 

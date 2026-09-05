@@ -4,7 +4,9 @@ import { getTrackedTrainByUidAndDate, ApiNotFoundError, ApiUnauthorizedError } f
 import { TrainJourney } from '@/components/TrainJourney';
 import { TicketPanel } from '@/components/TicketPanel';
 import { DeleteTrainButton } from '@/components/DeleteTrainButton';
+import { RenameTrainButton } from '@/components/RenameTrainButton';
 import { LoginLink } from '@/components/LoginLink';
+import { trackedTrainDisplayName } from '@/lib/trackingName';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -52,7 +54,14 @@ export default async function TrackedTrainByUidPage({
     <Stack p="lg" gap="md">
       <Group justify="space-between">
         <Title order={1}>Train {uid}</Title>
-        <DeleteTrainButton trackingId={state.id} />
+        <Group gap="xs">
+          <RenameTrainButton
+            trackingId={state.id}
+            customName={state.customName}
+            defaultName={trackedTrainDisplayName(state)}
+          />
+          <DeleteTrainButton trackingId={state.id} />
+        </Group>
       </Group>
       <TrainJourney state={state} />
       <TicketPanel trackingId={state.id} />

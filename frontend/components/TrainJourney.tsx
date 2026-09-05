@@ -1,7 +1,6 @@
 import { Alert, Badge, Group, Loader, Stack, Text } from '@mantine/core';
 import { EtaBadge } from './EtaBadge';
-import { formatDate } from '@/lib/dateFormat';
-import { routeLabel } from '@/lib/stationLabel';
+import { trackedTrainDisplayName } from '@/lib/trackingName';
 import type { TrackedTrainState } from '@/lib/types';
 
 /** Renders one `TrackedTrainState` through every state the backend can
@@ -10,16 +9,15 @@ import type { TrackedTrainState } from '@/lib/types';
  * Decision 3's table. Shared by both `/train/by-id/[trackingId]` and
  * `/train/[uid]/[date]`.
  *
- * Note on the pin summary shown for `pending`/`unresolved`: this renders
- * origin, destination, and service *date* only -- `TrackedTrainState` has
- * no scheduled-departure clock-time field (see this component's own
- * module in the implementation plan for why), so this does not claim to
- * show a scheduled time the backend doesn't return. */
+ * The pin summary shown for `pending`/`unresolved` is `trackedTrainDisplayName`
+ * -- the user's own custom name if they set one, otherwise the same
+ * route + date default this rendered directly before custom names existed
+ * (`TrackedTrainState` has no scheduled-departure clock-time field, so this
+ * still never claims to show a scheduled time the backend doesn't return). */
 export function TrainJourney({ state }: { state: TrackedTrainState }) {
   const pinSummary = (
     <Text size="sm" c="dimmed">
-      {routeLabel(state.pinOriginCrs, state.pinOriginName, state.pinDestinationCrs, state.pinDestinationName)} ·{' '}
-      {formatDate(state.serviceDate)}
+      {trackedTrainDisplayName(state)}
     </Text>
   );
 

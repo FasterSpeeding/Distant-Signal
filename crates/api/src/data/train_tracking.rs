@@ -5,7 +5,10 @@
 //! testable without a database.
 
 use chrono::{DateTime, Utc};
-use common::{TicketEntryRequest, TrackPinRequest, TrackedTrainRef, TrainMovementEventMessage};
+use common::{
+    CUSTOM_NAME_MAX_LENGTH, TicketEntryRequest, TrackPinRequest, TrackedTrainRef,
+    TrainMovementEventMessage,
+};
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -145,6 +148,102 @@ pub fn validate_ticket_entry(entry: &TicketEntryRequest) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// Normalizes a raw `customName` request field into what should actually be
+/// written: `None` if the field was absent/JSON-`null`, or if what's left
+/// after trimming is empty (this is "clear the custom name," not an error —
+/// see the design spec's Decision 1), or `Some(trimmed)` otherwise, bounded
+/// by [`CUSTOM_NAME_MAX_LENGTH`]. Both rename routes (`crates/api/src/routes/train.rs`)
+/// call this before writing, so the trim-and-normalize step lives in exactly
+/// one place rather than being duplicated between the tracked-train and
+/// ticket routes. Same user-facing-copy posture as [`validate_pin`]'s doc
+/// comment: this message is rendered verbatim in `RenameTrainButton`/
+/// `RenameTicketButton`'s error text, so it carries no internal field names.
+pub fn validate_custom_name(name: Option<&str>) -> Result<Option<String>, String> {
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > CUSTOM_NAME_MAX_LENGTH {
+        return Err(format!(
+            "That name is too long — custom names can be at most {CUSTOM_NAME_MAX_LENGTH} \
+             characters."
+        ));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+#[cfg(test)]
+mod custom_name_tests {
+    use super::*;
+
+    #[test]
+    fn a_well_formed_name_is_trimmed_and_kept() {
+        assert_eq!(
+            validate_custom_name(Some("  My commute  ")),
+            Ok(Some("My commute".to_string()))
+        );
+    }
+
+    #[test]
+    fn none_input_is_kept_as_none() {
+        // JSON `customName` omitted or explicitly `null` -- the route's
+        // Option<String> deserializes both to None.
+        assert_eq!(validate_custom_name(None), Ok(None));
+    }
+
+    #[test]
+    fn an_empty_string_clears_rather_than_errors() {
+        assert_eq!(validate_custom_name(Some("")), Ok(None));
+    }
+
+    #[test]
+    fn a_whitespace_only_string_clears_rather_than_errors() {
+        // Decision 1's own guard: whitespace-only can't masquerade as "a
+        // custom name is set" and permanently hide the useful default.
+        assert_eq!(validate_custom_name(Some("   ")), Ok(None));
+    }
+
+    #[test]
+    fn exactly_at_the_cap_is_accepted() {
+        let name = "a".repeat(CUSTOM_NAME_MAX_LENGTH);
+        assert_eq!(validate_custom_name(Some(&name)), Ok(Some(name)));
+    }
+
+    #[test]
+    fn one_over_the_cap_is_rejected() {
+        let name = "a".repeat(CUSTOM_NAME_MAX_LENGTH + 1);
+        assert!(validate_custom_name(Some(&name)).is_err());
+    }
+
+    #[test]
+    fn the_cap_counts_unicode_scalar_values_not_bytes() {
+        // "café" x 25 = 100 chars but more than 100 UTF-8 bytes (each 'é' is
+        // 2 bytes) -- proves this counts chars(), not len(), matching the
+        // "100 characters" wording in the error message.
+        let name = "café".repeat(25);
+        assert_eq!(name.chars().count(), 100);
+        assert!(name.len() > 100);
+        assert_eq!(validate_custom_name(Some(&name)), Ok(Some(name)));
+    }
+
+    #[test]
+    fn validation_messages_carry_no_internal_field_names() {
+        // Same guard as validate_pin's/validate_ticket_entry's own tests --
+        // this 400 body is rendered verbatim by RenameTrainButton/
+        // RenameTicketButton's error text.
+        let name = "a".repeat(CUSTOM_NAME_MAX_LENGTH + 1);
+        let message = validate_custom_name(Some(&name)).unwrap_err();
+        assert!(!message.is_empty());
+        assert!(
+            !message.contains('_'),
+            "user-facing copy leaked an identifier: {message}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -392,6 +491,7 @@ pub struct TrackedTrainState {
     pub next_calling_point: Option<String>,
     pub eta_next: Option<DateTime<Utc>>,
     pub eta_source: Option<String>,
+    pub custom_name: Option<String>,
 }
 
 // `LEFT JOIN`, never `JOIN`: a CRS with no reference row (a code the
@@ -410,7 +510,8 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
            so.name AS pin_origin_name, sd.name AS pin_destination_name, \
            tt.resolution_status, tt.train_uid, tt.train_id, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
-           cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source \
+           cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source, \
+           tt.custom_name \
     FROM tracked_trains tt \
     LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
     LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
@@ -443,6 +544,7 @@ pub struct TrackedTrainListItem {
     pub status: Option<String>,
     pub delay_minutes: Option<i32>,
     pub tracked_at: DateTime<Utc>,
+    pub custom_name: Option<String>,
 }
 
 /// A user's own tracked trains, most-recently-tracked first (`tracked_at
@@ -469,7 +571,7 @@ pub async fn list_tracked_trains_for_user(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 tt.pin_scheduled_departure, tt.resolution_status, tt.train_uid, \
-                cs.status, cs.delay_minutes, tt.tracked_at \
+                cs.status, cs.delay_minutes, tt.tracked_at, tt.custom_name \
          FROM tracked_trains tt \
          LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
          LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
@@ -537,6 +639,36 @@ pub async fn delete_tracked_train(pool: &PgPool, id: i64, user_id: &str) -> anyh
         .bind(user_id)
         .execute(pool)
         .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Renames (or clears, if `custom_name` is `None`) a tracked train's
+/// display name, scoped to the caller's ownership -- same
+/// `WHERE id = $1 AND user_id = $2` shape as [`delete_tracked_train`]
+/// immediately above, folded directly into the `UPDATE` rather than a
+/// separate ownership lookup first. Returns `true` if a row was updated,
+/// `false` if no tracked train with that id belongs to this caller
+/// (doesn't exist, or belongs to someone else -- indistinguishable at this
+/// layer, same as every other ownership check in this file; the route
+/// handler maps `false` to `404`, never `403`). The caller
+/// (`crate::routes::train::post_tracked_train_name`) is responsible for
+/// having already run `custom_name` through [`validate_custom_name`] --
+/// this function does no validation of its own, matching
+/// `attach_ticket_to_tracked_train`'s own "route validates, data layer
+/// writes" division of responsibility.
+pub async fn rename_tracked_train(
+    pool: &PgPool,
+    id: i64,
+    user_id: &str,
+    custom_name: Option<&str>,
+) -> anyhow::Result<bool> {
+    let result =
+        sqlx::query("UPDATE tracked_trains SET custom_name = $1 WHERE id = $2 AND user_id = $3")
+            .bind(custom_name)
+            .bind(id)
+            .bind(user_id)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -724,6 +856,7 @@ pub struct TrackedTrainTicket {
     pub destination_name: Option<String>,
     pub source: String,
     pub created_at: DateTime<Utc>,
+    pub custom_name: Option<String>,
 }
 
 // `format!`ed into two callers below (`list_tickets_for_tracked_train`,
@@ -732,7 +865,8 @@ pub struct TrackedTrainTicket {
 // must qualify its columns -- see both callers.
 const TICKET_SELECT: &str = "\
     SELECT t.id, t.tracked_train_id, t.operator, t.ticket_type, t.origin_crs, t.destination_crs, \
-           so.name AS origin_name, sd.name AS destination_name, t.source, t.created_at \
+           so.name AS origin_name, sd.name AS destination_name, t.source, t.created_at, \
+           t.custom_name \
     FROM tracked_train_tickets t \
     LEFT JOIN stations so ON so.crs = UPPER(t.origin_crs) \
     LEFT JOIN stations sd ON sd.crs = UPPER(t.destination_crs)";
@@ -803,6 +937,32 @@ pub async fn delete_ticket(pool: &PgPool, ticket_id: i64, user_id: &str) -> anyh
     Ok(result.rows_affected() > 0)
 }
 
+/// Renames (or clears) a ticket's display name, scoped to the caller's
+/// ownership -- mirrors [`rename_tracked_train`] exactly, and
+/// [`delete_ticket`]'s own `WHERE id = $1 AND user_id = $2` shape
+/// immediately above it (no join needed, per this table's own
+/// ownership-redundancy design -- see [`delete_ticket`]'s doc comment).
+/// Applies identically whether the ticket is attached or standalone, same
+/// as `delete_ticket`. Returns `true`/`false` with the same "doesn't
+/// exist, or isn't yours -- 404, never 403" contract as
+/// [`rename_tracked_train`].
+pub async fn rename_ticket(
+    pool: &PgPool,
+    ticket_id: i64,
+    user_id: &str,
+    custom_name: Option<&str>,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE tracked_train_tickets SET custom_name = $1 WHERE id = $2 AND user_id = $3",
+    )
+    .bind(custom_name)
+    .bind(ticket_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Caps `list_tickets_for_user`'s response size. No retention/pruning job
 /// exists anywhere in this codebase for `tracked_train_tickets` either
 /// (grepped for `prune`/`retention`/`expire`/`DELETE FROM tracked_train_tickets`
@@ -850,6 +1010,7 @@ struct TicketListRow {
     train_uid: Option<String>,
     status: Option<String>,
     delay_minutes: Option<i32>,
+    custom_name: Option<String>,
 }
 
 /// A user's own tickets, across every tracked train they have -- the
@@ -902,6 +1063,7 @@ pub struct TicketListItem {
     pub estimate: Option<delay_repay_rules::DelayRepayEstimate>,
     pub claim_url: String,
     pub disclaimer: &'static str,
+    pub custom_name: Option<String>,
 }
 
 /// Mirrors `routes/train.rs`'s `build_delay_repay_response` exactly (same
@@ -943,6 +1105,7 @@ fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
         estimate,
         claim_url: claim_url.to_string(),
         disclaimer: delay_repay_rules::ROUTE_DISCLAIMER,
+        custom_name: row.custom_name,
     }
 }
 
@@ -974,7 +1137,7 @@ pub async fn list_tickets_for_user(
                 t.source, t.created_at, \
                 tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, tt.pin_scheduled_departure, \
                 tt.resolution_status, tt.train_uid, \
-                cs.status, cs.delay_minutes \
+                cs.status, cs.delay_minutes, t.custom_name \
          FROM tracked_train_tickets t \
          LEFT JOIN tracked_trains tt ON tt.id = t.tracked_train_id \
          LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
@@ -1015,6 +1178,7 @@ mod ticket_list_tests {
             train_uid: Some("A12345".to_string()),
             status: Some("late".to_string()),
             delay_minutes,
+            custom_name: None,
         }
     }
 
@@ -1043,6 +1207,7 @@ mod ticket_list_tests {
             train_uid: None,
             status: None,
             delay_minutes: None,
+            custom_name: None,
         }
     }
 
@@ -1306,7 +1471,151 @@ mod db_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                rename_tracked_train -- --ignored --test-threads=1`"]
+    async fn rename_tracked_train_the_owner_can_set_and_clear_a_custom_name() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-RENAME-TRAIN-OWNER").await;
+        let tracking_id = seed_tracked_train(&pool, "TEST-RENAME-TRAIN-OWNER").await;
+
+        let renamed = rename_tracked_train(
+            &pool,
+            tracking_id,
+            "TEST-RENAME-TRAIN-OWNER",
+            Some("My commute"),
+        )
+        .await
+        .expect("rename tracked train");
+        assert!(renamed);
+
+        let state = get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("read tracked train")
+            .expect("tracked train exists");
+        assert_eq!(state.custom_name, Some("My commute".to_string()));
+
+        let cleared = rename_tracked_train(&pool, tracking_id, "TEST-RENAME-TRAIN-OWNER", None)
+            .await
+            .expect("clear custom name");
+        assert!(cleared);
+
+        let state = get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("read tracked train")
+            .expect("tracked train exists");
+        assert_eq!(state.custom_name, None);
+
+        cleanup_user(&pool, "TEST-RENAME-TRAIN-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                rename_tracked_train -- --ignored --test-threads=1`"]
+    async fn rename_tracked_train_a_non_owner_cannot_rename_it_and_the_row_survives() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-RENAME-TRAIN-REAL-OWNER").await;
+        seed_user(&pool, "TEST-RENAME-TRAIN-OTHER").await;
+        let tracking_id = seed_tracked_train(&pool, "TEST-RENAME-TRAIN-REAL-OWNER").await;
+
+        let renamed = rename_tracked_train(
+            &pool,
+            tracking_id,
+            "TEST-RENAME-TRAIN-OTHER",
+            Some("Hijacked name"),
+        )
+        .await
+        .expect("attempt rename as non-owner");
+        assert!(!renamed);
+
+        let state = get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("read tracked train")
+            .expect("tracked train exists");
+        assert_eq!(state.custom_name, None);
+
+        cleanup_user(&pool, "TEST-RENAME-TRAIN-REAL-OWNER").await;
+        cleanup_user(&pool, "TEST-RENAME-TRAIN-OTHER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                rename_ticket -- --ignored --test-threads=1`"]
+    async fn rename_ticket_the_owner_can_set_and_clear_a_custom_name() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-RENAME-TICKET-OWNER").await;
+        let ticket_id = create_ticket(&pool, None, &fixture_entry(), "TEST-RENAME-TICKET-OWNER")
+            .await
+            .expect("create fixture ticket");
+
+        let renamed = rename_ticket(
+            &pool,
+            ticket_id,
+            "TEST-RENAME-TICKET-OWNER",
+            Some("Mum's ticket to Leeds"),
+        )
+        .await
+        .expect("rename ticket");
+        assert!(renamed);
+
+        let ticket = get_ticket_owned(&pool, ticket_id, "TEST-RENAME-TICKET-OWNER")
+            .await
+            .expect("read ticket")
+            .expect("ticket exists");
+        assert_eq!(
+            ticket.custom_name,
+            Some("Mum's ticket to Leeds".to_string())
+        );
+
+        let cleared = rename_ticket(&pool, ticket_id, "TEST-RENAME-TICKET-OWNER", None)
+            .await
+            .expect("clear custom name");
+        assert!(cleared);
+
+        let ticket = get_ticket_owned(&pool, ticket_id, "TEST-RENAME-TICKET-OWNER")
+            .await
+            .expect("read ticket")
+            .expect("ticket exists");
+        assert_eq!(ticket.custom_name, None);
+
+        cleanup_user(&pool, "TEST-RENAME-TICKET-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                rename_ticket -- --ignored --test-threads=1`"]
+    async fn rename_ticket_a_non_owner_cannot_rename_it_and_the_row_survives() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-RENAME-TICKET-REAL-OWNER").await;
+        seed_user(&pool, "TEST-RENAME-TICKET-OTHER").await;
+        let ticket_id = create_ticket(
+            &pool,
+            None,
+            &fixture_entry(),
+            "TEST-RENAME-TICKET-REAL-OWNER",
+        )
+        .await
+        .expect("create fixture ticket");
+
+        let renamed = rename_ticket(
+            &pool,
+            ticket_id,
+            "TEST-RENAME-TICKET-OTHER",
+            Some("Hijacked name"),
+        )
+        .await
+        .expect("attempt rename as non-owner");
+        assert!(!renamed);
+
+        cleanup_user(&pool, "TEST-RENAME-TICKET-REAL-OWNER").await;
+        cleanup_user(&pool, "TEST-RENAME-TICKET-OTHER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 list_tracked_trains_for_user_resolves_the_station_name_join \
                 -- --ignored`"]

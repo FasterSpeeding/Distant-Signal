@@ -7,8 +7,11 @@ import { TicketSummary } from '@/components/TicketSummary';
 import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
 import { AttachTicketAction } from '@/components/AttachTicketAction';
 import { DeleteTicketButton } from '@/components/DeleteTicketButton';
+import { RenameTrainButton } from '@/components/RenameTrainButton';
+import { RenameTicketButton } from '@/components/RenameTicketButton';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
+import { trackedTrainDisplayName } from '@/lib/trackingName';
 import type { TrackedTrainListItem, TicketListItem } from '@/lib/types';
 
 // See app/page.tsx's own `revalidate = 0` comment for the rationale: this
@@ -136,6 +139,8 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
     train.pinDestinationCrs,
     train.pinDestinationName,
   );
+  const displayName = trackedTrainDisplayName(train);
+  const defaultName = `${route}, ${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`;
 
   return (
     <Card withBorder>
@@ -144,18 +149,22 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
             below render their own outbound Delay Repay link
             (DelayRepayEstimate), and nesting an <a> inside another <a>
             (wrapping the whole card, as the trains-only predecessor page
-            did) is invalid HTML once that's a real possibility. */}
-        <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
-          <Stack gap={4}>
-            <Group justify="space-between" wrap="nowrap">
-              <Text fw={500}>{route}</Text>
-              <RowStatusBadge train={train} />
-            </Group>
-            <Text size="sm" c="dimmed">
-              {formatDate(train.serviceDate)} · {formatTime(train.pinScheduledDeparture)}
-            </Text>
-          </Stack>
-        </Link>
+            did) is invalid HTML once that's a real possibility.
+            RenameTrainButton sits outside the <Link> for the same reason. */}
+        <Group justify="space-between" wrap="nowrap" align="flex-start">
+          <Link href={href} style={{ textDecoration: 'none', color: 'inherit', flex: 1 }}>
+            <Stack gap={4}>
+              <Group justify="space-between" wrap="nowrap">
+                <Text fw={500}>{displayName}</Text>
+                <RowStatusBadge train={train} />
+              </Group>
+              <Text size="sm" c="dimmed">
+                {formatDate(train.serviceDate)} · {formatTime(train.pinScheduledDeparture)}
+              </Text>
+            </Stack>
+          </Link>
+          <RenameTrainButton trackingId={train.id} customName={train.customName} defaultName={defaultName} />
+        </Group>
         {tickets.length > 0 && (
           <Stack
             gap="md"
@@ -176,7 +185,14 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
                     disclaimer: ticket.disclaimer,
                   }}
                 />
-                <DeleteTicketButton ticketId={ticket.id} />
+                <Group gap="xs">
+                  <RenameTicketButton
+                    ticketId={ticket.id}
+                    customName={ticket.customName}
+                    defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` — ${ticket.ticketType}` : ''}`}
+                  />
+                  <DeleteTicketButton ticketId={ticket.id} />
+                </Group>
               </Stack>
             ))}
           </Stack>
@@ -214,6 +230,11 @@ function UnattachedTicketRow({ ticket, trains }: { ticket: TicketListItem; train
           <TextLink href={`/track?${trackParams.toString()}`} underline="always">
             Track a new train for this ticket
           </TextLink>
+          <RenameTicketButton
+            ticketId={ticket.id}
+            customName={ticket.customName}
+            defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` — ${ticket.ticketType}` : ''}`}
+          />
           <DeleteTicketButton ticketId={ticket.id} />
         </Group>
       </Stack>
