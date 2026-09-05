@@ -91,6 +91,11 @@ pub fn router() -> Router {
             axum::routing::get(get_island_of_ireland_lines_last_fetched)
                 .post(post_island_of_ireland_lines),
         )
+        .route(
+            "/island-of-ireland-station-samples",
+            axum::routing::get(get_island_of_ireland_station_samples_last_fetched)
+                .post(post_island_of_ireland_station_samples),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -452,6 +457,28 @@ async fn post_island_of_ireland_lines(
     Ok(Json(UpsertResponse { upserted }))
 }
 
+/// `poller-irish-rail-live`'s per-poll-cycle raw departure-board batch --
+/// see `crate::data::island_of_ireland::upsert_station_samples`. Tier B of
+/// docs/superpowers/specs/2026-09-05-ireland-rail-support-design.md.
+async fn get_island_of_ireland_station_samples_last_fetched(
+    State(app): State<App>,
+) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
+    let fetched_at = crate::data::island_of_ireland::last_station_samples_fetch(&app.database)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(LastFetchedResponse { fetched_at }))
+}
+
+async fn post_island_of_ireland_station_samples(
+    State(app): State<App>,
+    Json(samples): Json<Vec<common::island_of_ireland::IslandOfIrelandStationSample>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = crate::data::island_of_ireland::upsert_station_samples(&app.database, &samples)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "ingestion upsert failed");
     (
@@ -498,6 +525,7 @@ mod db_tests {
             internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
             internal_oauth_group_full_coverage: "svc-full-coverage-consumer".to_string(),
             internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
+            internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),
             sso_client_secret: "test-secret".to_string(),
