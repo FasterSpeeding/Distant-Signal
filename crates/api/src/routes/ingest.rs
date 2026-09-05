@@ -81,6 +81,16 @@ pub fn router() -> Router {
             "/schedule-network-departures",
             axum::routing::post(post_schedule_network_departures),
         )
+        .route(
+            "/island-of-ireland-stations",
+            axum::routing::get(get_island_of_ireland_stations_last_fetched)
+                .post(post_island_of_ireland_stations),
+        )
+        .route(
+            "/island-of-ireland-lines",
+            axum::routing::get(get_island_of_ireland_lines_last_fetched)
+                .post(post_island_of_ireland_lines),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -401,6 +411,47 @@ async fn get_full_coverage_stats_last_fetched(
     Ok(Json(LastFetchedResponse { fetched_at }))
 }
 
+/// `poller-irish-rail-gtfs`'s per-poll-cycle station/line catalogue batch --
+/// see `crate::data::island_of_ireland::{upsert_stations,upsert_lines}`.
+/// Tier A of docs/superpowers/specs/2026-09-05-ireland-rail-support-design.md.
+async fn get_island_of_ireland_stations_last_fetched(
+    State(app): State<App>,
+) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
+    let fetched_at = crate::data::island_of_ireland::last_stations_fetch(&app.database)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(LastFetchedResponse { fetched_at }))
+}
+
+async fn post_island_of_ireland_stations(
+    State(app): State<App>,
+    Json(stations): Json<Vec<common::island_of_ireland::IslandOfIrelandStation>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = crate::data::island_of_ireland::upsert_stations(&app.database, &stations)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+async fn get_island_of_ireland_lines_last_fetched(
+    State(app): State<App>,
+) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
+    let fetched_at = crate::data::island_of_ireland::last_lines_fetch(&app.database)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(LastFetchedResponse { fetched_at }))
+}
+
+async fn post_island_of_ireland_lines(
+    State(app): State<App>,
+    Json(lines): Json<Vec<common::island_of_ireland::IslandOfIrelandLineDefinition>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = crate::data::island_of_ireland::upsert_lines(&app.database, &lines)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
     tracing::error!(error = ?err, "ingestion upsert failed");
     (
@@ -446,6 +497,7 @@ mod db_tests {
             internal_oauth_group_schedule_ingest: "svc-schedule-ingest".to_string(),
             internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
             internal_oauth_group_full_coverage: "svc-full-coverage-consumer".to_string(),
+            internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),
             sso_client_secret: "test-secret".to_string(),
