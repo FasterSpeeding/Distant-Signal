@@ -228,14 +228,14 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     ]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText('London Waterloo (WAT) → Woking (WOK)')).toBeInTheDocument();
+    expect(screen.getByText(/London Waterloo \(WAT\) → Woking \(WOK\)/)).toBeInTheDocument();
   });
 
   it('falls back to the bare code, not "null" or an empty label, when a name did not resolve', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ pinOriginName: null, pinDestinationName: null })]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText('WAT → WOK')).toBeInTheDocument();
+    expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
     expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
   });
 

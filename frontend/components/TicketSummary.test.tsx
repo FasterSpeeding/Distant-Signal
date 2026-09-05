@@ -17,10 +17,32 @@ describe('TicketSummary', () => {
           destinationName: null,
           source: 'manual',
           createdAt: '2026-08-29T12:00:00Z',
+          customName: null,
         }}
       />,
     );
     expect(screen.getByText('LNER — Off-Peak Day Single')).toBeInTheDocument();
+  });
+
+  it('renders the custom name in place of the operator/ticketType title when set, leaving the route line unchanged', () => {
+    renderWithMantine(
+      <TicketSummary
+        ticket={{
+          operator: 'LNER',
+          ticketType: 'Off-Peak Day Single',
+          originCrs: 'KGX',
+          destinationCrs: 'EDB',
+          originName: null,
+          destinationName: null,
+          source: 'manual',
+          createdAt: '2026-08-29T12:00:00Z',
+          customName: "Mum's ticket to Leeds",
+        }}
+      />,
+    );
+    expect(screen.getByText("Mum's ticket to Leeds")).toBeInTheDocument();
+    expect(screen.queryByText('LNER — Off-Peak Day Single')).not.toBeInTheDocument();
+    expect(screen.getByText('KGX → EDB')).toBeInTheDocument();
   });
 
   it('falls back to "Ticket" when operator is null', () => {
@@ -35,6 +57,7 @@ describe('TicketSummary', () => {
           destinationName: null,
           source: 'manual',
           createdAt: '2026-08-29T12:00:00Z',
+          customName: null,
         }}
       />,
     );
@@ -53,6 +76,7 @@ describe('TicketSummary', () => {
           destinationName: null,
           source: 'manual',
           createdAt: '2026-08-29T12:00:00Z',
+          customName: null,
         }}
       />,
     );
@@ -71,6 +95,7 @@ describe('TicketSummary', () => {
           destinationName: 'Edinburgh Waverley',
           source: 'manual',
           createdAt: '2026-08-29T12:00:00Z',
+          customName: null,
         }}
       />,
     );
@@ -89,6 +114,7 @@ describe('TicketSummary', () => {
           destinationName: null,
           source: 'manual',
           createdAt: '2026-08-29T12:00:00Z',
+          customName: null,
         }}
       />,
     );
@@ -107,6 +133,7 @@ describe('TicketSummary', () => {
           destinationName: null,
           source: 'pkpass-semantics',
           createdAt: '2026-08-29T12:00:00Z',
+          customName: null,
         }}
       />,
     );
@@ -133,6 +160,7 @@ describe('TicketSummary', () => {
           destinationName: null,
           source: 'manual',
           createdAt,
+          customName: null,
         }}
       />,
     );

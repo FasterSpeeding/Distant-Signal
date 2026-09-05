@@ -43,6 +43,7 @@ export function TicketSummary({
     | 'destinationName'
     | 'source'
     | 'createdAt'
+    | 'customName'
   >;
 }) {
   // Preserves the existing '?' fallback for whichever single end is
@@ -57,8 +58,12 @@ export function TicketSummary({
   return (
     <Stack gap={2}>
       <Text fw={500}>
-        {ticket.operator ?? 'Ticket'}
-        {ticket.ticketType ? ` — ${ticket.ticketType}` : ''}
+        {ticket.customName ?? (
+          <>
+            {ticket.operator ?? 'Ticket'}
+            {ticket.ticketType ? ` — ${ticket.ticketType}` : ''}
+          </>
+        )}
       </Text>
       {route && <Text size="sm">{route}</Text>}
       <Group gap="xs">
