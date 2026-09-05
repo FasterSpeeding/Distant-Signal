@@ -7,7 +7,6 @@
 mod config;
 mod eta;
 mod feed;
-mod health;
 mod matching;
 mod process;
 mod queries;
@@ -51,7 +50,7 @@ enum ActiveFeed {
     // module (by design -- it's shared with full-coverage-consumer, which
     // has its own separate ConnectionState type), so the equivalent update
     // happens here instead, at the ActiveFeed::next_batch call site below.
-    RedisStream(Box<RedisStreamMovementFeed>, health::ConnectionState),
+    RedisStream(Box<RedisStreamMovementFeed>, health_http::ConnectionState),
 }
 
 #[async_trait::async_trait]
@@ -61,7 +60,11 @@ impl MovementFeed for ActiveFeed {
             ActiveFeed::Kafka(feed) => feed.next_batch().await,
             ActiveFeed::RedisStream(feed, connection_state) => {
                 let result = feed.next_batch().await;
-                health::set_connected(connection_state, result.is_ok());
+                health_http::set_connected(
+                    connection_state,
+                    "trust_consumer_ready",
+                    result.is_ok(),
+                );
                 result
             }
         }
@@ -100,7 +103,8 @@ async fn main() -> anyhow::Result<()> {
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
-    let connection_state = health::spawn(config.health_bind_url.clone());
+    let connection_state =
+        health_http::spawn(config.health_bind_url.clone(), "connected", "disconnected");
     let http = reqwest::Client::new();
     let internal_oauth = config.internal_oauth.token_cache();
 
