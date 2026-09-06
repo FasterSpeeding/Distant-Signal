@@ -1214,6 +1214,20 @@ mod db_tests {
     /// linking `trains_id` (as every real dual-write path always does)
     /// would read back `None` -- a fixture gap Task 8's own end-to-end
     /// verification caught, not a production behavior change.
+    ///
+    /// The `train_current_state` row itself is ALSO keyed on `trains_id`
+    /// (in addition to `tracked_train_id`) whenever one is available -- Step
+    /// D's re-point (Task 11) moved `TRACKED_TRAIN_STATE_SELECT`'s `cs` join
+    /// from `cs.tracked_train_id = tt.id` to `cs.trains_id = tt.trains_id`,
+    /// matching real `upsert_train_movement` writes, which never populate
+    /// `tracked_train_id` at all. A fixture that only set `tracked_train_id`
+    /// here (as every real write path used to, pre-Task-11) would silently
+    /// stop being visible through that join -- caught by this task's own
+    /// regression pass, same class of fixture gap as the `trains_id`
+    /// linking above. For a `train_uid: None` (still-`pending`) fixture,
+    /// `trains_id` stays `NULL` here too -- correctly unreachable via the
+    /// join, since a real pending pin can never have a `trains_id`-keyed
+    /// current-state row either (nothing has resolved its identity yet).
     /// Returns the new row's `id`.
     async fn seed_tracked_train(
         pool: &PgPool,
@@ -1261,11 +1275,12 @@ mod db_tests {
 
         sqlx::query(
             "INSERT INTO train_current_state \
-                (tracked_train_id, status, last_reported_location, last_event_type, delay_minutes, \
-                 next_calling_point, updated_at) \
-             VALUES ($1, 'en_route', 'York', 'DEPARTURE', 12, 'Newcastle', NOW())",
+                (tracked_train_id, trains_id, status, last_reported_location, last_event_type, \
+                 delay_minutes, next_calling_point, updated_at) \
+             VALUES ($1, $2, 'en_route', 'York', 'DEPARTURE', 12, 'Newcastle', NOW())",
         )
         .bind(id)
+        .bind(trains_id)
         .execute(pool)
         .await
         .expect("insert fixture train_current_state row");

@@ -373,7 +373,7 @@ pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<Tra
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_scheduled_departure, \
                 tt.resolution_status, tt.train_uid, tt.train_id \
          FROM tracked_trains tt \
-         LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
+         LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
          WHERE tt.resolution_status != 'unresolved' \
            AND (cs.status IS NULL OR cs.status NOT IN ('completed', 'cancelled'))",
     )
@@ -382,65 +382,27 @@ pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<Tra
     Ok(rows.into_iter().map(TrackedTrainRef::from).collect())
 }
 
-/// Idempotent: resolves the pin (if `resolved_train_uid`/`resolved_train_id`
-/// are `Some`), inserts the event row with `ON CONFLICT DO NOTHING`
-/// (dedup'd on `(tracked_train_id, dedup_key)` -- a Kafka-redelivered
-/// message is silently dropped here), and upserts `train_current_state`.
-/// The `train_current_state` upsert always writes on every event, even a
-/// redelivered duplicate the event insert just dropped -- writing the same
-/// current-state values twice is harmless (idempotent by construction, not
-/// merely by dedup), so this doesn't need to be conditioned on whether the
-/// event insert actually inserted a row.
-pub async fn upsert_train_event(
+/// Writes one TRUST-derived event into the SHARED, per-physical-train
+/// tables. Callable for ANY `trains_id`, regardless of whether any
+/// `tracked_trains` row (subscription) references it at all -- this is
+/// the primary write path once trust-backlog-consumer becomes the primary
+/// movement-event writer (Task 14), and it's also what `upsert_train_event`
+/// below now delegates to for the legacy per-subscription path.
+/// `event.tracked_train_id` is ignored here on purpose -- this function's
+/// entire point is to not require one.
+pub async fn upsert_train_movement(
     pool: &PgPool,
+    trains_id: i64,
     event: &TrainMovementEventMessage,
 ) -> anyhow::Result<()> {
-    let mut tx = pool.begin().await?;
-
-    // Captured here (inside the transaction, via RETURNING) so the Step A
-    // dual-write below can run after commit without re-deriving what this
-    // UPDATE already computed.
-    let mut freshly_resolved: Option<(Option<String>, chrono::NaiveDate, String)> = None;
-
-    // Fires on `resolved_train_id.is_some()` ALONE now -- Decision 5 of
-    // docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md,
-    // the required companion to schedule-first matching: once a schedule
-    // match can populate `train_uid` before ANY TRUST message arrives, the
-    // resolving Movement's own `resolved_train_uid` is frequently `None`
-    // (this process's `pending_activations` map is unrelated to a
-    // schedule match), and the old two-field guard would leave a pin with
-    // fully live, correct tracking data stuck at `schedule_matched`
-    // forever. `train_uid` uses `COALESCE`, never a blind overwrite,
-    // preserving whatever value a schedule match (or an earlier message)
-    // already wrote. `resolved`'s own two-field INVARIANT (both
-    // `train_uid` and `train_id` bound) is unchanged: this is still the
-    // only write that ever sets `resolution_status = 'resolved'`, and it
-    // never leaves `train_uid` NULL when it does (either freshly supplied
-    // here, or already present from an earlier message/schedule match).
-    if let Some(train_id) = &event.resolved_train_id {
-        let row: Option<(Option<String>, chrono::NaiveDate)> = sqlx::query_as(
-            "UPDATE tracked_trains \
-             SET train_uid = COALESCE($2, train_uid), train_id = $3, \
-                 resolution_status = 'resolved', resolved_at = NOW() \
-             WHERE id = $1 \
-             RETURNING train_uid, service_date",
-        )
-        .bind(event.tracked_train_id)
-        .bind(&event.resolved_train_uid)
-        .bind(train_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        freshly_resolved = row.map(|(train_uid, service_date)| (train_uid, service_date, train_id.clone()));
-    }
-
     sqlx::query(
         "INSERT INTO train_movement_events \
-            (tracked_train_id, dedup_key, msg_type, event_type, loc_stanox, loc_crs, \
+            (trains_id, dedup_key, msg_type, event_type, loc_stanox, loc_crs, \
              planned_timestamp, actual_timestamp, variation_status, raw_body) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
-         ON CONFLICT (tracked_train_id, dedup_key) DO NOTHING",
+         ON CONFLICT (trains_id, dedup_key) WHERE trains_id IS NOT NULL DO NOTHING",
     )
-    .bind(event.tracked_train_id)
+    .bind(trains_id)
     .bind(&event.dedup_key)
     .bind(&event.msg_type)
     .bind(&event.event_type)
@@ -450,15 +412,15 @@ pub async fn upsert_train_event(
     .bind(event.actual_timestamp)
     .bind(&event.variation_status)
     .bind(&event.raw_body)
-    .execute(&mut *tx)
+    .execute(pool)
     .await?;
 
     sqlx::query(
         "INSERT INTO train_current_state \
-            (tracked_train_id, status, last_reported_location, last_event_type, \
+            (trains_id, status, last_reported_location, last_event_type, \
              delay_minutes, next_calling_point, eta_next, eta_source, updated_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) \
-         ON CONFLICT (tracked_train_id) DO UPDATE SET \
+         ON CONFLICT (trains_id) WHERE trains_id IS NOT NULL DO UPDATE SET \
             status                  = EXCLUDED.status, \
             last_reported_location  = EXCLUDED.last_reported_location, \
             last_event_type         = EXCLUDED.last_event_type, \
@@ -468,7 +430,7 @@ pub async fn upsert_train_event(
             eta_source               = EXCLUDED.eta_source, \
             updated_at               = NOW()",
     )
-    .bind(event.tracked_train_id)
+    .bind(trains_id)
     .bind(&event.status)
     .bind(&event.last_reported_location)
     .bind(&event.last_event_type)
@@ -476,24 +438,130 @@ pub async fn upsert_train_event(
     .bind(&event.next_calling_point)
     .bind(event.eta_next)
     .bind(&event.eta_source)
-    .execute(&mut *tx)
+    .execute(pool)
     .await?;
 
-    tx.commit().await?;
+    Ok(())
+}
 
-    // Step A dual-write (docs/superpowers/specs/2026-09-06-shared-train-identity-design.md
-    // §2 Step A), best-effort outside the transaction above -- every write
-    // here is itself an idempotent upsert, so atomicity with the legacy
-    // write isn't required (a failure here just retries cleanly on the
-    // next event for this train).
-    if let Some((Some(train_uid), service_date, train_id)) = freshly_resolved {
-        let trains_id = crate::data::trains::find_or_create_train(pool, &train_uid, service_date).await?;
-        crate::data::trains::mark_train_resolved(pool, trains_id, &train_id).await?;
-        sqlx::query("UPDATE tracked_trains SET trains_id = $2 WHERE id = $1")
+/// Legacy per-subscription resolution flip only -- as of this task, it no
+/// longer writes `train_movement_events`/`train_current_state` itself
+/// (that's `upsert_train_movement`'s job now). Advances
+/// `tracked_trains.resolution_status`, mirrors the resolution onto the
+/// shared `trains` row (same dual-write Task 5 introduced), and returns
+/// the resolved `trains_id` so the caller can feed the same event into
+/// `upsert_train_movement`. Returns `None` only in the accepted-gap case:
+/// no `trains_id` was already known AND this call carries no
+/// `resolved_train_uid` either (this process never saw the Activation) --
+/// the pin still flips to `'resolved'` for this user's own tracking
+/// purposes, but no shared `trains` row can be created or updated without
+/// a known identity.
+async fn flip_legacy_resolution(
+    pool: &PgPool,
+    tracked_train_id: i64,
+    resolved_train_uid: Option<&str>,
+    resolved_train_id: &str,
+) -> anyhow::Result<Option<i64>> {
+    // Also mirrors the resolution onto `tracked_trains`' own `train_uid`/
+    // `train_id` columns -- Task 5's original dual-write behavior, kept
+    // here rather than dropped, for two reasons the brief's own text
+    // doesn't override: (1) `TRACKED_TRAIN_STATE_SELECT`'s own
+    // `COALESCE(tr.train_id, tt.train_id)` (Step C) exists specifically to
+    // fall back to this column in the Step B "Named edge case" (train_id
+    // known, train_uid never known -- see that COALESCE's own comment) --
+    // if this UPDATE stopped writing `tt.train_id`, that documented,
+    // already-tested fallback would have nothing left to read. (2) `train_uid
+    // = COALESCE($2, train_uid)` preserves a value already set by an earlier
+    // schedule match even when THIS call's own `resolved_train_uid` is
+    // `None` -- exactly the scenario
+    // `upsert_train_event_with_only_resolved_train_id_resolves_and_preserves_the_existing_train_uid`
+    // tests, and RETURNING that post-COALESCE value (not just the
+    // already-linked `trains_id` column) is what lets the branch below
+    // still derive/create the shared `trains` row from a train_uid that was
+    // known on the row already, not only one freshly supplied on this call.
+    let row: Option<(Option<i64>, Option<String>, chrono::NaiveDate)> = sqlx::query_as(
+        "UPDATE tracked_trains \
+         SET train_uid = COALESCE($2, train_uid), train_id = $3, \
+             resolution_status = 'resolved', resolved_at = NOW() \
+         WHERE id = $1 \
+         RETURNING trains_id, train_uid, service_date",
+    )
+    .bind(tracked_train_id)
+    .bind(resolved_train_uid)
+    .bind(resolved_train_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((existing_trains_id, known_train_uid, service_date)) = row else {
+        return Ok(None);
+    };
+
+    let trains_id = match (existing_trains_id, known_train_uid) {
+        (Some(id), _) => Some(id),
+        (None, Some(train_uid)) => {
+            let id = crate::data::trains::find_or_create_train(pool, &train_uid, service_date).await?;
+            sqlx::query("UPDATE tracked_trains SET trains_id = $2 WHERE id = $1")
+                .bind(tracked_train_id)
+                .bind(id)
+                .execute(pool)
+                .await?;
+            Some(id)
+        }
+        (None, None) => None,
+    };
+    if let Some(id) = trains_id {
+        crate::data::trains::mark_train_resolved(pool, id, resolved_train_id).await?;
+    }
+    Ok(trains_id)
+}
+
+/// Idempotent, same overall contract as before this task: resolves the pin
+/// (if `resolved_train_id` is `Some`) and writes the shared movement/
+/// current-state tables. As of this task, that write ALWAYS goes through
+/// [`upsert_train_movement`], keyed on `trains_id` -- never directly on
+/// `tracked_train_id` -- so an event for a subscription whose identity is
+/// still entirely unknown (no schedule/backlog match ever ran, and this
+/// call itself carries no `resolved_train_uid`) has nothing to key a
+/// shared-table write on and is dropped with a warning, matching the
+/// accepted gap `flip_legacy_resolution` documents.
+pub async fn upsert_train_event(
+    pool: &PgPool,
+    event: &TrainMovementEventMessage,
+) -> anyhow::Result<()> {
+    let resolved_trains_id = match &event.resolved_train_id {
+        Some(train_id) => {
+            flip_legacy_resolution(
+                pool,
+                event.tracked_train_id,
+                event.resolved_train_uid.as_deref(),
+                train_id,
+            )
+            .await?
+        }
+        None => None,
+    };
+
+    let trains_id = match resolved_trains_id {
+        Some(id) => Some(id),
+        None => {
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT trains_id FROM tracked_trains WHERE id = $1",
+            )
             .bind(event.tracked_train_id)
-            .bind(trains_id)
-            .execute(pool)
-            .await?;
+            .fetch_optional(pool)
+            .await?
+            .flatten()
+        }
+    };
+
+    match trains_id {
+        Some(trains_id) => upsert_train_movement(pool, trains_id, event).await?,
+        None => {
+            tracing::warn!(
+                tracked_train_id = event.tracked_train_id,
+                "no trains_id known yet for this subscription; movement event dropped \
+                 from the shared store until its identity is resolved"
+            );
+        }
     }
 
     Ok(())
@@ -624,9 +692,11 @@ pub struct TrackedTrainState {
 // come from the shared trains row, not tracked_trains' own duplicate
 // columns (those columns still physically exist and are still written by
 // Tasks 3-5's dual-write and by apply_schedule_match until Task 21 retires
-// those writes -- this is a READ-only flip). `cs` still joins on
-// `tracked_train_id` here -- train_current_state isn't re-pointed to
-// trains_id until Step D (Task 11).
+// those writes -- this is a READ-only flip). `cs` now joins on
+// `trains_id` (Step D, Task 11) -- new writes go through
+// `upsert_train_movement`, keyed on `trains_id` alone, so the old
+// `cs.tracked_train_id = tt.id` join would silently stop seeing fresh
+// current-state rows for any train resolved after this task landed.
 //
 // `COALESCE(tr.train_id, tt.train_id)`, deliberately NOT applied to
 // `train_uid`/`schedule_destination_crs`/`schedule_calling_points`: the
@@ -653,7 +723,7 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
            tt.custom_name \
     FROM tracked_trains tt \
     LEFT JOIN trains tr ON tr.id = tt.trains_id \
-    LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
+    LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
     LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
     LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs) \
     LEFT JOIN stations ssd ON ssd.crs = UPPER(tr.destination_crs)";
@@ -715,7 +785,7 @@ pub async fn list_tracked_trains_for_user(
                 cs.status, cs.delay_minutes, tt.tracked_at, tt.custom_name \
          FROM tracked_trains tt \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
-         LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
+         LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
          LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
          LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs) \
          WHERE tt.user_id = $1 \
@@ -1269,6 +1339,14 @@ fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
 /// matches every other query in this file that reads it: a `pending`/
 /// just-resolved tracked train legitimately has no `train_current_state`
 /// row yet, same as before.
+///
+/// `cs` joins on `trains_id`, not `tracked_train_id` -- same Step D
+/// re-point (Task 11) as `TRACKED_TRAIN_STATE_SELECT`/
+/// `list_tracked_trains_for_user` above: `upsert_train_movement` only ever
+/// writes `train_current_state.trains_id`, so a `tracked_train_id` join
+/// here would silently stop seeing fresh current-state rows for any train
+/// resolved after this task landed, exactly the staleness those two
+/// queries' own re-point avoids.
 pub async fn list_tickets_for_user(
     pool: &PgPool,
     user_id: &str,
@@ -1282,7 +1360,7 @@ pub async fn list_tickets_for_user(
                 cs.status, cs.delay_minutes, t.custom_name \
          FROM tracked_train_tickets t \
          LEFT JOIN tracked_trains tt ON tt.id = t.tracked_train_id \
-         LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
+         LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
          LEFT JOIN stations so ON so.crs = UPPER(t.origin_crs) \
          LEFT JOIN stations sd ON sd.crs = UPPER(t.destination_crs) \
          WHERE t.user_id = $1 \
@@ -1977,9 +2055,21 @@ mod db_tests {
         );
         assert_eq!(state.train_uid, None);
         assert_eq!(state.train_id, None);
-        // The movement/current-state writes still happen unconditionally --
-        // this guard only ever gates the tracked_trains UPDATE.
-        assert_eq!(state.status, Some("en_route".to_string()));
+        // Task 11 behavior change (intentional, per this task's own doc
+        // comment on upsert_train_event): before this task, the
+        // movement/current-state writes happened unconditionally, keyed
+        // directly on tracked_train_id. As of this task, that write always
+        // goes through upsert_train_movement, keyed on trains_id -- and this
+        // fixture's identity is entirely unknown (never resolved, so
+        // tracked_trains.trains_id is still NULL, and this event itself
+        // carries no resolved_train_uid/resolved_train_id either). There is
+        // nothing to key a shared-table write on, so the event is dropped
+        // (with a warning) rather than written, matching the accepted gap
+        // flip_legacy_resolution documents. state.status comes back None,
+        // not "en_route", because no train_current_state row was created at
+        // all -- TRACKED_TRAIN_STATE_SELECT's LEFT JOIN cs ON cs.trains_id =
+        // tt.trains_id finds nothing to join against.
+        assert_eq!(state.status, None);
 
         cleanup_user(&pool, user_id).await;
     }
@@ -2478,6 +2568,208 @@ mod db_tests {
 
         sqlx::query("DELETE FROM tracked_trains WHERE id = $1").bind(tracked_train_id).execute(&pool).await.ok();
         sqlx::query("DELETE FROM tracked_trains WHERE id = $1").bind(unresolved_tracked_train_id).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1").bind(trains_id).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.ok();
+    }
+
+    // --- Task 11: split upsert_train_event into upsert_train_movement +
+    // flip_legacy_resolution --------------------------------------------
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                upsert_train_movement_writes_a_row_for_a_trains_id_with_no_subscriber_at_all \
+                -- --ignored --test-threads=1`"]
+    async fn upsert_train_movement_writes_a_row_for_a_trains_id_with_no_subscriber_at_all() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(&pool, "NOSUB-UID", service_date)
+            .await
+            .expect("find_or_create_train");
+        // Deliberately: no tracked_trains row is ever created for this trains_id.
+
+        let event = TrainMovementEventMessage {
+            tracked_train_id: 0, // unused by upsert_train_movement -- see its own doc comment
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: "test-nosub-dedup".to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            loc_stanox: Some("87212".to_string()),
+            loc_crs: Some("WAT".to_string()),
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("WAT".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: None,
+            eta_next: None,
+            eta_source: None,
+        };
+
+        upsert_train_movement(&pool, trains_id, &event)
+            .await
+            .expect("upsert_train_movement for an unsubscribed train");
+
+        let (status,): (String,) =
+            sqlx::query_as("SELECT status FROM train_current_state WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("a current-state row must exist for this trains_id even with zero subscribers");
+        assert_eq!(status, "en_route");
+
+        // Also verify the movement-event row itself landed, trains_id-keyed,
+        // with no tracked_train_id at all -- the whole point of this
+        // function's split from upsert_train_event.
+        let (dedup_key, tracked_train_id): (String, Option<i64>) = sqlx::query_as(
+            "SELECT dedup_key, tracked_train_id FROM train_movement_events WHERE trains_id = $1",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("a movement-event row must exist for this trains_id even with zero subscribers");
+        assert_eq!(dedup_key, "test-nosub-dedup");
+        assert_eq!(
+            tracked_train_id, None,
+            "no tracked_trains row was ever created for this trains_id, so tracked_train_id must be NULL"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE id = $1").bind(trains_id).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                upsert_train_movement_is_idempotent_on_a_redelivered_dedup_key \
+                -- --ignored --test-threads=1`"]
+    async fn upsert_train_movement_is_idempotent_on_a_redelivered_dedup_key() {
+        // Same real code path called twice against non-reset state (not a
+        // duplicated inline copy) -- proving ON CONFLICT (trains_id, dedup_key)
+        // actually dedups the movement-event insert for this new,
+        // trains_id-only write path, the same guarantee upsert_train_event
+        // already had for the legacy tracked_train_id-keyed path.
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(&pool, "IDEMPOTENT-UID", service_date)
+            .await
+            .expect("find_or_create_train");
+
+        let mut event = TrainMovementEventMessage {
+            tracked_train_id: 0,
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: "test-idempotent-dedup".to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            loc_stanox: Some("87212".to_string()),
+            loc_crs: Some("WAT".to_string()),
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("WAT".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: None,
+            eta_next: None,
+            eta_source: None,
+        };
+
+        upsert_train_movement(&pool, trains_id, &event)
+            .await
+            .expect("first upsert_train_movement call");
+        // A redelivered Kafka message: same dedup_key, but the current-state
+        // fields have moved on (a later, real-world snapshot of the same
+        // train) -- proving the event-row dedup and the current-state
+        // upsert are independent concerns, exactly as upsert_train_event's
+        // own doc comment already established for the legacy path.
+        event.status = "en_route".to_string();
+        event.delay_minutes = Some(5);
+        event.last_reported_location = Some("CLJ".to_string());
+        upsert_train_movement(&pool, trains_id, &event)
+            .await
+            .expect("second, redelivered upsert_train_movement call");
+
+        let rows: Vec<(i64,)> =
+            sqlx::query_as("SELECT id FROM train_movement_events WHERE trains_id = $1 AND dedup_key = $2")
+                .bind(trains_id)
+                .bind("test-idempotent-dedup")
+                .fetch_all(&pool)
+                .await
+                .expect("read back movement-event rows");
+        assert_eq!(
+            rows.len(),
+            1,
+            "the redelivered event must be deduped, not inserted a second time"
+        );
+
+        let (delay_minutes, last_reported_location): (Option<i32>, Option<String>) = sqlx::query_as(
+            "SELECT delay_minutes, last_reported_location FROM train_current_state WHERE trains_id = $1",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back current-state row");
+        assert_eq!(
+            delay_minutes,
+            Some(5),
+            "current-state upsert must still apply the second call's fresher values"
+        );
+        assert_eq!(last_reported_location, Some("CLJ".to_string()));
+
+        sqlx::query("DELETE FROM trains WHERE id = $1").bind(trains_id).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                upsert_train_event_delegates_to_upsert_train_movement_for_an_already_resolved_pin \
+                -- --ignored --test-threads=1`"]
+    async fn upsert_train_event_delegates_to_upsert_train_movement_for_an_already_resolved_pin() {
+        // A pin already resolved (trains_id known from an earlier message),
+        // receiving a plain follow-up event that itself carries neither
+        // resolved_train_uid nor resolved_train_id. upsert_train_event must
+        // still look up the existing trains_id and delegate the shared-table
+        // write to upsert_train_movement -- the legacy per-subscription path
+        // and the shared path must end up writing the exact same row.
+        let pool = connect().await;
+        let user_id = "TEST-DELEGATES-ALREADY-RESOLVED";
+        seed_user(&pool, user_id).await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(&pool, "DELEGATE-UID", service_date)
+            .await
+            .expect("find_or_create_train");
+        let (tracked_train_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO tracked_trains \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, trains_id, \
+                 train_uid, resolution_status) \
+             VALUES ($1, $2, 'EUS', $3, $4, 'DELEGATE-UID', 'resolved') RETURNING id",
+        )
+        .bind(user_id)
+        .bind(service_date)
+        .bind(service_date.and_hms_opt(19, 15, 0).unwrap().and_utc())
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed an already-resolved tracked_trains row");
+
+        let mut event = fixture_event(tracked_train_id, "test-delegate-dedup");
+        event.resolved_train_uid = None;
+        event.resolved_train_id = None; // no fresh resolution info on this event
+
+        upsert_train_event(&pool, &event).await.expect("upsert_train_event");
+
+        let (status,): (String,) =
+            sqlx::query_as("SELECT status FROM train_current_state WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("upsert_train_event must delegate to upsert_train_movement, keyed on trains_id");
+        assert_eq!(status, "en_route");
+
+        sqlx::query("DELETE FROM tracked_trains WHERE id = $1").bind(tracked_train_id).execute(&pool).await.ok();
         sqlx::query("DELETE FROM trains WHERE id = $1").bind(trains_id).execute(&pool).await.ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.ok();
     }
