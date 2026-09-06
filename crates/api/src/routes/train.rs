@@ -1044,6 +1044,7 @@ mod db_tests {
             lines: LineCatalogue(vec![]),
             vapid_public_key: "test-vapid-public-key".to_string(),
             full_coverage_enabled_default: false,
+            schedule_match_interval_secs: 300,
         };
 
         std::sync::Arc::new(AppState {

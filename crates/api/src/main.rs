@@ -2,7 +2,7 @@ use axum_prometheus::PrometheusMetricLayerBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
-use crate::app::{AppState, Router};
+use crate::app::{App, AppState, Router};
 
 pub mod app;
 pub mod auth;
@@ -15,6 +15,8 @@ async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
     let app = AppState::init().await?;
+
+    tokio::spawn(schedule_match_sweep_loop(app.clone()));
 
     // Permissive ORIGIN, deliberately non-credentialed. The four
     // line-status endpoints and /public/health are intentionally public,
@@ -101,4 +103,32 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&app.config.bind_url).await?;
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+/// Periodic retry of Decision 3's schedule-first match against every
+/// still-`pending`, never-schedule-matched tracked-train row -- the
+/// mechanism that makes this feature retroactive-capable for a pin
+/// created before its schedule's population was published, or before
+/// this feature shipped at all (Decision 6 of
+/// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md).
+/// Mirrors `crates/enricher/src/main.rs`'s own `sweep_loop` shape -- the
+/// established precedent in this workspace for "a service that is mostly
+/// a request/response server also runs one background interval loop."
+async fn schedule_match_sweep_loop(app: App) {
+    let mut interval =
+        tokio::time::interval(std::time::Duration::from_secs(app.config.schedule_match_interval_secs));
+    loop {
+        interval.tick().await;
+        match data::schedule_matching::run_schedule_match_sweep(&app.database, &app.schedule_crs_line_index)
+            .await
+        {
+            Ok(matched) if matched > 0 => {
+                tracing::info!(matched, "schedule-match sweep resolved pending pins");
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::error!(error = ?err, "schedule-match sweep failed; will retry next interval");
+            }
+        }
+    }
 }

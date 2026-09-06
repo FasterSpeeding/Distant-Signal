@@ -225,4 +225,23 @@ pub struct ServiceArguments {
     /// value.
     #[arg(long, env, default_value_t = false)]
     pub full_coverage_enabled_default: bool,
+
+    /// How often `api`'s own background schedule-match sweep re-attempts
+    /// Decision 3's schedule-first resolution against every still-`pending`
+    /// tracked-train row -- the retroactive-fix mechanism for a pin
+    /// created before its service's `schedule_line_population` cycle ran,
+    /// or before this feature shipped at all
+    /// (docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md
+    /// Decision 6). Same "plain interval, no jitter" shape as
+    /// `schedule-reference`'s own `poll_interval_secs`
+    /// (`crates/schedule-reference/src/config.rs:25`). 300s (5 minutes)
+    /// default -- frequent enough that a newly-published
+    /// `schedule_line_population` row is picked up within a rail day's
+    /// working hours, cheap enough (a handful of still-pending rows on a
+    /// typical day) not to matter at this cadence. Deliberately NOT wired
+    /// into the Helm chart -- same "default suffices, override via env if
+    /// an operator ever needs to" posture as several other unwired
+    /// `ServiceArguments` fields in this file.
+    #[arg(long, env, default_value_t = 300)]
+    pub schedule_match_interval_secs: u64,
 }
