@@ -354,9 +354,24 @@ export interface SessionInfo {
   name: string | null;
 }
 
-export type ResolutionStatus = 'pending' | 'resolved' | 'unresolved';
+export type ResolutionStatus = 'pending' | 'schedule_matched' | 'resolved' | 'unresolved';
 export type JourneyStatus = 'awaiting_activation' | 'en_route' | 'cancelled' | 'completed';
 export type EtaSource = 'trust-propagated' | 'darwin-estimated';
+
+export type ScheduleCallingPointKind = 'Origin' | 'Intermediate' | 'Terminate';
+
+/** One calling point of a `schedule_matched` pin's matched service, as
+ * snapshotted at match time (`crates/api/src/data/schedule_matching.rs`'s
+ * `ScheduleCallingPointDto`) -- already camelCase on the wire, unlike the
+ * Rust `schedule_query::CallingPoint` type it's derived from. */
+export interface ScheduleCallingPoint {
+  tiploc: string;
+  kind: ScheduleCallingPointKind;
+  bookedArrival: string | null; // "HH:MM:SS"
+  bookedDeparture: string | null;
+  isHalfMinuteArrival: boolean;
+  isHalfMinuteDeparture: boolean;
+}
 
 /** `GET /Train/{trackingId}` and `GET /Train/by-uid/{uid}/{date}`'s shared
  * response shape (`crates/api/src/data/train_tracking.rs`'s
@@ -378,6 +393,14 @@ export interface TrackedTrainState {
   resolutionStatus: ResolutionStatus;
   trainUid: string | null;
   trainId: string | null;
+  // Populated once `resolutionStatus` is `'schedule_matched'` or later
+  // (a schedule match's own destination -- may differ from
+  // `pinDestinationCrs`, which is only what the user typed on the
+  // tracking form and is optional). `null` until matched, or if the
+  // matched schedule's terminus TIPLOC never resolved to a CRS.
+  scheduleDestinationCrs: string | null;
+  scheduleDestinationName: string | null;
+  scheduleCallingPoints: ScheduleCallingPoint[] | null;
   status: JourneyStatus | null;
   lastReportedLocation: string | null;
   lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"
@@ -433,11 +456,14 @@ export interface TrackPinRequest {
 
 /** `POST /Train/track`'s response body -- camelCase, like every other
  * `crates/api` public JSON response (only the request body above is
- * snake_case). `resolutionStatus` is always the literal `'pending'` --
- * a newly-created pin has no `train_uid` bound yet. */
+ * snake_case). `resolutionStatus` is `'pending'` unless a synchronous
+ * schedule match succeeded at creation time, in which case it's
+ * `'schedule_matched'` -- see
+ * docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md
+ * Decision 3. */
 export interface TrackPinResponse {
   trackingId: number;
-  resolutionStatus: 'pending';
+  resolutionStatus: ResolutionStatus;
 }
 
 export type TicketSource = 'manual' | 'pkpass-semantics' | 'pkpass-heuristic' | 'pdf-heuristic';

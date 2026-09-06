@@ -22,6 +22,9 @@ function baseState(overrides: Partial<TrackedTrainState> = {}): TrackedTrainStat
     nextCallingPoint: null,
     etaNext: null,
     etaSource: null,
+    scheduleDestinationCrs: null,
+    scheduleDestinationName: null,
+    scheduleCallingPoints: null,
     ...overrides,
     customName: overrides.customName ?? null,
   };
@@ -46,6 +49,40 @@ describe('TrainJourney', () => {
     renderWithMantine(<TrainJourney state={baseState()} />);
     expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
     expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
+  });
+
+  it('schedule_matched: names the matched train and destination, with a caveat badge', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'schedule_matched',
+          trainUid: 'C88888',
+          scheduleDestinationCrs: 'CRE',
+          scheduleDestinationName: 'Crewe',
+        })}
+      />,
+    );
+    expect(screen.getByText(/Matched to a scheduled service — Train C88888 to Crewe/)).toBeInTheDocument();
+    expect(screen.getByText('As scheduled')).toBeInTheDocument();
+    expect(screen.getByText(/Waiting for Network Rail's live tracking to begin/)).toBeInTheDocument();
+  });
+
+  it('schedule_matched: falls back to the destination CRS when no name resolved, and omits it entirely when neither did', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'schedule_matched',
+          trainUid: 'C88888',
+          scheduleDestinationCrs: 'CRE',
+        })}
+      />,
+    );
+    expect(screen.getByText(/Train C88888 to CRE/)).toBeInTheDocument();
+
+    renderWithMantine(
+      <TrainJourney state={baseState({ resolutionStatus: 'schedule_matched', trainUid: 'C88888' })} />,
+    );
+    expect(screen.getAllByText(/Train C88888/).length).toBeGreaterThan(0);
   });
 
   it('unresolved: shows a terminal, non-retrying message', () => {

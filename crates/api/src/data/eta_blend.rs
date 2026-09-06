@@ -50,7 +50,7 @@ pub fn find_darwin_eta(
 /// own ETA in place -- this whole overlay is best-effort, so declining to
 /// guess costs nothing. (The aggregator's variant panics on those cases
 /// instead, but it only ever resolves local 02:00, which is never ambiguous.)
-fn london_to_utc(naive: chrono::NaiveDateTime) -> Option<DateTime<Utc>> {
+pub(crate) fn london_to_utc(naive: chrono::NaiveDateTime) -> Option<DateTime<Utc>> {
     match chrono_tz::Europe::London.from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
         chrono::LocalResult::Ambiguous(earliest, _) => Some(earliest.with_timezone(&Utc)),

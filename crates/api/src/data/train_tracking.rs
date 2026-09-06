@@ -397,15 +397,30 @@ pub async fn upsert_train_event(
 ) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
 
-    if let (Some(train_uid), Some(train_id)) = (&event.resolved_train_uid, &event.resolved_train_id)
-    {
+    // Fires on `resolved_train_id.is_some()` ALONE now -- Decision 5 of
+    // docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md,
+    // the required companion to schedule-first matching: once a schedule
+    // match can populate `train_uid` before ANY TRUST message arrives, the
+    // resolving Movement's own `resolved_train_uid` is frequently `None`
+    // (this process's `pending_activations` map is unrelated to a
+    // schedule match), and the old two-field guard would leave a pin with
+    // fully live, correct tracking data stuck at `schedule_matched`
+    // forever. `train_uid` uses `COALESCE`, never a blind overwrite,
+    // preserving whatever value a schedule match (or an earlier message)
+    // already wrote. `resolved`'s own two-field INVARIANT (both
+    // `train_uid` and `train_id` bound) is unchanged: this is still the
+    // only write that ever sets `resolution_status = 'resolved'`, and it
+    // never leaves `train_uid` NULL when it does (either freshly supplied
+    // here, or already present from an earlier message/schedule match).
+    if let Some(train_id) = &event.resolved_train_id {
         sqlx::query(
             "UPDATE tracked_trains \
-             SET train_uid = $2, train_id = $3, resolution_status = 'resolved', resolved_at = NOW() \
+             SET train_uid = COALESCE($2, train_uid), train_id = $3, \
+                 resolution_status = 'resolved', resolved_at = NOW() \
              WHERE id = $1",
         )
         .bind(event.tracked_train_id)
-        .bind(train_uid)
+        .bind(&event.resolved_train_uid)
         .bind(train_id)
         .execute(&mut *tx)
         .await?;
@@ -461,6 +476,68 @@ pub async fn upsert_train_event(
     Ok(())
 }
 
+/// Writes a successful schedule match (Decision 3 step 4 of
+/// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md):
+/// sets `train_uid` (never `train_id` -- that stays exclusively
+/// TRUST-sourced, per this plan's Global Constraints) and moves
+/// `resolution_status` to the new `'schedule_matched'` waypoint. Guarded
+/// by `WHERE train_uid IS NULL AND resolution_status = 'pending'` so this
+/// is safe to call from BOTH the synchronous pin-creation path and the
+/// periodic sweep without a race clobbering a row that has since moved on
+/// (a live TRUST Movement resolved it first, or an earlier sweep tick
+/// already matched it) -- `rows_affected() == 0` in either of those cases
+/// is not an error, just a no-op, which is why this returns `bool` rather
+/// than erroring on zero rows affected.
+pub async fn apply_schedule_match(
+    pool: &PgPool,
+    tracked_train_id: i64,
+    train_uid: &str,
+    matched_line_id: &str,
+    schedule_calling_points: &serde_json::Value,
+    schedule_destination_crs: Option<&str>,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE tracked_trains \
+         SET train_uid = $2, resolution_status = 'schedule_matched', matched_line_id = $3, \
+             schedule_calling_points = $4, schedule_destination_crs = $5, schedule_matched_at = NOW() \
+         WHERE id = $1 AND train_uid IS NULL AND resolution_status = 'pending'",
+    )
+    .bind(tracked_train_id)
+    .bind(train_uid)
+    .bind(matched_line_id)
+    .bind(schedule_calling_points)
+    .bind(schedule_destination_crs)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Row shape for `list_pending_pins_for_schedule_match`'s query -- every
+/// still-`pending`, never-schedule-matched row, the periodic sweep's own
+/// input set (Decision 3's "also run this same attempt periodically").
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PendingSchedulePin {
+    pub id: i64,
+    pub service_date: chrono::NaiveDate,
+    pub pin_origin_crs: String,
+    pub pin_scheduled_departure: DateTime<Utc>,
+}
+
+/// Every row the periodic schedule-match sweep should retry: still
+/// `pending` AND still lacking a `train_uid` -- a `schedule_matched` row
+/// already has one and is excluded, same as a `resolved`/`unresolved` row.
+pub async fn list_pending_pins_for_schedule_match(
+    pool: &PgPool,
+) -> anyhow::Result<Vec<PendingSchedulePin>> {
+    let rows = sqlx::query_as::<_, PendingSchedulePin>(
+        "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure \
+         FROM tracked_trains WHERE train_uid IS NULL AND resolution_status = 'pending'",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// The public read-model for a tracked train, returned directly as JSON by
 /// `crates/api/src/routes/train.rs`'s `GET /Train/{trackingId}` and
 /// `GET /Train/by-uid/{train_uid}/{date}`. Unlike `TrackedTrainRow`/
@@ -484,6 +561,19 @@ pub struct TrackedTrainState {
     pub resolution_status: String,
     pub train_uid: Option<String>,
     pub train_id: Option<String>,
+    /// The matched schedule's own terminus CRS (Decision 3 step 4 of
+    /// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md),
+    /// `None` until schedule-matched (or if the terminus TIPLOC never
+    /// resolved to a CRS -- see `schedule_matching::attempt_schedule_match`).
+    pub schedule_destination_crs: Option<String>,
+    /// See `pin_origin_name`'s own doc comment -- same
+    /// `LEFT JOIN stations` mechanism, joined on `schedule_destination_crs`.
+    pub schedule_destination_name: Option<String>,
+    /// Opaque JSONB relay of the matched entry's calling points, already
+    /// camelCase-shaped at write time
+    /// (`schedule_matching::ScheduleCallingPointDto`) -- this crate does
+    /// not deserialize it again on the way out.
+    pub schedule_calling_points: Option<serde_json::Value>,
     pub status: Option<String>,
     pub last_reported_location: Option<String>,
     pub last_event_type: Option<String>,
@@ -509,13 +599,16 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
     SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
            so.name AS pin_origin_name, sd.name AS pin_destination_name, \
            tt.resolution_status, tt.train_uid, tt.train_id, \
+           tt.schedule_destination_crs, ssd.name AS schedule_destination_name, \
+           tt.schedule_calling_points, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
            cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source, \
            tt.custom_name \
     FROM tracked_trains tt \
     LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
     LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
-    LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs)";
+    LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs) \
+    LEFT JOIN stations ssd ON ssd.crs = UPPER(tt.schedule_destination_crs)";
 
 /// A user's own tracked-train list, lighter than `TrackedTrainState`
 /// (Decision 1 of the design spec) -- excludes live movement detail
@@ -1680,6 +1773,146 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup fixture station");
+        cleanup_user(&pool, user_id).await;
+    }
+
+    // --- upsert_train_event's two-field guard (Task 9) -----------------------
+    //
+    // Audit performed before writing these: grepped
+    // resolved_train_uid|resolved_train_id|resolution_status across
+    // crates/api/ and crates/trust-consumer/, then read this module's own
+    // test coverage end to end. Finding: no existing test anywhere calls
+    // upsert_train_event at all -- the only matches live in
+    // crates/trust-consumer/src/process.rs's test module, and every one of
+    // them asserts what run_once *produces* on the outgoing
+    // TrainMovementEventMessage, never what this function *does* with it
+    // once posted. So relaxing the guard below cannot break an existing
+    // test; these are the first direct tests for this function.
+
+    fn fixture_event(tracked_train_id: i64, dedup_key: &str) -> common::TrainMovementEventMessage {
+        common::TrainMovementEventMessage {
+            tracked_train_id,
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: dedup_key.to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            loc_stanox: Some("72410".to_string()),
+            loc_crs: Some("EUS".to_string()),
+            planned_timestamp: Some("2026-09-05T18:15:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-05T18:15:00Z".parse().unwrap()),
+            variation_status: Some("ON TIME".to_string()),
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("EUS".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: Some("CRE".to_string()),
+            eta_next: None,
+            eta_source: None,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                upsert_train_event -- --ignored --test-threads=1`"]
+    async fn upsert_train_event_with_only_resolved_train_id_resolves_and_preserves_the_existing_train_uid()
+     {
+        let pool = connect().await;
+        let user_id = "TEST-UPSERT-SCHEDULE-MATCHED";
+        seed_user(&pool, user_id).await;
+        let (tracked_train_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO tracked_trains \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, train_uid, resolution_status) \
+             VALUES ($1, $2, $3, $4, $5, 'schedule_matched') RETURNING id",
+        )
+        .bind(user_id)
+        .bind("2026-09-05".parse::<chrono::NaiveDate>().unwrap())
+        .bind("EUS")
+        .bind("2026-09-05T18:15:00Z".parse::<DateTime<Utc>>().unwrap())
+        .bind("C88888") // schedule-matched train_uid, no train_id yet
+        .fetch_one(&pool)
+        .await
+        .expect("seed schedule-matched tracked_trains row");
+
+        let mut event = fixture_event(tracked_train_id, "dedup-only-train-id");
+        event.resolved_train_uid = None; // the exact gap this task closes
+        event.resolved_train_id = Some("221832406".to_string());
+
+        upsert_train_event(&pool, &event).await.expect("upsert train event");
+
+        let state = get_by_tracking_id(&pool, tracked_train_id)
+            .await
+            .expect("read tracked train")
+            .expect("tracked train exists");
+        assert_eq!(state.resolution_status, "resolved");
+        assert_eq!(state.train_id, Some("221832406".to_string()));
+        assert_eq!(
+            state.train_uid,
+            Some("C88888".to_string()),
+            "the schedule-matched train_uid must survive, COALESCE-preserved, not overwritten with NULL"
+        );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                upsert_train_event -- --ignored --test-threads=1`"]
+    async fn upsert_train_event_with_both_fields_still_sets_both_train_uid_and_train_id() {
+        let pool = connect().await;
+        let user_id = "TEST-UPSERT-BOTH-FIELDS";
+        seed_user(&pool, user_id).await;
+        let tracking_id = seed_tracked_train(&pool, user_id).await;
+
+        let mut event = fixture_event(tracking_id, "dedup-both-fields");
+        event.resolved_train_uid = Some("C21373".to_string());
+        event.resolved_train_id = Some("221832406".to_string());
+
+        upsert_train_event(&pool, &event).await.expect("upsert train event");
+
+        let state = get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("read tracked train")
+            .expect("tracked train exists");
+        assert_eq!(state.resolution_status, "resolved");
+        assert_eq!(state.train_uid, Some("C21373".to_string()));
+        assert_eq!(state.train_id, Some("221832406".to_string()));
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                upsert_train_event -- --ignored --test-threads=1`"]
+    async fn upsert_train_event_with_neither_field_leaves_resolution_status_and_train_uid_untouched()
+     {
+        let pool = connect().await;
+        let user_id = "TEST-UPSERT-NEITHER-FIELD";
+        seed_user(&pool, user_id).await;
+        let tracking_id = seed_tracked_train(&pool, user_id).await;
+
+        let event = fixture_event(tracking_id, "dedup-neither-field"); // both None, the default
+
+        upsert_train_event(&pool, &event).await.expect("upsert train event");
+
+        let state = get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("read tracked train")
+            .expect("tracked train exists");
+        assert_eq!(
+            state.resolution_status, "pending",
+            "resolution_status must not move without at least resolved_train_id"
+        );
+        assert_eq!(state.train_uid, None);
+        assert_eq!(state.train_id, None);
+        // The movement/current-state writes still happen unconditionally --
+        // this guard only ever gates the tracked_trains UPDATE.
+        assert_eq!(state.status, Some("en_route".to_string()));
+
         cleanup_user(&pool, user_id).await;
     }
 }

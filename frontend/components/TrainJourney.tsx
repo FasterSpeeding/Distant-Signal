@@ -1,4 +1,4 @@
-import { Alert, Badge, Group, Loader, Stack, Text } from '@mantine/core';
+import { Alert, Badge, Group, Loader, Stack, Text, Tooltip } from '@mantine/core';
 import { EtaBadge } from './EtaBadge';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import type { TrackedTrainState } from '@/lib/types';
@@ -31,6 +31,29 @@ export function TrainJourney({ state }: { state: TrackedTrainState }) {
         {pinSummary}
         <Text size="sm" c="dimmed">
           This train hasn&apos;t been matched to a live service yet. This page updates automatically.
+        </Text>
+      </Stack>
+    );
+  }
+
+  if (state.resolutionStatus === 'schedule_matched') {
+    const destination = state.scheduleDestinationName ?? state.scheduleDestinationCrs;
+    return (
+      <Stack gap="sm">
+        <Group gap="xs">
+          <Text fw={500}>
+            Matched to a scheduled service — Train {state.trainUid}
+            {destination ? ` to ${destination}` : ''}
+          </Text>
+          <Tooltip label="This is the booked timetable, not a live report yet. It may change if Network Rail issues a late alteration, and we'll update this automatically once live tracking begins.">
+            <Badge color="gray" variant="light">
+              As scheduled
+            </Badge>
+          </Tooltip>
+        </Group>
+        {pinSummary}
+        <Text size="sm" c="dimmed">
+          Waiting for Network Rail&apos;s live tracking to begin.
         </Text>
       </Stack>
     );

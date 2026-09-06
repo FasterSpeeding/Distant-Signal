@@ -417,6 +417,7 @@ function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem }) {
 // unlisted, so an unexpected value never disappears from the badge.
 const STATUS_LABELS: Record<string, string> = {
   pending: 'Pending match',
+  schedule_matched: 'Matched to schedule',
   unresolved: 'Unmatched',
   awaiting_activation: 'Not yet started',
   en_route: 'En route',

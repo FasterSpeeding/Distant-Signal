@@ -222,6 +222,7 @@ mod db_tests {
             lines: LineCatalogue(lines),
             vapid_public_key: "test-vapid-public-key".to_string(),
             full_coverage_enabled_default,
+            schedule_match_interval_secs: 300,
         };
 
         std::sync::Arc::new(AppState {
@@ -241,6 +242,7 @@ mod db_tests {
             )
             .expect("construct placeholder internal-oauth verifier"),
             internal_oauth_routes: Vec::new(),
+            schedule_crs_line_index: std::collections::HashMap::new(),
         })
     }
 

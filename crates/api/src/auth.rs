@@ -637,6 +637,7 @@ mod route_scoping_tests {
             lines: LineCatalogue(Vec::new()),
             vapid_public_key: "test-vapid-public-key".to_string(),
             full_coverage_enabled_default: false,
+            schedule_match_interval_secs: 300,
         }
     }
 
@@ -675,6 +676,7 @@ mod route_scoping_tests {
             .expect("construct placeholder oidc client"),
             internal_oauth_verifier: verifier,
             internal_oauth_routes,
+            schedule_crs_line_index: std::collections::HashMap::new(),
         });
 
         (server, app, expected_routes)
