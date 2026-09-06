@@ -9,10 +9,11 @@
 //! (`App::internal_oauth_routes`), and finally checks the verified
 //! token's `groups` claim against that matched entry's required group
 //! names -- a route passes if `groups` contains ANY of them. The method
-//! dimension is load-bearing, not incidental: `/stanox-crs` has two
-//! legitimate callers, `trust-consumer` (read-only, `GET` only) and
-//! `schedule-reference` (write-only, `POST` only), each with its OWN
-//! table entry carrying only its own group -- a token good for one
+//! dimension is load-bearing, not incidental: `/stanox-crs` has four
+//! legitimate callers -- `trust-consumer`, `full-coverage-consumer`, and
+//! `trust-backlog-consumer` (read-only, `GET` only, sharing one table
+//! entry) and `schedule-reference` (write-only, `POST` only, its own
+//! entry) -- a token good for one
 //! method on a path is never treated as good for a different method on
 //! that same path just because some group would otherwise be allowed
 //! there. See
@@ -570,7 +571,9 @@ mod tests {
 /// End-to-end coverage for `require_internal_oauth`'s route-scoping check
 /// -- the security gap this test suite exists to close (and pin against
 /// regressing) is that a route-scoping table keyed on path alone lets
-/// EITHER of `/stanox-crs`'s two legitimate callers authorize BOTH `GET`
+/// ANY of `/stanox-crs`'s four legitimate callers -- `trust-consumer`,
+/// `full-coverage-consumer`, and `trust-backlog-consumer` (`GET`) and
+/// `schedule-reference` (`POST`) -- authorize BOTH `GET`
 /// and `POST` on it, when only one method is actually legitimate per
 /// caller. Builds a real `App` (real `AppState`, a real mocked-Authentik
 /// `ServiceTokenVerifier`, and -- critically -- the REAL production
