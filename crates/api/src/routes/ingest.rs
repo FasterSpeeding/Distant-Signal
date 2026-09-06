@@ -62,6 +62,10 @@ pub fn router() -> Router {
             axum::routing::get(get_active_tracked_trains),
         )
         .route(
+            "/trust-event-backlog",
+            axum::routing::post(post_trust_event_backlog),
+        )
+        .route(
             "/schedule-feed-ingests",
             axum::routing::get(get_schedule_feed_last_fetched).post(post_schedule_feed_ingest),
         )
@@ -238,6 +242,20 @@ async fn post_train_events(
     Ok(Json(UpsertResponse {
         upserted: events.len() as u64,
     }))
+}
+
+/// `trust-backlog-consumer`'s per-cycle batch of key-journey-point TRUST
+/// events, scoped to catalogued-line CRSs -- see
+/// `crate::data::trust_event_backlog::upsert_trust_event_backlog_batch`.
+async fn post_trust_event_backlog(
+    State(app): State<App>,
+    Json(events): Json<Vec<common::TrustBacklogEventMessage>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let inserted =
+        crate::data::trust_event_backlog::upsert_trust_event_backlog_batch(&app.database, &events)
+            .await
+            .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted: inserted }))
 }
 
 /// `trust-consumer`'s periodic reference reload -- pending and
@@ -524,6 +542,7 @@ mod db_tests {
             internal_oauth_group_schedule_ingest: "svc-schedule-ingest".to_string(),
             internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
             internal_oauth_group_full_coverage: "svc-full-coverage-consumer".to_string(),
+            internal_oauth_group_trust_backlog: "svc-trust-backlog-consumer".to_string(),
             internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
             internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
             internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),

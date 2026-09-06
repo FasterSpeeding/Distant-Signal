@@ -487,6 +487,58 @@ services:
       retries: 5
       start_period: 15s
 
+  # trust-backlog-consumer: a THIRD, independent consumer group on the
+  # same movement-events Redis Stream trust-consumer/full-coverage-consumer
+  # read (as either their own optional MOVEMENT_FEED_BACKEND=redis-stream
+  # path, or -- for this crate -- unconditionally, since it has no legacy
+  # Kafka backend at all, see crates/trust-backlog-consumer/src/config.rs's
+  # own module doc). Retains a short, catalogued-line-scoped backlog of
+  # real TRUST calling-point events for late-tracking pins. See
+  # docs/superpowers/plans/2026-09-05-trust-event-backlog-plan.md.
+  trust-backlog-consumer:
+    build:
+      context: .
+      dockerfile: docker/trust-backlog-consumer.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # crates/trust-backlog-consumer/src/config.rs: Config. No Kafka env
+      # vars at all -- unlike trust-consumer/full-coverage-consumer, this
+      # crate only ever speaks Redis Streams.
+      REDIS_URL: redis://redis:6379
+      REDIS_AUTOCLAIM_MIN_IDLE_SECS: ${REDIS_AUTOCLAIM_MIN_IDLE_SECS_TRUST_BACKLOG:-30}
+      REDIS_GAP_CHECK_SECS: ${REDIS_GAP_CHECK_SECS_TRUST_BACKLOG:-60}
+      API_INGEST_URL: http://api:8080/private/trust-event-backlog
+      STANOX_CRS_URL: http://api:8080/private/stanox-crs
+      STANOX_CRS_RELOAD_SECS: ${STANOX_CRS_RELOAD_SECS_TRUST_BACKLOG:-3600}
+      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
+      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
+      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_TRUST_BACKLOG_CONSUMER:?INTERNAL_OAUTH_USERNAME_TRUST_BACKLOG_CONSUMER must be set}
+      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_TRUST_BACKLOG_CONSUMER:?INTERNAL_OAUTH_PASSWORD_TRUST_BACKLOG_CONSUMER must be set}
+      # Matches docker/trust-backlog-consumer.Dockerfile's COPY of
+      # reference-data/ into the image, same pattern as trust-consumer's
+      # own identical default -- no override needed here.
+      # STANOX_CRS_FILE: /app/reference-data/stanox-crs.csv (binary default)
+      # Matches docker/trust-backlog-consumer.Dockerfile's COPY of lines/
+      # into the image, same pattern as aggregator's/full-coverage-consumer's
+      # own explicit LINES_DIR above.
+      LINES_DIR: /app/lines
+      HEALTH_BIND_URL: 0.0.0.0:8083
+      RUST_LOG: ${RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
   # movement-relay: the sole real Kafka client against RDM's Train
   # Movements product from Deploy B onward (docs/superpowers/specs/2026-09-04-movement-relay-design.md),
   # fanning out into the movement-events Redis Stream both trust-consumer

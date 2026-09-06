@@ -68,6 +68,10 @@ pub struct ServiceArguments {
     /// Decision 5.
     #[arg(long, env, default_value = "svc-full-coverage-consumer")]
     pub internal_oauth_group_full_coverage: String,
+    /// Authentik group required to call `/private/trust-event-backlog`.
+    /// `trust-backlog-consumer`'s own service-account group.
+    #[arg(long, env, default_value = "svc-trust-backlog-consumer")]
+    pub internal_oauth_group_trust_backlog: String,
     /// Gates `POST`/`GET /private/island-of-ireland-stations` and
     /// `/island-of-ireland-lines` -- the new `poller-irish-rail-gtfs`
     /// crate's own credential. See
