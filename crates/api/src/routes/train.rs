@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
-use crate::data::{delay_repay_rules, eta_blend, schedule_matching, ticket_extraction, train_tracking};
+use crate::data::{
+    delay_repay_rules, eta_blend, schedule_matching, ticket_extraction, train_tracking,
+};
 
 pub fn router() -> Router {
     Router::new()
