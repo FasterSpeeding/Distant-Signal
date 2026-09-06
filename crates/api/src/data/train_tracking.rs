@@ -627,10 +627,25 @@ pub struct TrackedTrainState {
 // those writes -- this is a READ-only flip). `cs` still joins on
 // `tracked_train_id` here -- train_current_state isn't re-pointed to
 // trains_id until Step D (Task 11).
+//
+// `COALESCE(tr.train_id, tt.train_id)`, deliberately NOT applied to
+// `train_uid`/`schedule_destination_crs`/`schedule_calling_points`: the
+// design spec's own accepted gap (§2 Step B "Named edge case") is a row
+// resolved via live TRUST alone, where `train_uid` was never learned at
+// all -- `trains_id` stays permanently NULL by design, so the join above
+// can never surface anything for that row via `tr`. `tracked_trains.train_id`
+// itself is still directly written by the legacy `upsert_train_event` path
+// (not retired until a later task), so falling back to it here costs
+// nothing and restores the real TRUST train_id for this case. The other
+// three columns have no such fallback available -- `tracked_trains`' own
+// copies of THOSE are also NULL in this exact scenario (no schedule match
+// ever ran, so nothing was ever written to `tt.schedule_destination_crs`/
+// `tt.schedule_calling_points`, and `tt.train_uid` was never learned
+// either) -- so a COALESCE there would just resolve to the same NULL.
 const TRACKED_TRAIN_STATE_SELECT: &str = "\
     SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
            so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-           tt.resolution_status, tr.train_uid, tr.train_id, \
+           tt.resolution_status, tr.train_uid, COALESCE(tr.train_id, tt.train_id) AS train_id, \
            tr.destination_crs AS schedule_destination_crs, ssd.name AS schedule_destination_name, \
            tr.calling_points AS schedule_calling_points, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
@@ -2079,20 +2094,20 @@ mod db_tests {
             state.resolution_status, "resolved",
             "the pin itself must still resolve"
         );
-        // Step C consequence, not a regression in this test's own subject
-        // (upsert_train_event): the read model's `train_id` now comes from
-        // the joined `trains` row (see TRACKED_TRAIN_STATE_SELECT), and
-        // this is exactly the design's own "Named edge case" (design spec
-        // §2 Step B) -- train_id known, train_uid never known, so trains_id
-        // stays permanently NULL and the join can never surface it. The
-        // physical tracked_trains.train_id column is still correctly set
-        // (asserted directly against the column below); only the read
-        // model built through the join loses visibility into it.
+        // Design spec's own "Named edge case" (§2 Step B): train_id known,
+        // train_uid never known, so trains_id stays permanently NULL and
+        // `tr.train_id` (the join) can never surface it. But
+        // TRACKED_TRAIN_STATE_SELECT's `COALESCE(tr.train_id, tt.train_id)`
+        // falls back to tracked_trains' own directly-written column for
+        // exactly this scenario, so the read model still shows the real
+        // TRUST train_id here -- only train_uid/schedule_* stay NULL (no
+        // fallback exists for those; see the COALESCE's own comment above
+        // TRACKED_TRAIN_STATE_SELECT).
         assert_eq!(
-            state.train_id, None,
-            "accepted gap (design spec's Named Edge Case): with no known train_uid, trains_id \
-             never gets linked, so the joined read can't surface train_id even though \
-             tracked_trains' own column has it"
+            state.train_id,
+            Some("221832406".to_string()),
+            "COALESCE(tr.train_id, tt.train_id) must fall back to tracked_trains' own \
+             directly-written train_id when the shared trains row was never linked"
         );
         assert_eq!(state.train_uid, None, "train_uid was never known, so it must stay NULL");
 
