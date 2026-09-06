@@ -222,4 +222,103 @@ mod db_tests {
             .await
             .ok();
     }
+
+    #[tokio::test]
+    #[ignore = "one-off Step B production backfill job, not a repeatable unit test; \
+                run manually, exactly once per environment, with \
+                `DATABASE_URL=... cargo test -p api run_step_b_backfill_of_existing_resolved_rows \
+                -- --ignored --test-threads=1 --nocapture` -- see Task 6 for the pre-run diagnostic"]
+    async fn run_step_b_backfill_of_existing_resolved_rows() {
+        let pool = connect().await;
+        let user_id = "TEST-STEP-B-BACKFILL";
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind("step-b-backfill@example.com")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("seed fixture user");
+
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        // A resolved row exactly as Tasks 3-5 would have left one BEFORE this
+        // plan's dual-write landed -- train_uid set, trains_id still NULL.
+        let (tracked_train_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO tracked_trains \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, \
+                 train_uid, train_id, resolution_status) \
+             VALUES ($1, $2, 'EUS', $3, 'TEST-STEP-B-UID', 'TEST-STEP-B-TRAIN-ID', 'resolved') \
+             RETURNING id",
+        )
+        .bind(user_id)
+        .bind(service_date)
+        .bind(service_date.and_hms_opt(19, 15, 0).unwrap().and_utc())
+        .fetch_one(&pool)
+        .await
+        .expect("seed a pre-existing resolved row with no trains_id yet");
+
+        let (trains_id_before,): (Option<i64>,) =
+            sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
+                .bind(tracked_train_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back trains_id");
+        assert_eq!(trains_id_before, None, "precondition: not yet backfilled");
+
+        // --- the backfill job itself, run inline in this test ---
+        loop {
+            let rows: Vec<(i64, String, chrono::NaiveDate)> = sqlx::query_as(
+                "SELECT id, train_uid, service_date FROM tracked_trains \
+                 WHERE train_uid IS NOT NULL AND trains_id IS NULL \
+                 LIMIT 500",
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("select backfill batch");
+            if rows.is_empty() {
+                break;
+            }
+            for (id, train_uid, row_service_date) in &rows {
+                let trains_id = find_or_create_train(&pool, train_uid, *row_service_date)
+                    .await
+                    .expect("find_or_create_train");
+                sqlx::query("UPDATE tracked_trains SET trains_id = $2 WHERE id = $1")
+                    .bind(id)
+                    .bind(trains_id)
+                    .execute(&pool)
+                    .await
+                    .expect("set trains_id");
+            }
+        }
+
+        let (trains_id_after,): (Option<i64>,) =
+            sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
+                .bind(tracked_train_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back trains_id");
+        assert!(trains_id_after.is_some(), "the row must now point at a trains row");
+
+        // Re-running the whole loop must be a no-op -- proves idempotency.
+        let trains_id_second_run = find_or_create_train(&pool, "TEST-STEP-B-UID", service_date)
+            .await
+            .expect("re-run find_or_create_train");
+        assert_eq!(Some(trains_id_second_run), trains_id_after);
+
+        sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
+            .bind(tracked_train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-STEP-B-UID'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
 }
