@@ -311,8 +311,15 @@ plan is not on `main` as of this writing):
   retention (the spec's own Open Question 5) — out of scope; this plan
   only implements the day/week tiers with a single full-fidelity table.
 - **A new public-facing API route for a human/frontend to query the
-  backlog directly.** Resolved below ("API surface"): this is backend
-  plumbing only, consumed internally by `api`'s own pin-resolution logic.
+  backlog directly.** This is backend plumbing only: Task 4's ingest
+  route is private/internal-oauth-gated (`trust-backlog-consumer`'s own
+  writes), and Task 5's consumption logic is called internally from
+  `routes::train::post_track`, not exposed as its own route. No task in
+  this plan adds a public route over `trust_event_backlog` itself.
+  (An earlier draft of this section pointed at a since-removed "API
+  surface" section below that no longer exists in this document — fixed
+  during this plan's second review pass; this bullet is now
+  self-contained.)
 - **Deduplicating the now-three near-identical
   CRS/TIPLOC-reverse-index-building functions** (`full-coverage-consumer`'s
   `build_tiploc_index`, `api`'s pending `crs_to_line_ids`, and this plan's
@@ -449,11 +456,20 @@ CREATE INDEX trust_event_backlog_crs_time
     WHERE crs IS NOT NULL;
 
 -- Decision 3 step 3's own query: "the entire observed history for this
--- train" -- the full backfill, once a train_uid is known (directly, or
--- via a schedule match).
+-- train" -- the full backfill. Keyed on train_id, NOT train_uid: Task 9's
+-- own consumer never writes a train_uid onto a Movement/Cancellation row
+-- (only an Activation row ever carries one -- see that task's own "this
+-- consumer doesn't correlate Activation->Movement in-process" comment).
+-- train_id, by contrast, is NOT NULL on every one of the three kept
+-- message types, and it's the only column that actually ties a train's
+-- Activation/Movement/Cancellation rows together in this table -- so it,
+-- not train_uid, is the real backfill key. (An earlier draft of this
+-- migration indexed (train_uid, service_date) here; that would have made
+-- the Task 5 backfill query only ever retrieve the Activation row itself,
+-- never the Movement/Cancellation history the whole feature exists to
+-- replay -- caught and fixed during this plan's second review pass.)
 CREATE INDEX trust_event_backlog_train
-    ON trust_event_backlog (train_uid, service_date)
-    WHERE train_uid IS NOT NULL;
+    ON trust_event_backlog (train_id, service_date);
 ```
 
 - [ ] **Step 2: Run the migration against a local database and verify**
@@ -464,7 +480,7 @@ DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres sqlx migrate r
 psql "$DATABASE_URL" -c "\d trust_event_backlog"
 ```
 
-Expected: the table exists with all 11 columns, the two `CHECK`
+Expected: the table exists with all 13 columns, the two `CHECK`
 constraints on `msg_type`/`event_type` show in the printed output, and
 all three indexes (`trust_event_backlog_dedup_key`,
 `trust_event_backlog_crs_time`, `trust_event_backlog_train`) are listed.
@@ -530,11 +546,16 @@ pub struct TrustBacklogEventMessage {
 }
 ```
 
-Check whether `chrono::NaiveDate` is already imported at the top of
-`crates/common/src/lib.rs` (it is — `TrackedTrainRef`'s sibling types
-already use `chrono::{DateTime, Utc}`; confirm `NaiveDate` specifically
-with `grep -n "^use chrono" crates/common/src/lib.rs` and add it to the
-existing `use chrono::{...}` line if it's missing).
+**Confirmed directly, not guessed: `NaiveDate` is NOT yet in this file's
+top-level `chrono` import.** `crates/common/src/lib.rs`'s own `use
+chrono::{DateTime, Utc};` line (confirm with `grep -n "^use chrono"
+crates/common/src/lib.rs`) does not include `NaiveDate`, even though the
+type itself is already used elsewhere in this file via its fully
+qualified path (`TrackPinRequest.service_date: chrono::NaiveDate`). Add
+`NaiveDate` to that `use` line (`use chrono::{DateTime, NaiveDate,
+Utc};`) rather than writing `chrono::NaiveDate` inline on the new struct,
+for consistency with `TrainMovementEventMessage`'s neighboring fields
+(`DateTime<Utc>`, not `chrono::DateTime<Utc>`).
 
 - [ ] **Step 2: Build**
 
@@ -618,8 +639,24 @@ helper or an inline `ensure!`; match its existing signature exactly.)
       test fixture**
 
 ```bash
-grep -rln "internal_oauth_group_full_coverage" crates/api/src/**/*.rs
+grep -rln "internal_oauth_group_full_coverage" crates/api/src/
 ```
+
+(NOT `crates/api/src/**/*.rs` — without `shopt -s globstar`, bash's
+default `**` behaves like a single `*` and does not match `/`, so that
+glob silently misses any file directly inside `src/` itself, one
+directory level up from where the glob can reach. Confirmed directly by
+running both forms against this repo during this plan's second review
+pass: the `**/*.rs` form misses `crates/api/src/auth.rs:622` — itself a
+hand-built `ServiceArguments` literal this step needs to update — while
+the plain-directory form above finds it along with every other match.
+`crates/api/src/app.rs` and `crates/api/src/data/config.rs` also match
+this grep but are not fixtures to edit here — `app.rs` only reads
+`config.internal_oauth_group_full_coverage`, and `config.rs` is the
+field's own declaration, already handled by Step 1; skip both. A missed
+fixture is still caught by Step 5's `cargo build` as a missing-struct-
+field compile error, not a silent bug, but there is no reason to leave an
+engineer to debug that when the fix is a simpler, correct command.)
 
 For each match that constructs a literal `ServiceArguments { ... }` (test
 fixtures, not `ServiceArguments::parse()` call sites), add:
@@ -908,9 +945,18 @@ trust-schema = { path = "../trust-schema" }
 //! Task 5). Walks Decision 3 steps 2-4 exactly:
 //!
 //! 1. CRS+time lookup against `trust_event_backlog` to discover a
-//!    `train_uid` for a pin whose live TRUST window has already closed.
-//! 2. Full backfill: every backlog row for that `train_uid`+`service_date`,
-//!    in `received_at` order.
+//!    `train_id` (TRUST's own daily identifier) for a pin whose live
+//!    TRUST window has already closed, plus a `train_uid` (CIF's own
+//!    identifier) if an Activation for that `train_id` is also in the
+//!    backlog.
+//! 2. Full backfill: every backlog row for that `train_id`+`service_date`,
+//!    in `received_at` order. Keyed on `train_id`, NOT `train_uid` --
+//!    see `fetch_backlog_history`'s own doc comment for why (a real bug
+//!    caught in this plan's second review pass: `train_uid` is only ever
+//!    non-NULL on an Activation row in this table, never on a Movement/
+//!    Cancellation row, so a `train_uid`-keyed backfill query would only
+//!    ever retrieve the Activation row itself and silently miss every
+//!    Movement/Cancellation event this feature exists to replay).
 //! 3. Replay each row through the SAME `train_tracking::upsert_train_event`
 //!    path a live event would have taken, so `train_movement_events`/
 //!    `train_current_state`/`resolution_status` end up exactly where a
@@ -943,29 +989,53 @@ struct BacklogRow {
     train_id: String,
     msg_type: String,
     event_type: Option<String>,
+    // The already-translated CRS a Movement row was observed at (`None`
+    // for Activation/Cancellation, which carry no location at all -- see
+    // Task 1's migration). MUST be threaded through to `apply_movement`'s
+    // `loc_crs` param and the replayed event's own `loc_crs` field below --
+    // an earlier draft of this function didn't select this column at all
+    // and passed `None` unconditionally, silently discarding a value the
+    // table actually stores. That would have left every backfilled pin's
+    // `train_current_state.last_reported_location` permanently `NULL`
+    // even though the real CRS was sitting right there in
+    // `trust_event_backlog.crs` -- caught during this plan's second
+    // review pass.
+    crs: Option<String>,
     planned_timestamp: Option<DateTime<Utc>>,
     actual_timestamp: Option<DateTime<Utc>>,
     variation_status: Option<String>,
 }
 
 /// Decision 3 step 2: does any backlog row at `pin_origin_crs`, within
-/// `MATCH_TOLERANCE` of `pin_scheduled_departure`, carry a `train_uid`
-/// (directly, or via an Activation row for the same `train_id`)? Returns
-/// the first such `train_uid` found (arbitrary among ties -- this table
-/// has no equivalent of `resolve_origin_departure`'s own "only a
-/// DEPARTURE may claim" refinement, since by construction this table
-/// already excludes PASS and only Activation/Cancellation/Movement rows
-/// exist here at all).
-async fn find_backlog_train_uid(
+/// `MATCH_TOLERANCE` of `pin_scheduled_departure`, exist? Returns that
+/// row's `train_id` (TRUST's own daily identifier -- present on every row
+/// this table ever stores, per Task 9) plus, opportunistically, a
+/// `train_uid` (CIF's own identifier) if an Activation row for that same
+/// `train_id` is also present somewhere in the backlog (it may not be --
+/// see this module's own doc comment and this plan's "Dependency on the
+/// schedule-first plan" section on why that's an accepted, named gap, not
+/// a bug). Arbitrary among ties -- this table has no equivalent of
+/// `resolve_origin_departure`'s own "only a DEPARTURE may claim"
+/// refinement, since by construction this table already excludes PASS and
+/// only Activation/Cancellation/Movement rows exist here at all.
+///
+/// Deliberately does NOT look at this matching row's own `train_uid`
+/// column: a Movement/Cancellation row's `train_uid` is always NULL as
+/// written by Task 9's own consumer (only an Activation row ever carries
+/// one), so the matching row found here is realistically always a
+/// Movement (the only kept type that carries a `crs`) and its `train_uid`
+/// column is realistically always NULL. The real train_uid lookup is the
+/// second, explicit query below, by `train_id`.
+async fn find_backlog_match(
     pool: &PgPool,
     pin_origin_crs: &str,
     pin_scheduled_departure: DateTime<Utc>,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<Option<(String, Option<String>)>> {
     let window_start = pin_scheduled_departure - MATCH_TOLERANCE;
     let window_end = pin_scheduled_departure + MATCH_TOLERANCE;
 
-    let row: Option<(Option<String>, String)> = sqlx::query_as(
-        "SELECT train_uid, train_id FROM trust_event_backlog \
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT train_id FROM trust_event_backlog \
          WHERE UPPER(crs) = UPPER($1) AND planned_timestamp BETWEEN $2 AND $3 \
          ORDER BY planned_timestamp LIMIT 1",
     )
@@ -975,17 +1045,14 @@ async fn find_backlog_train_uid(
     .fetch_optional(pool)
     .await?;
 
-    let Some((direct_uid, train_id)) = row else {
+    let Some((train_id,)) = row else {
         return Ok(None);
     };
-    if direct_uid.is_some() {
-        return Ok(direct_uid);
-    }
 
-    // No train_uid on the matching row itself (a Movement whose
-    // Activation this consumer never saw) -- look for an Activation row
-    // for the SAME train_id anywhere in the backlog, unscoped by CRS
-    // (an Activation carries no location at all).
+    // Look for an Activation row for the SAME train_id anywhere in the
+    // backlog, unscoped by CRS (an Activation carries no location at
+    // all) -- the only row type in this table that ever carries a
+    // train_uid.
     let activation_uid: Option<(String,)> = sqlx::query_as(
         "SELECT train_uid FROM trust_event_backlog \
          WHERE train_id = $1 AND msg_type = '0001' AND train_uid IS NOT NULL \
@@ -994,24 +1061,36 @@ async fn find_backlog_train_uid(
     .bind(&train_id)
     .fetch_optional(pool)
     .await?;
-    Ok(activation_uid.map(|(uid,)| uid))
+    Ok(Some((train_id, activation_uid.map(|(uid,)| uid))))
 }
 
-/// Decision 3 step 3: every backlog row for `train_uid`/`service_date`,
-/// in `received_at` order -- the entire observed history for this train.
+/// Decision 3 step 3: every backlog row for `train_id`/`service_date`, in
+/// `received_at` order -- the entire observed history for this train.
+///
+/// Keyed on `train_id`, NOT `train_uid`. This is deliberate, not a typo:
+/// Task 9's own consumer writes `train_uid: None` on every Movement and
+/// Cancellation row (only an Activation row ever carries a real
+/// `train_uid` -- see that task's own "this consumer doesn't correlate
+/// Activation->Movement in-process" comment), so a query filtering on
+/// `train_uid = $1` would only ever match the Activation row itself and
+/// would silently return zero Movement/Cancellation rows -- exactly the
+/// data this whole function exists to retrieve. `train_id`, by contrast,
+/// is `NOT NULL` on all three kept message types (the migration's own
+/// schema, Task 1) and is the column that actually ties one train's
+/// Activation/Movement/Cancellation rows together in this table.
 async fn fetch_backlog_history(
     pool: &PgPool,
-    train_uid: &str,
+    train_id: &str,
     service_date: NaiveDate,
 ) -> anyhow::Result<Vec<BacklogRow>> {
     let rows = sqlx::query_as::<_, BacklogRow>(
-        "SELECT train_uid, train_id, msg_type, event_type, planned_timestamp, \
+        "SELECT train_uid, train_id, msg_type, event_type, crs, planned_timestamp, \
                 actual_timestamp, variation_status \
          FROM trust_event_backlog \
-         WHERE train_uid = $1 AND service_date = $2 \
+         WHERE train_id = $1 AND service_date = $2 \
          ORDER BY received_at",
     )
-    .bind(train_uid)
+    .bind(train_id)
     .bind(service_date)
     .fetch_all(pool)
     .await?;
@@ -1020,15 +1099,28 @@ async fn fetch_backlog_history(
 
 /// Decision 3 step 4: replays `history` through the SAME
 /// `train_tracking::upsert_train_event` path a live event would have
-/// taken. `resolved_train_uid`/`resolved_train_id` are set on the FIRST
-/// Movement row only, mirroring `trust-consumer::process.rs`'s own
-/// "only the resolving message carries these" convention -- every
-/// subsequent row passes `None`/`None`, since `upsert_train_event`'s
-/// guard only needs to fire once per pin.
+/// taken. `resolved_train_id` is set on the FIRST replayed row only,
+/// mirroring `trust-consumer::process.rs`'s own "only the resolving
+/// message carries these" convention -- every subsequent row passes
+/// `None`, since `upsert_train_event`'s guard only needs to fire once per
+/// pin. `resolved_train_uid` is set alongside it on that same first row
+/// **only if `train_uid` is `Some`** -- i.e. only if `find_backlog_match`
+/// found an Activation for this `train_id` somewhere in the backlog. If
+/// it didn't (Decision 3 step 6's named, accepted gap: the Activation
+/// fell outside the retention window, predates this consumer's own
+/// deployment, or was simply never emitted on the slice of the feed this
+/// consumer saw), `resolved_train_uid` stays `None` on every row, and
+/// `upsert_train_event`'s existing two-field guard
+/// (`train_tracking.rs:400-412`) will not advance `resolution_status`
+/// past whatever it already was -- real Movement/Cancellation data still
+/// lands in `train_movement_events`/`train_current_state`, just without
+/// the status bump. This is not a new failure mode this replay
+/// introduces; it is the exact interaction this plan's own "Dependency on
+/// the schedule-first plan" section already names and accepts.
 async fn replay_backlog_history(
     pool: &PgPool,
     tracked_train_id: i64,
-    train_uid: &str,
+    train_uid: Option<&str>,
     history: Vec<BacklogRow>,
 ) -> anyhow::Result<()> {
     let mut previous = DerivedState::awaiting_activation();
@@ -1049,7 +1141,8 @@ async fn replay_backlog_history(
                     toc_id: None,
                     variation_status: row.variation_status.clone(),
                 };
-                let mut derived = journey::apply_movement(&previous, &movement, None);
+                let mut derived =
+                    journey::apply_movement(&previous, &movement, row.crs.as_deref());
                 // Mirrors trust-consumer::process.rs's own post-apply_movement
                 // override exactly: apply_movement's own delay_minutes is a
                 // coarse variation_status-only estimate; a real timestamp
@@ -1086,6 +1179,22 @@ async fn replay_backlog_history(
             _ => continue,
         };
 
+        // `loc_stanox` is always `None` here -- `trust_event_backlog`
+        // never persists it (only the already-translated `crs`, see
+        // Task 1's migration), so this dedup_key can differ from what a
+        // live trust-consumer would have computed for the exact same
+        // real-world event (which passes the real `loc_stanox`). Named,
+        // accepted limitation, same posture as the plan's own raw_body
+        // gap: `ON CONFLICT (tracked_train_id, dedup_key) DO NOTHING`
+        // still makes this replay idempotent against ITSELF (a retried
+        // `attempt_backlog_match` call, or a redelivered ingest batch
+        // upstream of it), which is all this table's own writes ever
+        // need -- a live trust-consumer event for the same tracked_train_id
+        // arriving *after* a full backfill of an already-departed train is
+        // not a realistic scenario this design needs to guard against (by
+        // the time a backlog match runs, that train's live TRUST window
+        // has already closed, which is the entire reason this feature
+        // exists).
         let dedup = trust_schema::dedup::dedup_key(
             &row.train_id,
             &row.msg_type,
@@ -1096,7 +1205,7 @@ async fn replay_backlog_history(
 
         let (resolved_train_uid, resolved_train_id) = if !resolution_claimed {
             resolution_claimed = true;
-            (Some(train_uid.to_string()), Some(row.train_id.clone()))
+            (train_uid.map(str::to_string), Some(row.train_id.clone()))
         } else {
             (None, None)
         };
@@ -1108,8 +1217,8 @@ async fn replay_backlog_history(
             dedup_key: dedup,
             msg_type: row.msg_type.clone(),
             event_type,
-            loc_stanox: None,
-            loc_crs: None,
+            loc_stanox: None, // never persisted by trust_event_backlog -- see the dedup_key note above
+            loc_crs: row.crs.clone(),
             planned_timestamp: planned,
             actual_timestamp: actual,
             variation_status,
@@ -1129,13 +1238,18 @@ async fn replay_backlog_history(
 }
 
 /// Entry point: attempts a full backlog match+replay for one pin.
-/// Returns `Ok(true)` only if a `train_uid` was found AND at least one
-/// history row was replayed. `Ok(false)` covers every honest "nothing in
-/// the backlog for this pin" outcome (no CRS+time match, or the backlog's
-/// retention window has already rolled past this service_date) --
-/// exactly Decision 3 step 8's "no regression, no new failure mode"
-/// posture: a pin left `Ok(false)` here is exactly as it would have been
-/// without this feature at all.
+/// Returns `Ok(true)` only if a matching `train_id` was found AND at
+/// least one history row was replayed. `Ok(false)` covers every honest
+/// "nothing in the backlog for this pin" outcome (no CRS+time match, or
+/// the backlog's retention window has already rolled past this
+/// service_date) -- exactly Decision 3 step 8's "no regression, no new
+/// failure mode" posture: a pin left `Ok(false)` here is exactly as it
+/// would have been without this feature at all.
+///
+/// `Ok(true)` does NOT by itself mean `resolution_status` reached
+/// `'resolved'` -- see `replay_backlog_history`'s own doc comment on the
+/// no-Activation-found case, where real Movement/Cancellation data is
+/// still replayed but the status bump doesn't fire.
 pub async fn attempt_backlog_match(
     pool: &PgPool,
     tracked_train_id: i64,
@@ -1143,47 +1257,93 @@ pub async fn attempt_backlog_match(
     pin_scheduled_departure: DateTime<Utc>,
     service_date: NaiveDate,
 ) -> anyhow::Result<bool> {
-    let Some(train_uid) =
-        find_backlog_train_uid(pool, pin_origin_crs, pin_scheduled_departure).await?
+    let Some((train_id, train_uid)) =
+        find_backlog_match(pool, pin_origin_crs, pin_scheduled_departure).await?
     else {
         return Ok(false);
     };
 
-    let history = fetch_backlog_history(pool, &train_uid, service_date).await?;
+    let history = fetch_backlog_history(pool, &train_id, service_date).await?;
     if history.is_empty() {
         return Ok(false);
     }
 
-    replay_backlog_history(pool, tracked_train_id, &train_uid, history).await?;
+    replay_backlog_history(pool, tracked_train_id, train_uid.as_deref(), history).await?;
     Ok(true)
 }
 ```
 
 - [ ] **Step 3: Wire the call site into pin creation**
 
-In `crates/api/src/routes/train.rs`'s `post_track` handler, directly
-after the row is inserted (find the existing `INSERT INTO tracked_trains
-... RETURNING id` call site), add a best-effort call:
+**Confirmed directly, not guessed**: `post_track`'s own `INSERT INTO
+tracked_trains ... RETURNING id` does NOT live inline in
+`crates/api/src/routes/train.rs` — it's inside
+`train_tracking::create_pin` (`crates/api/src/data/train_tracking.rs`).
+`post_track` itself just calls that function and gets back an `i64`
+tracking id. As of this writing (confirmed with
+`grep -n "fn post_track" -A15 crates/api/src/routes/train.rs`), the
+handler reads:
+
+```rust
+async fn post_track(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Json(pin): Json<TrackPinRequest>,
+) -> Result<Json<TrackPinResponse>, (StatusCode, String)> {
+    train_tracking::validate_pin(&pin, Utc::now()).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
+    let tracking_id = train_tracking::create_pin(&app.database, &pin, &user.id)
+        .await
+        .map_err(internal_error("create tracking pin"))?;
+
+    Ok(Json(TrackPinResponse {
+        tracking_id,
+        resolution_status: "pending",
+    }))
+}
+```
+
+`pin: TrackPinRequest` (`crates/common/src/lib.rs`) carries
+`service_date: NaiveDate`, `origin_crs: String`, and
+`scheduled_departure: DateTime<Utc>` — exactly the three inputs
+`attempt_backlog_match` needs, already in scope under those names (NOT
+`request.pin_origin_crs`/`request.pin_scheduled_departure` — those are
+`tracked_trains`' own column names, not this request struct's field
+names). Add, directly after the `let tracking_id = ...` line and before
+the handler builds its `Ok(Json(...))` response:
 
 ```rust
     if let Err(err) = crate::data::trust_event_backlog_match::attempt_backlog_match(
         &app.database,
-        tracked_train_id,
-        &request.pin_origin_crs,
-        request.pin_scheduled_departure,
-        service_date,
+        tracking_id,
+        &pin.origin_crs,
+        pin.scheduled_departure,
+        pin.service_date,
     )
     .await
     {
-        tracing::warn!(error = ?err, tracked_train_id, "backlog match attempt failed; pin remains pending");
+        tracing::warn!(error = ?err, tracking_id, "backlog match attempt failed; pin remains pending");
     }
 ```
 
-(Match the exact existing variable names in `post_track` — `request`/
-`service_date`/the row-insert's returned id may be named differently;
-confirm with `grep -n "fn post_track" -A40 crates/api/src/routes/train.rs`
-before editing, and place this call after the row exists but before the
-handler returns its response.)
+**Ordering relative to the schedule-first design's own call site is
+safe either way, confirmed directly rather than assumed**: that design's
+own Task 7 adds an `attempt_schedule_match` call at this exact same spot
+in `post_track` (on the still-unmerged `worktree-schedule-first-plan`
+branch). Whichever of the two calls a merge order ends up placing first,
+neither can clobber the other's result: `attempt_schedule_match`'s own
+`UPDATE` is guarded by `WHERE train_uid IS NULL AND resolution_status =
+'pending'` (that plan's own Task 6), so it silently no-ops against a row
+this plan's `attempt_backlog_match` already resolved; conversely, this
+plan's `upsert_train_event` write has no dependency on
+`resolution_status`'s prior value at all. This plan does not require a
+particular splice order relative to that other call site — place this
+call before or after it, whichever lands second during merge.
+
+(If `post_track`'s real shape has drifted from the snippet above by the
+time this task is executed, re-confirm with the same grep command before
+editing — the field/variable names above are what matters, not the exact
+surrounding line numbers.)
 
 **No periodic sweep is wired in this plan.** Unlike the schedule-first
 design's own `run_schedule_match_sweep`, this plan does not add a
@@ -1201,7 +1361,7 @@ that it would ever behave differently from the creation-time call.
 
 - [ ] **Step 4: Write unit-shaped tests for `replay_backlog_history`'s pure logic**
 
-`replay_backlog_history` and `find_backlog_train_uid`/
+`replay_backlog_history` and `find_backlog_match`/
 `fetch_backlog_history` are DB-bound; add `#[ignore]`d db tests to
 `trust_event_backlog_match.rs`'s own `#[cfg(test)] mod db_tests`
 (following `trust_event_backlog.rs`'s own `connect()` helper shape),
@@ -1238,29 +1398,35 @@ mod db_tests {
         let service_date: chrono::NaiveDate = "2026-09-05".parse().unwrap();
         let scheduled: DateTime<Utc> = "2026-09-05T18:15:00Z".parse().unwrap();
 
+        // Faithful to Task 9's real producer behavior, NOT a shortcut:
+        // the Activation row (msg_type '0001') is the ONLY row that ever
+        // carries a real `train_uid` and the ONLY row with `crs = NULL`;
+        // the Movement row (msg_type '0003') carries the real `crs` +
+        // timing data but `train_uid = NULL` -- Task 9's own consumer
+        // never correlates the two in-process, `attempt_backlog_match`
+        // does that at read time instead (see `find_backlog_match`'s own
+        // doc comment). An earlier draft of this test set `train_uid` on
+        // the Movement row directly, which papered over a real bug in
+        // this plan's own backfill query -- caught and fixed during this
+        // plan's second review pass (see Task 1's migration and this
+        // module's `fetch_backlog_history`).
         sqlx::query(
             "INSERT INTO trust_event_backlog \
                 (crs, train_uid, train_id, service_date, msg_type, event_type, \
                  planned_timestamp, actual_timestamp, variation_status, dedup_key) \
-             VALUES ($1, NULL, $2, $3, '0001', NULL, NULL, NULL, NULL, $4), \
-                    ($1, 'C99999', $2, $3, '0003', 'DEPARTURE', $5, $5, 'ON TIME', $6)",
+             VALUES (NULL, $1, $2, $3, '0001', NULL, NULL, NULL, NULL, $4), \
+                    ($5, NULL, $2, $3, '0003', 'DEPARTURE', $6, $6, 'ON TIME', $7)",
         )
-        .bind("EUS")
+        .bind("C99999")
         .bind("TEST-BACKLOG-TRAIN-ID")
         .bind(service_date)
         .bind("test-backlog-dedup-activation")
+        .bind("EUS")
         .bind(scheduled)
         .bind("test-backlog-dedup-movement")
         .execute(&pool)
         .await
         .expect("seed backlog rows");
-        sqlx::query(
-            "UPDATE trust_event_backlog SET train_uid = 'C99999' \
-             WHERE dedup_key = 'test-backlog-dedup-activation'",
-        )
-        .execute(&pool)
-        .await
-        .expect("seed activation train_uid");
 
         let (tracked_train_id,): (i64,) = sqlx::query_as(
             "INSERT INTO tracked_trains (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
@@ -1564,8 +1730,10 @@ git commit -m "Add a real, wired trust_event_backlog prune job with a loud >1-da
 
 - [ ] **Step 1: Register the workspace member**
 
-In the root `Cargo.toml`'s `members` array, add (alphabetically, near
-`"crates/trust-consumer"`):
+In the root `Cargo.toml`'s `members` array (confirmed NOT alphabetized
+overall — it's ordered roughly by when each crate was added — so
+"alphabetically" isn't a real constraint here; just add it near its
+closest relative), add directly above `"crates/trust-consumer"`:
 
 ```toml
     "crates/trust-backlog-consumer",
@@ -1573,38 +1741,58 @@ In the root `Cargo.toml`'s `members` array, add (alphabetically, near
 
 - [ ] **Step 2: `Cargo.toml`**
 
+**Confirmed directly, not guessed: this workspace has no
+`[workspace.dependencies]` table at all.** Every crate pins its own
+explicit version string inline — grepped directly
+(`grep -rln "workspace = true" crates/*/Cargo.toml` returns zero matches
+anywhere in this repo) and confirmed against the root `Cargo.toml` (a
+bare `[workspace]` + `members = [...]`, no `[workspace.dependencies]`
+section). An earlier draft of this Cargo.toml used `{ workspace = true }`
+throughout, which would fail to resolve at all (`cargo` errors on
+`workspace = true` with no matching `[workspace.dependencies]` entry) —
+caught during this plan's second review pass. Every dependency below is
+copied verbatim from `crates/full-coverage-consumer/Cargo.toml` (the
+sibling crate needing the same `common`/`movement-feed`/`health-http`/
+`metrics`/`reqwest`/`serde`/`tokio`/`tracing` stack), plus `chrono-tz`
+(copied from `crates/aggregator/Cargo.toml`, needed for Task 9/10's own
+Europe/London rail-day calculation) and `dotenv`/`clap`/`anyhow` at the
+same versions `full-coverage-consumer` already pins. Also note
+`edition = "2024"`, not `"2021"` — every one of this workspace's 21
+member crates uses `"2024"` (`grep -h "^edition" crates/*/Cargo.toml`),
+confirmed directly rather than assumed:
+
 ```toml
 [package]
 name = "trust-backlog-consumer"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", features = ["serde"] }
+chrono-tz = "0.10"
+clap = { version = "4.6.6", features = ["derive", "env"] }
 common = { path = "../common" }
+dotenv = "0.15.0"
 health-http = { path = "../health-http" }
+metrics = "0.24"
 movement-feed = { path = "../movement-feed" }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "native-tls", "gzip", "query"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 trust-schema = { path = "../trust-schema" }
-anyhow = { workspace = true }
-clap = { workspace = true, features = ["derive", "env"] }
-chrono = { workspace = true }
-chrono-tz = { workspace = true }
-dotenv = { workspace = true }
-metrics = { workspace = true }
-reqwest = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 ```
 
-(Confirm the exact `[workspace.dependencies]` version keys against
-`crates/full-coverage-consumer/Cargo.toml` — copy its dependency list for
-every shared crate this plan also needs, since both crates need the same
-`common`/`movement-feed`/`health-http`/`metrics`/`reqwest`/`tokio` stack;
-this plan does NOT need `rdkafka`/`redis` direct deps or
+This plan does NOT need `rdkafka`/`redis` direct deps or
 `common::service_args::KafkaConnectionArgs` — see Task 8's own note on
-why this consumer is Redis-Streams-only, no Kafka backend.)
+why this consumer is Redis-Streams-only, no Kafka backend. (Re-confirm
+every version number above against `crates/full-coverage-consumer/Cargo.toml`
+and `crates/aggregator/Cargo.toml` at implementation time in case either
+has moved on since this plan was written — the versions above are a
+snapshot, not a promise they'll still be current.)
 
 - [ ] **Step 3: `config.rs`**
 
@@ -2376,6 +2564,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use config::Config;
+use movement_feed::ActiveFeed;
 use movement_feed::MovementFeed;
 use movement_feed::redis_stream::RedisStreamMovementFeed;
 
@@ -2398,13 +2587,31 @@ async fn main() -> anyhow::Result<()> {
     // runtime (config.lines doesn't change without a restart).
     let crs_index = crs_index::build_crs_index(&config.lines);
 
-    let mut feed = RedisStreamMovementFeed::connect(
-        &config.redis_url,
-        "trust-event-backlog",
-        "trust-event-backlog-1",
-        Duration::from_secs(config.redis_autoclaim_min_idle_secs),
-    )
-    .await?;
+    // Wrapped in `ActiveFeed::RedisStream`, not used bare -- this is what
+    // actually threads `connection_state` through to flip the /healthz
+    // readiness flag and the `trust_backlog_consumer_ready` gauge on every
+    // `next_batch` call, exactly `full-coverage-consumer/src/main.rs`'s own
+    // established pattern for a Redis-Streams backend
+    // (`crates/movement-feed/src/active_feed.rs`'s own `ActiveFeed::RedisStream`
+    // variant already does this generically -- see that module's doc
+    // comment). `ActiveFeed<K>` is generic over a Kafka backend type `K`
+    // this crate never uses (Task 7's own "Redis-Streams-only" decision);
+    // `RedisStreamMovementFeed` itself trivially satisfies `K: MovementFeed`,
+    // so `ActiveFeed<RedisStreamMovementFeed>` type-checks even though the
+    // `Kafka` variant is never constructed.
+    let mut feed: ActiveFeed<RedisStreamMovementFeed> = ActiveFeed::RedisStream(
+        Box::new(
+            RedisStreamMovementFeed::connect(
+                &config.redis_url,
+                "trust-event-backlog",
+                "trust-event-backlog-1",
+                Duration::from_secs(config.redis_autoclaim_min_idle_secs),
+            )
+            .await?,
+        ),
+        connection_state,
+        "trust_backlog_consumer_ready",
+    );
 
     let stanox = RwLock::new(config.stanox_crs.clone());
     let mut process_state = process::ProcessorState::default();
@@ -2464,7 +2671,7 @@ async fn main() -> anyhow::Result<()> {
         let cycle_start = std::time::Instant::now();
         match feed.next_batch().await {
             Ok(batch) => {
-                let today = chrono::Utc::now().date_naive();
+                let today = current_rail_day(chrono::Utc::now());
                 let snapshot = stanox.read().expect("stanox lock poisoned").clone();
                 let mut events = Vec::new();
                 for raw in &batch {
@@ -2544,23 +2751,72 @@ async fn main() -> anyhow::Result<()> {
 
 const ERROR_BACKOFF: Duration = Duration::from_secs(2);
 
-#[allow(dead_code)]
-fn touch_connection_state(state: &health_http::ConnectionState) {
-    let _ = state; // placeholder to keep `connection_state` used until health wiring is finalized
+/// The Europe/London rail day `at` falls on -- the calendar date the
+/// process.rs/migration doc comments already promise ("falls back to the
+/// current Europe/London rail day"), NOT a bare UTC calendar date. An
+/// earlier draft of this main loop used `chrono::Utc::now().date_naive()`
+/// directly, which is plain UTC and ignores both the Europe/London
+/// timezone offset AND this codebase's own established 02:00 rail-day
+/// cutoff convention (`common::rail_day::next_rail_day_boundary`,
+/// extracted specifically so more than one crate could share this exact
+/// DST-transition-safe logic) -- caught during this plan's second review
+/// pass. This function is the inverse of `next_rail_day_boundary`: a
+/// small, crate-local, pure duplication of the same "before/after local
+/// 02:00" check, not a call into `common::rail_day` itself, because that
+/// module only exposes the *next boundary*, not *which rail day `at`
+/// currently falls in* -- adding the latter to `common::rail_day` instead
+/// is a reasonable follow-up, but out of scope for this plan to also
+/// change a shared crate's public surface.
+fn current_rail_day(at: chrono::DateTime<chrono::Utc>) -> chrono::NaiveDate {
+    let local = at.with_timezone(&chrono_tz::Europe::London);
+    let cutoff = chrono::NaiveTime::from_hms_opt(2, 0, 0).expect("2:00:00 is a valid time");
+    if local.time() < cutoff {
+        local.date_naive() - chrono::Duration::days(1)
+    } else {
+        local.date_naive()
+    }
+}
+
+#[cfg(test)]
+mod rail_day_tests {
+    use super::*;
+
+    #[test]
+    fn well_after_the_0200_cutoff_is_that_calendar_days_rail_day() {
+        let at: chrono::DateTime<chrono::Utc> = "2026-09-05T13:00:00Z".parse().unwrap();
+        assert_eq!(
+            current_rail_day(at),
+            "2026-09-05".parse::<chrono::NaiveDate>().unwrap()
+        );
+    }
+
+    #[test]
+    fn just_before_the_0200_cutoff_is_still_the_previous_calendar_days_rail_day() {
+        // 2026-09-05T01:30:00Z is 02:30 BST (September is daylight saving) --
+        // wait, that's AFTER 02:00 local, so pick a UTC time that's clearly
+        // before 02:00 Europe/London instead: 00:30 UTC = 01:30 BST.
+        let at: chrono::DateTime<chrono::Utc> = "2026-09-05T00:30:00Z".parse().unwrap();
+        assert_eq!(
+            current_rail_day(at),
+            "2026-09-04".parse::<chrono::NaiveDate>().unwrap()
+        );
+    }
 }
 ```
 
-(The `connection_state` value returned by `health_http::spawn` is
-currently unused in the sketch above beyond being held — confirm against
-`trust-consumer`/`full-coverage-consumer`'s own `main.rs` whether it
-needs to be threaded into `RedisStreamMovementFeed::connect` or a
-separate readiness-flip call, e.g. `full-coverage-consumer`'s own
-`"full_coverage_consumer_ready"` string argument at its `RedisStreamMovementFeed::connect`
-call site — `grep -n "RedisStreamMovementFeed::connect" -A8 crates/full-coverage-consumer/src/main.rs`
-shows a 3-argument extra tail this sketch's own call above is missing;
-match that exact call shape, passing `connection_state` and a
-`"trust_backlog_consumer_ready"` string, and delete the placeholder
-`touch_connection_state` function once that's wired correctly.)
+**Confirmed directly, not guessed**: `full-coverage-consumer/src/main.rs`'s
+own `RedisStreamMovementFeed::connect(...)` call takes exactly the same 4
+arguments as the sketch above (`redis_url`, `group`, `consumer`,
+`autoclaim_min_idle`) — `connection_state` is NOT an extra argument to
+`connect()` itself. An earlier draft of this task claimed otherwise (a
+misreading of `full-coverage-consumer/src/main.rs`'s own
+`ActiveFeed::RedisStream(Box::new(RedisStreamMovementFeed::connect(...).await?),
+connection_state, "full_coverage_consumer_ready")` construction, where
+those two extra values are fields of the `ActiveFeed::RedisStream` enum
+variant *wrapping* the already-connected feed, not arguments passed into
+`connect()`) — caught during this plan's second review pass; see
+`crates/movement-feed/src/active_feed.rs` for the real shape, already
+used correctly above.
 
 - [ ] **Step 3: Build**
 
@@ -2662,7 +2918,17 @@ reading the client library's own semantics.
 - Produces: one new `#[ignore]`d integration test in
   `redis_stream.rs`'s own `redis_tests` module.
 
-- [ ] **Step 1: Write the test**
+- [ ] **Step 1: Update `connect`'s own stale doc comment**
+
+`RedisStreamMovementFeed::connect`'s doc comment currently reads `group`
+is one of "the two fixed literals (`"trust-consumer"` /
+`"full-coverage-consumer"`)". This plan adds a real, legitimate third —
+update that comment (in this same file) to say "one of a small number of
+fixed literals (`"trust-consumer"` / `"full-coverage-consumer"` /
+`"trust-event-backlog"`, one per consumer crate)" so it doesn't read as
+a stale, now-false constraint to the next person who adds a fourth.
+
+- [ ] **Step 2: Write the test**
 
 Add to `crates/movement-feed/src/redis_stream.rs`'s existing
 `#[cfg(test)] mod redis_tests`:
@@ -2739,7 +3005,7 @@ async fn three_independent_consumer_groups_each_receive_every_entry_independentl
 }
 ```
 
-- [ ] **Step 2: Run against a real Redis**
+- [ ] **Step 3: Run against a real Redis**
 
 ```bash
 REDIS_URL=redis://localhost:6379 cargo test -p movement-feed three_independent_consumer_groups -- --ignored
@@ -2748,7 +3014,7 @@ REDIS_URL=redis://localhost:6379 cargo test -p movement-feed three_independent_c
 Expected: pass — direct, real-Redis proof (not an inference) that the
 third consumer group added by this plan is safe.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add crates/movement-feed/src/redis_stream.rs
