@@ -709,9 +709,21 @@ mod redis_tests {
         let b = full_coverage_consumer.next_batch().await.unwrap();
         let c = trust_backlog_consumer.next_batch().await.unwrap();
 
-        assert_eq!(a, vec!["payload-1".to_string()], "trust-consumer must see the entry");
-        assert_eq!(b, vec!["payload-1".to_string()], "full-coverage-consumer must ALSO see the same entry");
-        assert_eq!(c, vec!["payload-1".to_string()], "trust-backlog-consumer must ALSO see the same entry -- proving the third group does not steal it from, or split it with, the other two");
+        assert_eq!(
+            a,
+            vec!["payload-1".to_string()],
+            "trust-consumer must see the entry"
+        );
+        assert_eq!(
+            b,
+            vec!["payload-1".to_string()],
+            "full-coverage-consumer must ALSO see the same entry"
+        );
+        assert_eq!(
+            c,
+            vec!["payload-1".to_string()],
+            "trust-backlog-consumer must ALSO see the same entry -- proving the third group does not steal it from, or split it with, the other two"
+        );
 
         // Each group acks independently -- one group's XACK must not affect
         // another's own pending-entries list.

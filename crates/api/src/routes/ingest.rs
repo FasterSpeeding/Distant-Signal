@@ -251,12 +251,10 @@ async fn post_trust_event_backlog(
     State(app): State<App>,
     Json(events): Json<Vec<common::TrustBacklogEventMessage>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let inserted = crate::data::trust_event_backlog::upsert_trust_event_backlog_batch(
-        &app.database,
-        &events,
-    )
-    .await
-    .map_err(internal_error)?;
+    let inserted =
+        crate::data::trust_event_backlog::upsert_trust_event_backlog_batch(&app.database, &events)
+            .await
+            .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted: inserted }))
 }
 

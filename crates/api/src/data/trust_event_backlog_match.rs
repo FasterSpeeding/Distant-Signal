@@ -207,8 +207,7 @@ async fn replay_backlog_history(
     let mut resolution_claimed = false;
 
     for row in history {
-        let (derived, event_type, planned, actual, variation_status) = match row.msg_type.as_str()
-        {
+        let (derived, event_type, planned, actual, variation_status) = match row.msg_type.as_str() {
             "0003" => {
                 let movement = Movement {
                     train_id: row.train_id.clone(),
@@ -225,8 +224,7 @@ async fn replay_backlog_history(
                     toc_id: None,
                     variation_status: row.variation_status.clone(),
                 };
-                let mut derived =
-                    journey::apply_movement(&previous, &movement, row.crs.as_deref());
+                let mut derived = journey::apply_movement(&previous, &movement, row.crs.as_deref());
                 // Mirrors trust-consumer::process.rs's own post-apply_movement
                 // override exactly: apply_movement's own delay_minutes is a
                 // coarse variation_status-only estimate; a real timestamp
@@ -434,18 +432,18 @@ mod db_tests {
         .await
         .expect("seed tracked_trains row");
 
-        let matched = attempt_backlog_match(&pool, tracked_train_id, "EUS", scheduled, service_date)
-            .await
-            .expect("attempt_backlog_match");
+        let matched =
+            attempt_backlog_match(&pool, tracked_train_id, "EUS", scheduled, service_date)
+                .await
+                .expect("attempt_backlog_match");
         assert!(matched);
 
-        let (resolution_status, train_uid): (String, Option<String>) = sqlx::query_as(
-            "SELECT resolution_status, train_uid FROM tracked_trains WHERE id = $1",
-        )
-        .bind(tracked_train_id)
-        .fetch_one(&pool)
-        .await
-        .expect("read back tracked_trains");
+        let (resolution_status, train_uid): (String, Option<String>) =
+            sqlx::query_as("SELECT resolution_status, train_uid FROM tracked_trains WHERE id = $1")
+                .bind(tracked_train_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back tracked_trains");
         assert_eq!(resolution_status, "resolved");
         assert_eq!(train_uid, Some("C99999".to_string()));
 
@@ -485,10 +483,15 @@ mod db_tests {
         .await
         .expect("seed tracked_trains row");
 
-        let matched =
-            attempt_backlog_match(&pool, tracked_train_id, "ZZZ-NOWHERE", scheduled, service_date)
-                .await
-                .expect("attempt_backlog_match");
+        let matched = attempt_backlog_match(
+            &pool,
+            tracked_train_id,
+            "ZZZ-NOWHERE",
+            scheduled,
+            service_date,
+        )
+        .await
+        .expect("attempt_backlog_match");
         assert!(!matched);
 
         let (resolution_status,): (String,) =

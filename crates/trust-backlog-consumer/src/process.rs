@@ -325,11 +325,8 @@ mod tests {
 
     #[test]
     fn a_movement_reuses_the_activations_own_service_date() {
-        let activation_msg = TrustMessage::Activation(activation(
-            "221832406",
-            "C21373",
-            "2026-09-04",
-        ));
+        let activation_msg =
+            TrustMessage::Activation(activation("221832406", "C21373", "2026-09-04"));
         let mut state = ProcessorState::default();
         process_message(
             &activation_msg,

@@ -3073,13 +3073,17 @@ mod tests {
         .expect("seed fixture rows");
 
         let pruned = prune_trust_event_backlog(&pool, 1).await.expect("prune");
-        assert_eq!(pruned, 1, "only the 2-day-old row should be pruned at a 1-day retention");
+        assert_eq!(
+            pruned, 1,
+            "only the 2-day-old row should be pruned at a 1-day retention"
+        );
 
-        let remaining: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM trust_event_backlog WHERE train_id = 'TEST-PRUNE-NEW'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let remaining: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM trust_event_backlog WHERE train_id = 'TEST-PRUNE-NEW'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(remaining.0, 1);
 
         sqlx::query("DELETE FROM trust_event_backlog WHERE train_id IN ('TEST-PRUNE-OLD', 'TEST-PRUNE-NEW')")
