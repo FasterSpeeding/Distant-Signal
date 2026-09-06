@@ -447,6 +447,23 @@ mod db_tests {
         assert_eq!(resolution_status, "resolved");
         assert_eq!(train_uid, Some("C99999".to_string()));
 
+        // Real bug caught while running this plan's own end-to-end
+        // verification (Task 13): this test's own fixture cleanup, as
+        // specced, deleted the trust_event_backlog rows but never the
+        // tracked_trains row it inserted above. tracked_trains has a real
+        // UNIQUE(train_uid, service_date) WHERE train_uid IS NOT NULL
+        // constraint (tracked_trains_resolved_identity, added by the
+        // schedule-first design) -- re-running this test without deleting
+        // that row made the SECOND run's own INSERT INTO tracked_trains
+        // violate that constraint against the FIRST run's leftover row
+        // (both resolve to the same train_uid=C99999/service_date). Delete
+        // it here too so this test is idempotent across repeated runs, not
+        // just its own single first execution.
+        sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
+            .bind(tracked_train_id)
+            .execute(&pool)
+            .await
+            .ok();
         sqlx::query("DELETE FROM trust_event_backlog WHERE train_id = 'TEST-BACKLOG-TRAIN-ID'")
             .execute(&pool)
             .await
@@ -501,5 +518,11 @@ mod db_tests {
                 .await
                 .expect("read back tracked_trains");
         assert_eq!(resolution_status, "pending");
+
+        sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
+            .bind(tracked_train_id)
+            .execute(&pool)
+            .await
+            .ok();
     }
 }

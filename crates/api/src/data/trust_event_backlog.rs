@@ -105,7 +105,7 @@ mod db_tests {
         let pool = connect().await;
         let event = fixture_event("TEST-TRUST-BACKLOG-3", "test-dedup-key-3");
 
-        let first = upsert_trust_event_backlog_batch(&pool, &[event.clone()])
+        let first = upsert_trust_event_backlog_batch(&pool, std::slice::from_ref(&event))
             .await
             .expect("first insert");
         assert_eq!(first, 1);
