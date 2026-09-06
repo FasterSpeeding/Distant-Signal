@@ -62,6 +62,10 @@ pub fn router() -> Router {
             axum::routing::get(get_active_tracked_trains),
         )
         .route(
+            "/trust-event-backlog",
+            axum::routing::post(post_trust_event_backlog),
+        )
+        .route(
             "/schedule-feed-ingests",
             axum::routing::get(get_schedule_feed_last_fetched).post(post_schedule_feed_ingest),
         )
@@ -238,6 +242,22 @@ async fn post_train_events(
     Ok(Json(UpsertResponse {
         upserted: events.len() as u64,
     }))
+}
+
+/// `trust-backlog-consumer`'s per-cycle batch of key-journey-point TRUST
+/// events, scoped to catalogued-line CRSs -- see
+/// `crate::data::trust_event_backlog::upsert_trust_event_backlog_batch`.
+async fn post_trust_event_backlog(
+    State(app): State<App>,
+    Json(events): Json<Vec<common::TrustBacklogEventMessage>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let inserted = crate::data::trust_event_backlog::upsert_trust_event_backlog_batch(
+        &app.database,
+        &events,
+    )
+    .await
+    .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted: inserted }))
 }
 
 /// `trust-consumer`'s periodic reference reload -- pending and
