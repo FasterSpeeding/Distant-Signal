@@ -137,6 +137,14 @@ pub(crate) fn build_internal_oauth_routes(
             Method::GET,
             vec![config.internal_oauth_group_trust_consumer.clone()],
         ),
+        // POST-only: trust-backlog-consumer's per-cycle event batch --
+        // ingest::router() never wires a GET handler for this path,
+        // mirroring /train-events exactly (see that entry's own comment).
+        (
+            "/trust-event-backlog",
+            Method::POST,
+            vec![config.internal_oauth_group_trust_backlog.clone()],
+        ),
         (
             "/schedule-feed-ingests",
             Method::GET,
@@ -389,6 +397,10 @@ impl AppState {
             (
                 "internal_oauth_group_full_coverage",
                 &config.internal_oauth_group_full_coverage,
+            ),
+            (
+                "internal_oauth_group_trust_backlog",
+                &config.internal_oauth_group_trust_backlog,
             ),
             (
                 "internal_oauth_group_irish_rail_gtfs",

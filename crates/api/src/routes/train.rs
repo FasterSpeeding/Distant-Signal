@@ -1033,6 +1033,7 @@ mod db_tests {
             internal_oauth_group_schedule_ingest: "svc-schedule-ingest".to_string(),
             internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
             internal_oauth_group_full_coverage: "svc-full-coverage-consumer".to_string(),
+            internal_oauth_group_trust_backlog: "svc-trust-backlog-consumer".to_string(),
             internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
             internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
             internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),
