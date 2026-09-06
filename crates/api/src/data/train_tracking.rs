@@ -397,6 +397,11 @@ pub async fn upsert_train_event(
 ) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
 
+    // Captured here (inside the transaction, via RETURNING) so the Step A
+    // dual-write below can run after commit without re-deriving what this
+    // UPDATE already computed.
+    let mut freshly_resolved: Option<(Option<String>, chrono::NaiveDate, String)> = None;
+
     // Fires on `resolved_train_id.is_some()` ALONE now -- Decision 5 of
     // docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md,
     // the required companion to schedule-first matching: once a schedule
@@ -413,17 +418,19 @@ pub async fn upsert_train_event(
     // never leaves `train_uid` NULL when it does (either freshly supplied
     // here, or already present from an earlier message/schedule match).
     if let Some(train_id) = &event.resolved_train_id {
-        sqlx::query(
+        let row: Option<(Option<String>, chrono::NaiveDate)> = sqlx::query_as(
             "UPDATE tracked_trains \
              SET train_uid = COALESCE($2, train_uid), train_id = $3, \
                  resolution_status = 'resolved', resolved_at = NOW() \
-             WHERE id = $1",
+             WHERE id = $1 \
+             RETURNING train_uid, service_date",
         )
         .bind(event.tracked_train_id)
         .bind(&event.resolved_train_uid)
         .bind(train_id)
-        .execute(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
+        freshly_resolved = row.map(|(train_uid, service_date)| (train_uid, service_date, train_id.clone()));
     }
 
     sqlx::query(
@@ -473,6 +480,22 @@ pub async fn upsert_train_event(
     .await?;
 
     tx.commit().await?;
+
+    // Step A dual-write (docs/superpowers/specs/2026-09-06-shared-train-identity-design.md
+    // §2 Step A), best-effort outside the transaction above -- every write
+    // here is itself an idempotent upsert, so atomicity with the legacy
+    // write isn't required (a failure here just retries cleanly on the
+    // next event for this train).
+    if let Some((Some(train_uid), service_date, train_id)) = freshly_resolved {
+        let trains_id = crate::data::trains::find_or_create_train(pool, &train_uid, service_date).await?;
+        crate::data::trains::mark_train_resolved(pool, trains_id, &train_id).await?;
+        sqlx::query("UPDATE tracked_trains SET trains_id = $2 WHERE id = $1")
+            .bind(event.tracked_train_id)
+            .bind(trains_id)
+            .execute(pool)
+            .await?;
+    }
+
     Ok(())
 }
 
@@ -1914,5 +1937,80 @@ mod db_tests {
         assert_eq!(state.status, Some("en_route".to_string()));
 
         cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_live_resolution_with_a_known_train_uid_dual_writes_the_shared_trains_row -- --ignored --test-threads=1`"]
+    async fn a_live_resolution_with_a_known_train_uid_dual_writes_the_shared_trains_row() {
+        let pool = connect().await;
+        let user_id = "TEST-LIVE-RESOLUTION-DUAL-WRITE";
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind("live-resolution@example.com")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("seed fixture user");
+
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let (tracked_train_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO tracked_trains (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(service_date)
+        .bind("WAT")
+        .bind(service_date.and_hms_opt(18, 32, 0).unwrap().and_utc())
+        .fetch_one(&pool)
+        .await
+        .expect("seed tracked_trains row");
+
+        let event = TrainMovementEventMessage {
+            tracked_train_id,
+            resolved_train_uid: Some("TEST-LIVE-UID".to_string()),
+            resolved_train_id: Some("221832406".to_string()),
+            dedup_key: "test-live-dual-write-dedup".to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            loc_stanox: Some("87212".to_string()),
+            loc_crs: Some("WAT".to_string()),
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("WAT".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: None,
+            eta_next: None,
+            eta_source: None,
+        };
+
+        upsert_train_event(&pool, &event).await.expect("upsert_train_event");
+
+        let (trains_id,): (Option<i64>,) =
+            sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
+                .bind(tracked_train_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back trains_id");
+        let trains_id = trains_id.expect("a resolution with a known train_uid must set trains_id");
+
+        let (train_uid, train_id): (String, Option<String>) =
+            sqlx::query_as("SELECT train_uid, train_id FROM trains WHERE id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back the shared trains row");
+        assert_eq!(train_uid, "TEST-LIVE-UID");
+        assert_eq!(train_id, Some("221832406".to_string()));
+
+        sqlx::query("DELETE FROM tracked_trains WHERE user_id = $1").bind(user_id).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-LIVE-UID'").execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.ok();
     }
 }
