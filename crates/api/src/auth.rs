@@ -290,19 +290,43 @@ impl FromRequestParts<App> for OptionalAuthenticatedUser {
     }
 }
 
-/// Wraps `AuthenticatedUser` with one more lookup against
-/// `chatbot_allowed_users` -- the DS-hosted chat orchestrator (Option B)'s
-/// cost/access gate, embedded-chatbot-dual-mode-design's Decision 5. See
+/// Wraps `AuthenticatedUser` with one more check: does the resolved user's
+/// own `groups` (the already-decoded OIDC `groups` claim, upserted onto
+/// `users.groups` on every login -- see `data::users::upsert_user`) contain
+/// the configured `ServiceArguments::chatbot_access_group`? This is the
+/// DS-hosted embedded chatbot's access gate, embedded-chatbot-dual-mode-
+/// design's Decision 5. See
 /// `docs/superpowers/plans/2026-09-02-embedded-chatbot-option-b.md` Task 2.
 ///
+/// Formerly backed by a per-user `chatbot_allowed_users` DB allowlist
+/// (`data::users::is_chatbot_allowed`, an extra async DB round trip); now a
+/// synchronous check against the `groups` `AuthenticatedUser::
+/// from_request_parts` already resolved for the `401` check above -- an SSO
+/// group is a strictly better fit for "which real people get this" than a
+/// hand-maintained per-user table: an operator manages membership in
+/// Authentik, the same place every other access group in this app already
+/// lives, instead of a bespoke admin path onto this one table. The
+/// allowlist table itself is dropped (see the migration removing it);
+/// nothing else read it.
+///
 /// Deliberately a SEPARATE rejection shape from `AuthenticatedUser`'s own
-/// `401` ("no session at all"): a resolved, real user who simply isn't on
-/// the list is a genuinely different case and, per that design's own Error
+/// `401` ("no session at all"): a resolved, real user who simply isn't in
+/// the group is a genuinely different case and, per that design's own Error
 /// handling section, must not collapse into a `404` -- this isn't an
 /// ownership check hiding a secret resource, the feature's existence isn't
-/// a secret, so a logged-in-but-not-allowlisted user gets a plain `403`
+/// a secret, so a logged-in-but-not-in-group user gets a plain `403`
 /// "not available for your account" instead.
 pub struct ChatbotAuthorizedUser(pub AuthenticatedUser);
+
+/// Does `groups` (a resolved user's own group memberships) include the
+/// configured chatbot-access SSO group? Split out from the extractor below
+/// so it's testable without a live database -- `AuthenticatedUser::
+/// from_request_parts` (the only path that produces a real `groups` list)
+/// always hits `sessions`/`users`, but this check itself needs neither
+/// those tables nor the removed `chatbot_allowed_users` one.
+fn has_chatbot_access(groups: &[String], required_group: &str) -> bool {
+    groups.iter().any(|group| group == required_group)
+}
 
 impl FromRequestParts<App> for ChatbotAuthorizedUser {
     type Rejection = (axum::http::StatusCode, axum::Json<serde_json::Value>);
@@ -311,22 +335,39 @@ impl FromRequestParts<App> for ChatbotAuthorizedUser {
         let user = AuthenticatedUser::from_request_parts(parts, app)
             .await
             .map_err(|(status, msg)| (status, axum::Json(serde_json::json!({ "error": msg }))))?;
-        let allowed = crate::data::users::is_chatbot_allowed(&app.database, &user.id)
-            .await
-            .map_err(|err| {
-                tracing::error!(error = ?err, "chatbot allowlist lookup failed");
-                (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(serde_json::json!({ "error": "chatbot allowlist lookup failed" })),
-                )
-            })?;
-        if !allowed {
+        if !has_chatbot_access(&user.groups, &app.config.chatbot_access_group) {
             return Err((
                 axum::http::StatusCode::FORBIDDEN,
                 axum::Json(serde_json::json!({ "error": "chatbot_not_available" })),
             ));
         }
         Ok(ChatbotAuthorizedUser(user))
+    }
+}
+
+#[cfg(test)]
+mod chatbot_access_tests {
+    use super::*;
+
+    #[test]
+    fn a_user_whose_groups_contains_the_configured_group_is_granted_access() {
+        let groups = vec![
+            "mcp-users".to_string(),
+            "distant-signal-chatbot-users".to_string(),
+        ];
+        assert!(has_chatbot_access(&groups, "distant-signal-chatbot-users"));
+    }
+
+    #[test]
+    fn a_user_whose_groups_does_not_contain_the_configured_group_is_denied_access() {
+        let groups = vec!["mcp-users".to_string()];
+        assert!(!has_chatbot_access(&groups, "distant-signal-chatbot-users"));
+    }
+
+    #[test]
+    fn a_user_with_no_groups_at_all_is_denied_access() {
+        let groups: Vec<String> = Vec::new();
+        assert!(!has_chatbot_access(&groups, "distant-signal-chatbot-users"));
     }
 }
 
@@ -627,6 +668,7 @@ mod route_scoping_tests {
             internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
             internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
             internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),
+            chatbot_access_group: "distant-signal-chatbot-users".to_string(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),
             sso_client_secret: "test-secret".to_string(),

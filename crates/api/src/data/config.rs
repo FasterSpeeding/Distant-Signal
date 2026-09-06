@@ -95,6 +95,21 @@ pub struct ServiceArguments {
     /// Task 1.
     #[arg(long, env, default_value = "svc-poller-nir-stations")]
     pub internal_oauth_group_nir_stations: String,
+    /// Authentik/SSO group (via the `groups` OIDC claim, already decoded
+    /// into `AuthenticatedUser.groups` on every login -- see
+    /// `crates/api/src/auth/oidc.rs` and `data::users::upsert_user`) that
+    /// grants access to the embedded chatbot (`ChatbotAuthorizedUser`,
+    /// `crates/api/src/auth.rs`). This is an END-USER access group, NOT one
+    /// of the `internal_oauth_group_*` fields above -- those gate
+    /// machine/service-account credentials on `/private/*` routes; this one
+    /// gates a real person's own SSO session on `GET /public/chatbot/access`.
+    /// Not secret (a group name isn't confidential). Suggested default only
+    /// -- an operator's actual Authentik group name is not mandated by this
+    /// design. Supersedes the former per-user `chatbot_allowed_users` DB
+    /// allowlist (dropped; see the migration removing it).
+    #[arg(long, env, default_value = "distant-signal-chatbot-users")]
+    pub chatbot_access_group: String,
+
     /// OIDC issuer base URL (e.g. `https://sso.example.com/realms/rail`).
     /// `crates/api` discovers every other endpoint (authorization, token,
     /// JWKS) from this single URL's `.well-known/openid-configuration`

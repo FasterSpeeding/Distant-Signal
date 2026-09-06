@@ -1,5 +1,5 @@
 //! `/public/chatbot/access` -- a beta/feature-flag gate for the `/chat`
-//! page's own visibility. NOT spend-protection: that was this table's
+//! page's own visibility. NOT spend-protection: that was this gate's
 //! original purpose (dual-mode design's Decision 5), back when Option B
 //! held a DS-funded Anthropic key server-side. Once each user supplies
 //! their own Anthropic key directly to their own browser (see
@@ -9,6 +9,14 @@
 //! `distant-signal-mcp`'s own `mcp-users`/`mcp-live-boards` access groups
 //! (which gate the tools themselves, for a materially different
 //! population -- Option C's arbitrary Claude.ai users included).
+//!
+//! Backed by an Authentik/SSO group membership check
+//! (`ServiceArguments::chatbot_access_group`, checked against the resolved
+//! user's own `AuthenticatedUser::groups` -- see `crate::auth::
+//! ChatbotAuthorizedUser`), not a per-user DB allowlist: the former
+//! `chatbot_allowed_users` table this gate used to consult is dropped, an
+//! operator now manages membership in Authentik like every other access
+//! group in this app.
 //!
 //! One caller: `frontend/app/chat/page.tsx`'s own page-load gate. (The
 //! former second caller, `orchestrator/`'s `checkChatbotAccess` -- "the
@@ -29,8 +37,9 @@ pub fn router() -> Router {
 
 /// `401` (via `ChatbotAuthorizedUser`'s inner `AuthenticatedUser`, unchanged)
 /// for no session at all; `403 { "error": "chatbot_not_available" }` for a
-/// logged-in, non-allowlisted user; `200 { "allowed": true }` otherwise --
-/// never `404`, see `ChatbotAuthorizedUser`'s own doc comment.
+/// logged-in user not in the configured chatbot-access SSO group;
+/// `200 { "allowed": true }` otherwise -- never `404`, see
+/// `ChatbotAuthorizedUser`'s own doc comment.
 async fn access(ChatbotAuthorizedUser(_user): ChatbotAuthorizedUser) -> Json<Value> {
     Json(json!({ "allowed": true }))
 }
@@ -78,6 +87,7 @@ mod db_tests {
             internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
             internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
             internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),
+            chatbot_access_group: "distant-signal-chatbot-users".to_string(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),
             sso_client_secret: "test-secret".to_string(),
@@ -122,13 +132,22 @@ mod db_tests {
             .with_state(app)
     }
 
-    async fn seed_session(pool: &PgPool, user_id: &str) -> String {
+    /// Seeds a fixture user (with the given `groups` -- the resolved OIDC
+    /// `groups` claim `upsert_user` would otherwise have written on login)
+    /// plus a live session for it, returning the raw (unhashed) session
+    /// token to send as a cookie. `groups` is what `ChatbotAuthorizedUser`
+    /// now checks directly, replacing the former `chatbot_allowed_users`
+    /// allowlist row this helper used to also insert.
+    async fn seed_session(pool: &PgPool, user_id: &str, groups: &[&str]) -> String {
+        let groups: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
         sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO users (id, email, name, groups) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (id) DO UPDATE SET groups = EXCLUDED.groups",
         )
         .bind(user_id)
         .bind(format!("{user_id}@example.com"))
         .bind(user_id)
+        .bind(&groups)
         .execute(pool)
         .await
         .expect("seed fixture user");
@@ -140,18 +159,8 @@ mod db_tests {
         raw_token
     }
 
-    async fn allowlist(pool: &PgPool, user_id: &str) {
-        sqlx::query(
-            "INSERT INTO chatbot_allowed_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
-        )
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .expect("insert allowlist row");
-    }
-
     async fn cleanup_user(pool: &PgPool, user_id: &str) {
-        // chatbot_allowed_users/sessions both cascade via ON DELETE CASCADE.
+        // sessions cascades via ON DELETE CASCADE.
         sqlx::query("DELETE FROM users WHERE id = $1")
             .bind(user_id)
             .execute(pool)
@@ -200,9 +209,9 @@ mod db_tests {
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 chatbot_access -- --ignored --test-threads=1`"]
-    async fn logged_in_but_not_allowlisted_is_403_not_404() {
+    async fn logged_in_user_missing_the_chatbot_group_is_403_not_404() {
         let pool = connect().await;
-        let token = seed_session(&pool, "TEST-CHATBOT-NOT-ALLOWED").await;
+        let token = seed_session(&pool, "TEST-CHATBOT-NO-GROUP", &[]).await;
         let router = test_router(test_app(pool.clone()));
 
         let (status, body) = request(router, Some(&token)).await;
@@ -212,17 +221,40 @@ mod db_tests {
             Some("chatbot_not_available")
         );
 
-        cleanup_user(&pool, "TEST-CHATBOT-NOT-ALLOWED").await;
+        cleanup_user(&pool, "TEST-CHATBOT-NO-GROUP").await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 chatbot_access -- --ignored --test-threads=1`"]
-    async fn allowlisted_user_gets_200_allowed_true() {
+    async fn logged_in_user_with_a_different_group_is_403_not_404() {
         let pool = connect().await;
-        let token = seed_session(&pool, "TEST-CHATBOT-ALLOWED").await;
-        allowlist(&pool, "TEST-CHATBOT-ALLOWED").await;
+        let token = seed_session(&pool, "TEST-CHATBOT-WRONG-GROUP", &["some-other-group"]).await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (status, body) = request(router, Some(&token)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            body.get("error").and_then(Value::as_str),
+            Some("chatbot_not_available")
+        );
+
+        cleanup_user(&pool, "TEST-CHATBOT-WRONG-GROUP").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                chatbot_access -- --ignored --test-threads=1`"]
+    async fn user_in_the_configured_chatbot_access_group_gets_200_allowed_true() {
+        let pool = connect().await;
+        let token = seed_session(
+            &pool,
+            "TEST-CHATBOT-ALLOWED",
+            &["distant-signal-chatbot-users"],
+        )
+        .await;
         let router = test_router(test_app(pool.clone()));
 
         let (status, body) = request(router, Some(&token)).await;
