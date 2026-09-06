@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
-use crate::data::{delay_repay_rules, eta_blend, ticket_extraction, train_tracking};
+use crate::data::{delay_repay_rules, eta_blend, schedule_matching, ticket_extraction, train_tracking};
 
 pub fn router() -> Router {
     Router::new()
@@ -426,9 +426,37 @@ async fn post_track(
         .await
         .map_err(internal_error("create tracking pin"))?;
 
+    // Best-effort schedule-first match, attempted synchronously in the
+    // same request (Decision 3 of
+    // docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md).
+    // A failure here must never fail pin creation itself -- the periodic
+    // sweep (Task 8) retries any pin this call didn't resolve, including
+    // one that failed with a real error.
+    let resolution_status = match schedule_matching::attempt_schedule_match(
+        &app.database,
+        tracking_id,
+        &pin.origin_crs,
+        pin.scheduled_departure,
+        pin.service_date,
+        &app.schedule_crs_line_index,
+    )
+    .await
+    {
+        Ok(true) => "schedule_matched",
+        Ok(false) => "pending",
+        Err(err) => {
+            tracing::warn!(
+                error = ?err,
+                tracking_id,
+                "schedule match attempt failed at pin creation; pin stays pending"
+            );
+            "pending"
+        }
+    };
+
     Ok(Json(TrackPinResponse {
         tracking_id,
-        resolution_status: "pending",
+        resolution_status,
     }))
 }
 
@@ -973,6 +1001,18 @@ mod db_tests {
     /// `crate::routes::lines::db_tests::test_app` -- see this module's own
     /// doc comment for why it's not shared cross-file.
     fn test_app(pool: PgPool) -> App {
+        test_app_with_schedule_index(pool, std::collections::HashMap::new())
+    }
+
+    /// Same fixture as `test_app`, but with a caller-supplied
+    /// `schedule_crs_line_index` -- used by the one route test
+    /// (`post_track_schedule_matches_a_pin_whose_train_a_live_movement_would_have_missed`)
+    /// that needs a real candidate line for its origin CRS; every other
+    /// test in this module gets the empty-index default via `test_app`.
+    fn test_app_with_schedule_index(
+        pool: PgPool,
+        schedule_crs_line_index: std::collections::HashMap<String, Vec<String>>,
+    ) -> App {
         let config = ServiceArguments {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
@@ -1026,7 +1066,7 @@ mod db_tests {
             )
             .expect("construct placeholder internal-oauth verifier"),
             internal_oauth_routes: Vec::new(),
-            schedule_crs_line_index: std::collections::HashMap::new(),
+            schedule_crs_line_index,
         })
     }
 
@@ -1629,6 +1669,129 @@ mod db_tests {
         );
 
         cleanup_user(&pool, "TEST-ROUTE-RENAME-TICKET-OWNER").await;
+    }
+
+    // --- post_track (schedule-first matching, Task 7) -----------------------
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_track_schedule_matches -- --ignored --test-threads=1`"]
+    async fn post_track_schedule_matches_a_pin_whose_train_a_live_movement_would_have_missed() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-SCHEDULE-MATCH").await;
+
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TEST-ROUTE-EUS-STANOX', 'EUS', 'EUSTON', 'LONDON EUSTON', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+
+        // `validate_pin` rejects any `scheduled_departure` more than
+        // `MAX_PIN_AGE` (6h) in the past relative to the real wall clock at
+        // test time, so this can't be a fixed calendar date -- it's derived
+        // from `Utc::now()` instead, then converted to its own Europe/London
+        // local wall time/date so the seeded `schedule_line_population`
+        // entry's `booked_departure` and `service_date` land exactly where
+        // `attempt_schedule_match`'s `london_to_utc` conversion will look for
+        // them, whatever day this test actually runs on.
+        let scheduled_departure = chrono::Utc::now();
+        let london_now = scheduled_departure.with_timezone(&chrono_tz::Europe::London);
+        let service_date = london_now.date_naive();
+        let booked_departure = london_now.format("%H:%M").to_string();
+
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ('west-coast-main-line', $1, $2) \
+             ON CONFLICT (line_id, service_date) DO UPDATE SET population = EXCLUDED.population",
+        )
+        .bind(service_date)
+        .bind(serde_json::json!([{
+            "uid": "C88888",
+            "calling_points": [{
+                "tiploc": "EUSTON ",
+                "kind": "Origin",
+                "booked_arrival": null,
+                "booked_departure": booked_departure,
+                "is_half_minute_arrival": false,
+                "is_half_minute_departure": false
+            }]
+        }]))
+        .execute(&pool)
+        .await
+        .expect("seed schedule_line_population");
+
+        // This is the one route test that needs a real candidate line --
+        // the shared `test_app` fixture's `schedule_crs_line_index` stays
+        // empty, matching every other test's fixture default.
+        let app = test_app_with_schedule_index(
+            pool.clone(),
+            std::collections::HashMap::from([(
+                "EUS".to_string(),
+                vec!["west-coast-main-line".to_string()],
+            )]),
+        );
+        let router = test_router(app);
+        let (status, body) = post_json(
+            router,
+            "/Train/track".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "service_date": service_date.to_string(),
+                "origin_crs": "EUS",
+                "scheduled_departure": scheduled_departure.to_rfc3339(),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        assert_eq!(
+            body.get("resolutionStatus").and_then(Value::as_str),
+            Some("schedule_matched")
+        );
+
+        sqlx::query("DELETE FROM schedule_line_population WHERE line_id = 'west-coast-main-line' AND service_date = $1")
+            .bind(service_date)
+            .execute(&pool)
+            .await
+            .expect("cleanup population");
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-ROUTE-EUS-STANOX'")
+            .execute(&pool)
+            .await
+            .expect("cleanup stanox_crs");
+        cleanup_user(&pool, "TEST-ROUTE-SCHEDULE-MATCH").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                post_track_schedule_matches -- --ignored --test-threads=1`"]
+    async fn post_track_with_no_candidate_line_stays_pending() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-ROUTE-SCHEDULE-NO-MATCH").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let now = chrono::Utc::now();
+        let (status, body) = post_json(
+            router,
+            "/Train/track".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "service_date": now.date_naive().to_string(),
+                "origin_crs": "ZZZ",
+                "scheduled_departure": now.to_rfc3339(),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        assert_eq!(
+            body.get("resolutionStatus").and_then(Value::as_str),
+            Some("pending")
+        );
+
+        cleanup_user(&pool, "TEST-ROUTE-SCHEDULE-NO-MATCH").await;
     }
 
     // --- get_by_tracking_id -------------------------------------------------
