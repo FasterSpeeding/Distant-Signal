@@ -314,4 +314,87 @@ mod db_tests {
             "no trains row should be created with no known train_uid"
         );
     }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                ingest_shared_movement_twice_with_the_same_event_writes_exactly_one_row_each \
+                -- --ignored --test-threads=1`"]
+    async fn ingest_shared_movement_twice_with_the_same_event_writes_exactly_one_row_each() {
+        // Same real code path (ingest_shared_movement) called twice against
+        // non-reset state -- not a duplicated inline copy, not a reset in
+        // between -- proving the composed find_or_create_train (ON CONFLICT
+        // DO UPDATE ... RETURNING id), mark_train_resolved (plain overwrite
+        // UPDATE), and upsert_train_movement (ON CONFLICT DO NOTHING /
+        // DO UPDATE) are genuinely safe against Redis Streams' at-least-once
+        // redelivery of the same trust-backlog batch. Tasks 7 and 10 both had
+        // to be fixed in review because their "idempotency" tests didn't
+        // actually re-invoke the same code path against non-reset state --
+        // this test exists specifically so that mistake can't recur silently
+        // here.
+        let pool = connect().await;
+        let event = TrustBacklogEventMessage {
+            crs: Some("WAT".to_string()),
+            train_uid: Some("TEST-INGEST-TWICE-UID".to_string()),
+            train_id: "TEST-INGEST-TWICE-TRAIN-ID".to_string(),
+            service_date: "2026-09-06".parse().unwrap(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T19:16:00Z".parse().unwrap()),
+            variation_status: Some("LATE".to_string()),
+            delay_minutes: Some(1),
+            dedup_key: "test-ingest-shared-twice-dedup".to_string(),
+        };
+
+        ingest_shared_movement(&pool, &event)
+            .await
+            .expect("first ingest_shared_movement");
+        ingest_shared_movement(&pool, &event)
+            .await
+            .expect("second ingest_shared_movement, same event, non-reset state");
+
+        let trains_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM trains WHERE train_uid = 'TEST-INGEST-TWICE-UID'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count trains");
+        assert_eq!(trains_count, 1, "exactly one trains row after two identical calls");
+
+        let (trains_id,): (i64,) =
+            sqlx::query_as("SELECT id FROM trains WHERE train_uid = 'TEST-INGEST-TWICE-UID'")
+                .fetch_one(&pool)
+                .await
+                .expect("trains id");
+
+        let movement_events_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM train_movement_events WHERE trains_id = $1",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count train_movement_events");
+        assert_eq!(
+            movement_events_count, 1,
+            "exactly one train_movement_events row after two identical calls"
+        );
+
+        let current_state_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM train_current_state WHERE trains_id = $1",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count train_current_state");
+        assert_eq!(
+            current_state_count, 1,
+            "exactly one train_current_state row after two identical calls"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
 }
