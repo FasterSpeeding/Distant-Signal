@@ -1877,6 +1877,18 @@ mod db_tests {
             "the schedule-matched train_uid must survive, COALESCE-preserved, not overwritten with NULL"
         );
 
+        // This resolution ends up with both a known train_uid ("C88888",
+        // preserved from the earlier schedule match) and a train_id, so
+        // upsert_train_event's Step A dual-write fires and creates a row in
+        // the shared `trains` table. cleanup_user only cleans
+        // tracked_train_tickets/tracked_trains/users, so this table needs
+        // its own cleanup here (same convention as
+        // crates/api/src/data/schedule_matching.rs and
+        // crates/api/src/data/trust_event_backlog_match.rs).
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'C88888'")
+            .execute(&pool)
+            .await
+            .ok();
         cleanup_user(&pool, user_id).await;
     }
 
@@ -1904,6 +1916,13 @@ mod db_tests {
         assert_eq!(state.train_uid, Some("C21373".to_string()));
         assert_eq!(state.train_id, Some("221832406".to_string()));
 
+        // Both fields resolve here, so the Step A dual-write fires and
+        // creates a row in the shared `trains` table -- clean it up (see
+        // the comment on the sibling test above for the convention).
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'C21373'")
+            .execute(&pool)
+            .await
+            .ok();
         cleanup_user(&pool, user_id).await;
     }
 
@@ -2012,5 +2031,68 @@ mod db_tests {
         sqlx::query("DELETE FROM tracked_trains WHERE user_id = $1").bind(user_id).execute(&pool).await.ok();
         sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-LIVE-UID'").execute(&pool).await.ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_resolution_with_no_known_train_uid_leaves_trains_id_null -- --ignored --test-threads=1`"]
+    async fn a_resolution_with_no_known_train_uid_leaves_trains_id_null() {
+        // The brief's accepted gap: a live-TRUST resolution that sets
+        // resolved_train_id but never learned a train_uid at all (no prior
+        // schedule match seeded train_uid on the row, and this event carries
+        // no resolved_train_uid either) must NOT dual-write onto the shared
+        // `trains` table -- tracked_trains.trains_id must stay NULL. This is
+        // distinct from the
+        // upsert_train_event_with_only_resolved_train_id_resolves_and_preserves_the_existing_train_uid
+        // test above, which seeds a row that already has a known train_uid
+        // from a prior schedule match (so COALESCE preserves it and the
+        // dual-write correctly *does* fire for that case).
+        let pool = connect().await;
+        let user_id = "TEST-RESOLUTION-NO-KNOWN-TRAIN-UID";
+        seed_user(&pool, user_id).await;
+        // No train_uid column set here at all -- this pin was never
+        // schedule-matched, unlike the sibling test's fixture.
+        let tracking_id = seed_tracked_train(&pool, user_id).await;
+
+        let mut event = fixture_event(tracking_id, "dedup-no-known-train-uid");
+        event.resolved_train_uid = None; // never learned -- the accepted gap
+        event.resolved_train_id = Some("221832406".to_string());
+
+        upsert_train_event(&pool, &event).await.expect("upsert train event");
+
+        let state = get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("read tracked train")
+            .expect("tracked train exists");
+        assert_eq!(
+            state.resolution_status, "resolved",
+            "the pin itself must still resolve"
+        );
+        assert_eq!(state.train_id, Some("221832406".to_string()));
+        assert_eq!(state.train_uid, None, "train_uid was never known, so it must stay NULL");
+
+        let (trains_id,): (Option<i64>,) =
+            sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
+                .bind(tracking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back trains_id");
+        assert_eq!(
+            trains_id, None,
+            "no train_uid was ever known, so the Step A dual-write must not fire and trains_id must stay NULL"
+        );
+
+        let leaked: Vec<(i64,)> =
+            sqlx::query_as("SELECT id FROM trains WHERE train_id = $1")
+                .bind("221832406")
+                .fetch_all(&pool)
+                .await
+                .expect("check for leaked trains rows");
+        assert!(
+            leaked.is_empty(),
+            "no trains row should have been created for this train_id when train_uid was never known, found: {leaked:?}"
+        );
+
+        cleanup_user(&pool, user_id).await;
     }
 }
