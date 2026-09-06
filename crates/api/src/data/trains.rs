@@ -156,4 +156,70 @@ mod db_tests {
             .await
             .ok();
     }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                find_or_create_train_with_schedule_match_never_clobbers_an_earlier_match -- --ignored"]
+    async fn find_or_create_train_with_schedule_match_never_clobbers_an_earlier_match() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let scheduled_departure: chrono::DateTime<chrono::Utc> =
+            "2026-09-06T12:00:00Z".parse().unwrap();
+        let calling_points = serde_json::json!(["PAD", "RDG"]);
+
+        let first_id = find_or_create_train_with_schedule_match(
+            &pool,
+            "TEST-TRAINS-UID-3",
+            service_date,
+            "PAD",
+            scheduled_departure,
+            None,
+            "line-a",
+            &calling_points,
+        )
+        .await
+        .expect("first find_or_create_train_with_schedule_match");
+
+        let second_id = find_or_create_train_with_schedule_match(
+            &pool,
+            "TEST-TRAINS-UID-3",
+            service_date,
+            "ZZZ",
+            scheduled_departure,
+            None,
+            "line-b",
+            &calling_points,
+        )
+        .await
+        .expect("second find_or_create_train_with_schedule_match");
+
+        assert_eq!(
+            first_id, second_id,
+            "the same (train_uid, service_date) must resolve to one row"
+        );
+
+        let (origin_crs, matched_line_id): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT origin_crs, matched_line_id FROM trains WHERE id = $1",
+        )
+        .bind(first_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back trains row");
+        assert_eq!(
+            origin_crs,
+            Some("PAD".to_string()),
+            "a later independent match must not clobber the first match's origin_crs"
+        );
+        assert_eq!(
+            matched_line_id,
+            Some("line-a".to_string()),
+            "a later independent match must not clobber the first match's matched_line_id"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(first_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
 }
