@@ -13,6 +13,7 @@ pub mod station_stats;
 pub mod ticket_extraction;
 pub mod train_tracking;
 pub mod trust_event_backlog;
+pub mod trust_event_backlog_match;
 pub mod users;
 
 pub use common::{LineDefinition, Station};

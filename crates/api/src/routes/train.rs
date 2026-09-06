@@ -456,6 +456,36 @@ async fn post_track(
         }
     };
 
+    // Best-effort backlog match for a pin whose train's live TRUST window
+    // has already closed (docs/superpowers/plans/2026-09-05-trust-event-backlog-plan.md
+    // Task 5). Independent of, and safe to run in any order relative to,
+    // the schedule-first match above -- see that plan's own "Dependency
+    // on the schedule-first plan" section: attempt_schedule_match's own
+    // UPDATE is guarded by `WHERE train_uid IS NULL AND resolution_status
+    // = 'pending'`, so it no-ops against a row this call already
+    // resolved, and this call's own upsert_train_event write has no
+    // dependency on resolution_status's prior value at all. A failure
+    // here must never fail pin creation itself, same posture as the
+    // schedule match above; unlike that one, there is no periodic sweep
+    // to retry a backlog match later -- see attempt_backlog_match's own
+    // module doc comment for why that's a deliberate simplification, not
+    // an oversight. Note this doesn't update `resolution_status` above:
+    // the response returned to the caller reflects the schedule-match
+    // outcome only, same as the plan's own Task 5 Step 3 sketch -- a
+    // successful backlog match still lands correctly in the database, a
+    // subsequent GET just sees it a moment sooner than this response does.
+    if let Err(err) = crate::data::trust_event_backlog_match::attempt_backlog_match(
+        &app.database,
+        tracking_id,
+        &pin.origin_crs,
+        pin.scheduled_departure,
+        pin.service_date,
+    )
+    .await
+    {
+        tracing::warn!(error = ?err, tracking_id, "backlog match attempt failed; pin remains pending");
+    }
+
     Ok(Json(TrackPinResponse {
         tracking_id,
         resolution_status,
