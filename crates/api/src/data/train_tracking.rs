@@ -618,20 +618,30 @@ pub struct TrackedTrainState {
 // and fall back to the bare code -- the exact outcome this join exists to
 // remove, for the subset of users most likely to hit it (see Decision 3 of
 // docs/superpowers/plans/2026-09-02-frontend-ux-review-fixes.md).
+// `LEFT JOIN trains tr`: Step C of
+// docs/superpowers/specs/2026-09-06-shared-train-identity-design.md §2 --
+// train_uid/train_id/schedule_destination_crs/schedule_calling_points now
+// come from the shared trains row, not tracked_trains' own duplicate
+// columns (those columns still physically exist and are still written by
+// Tasks 3-5's dual-write and by apply_schedule_match until Task 21 retires
+// those writes -- this is a READ-only flip). `cs` still joins on
+// `tracked_train_id` here -- train_current_state isn't re-pointed to
+// trains_id until Step D (Task 11).
 const TRACKED_TRAIN_STATE_SELECT: &str = "\
     SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
            so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-           tt.resolution_status, tt.train_uid, tt.train_id, \
-           tt.schedule_destination_crs, ssd.name AS schedule_destination_name, \
-           tt.schedule_calling_points, \
+           tt.resolution_status, tr.train_uid, tr.train_id, \
+           tr.destination_crs AS schedule_destination_crs, ssd.name AS schedule_destination_name, \
+           tr.calling_points AS schedule_calling_points, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
            cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source, \
            tt.custom_name \
     FROM tracked_trains tt \
+    LEFT JOIN trains tr ON tr.id = tt.trains_id \
     LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
     LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
     LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs) \
-    LEFT JOIN stations ssd ON ssd.crs = UPPER(tt.schedule_destination_crs)";
+    LEFT JOIN stations ssd ON ssd.crs = UPPER(tr.destination_crs)";
 
 /// A user's own tracked-train list, lighter than `TrackedTrainState`
 /// (Decision 1 of the design spec) -- excludes live movement detail
@@ -686,9 +696,10 @@ pub async fn list_tracked_trains_for_user(
     let rows = sqlx::query_as::<_, TrackedTrainListItem>(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-                tt.pin_scheduled_departure, tt.resolution_status, tt.train_uid, \
+                tt.pin_scheduled_departure, tt.resolution_status, tr.train_uid, \
                 cs.status, cs.delay_minutes, tt.tracked_at, tt.custom_name \
          FROM tracked_trains tt \
+         LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
          LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
          LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs) \
@@ -722,7 +733,7 @@ pub async fn get_by_uid_and_date(
     service_date: chrono::NaiveDate,
 ) -> anyhow::Result<Option<TrackedTrainState>> {
     let row = sqlx::query_as::<_, TrackedTrainState>(&format!(
-        "{TRACKED_TRAIN_STATE_SELECT} WHERE tt.train_uid = $1 AND tt.service_date = $2"
+        "{TRACKED_TRAIN_STATE_SELECT} WHERE tr.train_uid = $1 AND tt.service_date = $2"
     ))
     .bind(train_uid)
     .bind(service_date)
@@ -2068,8 +2079,35 @@ mod db_tests {
             state.resolution_status, "resolved",
             "the pin itself must still resolve"
         );
-        assert_eq!(state.train_id, Some("221832406".to_string()));
+        // Step C consequence, not a regression in this test's own subject
+        // (upsert_train_event): the read model's `train_id` now comes from
+        // the joined `trains` row (see TRACKED_TRAIN_STATE_SELECT), and
+        // this is exactly the design's own "Named edge case" (design spec
+        // §2 Step B) -- train_id known, train_uid never known, so trains_id
+        // stays permanently NULL and the join can never surface it. The
+        // physical tracked_trains.train_id column is still correctly set
+        // (asserted directly against the column below); only the read
+        // model built through the join loses visibility into it.
+        assert_eq!(
+            state.train_id, None,
+            "accepted gap (design spec's Named Edge Case): with no known train_uid, trains_id \
+             never gets linked, so the joined read can't surface train_id even though \
+             tracked_trains' own column has it"
+        );
         assert_eq!(state.train_uid, None, "train_uid was never known, so it must stay NULL");
+
+        let (own_train_id,): (Option<String>,) =
+            sqlx::query_as("SELECT train_id FROM tracked_trains WHERE id = $1")
+                .bind(tracking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back tracked_trains.train_id directly");
+        assert_eq!(
+            own_train_id,
+            Some("221832406".to_string()),
+            "tracked_trains' own train_id column is still correctly set by upsert_train_event -- \
+             only the joined read model loses visibility into it"
+        );
 
         let (trains_id,): (Option<i64>,) =
             sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
@@ -2092,6 +2130,96 @@ mod db_tests {
             leaked.is_empty(),
             "no trains row should have been created for this train_id when train_uid was never known, found: {leaked:?}"
         );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    // --- Step C cutover: reads now come from the joined `trains` row -----
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_tracking_id_reads_identity_from_the_joined_trains_row -- --ignored --test-threads=1`"]
+    async fn get_by_tracking_id_reads_identity_from_the_joined_trains_row_not_tracked_trains_own_stale_column()
+    {
+        let pool = connect().await;
+        let user_id = "TEST-STEP-C-CUTOVER";
+        seed_user(&pool, user_id).await;
+
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(&pool, "STEPC-UID", service_date)
+            .await
+            .expect("find_or_create_train");
+
+        // The row's OWN train_uid column is deliberately wrong -- proving
+        // the read below trusts the joined `trains` row, not this column.
+        let (tracked_train_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO tracked_trains \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, trains_id, train_uid) \
+             VALUES ($1, $2, 'EUS', $3, $4, 'STALE-WRONG-UID') RETURNING id",
+        )
+        .bind(user_id)
+        .bind(service_date)
+        .bind(service_date.and_hms_opt(19, 15, 0).unwrap().and_utc())
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed tracked_trains row with a stale own train_uid");
+
+        let state = get_by_tracking_id(&pool, tracked_train_id)
+            .await
+            .expect("get_by_tracking_id")
+            .expect("row exists");
+        assert_eq!(
+            state.train_uid,
+            Some("STEPC-UID".to_string()),
+            "must read train_uid from the joined trains row, not tracked_trains' own stale column"
+        );
+
+        sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
+            .bind(tracked_train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// Legacy-pin regression guard: a pin still stuck at `trains_id IS NULL`
+    /// (never resolved -- Task 7's backfill only ever touches
+    /// `train_uid IS NOT NULL` rows, so a genuinely-`pending` pin never gets
+    /// one) must still come back with every `trains`-derived field `None`,
+    /// via the `LEFT JOIN` -- not be silently excluded, which an inadvertent
+    /// `JOIN`/`INNER JOIN` would do.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_tracking_id_a_legacy_unresolved_pin_with_no_trains_id_still_returns_the_row \
+                -- --ignored --test-threads=1`"]
+    async fn get_by_tracking_id_a_legacy_unresolved_pin_with_no_trains_id_still_returns_the_row() {
+        let pool = connect().await;
+        let user_id = "TEST-STEP-C-LEFT-JOIN";
+        seed_user(&pool, user_id).await;
+        let tracking_id = seed_tracked_train(&pool, user_id).await;
+
+        let state = get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("get_by_tracking_id")
+            .expect("row must still be returned even with trains_id NULL");
+        assert_eq!(state.resolution_status, "pending");
+        assert_eq!(
+            state.train_uid, None,
+            "no trains row to join against -- must be None, not an error or a missing row"
+        );
+        assert_eq!(state.train_id, None);
+        assert_eq!(state.schedule_destination_crs, None);
+        assert_eq!(state.schedule_calling_points, None);
 
         cleanup_user(&pool, user_id).await;
     }

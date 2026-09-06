@@ -1164,6 +1164,22 @@ mod db_tests {
             .execute(pool)
             .await
             .expect("cleanup fixture tracked_train_tickets rows");
+        // `seed_tracked_train` (Step C: `find_or_create_train`) can leave a
+        // shared `trains` row behind that nothing else references once the
+        // owning `tracked_trains` row below is deleted -- clean those up
+        // first, while the FK linking them is still readable, so repeat
+        // runs of the SAME fixture identity (e.g. "A33333") don't collide
+        // with a leftover row's `ON CONFLICT (train_uid, service_date)`
+        // ...though that upsert is idempotent anyway, leaving it behind
+        // would just be silent, unbounded fixture-data accumulation.
+        sqlx::query(
+            "DELETE FROM trains WHERE id IN \
+                (SELECT trains_id FROM tracked_trains WHERE user_id = $1 AND trains_id IS NOT NULL)",
+        )
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("cleanup fixture trains rows");
         sqlx::query("DELETE FROM tracked_trains WHERE user_id = $1")
             .bind(user_id)
             .execute(pool)
@@ -1189,7 +1205,15 @@ mod db_tests {
     /// matching `train_current_state` row so a 200 response has non-null
     /// state to assert on. `train_uid: Some(..)` also marks the row
     /// `resolved` (required for `get_by_uid_and_date` to find it at all --
-    /// see that route's `WHERE tt.train_uid = $1 AND tt.service_date = $2`).
+    /// see that route's `WHERE tt.train_uid = $1 AND tt.service_date = $2`,
+    /// now `tr.train_uid = $1` post-Step-C) AND links `trains_id` via
+    /// `find_or_create_train` -- Step C's read cutover
+    /// (`TRACKED_TRAIN_STATE_SELECT`'s `LEFT JOIN trains tr`) reads
+    /// `train_uid`/`train_id`/schedule fields through that join, so a
+    /// fixture that set `tracked_trains.train_uid` directly without also
+    /// linking `trains_id` (as every real dual-write path always does)
+    /// would read back `None` -- a fixture gap Task 8's own end-to-end
+    /// verification caught, not a production behavior change.
     /// Returns the new row's `id`.
     async fn seed_tracked_train(
         pool: &PgPool,
@@ -1202,11 +1226,19 @@ mod db_tests {
         } else {
             "pending"
         };
+        let trains_id = match train_uid {
+            Some(uid) => Some(
+                crate::data::trains::find_or_create_train(pool, uid, service_date)
+                    .await
+                    .expect("find_or_create_train for fixture"),
+            ),
+            None => None,
+        };
         let (id,): (i64,) = sqlx::query_as(
             "INSERT INTO tracked_trains \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs, \
-                 train_uid, train_id, resolution_status) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+                 train_uid, train_id, resolution_status, trains_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              RETURNING id",
         )
         .bind(user_id)
@@ -1217,9 +1249,15 @@ mod db_tests {
         .bind(train_uid)
         .bind(train_uid.map(|_| "1A23"))
         .bind(resolution_status)
+        .bind(trains_id)
         .fetch_one(pool)
         .await
         .expect("insert fixture tracked_trains row");
+        if let Some(trains_id) = trains_id {
+            crate::data::trains::mark_train_resolved(pool, trains_id, "1A23")
+                .await
+                .expect("mark_train_resolved for fixture");
+        }
 
         sqlx::query(
             "INSERT INTO train_current_state \
@@ -2101,6 +2139,15 @@ mod db_tests {
             "row should be gone after the owner deletes it"
         );
 
+        // The tracked_trains row (and its trains_id FK) is already gone by
+        // this point -- cleanup_user's own `trains` cleanup joins through
+        // tracked_trains.trains_id, so it can't reach this row's shared
+        // `trains` identity anymore. Clean it up directly by its known
+        // fixture train_uid instead.
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'D33333'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture trains row orphaned by the delete route itself");
         cleanup_user(&pool, "TEST-DELETE-REAL-OWNER").await;
     }
 
