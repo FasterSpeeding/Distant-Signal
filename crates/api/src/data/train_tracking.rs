@@ -2238,4 +2238,182 @@ mod db_tests {
 
         cleanup_user(&pool, user_id).await;
     }
+
+    #[tokio::test]
+    #[ignore = "one-off Step D production backfill job, not a repeatable unit test; \
+                run manually, exactly once per environment, with \
+                `DATABASE_URL=... cargo test -p api run_step_d_backfill_of_movement_tables \
+                -- --ignored --test-threads=1 --nocapture` -- run AFTER Task 7's backfill"]
+    async fn run_step_d_backfill_of_movement_tables() {
+        let pool = connect().await;
+        let user_id = "TEST-STEP-D-BACKFILL";
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind("step-d-backfill@example.com")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("seed fixture user");
+
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(&pool, "STEPD-UID", service_date)
+            .await
+            .expect("find_or_create_train");
+        let (tracked_train_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO tracked_trains \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, trains_id) \
+             VALUES ($1, $2, 'EUS', $3, $4) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(service_date)
+        .bind(service_date.and_hms_opt(19, 15, 0).unwrap().and_utc())
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed a resolved, already-repointed subscription");
+
+        sqlx::query(
+            "INSERT INTO train_movement_events (tracked_train_id, dedup_key, msg_type, raw_body) \
+             VALUES ($1, 'test-step-d-dedup', '0003', '{}'::jsonb)",
+        )
+        .bind(tracked_train_id)
+        .execute(&pool)
+        .await
+        .expect("seed a pre-existing movement row with no trains_id yet");
+        sqlx::query(
+            "INSERT INTO train_current_state (tracked_train_id, status) VALUES ($1, 'en_route')",
+        )
+        .bind(tracked_train_id)
+        .execute(&pool)
+        .await
+        .expect("seed a pre-existing current-state row with no trains_id yet");
+
+        // --- the backfill job itself, run inline in this test ---
+        loop {
+            let result = sqlx::query(
+                "WITH batch AS ( \
+                    SELECT tme.id, tt.trains_id AS new_trains_id \
+                    FROM train_movement_events tme \
+                    JOIN tracked_trains tt ON tt.id = tme.tracked_train_id \
+                    WHERE tme.trains_id IS NULL AND tt.trains_id IS NOT NULL \
+                    LIMIT 500 \
+                 ) \
+                 UPDATE train_movement_events tme SET trains_id = batch.new_trains_id \
+                 FROM batch WHERE tme.id = batch.id",
+            )
+            .execute(&pool)
+            .await
+            .expect("backfill train_movement_events batch");
+            if result.rows_affected() == 0 {
+                break;
+            }
+        }
+        loop {
+            let result = sqlx::query(
+                "WITH batch AS ( \
+                    SELECT cs.id, tt.trains_id AS new_trains_id \
+                    FROM train_current_state cs \
+                    JOIN tracked_trains tt ON tt.id = cs.tracked_train_id \
+                    WHERE cs.trains_id IS NULL AND tt.trains_id IS NOT NULL \
+                    LIMIT 500 \
+                 ) \
+                 UPDATE train_current_state cs SET trains_id = batch.new_trains_id \
+                 FROM batch WHERE cs.id = batch.id",
+            )
+            .execute(&pool)
+            .await
+            .expect("backfill train_current_state batch");
+            if result.rows_affected() == 0 {
+                break;
+            }
+        }
+
+        let (event_trains_id,): (Option<i64>,) =
+            sqlx::query_as("SELECT trains_id FROM train_movement_events WHERE dedup_key = 'test-step-d-dedup'")
+                .fetch_one(&pool)
+                .await
+                .expect("read back trains_id");
+        assert_eq!(event_trains_id, Some(trains_id));
+
+        let (state_trains_id,): (Option<i64>,) = sqlx::query_as(
+            "SELECT trains_id FROM train_current_state WHERE tracked_train_id = $1",
+        )
+        .bind(tracked_train_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back trains_id");
+        assert_eq!(state_trains_id, Some(trains_id));
+
+        // Test idempotency: run the backfill a second time and verify it's a no-op
+        println!("First backfill complete. Running second pass to verify idempotency...");
+        let mut second_pass_total = 0;
+        loop {
+            let result = sqlx::query(
+                "WITH batch AS ( \
+                    SELECT tme.id, tt.trains_id AS new_trains_id \
+                    FROM train_movement_events tme \
+                    JOIN tracked_trains tt ON tt.id = tme.tracked_train_id \
+                    WHERE tme.trains_id IS NULL AND tt.trains_id IS NOT NULL \
+                    LIMIT 500 \
+                 ) \
+                 UPDATE train_movement_events tme SET trains_id = batch.new_trains_id \
+                 FROM batch WHERE tme.id = batch.id",
+            )
+            .execute(&pool)
+            .await
+            .expect("backfill train_movement_events batch (second pass)");
+            second_pass_total += result.rows_affected();
+            if result.rows_affected() == 0 {
+                break;
+            }
+        }
+        loop {
+            let result = sqlx::query(
+                "WITH batch AS ( \
+                    SELECT cs.id, tt.trains_id AS new_trains_id \
+                    FROM train_current_state cs \
+                    JOIN tracked_trains tt ON tt.id = cs.tracked_train_id \
+                    WHERE cs.trains_id IS NULL AND tt.trains_id IS NOT NULL \
+                    LIMIT 500 \
+                 ) \
+                 UPDATE train_current_state cs SET trains_id = batch.new_trains_id \
+                 FROM batch WHERE cs.id = batch.id",
+            )
+            .execute(&pool)
+            .await
+            .expect("backfill train_current_state batch (second pass)");
+            second_pass_total += result.rows_affected();
+            if result.rows_affected() == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            second_pass_total, 0,
+            "second backfill pass must be a true no-op: no rows affected"
+        );
+        println!("Idempotency verified: second pass affected {} rows", second_pass_total);
+
+        // Verify data integrity: values should remain unchanged
+        let (event_trains_id_after,): (Option<i64>,) =
+            sqlx::query_as("SELECT trains_id FROM train_movement_events WHERE dedup_key = 'test-step-d-dedup'")
+                .fetch_one(&pool)
+                .await
+                .expect("read back trains_id after second pass");
+        assert_eq!(event_trains_id_after, Some(trains_id), "trains_id must not change on second pass");
+
+        let (state_trains_id_after,): (Option<i64>,) = sqlx::query_as(
+            "SELECT trains_id FROM train_current_state WHERE tracked_train_id = $1",
+        )
+        .bind(tracked_train_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back trains_id after second pass");
+        assert_eq!(state_trains_id_after, Some(trains_id), "trains_id must not change on second pass");
+
+        sqlx::query("DELETE FROM tracked_trains WHERE id = $1").bind(tracked_train_id).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1").bind(trains_id).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.ok();
+    }
 }
