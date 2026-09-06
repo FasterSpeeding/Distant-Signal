@@ -58,6 +58,9 @@ function trackedTrainState(overrides: Partial<TrackedTrainState> = {}): TrackedT
     nextCallingPoint: 'Basingstoke',
     etaNext: null,
     etaSource: null,
+    scheduleDestinationCrs: null,
+    scheduleDestinationName: null,
+    scheduleCallingPoints: null,
     ...overrides,
     customName: overrides.customName ?? null,
   };

@@ -561,6 +561,19 @@ pub struct TrackedTrainState {
     pub resolution_status: String,
     pub train_uid: Option<String>,
     pub train_id: Option<String>,
+    /// The matched schedule's own terminus CRS (Decision 3 step 4 of
+    /// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md),
+    /// `None` until schedule-matched (or if the terminus TIPLOC never
+    /// resolved to a CRS -- see `schedule_matching::attempt_schedule_match`).
+    pub schedule_destination_crs: Option<String>,
+    /// See `pin_origin_name`'s own doc comment -- same
+    /// `LEFT JOIN stations` mechanism, joined on `schedule_destination_crs`.
+    pub schedule_destination_name: Option<String>,
+    /// Opaque JSONB relay of the matched entry's calling points, already
+    /// camelCase-shaped at write time
+    /// (`schedule_matching::ScheduleCallingPointDto`) -- this crate does
+    /// not deserialize it again on the way out.
+    pub schedule_calling_points: Option<serde_json::Value>,
     pub status: Option<String>,
     pub last_reported_location: Option<String>,
     pub last_event_type: Option<String>,
@@ -586,13 +599,16 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
     SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
            so.name AS pin_origin_name, sd.name AS pin_destination_name, \
            tt.resolution_status, tt.train_uid, tt.train_id, \
+           tt.schedule_destination_crs, ssd.name AS schedule_destination_name, \
+           tt.schedule_calling_points, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
            cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source, \
            tt.custom_name \
     FROM tracked_trains tt \
     LEFT JOIN train_current_state cs ON cs.tracked_train_id = tt.id \
     LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
-    LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs)";
+    LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs) \
+    LEFT JOIN stations ssd ON ssd.crs = UPPER(tt.schedule_destination_crs)";
 
 /// A user's own tracked-train list, lighter than `TrackedTrainState`
 /// (Decision 1 of the design spec) -- excludes live movement detail
