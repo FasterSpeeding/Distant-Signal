@@ -128,7 +128,7 @@ git commit -m "Add trains table and tracked_trains.trains_id/notifications_enabl
 
 **Interfaces:**
 - Consumes: table `trains` from Task 1.
-- Produces: `pub async fn find_or_create_train(pool: &PgPool, train_uid: &str, service_date: chrono::NaiveDate) -> anyhow::Result<i64>`; `pub async fn mark_train_resolved(pool: &PgPool, trains_id: i64, train_id: &str) -> anyhow::Result<()>`. Both are called by Tasks 3, 4, 5, 6, 21.
+- Produces: `pub async fn find_or_create_train(pool: &PgPool, train_uid: &str, service_date: chrono::NaiveDate) -> anyhow::Result<i64>`; `pub async fn mark_train_resolved(pool: &PgPool, trains_id: i64, train_id: &str) -> anyhow::Result<()>`; `pub async fn find_or_create_train_with_schedule_match(pool: &PgPool, train_uid: &str, service_date: NaiveDate, origin_crs: &str, scheduled_departure: DateTime<Utc>, destination_crs: Option<&str>, matched_line_id: &str, calling_points: &serde_json::Value) -> anyhow::Result<i64>` (COALESCE'd upsert so a second subscriber's independent match on the same physical train never clobbers an earlier one's data). `find_or_create_train`/`mark_train_resolved` are called by Tasks 4, 5, 6, 21; `find_or_create_train_with_schedule_match` is called by Tasks 3 and 21.
 
 - [ ] **Step 1: Write the failing test**
 
