@@ -12,5 +12,7 @@
 // syntax, fails on the not-yet-written sibling modules" signal this task
 // step is checking for.
 mod config;
+mod crs_index;
+mod stanox_crs;
 
 fn main() {}
