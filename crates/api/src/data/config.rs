@@ -79,6 +79,18 @@ pub struct ServiceArguments {
     /// docs/superpowers/plans/2026-09-05-ireland-rail-support-plan.md Task B3.
     #[arg(long, env, default_value = "svc-poller-irish-rail-live")]
     pub internal_oauth_group_irish_rail_live: String,
+    /// Gates `POST`/`GET /private/island-of-ireland-stations` and
+    /// `/island-of-ireland-lines` ALONGSIDE `poller-irish-rail-gtfs`'s own
+    /// credential above -- `poller-nir-stations`'s own credential. Two
+    /// independent producer services write to these same two tables (one
+    /// per island-of-ireland network); each keeps its own service
+    /// identity rather than sharing `internal_oauth_group_irish_rail_gtfs`,
+    /// matching this file's existing one-producer-one-credential
+    /// convention. See
+    /// docs/superpowers/plans/2026-09-05-nir-tier-a-implementation-plan.md
+    /// Task 1.
+    #[arg(long, env, default_value = "svc-poller-nir-stations")]
+    pub internal_oauth_group_nir_stations: String,
     /// OIDC issuer base URL (e.g. `https://sso.example.com/realms/rail`).
     /// `crates/api` discovers every other endpoint (authorization, token,
     /// JWKS) from this single URL's `.well-known/openid-configuration`

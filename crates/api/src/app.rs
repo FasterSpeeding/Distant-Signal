@@ -216,25 +216,43 @@ pub(crate) fn build_internal_oauth_routes(
             Method::GET,
             vec![config.internal_oauth_group_full_coverage.clone()],
         ),
+        // Two independent producers write to each of these tables now --
+        // poller-irish-rail-gtfs (RepublicOfIreland rows) and
+        // poller-nir-stations (NorthernIreland rows) -- so both GET and
+        // POST accept either credential. See
+        // docs/superpowers/plans/2026-09-05-nir-tier-a-implementation-plan.md
+        // Task 1.
         (
             "/island-of-ireland-stations",
             Method::GET,
-            vec![config.internal_oauth_group_irish_rail_gtfs.clone()],
+            vec![
+                config.internal_oauth_group_irish_rail_gtfs.clone(),
+                config.internal_oauth_group_nir_stations.clone(),
+            ],
         ),
         (
             "/island-of-ireland-stations",
             Method::POST,
-            vec![config.internal_oauth_group_irish_rail_gtfs.clone()],
+            vec![
+                config.internal_oauth_group_irish_rail_gtfs.clone(),
+                config.internal_oauth_group_nir_stations.clone(),
+            ],
         ),
         (
             "/island-of-ireland-lines",
             Method::GET,
-            vec![config.internal_oauth_group_irish_rail_gtfs.clone()],
+            vec![
+                config.internal_oauth_group_irish_rail_gtfs.clone(),
+                config.internal_oauth_group_nir_stations.clone(),
+            ],
         ),
         (
             "/island-of-ireland-lines",
             Method::POST,
-            vec![config.internal_oauth_group_irish_rail_gtfs.clone()],
+            vec![
+                config.internal_oauth_group_irish_rail_gtfs.clone(),
+                config.internal_oauth_group_nir_stations.clone(),
+            ],
         ),
         (
             "/island-of-ireland-station-samples",
@@ -370,6 +388,10 @@ impl AppState {
             (
                 "internal_oauth_group_irish_rail_live",
                 &config.internal_oauth_group_irish_rail_live,
+            ),
+            (
+                "internal_oauth_group_nir_stations",
+                &config.internal_oauth_group_nir_stations,
             ),
         ] {
             ensure!(
