@@ -767,6 +767,46 @@ mod route_scoping_tests {
     }
 
     #[tokio::test]
+    async fn trust_backlog_consumers_token_is_accepted_on_get_stanox_crs() {
+        // trust-backlog-consumer is the third legitimate GET caller on this
+        // path (alongside trust-consumer and full-coverage-consumer): its
+        // hourly STANOX/CRS reference-table reload otherwise-correctly-scoped
+        // token 403'd here because this route's group list never included
+        // it.
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let token = token_for(
+            &server.uri(),
+            "svc-trust-backlog-consumer-1",
+            &["svc-trust-backlog-consumer"],
+        );
+
+        assert_eq!(
+            send(&router, Method::GET, "/stanox-crs", Some(&token)).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn trust_backlog_consumers_token_is_rejected_on_post_stanox_crs() {
+        // Same read-only boundary as trust-consumer's and
+        // full-coverage-consumer's own tokens: being an accepted GET caller
+        // must not also authorize the write.
+        let (server, app, _routes) = test_app().await;
+        let router = test_router(app.clone());
+        let token = token_for(
+            &server.uri(),
+            "svc-trust-backlog-consumer-1",
+            &["svc-trust-backlog-consumer"],
+        );
+
+        assert_eq!(
+            send(&router, Method::POST, "/stanox-crs", Some(&token)).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
     async fn full_coverage_consumers_token_is_rejected_on_post_stanox_crs() {
         // Same read-only boundary as trust-consumer's own token: being an
         // accepted GET caller must not also authorize the write.
