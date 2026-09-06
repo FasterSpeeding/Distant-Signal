@@ -13,6 +13,7 @@
 // step is checking for.
 mod config;
 mod crs_index;
+mod process;
 mod stanox_crs;
 
 fn main() {}
