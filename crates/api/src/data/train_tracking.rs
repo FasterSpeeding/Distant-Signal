@@ -741,6 +741,36 @@ pub struct PendingSchedulePin {
 /// has -- pointlessly, and for a bare-`train_uid`-no-schedule-data row (the
 /// design's own accepted §1 gap) fatally: `PendingSchedulePin::pin_origin_crs`
 /// is a non-`Option` `String`.
+///
+/// **Re-examined for review finding I1, and deliberately left as it is.**
+/// The question was whether this should instead pick up NR-primary rows
+/// whose linked `trains` row still lacks schedule data. It should not, for
+/// a concrete reason rather than a stylistic one: this sweep's only tool is
+/// `attempt_schedule_match`, which is keyed on `(origin CRS, departure
+/// time)` -- exactly the pair such a row does not have and cannot derive.
+/// Widening the `WHERE` would select rows the sweep can do nothing with,
+/// and (with `pin_origin_crs` NULL) could not even decode.
+///
+/// What those rows get instead:
+/// * LIVE data -- `trust-consumer` sees them through
+///   `list_active_tracked_trains`' `LEFT JOIN trains`, matches their
+///   `train_uid` straight off an Activation, and their movements flow
+///   normally. Proven end to end by
+///   `an_nr_primary_subscription_receives_live_movement_events` in this
+///   module's own `db_tests`, not assumed.
+/// * HISTORICAL data -- `routes::train::enrich_shared_train` replays the
+///   retained `trust_event_backlog` at track time, and uses the replayed
+///   origin departure's own `(CRS, time)` to run a real schedule match
+///   (`schedule_matching::attempt_schedule_match_for_shared_train`).
+///
+/// The one residual gap, named rather than hidden: a train tracked
+/// NR-primary that has NOT yet run (nothing in the backlog) acquires
+/// schedule data only if something else supplies a `(CRS, time)` for it
+/// later -- another subscriber's legacy pin, or a re-track. Live TRUST
+/// still resolves its `train_id` and movements; it is only origin/
+/// destination/calling points that stay `NULL`. Closing that needs a
+/// schedule lookup keyed on `train_uid` alone, which no index in this
+/// codebase supports today; out of scope for this fix.
 pub async fn list_pending_pins_for_schedule_match(
     pool: &PgPool,
 ) -> anyhow::Result<Vec<PendingSchedulePin>> {
@@ -3316,6 +3346,142 @@ mod db_tests {
             Some("TEST-NULL-PIN-STATE-UID".to_string()),
             "the shared trains row's identity is still readable"
         );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(tracking_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Fix 4 (review finding I1), the LIVE half -- the half the review
+    /// asked to be confirmed by test rather than assumed broken.
+    ///
+    /// An NR-primary subscription (no pin, no schedule data, `trains_id`
+    /// set from birth) is reachable by `trust-consumer`: it comes back from
+    /// `list_active_tracked_trains` WITH its `train_uid` (via the `LEFT
+    /// JOIN trains`), which is what populates that crate's
+    /// `Reference::by_train_uid` direct-Activation-match fast path. This
+    /// test then feeds the exact `TrainMovementEventMessage` that fast path
+    /// produces back through `upsert_train_event` -- the real ingest entry
+    /// point -- and asserts the full live outcome lands:
+    ///
+    /// * the subscription flips to `'resolved'`;
+    /// * the SHARED `trains` row gets TRUST's own `train_id`/`resolved_at`;
+    /// * `train_movement_events`/`train_current_state` are written, keyed
+    ///   on `trains_id`.
+    ///
+    /// So live data flows correctly for this shape today, and Fix 4's
+    /// production change is scoped to the BACKLOG gap alone (a train that
+    /// has already run, whose live TRUST window has closed) -- see
+    /// `routes::train::enrich_shared_train`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                an_nr_primary_subscription_receives_live_movement_events \
+                -- --ignored --test-threads=1`"]
+    async fn an_nr_primary_subscription_receives_live_movement_events() {
+        let pool = connect().await;
+        let user_id = "TEST-NR-LIVE-FLOW";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-NR-LIVE-UID", service_date)
+                .await
+                .expect("seed a bare trains row with no schedule data");
+        let tracking_id = create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("create_subscription_for_train");
+
+        // Step 1: trust-consumer's own reference reload must be able to SEE
+        // this subscription's train_uid at all -- without this, its
+        // `by_train_uid` fast path can never match an Activation for it.
+        let refs = list_active_tracked_trains(&pool)
+            .await
+            .expect("list_active_tracked_trains");
+        let this_ref = refs
+            .iter()
+            .find(|r| r.id == tracking_id)
+            .expect("the NR-primary subscription must be in the active reference set");
+        assert_eq!(
+            this_ref.train_uid,
+            Some("TEST-NR-LIVE-UID".to_string()),
+            "train_uid must reach trust-consumer's by_train_uid map"
+        );
+        assert_eq!(this_ref.trains_id, Some(trains_id));
+        assert_eq!(
+            this_ref.pin_origin_crs, None,
+            "and it genuinely has no pin for the CRS+time heuristic to use"
+        );
+
+        // Step 2: the event trust-consumer posts once its Activation match
+        // is confirmed by the first live Movement.
+        let event = common::TrainMovementEventMessage {
+            tracked_train_id: tracking_id,
+            resolved_train_uid: Some("TEST-NR-LIVE-UID".to_string()),
+            resolved_train_id: Some("TEST-NR-LIVE-TRAINID".to_string()),
+            dedup_key: "test-nr-live-dedup-1".to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            loc_stanox: Some("12345".to_string()),
+            loc_crs: Some("EUS".to_string()),
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: Some("ON TIME".to_string()),
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("EUS".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: Some("MKC".to_string()),
+            eta_next: None,
+            eta_source: None,
+        };
+        upsert_train_event(&pool, &event)
+            .await
+            .expect("upsert_train_event for a live NR-primary movement");
+
+        let (resolution_status,): (String,) =
+            sqlx::query_as("SELECT resolution_status FROM train_subscriptions WHERE id = $1")
+                .bind(tracking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back the subscription");
+        assert_eq!(resolution_status, "resolved");
+
+        let (train_id, resolved_at): (Option<String>, Option<DateTime<Utc>>) =
+            sqlx::query_as("SELECT train_id, resolved_at FROM trains WHERE id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back the shared trains row");
+        assert_eq!(train_id, Some("TEST-NR-LIVE-TRAINID".to_string()));
+        assert!(resolved_at.is_some());
+
+        let (event_count,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM train_movement_events WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count movement events");
+        assert_eq!(event_count, 1);
+
+        let (last_location, status): (Option<String>, String) = sqlx::query_as(
+            "SELECT last_reported_location, status FROM train_current_state WHERE trains_id = $1",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("the shared current-state row must exist");
+        assert_eq!(last_location, Some("EUS".to_string()));
+        assert_eq!(status, "en_route");
 
         sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
             .bind(tracking_id)

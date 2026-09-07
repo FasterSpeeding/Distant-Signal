@@ -103,6 +103,28 @@ pub async fn mark_train_resolved(
 // `run_step_b_backfill_of_existing_resolved_rows` test below, rather than
 // left as permanently-broken dead code.
 
+/// `(has schedule data, has a live/backlog resolution)` for one shared
+/// `trains` row, or `None` if no such row exists.
+///
+/// Only ever a precheck: `routes::train::enrich_shared_train` uses it to
+/// skip an enrichment pass that provably has nothing to add (the common
+/// case once a train has any subscribers at all), and every writer it
+/// guards is independently idempotent, so a stale read here costs at worst
+/// one redundant no-op pass.
+pub async fn shared_train_enrichment_state(
+    pool: &PgPool,
+    trains_id: i64,
+) -> anyhow::Result<Option<(bool, bool)>> {
+    let row: Option<(bool, bool)> = sqlx::query_as(
+        "SELECT schedule_matched_at IS NOT NULL, resolved_at IS NOT NULL \
+         FROM trains WHERE id = $1",
+    )
+    .bind(trains_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 /// The public, unscoped read-model for `GET /Train/by-uid/{uid}/{date}`
 /// (docs/superpowers/specs/2026-09-06-shared-train-identity-design.md §4).
 /// Unlike `train_tracking::TrackedTrainState` (which this route used to

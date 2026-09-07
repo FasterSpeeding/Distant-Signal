@@ -700,7 +700,124 @@ async fn post_track_by_uid(
         train_tracking::create_subscription_for_train(&app.database, trains_id, &user.id)
             .await
             .map_err(internal_error("create subscription"))?;
+
+    enrich_shared_train(&app, tracking_id, trains_id, &train_uid, date).await;
+
     Ok(Json(TrackByUidResponse { tracking_id }))
+}
+
+/// Best-effort enrichment of the shared `trains` row a brand-new NR-primary
+/// subscription just linked to. Review finding I1: without this, that
+/// subscription NEVER acquired schedule data (origin, destination, calling
+/// points) or a `train_id` from any path at all.
+///
+/// Why nothing else covered it:
+/// * `attempt_schedule_match` (the legacy pin's path) is gated on
+///   `apply_schedule_match`'s `WHERE trains_id IS NULL AND
+///   resolution_status = 'pending'`, which is false the instant
+///   `create_subscription_for_train` returns.
+/// * `list_pending_pins_for_schedule_match` (the periodic sweep)
+///   deliberately excludes `trains_id`-bearing rows for the same reason,
+///   and could not use them anyway -- it selects `pin_origin_crs` as a
+///   non-`Option`, which is exactly `NULL` for this shape.
+/// * `attempt_backlog_match` needs a CRS+time pin to discover an identity
+///   from; this path already HAS the identity and has no pin.
+///
+/// So it goes the other way round, via `find_train_id_by_uid` (Task 15,
+/// which had no production caller until now): identity -> TRUST `train_id`
+/// -> replayed history -> origin departure -> schedule match. Both steps
+/// are best-effort and logged-not-propagated: a train nobody has any
+/// retained history for is a completely normal outcome (it may not have
+/// run yet -- see the live-data path below), and none of it may fail the
+/// subscription the caller actually asked for.
+///
+/// LIVE data does NOT come through here and never did: a train that has
+/// not yet run is resolved by `trust-consumer`, which sees this
+/// subscription through `list_active_tracked_trains`' `LEFT JOIN trains`
+/// (so its `train_uid` reaches `Reference::by_train_uid`) and matches it
+/// directly off the Activation. That path is verified end to end by
+/// `nr_primary_subscriptions_resolve_from_a_live_activation_and_movement`
+/// in `crates/trust-consumer/src/process.rs`, and by
+/// `an_nr_primary_subscription_receives_live_movement_events` in
+/// `train_tracking`'s own `db_tests`.
+async fn enrich_shared_train(
+    app: &App,
+    tracking_id: i64,
+    trains_id: i64,
+    train_uid: &str,
+    date: NaiveDate,
+) {
+    // Cheap precheck: a shared row that already has both halves has nothing
+    // left for this to add, and a second subscriber to a popular train is
+    // the common case this endpoint exists for.
+    match crate::data::trains::shared_train_enrichment_state(&app.database, trains_id).await {
+        Ok(Some((true, true))) => return,
+        Ok(_) => {}
+        Err(err) => {
+            tracing::warn!(error = ?err, trains_id, "could not read shared train enrichment state");
+            return;
+        }
+    }
+
+    let outcome = match crate::data::trust_event_backlog_match::attempt_backlog_match_by_uid(
+        &app.database,
+        tracking_id,
+        train_uid,
+        date,
+    )
+    .await
+    {
+        Ok(Some(outcome)) => outcome,
+        Ok(None) => {
+            tracing::debug!(
+                train_uid,
+                "no retained TRUST history for this train; leaving it to live trust-consumer \
+                 resolution"
+            );
+            return;
+        }
+        Err(err) => {
+            tracing::warn!(error = ?err, train_uid, "backlog replay failed for a new NR-primary subscription");
+            return;
+        }
+    };
+
+    tracing::info!(
+        train_uid,
+        train_id = outcome.train_id,
+        replayed_rows = outcome.replayed_rows,
+        "replayed retained TRUST history onto a new NR-primary subscription"
+    );
+
+    let Some((origin_crs, scheduled_departure)) = outcome.origin_departure else {
+        tracing::debug!(
+            train_uid,
+            "replayed history carries no located origin departure, so there is no (CRS, time) \
+             key to look a schedule up by"
+        );
+        return;
+    };
+
+    match schedule_matching::attempt_schedule_match_for_shared_train(
+        &app.database,
+        train_uid,
+        &origin_crs,
+        scheduled_departure,
+        date,
+        &app.schedule_crs_line_index,
+    )
+    .await
+    {
+        Ok(true) => tracing::info!(train_uid, origin_crs, "schedule-matched a shared train row"),
+        Ok(false) => tracing::debug!(
+            train_uid,
+            origin_crs,
+            "no schedule match for this train's replayed origin departure"
+        ),
+        Err(err) => {
+            tracing::warn!(error = ?err, train_uid, "schedule match failed for a shared train row")
+        }
+    }
 }
 
 /// Best-effort overlay: if a live Darwin/LDBWS departure board sample for
@@ -3030,6 +3147,293 @@ mod db_tests {
             Some(train_uid),
             "the shared trains row's identity still comes through"
         );
+
+        cleanup_user(&pool, user_id).await;
+        cleanup_public_train(&pool, train_uid).await;
+    }
+
+    // --- Fix 4 (review finding I1): the NR-primary path acquires data ----
+
+    /// The whole of finding I1, end to end through the real router.
+    ///
+    /// Seeds a train that has ALREADY RUN -- its retained
+    /// `trust_event_backlog` history holds an Activation (the only row type
+    /// that ever carries a `train_uid`) plus a located origin DEPARTURE and
+    /// a later ARRIVAL -- then tracks it via
+    /// `POST /Train/by-uid/{uid}/{date}/track` and asserts the shared
+    /// `trains` row comes out with BOTH halves it used to be permanently
+    /// missing:
+    ///
+    /// * live-TRUST identity: `train_id`/`resolved_at` from the replay, and
+    ///   real `train_movement_events`/`train_current_state` rows;
+    /// * schedule data: `origin_crs`/`destination_crs`/`calling_points`/
+    ///   `schedule_matched_at`, reached via the replayed origin departure's
+    ///   own (CRS, planned time) -- the key a bare `train_uid` otherwise
+    ///   has no way to produce.
+    ///
+    /// Before this fix, `post_track_by_uid` called bare `find_or_create_train`
+    /// and stopped: every one of those columns stayed `NULL` forever, since
+    /// `attempt_schedule_match` is gated on `trains_id IS NULL` and
+    /// `list_pending_pins_for_schedule_match` excludes `trains_id`-bearing
+    /// rows outright.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                post_track_by_uid_backfills_schedule_and_movement_data_from_the_backlog \
+                -- --ignored --test-threads=1`"]
+    async fn post_track_by_uid_backfills_schedule_and_movement_data_from_the_backlog() {
+        let pool = connect().await;
+        let user_id = "TEST-NR-ENRICH-USER";
+        cleanup_user(&pool, user_id).await;
+        let token = seed_session(&pool, user_id).await;
+        let train_uid = "TEST-NR-ENRICH-UID";
+        let train_id = "TEST-NR-ENRICH-TRAINID";
+
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TEST-NR-ENRICH-STANOX', 'EUS', 'EUSTON', 'LONDON EUSTON', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TEST-NR-ENRICH-STANOX-2', 'MKC', 'MKNSCEN', 'MILTON KEYNES CENTRAL', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed destination stanox_crs");
+
+        // Same wall-clock derivation as `post_track_schedule_matches_...`:
+        // `london_to_utc` resolves the seeded `booked_departure` against
+        // the service date's own Europe/London day, so a fixed calendar
+        // date would drift in and out of tolerance depending on when this
+        // test runs.
+        let departure = chrono::Utc::now();
+        let london_now = departure.with_timezone(&chrono_tz::Europe::London);
+        let service_date = london_now.date_naive();
+        let booked_departure = london_now.format("%H:%M").to_string();
+
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ('west-coast-main-line', $1, $2) \
+             ON CONFLICT (line_id, service_date) DO UPDATE SET population = EXCLUDED.population",
+        )
+        .bind(service_date)
+        .bind(serde_json::json!([{
+            "uid": train_uid,
+            "calling_points": [
+                {
+                    "tiploc": "EUSTON ",
+                    "kind": "Origin",
+                    "booked_arrival": null,
+                    "booked_departure": booked_departure,
+                    "is_half_minute_arrival": false,
+                    "is_half_minute_departure": false
+                },
+                {
+                    "tiploc": "MKNSCEN",
+                    "kind": "Terminate",
+                    "booked_arrival": booked_departure,
+                    "booked_departure": null,
+                    "is_half_minute_arrival": false,
+                    "is_half_minute_departure": false
+                }
+            ]
+        }]))
+        .execute(&pool)
+        .await
+        .expect("seed schedule_line_population");
+
+        // The retained TRUST history. The Activation is what
+        // `find_train_id_by_uid` looks for; the DEPARTURE is what supplies
+        // the (CRS, planned time) the schedule lookup needs.
+        for (msg_type, event_type, crs, dedup) in [
+            ("0001", None, None, "test-nr-enrich-act"),
+            ("0003", Some("DEPARTURE"), Some("EUS"), "test-nr-enrich-dep"),
+            ("0003", Some("ARRIVAL"), Some("MKC"), "test-nr-enrich-arr"),
+        ] {
+            sqlx::query(
+                "INSERT INTO trust_event_backlog \
+                    (crs, train_uid, train_id, service_date, msg_type, event_type, \
+                     planned_timestamp, actual_timestamp, variation_status, dedup_key) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $7, 'ON TIME', $8) \
+                 ON CONFLICT (dedup_key) DO NOTHING",
+            )
+            .bind(crs)
+            // Only the Activation ever carries a train_uid, exactly as the
+            // real trust-backlog-consumer writes it.
+            .bind(if msg_type == "0001" {
+                Some(train_uid)
+            } else {
+                None
+            })
+            .bind(train_id)
+            .bind(service_date)
+            .bind(msg_type)
+            .bind(event_type)
+            .bind(departure)
+            .bind(dedup)
+            .execute(&pool)
+            .await
+            .expect("seed trust_event_backlog row");
+        }
+
+        let app = test_app_with_schedule_index(
+            pool.clone(),
+            std::collections::HashMap::from([(
+                "EUS".to_string(),
+                vec!["west-coast-main-line".to_string()],
+            )]),
+        );
+        let (status, body) = post_json(
+            test_router(app),
+            format!("/Train/by-uid/{train_uid}/{service_date}/track"),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        let tracking_id = body
+            .get("trackingId")
+            .and_then(Value::as_i64)
+            .expect("trackingId present");
+
+        #[allow(clippy::type_complexity)]
+        let (
+            trains_id,
+            row_train_id,
+            resolved_at,
+            origin_crs,
+            destination_crs,
+            calling_points,
+            schedule_matched_at,
+        ): (
+            i64,
+            Option<String>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<String>,
+            Option<String>,
+            Option<serde_json::Value>,
+            Option<chrono::DateTime<chrono::Utc>>,
+        ) = sqlx::query_as(
+            "SELECT id, train_id, resolved_at, origin_crs, destination_crs, calling_points, \
+                    schedule_matched_at \
+             FROM trains WHERE train_uid = $1 AND service_date = $2",
+        )
+        .bind(train_uid)
+        .bind(service_date)
+        .fetch_one(&pool)
+        .await
+        .expect("the shared trains row must exist");
+
+        // Half 1: the backlog replay's live-TRUST identity.
+        assert_eq!(
+            row_train_id,
+            Some(train_id.to_string()),
+            "the replay must mark the shared row resolved with TRUST's own train_id"
+        );
+        assert!(resolved_at.is_some());
+
+        // Half 2: schedule data, reached via the replayed origin departure.
+        assert_eq!(
+            origin_crs,
+            Some("EUS".to_string()),
+            "the shared row must have acquired schedule data -- this is the whole of finding I1"
+        );
+        assert_eq!(destination_crs, Some("MKC".to_string()));
+        assert!(schedule_matched_at.is_some());
+        let calling_points = calling_points.expect("calling points must be populated");
+        assert_eq!(
+            calling_points.as_array().map(Vec::len),
+            Some(2),
+            "calling points: {calling_points:?}"
+        );
+
+        // And the replayed movement history itself landed on the shared
+        // tables, keyed on trains_id.
+        let (event_count,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM train_movement_events WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count replayed movement events");
+        assert_eq!(
+            event_count, 2,
+            "both Movement rows must be replayed (the Activation itself posts no event)"
+        );
+        let (last_location,): (Option<String>,) = sqlx::query_as(
+            "SELECT last_reported_location FROM train_current_state WHERE trains_id = $1",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("the shared current-state row must exist");
+        assert_eq!(last_location, Some("MKC".to_string()));
+
+        // The subscription itself flipped to resolved off the same replay.
+        let (resolution_status,): (String,) =
+            sqlx::query_as("SELECT resolution_status FROM train_subscriptions WHERE id = $1")
+                .bind(tracking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back the subscription");
+        assert_eq!(resolution_status, "resolved");
+
+        sqlx::query("DELETE FROM trust_event_backlog WHERE train_id = $1")
+            .bind(train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_line_population WHERE line_id = 'west-coast-main-line' AND service_date = $1")
+            .bind(service_date)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TEST-NR-ENRICH-STANOX%'")
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+        cleanup_public_train(&pool, train_uid).await;
+    }
+
+    /// The honest no-op half of the same fix: a train with NO retained
+    /// backlog history at all (it has not run yet -- the ordinary case for
+    /// someone tracking tomorrow's commute) must still create the
+    /// subscription successfully and simply leave the shared row bare, for
+    /// live `trust-consumer` resolution to fill in later. Proves the
+    /// enrichment is genuinely best-effort and cannot fail the request.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                post_track_by_uid_with_no_backlog_history_still_succeeds \
+                -- --ignored --test-threads=1`"]
+    async fn post_track_by_uid_with_no_backlog_history_still_succeeds() {
+        let pool = connect().await;
+        let user_id = "TEST-NR-ENRICH-NOHISTORY";
+        cleanup_user(&pool, user_id).await;
+        let token = seed_session(&pool, user_id).await;
+        let train_uid = "TEST-NR-ENRICH-NOHISTORY-UID";
+        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
+
+        let (status, body) = post_json(
+            test_router(test_app(pool.clone())),
+            format!("/Train/by-uid/{train_uid}/{service_date}/track"),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+
+        let (train_id, origin_crs): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT train_id, origin_crs FROM trains WHERE train_uid = $1")
+                .bind(train_uid)
+                .fetch_one(&pool)
+                .await
+                .expect("the shared trains row must still have been created");
+        assert_eq!(train_id, None, "nothing to replay -> nothing invented");
+        assert_eq!(origin_crs, None);
 
         cleanup_user(&pool, user_id).await;
         cleanup_public_train(&pool, train_uid).await;
