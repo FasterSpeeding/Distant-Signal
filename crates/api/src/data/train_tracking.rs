@@ -525,14 +525,40 @@ pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<Tra
 /// timestamp, not `NOW()` (which `updated_at` already records, and which
 /// provides no protection at all since it always advances forward
 /// regardless of which writer produced it). The `ON CONFLICT DO UPDATE`'s
-/// `WHERE EXCLUDED.event_time >= train_current_state.event_time OR
-/// train_current_state.event_time IS NULL` clause makes the whole `UPDATE`
-/// a no-op whenever the incoming event is older than what's already
-/// stored, independent of commit order between the two writers -- so this
-/// is NOT dead code or a redundant restatement of the `ON CONFLICT` target;
-/// it is the actual fix. `event_time` is also written into `SET` (from
-/// `EXCLUDED.event_time`, guarded by the same `WHERE`) so it only ever
-/// advances in lock-step with the row it guards.
+/// `WHERE EXCLUDED.event_time IS NULL OR EXCLUDED.event_time >=
+/// train_current_state.event_time OR train_current_state.event_time IS
+/// NULL` clause makes the whole `UPDATE` a no-op whenever the incoming
+/// event is OLDER than what's already stored, independent of commit order
+/// between the two writers -- so this is NOT dead code or a redundant
+/// restatement of the `ON CONFLICT` target; it is the actual fix.
+///
+/// **A no-timestamp incoming event always applies, but never regresses a
+/// known `event_time`.** Not every message this function is called for
+/// actually carries a timestamp -- e.g. a Cancellation with a missing or
+/// malformed `canx_timestamp` (both `crates/trust-consumer/src/process.rs`
+/// and `crates/trust-backlog-consumer/src/process.rs` build a
+/// Cancellation's `actual_timestamp` from
+/// `canx_timestamp.as_deref().and_then(parse_epoch_millis)`, `None` on
+/// either a missing or an unparseable value, with `planned_timestamp`
+/// always `None` for that message shape) -- so `event_time` here can
+/// legitimately be `NULL` even once the stored row's `event_time` is
+/// already known. The first `EXCLUDED.event_time IS NULL` branch exists
+/// specifically for that case: an event we have no real-world time for is
+/// still the best information available and must still apply (matching
+/// this function's pre-guard behaviour for exactly that case), rather than
+/// being silently and PERMANENTLY dropped -- without this branch, `NULL >=
+/// x` is SQL's UNKNOWN, `train_current_state.event_time IS NULL` is FALSE
+/// once a real event_time is stored, and `UNKNOWN OR FALSE` never
+/// satisfies `WHERE`, so every future write to that `trains_id` (including
+/// ones that DO carry a real, newer timestamp) would silently no-op
+/// forever -- worse than having no guard at all. Symmetrically, `SET
+/// event_time = COALESCE(EXCLUDED.event_time, train_current_state.event_time)`
+/// (rather than a bare `EXCLUDED.event_time`) means a no-timestamp write
+/// updates every other column normally but leaves the stored `event_time`
+/// exactly as it was -- if it instead clobbered `event_time` back to
+/// `NULL`, that would re-open the `train_current_state.event_time IS NULL`
+/// branch for every subsequent call, permanently defeating the guard for
+/// this `trains_id` after just one no-timestamp event.
 pub async fn upsert_train_movement(
     pool: &PgPool,
     trains_id: i64,
@@ -573,9 +599,10 @@ pub async fn upsert_train_movement(
             next_calling_point       = EXCLUDED.next_calling_point, \
             eta_next                 = EXCLUDED.eta_next, \
             eta_source               = EXCLUDED.eta_source, \
-            event_time               = EXCLUDED.event_time, \
+            event_time               = COALESCE(EXCLUDED.event_time, train_current_state.event_time), \
             updated_at               = NOW() \
-         WHERE EXCLUDED.event_time >= train_current_state.event_time \
+         WHERE EXCLUDED.event_time IS NULL \
+            OR EXCLUDED.event_time >= train_current_state.event_time \
             OR train_current_state.event_time IS NULL",
     )
     .bind(trains_id)
@@ -2956,6 +2983,260 @@ mod db_tests {
         assert_eq!(
             event_time,
             Some("2026-09-06T19:45:00Z".parse::<DateTime<Utc>>().unwrap())
+        );
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// Regression test for a critical bug review found in this guard's
+    /// first version: `WHERE EXCLUDED.event_time >=
+    /// train_current_state.event_time OR train_current_state.event_time IS
+    /// NULL`, with no `EXCLUDED.event_time IS NULL` branch, silently and
+    /// PERMANENTLY blocked every future write to a `trains_id` once (a) its
+    /// stored `event_time` had become non-NULL, and (b) a later incoming
+    /// event itself carried `event_time = NULL` (a real, reachable case --
+    /// see this function's own doc comment on Cancellations with a missing
+    /// or malformed `canx_timestamp`). `NULL >= x` is SQL's UNKNOWN, `... IS
+    /// NULL` is FALSE once a real value is stored, and `UNKNOWN OR FALSE`
+    /// never satisfies `WHERE` -- so the whole `ON CONFLICT DO UPDATE`
+    /// became a no-op, worse than the pre-fix blind-overwrite behaviour it
+    /// replaced (which at least always applied). This test proves a
+    /// no-timestamp event still applies normally even against a row whose
+    /// `event_time` is already known.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_null_event_time_event_still_applies_even_with_a_known_stored_event_time \
+                -- --ignored --test-threads=1`"]
+    async fn a_null_event_time_event_still_applies_even_with_a_known_stored_event_time() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "NULL-EVENT-TIME-APPLIES-UID",
+            service_date,
+        )
+        .await
+        .expect("find_or_create_train");
+
+        // First, a normal, well-timed event -- establishes a known, non-NULL
+        // stored event_time.
+        let timed_event = TrainMovementEventMessage {
+            tracked_train_id: 0,
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: "test-null-event-time-timed-dedup".to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            loc_stanox: Some("72410".to_string()),
+            loc_crs: Some("EUS".to_string()),
+            planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            variation_status: Some("ON TIME".to_string()),
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("EUS".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: Some("MKC".to_string()),
+            eta_next: None,
+            eta_source: None,
+        };
+        upsert_train_movement(&pool, trains_id, &timed_event)
+            .await
+            .expect("the first, well-timed event must succeed");
+
+        // A CANCELLATION with a missing/malformed canx_timestamp -- both
+        // planned_timestamp and actual_timestamp are None, exactly as
+        // trust-consumer/trust-backlog-consumer's own Cancellation
+        // construction produces for that case. Before the fix, this call
+        // would have silently no-op'd (INSERT 0 0) instead of applying.
+        let no_timestamp_cancellation = TrainMovementEventMessage {
+            tracked_train_id: 0,
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: "test-null-event-time-cancel-dedup".to_string(),
+            msg_type: "0002".to_string(),
+            event_type: None,
+            loc_stanox: None,
+            loc_crs: None,
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            raw_body: serde_json::json!({}),
+            status: "cancelled".to_string(),
+            last_reported_location: Some("EUS".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: Some("MKC".to_string()),
+            eta_next: None,
+            eta_source: None,
+        };
+        upsert_train_movement(&pool, trains_id, &no_timestamp_cancellation)
+            .await
+            .expect("the no-timestamp event's own call must succeed");
+
+        let (status,): (String,) =
+            sqlx::query_as("SELECT status FROM train_current_state WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back current-state row");
+        assert_eq!(
+            status, "cancelled",
+            "a no-timestamp event must still apply normally, even against a row whose \
+             event_time is already known -- this is the direct regression proof for the bug \
+             review found in this guard's first version"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// Companion to the regression test above, proving the fix's OTHER half:
+    /// a no-timestamp write must not clobber the stored `event_time` back to
+    /// `NULL` (which would re-open the `train_current_state.event_time IS
+    /// NULL` branch and permanently defeat the guard for this `trains_id`
+    /// after just one no-timestamp event). Proves both halves directly: (1)
+    /// `event_time` survives the no-timestamp write unchanged, and (2) a
+    /// SUBSEQUENT, genuinely-stale, well-timed write is still correctly
+    /// guarded (blocked) afterwards -- i.e. the guard keeps working, not
+    /// merely that the column value looks right in isolation.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_null_event_time_write_does_not_clobber_the_stored_event_time \
+                -- --ignored --test-threads=1`"]
+    async fn a_null_event_time_write_does_not_clobber_the_stored_event_time() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "NULL-EVENT-TIME-NO-CLOBBER-UID",
+            service_date,
+        )
+        .await
+        .expect("find_or_create_train");
+
+        let timed_event = TrainMovementEventMessage {
+            tracked_train_id: 0,
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: "test-no-clobber-timed-dedup".to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            loc_stanox: Some("72410".to_string()),
+            loc_crs: Some("EUS".to_string()),
+            planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            variation_status: Some("ON TIME".to_string()),
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("EUS".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: Some("MKC".to_string()),
+            eta_next: None,
+            eta_source: None,
+        };
+        upsert_train_movement(&pool, trains_id, &timed_event)
+            .await
+            .expect("the first, well-timed event must succeed");
+
+        let no_timestamp_event = TrainMovementEventMessage {
+            tracked_train_id: 0,
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: "test-no-clobber-no-timestamp-dedup".to_string(),
+            msg_type: "0002".to_string(),
+            event_type: None,
+            loc_stanox: None,
+            loc_crs: None,
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            raw_body: serde_json::json!({}),
+            status: "cancelled".to_string(),
+            last_reported_location: Some("EUS".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: Some("MKC".to_string()),
+            eta_next: None,
+            eta_source: None,
+        };
+        upsert_train_movement(&pool, trains_id, &no_timestamp_event)
+            .await
+            .expect("the no-timestamp event's own call must succeed");
+
+        let (event_time_after_no_timestamp_write,): (Option<DateTime<Utc>>,) =
+            sqlx::query_as("SELECT event_time FROM train_current_state WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back current-state row");
+        assert_eq!(
+            event_time_after_no_timestamp_write,
+            Some("2026-09-06T19:15:00Z".parse::<DateTime<Utc>>().unwrap()),
+            "a no-timestamp write must not clobber the stored event_time back to NULL"
+        );
+
+        // Now a genuinely STALE, well-timed event (older than the row's
+        // still-intact stored event_time) -- must still be correctly
+        // guarded (blocked), proving the earlier no-timestamp write didn't
+        // permanently defeat the guard for this trains_id.
+        let stale_timed_event = TrainMovementEventMessage {
+            tracked_train_id: 0,
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: "test-no-clobber-stale-dedup".to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            loc_stanox: Some("11111".to_string()),
+            loc_crs: Some("XXX".to_string()),
+            planned_timestamp: Some("2026-09-06T18:00:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T18:00:00Z".parse().unwrap()),
+            variation_status: Some("ON TIME".to_string()),
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("XXX".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: Some("YYY".to_string()),
+            eta_next: None,
+            eta_source: None,
+        };
+        upsert_train_movement(&pool, trains_id, &stale_timed_event)
+            .await
+            .expect("the stale event's own call must succeed (a guarded no-op is not an error)");
+
+        let (status, last_reported_location, event_time): (
+            String,
+            Option<String>,
+            Option<DateTime<Utc>>,
+        ) = sqlx::query_as(
+            "SELECT status, last_reported_location, event_time \
+             FROM train_current_state WHERE trains_id = $1",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back current-state row");
+        assert_eq!(
+            status, "cancelled",
+            "the stale, well-timed event must still be guarded (blocked) after the intervening \
+             no-timestamp write -- the guard must not have been permanently defeated"
+        );
+        assert_eq!(last_reported_location, Some("EUS".to_string()));
+        assert_eq!(
+            event_time,
+            Some("2026-09-06T19:15:00Z".parse::<DateTime<Utc>>().unwrap()),
+            "event_time itself must still reflect the last real timestamp, unaffected by \
+             either the no-timestamp write or the subsequently-blocked stale write"
         );
 
         sqlx::query("DELETE FROM trains WHERE id = $1")
