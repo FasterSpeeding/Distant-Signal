@@ -107,6 +107,25 @@ pub struct Config {
     #[arg(long, env, default_value_t = 30)]
     pub trains_retention_days: i64,
 
+    /// How long to keep a `trains` row (and its cascaded
+    /// `train_movement_events`/`train_current_state` rows) when NO
+    /// `train_subscriptions` row references it (`trains_id`) -- i.e.
+    /// nobody ever pinned this journey. `trains_retention_days` above
+    /// still governs a train with at least one subscription: a real user
+    /// tracked that journey, and their history for it should not
+    /// disappear sooner just because this shorter tier shipped. This
+    /// field only shortens the window for the orphan case -- rows this
+    /// service itself resolved from the schedule/TRUST feeds but that no
+    /// one is actually watching, which make up the bulk of `trains` at
+    /// national scale and have no per-user value once stale. 14 (2
+    /// weeks) is comfortably under the existing 30-day
+    /// `trains_retention_days` default, and reuses the same already-
+    /// confirmed-clear RDM licensing posture that default's own doc
+    /// comment cites -- this is a narrower cut of the same data, not a
+    /// new licensing question.
+    #[arg(long, env, default_value_t = 14)]
+    pub untracked_trains_retention_days: i64,
+
     /// Port for the aggregator's Prometheus `/metrics` endpoint. See
     /// docs/superpowers/plans/2026-08-29-metrics.md's Global Constraints
     /// for why this differs from api.service.port -- api reuses its

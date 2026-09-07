@@ -72,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
             config.half_hourly_stats_retention_hours,
             config.trust_event_backlog_retention_days,
             config.trains_retention_days,
+            config.untracked_trains_retention_days,
             &mut dedup_ledger,
             config.full_coverage_enabled_default,
         )
@@ -183,6 +184,7 @@ async fn run_cycle(
     half_hourly_stats_retention_hours: i64,
     trust_event_backlog_retention_days: i64,
     trains_retention_days: i64,
+    untracked_trains_retention_days: i64,
     dedup_ledger: &mut SeenServiceLedger,
     full_coverage_enabled_default: bool,
 ) -> anyhow::Result<()> {
@@ -266,7 +268,15 @@ async fn run_cycle(
     ))
     .increment(trust_event_backlog_pruned);
 
-    let trains_pruned = queries::prune_trains(pool, trains_retention_days).await?;
+    // Two-tier retention: a train with at least one train_subscriptions
+    // row keeps trains_retention_days (30 by default), an untracked train
+    // (no subscription at all) is pruned on the shorter
+    // untracked_trains_retention_days (14 by default) instead -- see
+    // Config::untracked_trains_retention_days's own doc comment and
+    // queries::prune_trains's doc comment for the two-tier query
+    // structure.
+    let trains_pruned =
+        queries::prune_trains(pool, trains_retention_days, untracked_trains_retention_days).await?;
     metrics::counter!(common::metrics::metric_name(
         "aggregator_trains_rows_pruned_total"
     ))
