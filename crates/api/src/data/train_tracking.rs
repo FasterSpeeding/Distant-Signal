@@ -122,20 +122,21 @@ pub async fn create_pin(
 /// that constraint and fail outright. That index is scheduled to be dropped
 /// entirely in Task 22 (alongside the whole legacy `train_uid` column it
 /// guards), not before -- narrowing it here would be a bigger, separately-
-/// reviewable change than this task's own scope. The practical consequence:
+/// reviewable change than this task's own scope. As of Task 21,
 /// `trust-consumer`'s `by_train_uid` direct-Activation-match fast path
-/// (Task 16) doesn't yet see NR-primary subscriptions (it reads
-/// `tracked_trains.train_uid` directly, pre-Task-21) -- they still resolve
-/// correctly once trust-consumer's live-Movement CRS+time heuristic runs
-/// (for the known-schedule case; see `pending`/`by_train_uid` handling in
-/// `trust-consumer::process::apply_reference_reload`), just without the
-/// fast path's extra reliability edge until Task 21's already-planned
-/// `list_active_tracked_trains` re-point (reading `tr.train_uid` via the
-/// `trains` join instead) lands and picks this row up automatically -- `
-/// trains_id` (unlike `train_uid`) IS written here, immediately, so no
-/// further change to this function will be needed when that happens. A
-/// bare-`train_uid`-no-schedule-data row (this same accepted §1 gap) has no
-/// route to trust-consumer's matching at all until then, same posture.
+/// (Task 16) DOES see NR-primary subscriptions created by this function --
+/// `list_active_tracked_trains` now reads `train_uid` via a `LEFT JOIN
+/// trains` rather than this table's own (never-written-by-this-function)
+/// column, and `trains_id` (unlike `train_uid`) IS written here,
+/// immediately, so no further change to this function was needed for that
+/// join to pick this row up automatically. See
+/// `list_active_tracked_trains_surfaces_train_uid_for_every_subscriber_sharing_a_trains_id`
+/// (this module's own `db_tests`) for the end-to-end proof, including for
+/// TWO subscribers sharing one `trains_id` -- this endpoint's own headline
+/// scenario. A bare-`train_uid`-no-schedule-data row (the design's own
+/// accepted §1 gap) still has no route to trust-consumer's CRS+time
+/// heuristic (nothing to match against), but the `by_train_uid` fast path
+/// now covers it too.
 ///
 /// Two more downstream correctness fixes this task's own migration made
 /// necessary, neither mentioned in the original brief text, both verified
@@ -463,11 +464,28 @@ impl From<TrackedTrainRow> for TrackedTrainRef {
 /// periodic reload. "Active" excludes `completed`/`cancelled` rows in
 /// `train_current_state` and `unresolved` rows in `tracked_trains` --
 /// there is nothing further for trust-consumer to do with either.
+///
+/// `train_uid`/`train_id` now come from a `LEFT JOIN trains`, not
+/// `tracked_trains`' own (as of this task, no-longer-written) columns --
+/// this is the change that finally lets an NR-primary subscription
+/// (Task 20's `create_subscription_for_train`, which sets `trains_id`
+/// immediately but deliberately never touches this table's own legacy
+/// `train_uid` column) populate `trust-consumer`'s `by_train_uid`
+/// direct-match fast path (Task 16) at all, including for a SECOND
+/// subscriber sharing the same physical train's `trains_id` -- exactly
+/// the scenario the unique `tracked_trains_resolved_identity` index made
+/// impossible to express via `tracked_trains.train_uid` itself. `LEFT
+/// JOIN`, not `JOIN`: a row whose `trains_id` is still `NULL` (no
+/// schedule/backlog/live match has ever run) must still come back, just
+/// with `train_uid`/`train_id` both `None` -- `TrackedTrainRow`/
+/// `TrackedTrainRef` already type both fields `Option` for exactly this
+/// reason.
 pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<TrackedTrainRef>> {
     let rows = sqlx::query_as::<_, TrackedTrainRow>(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_scheduled_departure, \
-                tt.resolution_status, tt.train_uid, tt.train_id, tt.trains_id \
+                tt.resolution_status, tr.train_uid, tr.train_id, tt.trains_id \
          FROM tracked_trains tt \
+         LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
          WHERE tt.resolution_status != 'unresolved' \
            AND (cs.status IS NULL OR cs.status NOT IN ('completed', 'cancelled'))",
@@ -662,37 +680,29 @@ pub async fn upsert_train_event(
     Ok(())
 }
 
-/// Writes a successful schedule match (Decision 3 step 4 of
-/// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md):
-/// sets `train_uid` (never `train_id` -- that stays exclusively
-/// TRUST-sourced, per this plan's Global Constraints) and moves
-/// `resolution_status` to the new `'schedule_matched'` waypoint. Guarded
-/// by `WHERE train_uid IS NULL AND resolution_status = 'pending'` so this
-/// is safe to call from BOTH the synchronous pin-creation path and the
+/// As of this task, this ONLY flips `resolution_status` -- every schedule
+/// column this used to also write now lives exclusively on the shared
+/// `trains` row (`schedule_matching::attempt_schedule_match`'s own
+/// `find_or_create_train_with_schedule_match` call, Task 3). Guarded on
+/// `trains_id IS NULL` rather than the old `train_uid IS NULL` -- since
+/// Task 8's read cutover, `tracked_trains.train_uid` is no longer the
+/// signal anything trusts for "has this pin been schedule-matched yet."
+/// Still safe to call from BOTH the synchronous pin-creation path and the
 /// periodic sweep without a race clobbering a row that has since moved on
-/// (a live TRUST Movement resolved it first, or an earlier sweep tick
-/// already matched it) -- `rows_affected() == 0` in either of those cases
-/// is not an error, just a no-op, which is why this returns `bool` rather
-/// than erroring on zero rows affected.
+/// (a live TRUST Movement resolved it first -- setting `trains_id` via
+/// `flip_legacy_resolution` -- or an earlier sweep tick already matched
+/// it) -- `rows_affected() == 0` in either of those cases is not an error,
+/// just a no-op, which is why this returns `bool` rather than erroring on
+/// zero rows affected.
 pub async fn apply_schedule_match(
     pool: &PgPool,
     tracked_train_id: i64,
-    train_uid: &str,
-    matched_line_id: &str,
-    schedule_calling_points: &serde_json::Value,
-    schedule_destination_crs: Option<&str>,
 ) -> anyhow::Result<bool> {
     let result = sqlx::query(
-        "UPDATE tracked_trains \
-         SET train_uid = $2, resolution_status = 'schedule_matched', matched_line_id = $3, \
-             schedule_calling_points = $4, schedule_destination_crs = $5, schedule_matched_at = NOW() \
-         WHERE id = $1 AND train_uid IS NULL AND resolution_status = 'pending'",
+        "UPDATE tracked_trains SET resolution_status = 'schedule_matched' \
+         WHERE id = $1 AND trains_id IS NULL AND resolution_status = 'pending'",
     )
     .bind(tracked_train_id)
-    .bind(train_uid)
-    .bind(matched_line_id)
-    .bind(schedule_calling_points)
-    .bind(schedule_destination_crs)
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
@@ -710,29 +720,32 @@ pub struct PendingSchedulePin {
 }
 
 /// Every row the periodic schedule-match sweep should retry: still
-/// `pending` AND still lacking a `train_uid` -- a `schedule_matched` row
-/// already has one and is excluded, same as a `resolved`/`unresolved` row.
+/// `pending` AND still lacking a `trains_id` -- a `schedule_matched` row
+/// (or one resolved via live TRUST) already has one and is excluded, same
+/// as a `resolved`/`unresolved` row. As of this task, `trains_id IS NULL`
+/// is the ONLY identity guard here (the old, redundant `train_uid IS NULL`
+/// was dropped along with `apply_schedule_match`'s own write of that
+/// column -- `resolution_status = 'pending'` alone already excluded every
+/// `schedule_matched` row, since `apply_schedule_match` always flips both
+/// together in the same `UPDATE`).
 ///
-/// Also requires `trains_id IS NULL` -- a no-op for every legacy row (which
-/// never has a `trains_id` without also having a `train_uid`, since the two
-/// are only ever set together by `attempt_schedule_match`/live resolution),
-/// but load-bearing as of Task 20's NR-primary path
+/// `trains_id IS NULL` is a no-op for every legacy row (which never has a
+/// `trains_id` without also going through `apply_schedule_match`/live
+/// resolution first, both of which also flip `resolution_status` away from
+/// `'pending'`), but load-bearing as of Task 20's NR-primary path
 /// (`create_subscription_for_train`): that function sets `trains_id`
-/// immediately but deliberately never sets this table's own legacy
-/// `train_uid` column (see its own doc comment), so such a row would
-/// otherwise match `train_uid IS NULL AND resolution_status = 'pending'`
-/// despite its identity already being fully known -- getting pointlessly
-/// (and for a bare-`train_uid`-no-schedule-data row, per the design's own
-/// accepted §1 gap, fatally: `PendingSchedulePin::pin_origin_crs` is a
-/// non-`Option` `String`) swept into a schedule-match attempt that exists
-/// only to *discover* a `train_uid`, which this row already has.
+/// immediately but leaves `resolution_status` at its `'pending'` default,
+/// so such a row would otherwise be swept into a schedule-match attempt
+/// that exists only to *discover* a `trains_id`, which this row already
+/// has -- pointlessly, and for a bare-`train_uid`-no-schedule-data row (the
+/// design's own accepted §1 gap) fatally: `PendingSchedulePin::pin_origin_crs`
+/// is a non-`Option` `String`.
 pub async fn list_pending_pins_for_schedule_match(
     pool: &PgPool,
 ) -> anyhow::Result<Vec<PendingSchedulePin>> {
     let rows = sqlx::query_as::<_, PendingSchedulePin>(
         "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure \
-         FROM tracked_trains \
-         WHERE train_uid IS NULL AND trains_id IS NULL AND resolution_status = 'pending'",
+         FROM tracked_trains WHERE trains_id IS NULL AND resolution_status = 'pending'",
     )
     .fetch_all(pool)
     .await?;
@@ -3123,5 +3136,113 @@ mod db_tests {
             .await
             .ok();
         cleanup_user(&pool, user_id).await;
+    }
+
+    /// Task 21's own headline scenario, proven end-to-end rather than
+    /// merely claimed: two DIFFERENT users tracking the SAME physical
+    /// train via `create_subscription_for_train` (Task 20's NR-primary
+    /// path, which deliberately never writes either row's own legacy
+    /// `tracked_trains.train_uid` -- see that function's doc comment) must
+    /// BOTH now come back from `list_active_tracked_trains` with a real
+    /// `train_uid`, sourced via this task's new `LEFT JOIN trains` rather
+    /// than the (as of this task, no-longer-written) `tracked_trains.train_uid`
+    /// column itself. Before this task, both rows would have surfaced
+    /// `train_uid: None` here -- neither is directly asserted by an
+    /// existing test, which is why this task's brief calls for a new one
+    /// rather than trusting the doc comment's own claim.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_active_tracked_trains_surfaces_train_uid_for_every_subscriber_sharing_a_trains_id \
+                -- --ignored --test-threads=1`"]
+    async fn list_active_tracked_trains_surfaces_train_uid_for_every_subscriber_sharing_a_trains_id()
+     {
+        let pool = connect().await;
+        let first_user_id = "TEST-SHARED-TRAINS-ID-USER-1";
+        let second_user_id = "TEST-SHARED-TRAINS-ID-USER-2";
+        seed_user(&pool, first_user_id).await;
+        seed_user(&pool, second_user_id).await;
+
+        let train_uid = "TEST-SHARED-TRAINS-ID-UID";
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            train_uid,
+            "2026-09-06".parse().unwrap(),
+        )
+        .await
+        .expect("find_or_create_train");
+
+        let first_tracking_id = create_subscription_for_train(&pool, trains_id, first_user_id)
+            .await
+            .expect("first subscriber tracks this train");
+        let second_tracking_id = create_subscription_for_train(&pool, trains_id, second_user_id)
+            .await
+            .expect("second subscriber tracks the SAME physical train");
+
+        // Belt-and-braces per this task's own brief: confirm neither row's
+        // own legacy `tracked_trains.train_uid` column was ever written --
+        // if `list_active_tracked_trains` below saw `Some(train_uid)`
+        // straight off THIS column rather than the new `trains` join, this
+        // assertion would be the only thing catching that.
+        let (legacy_train_uid_1, legacy_train_uid_2): (Option<String>, Option<String>) = {
+            let a: (Option<String>,) =
+                sqlx::query_as("SELECT train_uid FROM tracked_trains WHERE id = $1")
+                    .bind(first_tracking_id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("read back first row's legacy train_uid column");
+            let b: (Option<String>,) =
+                sqlx::query_as("SELECT train_uid FROM tracked_trains WHERE id = $1")
+                    .bind(second_tracking_id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("read back second row's legacy train_uid column");
+            (a.0, b.0)
+        };
+        assert_eq!(
+            legacy_train_uid_1, None,
+            "create_subscription_for_train must never write its own legacy train_uid column"
+        );
+        assert_eq!(legacy_train_uid_2, None);
+
+        let refs = list_active_tracked_trains(&pool)
+            .await
+            .expect("list_active_tracked_trains");
+        let first_ref = refs
+            .iter()
+            .find(|r| r.id == first_tracking_id)
+            .expect("first subscriber's row must be active");
+        let second_ref = refs
+            .iter()
+            .find(|r| r.id == second_tracking_id)
+            .expect("second subscriber's row must be active");
+
+        assert_eq!(
+            first_ref.train_uid,
+            Some(train_uid.to_string()),
+            "the FIRST subscriber must get a by_train_uid-matchable entry, sourced via the \
+             trains join, despite its own tracked_trains.train_uid column never being written"
+        );
+        assert_eq!(
+            second_ref.train_uid,
+            Some(train_uid.to_string()),
+            "the SECOND subscriber sharing the same trains_id must ALSO get a \
+             by_train_uid-matchable entry -- this is the Task 20 gap Task 21 exists to close"
+        );
+        assert_eq!(first_ref.trains_id, Some(trains_id));
+        assert_eq!(second_ref.trains_id, Some(trains_id));
+
+        sqlx::query("DELETE FROM tracked_trains WHERE id IN ($1, $2)")
+            .bind(first_tracking_id)
+            .bind(second_tracking_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, first_user_id).await;
+        cleanup_user(&pool, second_user_id).await;
     }
 }
