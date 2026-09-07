@@ -712,12 +712,28 @@ pub async fn apply_schedule_match(pool: &PgPool, tracked_train_id: i64) -> anyho
 /// Row shape for `list_pending_pins_for_schedule_match`'s query -- every
 /// still-`pending`, never-schedule-matched row, the periodic sweep's own
 /// input set (Decision 3's "also run this same attempt periodically").
+///
+/// `pin_origin_crs`/`pin_scheduled_departure` are `Option`, not bare
+/// `String`/`DateTime<Utc>`, even though the query below already filters
+/// NULLs out of its `WHERE` clause: `train_subscriptions.trains_id` is
+/// `ON DELETE SET NULL` (`20260906100000_trains.sql:38`), so a still-
+/// `pending` NR-primary subscription (`create_subscription_for_train`,
+/// whose `pin_*` columns are `NULL` by design until a schedule match ever
+/// happens -- the design's own accepted §1 gap) can have its `trains_id`
+/// nulled out from under it once `aggregator::queries::prune_trains`
+/// deletes the `trains` row it pointed at, landing it right back in this
+/// query's result set with NULL `pin_*` columns. Decoding those as
+/// non-`Option` used to make sqlx error on EVERY row of EVERY sweep tick,
+/// forever, the moment a single row reached that state -- not just fail to
+/// process that one row. See
+/// `list_pending_pins_for_schedule_match_excludes_a_pruned_nr_primary_row_with_null_pins`
+/// in this module's own `db_tests`.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct PendingSchedulePin {
     pub id: i64,
     pub service_date: chrono::NaiveDate,
-    pub pin_origin_crs: String,
-    pub pin_scheduled_departure: DateTime<Utc>,
+    pub pin_origin_crs: Option<String>,
+    pub pin_scheduled_departure: Option<DateTime<Utc>>,
 }
 
 /// Every row the periodic schedule-match sweep should retry: still
@@ -738,9 +754,7 @@ pub struct PendingSchedulePin {
 /// immediately but leaves `resolution_status` at its `'pending'` default,
 /// so such a row would otherwise be swept into a schedule-match attempt
 /// that exists only to *discover* a `trains_id`, which this row already
-/// has -- pointlessly, and for a bare-`train_uid`-no-schedule-data row (the
-/// design's own accepted §1 gap) fatally: `PendingSchedulePin::pin_origin_crs`
-/// is a non-`Option` `String`.
+/// has -- pointlessly.
 ///
 /// **Re-examined for review finding I1, and deliberately left as it is.**
 /// The question was whether this should instead pick up NR-primary rows
@@ -748,8 +762,23 @@ pub struct PendingSchedulePin {
 /// a concrete reason rather than a stylistic one: this sweep's only tool is
 /// `attempt_schedule_match`, which is keyed on `(origin CRS, departure
 /// time)` -- exactly the pair such a row does not have and cannot derive.
-/// Widening the `WHERE` would select rows the sweep can do nothing with,
-/// and (with `pin_origin_crs` NULL) could not even decode.
+/// Widening the `WHERE` would select rows the sweep can do nothing with.
+///
+/// **Re-examined again for the finding that `trains_id IS NULL` alone is
+/// NOT sufficient to guarantee non-NULL `pin_*` columns.** `trains_id` is
+/// `ON DELETE SET NULL` (`20260906100000_trains.sql:38`): once
+/// `aggregator::queries::prune_trains` deletes a `trains` row, any
+/// still-`pending` subscription pointing at it (an NR-primary row that
+/// never got a schedule match, e.g. a train that never ran) has its
+/// `trains_id` nulled out and reappears in this very query's result --
+/// now indistinguishable, by `trains_id` alone, from a fresh NR-primary
+/// row, but with `pin_origin_crs`/`pin_scheduled_departure` NULL. The
+/// `WHERE` clause below now also excludes those explicitly (rather than
+/// relying solely on `PendingSchedulePin`'s fields being `Option` to avoid
+/// a decode error), since this sweep has nothing to do with such a row
+/// either way -- same reasoning as the paragraph above, just reached via a
+/// different route into this table's state space. See
+/// `list_pending_pins_for_schedule_match_excludes_a_pruned_nr_primary_row_with_null_pins`.
 ///
 /// What those rows get instead:
 /// * LIVE data -- `trust-consumer` sees them through
@@ -776,7 +805,8 @@ pub async fn list_pending_pins_for_schedule_match(
 ) -> anyhow::Result<Vec<PendingSchedulePin>> {
     let rows = sqlx::query_as::<_, PendingSchedulePin>(
         "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure \
-         FROM train_subscriptions WHERE trains_id IS NULL AND resolution_status = 'pending'",
+         FROM train_subscriptions WHERE trains_id IS NULL AND resolution_status = 'pending' \
+         AND pin_origin_crs IS NOT NULL AND pin_scheduled_departure IS NOT NULL",
     )
     .fetch_all(pool)
     .await?;
@@ -2967,6 +2997,102 @@ mod db_tests {
             .ok();
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Final whole-branch review re-review finding: proves
+    /// `list_pending_pins_for_schedule_match` survives the state
+    /// `aggregator::queries::prune_trains` can eventually put a still-
+    /// `pending` NR-primary subscription into. `train_subscriptions.trains_id`
+    /// is `ON DELETE SET NULL` (`20260906100000_trains.sql:38`), so deleting
+    /// the `trains` row a bare-`train_uid`-no-schedule-data subscription
+    /// (the same fixture shape as
+    /// `create_subscription_for_train_allows_null_pins_for_a_bare_uid_with_no_schedule_data`)
+    /// points at reproduces the exact post-prune state: `trains_id` NULL,
+    /// `resolution_status` still `'pending'` (the cascade never touches
+    /// it), AND `pin_origin_crs`/`pin_scheduled_departure` NULL (they were
+    /// never written in the first place -- this subscription never had
+    /// schedule data). Before this fix, `PendingSchedulePin` decoding those
+    /// two columns as non-`Option` made this query error out entirely the
+    /// moment ANY row reached this state, not just fail to process that one
+    /// row -- poisoning every tick of the periodic sweep for every
+    /// still-pending subscription in the table, forever. Asserts here that
+    /// the call succeeds and this row is excluded rather than surfaced for
+    /// a schedule-match attempt it has no CRS/time to make.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_pending_pins_for_schedule_match_excludes_a_pruned_nr_primary_row_with_null_pins \
+                -- --ignored --test-threads=1`"]
+    async fn list_pending_pins_for_schedule_match_excludes_a_pruned_nr_primary_row_with_null_pins()
+     {
+        let pool = connect().await;
+        let user_id = "TEST-PRUNED-NR-PRIMARY-SWEEP";
+        seed_user(&pool, user_id).await;
+
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-PRUNED-NR-PRIMARY-UID",
+            "2026-09-06".parse().unwrap(),
+        )
+        .await
+        .expect("seed a bare trains row with no schedule data");
+
+        let tracking_id = create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("create_subscription_for_train must succeed even with no schedule data");
+
+        // Simulate `aggregator::queries::prune_trains` deleting the linked
+        // `trains` row: the FK's own `ON DELETE SET NULL`
+        // (`20260906100000_trains.sql:38`) is what actually nulls out
+        // `trains_id` here, not a manual UPDATE -- this is the real
+        // mechanism responsible for the bug, not a stand-in for it.
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .expect("delete the trains row to trigger its ON DELETE SET NULL cascade");
+
+        let (row_trains_id, row_status, row_origin, row_departure): (
+            Option<i64>,
+            String,
+            Option<String>,
+            Option<DateTime<Utc>>,
+        ) = sqlx::query_as(
+            "SELECT trains_id, resolution_status, pin_origin_crs, pin_scheduled_departure \
+             FROM train_subscriptions WHERE id = $1",
+        )
+        .bind(tracking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back the subscription after the trains row is gone");
+        assert_eq!(
+            row_trains_id, None,
+            "ON DELETE SET NULL should have nulled out trains_id"
+        );
+        assert_eq!(
+            row_status, "pending",
+            "resolution_status is untouched by the FK cascade"
+        );
+        assert_eq!(row_origin, None, "this subscription never had schedule data");
+        assert_eq!(row_departure, None);
+
+        let pending = list_pending_pins_for_schedule_match(&pool)
+            .await
+            .expect(
+                "must not error even though a pruned NR-primary row with NULL pin columns is \
+                 present in the table",
+            );
+        assert!(
+            !pending.iter().any(|row| row.id == tracking_id),
+            "a row with NULL pin_origin_crs/pin_scheduled_departure must be excluded, not \
+             surfaced for a schedule-match attempt it cannot make"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(tracking_id)
             .execute(&pool)
             .await
             .ok();
