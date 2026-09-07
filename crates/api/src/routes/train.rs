@@ -1447,16 +1447,28 @@ mod db_tests {
                 .expect("mark_train_resolved for fixture");
         }
 
-        sqlx::query(
-            "INSERT INTO train_current_state \
-                (trains_id, status, last_reported_location, last_event_type, \
-                 delay_minutes, next_calling_point, updated_at) \
-             VALUES ($1, 'en_route', 'York', 'DEPARTURE', 12, 'Newcastle', NOW())",
-        )
-        .bind(trains_id)
-        .execute(pool)
-        .await
-        .expect("insert fixture train_current_state row");
+        // ONLY when there is a `trains_id` to key it on. This used to bind
+        // `trains_id` unconditionally, which for a `train_uid: None`
+        // (still-`pending`) fixture inserted a `train_current_state` row
+        // with `trains_id IS NULL`. Since Task 22 dropped this table's
+        // `tracked_train_id` column, such a row is joined to nothing, read
+        // by nothing (every read path joins `cs ON cs.trains_id =
+        // tt.trains_id`), and cascaded by nothing -- so `cleanup_user`
+        // could never delete it and every run of this suite leaked one per
+        // pending fixture. Skipping the insert is not a coverage loss: the
+        // row it produced was already invisible to every assertion.
+        if let Some(trains_id) = trains_id {
+            sqlx::query(
+                "INSERT INTO train_current_state \
+                    (trains_id, status, last_reported_location, last_event_type, \
+                     delay_minutes, next_calling_point, updated_at) \
+                 VALUES ($1, 'en_route', 'York', 'DEPARTURE', 12, 'Newcastle', NOW())",
+            )
+            .bind(trains_id)
+            .execute(pool)
+            .await
+            .expect("insert fixture train_current_state row");
+        }
 
         id
     }
