@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TextLink } from './TextLink';
 
@@ -78,6 +78,23 @@ describe('TextLink', () => {
     const link = screen.getByRole('link', { name: 'All Lines' });
     expect(link).not.toHaveAttribute('target');
     expect(link).not.toHaveAttribute('rel');
+  });
+
+  it('forwards onClick/onKeyDown to the rendered anchor (regression: TrackTrainForm relies on these to stop a nested link inside a keyboard-handled row from also selecting the row)', () => {
+    const onClick = vi.fn();
+    const onKeyDown = vi.fn();
+    renderWithMantine(
+      <TextLink href="/lines" onClick={onClick} onKeyDown={onKeyDown}>
+        All Lines
+      </TextLink>,
+    );
+    const link = screen.getByRole('link', { name: 'All Lines' });
+
+    fireEvent.click(link);
+    expect(onClick).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(link, { key: 'Enter' });
+    expect(onKeyDown).toHaveBeenCalledTimes(1);
   });
 
   it('can opt into target/rel for an external link', () => {

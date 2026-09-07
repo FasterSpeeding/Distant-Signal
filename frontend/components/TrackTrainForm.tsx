@@ -7,6 +7,7 @@ import { DateTimePicker } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
+import { TextLink } from './TextLink';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import type { TrackPinRequest, TrackPinResponse } from '@/lib/types';
@@ -72,7 +73,13 @@ function matchesScheduledDeparture(rowScheduled: string, scheduledDeparture: str
  * (`crates/api/src/render.rs::station_departure_json`) -- camelCase
  * mirror of `common::StationDeparture`'s own fields, minus `headcode`
  * (always `None` at the source, never carried through). See
- * docs/superpowers/specs/2026-09-03-trip-search-design.md Decision 2/5. */
+ * docs/superpowers/specs/2026-09-03-trip-search-design.md Decision 2/5.
+ * Deliberately carries no `uid`: LDBWS/Darwin has no concept of the CIF
+ * schedule UID the public `/train/[uid]/[date]` page is keyed on --
+ * `serviceId` below is Darwin's own RID-based identifier, a different
+ * scheme entirely, not a substitute. That's why this source's row
+ * rendering (`pickerContent`, `'ldbws'` branch) has no "View live status"
+ * link even though the `'cif'` branch does. */
 interface DepartureRow {
   serviceId: string;
   operator: string;
@@ -455,6 +462,12 @@ export function TrackTrainForm({
         matchesDestination(row.destinationCrs, destinationCrs) &&
         matchesScheduledDeparture(row.scheduled, scheduledDeparture),
     );
+    // Computed once, outside the `.map()` below -- every row's link uses
+    // the same calendar date (the public train page is keyed by
+    // `(train_uid, service_date)`, and this picker, like `pickCifDeparture`
+    // itself, only ever shows *today's* schedule), so there is no reason
+    // to re-read `dayjs()` once per row.
+    const today = dayjs().format('YYYY-MM-DD');
     return (
       <>
         <Text size="sm" c="dimmed">
@@ -485,6 +498,37 @@ export function TrackTrainForm({
                     {row.scheduled}
                     {row.destinationCrs ? ` · ${row.destinationCrs}` : ''}
                   </Text>
+                  {/* A secondary action, deliberately separate from the row's
+                      own click-to-select behaviour above: this navigates to
+                      the train's own public status page
+                      (`/train/[uid]/[date]`) WITHOUT filling/submitting the
+                      tracking form at all, for a visitor who just wants to
+                      look, not track. `row.uid` is a real CIF schedule UID
+                      here (unlike the LDBWS branch above, whose
+                      `DepartureRow` carries no train UID at all -- Darwin's
+                      `serviceId` is a different identifier scheme entirely,
+                      and the public page is keyed on the CIF/TRUST one --
+                      so that branch has nothing honest to link this action
+                      to and doesn't render it).
+
+                      `stopPropagation` on BOTH handlers, not just `onClick`:
+                      this link sits inside the row's own `role="button"`
+                      `onClick`/`onKeyDown`, so without it, either activation
+                      path would ALSO select the row for tracking --
+                      a plain click bubbles up to the row's `onClick`, and an
+                      Enter/Space keydown on the focused link bubbles up to
+                      the row's `onKeyDown` before the browser's own
+                      synthesized click on the anchor even fires. The link
+                      keeps its own native Enter-to-follow behaviour and
+                      remains a normal, independently tab-reachable focus
+                      stop -- only the *bubbling into the row* is stopped. */}
+                  <TextLink
+                    href={`/train/${encodeURIComponent(row.uid)}/${today}`}
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => event.stopPropagation()}
+                  >
+                    View live status
+                  </TextLink>
                 </Group>
               ))}
             </Stack>

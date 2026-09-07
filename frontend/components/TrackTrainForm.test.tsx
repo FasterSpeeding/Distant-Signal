@@ -869,6 +869,79 @@ describe('TrackTrainForm', () => {
       expect(screen.getByRole('button', { name: /09:00/ })).toBeInTheDocument();
     });
 
+    it('renders a "View live status" link on each CIF row, pointing at /train/{uid}/{today}', async () => {
+      const fetchMock = mockFetchByUrl({
+        departures: () => new Response('not found', { status: 404 }),
+        scheduleDepartures: () => new Response(JSON.stringify(scheduleDepartures), { status: 200 }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await screen.findByRole('button', { name: /08:22/ });
+      // Reuses this file's existing technique (see the "clicking a
+      // non-cancelled row" test above) for reading "today" deterministically
+      // via the same `dayjs()` call the component itself makes.
+      const today = dayjs().format('YYYY-MM-DD');
+
+      const links = screen.getAllByRole('link', { name: 'View live status' });
+      expect(links).toHaveLength(2);
+      expect(links[0]).toHaveAttribute('href', `/train/C11052/${today}`);
+      expect(links[1]).toHaveAttribute('href', `/train/C99999/${today}`);
+    });
+
+    it('does not render a "View live status" link on LDBWS rows -- DepartureRow carries no train UID', async () => {
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await screen.findByRole('button', { name: /10:40/ });
+
+      expect(screen.queryByRole('link', { name: 'View live status' })).not.toBeInTheDocument();
+    });
+
+    it('clicking a CIF row\'s "View live status" link does not also select the row for tracking', async () => {
+      const fetchMock = mockFetchByUrl({
+        departures: () => new Response('not found', { status: 404 }),
+        scheduleDepartures: () => new Response(JSON.stringify(scheduleDepartures), { status: 200 }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await screen.findByRole('button', { name: /08:22/ });
+      const today = dayjs().format('YYYY-MM-DD');
+
+      // Two CIF fixture rows both render this link -- the first is C11052's.
+      const link = screen.getAllByRole('link', { name: 'View live status' })[0];
+      expect(link).toHaveAttribute('href', `/train/C11052/${today}`);
+
+      fireEvent.click(link);
+
+      // pickCifDeparture would have filled Destination/Scheduled-departure
+      // from this row -- it must not have run.
+      expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('');
+      const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+      expect(picker.value).toBe(dayjs().format('YYYY-MM-DD HH:mm:ss'));
+    });
+
+    it('pressing Enter on a focused "View live status" link does not also select the row for tracking', async () => {
+      const fetchMock = mockFetchByUrl({
+        departures: () => new Response('not found', { status: 404 }),
+        scheduleDepartures: () => new Response(JSON.stringify(scheduleDepartures), { status: 200 }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await screen.findByRole('button', { name: /08:22/ });
+
+      const link = screen.getAllByRole('link', { name: 'View live status' })[0];
+      link.focus();
+      fireEvent.keyDown(link, { key: 'Enter' });
+
+      // The row's own onKeyDown (which calls pickCifDeparture on Enter) must
+      // not have fired via bubbling from the nested link.
+      expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('');
+    });
+
     it('a Destination filter can legitimately empty the CIF list, with its own "no match" text', async () => {
       const fetchMock = mockFetchByUrl({
         departures: () => new Response('not found', { status: 404 }),

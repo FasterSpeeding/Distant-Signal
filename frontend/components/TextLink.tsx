@@ -26,6 +26,8 @@ export function TextLink({
   target,
   rel,
   prefetch,
+  onClick,
+  onKeyDown,
 }: {
   href: string;
   children: React.ReactNode;
@@ -39,13 +41,33 @@ export function TextLink({
   // never a real page, so letting Next prefetch it fires a real,
   // side-effecting request with no user interaction at all.
   prefetch?: boolean;
+  // Optional escape hatches for a `TextLink` nested inside its own
+  // separately-clickable/keyboard-handled container -- e.g. a
+  // `role="button"` picker row in `TrackTrainForm.tsx` whose own
+  // `onClick`/`onKeyDown` would otherwise also fire when this link is
+  // activated (a click bubbles to the row; a `keydown` on the anchor
+  // bubbles too, ahead of the browser's own synthesized click). A call
+  // site in that position passes a handler that calls
+  // `event.stopPropagation()` before letting the link behave normally. No
+  // call site needs these outside that situation, so both are optional
+  // and every existing use is unaffected.
+  onClick?: (event: React.MouseEvent<HTMLAnchorElement>) => void;
+  onKeyDown?: (event: React.KeyboardEvent<HTMLAnchorElement>) => void;
 }) {
   return (
     // The undecorated resting state comes from the stylesheet rather than
     // the `style={{ textDecoration: 'none' }}` these call sites used to
     // carry: an inline style outranks every selector, so a hover rule
     // would never have got a look in.
-    <Link href={href} data-text-link={underline} target={target} rel={rel} prefetch={prefetch}>
+    <Link
+      href={href}
+      data-text-link={underline}
+      target={target}
+      rel={rel}
+      prefetch={prefetch}
+      onClick={onClick}
+      onKeyDown={onKeyDown}
+    >
       <Text c="var(--mantine-color-anchor)">{children}</Text>
     </Link>
   );
