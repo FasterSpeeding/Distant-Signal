@@ -148,6 +148,31 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     expect(screen.queryByText('LNER')).not.toBeInTheDocument();
   });
 
+  // Fix 2 (review finding C2), frontend half: an NR-primary subscription
+  // (POST /Train/by-uid/{uid}/{date}/track) against a shared train with no
+  // schedule data yet has BOTH pin fields null on the wire. The row must
+  // still render -- degrading to "Unknown station" and a date-only label --
+  // rather than throwing or printing "Invalid Date".
+  it('a subscription with null pin fields renders without crashing, degrading to a date-only label', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      train({
+        id: 9,
+        pinOriginCrs: null,
+        pinOriginName: null,
+        pinDestinationCrs: null,
+        pinDestinationName: null,
+        pinScheduledDeparture: null,
+        resolutionStatus: 'pending',
+        status: null,
+        delayMinutes: null,
+      }),
+    ]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.getByText('Unknown station, 31 Aug 2026')).toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument();
+  });
+
   // Part A/B: a standalone ticket (trackedTrainId: null) not yet attached
   // to anything.
   it('a standalone (unattached) ticket: renders in its own section with an attach action and a track-a-new-train link', async () => {

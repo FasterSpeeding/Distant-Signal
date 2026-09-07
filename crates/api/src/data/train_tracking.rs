@@ -764,7 +764,18 @@ pub async fn list_pending_pins_for_schedule_match(
 pub struct TrackedTrainState {
     pub id: i64,
     pub service_date: chrono::NaiveDate,
-    pub pin_origin_crs: String,
+    /// `Option`, not `String`. `20260906130000_nullable_pin_columns.sql`
+    /// dropped this column's `NOT NULL`, and
+    /// `create_subscription_for_train` (the NR-primary path behind
+    /// `POST /Train/by-uid/{uid}/{date}/track`) sources it via
+    /// `INSERT ... SELECT` from the linked `trains` row -- which leaves it
+    /// `NULL` whenever that row has no schedule data yet. That is the
+    /// DEFAULT outcome of the new endpoint, not an edge case, so decoding
+    /// this as a bare `String` made `GET /Train/{trackingId}` fail outright
+    /// ("unexpected null; try decoding as an Option") for exactly the
+    /// subscriptions this whole redesign exists to create. See
+    /// `get_by_tracking_id_returns_a_row_with_null_pins_for_an_nr_primary_subscription`.
+    pub pin_origin_crs: Option<String>,
     pub pin_destination_crs: Option<String>,
     /// `None` whenever the `LEFT JOIN` below found no `stations` row for
     /// `pin_origin_crs` (an unrecognised code, or reference data that
@@ -866,14 +877,23 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
 pub struct TrackedTrainListItem {
     pub id: i64,
     pub service_date: chrono::NaiveDate,
-    pub pin_origin_crs: String,
+    /// `Option`, not `String` -- see `TrackedTrainState::pin_origin_crs`'s
+    /// own doc comment for the full reasoning. `GET /Train/mine` returns
+    /// EVERY one of a user's subscriptions, so a single NR-primary
+    /// subscription with no schedule data yet used to fail the whole list
+    /// request, not merely omit itself from it.
+    pub pin_origin_crs: Option<String>,
     pub pin_destination_crs: Option<String>,
     /// See `TrackedTrainState::pin_origin_name`'s doc comment -- same
     /// `LEFT JOIN stations` mechanism, same `None`-means-no-reference-row
     /// contract.
     pub pin_origin_name: Option<String>,
     pub pin_destination_name: Option<String>,
-    pub pin_scheduled_departure: DateTime<Utc>,
+    /// `Option` for the same reason as `pin_origin_crs` directly above --
+    /// the two columns were relaxed together by
+    /// `20260906130000_nullable_pin_columns.sql` and are written (or not)
+    /// together by `create_subscription_for_train`.
+    pub pin_scheduled_departure: Option<DateTime<Utc>>,
     pub resolution_status: String,
     pub train_uid: Option<String>,
     pub status: Option<String>,
@@ -3176,5 +3196,137 @@ mod db_tests {
             .ok();
         cleanup_user(&pool, first_user_id).await;
         cleanup_user(&pool, second_user_id).await;
+    }
+
+    /// Fix 2 (review finding C2), read path 1 of 2: `GET /Train/mine`.
+    ///
+    /// `create_subscription_for_train` against a `trains` row with NO
+    /// schedule data leaves `pin_origin_crs`/`pin_scheduled_departure`
+    /// `NULL` -- the DEFAULT outcome of `POST /Train/by-uid/{uid}/{date}/track`,
+    /// not an edge case. Before this fix, `TrackedTrainListItem` typed both
+    /// as non-`Option`, so sqlx failed to decode the row and the ENTIRE list
+    /// request errored out -- one such subscription hid every other train
+    /// the user had. This asserts the read succeeds and reports the pins as
+    /// `None`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_tracked_trains_for_user_reads_a_subscription_with_null_pins \
+                -- --ignored --test-threads=1`"]
+    async fn list_tracked_trains_for_user_reads_a_subscription_with_null_pins() {
+        let pool = connect().await;
+        let user_id = "TEST-NULL-PIN-MINE-LIST";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-NULL-PIN-LIST-UID",
+            "2026-09-06".parse().unwrap(),
+        )
+        .await
+        .expect("seed a bare trains row with no schedule data at all");
+        let tracking_id = create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("create_subscription_for_train");
+
+        let items = list_tracked_trains_for_user(&pool, user_id)
+            .await
+            .expect("GET /Train/mine's read must not error on a NULL-pin subscription");
+
+        assert_eq!(
+            items.len(),
+            1,
+            "the NULL-pin subscription must be listed, not skipped"
+        );
+        let item = &items[0];
+        assert_eq!(item.id, tracking_id);
+        assert_eq!(
+            item.pin_origin_crs, None,
+            "no schedule data -> None, not a default"
+        );
+        assert_eq!(item.pin_scheduled_departure, None);
+        assert_eq!(item.pin_origin_name, None, "no CRS to join stations on");
+        assert_eq!(
+            item.train_uid,
+            Some("TEST-NULL-PIN-LIST-UID".to_string()),
+            "the shared trains row's identity is still readable"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(tracking_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Fix 2 (review finding C2), read path 2 of 2: the
+    /// `TRACKED_TRAIN_STATE_SELECT`-backed read behind
+    /// `GET /Train/{trackingId}`. Same NULL-pin scenario as the test above;
+    /// before this fix `TrackedTrainState::pin_origin_crs` was a bare
+    /// `String` and this call failed with "unexpected null; try decoding as
+    /// an Option".
+    ///
+    /// `get_by_uid_and_date` (this module's other
+    /// `TRACKED_TRAIN_STATE_SELECT` caller) is deliberately NOT covered
+    /// here: it no longer has a single caller anywhere in the workspace --
+    /// `GET /Train/by-uid/{uid}/{date}` reads
+    /// `trains::get_public_train_state` as of Task 19. See this fix's
+    /// report for that as a flagged, deliberate non-removal.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_tracking_id_reads_a_subscription_with_null_pins \
+                -- --ignored --test-threads=1`"]
+    async fn get_by_tracking_id_reads_a_subscription_with_null_pins() {
+        let pool = connect().await;
+        let user_id = "TEST-NULL-PIN-STATE-READ";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-NULL-PIN-STATE-UID",
+            "2026-09-06".parse().unwrap(),
+        )
+        .await
+        .expect("seed a bare trains row with no schedule data at all");
+        let tracking_id = create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("create_subscription_for_train");
+
+        let state = get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("GET /Train/{trackingId}'s read must not error on a NULL-pin subscription")
+            .expect("the subscription exists, so a row must come back");
+
+        assert_eq!(state.id, tracking_id);
+        assert_eq!(
+            state.pin_origin_crs, None,
+            "no schedule data -> None, not a default"
+        );
+        assert_eq!(state.pin_destination_crs, None);
+        assert_eq!(state.pin_origin_name, None);
+        assert_eq!(
+            state.train_uid,
+            Some("TEST-NULL-PIN-STATE-UID".to_string()),
+            "the shared trains row's identity is still readable"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(tracking_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
     }
 }

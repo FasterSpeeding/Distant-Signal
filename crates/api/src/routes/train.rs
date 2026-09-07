@@ -724,8 +724,17 @@ async fn blend_darwin_eta(
     else {
         return state;
     };
+    // `pin_origin_crs` is `Option` as of Fix 2 (it is `NULL` for an
+    // NR-primary subscription whose `trains` row has no schedule data yet).
+    // There is no origin station to fetch a Darwin departure board for in
+    // that case, so this overlay simply doesn't apply -- the same
+    // return-`state`-unchanged posture as the two failure branches around
+    // it, not an error.
+    let Some(pin_origin_crs) = state.pin_origin_crs.as_deref() else {
+        return state;
+    };
     let Ok(samples) =
-        crate::data::queries::latest_station_sample(&app.database, &state.pin_origin_crs).await
+        crate::data::queries::latest_station_sample(&app.database, pin_origin_crs).await
     else {
         return state;
     };
@@ -939,7 +948,7 @@ mod tests {
         train_tracking::TrackedTrainState {
             id: 1,
             service_date: "2026-08-29".parse().unwrap(),
-            pin_origin_crs: "KGX".to_string(),
+            pin_origin_crs: Some("KGX".to_string()),
             pin_destination_crs: Some("EDB".to_string()),
             pin_origin_name: Some("London Kings Cross".to_string()),
             pin_destination_name: Some("Edinburgh Waverley".to_string()),
@@ -2922,5 +2931,92 @@ mod db_tests {
         );
 
         cleanup_user(&pool, "TEST-LEGACY-VALIDATION-STILL-ENFORCED").await;
+    }
+
+    // --- Fix 2 (review finding C2): NULL pin columns on the two read paths ---
+
+    /// End-to-end at the HTTP layer: track a train the NR-primary way (the
+    /// route's own default outcome is a `trains` row with no schedule data,
+    /// hence `NULL` pins), then call BOTH read routes that used to decode
+    /// those columns into non-`Option` fields.
+    ///
+    /// Before this fix, `GET /Train/mine` and `GET /Train/{trackingId}` both
+    /// returned `500` here -- sqlx cannot decode a `NULL` into `String`/
+    /// `DateTime<Utc>`. Driven through the real router (not the data layer
+    /// alone) so the assertion covers the whole stack the frontend actually
+    /// hits, `blend_darwin_eta`'s own `pin_origin_crs` read included.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                null_pin_subscription_is_readable_on_both_read_routes \
+                -- --ignored --test-threads=1`"]
+    async fn null_pin_subscription_is_readable_on_both_read_routes() {
+        let pool = connect().await;
+        let user_id = "TEST-NULL-PIN-READ-ROUTES";
+        cleanup_user(&pool, user_id).await;
+        let token = seed_session(&pool, user_id).await;
+        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
+        let train_uid = "TEST-NULL-PIN-ROUTES-UID";
+
+        let (status, body) = post_json(
+            test_router(test_app(pool.clone())),
+            format!("/Train/by-uid/{train_uid}/{service_date}/track"),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        let tracking_id = body
+            .get("trackingId")
+            .and_then(Value::as_i64)
+            .expect("trackingId present");
+
+        // Read path 1: GET /Train/mine (list_tracked_trains_for_user).
+        let (status, body) = request(
+            test_router(test_app(pool.clone())),
+            "/Train/mine".to_string(),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "GET /Train/mine must not 500 on a NULL-pin subscription: {body:?}"
+        );
+        let items = body.as_array().expect("an array of tracked trains");
+        assert_eq!(items.len(), 1, "response: {body:?}");
+        assert_eq!(
+            items[0].get("id").and_then(Value::as_i64),
+            Some(tracking_id)
+        );
+        assert_eq!(
+            items[0].get("pinOriginCrs"),
+            Some(&Value::Null),
+            "the NULL pin must serialize as JSON null, not be omitted or defaulted"
+        );
+        assert_eq!(items[0].get("pinScheduledDeparture"), Some(&Value::Null));
+
+        // Read path 2: GET /Train/{trackingId} (TRACKED_TRAIN_STATE_SELECT
+        // + blend_darwin_eta).
+        let (status, body) = request(
+            test_router(test_app(pool.clone())),
+            format!("/Train/{tracking_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "GET /Train/{{trackingId}} must not 500 on a NULL-pin subscription: {body:?}"
+        );
+        assert_eq!(body.get("id").and_then(Value::as_i64), Some(tracking_id));
+        assert_eq!(body.get("pinOriginCrs"), Some(&Value::Null));
+        assert_eq!(
+            body.get("trainUid").and_then(Value::as_str),
+            Some(train_uid),
+            "the shared trains row's identity still comes through"
+        );
+
+        cleanup_user(&pool, user_id).await;
+        cleanup_public_train(&pool, train_uid).await;
     }
 }

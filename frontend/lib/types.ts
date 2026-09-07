@@ -384,7 +384,13 @@ export interface ScheduleCallingPoint {
 export interface TrackedTrainState {
   id: number;
   serviceDate: string; // "YYYY-MM-DD"
-  pinOriginCrs: string;
+  // `null` for a subscription created the NR-primary way
+  // (`POST /Train/by-uid/{uid}/{date}/track`) against a shared `trains` row
+  // that has no schedule data yet -- the DEFAULT outcome of that endpoint,
+  // not an edge case. `20260906130000_nullable_pin_columns.sql` dropped
+  // this column's `NOT NULL` and the backend read model is `Option<String>`
+  // to match.
+  pinOriginCrs: string | null;
   pinDestinationCrs: string | null;
   // `null` whenever the backend's `LEFT JOIN stations` found no reference
   // row for the code -- see `lib/stationLabel.ts`'s fallback.
@@ -425,12 +431,14 @@ export interface TrackedTrainState {
 export interface TrackedTrainListItem {
   id: number;
   serviceDate: string; // "YYYY-MM-DD"
-  pinOriginCrs: string;
+  // See `TrackedTrainState.pinOriginCrs`'s comment -- same contract, same
+  // reason. Both pin fields on this shape are nullable together.
+  pinOriginCrs: string | null;
   pinDestinationCrs: string | null;
   // See `TrackedTrainState.pinOriginName`'s comment -- same contract.
   pinOriginName: string | null;
   pinDestinationName: string | null;
-  pinScheduledDeparture: string; // RFC3339
+  pinScheduledDeparture: string | null; // RFC3339
   resolutionStatus: ResolutionStatus;
   trainUid: string | null;
   status: JourneyStatus | null;

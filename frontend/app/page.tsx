@@ -403,7 +403,12 @@ function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem }) {
             <TrackedTrainStatusBadge train={train} />
           </Group>
           <Text size="sm" c="dimmed">
-            {formatDate(train.serviceDate)} · {formatTime(train.pinScheduledDeparture)}
+            {/* `pinScheduledDeparture` is `null` for an NR-primary
+                subscription whose train has no schedule data yet -- same
+                date-only degradation as /track/mine's own row. */}
+            {train.pinScheduledDeparture
+              ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
+              : formatDate(train.serviceDate)}
           </Text>
         </Stack>
       </Card>

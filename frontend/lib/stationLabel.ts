@@ -13,16 +13,26 @@ export function stationLabel(crs: string, name: string | null | undefined): stri
   return name ? `${name} (${crs})` : crs;
 }
 
+/** What to render in place of a station when there isn't one to name. A
+ * tracked train's `pinOriginCrs` is genuinely `null` for a subscription
+ * created by `train_uid` alone, before any schedule data has been matched
+ * to the shared train -- see `TrackedTrainState.pinOriginCrs` in
+ * `lib/types.ts`. */
+export const UNKNOWN_STATION_LABEL = 'Unknown station';
+
 /** `"A (AAA) → B (BBB)"`, or just the origin when there is no destination
  * (a pre-match pin genuinely has none -- see
  * `2026-09-01-tracked-trains-home-page-design.md` Decision 1). */
 export function routeLabel(
-  originCrs: string,
+  originCrs: string | null | undefined,
   originName: string | null | undefined,
   destinationCrs: string | null | undefined,
   destinationName: string | null | undefined,
 ): string {
-  const origin = stationLabel(originCrs, originName);
+  // `originCrs` is nullable as of the shared-train-identity change: an
+  // NR-primary subscription whose train has no schedule match yet has no
+  // origin at all, not merely no origin *name*.
+  const origin = originCrs ? stationLabel(originCrs, originName) : UNKNOWN_STATION_LABEL;
   if (!destinationCrs) return origin;
   return `${origin} → ${stationLabel(destinationCrs, destinationName)}`;
 }

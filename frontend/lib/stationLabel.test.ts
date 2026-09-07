@@ -41,4 +41,17 @@ describe('routeLabel', () => {
   it('falls back to a bare destination code with a named origin', () => {
     expect(routeLabel('KGX', 'London Kings Cross', 'EDB', null)).toBe('London Kings Cross (KGX) → EDB');
   });
+
+  // Fix 2 (review finding C2): an NR-primary subscription whose shared
+  // train has no schedule data yet genuinely has no origin CRS at all --
+  // not merely no origin *name*.
+  it('renders a placeholder when the origin CRS itself is null', () => {
+    expect(routeLabel(null, null, null, null)).toBe('Unknown station');
+  });
+
+  it('still renders a known destination when the origin CRS is null', () => {
+    expect(routeLabel(null, null, 'EDB', 'Edinburgh Waverley')).toBe(
+      'Unknown station → Edinburgh Waverley (EDB)',
+    );
+  });
 });

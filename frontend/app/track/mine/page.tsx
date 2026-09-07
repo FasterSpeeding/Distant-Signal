@@ -140,7 +140,15 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
     train.pinDestinationName,
   );
   const displayName = trackedTrainDisplayName(train);
-  const defaultName = `${route}, ${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`;
+  // `pinScheduledDeparture` is `null` for an NR-primary subscription whose
+  // train has no schedule data yet -- degrade to a date-only label rather
+  // than rendering `Invalid Date`. Kept identical to
+  // `trackedTrainDisplayName`'s own fallback so the rename dialog's
+  // placeholder always matches the label it would replace.
+  const when = train.pinScheduledDeparture
+    ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
+    : formatDate(train.serviceDate);
+  const defaultName = `${route}, ${when}`;
 
   return (
     <Card withBorder>
@@ -159,7 +167,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
                 <RowStatusBadge train={train} />
               </Group>
               <Text size="sm" c="dimmed">
-                {formatDate(train.serviceDate)} · {formatTime(train.pinScheduledDeparture)}
+                {when}
               </Text>
             </Stack>
           </Link>

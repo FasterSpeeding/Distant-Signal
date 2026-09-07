@@ -26,12 +26,12 @@ import { routeLabel } from './stationLabel';
  * resolves later. */
 export function trackedTrainDisplayName(train: {
   customName: string | null;
-  pinOriginCrs: string;
+  pinOriginCrs: string | null;
   pinOriginName: string | null;
   pinDestinationCrs: string | null;
   pinDestinationName: string | null;
   serviceDate: string;
-  pinScheduledDeparture?: string;
+  pinScheduledDeparture?: string | null;
 }): string {
   if (train.customName) return train.customName;
 
