@@ -406,6 +406,26 @@ async fn fetch_previous_derived_state(
     })
 }
 
+/// Test-only, one-shot fault injector for [`fetch_previous_derived_states_batch`]'s
+/// batched SELECT, compiled out of every non-test build. It exists because,
+/// unlike `find_or_create_trains_batch`/`mark_trains_resolved_batch` (whose
+/// batched fallback IS reachable via a real, per-row-attributable DB failure
+/// -- a value violating a genuine column constraint), this function's only
+/// bound parameter is `trains_ids: &[i64]` -- internally generated
+/// surrogate keys from a PRIOR successful step, never raw/untrusted event
+/// data -- so there is no "bad row" shape that can make this particular
+/// SELECT fail for one id but not another. `ingest_shared_movements_batch`'s
+/// own fallback here is reachable in production, though: real-world
+/// failures like a dropped connection or statement timeout hit the whole
+/// query regardless of row content. This flag lets a test force exactly
+/// that kind of failure once, deterministically, so the REAL fallback loop
+/// (this function's caller retrying one `trains_id` at a time via
+/// [`fetch_previous_derived_state`]) can be exercised against a real
+/// database rather than mocked out.
+#[cfg(test)]
+static FORCE_FETCH_PREVIOUS_DERIVED_STATES_BATCH_FAILURE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Batch-shaped sibling of [`fetch_previous_derived_state`] -- one SELECT
 /// covering every DISTINCT `trains_id` in `trains_ids`, rather than one
 /// SELECT per id. A `trains_id` with no `train_current_state` row yet
@@ -419,6 +439,14 @@ async fn fetch_previous_derived_states_batch(
 ) -> anyhow::Result<HashMap<i64, DerivedState>> {
     if trains_ids.is_empty() {
         return Ok(HashMap::new());
+    }
+    #[cfg(test)]
+    if FORCE_FETCH_PREVIOUS_DERIVED_STATES_BATCH_FAILURE
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+    {
+        return Err(anyhow::anyhow!(
+            "test-injected fetch_previous_derived_states_batch failure"
+        ));
     }
     let rows: Vec<(
         i64,
@@ -707,11 +735,24 @@ mod db_tests {
         // A real, non-trivial batch: two distinct trains (A, B), with A
         // seeing TWO events (proving the batched find_or_create_train/
         // mark_train_resolved calls dedup a repeated identity rather than
-        // writing it twice, and that intra-batch causality for
-        // fetch_previous_derived_state survives being collapsed into one
-        // SELECT), plus a no-known-train_uid event (proving the existing
-        // no-op path still no-ops from inside a batch, not just when
-        // called standalone). Before this task's batching change, this
+        // writing it twice), plus a no-known-train_uid event (proving the
+        // existing no-op path still no-ops from inside a batch, not just
+        // when called standalone).
+        //
+        // NOTE: this test does NOT prove intra-batch causality for
+        // fetch_previous_derived_state, despite an earlier version of this
+        // comment claiming it did -- `journey::apply_movement` derives
+        // every field this test asserts on (status, last_event_type,
+        // delay_minutes) from the CURRENT movement alone, never from
+        // `previous`, so those assertions would pass identically whether or
+        // not `previous` state were threaded correctly between A's two
+        // events. See
+        // `ingest_shared_movements_batch_preserves_intra_batch_causality_for_a_movement_then_cancellation_pair`
+        // below for a test that actually discriminates on this (using a
+        // Movement -> Cancellation pair, since `apply_cancellation` DOES
+        // copy fields straight from `previous`).
+        //
+        // Before this task's batching change, this
         // would have cost 5 sequential round trips per event (15 total);
         // after, it costs 3 batched round trips for identity resolution/
         // previous-state-fetch plus 2 per event that actually needs a
@@ -870,6 +911,488 @@ mod db_tests {
             .ok();
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_b_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                ingest_shared_movements_batch_falls_back_to_per_pair_find_or_create_when_the_batched_insert_fails \
+                -- --ignored --test-threads=1`"]
+    async fn ingest_shared_movements_batch_falls_back_to_per_pair_find_or_create_when_the_batched_insert_fails(
+    ) {
+        // Forces `find_or_create_trains_batch`'s batched `INSERT ...
+        // UNNEST(...)` to fail for the WHOLE batch by giving one event's
+        // train_uid an embedded NUL byte -- Postgres genuinely rejects any
+        // TEXT value containing one (`invalid byte sequence for encoding
+        // "UTF8": 0x00`, confirmed against this same live database before
+        // writing this test), so this isn't a contrived/mocked failure.
+        // Asserts the fallback then retries one pair at a time, so the
+        // GOOD event still succeeds and the BAD event's failure is
+        // reported against only itself -- not silently swallowed, and not
+        // misattributed to the good event.
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+
+        let good = TrustBacklogEventMessage {
+            crs: Some("EUS".to_string()),
+            train_uid: Some("TEST-FALLBACK-STEP1-GOOD".to_string()),
+            train_id: "TEST-FALLBACK-STEP1-GOOD-TID".to_string(),
+            service_date,
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T19:16:00Z".parse().unwrap()),
+            variation_status: Some("ON TIME".to_string()),
+            delay_minutes: Some(0),
+            dedup_key: "test-fallback-step1-good-dedup".to_string(),
+        };
+        let bad = TrustBacklogEventMessage {
+            crs: Some("WAT".to_string()),
+            // The embedded NUL byte is what trips the batched INSERT.
+            train_uid: Some("TEST-FALLBACK-STEP1-BAD\u{0}".to_string()),
+            train_id: "TEST-FALLBACK-STEP1-BAD-TID".to_string(),
+            service_date,
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            delay_minutes: None,
+            dedup_key: "test-fallback-step1-bad-dedup".to_string(),
+        };
+
+        let results = ingest_shared_movements_batch(&pool, &[good, bad]).await;
+        assert_eq!(results.len(), 2);
+        assert!(
+            results[0].is_ok(),
+            "the good event must still succeed: {:?}",
+            results[0]
+        );
+        let bad_err = results[1]
+            .as_ref()
+            .expect_err("the bad event must fail, not be silently swallowed");
+        assert!(
+            bad_err.to_string().contains("find_or_create_train failed"),
+            "the bad event's error must be attributed to the find_or_create_train fallback step, \
+             got: {bad_err}"
+        );
+
+        let (trains_id, status): (i64, String) = sqlx::query_as(
+            "SELECT tr.id, cs.status FROM trains tr \
+             JOIN train_current_state cs ON cs.trains_id = tr.id \
+             WHERE tr.train_uid = 'TEST-FALLBACK-STEP1-GOOD'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("the good event's trains/current_state rows must exist");
+        assert_eq!(status, "en_route");
+
+        let bad_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM trains WHERE train_id = 'TEST-FALLBACK-STEP1-BAD-TID'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(
+            bad_count, 0,
+            "the bad event's identity must never have been created"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                ingest_shared_movements_batch_falls_back_to_per_pair_mark_resolved_when_the_batched_update_fails \
+                -- --ignored --test-threads=1`"]
+    async fn ingest_shared_movements_batch_falls_back_to_per_pair_mark_resolved_when_the_batched_update_fails(
+    ) {
+        // Same technique as the find_or_create_trains_batch fallback test
+        // above, but the NUL byte is on `train_id` instead of `train_uid`,
+        // so BOTH events resolve a real trains_id via Step 1 (proving this
+        // failure is genuinely isolated to Step 2, `mark_trains_resolved_batch`'s
+        // batched `UPDATE ... FROM UNNEST(...)`), which then fails only for
+        // the bad event's pair. Asserts the good event still gets its
+        // train_id resolved and its current_state written, while the bad
+        // event's failure is attributed to only itself and its identity
+        // row is left un-resolved (train_id still NULL) rather than ending
+        // up with a wrong/partial value.
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+
+        let good = TrustBacklogEventMessage {
+            crs: Some("EUS".to_string()),
+            train_uid: Some("TEST-FALLBACK-STEP2-GOOD".to_string()),
+            train_id: "TEST-FALLBACK-STEP2-GOOD-TID".to_string(),
+            service_date,
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T19:16:00Z".parse().unwrap()),
+            variation_status: Some("ON TIME".to_string()),
+            delay_minutes: Some(0),
+            dedup_key: "test-fallback-step2-good-dedup".to_string(),
+        };
+        let bad = TrustBacklogEventMessage {
+            crs: Some("WAT".to_string()),
+            train_uid: Some("TEST-FALLBACK-STEP2-BAD".to_string()),
+            // The embedded NUL byte is what trips the batched UPDATE, not
+            // the (perfectly valid) train_uid this time.
+            train_id: "TEST-FALLBACK-STEP2-BAD-TID\u{0}".to_string(),
+            service_date,
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            delay_minutes: None,
+            dedup_key: "test-fallback-step2-bad-dedup".to_string(),
+        };
+
+        let results = ingest_shared_movements_batch(&pool, &[good, bad]).await;
+        assert_eq!(results.len(), 2);
+        assert!(
+            results[0].is_ok(),
+            "the good event must still succeed: {:?}",
+            results[0]
+        );
+        let bad_err = results[1]
+            .as_ref()
+            .expect_err("the bad event must fail, not be silently swallowed");
+        assert!(
+            bad_err.to_string().contains("mark_train_resolved failed"),
+            "the bad event's error must be attributed to the mark_train_resolved fallback step, \
+             got: {bad_err}"
+        );
+
+        let (good_trains_id, good_train_id, good_status): (i64, Option<String>, String) =
+            sqlx::query_as(
+                "SELECT tr.id, tr.train_id, cs.status FROM trains tr \
+                 JOIN train_current_state cs ON cs.trains_id = tr.id \
+                 WHERE tr.train_uid = 'TEST-FALLBACK-STEP2-GOOD'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("the good event's trains/current_state rows must exist");
+        assert_eq!(good_train_id, Some("TEST-FALLBACK-STEP2-GOOD-TID".to_string()));
+        assert_eq!(good_status, "en_route");
+
+        // Step 1 (identity resolution) succeeded for the bad event too --
+        // only Step 2 (resolving train_id) failed for it -- so a trains
+        // row exists, but must have been left un-resolved rather than
+        // ending up with a truncated/garbage train_id.
+        let (bad_trains_id, bad_train_id): (i64, Option<String>) = sqlx::query_as(
+            "SELECT id, train_id FROM trains WHERE train_uid = 'TEST-FALLBACK-STEP2-BAD'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("the bad event's trains row must still have been created by Step 1");
+        assert_eq!(
+            bad_train_id, None,
+            "a failed mark_train_resolved must leave train_id un-resolved, not partially written"
+        );
+        let bad_current_state_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM train_current_state WHERE trains_id = $1",
+        )
+        .bind(bad_trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(
+            bad_current_state_count, 0,
+            "an event whose resolution failed must not reach the derive/write step"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE id IN ($1, $2)")
+            .bind(good_trains_id)
+            .bind(bad_trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                ingest_shared_movements_batch_falls_back_to_per_id_fetch_when_the_batched_previous_state_select_fails \
+                -- --ignored --test-threads=1`"]
+    async fn ingest_shared_movements_batch_falls_back_to_per_id_fetch_when_the_batched_previous_state_select_fails(
+    ) {
+        // Unlike Steps 1/2, `fetch_previous_derived_states_batch`'s only
+        // bound parameter is a `Vec<i64>` of ALREADY-resolved surrogate
+        // trains_ids, not raw/untrusted event data -- there is no "bad
+        // row" shape a caller can supply that makes this SELECT fail for
+        // one id but not another. What IS real and reachable in
+        // production is the batched SELECT failing outright for reasons
+        // unrelated to row content (a dropped connection, a statement
+        // timeout) while the DATABASE ITSELF stays healthy -- so this test
+        // uses `FORCE_FETCH_PREVIOUS_DERIVED_STATES_BATCH_FAILURE`, a
+        // one-shot, #[cfg(test)]-only fault injector (compiled out of
+        // every non-test build -- see its own doc comment), to force
+        // exactly that once, and then exercises the REAL per-row fallback
+        // (`fetch_previous_derived_state`) against real data.
+        //
+        // Two trains each get a real Movement first (establishing REAL,
+        // non-default previous state), then, with the fault armed, both
+        // get a Cancellation in the SAME batch call. `apply_cancellation`
+        // copies `last_reported_location`/`last_event_type`/`delay_minutes`
+        // straight from `previous` -- so this only passes if the fallback
+        // actually fetched each train's REAL prior state from the
+        // database, not a default/lost one.
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+
+        let movement_a = TrustBacklogEventMessage {
+            crs: Some("EUS".to_string()),
+            train_uid: Some("TEST-FALLBACK-STEP3-UID-A".to_string()),
+            train_id: "TEST-FALLBACK-STEP3-TID-A".to_string(),
+            service_date,
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T19:20:00Z".parse().unwrap()),
+            variation_status: Some("LATE".to_string()),
+            delay_minutes: Some(5),
+            dedup_key: "test-fallback-step3-movement-a-dedup".to_string(),
+        };
+        let movement_b = TrustBacklogEventMessage {
+            crs: Some("WAT".to_string()),
+            train_uid: Some("TEST-FALLBACK-STEP3-UID-B".to_string()),
+            train_id: "TEST-FALLBACK-STEP3-TID-B".to_string(),
+            service_date,
+            msg_type: "0003".to_string(),
+            event_type: Some("ARRIVAL".to_string()),
+            planned_timestamp: Some("2026-09-06T20:00:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T20:03:00Z".parse().unwrap()),
+            variation_status: Some("LATE".to_string()),
+            delay_minutes: Some(3),
+            dedup_key: "test-fallback-step3-movement-b-dedup".to_string(),
+        };
+        let seed_results =
+            ingest_shared_movements_batch(&pool, &[movement_a, movement_b]).await;
+        assert!(
+            seed_results.iter().all(|r| r.is_ok()),
+            "seeding movements must succeed: {seed_results:?}"
+        );
+
+        let (trains_a_id,): (i64,) = sqlx::query_as(
+            "SELECT id FROM trains WHERE train_uid = 'TEST-FALLBACK-STEP3-UID-A'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("trains row for A");
+        let (trains_b_id,): (i64,) = sqlx::query_as(
+            "SELECT id FROM trains WHERE train_uid = 'TEST-FALLBACK-STEP3-UID-B'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("trains row for B");
+
+        // Arm the one-shot fault injector, then send both trains a
+        // Cancellation in the SAME batch call.
+        FORCE_FETCH_PREVIOUS_DERIVED_STATES_BATCH_FAILURE
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let cancel_a = TrustBacklogEventMessage {
+            crs: None,
+            train_uid: Some("TEST-FALLBACK-STEP3-UID-A".to_string()),
+            train_id: "TEST-FALLBACK-STEP3-TID-A".to_string(),
+            service_date,
+            msg_type: "0002".to_string(),
+            event_type: None,
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            delay_minutes: None,
+            dedup_key: "test-fallback-step3-cancel-a-dedup".to_string(),
+        };
+        let cancel_b = TrustBacklogEventMessage {
+            crs: None,
+            train_uid: Some("TEST-FALLBACK-STEP3-UID-B".to_string()),
+            train_id: "TEST-FALLBACK-STEP3-TID-B".to_string(),
+            service_date,
+            msg_type: "0002".to_string(),
+            event_type: None,
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            delay_minutes: None,
+            dedup_key: "test-fallback-step3-cancel-b-dedup".to_string(),
+        };
+        let results = ingest_shared_movements_batch(&pool, &[cancel_a, cancel_b]).await;
+
+        assert!(
+            !FORCE_FETCH_PREVIOUS_DERIVED_STATES_BATCH_FAILURE
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "the fault must actually have fired during this call (one-shot flag consumed), \
+             otherwise this test isn't exercising the fallback at all"
+        );
+        assert!(
+            results.iter().all(|r| r.is_ok()),
+            "both cancellations must still succeed via the per-id fallback: {results:?}"
+        );
+
+        let (status_a, last_loc_a, last_event_a, delay_a): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i32>,
+        ) = sqlx::query_as(
+            "SELECT status, last_reported_location, last_event_type, delay_minutes \
+             FROM train_current_state WHERE trains_id = $1",
+        )
+        .bind(trains_a_id)
+        .fetch_one(&pool)
+        .await
+        .expect("current state for A");
+        assert_eq!(status_a, "cancelled");
+        assert_eq!(
+            last_loc_a,
+            Some("EUS".to_string()),
+            "must carry over A's REAL previous location, fetched via the per-id fallback"
+        );
+        assert_eq!(last_event_a, Some("DEPARTURE".to_string()));
+        assert_eq!(delay_a, Some(5));
+
+        let (status_b, last_loc_b, last_event_b, delay_b): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i32>,
+        ) = sqlx::query_as(
+            "SELECT status, last_reported_location, last_event_type, delay_minutes \
+             FROM train_current_state WHERE trains_id = $1",
+        )
+        .bind(trains_b_id)
+        .fetch_one(&pool)
+        .await
+        .expect("current state for B");
+        assert_eq!(status_b, "cancelled");
+        assert_eq!(
+            last_loc_b,
+            Some("WAT".to_string()),
+            "must carry over B's REAL previous location, fetched via the per-id fallback"
+        );
+        assert_eq!(last_event_b, Some("ARRIVAL".to_string()));
+        assert_eq!(delay_b, Some(3));
+
+        sqlx::query("DELETE FROM trains WHERE id IN ($1, $2)")
+            .bind(trains_a_id)
+            .bind(trains_b_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                ingest_shared_movements_batch_preserves_intra_batch_causality_for_a_movement_then_cancellation_pair \
+                -- --ignored --test-threads=1`"]
+    async fn ingest_shared_movements_batch_preserves_intra_batch_causality_for_a_movement_then_cancellation_pair(
+    ) {
+        // The discriminating test the flagship
+        // `ingest_shared_movements_batch_collapses_round_trips_across_a_real_batch`
+        // test above claimed to be, but isn't: `journey::apply_movement`
+        // derives every field a same-train Movement-then-Movement pair
+        // could assert on purely from the CURRENT movement, never from
+        // `previous` -- so that test would pass identically even if a
+        // broken implementation read every event in a batch from the SAME
+        // stale pre-batch snapshot instead of the causally-updated
+        // in-memory state map.
+        //
+        // `journey::apply_cancellation`, by contrast, copies
+        // `last_reported_location`/`last_event_type`/`delay_minutes`
+        // straight from `previous` -- so a same-train Movement followed by
+        // a Cancellation, in ONE batch call, for a train with NO prior
+        // database row (previous == DerivedState::awaiting_activation()
+        // before this call), actually discriminates: a correct
+        // implementation has the Cancellation observe the Movement's
+        // JUST-COMPUTED state (real location/event_type/delay); a broken
+        // one that re-reads a pre-batch snapshot would have it observe the
+        // pre-batch default instead (None/None/None), since there was no
+        // database row before this call started.
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+
+        let movement = TrustBacklogEventMessage {
+            crs: Some("EUS".to_string()),
+            train_uid: Some("TEST-CAUSALITY-UID".to_string()),
+            train_id: "TEST-CAUSALITY-TID".to_string(),
+            service_date,
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T19:20:00Z".parse().unwrap()),
+            variation_status: Some("LATE".to_string()),
+            delay_minutes: Some(5),
+            dedup_key: "test-causality-movement-dedup".to_string(),
+        };
+        let cancellation = TrustBacklogEventMessage {
+            crs: None,
+            train_uid: Some("TEST-CAUSALITY-UID".to_string()),
+            train_id: "TEST-CAUSALITY-TID".to_string(),
+            service_date,
+            msg_type: "0002".to_string(),
+            event_type: None,
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: None,
+            delay_minutes: None,
+            dedup_key: "test-causality-cancellation-dedup".to_string(),
+        };
+
+        let results = ingest_shared_movements_batch(&pool, &[movement, cancellation]).await;
+        assert!(
+            results.iter().all(|r| r.is_ok()),
+            "both events should succeed: {results:?}"
+        );
+
+        let (trains_id,): (i64,) =
+            sqlx::query_as("SELECT id FROM trains WHERE train_uid = 'TEST-CAUSALITY-UID'")
+                .fetch_one(&pool)
+                .await
+                .expect("trains row");
+
+        let (status, last_reported_location, last_event_type, delay_minutes): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i32>,
+        ) = sqlx::query_as(
+            "SELECT status, last_reported_location, last_event_type, delay_minutes \
+             FROM train_current_state WHERE trains_id = $1",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("current state");
+
+        assert_eq!(status, "cancelled");
+        assert_eq!(
+            last_reported_location,
+            Some("EUS".to_string()),
+            "the Cancellation must have observed the Movement's just-computed location, not a \
+             stale pre-batch default -- this is what proves intra-batch causality survived \
+             batching"
+        );
+        assert_eq!(
+            last_event_type,
+            Some("DEPARTURE".to_string()),
+            "same causality proof, for last_event_type"
+        );
+        assert_eq!(
+            delay_minutes,
+            Some(5),
+            "same causality proof, for delay_minutes"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
             .execute(&pool)
             .await
             .ok();
