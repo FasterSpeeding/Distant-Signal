@@ -88,6 +88,10 @@ pub fn router() -> Router {
             axum::routing::get(get_by_uid_and_date),
         )
         .route(
+            "/Train/by-uid/{train_uid}/{date}/track",
+            axum::routing::post(post_track_by_uid),
+        )
+        .route(
             "/Train/{tracking_id}/tickets",
             axum::routing::post(post_ticket).get(get_tickets),
         )
@@ -655,6 +659,40 @@ async fn get_by_uid_and_date(
             "no known train for that uid/date".to_string(),
         )),
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrackByUidResponse {
+    tracking_id: i64,
+}
+
+/// `POST /Train/by-uid/{train_uid}/{date}/track` -- the NR-primary tracking
+/// entry point (Task 20,
+/// docs/superpowers/specs/2026-09-06-shared-train-identity-design.md §4).
+/// AUTHENTICATED via the normal user-session `AuthenticatedUser` extractor
+/// -- same auth model as `post_track` below, NOT the internal-OAuth
+/// service-token pattern the poller/consumer routes use (this is a user
+/// creating their own subscription, not a backend service pushing data).
+/// Unlike `post_track`'s legacy CRS+time flow, this never goes through
+/// `pending`/`schedule_matched`: identity is already known upfront (a real
+/// `train_uid`, not a departure-board guess), so `find_or_create_train`
+/// resolves the shared row immediately and
+/// `train_tracking::create_subscription_for_train` links the new
+/// subscription to it in the same request, no waypoint in between.
+async fn post_track_by_uid(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path((train_uid, date)): Path<(String, NaiveDate)>,
+) -> Result<Json<TrackByUidResponse>, (StatusCode, String)> {
+    let trains_id = crate::data::trains::find_or_create_train(&app.database, &train_uid, date)
+        .await
+        .map_err(internal_error("find or create train"))?;
+    let tracking_id =
+        train_tracking::create_subscription_for_train(&app.database, trains_id, &user.id)
+            .await
+            .map_err(internal_error("create subscription"))?;
+    Ok(Json(TrackByUidResponse { tracking_id }))
 }
 
 /// Best-effort overlay: if a live Darwin/LDBWS departure board sample for
@@ -2592,5 +2630,293 @@ mod db_tests {
 
         cleanup_user(&pool, "TEST-UIDDATE-PRIVACY-OWNER").await;
         cleanup_user(&pool, "TEST-UIDDATE-PRIVACY-OTHER").await;
+    }
+
+    // --- post_track_by_uid (Task 20: the NR-primary tracking entry point) ---
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                post_track_by_uid_no_session_is_401 -- --ignored --test-threads=1`"]
+    async fn post_track_by_uid_no_session_is_401() {
+        let pool = connect().await;
+        let router = test_router(test_app(pool));
+
+        // No session cookie at all -- unlike GET /Train/by-uid/{uid}/{date}
+        // (Task 19, deliberately public), this WRITE route must stay behind
+        // normal user authentication.
+        let (status, body) = post_json(
+            router,
+            "/Train/by-uid/TEST-TRACK-BY-UID-NOAUTH/2026-09-07/track".to_string(),
+            None,
+            serde_json::json!({}),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "response: {body:?}");
+        assert_eq!(body, Value::String("no session".to_string()));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                post_track_by_uid_creates_a_subscription_that_inherits_known_schedule_data \
+                -- --ignored --test-threads=1`"]
+    async fn post_track_by_uid_creates_a_subscription_that_inherits_known_schedule_data() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-TRACK-BY-UID-KNOWN").await;
+        let router = test_router(test_app(pool.clone()));
+        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
+        let scheduled_departure = service_date.and_hms_opt(19, 15, 0).unwrap().and_utc();
+
+        sqlx::query(
+            "INSERT INTO trains (train_uid, service_date, origin_crs, scheduled_departure) \
+             VALUES ('TEST-TRACK-BY-UID-KNOWN-UID', $1, 'EUS', $2)",
+        )
+        .bind(service_date)
+        .bind(scheduled_departure)
+        .execute(&pool)
+        .await
+        .expect("seed a trains row with known schedule data");
+
+        let (status, body) = post_json(
+            router,
+            format!("/Train/by-uid/TEST-TRACK-BY-UID-KNOWN-UID/{service_date}/track"),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        let tracking_id = body
+            .get("trackingId")
+            .and_then(Value::as_i64)
+            .expect("trackingId present");
+
+        // No pending/schedule_matched waypoint at all -- trains_id and the
+        // schedule-derived pin_* columns must be set immediately, in this
+        // same request.
+        let (trains_id, resolution_status, pin_origin_crs, pin_scheduled_departure): (
+            Option<i64>,
+            String,
+            Option<String>,
+            Option<chrono::DateTime<chrono::Utc>>,
+        ) = sqlx::query_as(
+            "SELECT trains_id, resolution_status, pin_origin_crs, pin_scheduled_departure \
+             FROM tracked_trains WHERE id = $1",
+        )
+        .bind(tracking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back the new subscription");
+        assert!(trains_id.is_some(), "trains_id must be set immediately");
+        assert_eq!(
+            pin_origin_crs,
+            Some("EUS".to_string()),
+            "known schedule data must be inherited immediately, not left NULL"
+        );
+        assert_eq!(pin_scheduled_departure, Some(scheduled_departure));
+        // `resolution_status` DOES stay at this table's own `DEFAULT
+        // 'pending'` here -- deliberately, not an oversight:
+        // `create_subscription_for_train` never touches this column, and
+        // leaving it 'pending' is what routes this row into
+        // `trust-consumer::process::apply_reference_reload`'s
+        // `by_train_uid` fast-path branch once Task 21's read cutover picks
+        // up this row's `trains_id` (see that function's own doc comment).
+        // "No pending/schedule_matched waypoint" (the design spec's own
+        // phrasing) refers to IDENTITY never being in question here -- it
+        // does not mean this literal DB value differs from the legacy
+        // path's own 'pending' value.
+        assert_eq!(resolution_status, "pending");
+
+        cleanup_user(&pool, "TEST-TRACK-BY-UID-KNOWN").await;
+        cleanup_public_train(&pool, "TEST-TRACK-BY-UID-KNOWN-UID").await;
+    }
+
+    /// The accepted §1 gap: a bare `train_uid`/`date` with no schedule match
+    /// yet. Proves the whole request succeeds end-to-end (route ->
+    /// find_or_create_train -> create_subscription_for_train) and persists
+    /// `NULL` pin columns rather than erroring -- only possible because this
+    /// task's own migration dropped their `NOT NULL` constraint.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                post_track_by_uid_allows_a_bare_uid_with_no_schedule_data \
+                -- --ignored --test-threads=1`"]
+    async fn post_track_by_uid_allows_a_bare_uid_with_no_schedule_data() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-TRACK-BY-UID-BARE").await;
+        let router = test_router(test_app(pool.clone()));
+        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
+
+        // No pre-existing `trains` row at all -- find_or_create_train must
+        // create one fresh, with no schedule data to inherit.
+        let (status, body) = post_json(
+            router,
+            format!("/Train/by-uid/TEST-TRACK-BY-UID-BARE-UID/{service_date}/track"),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        let tracking_id = body
+            .get("trackingId")
+            .and_then(Value::as_i64)
+            .expect("trackingId present");
+
+        let (trains_id, pin_origin_crs, pin_scheduled_departure): (
+            Option<i64>,
+            Option<String>,
+            Option<chrono::DateTime<chrono::Utc>>,
+        ) = sqlx::query_as(
+            "SELECT trains_id, pin_origin_crs, pin_scheduled_departure FROM tracked_trains \
+             WHERE id = $1",
+        )
+        .bind(tracking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back the new subscription");
+        assert!(trains_id.is_some(), "trains_id must still be set immediately");
+        assert_eq!(pin_origin_crs, None);
+        assert_eq!(pin_scheduled_departure, None);
+
+        cleanup_user(&pool, "TEST-TRACK-BY-UID-BARE").await;
+        cleanup_public_train(&pool, "TEST-TRACK-BY-UID-BARE-UID").await;
+    }
+
+    /// Explicit idempotency check at the HTTP layer, mirroring the
+    /// data-layer test of the same name in `train_tracking::db_tests`: the
+    /// SAME authenticated caller hits this route twice for the SAME
+    /// `(train_uid, date)`, with no reset in between. Result: two distinct
+    /// `trackingId`s, i.e. two separate subscriptions -- this route is NOT
+    /// idempotent, matching `POST /Train/track`'s own long-established
+    /// non-dedup behavior. Documented here as observed real behavior, not
+    /// assumed.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                post_track_by_uid_called_twice_creates_two_separate_subscriptions \
+                -- --ignored --test-threads=1`"]
+    async fn post_track_by_uid_called_twice_creates_two_separate_subscriptions() {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-TRACK-BY-UID-TWICE").await;
+        let router = test_router(test_app(pool.clone()));
+        let service_date: chrono::NaiveDate = "2026-09-07".parse().unwrap();
+        let uri = format!("/Train/by-uid/TEST-TRACK-BY-UID-TWICE-UID/{service_date}/track");
+
+        let (status1, body1) = post_json(
+            router.clone(),
+            uri.clone(),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status1, StatusCode::OK, "first call response: {body1:?}");
+        let first_tracking_id = body1
+            .get("trackingId")
+            .and_then(Value::as_i64)
+            .expect("trackingId present on first call");
+
+        let (status2, body2) =
+            post_json(router, uri, Some(&token), serde_json::json!({})).await;
+        assert_eq!(status2, StatusCode::OK, "second call response: {body2:?}");
+        let second_tracking_id = body2
+            .get("trackingId")
+            .and_then(Value::as_i64)
+            .expect("trackingId present on second call");
+
+        assert_ne!(
+            first_tracking_id, second_tracking_id,
+            "this route is not idempotent -- a second call for the same (uid, date) by the \
+             same user creates a second, separate subscription rather than returning the \
+             first one"
+        );
+
+        let (row_count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM tracked_trains WHERE id IN ($1, $2)",
+        )
+        .bind(first_tracking_id)
+        .bind(second_tracking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count both subscription rows");
+        assert_eq!(row_count, 2, "both calls' rows must actually persist");
+
+        cleanup_user(&pool, "TEST-TRACK-BY-UID-TWICE").await;
+        cleanup_public_train(&pool, "TEST-TRACK-BY-UID-TWICE-UID").await;
+    }
+
+    // --- legacy POST /Train/track: validation unaffected by Task 20's own
+    // nullable-column migration --------------------------------------------
+
+    /// Task 20's migration dropped `tracked_trains.pin_origin_crs`/
+    /// `pin_scheduled_departure`'s `NOT NULL` constraint -- required for the
+    /// NEW NR-primary path above, which legitimately has no schedule data at
+    /// pin time. This proves that relaxation did NOT weaken the LEGACY
+    /// `POST /Train/track` path: `validate_pin`'s own application-level gate
+    /// still runs and still rejects a malformed pin, and no
+    /// `tracked_trains` row is ever created for a rejected request, even
+    /// though the database itself no longer has a `NOT NULL` constraint to
+    /// fall back on if that application check were ever accidentally
+    /// removed.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                post_track_still_rejects_a_pin_missing_required_fields_after_nullable_pin_columns_migration \
+                -- --ignored --test-threads=1`"]
+    async fn post_track_still_rejects_a_pin_missing_required_fields_after_nullable_pin_columns_migration()
+     {
+        let pool = connect().await;
+        let token = seed_session(&pool, "TEST-LEGACY-VALIDATION-STILL-ENFORCED").await;
+        let router = test_router(test_app(pool.clone()));
+
+        // Empty origin_crs: deserializes fine (still a String, just empty),
+        // so only `validate_pin`'s own check -- not serde/axum -- can catch
+        // this. This is the scenario Task 20's migration could have
+        // silently broken, since the DB column itself would now happily
+        // accept this value if it were ever coerced to NULL upstream.
+        let (status, body) = post_json(
+            router.clone(),
+            "/Train/track".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "service_date": "2026-09-07",
+                "origin_crs": "",
+                "scheduled_departure": chrono::Utc::now().to_rfc3339(),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "response: {body:?}");
+        assert!(
+            body.as_str().is_some_and(|s| s.to_lowercase().contains("station")),
+            "expected validate_pin's own empty-origin message: {body:?}"
+        );
+
+        let (rejected_row_count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM tracked_trains WHERE user_id = $1")
+                .bind("TEST-LEGACY-VALIDATION-STILL-ENFORCED")
+                .fetch_one(&pool)
+                .await
+                .expect("count tracked_trains rows for this user");
+        assert_eq!(
+            rejected_row_count, 0,
+            "a pin rejected by validate_pin must never reach the database"
+        );
+
+        // A request missing scheduled_departure entirely (not just empty) is
+        // rejected too -- axum's Json extractor itself refuses to
+        // deserialize TrackPinRequest without it (a required, non-Option
+        // field), independent of anything this migration touched.
+        let (status2, body2) = post_json(
+            router,
+            "/Train/track".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "service_date": "2026-09-07",
+                "origin_crs": "EUS",
+            }),
+        )
+        .await;
+        assert_ne!(
+            status2,
+            StatusCode::OK,
+            "a pin missing scheduled_departure must not be accepted: {body2:?}"
+        );
+
+        cleanup_user(&pool, "TEST-LEGACY-VALIDATION-STILL-ENFORCED").await;
     }
 }

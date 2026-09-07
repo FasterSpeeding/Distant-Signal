@@ -99,6 +99,92 @@ pub async fn create_pin(
     Ok(row.0)
 }
 
+/// Creates a subscription for an identity that is ALREADY fully known
+/// (the NR-primary path, docs/superpowers/specs/2026-09-06-shared-train-identity-design.md
+/// §4) -- no `pending`/`schedule_matched` waypoint at all, unlike
+/// `create_pin`'s legacy CRS+time flow. `pin_*` columns are sourced live
+/// from the `trains` row itself via `INSERT ... SELECT`, and come back
+/// `NULL` if that row has no schedule data yet (the accepted gap named in
+/// the design spec's §1) -- safe since Task 20's own migration relaxed
+/// their `NOT NULL` constraint.
+///
+/// Deliberately does NOT also write the matched `train_uid` onto this row's
+/// own (legacy) `tracked_trains.train_uid` column, even though `trains.train_uid`
+/// is right there in the same `SELECT`. Two different users tracking the
+/// SAME real train via this endpoint -- this endpoint's own headline
+/// scenario -- would both resolve to the identical `(train_uid,
+/// service_date)` pair; `tracked_trains` still carries a real
+/// `UNIQUE (train_uid, service_date) WHERE train_uid IS NOT NULL` index
+/// (`tracked_trains_resolved_identity`,
+/// `20260828120000_train_tracking.sql:85`) left over from the old
+/// one-row-per-physical-train assumption the shared-`trains` table (Task 1)
+/// was built specifically to retire -- the SECOND user's `INSERT` would hit
+/// that constraint and fail outright. That index is scheduled to be dropped
+/// entirely in Task 22 (alongside the whole legacy `train_uid` column it
+/// guards), not before -- narrowing it here would be a bigger, separately-
+/// reviewable change than this task's own scope. The practical consequence:
+/// `trust-consumer`'s `by_train_uid` direct-Activation-match fast path
+/// (Task 16) doesn't yet see NR-primary subscriptions (it reads
+/// `tracked_trains.train_uid` directly, pre-Task-21) -- they still resolve
+/// correctly once trust-consumer's live-Movement CRS+time heuristic runs
+/// (for the known-schedule case; see `pending`/`by_train_uid` handling in
+/// `trust-consumer::process::apply_reference_reload`), just without the
+/// fast path's extra reliability edge until Task 21's already-planned
+/// `list_active_tracked_trains` re-point (reading `tr.train_uid` via the
+/// `trains` join instead) lands and picks this row up automatically -- `
+/// trains_id` (unlike `train_uid`) IS written here, immediately, so no
+/// further change to this function will be needed when that happens. A
+/// bare-`train_uid`-no-schedule-data row (this same accepted §1 gap) has no
+/// route to trust-consumer's matching at all until then, same posture.
+///
+/// Two more downstream correctness fixes this task's own migration made
+/// necessary, neither mentioned in the original brief text, both verified
+/// by tracing every reader of `tracked_trains.pin_origin_crs`/
+/// `pin_scheduled_departure`: `common::TrackedTrainRef`/this file's own
+/// `TrackedTrainRow` had those two fields typed as plain `String`/
+/// `DateTime<Utc>` (never `Option`) -- with the columns now nullable, a
+/// bare-`train_uid`-no-schedule NR-primary row would fail to decode via
+/// `list_active_tracked_trains` (used by `trust-consumer`'s periodic
+/// reference reload), erroring that ENTIRE reload, not just this one row.
+/// Both are now `Option` (see their own doc comments). Second,
+/// `list_pending_pins_for_schedule_match`'s sweep was guarded only on
+/// `WHERE train_uid IS NULL AND resolution_status = 'pending'` -- since
+/// this function never sets `train_uid`, a fresh NR-primary row (still
+/// `'pending'` by this table's own `DEFAULT`) would be swept up by the
+/// periodic schedule-match job despite already having a known `trains_id`,
+/// hitting the exact same `PendingSchedulePin` decode failure for a
+/// bare-`train_uid`-no-schedule row. Its `WHERE` clause now also requires
+/// `trains_id IS NULL` -- a no-op for every legacy row (which never has one
+/// without also having the other) and the correct exclusion for this new
+/// NR-primary shape.
+///
+/// NOT idempotent by `(trains_id, user_id)` -- every call inserts a new
+/// row, same as `create_pin`'s own long-established behavior for the
+/// legacy path (calling `POST /Train/track` twice for the same pin already
+/// creates two independent rows today; nothing in this schema has ever
+/// deduped subscriptions by identity). Calling this twice for the same
+/// train therefore creates two separate subscriptions, each independently
+/// rename/delete-able -- see this function's own `db_tests` for the test
+/// that proves this explicitly, rather than assuming either way.
+pub async fn create_subscription_for_train(
+    pool: &PgPool,
+    trains_id: i64,
+    user_id: &str,
+) -> anyhow::Result<i64> {
+    let row: (i64,) = sqlx::query_as(
+        "INSERT INTO tracked_trains \
+            (user_id, trains_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs) \
+         SELECT $1, tr.id, tr.service_date, tr.origin_crs, tr.scheduled_departure, tr.destination_crs \
+         FROM trains tr WHERE tr.id = $2 \
+         RETURNING id",
+    )
+    .bind(user_id)
+    .bind(trains_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
 /// Every allowed value of `tracked_train_tickets.source` -- kept in one
 /// place (this constant, not repeated string literals) so this app-layer
 /// check and the migration's own CHECK constraint (Task 1) can't silently
@@ -341,8 +427,15 @@ mod ticket_entry_tests {
 struct TrackedTrainRow {
     id: i64,
     service_date: chrono::NaiveDate,
-    pin_origin_crs: String,
-    pin_scheduled_departure: DateTime<Utc>,
+    /// `Option`, not `String` -- as of Task 20's `create_subscription_for_train`
+    /// (the NR-primary path), a row can legitimately have `NULL` here (the
+    /// design spec's own accepted §1 gap: a bare `train_uid` with no
+    /// schedule match yet). See `common::TrackedTrainRef::pin_origin_crs`'s
+    /// own doc comment -- this row shape's whole reason to exist is
+    /// carrying that value through to it unchanged.
+    pin_origin_crs: Option<String>,
+    /// See `pin_origin_crs`'s own doc comment on this same struct.
+    pin_scheduled_departure: Option<DateTime<Utc>>,
     resolution_status: String,
     train_uid: Option<String>,
     train_id: Option<String>,
@@ -619,12 +712,27 @@ pub struct PendingSchedulePin {
 /// Every row the periodic schedule-match sweep should retry: still
 /// `pending` AND still lacking a `train_uid` -- a `schedule_matched` row
 /// already has one and is excluded, same as a `resolved`/`unresolved` row.
+///
+/// Also requires `trains_id IS NULL` -- a no-op for every legacy row (which
+/// never has a `trains_id` without also having a `train_uid`, since the two
+/// are only ever set together by `attempt_schedule_match`/live resolution),
+/// but load-bearing as of Task 20's NR-primary path
+/// (`create_subscription_for_train`): that function sets `trains_id`
+/// immediately but deliberately never sets this table's own legacy
+/// `train_uid` column (see its own doc comment), so such a row would
+/// otherwise match `train_uid IS NULL AND resolution_status = 'pending'`
+/// despite its identity already being fully known -- getting pointlessly
+/// (and for a bare-`train_uid`-no-schedule-data row, per the design's own
+/// accepted §1 gap, fatally: `PendingSchedulePin::pin_origin_crs` is a
+/// non-`Option` `String`) swept into a schedule-match attempt that exists
+/// only to *discover* a `train_uid`, which this row already has.
 pub async fn list_pending_pins_for_schedule_match(
     pool: &PgPool,
 ) -> anyhow::Result<Vec<PendingSchedulePin>> {
     let rows = sqlx::query_as::<_, PendingSchedulePin>(
         "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure \
-         FROM tracked_trains WHERE train_uid IS NULL AND resolution_status = 'pending'",
+         FROM tracked_trains \
+         WHERE train_uid IS NULL AND trains_id IS NULL AND resolution_status = 'pending'",
     )
     .fetch_all(pool)
     .await?;
@@ -2830,6 +2938,182 @@ mod db_tests {
 
         sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
             .bind(tracked_train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                create_subscription_for_train_inherits_known_schedule_data \
+                -- --ignored --test-threads=1`"]
+    async fn create_subscription_for_train_inherits_known_schedule_data() {
+        let pool = connect().await;
+        let user_id = "TEST-NR-PRIMARY-TRACK";
+        seed_user(&pool, user_id).await;
+
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let scheduled_departure: chrono::DateTime<chrono::Utc> =
+            "2026-09-06T19:15:00Z".parse().unwrap();
+        let trains_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO trains (train_uid, service_date, origin_crs, scheduled_departure) \
+             VALUES ('TEST-NR-PRIMARY-UID', $1, 'EUS', $2) RETURNING id",
+        )
+        .bind(service_date)
+        .bind(scheduled_departure)
+        .fetch_one(&pool)
+        .await
+        .expect("seed a trains row with known schedule data");
+
+        let tracking_id = create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("create_subscription_for_train");
+
+        let (row_trains_id, pin_origin_crs, pin_scheduled_departure): (
+            Option<i64>,
+            String,
+            chrono::DateTime<chrono::Utc>,
+        ) = sqlx::query_as(
+            "SELECT trains_id, pin_origin_crs, pin_scheduled_departure FROM tracked_trains \
+             WHERE id = $1",
+        )
+        .bind(tracking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back the new subscription");
+        assert_eq!(row_trains_id, Some(trains_id));
+        assert_eq!(pin_origin_crs, "EUS");
+        assert_eq!(pin_scheduled_departure, scheduled_departure);
+
+        sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
+            .bind(tracking_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// The `NULL`-pins case the design spec's own §1 accepts as a gap: a
+    /// bare `train_uid` `trains` row with no schedule data at all (a caller
+    /// that only ever knew NR's identity for the train, never a CRS/time).
+    /// Proves `create_subscription_for_train` doesn't error or silently
+    /// substitute a default -- it faithfully carries the `trains` row's own
+    /// `NULL` schedule columns straight through, which only works at all
+    /// because this task's own migration dropped `pin_origin_crs`/
+    /// `pin_scheduled_departure`'s `NOT NULL` constraint.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                create_subscription_for_train_allows_null_pins_for_a_bare_uid_with_no_schedule_data \
+                -- --ignored --test-threads=1`"]
+    async fn create_subscription_for_train_allows_null_pins_for_a_bare_uid_with_no_schedule_data() {
+        let pool = connect().await;
+        let user_id = "TEST-NR-PRIMARY-TRACK-NULL-PINS";
+        seed_user(&pool, user_id).await;
+
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-NR-PRIMARY-NULL-PINS-UID",
+            "2026-09-06".parse().unwrap(),
+        )
+        .await
+        .expect("seed a bare trains row with no schedule data");
+
+        let tracking_id = create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("create_subscription_for_train must succeed even with no schedule data");
+
+        let (row_trains_id, pin_origin_crs, pin_scheduled_departure): (
+            Option<i64>,
+            Option<String>,
+            Option<chrono::DateTime<chrono::Utc>>,
+        ) = sqlx::query_as(
+            "SELECT trains_id, pin_origin_crs, pin_scheduled_departure FROM tracked_trains \
+             WHERE id = $1",
+        )
+        .bind(tracking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back the new subscription");
+        assert_eq!(row_trains_id, Some(trains_id));
+        assert_eq!(pin_origin_crs, None, "no schedule match yet -> NULL pin, not a default");
+        assert_eq!(pin_scheduled_departure, None);
+
+        sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
+            .bind(tracking_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Explicit idempotency check (per this plan's own lessons-learned
+    /// posture on this exact question): calls the SAME real function twice,
+    /// against the SAME already-existing `trains_id` and `user_id`, with no
+    /// reset in between, and asserts on what ACTUALLY happens rather than
+    /// assuming either "same row" or "duplicate". Result: two distinct
+    /// `tracked_trains` rows -- this function has no `ON CONFLICT`/existence
+    /// check of any kind, matching `create_pin`'s own long-established
+    /// non-dedup behavior for the legacy path (see this function's own doc
+    /// comment).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                create_subscription_for_train_called_twice_creates_two_separate_subscriptions \
+                -- --ignored --test-threads=1`"]
+    async fn create_subscription_for_train_called_twice_creates_two_separate_subscriptions() {
+        let pool = connect().await;
+        let user_id = "TEST-NR-PRIMARY-TRACK-TWICE";
+        seed_user(&pool, user_id).await;
+
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-NR-PRIMARY-TWICE-UID",
+            "2026-09-06".parse().unwrap(),
+        )
+        .await
+        .expect("seed a trains row");
+
+        let first_tracking_id = create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("first create_subscription_for_train call");
+        let second_tracking_id = create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("second create_subscription_for_train call, same trains_id and user_id");
+
+        assert_ne!(
+            first_tracking_id, second_tracking_id,
+            "this function is NOT idempotent -- calling it twice for the same (trains_id, \
+             user_id) creates two distinct subscription rows, not one shared/returned row"
+        );
+
+        let (row_count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM tracked_trains WHERE trains_id = $1 AND user_id = $2",
+        )
+        .bind(trains_id)
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count subscriptions for this (trains_id, user_id) pair");
+        assert_eq!(row_count, 2, "both calls' rows must actually persist");
+
+        sqlx::query("DELETE FROM tracked_trains WHERE id IN ($1, $2)")
+            .bind(first_tracking_id)
+            .bind(second_tracking_id)
             .execute(&pool)
             .await
             .ok();
