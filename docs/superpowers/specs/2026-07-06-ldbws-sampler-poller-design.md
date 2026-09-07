@@ -16,7 +16,7 @@ and the read endpoints — brainstormed separately, after this lands).
 
 ## Why this, why now
 
-The previous plan (`plans/01-poller-microservices.md`) built three pollers
+The previous plan (`docs/superpowers/plans/01-poller-microservices.md`) built three pollers
 (Knowledgebase Incidents, Stations reference data, TOCs) plus the ingestion
 API, but did not touch LDBWS sampling — it wasn't in that plan's scope.
 DESIGN.md's aggregation logic (§6, `aggregate()`) is a two-layer design:

@@ -263,7 +263,7 @@ Repo-wide grep for `"Powered by National Rail Enquiries"` and `\bNRE\b`
 `frontend/components/OpenDataAttribution.test.tsx`, and design-doc prose in
 `docs/superpowers/specs/*.md` / `docs/superpowers/plans/*.md` / `DESIGN.md`
 / `crates/poller-incidents/src/config.rs` (a config field literally named
-`nre_...`, unrelated to the attribution string) / `plans/01-poller-microservices.md`.
+`nre_...`, unrelated to the attribution string) / `docs/superpowers/plans/01-poller-microservices.md`.
 None of those besides the two `OpenDataAttribution.*` files render live UI
 copy — they're either historical narrative (safe to leave) or an unrelated
 identifier. This confirms the fix is fully contained to the two files this
