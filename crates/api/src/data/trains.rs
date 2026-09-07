@@ -192,7 +192,10 @@ mod db_tests {
         let second = find_or_create_train(&pool, "TEST-TRAINS-UID-1", service_date)
             .await
             .expect("second find_or_create_train");
-        assert_eq!(first, second, "the same (train_uid, service_date) must resolve to one row");
+        assert_eq!(
+            first, second,
+            "the same (train_uid, service_date) must resolve to one row"
+        );
 
         sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-TRAINS-UID-1'")
             .execute(&pool)
@@ -271,13 +274,12 @@ mod db_tests {
             "the same (train_uid, service_date) must resolve to one row"
         );
 
-        let (origin_crs, matched_line_id): (Option<String>, Option<String>) = sqlx::query_as(
-            "SELECT origin_crs, matched_line_id FROM trains WHERE id = $1",
-        )
-        .bind(first_id)
-        .fetch_one(&pool)
-        .await
-        .expect("read back trains row");
+        let (origin_crs, matched_line_id): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT origin_crs, matched_line_id FROM trains WHERE id = $1")
+                .bind(first_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back trains row");
         assert_eq!(
             origin_crs,
             Some("PAD".to_string()),

@@ -616,7 +616,8 @@ async fn flip_legacy_resolution(
     let trains_id = match (existing_trains_id, resolved_train_uid) {
         (Some(id), _) => Some(id),
         (None, Some(train_uid)) => {
-            let id = crate::data::trains::find_or_create_train(pool, train_uid, service_date).await?;
+            let id =
+                crate::data::trains::find_or_create_train(pool, train_uid, service_date).await?;
             sqlx::query("UPDATE train_subscriptions SET trains_id = $2 WHERE id = $1")
                 .bind(tracked_train_id)
                 .bind(id)
@@ -660,15 +661,13 @@ pub async fn upsert_train_event(
 
     let trains_id = match resolved_trains_id {
         Some(id) => Some(id),
-        None => {
-            sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT trains_id FROM train_subscriptions WHERE id = $1",
-            )
-            .bind(event.tracked_train_id)
-            .fetch_optional(pool)
-            .await?
-            .flatten()
-        }
+        None => sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT trains_id FROM train_subscriptions WHERE id = $1",
+        )
+        .bind(event.tracked_train_id)
+        .fetch_optional(pool)
+        .await?
+        .flatten(),
     };
 
     match trains_id {
@@ -699,10 +698,7 @@ pub async fn upsert_train_event(
 /// it) -- `rows_affected() == 0` in either of those cases is not an error,
 /// just a no-op, which is why this returns `bool` rather than erroring on
 /// zero rows affected.
-pub async fn apply_schedule_match(
-    pool: &PgPool,
-    tracked_train_id: i64,
-) -> anyhow::Result<bool> {
+pub async fn apply_schedule_match(pool: &PgPool, tracked_train_id: i64) -> anyhow::Result<bool> {
     let result = sqlx::query(
         "UPDATE train_subscriptions SET resolution_status = 'schedule_matched' \
          WHERE id = $1 AND trains_id IS NULL AND resolution_status = 'pending'",
@@ -1002,13 +998,14 @@ pub async fn rename_tracked_train(
     user_id: &str,
     custom_name: Option<&str>,
 ) -> anyhow::Result<bool> {
-    let result =
-        sqlx::query("UPDATE train_subscriptions SET custom_name = $1 WHERE id = $2 AND user_id = $3")
-            .bind(custom_name)
-            .bind(id)
-            .bind(user_id)
-            .execute(pool)
-            .await?;
+    let result = sqlx::query(
+        "UPDATE train_subscriptions SET custom_name = $1 WHERE id = $2 AND user_id = $3",
+    )
+    .bind(custom_name)
+    .bind(id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -1095,10 +1092,11 @@ pub async fn tracked_train_owner(
     pool: &PgPool,
     tracking_id: i64,
 ) -> anyhow::Result<Option<String>> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT user_id FROM train_subscriptions WHERE id = $1")
-        .bind(tracking_id)
-        .fetch_optional(pool)
-        .await?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT user_id FROM train_subscriptions WHERE id = $1")
+            .bind(tracking_id)
+            .fetch_optional(pool)
+            .await?;
     Ok(row.map(|(id,)| id))
 }
 
@@ -2120,7 +2118,9 @@ mod db_tests {
         event.resolved_train_uid = None; // not re-supplied by this event
         event.resolved_train_id = Some("221832406".to_string());
 
-        upsert_train_event(&pool, &event).await.expect("upsert train event");
+        upsert_train_event(&pool, &event)
+            .await
+            .expect("upsert train event");
 
         let state = get_by_tracking_id(&pool, tracked_train_id)
             .await
@@ -2157,7 +2157,9 @@ mod db_tests {
         event.resolved_train_uid = Some("C21373".to_string());
         event.resolved_train_id = Some("221832406".to_string());
 
-        upsert_train_event(&pool, &event).await.expect("upsert train event");
+        upsert_train_event(&pool, &event)
+            .await
+            .expect("upsert train event");
 
         let state = get_by_tracking_id(&pool, tracking_id)
             .await
@@ -2190,7 +2192,9 @@ mod db_tests {
 
         let event = fixture_event(tracking_id, "dedup-neither-field"); // both None, the default
 
-        upsert_train_event(&pool, &event).await.expect("upsert train event");
+        upsert_train_event(&pool, &event)
+            .await
+            .expect("upsert train event");
 
         let state = get_by_tracking_id(&pool, tracking_id)
             .await
@@ -2272,7 +2276,9 @@ mod db_tests {
             eta_source: None,
         };
 
-        upsert_train_event(&pool, &event).await.expect("upsert_train_event");
+        upsert_train_event(&pool, &event)
+            .await
+            .expect("upsert_train_event");
 
         let (trains_id,): (Option<i64>,) =
             sqlx::query_as("SELECT trains_id FROM train_subscriptions WHERE id = $1")
@@ -2291,9 +2297,20 @@ mod db_tests {
         assert_eq!(train_uid, "TEST-LIVE-UID");
         assert_eq!(train_id, Some("221832406".to_string()));
 
-        sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1").bind(user_id).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-LIVE-UID'").execute(&pool).await.ok();
-        sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-LIVE-UID'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     #[tokio::test]
@@ -2331,7 +2348,9 @@ mod db_tests {
         event.resolved_train_uid = None; // never learned -- the accepted gap
         event.resolved_train_id = Some("221832406".to_string());
 
-        upsert_train_event(&pool, &event).await.expect("upsert train event");
+        upsert_train_event(&pool, &event)
+            .await
+            .expect("upsert train event");
 
         let state = get_by_tracking_id(&pool, tracking_id)
             .await
@@ -2347,7 +2366,10 @@ mod db_tests {
              train_id from -- this widened gap is the direct, accepted consequence of Task 22 \
              dropping tracked_trains' own train_id column and flip_legacy_resolution's write to it"
         );
-        assert_eq!(state.train_uid, None, "train_uid was never known, so it must stay NULL");
+        assert_eq!(
+            state.train_uid, None,
+            "train_uid was never known, so it must stay NULL"
+        );
 
         let (trains_id,): (Option<i64>,) =
             sqlx::query_as("SELECT trains_id FROM train_subscriptions WHERE id = $1")
@@ -2360,12 +2382,11 @@ mod db_tests {
             "no train_uid was ever known, so the Step A dual-write must not fire and trains_id must stay NULL"
         );
 
-        let leaked: Vec<(i64,)> =
-            sqlx::query_as("SELECT id FROM trains WHERE train_id = $1")
-                .bind("221832406")
-                .fetch_all(&pool)
-                .await
-                .expect("check for leaked trains rows");
+        let leaked: Vec<(i64,)> = sqlx::query_as("SELECT id FROM trains WHERE train_id = $1")
+            .bind("221832406")
+            .fetch_all(&pool)
+            .await
+            .expect("check for leaked trains rows");
         assert!(
             leaked.is_empty(),
             "no trains row should have been created for this train_id when train_uid was never known, found: {leaked:?}"
@@ -2474,7 +2495,9 @@ mod db_tests {
                 .bind(trains_id)
                 .fetch_one(&pool)
                 .await
-                .expect("a current-state row must exist for this trains_id even with zero subscribers");
+                .expect(
+                    "a current-state row must exist for this trains_id even with zero subscribers",
+                );
         assert_eq!(status, "en_route");
 
         // Also verify the movement-event row itself landed, trains_id-keyed
@@ -2483,16 +2506,21 @@ mod db_tests {
         // longer has a `tracked_train_id` column at all to assert `NULL`
         // on -- "with no tracked_train_id at all" is now structurally
         // guaranteed by the schema itself, not just this row's own value.
-        let (dedup_key,): (String,) = sqlx::query_as(
-            "SELECT dedup_key FROM train_movement_events WHERE trains_id = $1",
-        )
-        .bind(trains_id)
-        .fetch_one(&pool)
-        .await
-        .expect("a movement-event row must exist for this trains_id even with zero subscribers");
+        let (dedup_key,): (String,) =
+            sqlx::query_as("SELECT dedup_key FROM train_movement_events WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect(
+                    "a movement-event row must exist for this trains_id even with zero subscribers",
+                );
         assert_eq!(dedup_key, "test-nosub-dedup");
 
-        sqlx::query("DELETE FROM trains WHERE id = $1").bind(trains_id).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     #[tokio::test]
@@ -2507,9 +2535,10 @@ mod db_tests {
         // already had for the legacy tracked_train_id-keyed path.
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
-        let trains_id = crate::data::trains::find_or_create_train(&pool, "IDEMPOTENT-UID", service_date)
-            .await
-            .expect("find_or_create_train");
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "IDEMPOTENT-UID", service_date)
+                .await
+                .expect("find_or_create_train");
 
         let mut event = TrainMovementEventMessage {
             tracked_train_id: 0,
@@ -2548,13 +2577,14 @@ mod db_tests {
             .await
             .expect("second, redelivered upsert_train_movement call");
 
-        let rows: Vec<(i64,)> =
-            sqlx::query_as("SELECT id FROM train_movement_events WHERE trains_id = $1 AND dedup_key = $2")
-                .bind(trains_id)
-                .bind("test-idempotent-dedup")
-                .fetch_all(&pool)
-                .await
-                .expect("read back movement-event rows");
+        let rows: Vec<(i64,)> = sqlx::query_as(
+            "SELECT id FROM train_movement_events WHERE trains_id = $1 AND dedup_key = $2",
+        )
+        .bind(trains_id)
+        .bind("test-idempotent-dedup")
+        .fetch_all(&pool)
+        .await
+        .expect("read back movement-event rows");
         assert_eq!(
             rows.len(),
             1,
@@ -2575,7 +2605,11 @@ mod db_tests {
         );
         assert_eq!(last_reported_location, Some("CLJ".to_string()));
 
-        sqlx::query("DELETE FROM trains WHERE id = $1").bind(trains_id).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     #[tokio::test]
@@ -2593,9 +2627,10 @@ mod db_tests {
         let user_id = "TEST-DELEGATES-ALREADY-RESOLVED";
         seed_user(&pool, user_id).await;
         let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
-        let trains_id = crate::data::trains::find_or_create_train(&pool, "DELEGATE-UID", service_date)
-            .await
-            .expect("find_or_create_train");
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "DELEGATE-UID", service_date)
+                .await
+                .expect("find_or_create_train");
         let (tracked_train_id,): (i64,) = sqlx::query_as(
             "INSERT INTO train_subscriptions \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure, trains_id, \
@@ -2614,19 +2649,35 @@ mod db_tests {
         event.resolved_train_uid = None;
         event.resolved_train_id = None; // no fresh resolution info on this event
 
-        upsert_train_event(&pool, &event).await.expect("upsert_train_event");
+        upsert_train_event(&pool, &event)
+            .await
+            .expect("upsert_train_event");
 
         let (status,): (String,) =
             sqlx::query_as("SELECT status FROM train_current_state WHERE trains_id = $1")
                 .bind(trains_id)
                 .fetch_one(&pool)
                 .await
-                .expect("upsert_train_event must delegate to upsert_train_movement, keyed on trains_id");
+                .expect(
+                    "upsert_train_event must delegate to upsert_train_movement, keyed on trains_id",
+                );
         assert_eq!(status, "en_route");
 
-        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1").bind(tracked_train_id).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM trains WHERE id = $1").bind(trains_id).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(tracked_train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     /// Task 17's own reason `list_active_tracked_trains` needed to start
@@ -2790,7 +2841,10 @@ mod db_tests {
         .await
         .expect("read back the new subscription");
         assert_eq!(row_trains_id, Some(trains_id));
-        assert_eq!(pin_origin_crs, None, "no schedule match yet -> NULL pin, not a default");
+        assert_eq!(
+            pin_origin_crs, None,
+            "no schedule match yet -> NULL pin, not a default"
+        );
         assert_eq!(pin_scheduled_departure, None);
 
         sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
@@ -3086,12 +3140,10 @@ mod db_tests {
         let mut second_event = fixture_event(second_tracking_id, "dedup-post-drop-collision-2");
         second_event.resolved_train_uid = Some("TEST-POST-DROP-COLLISION-UID".to_string());
         second_event.resolved_train_id = Some("TEST-POST-DROP-COLLISION-TRAIN-ID".to_string());
-        upsert_train_event(&pool, &second_event)
-            .await
-            .expect(
-                "the SECOND subscriber sharing the same physical train must ALSO resolve, with \
+        upsert_train_event(&pool, &second_event).await.expect(
+            "the SECOND subscriber sharing the same physical train must ALSO resolve, with \
                  no unique-constraint collision -- this is the direct proof of Task 21's fix",
-            );
+        );
 
         let (first_status, first_trains_id): (String, Option<i64>) = sqlx::query_as(
             "SELECT resolution_status, trains_id FROM train_subscriptions WHERE id = $1",

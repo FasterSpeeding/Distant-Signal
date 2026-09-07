@@ -2526,10 +2526,7 @@ mod db_tests {
         .await;
 
         assert_eq!(status, StatusCode::OK, "response: {body:?}");
-        assert_eq!(
-            body.get("trainUid").and_then(Value::as_str),
-            Some("B22222")
-        );
+        assert_eq!(body.get("trainUid").and_then(Value::as_str), Some("B22222"));
 
         cleanup_user(&pool, "TEST-UIDDATE-OWNER").await;
         cleanup_user(&pool, "TEST-UIDDATE-OTHER").await;
@@ -2777,7 +2774,10 @@ mod db_tests {
         .fetch_one(&pool)
         .await
         .expect("read back the new subscription");
-        assert!(trains_id.is_some(), "trains_id must still be set immediately");
+        assert!(
+            trains_id.is_some(),
+            "trains_id must still be set immediately"
+        );
         assert_eq!(pin_origin_crs, None);
         assert_eq!(pin_scheduled_departure, None);
 
@@ -2817,8 +2817,7 @@ mod db_tests {
             .and_then(Value::as_i64)
             .expect("trackingId present on first call");
 
-        let (status2, body2) =
-            post_json(router, uri, Some(&token), serde_json::json!({})).await;
+        let (status2, body2) = post_json(router, uri, Some(&token), serde_json::json!({})).await;
         assert_eq!(status2, StatusCode::OK, "second call response: {body2:?}");
         let second_tracking_id = body2
             .get("trackingId")
@@ -2832,14 +2831,13 @@ mod db_tests {
              first one"
         );
 
-        let (row_count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM train_subscriptions WHERE id IN ($1, $2)",
-        )
-        .bind(first_tracking_id)
-        .bind(second_tracking_id)
-        .fetch_one(&pool)
-        .await
-        .expect("count both subscription rows");
+        let (row_count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM train_subscriptions WHERE id IN ($1, $2)")
+                .bind(first_tracking_id)
+                .bind(second_tracking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count both subscription rows");
         assert_eq!(row_count, 2, "both calls' rows must actually persist");
 
         cleanup_user(&pool, "TEST-TRACK-BY-UID-TWICE").await;
@@ -2887,7 +2885,8 @@ mod db_tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "response: {body:?}");
         assert!(
-            body.as_str().is_some_and(|s| s.to_lowercase().contains("station")),
+            body.as_str()
+                .is_some_and(|s| s.to_lowercase().contains("station")),
             "expected validate_pin's own empty-origin message: {body:?}"
         );
 

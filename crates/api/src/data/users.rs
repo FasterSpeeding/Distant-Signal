@@ -271,8 +271,8 @@ mod db_tests {
     async fn groups_are_overwritten_not_merged_on_repeat_login() {
         use sqlx::postgres::PgPoolOptions;
 
-        let database_url = std::env::var("DATABASE_URL")
-            .expect("DATABASE_URL must be set to run this test");
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
         let pool = PgPoolOptions::new()
             .connect(&database_url)
             .await
@@ -285,7 +285,9 @@ mod db_tests {
             name: Some("Test Rider".to_string()),
             groups: vec!["mcp-users".to_string(), "mcp-live-boards".to_string()],
         };
-        let user = upsert_user(&pool, &identity).await.expect("first login upsert");
+        let user = upsert_user(&pool, &identity)
+            .await
+            .expect("first login upsert");
 
         insert_session(&pool, "test-hashed-token-groups", &user.id, 14)
             .await
@@ -302,7 +304,9 @@ mod db_tests {
         // Second login, with mcp-live-boards removed in Authentik -- must
         // be reflected exactly, not unioned with the first login's set.
         identity.groups = vec!["mcp-users".to_string()];
-        upsert_user(&pool, &identity).await.expect("second login upsert");
+        upsert_user(&pool, &identity)
+            .await
+            .expect("second login upsert");
         let found_again = get_session_with_user(&pool, "test-hashed-token-groups")
             .await
             .expect("lookup session")
@@ -317,5 +321,4 @@ mod db_tests {
             .await
             .expect("cleanup");
     }
-
 }

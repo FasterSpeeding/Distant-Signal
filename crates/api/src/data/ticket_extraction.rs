@@ -291,7 +291,10 @@ mod pass_json_tests {
             }
         });
         let ticket = parse_pass_json(&pass).unwrap();
-        assert_eq!(ticket.ticket_type, Some("Super Off-Peak Return".to_string()));
+        assert_eq!(
+            ticket.ticket_type,
+            Some("Super Off-Peak Return".to_string())
+        );
     }
 
     #[test]
@@ -480,7 +483,8 @@ static ROUTE_PATTERNS: std::sync::LazyLock<[regex::Regex; 2]> = std::sync::LazyL
         // defensively alongside plain ASCII "-", since it is unconfirmed
         // whether every OTRL PDF generation renders a plain ASCII hyphen
         // here (see this module's Open questions).
-        regex::Regex::new(r"(?:Out|Ret):\s*([A-Z]{3})\s*[-\u{2010}-\u{2015}]\s*([A-Z]{3})").unwrap(),
+        regex::Regex::new(r"(?:Out|Ret):\s*([A-Z]{3})\s*[-\u{2010}-\u{2015}]\s*([A-Z]{3})")
+            .unwrap(),
         // The original generic "<origin> to <destination>" prose match --
         // matches the design doc's own worked example ("18:32 London
         // Waterloo to Woking, Off-Peak Day Single"). Deliberately
@@ -497,7 +501,8 @@ static ROUTE_PATTERNS: std::sync::LazyLock<[regex::Regex; 2]> = std::sync::LazyL
         // both are present. `train_tracking::validate_ticket_entry`'s
         // CRS-format check is what actually prevents an unedited false
         // match from ever being saved, not this regex's own precision.
-        regex::Regex::new(r"([A-Za-z][A-Za-z '\-]+?)\s+to\s+([A-Za-z][A-Za-z '\-]+?)(?:[,\.\n]|$)").unwrap(),
+        regex::Regex::new(r"([A-Za-z][A-Za-z '\-]+?)\s+to\s+([A-Za-z][A-Za-z '\-]+?)(?:[,\.\n]|$)")
+            .unwrap(),
     ]
 });
 
@@ -594,7 +599,10 @@ mod parse_pdf_text_tests {
     #[test]
     fn ticket_type_matches_the_super_off_peak_return_keyword() {
         let ticket = parse_pdf_text("Southern e-ticket\nOut: ABC - XYZ\nSuper Off-Peak Return");
-        assert_eq!(ticket.ticket_type, Some("Super Off-Peak Return".to_string()));
+        assert_eq!(
+            ticket.ticket_type,
+            Some("Super Off-Peak Return".to_string())
+        );
     }
 }
 

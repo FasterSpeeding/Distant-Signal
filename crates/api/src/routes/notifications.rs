@@ -14,8 +14,14 @@ use crate::data::notifications;
 
 pub fn router() -> Router {
     Router::new()
-        .route("/notifications/vapid-public-key", axum::routing::get(get_vapid_public_key))
-        .route("/notifications/subscribe", axum::routing::post(post_subscribe))
+        .route(
+            "/notifications/vapid-public-key",
+            axum::routing::get(get_vapid_public_key),
+        )
+        .route(
+            "/notifications/subscribe",
+            axum::routing::post(post_subscribe),
+        )
 }
 
 /// Unauthenticated on purpose -- the browser needs this key BEFORE it has
@@ -48,11 +54,20 @@ async fn post_subscribe(
     user: AuthenticatedUser,
     Json(body): Json<SubscribeRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    notifications::upsert_push_subscription(&app.database, &user.id, &body.endpoint, &body.keys.p256dh, &body.keys.auth)
-        .await
-        .map_err(|err| {
-            tracing::error!(error = ?err, "failed to upsert push subscription");
-            (StatusCode::INTERNAL_SERVER_ERROR, "failed to save subscription".to_string())
-        })?;
+    notifications::upsert_push_subscription(
+        &app.database,
+        &user.id,
+        &body.endpoint,
+        &body.keys.p256dh,
+        &body.keys.auth,
+    )
+    .await
+    .map_err(|err| {
+        tracing::error!(error = ?err, "failed to upsert push subscription");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to save subscription".to_string(),
+        )
+    })?;
     Ok(StatusCode::NO_CONTENT)
 }

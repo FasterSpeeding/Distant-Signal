@@ -135,14 +135,19 @@ async fn fetch_previous_derived_state(
     pool: &PgPool,
     trains_id: i64,
 ) -> anyhow::Result<DerivedState> {
-    let row: Option<(String, Option<String>, Option<String>, Option<i32>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT status, last_reported_location, last_event_type, delay_minutes, next_calling_point \
+    let row: Option<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i32>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT status, last_reported_location, last_event_type, delay_minutes, next_calling_point \
              FROM train_current_state WHERE trains_id = $1",
-        )
-        .bind(trains_id)
-        .fetch_optional(pool)
-        .await?;
+    )
+    .bind(trains_id)
+    .fetch_optional(pool)
+    .await?;
     Ok(match row {
         Some((
             status,
@@ -359,7 +364,10 @@ mod db_tests {
         .fetch_one(&pool)
         .await
         .expect("count trains");
-        assert_eq!(trains_count, 1, "exactly one trains row after two identical calls");
+        assert_eq!(
+            trains_count, 1,
+            "exactly one trains row after two identical calls"
+        );
 
         let (trains_id,): (i64,) =
             sqlx::query_as("SELECT id FROM trains WHERE train_uid = 'TEST-INGEST-TWICE-UID'")
@@ -367,25 +375,23 @@ mod db_tests {
                 .await
                 .expect("trains id");
 
-        let movement_events_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM train_movement_events WHERE trains_id = $1",
-        )
-        .bind(trains_id)
-        .fetch_one(&pool)
-        .await
-        .expect("count train_movement_events");
+        let movement_events_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM train_movement_events WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count train_movement_events");
         assert_eq!(
             movement_events_count, 1,
             "exactly one train_movement_events row after two identical calls"
         );
 
-        let current_state_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM train_current_state WHERE trains_id = $1",
-        )
-        .bind(trains_id)
-        .fetch_one(&pool)
-        .await
-        .expect("count train_current_state");
+        let current_state_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM train_current_state WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count train_current_state");
         assert_eq!(
             current_state_count, 1,
             "exactly one train_current_state row after two identical calls"
