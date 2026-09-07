@@ -3495,4 +3495,137 @@ mod db_tests {
             .ok();
         cleanup_user(&pool, user_id).await;
     }
+
+    /// Fix 5 (review finding I6), the database half.
+    ///
+    /// `trust-consumer` now fans one TRUST movement out to one
+    /// `TrainMovementEventMessage` per subscription sharing the train (see
+    /// `nr_primary_subscriptions_resolve_from_a_live_activation_and_movement`
+    /// in `crates/trust-consumer/src/process.rs`, which proves it produces
+    /// exactly those two messages). This is the other end of that: feeding
+    /// both through `upsert_train_event` -- the real ingest path -- must
+    /// flip BOTH subscriptions to `'resolved'`, and must NOT double-write
+    /// the shared movement row they both describe.
+    ///
+    /// Both messages carry the SAME `dedup_key`, because they describe one
+    /// real-world event; `upsert_train_movement`'s
+    /// `ON CONFLICT (trains_id, dedup_key) DO NOTHING` is what collapses
+    /// them to a single stored row.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                two_subscribers_sharing_one_train_both_resolve_from_one_movement \
+                -- --ignored --test-threads=1`"]
+    async fn two_subscribers_sharing_one_train_both_resolve_from_one_movement() {
+        let pool = connect().await;
+        let first_user = "TEST-SHARED-RESOLVE-A";
+        let second_user = "TEST-SHARED-RESOLVE-B";
+        cleanup_user(&pool, first_user).await;
+        cleanup_user(&pool, second_user).await;
+        seed_user(&pool, first_user).await;
+        seed_user(&pool, second_user).await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-SHARED-RESOLVE-UID",
+            service_date,
+        )
+        .await
+        .expect("seed the shared trains row");
+        let first_id = create_subscription_for_train(&pool, trains_id, first_user)
+            .await
+            .expect("first subscription");
+        let second_id = create_subscription_for_train(&pool, trains_id, second_user)
+            .await
+            .expect("second subscription, same physical train");
+        assert_ne!(first_id, second_id);
+
+        // Exactly the two messages trust-consumer's fan-out produces for
+        // one Activation+Movement cycle: same dedup_key, same resolution
+        // signal, different tracked_train_id.
+        let event_for = |tracked_train_id: i64| common::TrainMovementEventMessage {
+            tracked_train_id,
+            resolved_train_uid: Some("TEST-SHARED-RESOLVE-UID".to_string()),
+            resolved_train_id: Some("TEST-SHARED-RESOLVE-TRAINID".to_string()),
+            dedup_key: "test-shared-resolve-dedup".to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            loc_stanox: Some("87212".to_string()),
+            loc_crs: Some("WAT".to_string()),
+            planned_timestamp: None,
+            actual_timestamp: None,
+            variation_status: Some("ON TIME".to_string()),
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("WAT".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: Some("WOK".to_string()),
+            eta_next: None,
+            eta_source: None,
+        };
+        upsert_train_event(&pool, &event_for(first_id))
+            .await
+            .expect("ingest the first subscriber's copy");
+        upsert_train_event(&pool, &event_for(second_id))
+            .await
+            .expect("ingest the second subscriber's copy");
+
+        let statuses: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT id, resolution_status FROM train_subscriptions WHERE id = ANY($1) ORDER BY id",
+        )
+        .bind(vec![first_id, second_id])
+        .fetch_all(&pool)
+        .await
+        .expect("read back both subscriptions");
+        assert_eq!(
+            statuses,
+            vec![
+                (first_id.min(second_id), "resolved".to_string()),
+                (first_id.max(second_id), "resolved".to_string()),
+            ],
+            "BOTH subscribers sharing one physical train must resolve, not just one"
+        );
+
+        let (event_count,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM train_movement_events WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count movement events");
+        assert_eq!(
+            event_count, 1,
+            "one real-world event, one stored row -- the shared dedup key must collapse the \
+             fan-out rather than duplicating it per subscriber"
+        );
+
+        let (state_count,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM train_current_state WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count current-state rows");
+        assert_eq!(state_count, 1);
+
+        let (train_id,): (Option<String>,) =
+            sqlx::query_as("SELECT train_id FROM trains WHERE id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back the shared trains row");
+        assert_eq!(train_id, Some("TEST-SHARED-RESOLVE-TRAINID".to_string()));
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = ANY($1)")
+            .bind(vec![first_id, second_id])
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, first_user).await;
+        cleanup_user(&pool, second_user).await;
+    }
 }
