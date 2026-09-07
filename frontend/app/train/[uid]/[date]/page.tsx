@@ -1,6 +1,7 @@
-import { Stack, Title, Text } from '@mantine/core';
+import { Stack, Title, Text, Group } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import { getPublicTrainByUidAndDate, ApiNotFoundError } from '@/lib/api';
+import { ShareButton } from '@/components/ShareButton';
 import { TrainJourney } from '@/components/TrainJourney';
 import type { PublicTrainState, TrainJourneyState } from '@/lib/types';
 
@@ -97,7 +98,10 @@ export default async function TrackedTrainByUidPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Train {uid}</Title>
+      <Group justify="space-between">
+        <Title order={1}>Train {uid}</Title>
+        <ShareButton />
+      </Group>
       <TrainJourney state={toJourneyState(train)} />
       <Text size="sm" c="dimmed">
         This is the public view of this service. To get updates about it, track it from{' '}

@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation';
 import { Badge, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { ApiNotFoundError, getIncident } from '@/lib/api';
 import { sanitizeDescription } from '@/lib/sanitizeHtml';
+import { ShareButton } from '@/components/ShareButton';
 import { TextLink } from '@/components/TextLink';
 import { formatDateTime } from '@/lib/dateFormat';
 import type { IncidentDetail, IncidentHistoryEntry, ValidityPeriod } from '@/lib/types';
@@ -53,9 +54,12 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
 
   return (
     <Stack p="lg" gap="md">
-      <Group gap="sm">
-        <Title order={1}>{incident.summary}</Title>
-        <Badge color={incident.isPlanned ? 'blue' : 'orange'}>{incident.isPlanned ? 'Planned Work' : 'Real-Time'}</Badge>
+      <Group justify="space-between">
+        <Group gap="sm">
+          <Title order={1}>{incident.summary}</Title>
+          <Badge color={incident.isPlanned ? 'blue' : 'orange'}>{incident.isPlanned ? 'Planned Work' : 'Real-Time'}</Badge>
+        </Group>
+        <ShareButton />
       </Group>
 
       {/* `data-rich-text`: see the identical hook and full rationale on

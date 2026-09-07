@@ -9,6 +9,7 @@ import { RepresentativeInfo } from '@/components/RepresentativeInfo';
 import { IssueList } from '@/components/IssueList';
 import { DeleteLineButton } from '@/components/DeleteLineButton';
 import { LineDefinitionTooltip } from '@/components/LineDefinitionTooltip';
+import { ShareButton } from '@/components/ShareButton';
 import { TextLink } from '@/components/TextLink';
 import { worstStatus } from '@/lib/severity';
 import { resolveHalfHourlyRange } from '@/lib/history';
@@ -146,6 +147,7 @@ export default async function LineDetailPage({
               <DeleteLineButton id={id} />
             </>
           )}
+          <ShareButton />
           <StatusBadge severity={worst.statusSeverity} />
         </Group>
       </Group>

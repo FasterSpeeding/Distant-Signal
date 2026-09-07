@@ -12,6 +12,7 @@ import { withStaleFallback } from '@/lib/liveDataCache';
 import { StatusBadge } from '@/components/StatusBadge';
 import { IssueList } from '@/components/IssueList';
 import { PinToggle } from '@/components/PinToggle';
+import { ShareButton } from '@/components/ShareButton';
 import { TextLink } from '@/components/TextLink';
 import { worstStatus, severityRank } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
@@ -153,6 +154,7 @@ export default async function StationDisruptionPage({
         <Group gap="md">
           <TextLink href={`/track?origin=${crs}`}>Track a train from here</TextLink>
           <PinToggle kind="station" id={crs} initiallyPinned={preferences.pinnedStations.includes(crs)} />
+          <ShareButton />
         </Group>
       </Group>
 
