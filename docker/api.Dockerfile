@@ -18,6 +18,15 @@
 # resolves to the same rustc 1.88 requirement by way of the icu_* chain
 # above (api additionally hits it via `home`).
 #
+# This image carries TWO binaries: `api` (the ENTRYPOINT) and
+# `backfill_trains`, the one-off, idempotent shared-train-identity backfill
+# that MUST be run before this image is first started against a database
+# with pre-existing `tracked_trains` data. `api`'s own startup enforces that
+# ordering (it refuses to apply `20260906140000_drop_legacy_columns.sql`
+# while unbackfilled rows remain), so shipping both here is what makes the
+# enforced sequence actually satisfiable from inside the cluster. See
+# crates/api/src/data/legacy_backfill.rs's module doc.
+#
 # Migrations note: `crates/api/src/main.rs` runs `sqlx::migrate!().run(...)`
 # with no path argument, which defaults to the `migrations/` directory next
 # to this crate's `Cargo.toml` (`crates/api/migrations/`). `sqlx::migrate!`
@@ -66,11 +75,12 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=cargo-target-1.88,target=/app/target,sharing=locked \
     if [ "$CARGO_PROFILE" = "release" ]; then \
-      cargo build --release --bin api; \
+      cargo build --release --bin api --bin backfill_trains; \
     else \
-      cargo build --bin api; \
+      cargo build --bin api --bin backfill_trains; \
     fi \
-    && cp /app/target/${CARGO_PROFILE}/api /usr/local/bin/api
+    && cp /app/target/${CARGO_PROFILE}/api /usr/local/bin/api \
+    && cp /app/target/${CARGO_PROFILE}/backfill_trains /usr/local/bin/backfill_trains
 
 FROM debian:bookworm-slim
 
@@ -86,6 +96,16 @@ RUN apt-get update \
     && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 1000 --gid 1000 api
 
 COPY --from=builder /usr/local/bin/api /usr/local/bin/api
+# The operational, one-off backfill this image must be able to run BEFORE it
+# is first started against a database with pre-existing `tracked_trains`
+# data -- see crates/api/src/data/legacy_backfill.rs's module doc for the
+# required deploy sequence. Shipped in the same image (rather than a second
+# one) so it is guaranteed to be the exact build whose migrations are about
+# to run:
+#   kubectl run ... --image=<this image> --command -- /usr/local/bin/backfill_trains
+# `api`'s own startup refuses to apply the contract migration until this has
+# been run, so the two can never get out of order silently.
+COPY --from=builder /usr/local/bin/backfill_trains /usr/local/bin/backfill_trains
 COPY --chown=api:api lines/ /app/lines/
 
 # Numeric USER, not the `api` name useradd created above: Kubernetes'

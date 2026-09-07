@@ -2,13 +2,8 @@ use axum_prometheus::PrometheusMetricLayerBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
-use crate::app::{App, AppState, Router};
-
-pub mod app;
-pub mod auth;
-pub mod data;
-pub mod render;
-pub mod routes;
+use api::app::{App, AppState, Router};
+use api::{data, routes};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -98,6 +93,23 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    // MUST stay immediately before `sqlx::migrate!()`, never after.
+    // `migrations/20260906140000_drop_legacy_columns.sql` IRREVERSIBLY drops
+    // `train_movement_events.tracked_train_id`, `train_current_state.tracked_train_id`
+    // and `tracked_trains.train_uid` -- the only columns from which a
+    // pre-existing row's shared-train identity can still be recovered. On a
+    // database that has not yet applied that migration and still has rows
+    // whose `trains_id` was never backfilled, this refuses to start and
+    // names the fix (`cargo run -p api --bin backfill_trains`), rather than
+    // letting the migration run and silently lose the link. On every
+    // already-contracted database -- which is every environment this plan
+    // has already touched -- it is a single `_sqlx_migrations` lookup that
+    // returns immediately. See
+    // `crates/api/src/data/legacy_backfill.rs`'s module doc for the full
+    // required deploy sequence and for why this check cannot live inside
+    // the migration file itself.
+    data::legacy_backfill::ensure_ready_for_contract_migration(&app.database).await?;
+
     sqlx::migrate!().run(&app.database).await?;
 
     let listener = tokio::net::TcpListener::bind(&app.config.bind_url).await?;
@@ -115,12 +127,16 @@ async fn main() -> anyhow::Result<()> {
 /// established precedent in this workspace for "a service that is mostly
 /// a request/response server also runs one background interval loop."
 async fn schedule_match_sweep_loop(app: App) {
-    let mut interval =
-        tokio::time::interval(std::time::Duration::from_secs(app.config.schedule_match_interval_secs));
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+        app.config.schedule_match_interval_secs,
+    ));
     loop {
         interval.tick().await;
-        match data::schedule_matching::run_schedule_match_sweep(&app.database, &app.schedule_crs_line_index)
-            .await
+        match data::schedule_matching::run_schedule_match_sweep(
+            &app.database,
+            &app.schedule_crs_line_index,
+        )
+        .await
         {
             Ok(matched) if matched > 0 => {
                 tracing::info!(matched, "schedule-match sweep resolved pending pins");
