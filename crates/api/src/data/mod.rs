@@ -4,6 +4,7 @@ pub mod delay_repay_rules;
 pub mod eta_blend;
 pub mod island_of_ireland;
 pub mod notifications;
+pub mod notifier_forward_queue;
 pub mod preferences;
 pub mod queries;
 pub mod reference;

@@ -401,6 +401,7 @@ services:
       # property \"sasl.mechanisms\""). Either way it stops, loudly.
       KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM}
       API_INGEST_URL: http://api:8080/private/train-events
+      FORWARD_SIGNALS_URL: http://api:8080/private/train-forward-signals
       API_TRACKED_TRAINS_URL: http://api:8080/private/tracked-trains
       INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
       INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}

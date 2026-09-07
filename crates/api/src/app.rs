@@ -130,6 +130,14 @@ pub(crate) fn build_internal_oauth_routes(
             Method::POST,
             vec![config.internal_oauth_group_trust_consumer.clone()],
         ),
+        // POST-only, same caller/group as /train-events: trust-consumer's
+        // notifier-forwarding queue signals (Task 17) -- ingest::router()
+        // never wires a GET handler for this path either.
+        (
+            "/train-forward-signals",
+            Method::POST,
+            vec![config.internal_oauth_group_trust_consumer.clone()],
+        ),
         // GET-only: trust-consumer's periodic tracked-trains reload --
         // `ingest::router()` never wires a POST handler for this path.
         (

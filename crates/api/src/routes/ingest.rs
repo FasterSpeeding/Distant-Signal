@@ -58,6 +58,10 @@ pub fn router() -> Router {
         )
         .route("/train-events", axum::routing::post(post_train_events))
         .route(
+            "/train-forward-signals",
+            axum::routing::post(post_train_forward_signals),
+        )
+        .route(
             "/tracked-trains",
             axum::routing::get(get_active_tracked_trains),
         )
@@ -242,6 +246,22 @@ async fn post_train_events(
     Ok(Json(UpsertResponse {
         upserted: events.len() as u64,
     }))
+}
+
+/// `trust-consumer`'s fast-path forwarding signals for the notifier-
+/// forwarding queue (Task 17) -- see
+/// `crate::data::notifier_forward_queue::insert_forward_signals`. Purely
+/// additive: notifier's own unchanged cooldown/escalation logic is still
+/// the sole gatekeeper for whether a push is actually sent.
+async fn post_train_forward_signals(
+    State(app): State<App>,
+    Json(signals): Json<Vec<common::TrainForwardSignalMessage>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let inserted =
+        crate::data::notifier_forward_queue::insert_forward_signals(&app.database, &signals)
+            .await
+            .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted: inserted }))
 }
 
 /// `trust-backlog-consumer`'s per-cycle batch of key-journey-point TRUST
@@ -1165,5 +1185,61 @@ mod db_tests {
         assert_eq!(rows[0].0[0]["uid"], "C99999");
 
         delete_network_departures_fixture(&pool, "ZQW").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                post_train_forward_signals -- --ignored --test-threads=1`"]
+    async fn post_train_forward_signals_through_the_router_lands_in_the_queue() {
+        let pool = connect().await;
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-FORWARD-SIGNALS-ROUTE-UID",
+            "2026-09-06".parse().unwrap(),
+        )
+        .await
+        .expect("find_or_create_train");
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+
+        let body = serde_json::json!([{
+            "trains_id": trains_id,
+            "event_summary": "en_route at WAT",
+        }]);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/train-forward-signals")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json, serde_json::json!({"upserted": 1}));
+
+        let event_summary: String = sqlx::query_scalar(
+            "SELECT event_summary FROM notifier_forward_queue WHERE trains_id = $1",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("row landed");
+        assert_eq!(event_summary, "en_route at WAT");
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
     }
 }

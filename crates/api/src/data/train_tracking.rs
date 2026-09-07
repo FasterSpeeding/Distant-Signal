@@ -346,6 +346,7 @@ struct TrackedTrainRow {
     resolution_status: String,
     train_uid: Option<String>,
     train_id: Option<String>,
+    trains_id: Option<i64>,
 }
 
 impl From<TrackedTrainRow> for TrackedTrainRef {
@@ -358,6 +359,7 @@ impl From<TrackedTrainRow> for TrackedTrainRef {
             resolution_status: row.resolution_status,
             train_uid: row.train_uid,
             train_id: row.train_id,
+            trains_id: row.trains_id,
         }
     }
 }
@@ -371,7 +373,7 @@ impl From<TrackedTrainRow> for TrackedTrainRef {
 pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<TrackedTrainRef>> {
     let rows = sqlx::query_as::<_, TrackedTrainRow>(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_scheduled_departure, \
-                tt.resolution_status, tt.train_uid, tt.train_id \
+                tt.resolution_status, tt.train_uid, tt.train_id, tt.trains_id \
          FROM tracked_trains tt \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
          WHERE tt.resolution_status != 'unresolved' \
@@ -2772,5 +2774,70 @@ mod db_tests {
         sqlx::query("DELETE FROM tracked_trains WHERE id = $1").bind(tracked_train_id).execute(&pool).await.ok();
         sqlx::query("DELETE FROM trains WHERE id = $1").bind(trains_id).execute(&pool).await.ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.ok();
+    }
+
+    /// Task 17's own reason `list_active_tracked_trains` needed to start
+    /// selecting `tt.trains_id`: trust-consumer's `apply_reference_reload`
+    /// seeds `trains_id_by_tracked_train_id` straight off the field on
+    /// `TrackedTrainRef` this query returns -- if the query silently
+    /// dropped it, no forwarding signal (Task 17) could ever be built for
+    /// this ref, even though the pin is otherwise fully wired up
+    /// (`resolved`, with a real `trains_id`).
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_active_tracked_trains -- --ignored --test-threads=1`"]
+    async fn list_active_tracked_trains_carries_the_trains_id_through_for_a_resolved_ref() {
+        let pool = connect().await;
+        let user_id = "TEST-LIST-ACTIVE-TRAINS-ID-USER";
+        seed_user(&pool, user_id).await;
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-LIST-ACTIVE-TRAINS-ID-UID",
+            "2026-09-06".parse().unwrap(),
+        )
+        .await
+        .expect("find_or_create_train");
+
+        let (tracked_train_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO tracked_trains \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, \
+                 train_uid, train_id, trains_id, resolution_status) \
+             VALUES ($1, $2, 'WAT', $3, 'TEST-LIST-ACTIVE-TRAINS-ID-UID', \
+                     'TEST-LIST-ACTIVE-TRAINS-ID-TRAIN-ID', $4, 'resolved') \
+             RETURNING id",
+        )
+        .bind(user_id)
+        .bind("2026-09-06".parse::<chrono::NaiveDate>().unwrap())
+        .bind("2026-09-06T19:15:00Z".parse::<DateTime<Utc>>().unwrap())
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed a resolved tracked_trains row with a real trains_id");
+
+        let refs = list_active_tracked_trains(&pool)
+            .await
+            .expect("list_active_tracked_trains");
+        let seeded = refs
+            .into_iter()
+            .find(|r| r.id == tracked_train_id)
+            .expect("the seeded ref should be active (resolved, no current-state row)");
+        assert_eq!(
+            seeded.trains_id,
+            Some(trains_id),
+            "trains_id must round-trip through list_active_tracked_trains, not be dropped"
+        );
+
+        sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
+            .bind(tracked_train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
     }
 }
