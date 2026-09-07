@@ -67,6 +67,31 @@ fn full_coverage_enabled_for(
     })
 }
 
+/// True for an operator value shaped like a real ATOC code: `^[A-Za-z]{2}$`,
+/// i.e. exactly two ASCII letters. Matches the `tocs.atoc_code CHAR(2)`
+/// convention this codebase's real reference data is stored/compared in
+/// (`crates/api/migrations/20260706004003_reference_data.sql:28`; always
+/// populated uppercase in practice, e.g. `reference.rs`'s own "GR"/"SW"/"ZF"
+/// test fixtures) and what LDBWS always sends (`crates/poller-ldbws`) --
+/// but this check is deliberately case-insensitive (`is_ascii_alphabetic`,
+/// not an uppercase-only check) since it exists to police
+/// `full_coverage_rows`, not to enforce that convention itself.
+///
+/// `full_coverage_rows.operator` comes straight from TRUST's `toc_id`
+/// (`crates/full-coverage-consumer/src/station_correlate.rs:34-38,76-91`
+/// <- `trust_schema::schema::Activation::toc_id`), which has no such
+/// format guarantee end to end -- TRUST's code space is broader than
+/// ATOC's and includes freight/engineering/positioning workings that
+/// surface as bare numeric strings (e.g. "12", "29", "30", "65", the
+/// bogus rows seen alongside real ATOC codes on production's
+/// `/stations/EUS` "Sample stats by operator" table). LDBWS-sourced
+/// operators are never checked against this -- they're already clean by
+/// construction, and this function only ever gates the `full_coverage_rows`
+/// half of the union below.
+fn looks_like_atoc_code(operator: &str) -> bool {
+    operator.len() == 2 && operator.chars().all(|c| c.is_ascii_alphabetic())
+}
+
 /// One entry per distinct `operator` value observed in `sample`'s current
 /// departures, UNIONED with every operator that has a `full_coverage_rows`
 /// entry for this station (design doc Decision 4) -- not every ATOC code
@@ -79,6 +104,13 @@ fn full_coverage_enabled_for(
 /// deliberate. Sorted alphabetically by ATOC code (via `BTreeSet`) for
 /// deterministic wire output, mirroring `dedup_sample_stations`'s
 /// (`crates/api/src/data/samples.rs:11-23`) own rationale.
+///
+/// The `full_coverage_rows` half of the union is filtered through
+/// [`looks_like_atoc_code`] first -- see that function's doc for why
+/// (TRUST `toc_id` values are not format-guaranteed the way ATOC codes
+/// are). A row that fails the check is skipped for this aggregation only;
+/// it stays untouched in `full_coverage_rows` itself and everywhere else
+/// that consumes it.
 pub fn compute_station_operator_stats(
     sample: &StationSample,
     defaults: &Defaults,
@@ -90,7 +122,12 @@ pub fn compute_station_operator_stats(
         .departures
         .iter()
         .map(|d| d.operator.as_str())
-        .chain(full_coverage_rows.iter().map(|r| r.operator.as_str()))
+        .chain(
+            full_coverage_rows
+                .iter()
+                .map(|r| r.operator.as_str())
+                .filter(|operator| looks_like_atoc_code(operator)),
+        )
         .collect();
 
     operators
@@ -493,5 +530,55 @@ mod tests {
             stats[0].full_coverage_availability,
             FullCoverageAvailability::Available(sample_stats(30))
         );
+    }
+
+    /// A `full_coverage_rows` entry whose operator isn't a 2-letter ATOC
+    /// shape (bare TRUST `toc_id` values like "12"/"65", never validated
+    /// anywhere in the ingestion chain) must be excluded from the
+    /// operator-stats union, while a legitimate 2-letter code from the
+    /// SAME `full_coverage_rows` slice, in the SAME call, still comes
+    /// through -- proving this is a selective filter on the bad shape,
+    /// not a blanket exclusion of `full_coverage_rows` entries in
+    /// general. Both good and bad rows also share a CRS with no LDBWS
+    /// departures at all, so nothing here rides in via the departures
+    /// half of the union.
+    #[test]
+    fn full_coverage_rows_with_a_non_atoc_shaped_operator_are_excluded_while_legitimate_ones_survive()
+     {
+        let defaults = Defaults::default();
+        let sample = sample("EUS", vec![]);
+        let rows = vec![
+            full_coverage_row("EUS", "GW", sample_stats(65)),
+            full_coverage_row("EUS", "12", sample_stats(29)),
+            full_coverage_row("EUS", "SW", sample_stats(30)),
+            full_coverage_row("EUS", "65", sample_stats(12)),
+        ];
+
+        let stats = compute_station_operator_stats(&sample, &defaults, &rows, &[], false);
+
+        let operators: Vec<&str> = stats.iter().map(|s| s.operator.as_str()).collect();
+        assert_eq!(operators, vec!["GW", "SW"]);
+    }
+
+    /// Reproduces production's actual `/stations/EUS` shape as closely as
+    /// this fixture set allows: an LDBWS-sourced departure for a real
+    /// operator ("VT", clean by construction -- LDBWS-sourced operators
+    /// are never filtered) alongside a full-coverage row for the SAME
+    /// station carrying a bogus numeric TRUST `toc_id` ("65", one of the
+    /// exact bogus codes seen on production). Only the legitimate,
+    /// LDBWS-sourced operator should survive into the table.
+    #[test]
+    fn a_bogus_full_coverage_operator_does_not_pollute_a_station_with_a_real_ldbws_operator() {
+        let defaults = Defaults {
+            min_sample_size: 1,
+            ..Defaults::default()
+        };
+        let sample = sample("EUS", vec![departure("VT", 0, false, vec![])]);
+        let rows = vec![full_coverage_row("EUS", "65", sample_stats(12))];
+
+        let stats = compute_station_operator_stats(&sample, &defaults, &rows, &[], false);
+
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].operator, "VT");
     }
 }
