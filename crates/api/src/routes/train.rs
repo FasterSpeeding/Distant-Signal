@@ -1301,8 +1301,8 @@ mod db_tests {
         let (id,): (i64,) = sqlx::query_as(
             "INSERT INTO tracked_trains \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs, \
-                 train_uid, train_id, resolution_status, trains_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+                 resolution_status, trains_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
              RETURNING id",
         )
         .bind(user_id)
@@ -1310,8 +1310,6 @@ mod db_tests {
         .bind("KGX")
         .bind(service_date.and_hms_opt(12, 0, 0).unwrap().and_utc())
         .bind("EDB")
-        .bind(train_uid)
-        .bind(train_uid.map(|_| "1A23"))
         .bind(resolution_status)
         .bind(trains_id)
         .fetch_one(pool)
@@ -1325,11 +1323,10 @@ mod db_tests {
 
         sqlx::query(
             "INSERT INTO train_current_state \
-                (tracked_train_id, trains_id, status, last_reported_location, last_event_type, \
+                (trains_id, status, last_reported_location, last_event_type, \
                  delay_minutes, next_calling_point, updated_at) \
-             VALUES ($1, $2, 'en_route', 'York', 'DEPARTURE', 12, 'Newcastle', NOW())",
+             VALUES ($1, 'en_route', 'York', 'DEPARTURE', 12, 'Newcastle', NOW())",
         )
-        .bind(id)
         .bind(trains_id)
         .execute(pool)
         .await

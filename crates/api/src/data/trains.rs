@@ -93,35 +93,15 @@ pub async fn mark_train_resolved(
     Ok(())
 }
 
-/// Step B's one-off backfill job: for every `tracked_trains` row with
-/// `train_uid IS NOT NULL AND trains_id IS NULL`, finds-or-creates the
-/// matching `trains` row and links it. Batches 500 rows at a time until
-/// none remain. Safe to call more than once -- a later call against
-/// already-backfilled data selects zero rows on its very first batch and
-/// returns immediately without touching `trains` or `tracked_trains` again.
-pub async fn backfill_trains_id_for_resolved_rows(pool: &PgPool) -> anyhow::Result<()> {
-    loop {
-        let rows: Vec<(i64, String, NaiveDate)> = sqlx::query_as(
-            "SELECT id, train_uid, service_date FROM tracked_trains \
-             WHERE train_uid IS NOT NULL AND trains_id IS NULL \
-             LIMIT 500",
-        )
-        .fetch_all(pool)
-        .await?;
-        if rows.is_empty() {
-            break;
-        }
-        for (id, train_uid, row_service_date) in &rows {
-            let trains_id = find_or_create_train(pool, train_uid, *row_service_date).await?;
-            sqlx::query("UPDATE tracked_trains SET trains_id = $2 WHERE id = $1")
-                .bind(id)
-                .bind(trains_id)
-                .execute(pool)
-                .await?;
-        }
-    }
-    Ok(())
-}
+// Step B's one-off backfill job (`backfill_trains_id_for_resolved_rows`,
+// which used to live here) already ran, exactly once, against every real
+// environment -- Task 22's own Step 1 dry-run count of 0 confirms nothing
+// was left for it to do. Its own `SELECT id, train_uid, service_date FROM
+// tracked_trains WHERE train_uid IS NOT NULL ...` read a column
+// (`tracked_trains.train_uid`) Task 22's migration drops entirely, so it
+// can never run again; removed here, alongside its own one-off
+// `run_step_b_backfill_of_existing_resolved_rows` test below, rather than
+// left as permanently-broken dead code.
 
 /// The public, unscoped read-model for `GET /Train/by-uid/{uid}/{date}`
 /// (docs/superpowers/specs/2026-09-06-shared-train-identity-design.md §4).
@@ -311,128 +291,6 @@ mod db_tests {
 
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(first_id)
-            .execute(&pool)
-            .await
-            .ok();
-    }
-
-    #[tokio::test]
-    #[ignore = "one-off Step B production backfill job, not a repeatable unit test; \
-                run manually, exactly once per environment, with \
-                `DATABASE_URL=... cargo test -p api run_step_b_backfill_of_existing_resolved_rows \
-                -- --ignored --test-threads=1 --nocapture` -- see Task 6 for the pre-run diagnostic"]
-    async fn run_step_b_backfill_of_existing_resolved_rows() {
-        let pool = connect().await;
-        let user_id = "TEST-STEP-B-BACKFILL";
-        sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
-        )
-        .bind(user_id)
-        .bind("step-b-backfill@example.com")
-        .bind(user_id)
-        .execute(&pool)
-        .await
-        .expect("seed fixture user");
-
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
-        // A resolved row exactly as Tasks 3-5 would have left one BEFORE this
-        // plan's dual-write landed -- train_uid set, trains_id still NULL.
-        let (tracked_train_id,): (i64,) = sqlx::query_as(
-            "INSERT INTO tracked_trains \
-                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, \
-                 train_uid, train_id, resolution_status) \
-             VALUES ($1, $2, 'EUS', $3, 'TEST-STEP-B-UID', 'TEST-STEP-B-TRAIN-ID', 'resolved') \
-             RETURNING id",
-        )
-        .bind(user_id)
-        .bind(service_date)
-        .bind(service_date.and_hms_opt(19, 15, 0).unwrap().and_utc())
-        .fetch_one(&pool)
-        .await
-        .expect("seed a pre-existing resolved row with no trains_id yet");
-
-        let (trains_id_before,): (Option<i64>,) =
-            sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
-                .bind(tracked_train_id)
-                .fetch_one(&pool)
-                .await
-                .expect("read back trains_id");
-        assert_eq!(trains_id_before, None, "precondition: not yet backfilled");
-
-        // --- Run 1: the backfill job against genuinely unbackfilled data ---
-        backfill_trains_id_for_resolved_rows(&pool)
-            .await
-            .expect("first backfill run");
-
-        let (trains_id_after_first_run,): (Option<i64>,) =
-            sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
-                .bind(tracked_train_id)
-                .fetch_one(&pool)
-                .await
-                .expect("read back trains_id after first run");
-        assert!(
-            trains_id_after_first_run.is_some(),
-            "the row must now point at a trains row"
-        );
-
-        let (matched_trains_id,): (i64,) = sqlx::query_as(
-            "SELECT id FROM trains WHERE train_uid = $1 AND service_date = $2",
-        )
-        .bind("TEST-STEP-B-UID")
-        .bind(service_date)
-        .fetch_one(&pool)
-        .await
-        .expect("exactly one trains row must exist for this identity after the first run");
-        assert_eq!(trains_id_after_first_run, Some(matched_trains_id));
-
-        // --- Run 2: re-run the SAME job, in the SAME test, with NO cleanup
-        // or reset in between -- this is what actually proves the job's own
-        // `SELECT ... WHERE trains_id IS NULL` + `UPDATE` loop is safe to
-        // run again against data it already backfilled. (Merely re-calling
-        // `find_or_create_train` directly, as the old version of this test
-        // did, only re-proves Task 2's upsert idempotency -- it never
-        // exercises this job's own selection query a second time.)
-        backfill_trains_id_for_resolved_rows(&pool)
-            .await
-            .expect("second backfill run, against already-backfilled data");
-
-        let (trains_id_after_second_run,): (Option<i64>,) =
-            sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
-                .bind(tracked_train_id)
-                .fetch_one(&pool)
-                .await
-                .expect("read back trains_id after second run");
-        assert_eq!(
-            trains_id_after_second_run, trains_id_after_first_run,
-            "re-running the backfill job against already-backfilled data must leave trains_id \
-             pointing at the exact same trains row"
-        );
-
-        let (trains_row_count_after_second_run,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM trains WHERE train_uid = $1 AND service_date = $2",
-        )
-        .bind("TEST-STEP-B-UID")
-        .bind(service_date)
-        .fetch_one(&pool)
-        .await
-        .expect("count trains rows for this identity after the second run");
-        assert_eq!(
-            trains_row_count_after_second_run, 1,
-            "re-running the backfill job must not create a duplicate trains row for the same \
-             (train_uid, service_date) identity"
-        );
-
-        sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
-            .bind(tracked_train_id)
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-STEP-B-UID'")
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM users WHERE id = $1")
-            .bind(user_id)
             .execute(&pool)
             .await
             .ok();

@@ -569,49 +569,54 @@ pub async fn upsert_train_movement(
 /// the pin still flips to `'resolved'` for this user's own tracking
 /// purposes, but no shared `trains` row can be created or updated without
 /// a known identity.
+///
+/// As of Task 22 (Step D's final cutover), this `UPDATE` writes ONLY
+/// `resolution_status` -- `tracked_trains.train_uid`/`train_id`/
+/// `resolved_at` no longer exist as columns at all (dropped by this same
+/// task's migration), so the old `train_uid = COALESCE($2, train_uid),
+/// train_id = $3, ..., resolved_at = NOW()` write this UPDATE used to do
+/// is gone entirely, not merely stopped. This is also the direct fix for
+/// the risk Task 21's review flagged: that old per-subscription
+/// `train_uid` write could collide with `tracked_trains_resolved_identity`
+/// (a `UNIQUE (train_uid, service_date) WHERE train_uid IS NOT NULL`
+/// index) the moment two subscribers shared one physical train (Task 20's
+/// own headline scenario) and a process restart re-delivered an Activation
+/// for the second one -- both writes would race to set the same
+/// `(train_uid, service_date)` pair on two different `tracked_trains` rows.
+/// That index is dropped by this same migration, and this UPDATE no longer
+/// attempts the write that could have hit it -- the shared identity link
+/// lives exclusively on `trains_id` from here on.
+///
+/// Because the returned row no longer carries a `train_uid` column to fall
+/// back on, `trains_id` derivation below now reads directly off THIS
+/// call's own `resolved_train_uid` parameter instead of a value the
+/// `UPDATE` read back post-write. A previously-schedule-matched pin no
+/// longer needs that fallback anyway: schedule matching (Task 3) already
+/// links `trains_id` directly on `tracked_trains` the moment it succeeds,
+/// so `existing_trains_id` (the `trains_id` column itself) is already
+/// `Some` by the time any live-TRUST resolution reaches this function for
+/// such a pin.
 async fn flip_legacy_resolution(
     pool: &PgPool,
     tracked_train_id: i64,
     resolved_train_uid: Option<&str>,
     resolved_train_id: &str,
 ) -> anyhow::Result<Option<i64>> {
-    // Also mirrors the resolution onto `tracked_trains`' own `train_uid`/
-    // `train_id` columns -- Task 5's original dual-write behavior, kept
-    // here rather than dropped, for two reasons the brief's own text
-    // doesn't override: (1) `TRACKED_TRAIN_STATE_SELECT`'s own
-    // `COALESCE(tr.train_id, tt.train_id)` (Step C) exists specifically to
-    // fall back to this column in the Step B "Named edge case" (train_id
-    // known, train_uid never known -- see that COALESCE's own comment) --
-    // if this UPDATE stopped writing `tt.train_id`, that documented,
-    // already-tested fallback would have nothing left to read. (2) `train_uid
-    // = COALESCE($2, train_uid)` preserves a value already set by an earlier
-    // schedule match even when THIS call's own `resolved_train_uid` is
-    // `None` -- exactly the scenario
-    // `upsert_train_event_with_only_resolved_train_id_resolves_and_preserves_the_existing_train_uid`
-    // tests, and RETURNING that post-COALESCE value (not just the
-    // already-linked `trains_id` column) is what lets the branch below
-    // still derive/create the shared `trains` row from a train_uid that was
-    // known on the row already, not only one freshly supplied on this call.
-    let row: Option<(Option<i64>, Option<String>, chrono::NaiveDate)> = sqlx::query_as(
-        "UPDATE tracked_trains \
-         SET train_uid = COALESCE($2, train_uid), train_id = $3, \
-             resolution_status = 'resolved', resolved_at = NOW() \
-         WHERE id = $1 \
-         RETURNING trains_id, train_uid, service_date",
+    let row: Option<(Option<i64>, chrono::NaiveDate)> = sqlx::query_as(
+        "UPDATE tracked_trains SET resolution_status = 'resolved' \
+         WHERE id = $1 RETURNING trains_id, service_date",
     )
     .bind(tracked_train_id)
-    .bind(resolved_train_uid)
-    .bind(resolved_train_id)
     .fetch_optional(pool)
     .await?;
-    let Some((existing_trains_id, known_train_uid, service_date)) = row else {
+    let Some((existing_trains_id, service_date)) = row else {
         return Ok(None);
     };
 
-    let trains_id = match (existing_trains_id, known_train_uid) {
+    let trains_id = match (existing_trains_id, resolved_train_uid) {
         (Some(id), _) => Some(id),
         (None, Some(train_uid)) => {
-            let id = crate::data::trains::find_or_create_train(pool, &train_uid, service_date).await?;
+            let id = crate::data::trains::find_or_create_train(pool, train_uid, service_date).await?;
             sqlx::query("UPDATE tracked_trains SET trains_id = $2 WHERE id = $1")
                 .bind(tracked_train_id)
                 .bind(id)
@@ -811,34 +816,34 @@ pub struct TrackedTrainState {
 // docs/superpowers/plans/2026-09-02-frontend-ux-review-fixes.md).
 // `LEFT JOIN trains tr`: Step C of
 // docs/superpowers/specs/2026-09-06-shared-train-identity-design.md §2 --
-// train_uid/train_id/schedule_destination_crs/schedule_calling_points now
-// come from the shared trains row, not tracked_trains' own duplicate
-// columns (those columns still physically exist and are still written by
-// Tasks 3-5's dual-write and by apply_schedule_match until Task 21 retires
-// those writes -- this is a READ-only flip). `cs` now joins on
-// `trains_id` (Step D, Task 11) -- new writes go through
-// `upsert_train_movement`, keyed on `trains_id` alone, so the old
-// `cs.tracked_train_id = tt.id` join would silently stop seeing fresh
-// current-state rows for any train resolved after this task landed.
+// train_uid/train_id/schedule_destination_crs/schedule_calling_points come
+// from the shared trains row -- `tracked_trains`' own duplicate columns
+// (train_uid/train_id/schedule_*) no longer exist at all as of Task 22's
+// migration, so `tr` is now the ONLY possible source for any of these
+// four fields. `cs` joins on `trains_id` (Step D, Task 11) -- new writes
+// go through `upsert_train_movement`, keyed on `trains_id` alone, so the
+// old `cs.tracked_train_id = tt.id` join would silently stop seeing fresh
+// current-state rows for any train resolved after that task landed.
 //
-// `COALESCE(tr.train_id, tt.train_id)`, deliberately NOT applied to
-// `train_uid`/`schedule_destination_crs`/`schedule_calling_points`: the
-// design spec's own accepted gap (§2 Step B "Named edge case") is a row
-// resolved via live TRUST alone, where `train_uid` was never learned at
-// all -- `trains_id` stays permanently NULL by design, so the join above
-// can never surface anything for that row via `tr`. `tracked_trains.train_id`
-// itself is still directly written by the legacy `upsert_train_event` path
-// (not retired until a later task), so falling back to it here costs
-// nothing and restores the real TRUST train_id for this case. The other
-// three columns have no such fallback available -- `tracked_trains`' own
-// copies of THOSE are also NULL in this exact scenario (no schedule match
-// ever ran, so nothing was ever written to `tt.schedule_destination_crs`/
-// `tt.schedule_calling_points`, and `tt.train_uid` was never learned
-// either) -- so a COALESCE there would just resolve to the same NULL.
+// Until Task 22, `train_id` here was `COALESCE(tr.train_id, tt.train_id)`
+// -- a fallback to `tracked_trains`' own directly-written column for the
+// design spec's accepted gap (§2 Step B "Named edge case": a row resolved
+// via live TRUST alone, where `train_uid` was never learned at all, so
+// `trains_id` stays permanently NULL and `tr` can never surface anything
+// for that row). Task 22's migration drops `tt.train_id` entirely, and
+// `flip_legacy_resolution` (the only writer of that column) stopped
+// writing it in the same task -- the fallback's source is gone on both
+// ends, so this now reads `tr.train_id` alone. This WIDENS the accepted
+// gap: a live-TRUST-only resolution with no known `train_uid` now loses
+// `train_id` too, not just the three fields that were already NULL in
+// that scenario (`train_uid`/`schedule_destination_crs`/
+// `schedule_calling_points`) -- see
+// `a_resolution_with_no_known_train_uid_leaves_trains_id_null`'s own
+// updated assertions for the concrete, tested shape of that gap.
 const TRACKED_TRAIN_STATE_SELECT: &str = "\
     SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
            so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-           tt.resolution_status, tr.train_uid, COALESCE(tr.train_id, tt.train_id) AS train_id, \
+           tt.resolution_status, tr.train_uid, tr.train_id, \
            tr.destination_crs AS schedule_destination_crs, ssd.name AS schedule_destination_name, \
            tr.calling_points AS schedule_calling_points, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
@@ -1470,6 +1475,12 @@ fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
 /// here would silently stop seeing fresh current-state rows for any train
 /// resolved after this task landed, exactly the staleness those two
 /// queries' own re-point avoids.
+///
+/// `LEFT JOIN trains tr ON tr.id = tt.trains_id` for `train_uid`: added by
+/// Task 22, replacing a direct `tt.train_uid` read -- that column no
+/// longer exists as of this task's migration, same Step C cutover
+/// `TRACKED_TRAIN_STATE_SELECT`/`list_tracked_trains_for_user` already
+/// made for their own `train_uid` field.
 pub async fn list_tickets_for_user(
     pool: &PgPool,
     user_id: &str,
@@ -1479,10 +1490,11 @@ pub async fn list_tickets_for_user(
                 so.name AS origin_name, sd.name AS destination_name, \
                 t.source, t.created_at, \
                 tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, tt.pin_scheduled_departure, \
-                tt.resolution_status, tt.train_uid, \
+                tt.resolution_status, tr.train_uid, \
                 cs.status, cs.delay_minutes, t.custom_name \
          FROM tracked_train_tickets t \
          LEFT JOIN tracked_trains tt ON tt.id = t.tracked_train_id \
+         LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
          LEFT JOIN stations so ON so.crs = UPPER(t.origin_crs) \
          LEFT JOIN stations sd ON sd.crs = UPPER(t.destination_crs) \
@@ -2067,27 +2079,45 @@ mod db_tests {
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 upsert_train_event -- --ignored --test-threads=1`"]
-    async fn upsert_train_event_with_only_resolved_train_id_resolves_and_preserves_the_existing_train_uid()
+    // As of Task 22, `tracked_trains` no longer has its own `train_uid`
+    // column at all -- a schedule-matched pin's identity link lives
+    // exclusively on `trains_id` (Task 3 already sets that directly, the
+    // moment a schedule match succeeds). This test used to seed a raw
+    // `tracked_trains.train_uid` value with `trains_id` left NULL, proving
+    // the old per-row `train_uid = COALESCE($2, train_uid)` write preserved
+    // it; that scenario can no longer be constructed (or occur in
+    // production) once the column is gone, so this test now seeds the
+    // schedule-matched identity the real way -- a pre-existing `trains_id`
+    // link -- and proves the SAME end-to-end guarantee survives through
+    // `flip_legacy_resolution`'s `(Some(id), _) => Some(id)` branch: a
+    // later event carrying only `resolved_train_id` (no
+    // `resolved_train_uid`) still resolves the pin and still shows the
+    // earlier-linked `train_uid` via the joined `trains` row.
+    async fn upsert_train_event_with_only_resolved_train_id_resolves_via_the_existing_trains_id_link()
      {
         let pool = connect().await;
         let user_id = "TEST-UPSERT-SCHEDULE-MATCHED";
         seed_user(&pool, user_id).await;
+        let service_date: chrono::NaiveDate = "2026-09-05".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(&pool, "C88888", service_date)
+            .await
+            .expect("find_or_create_train for the schedule-matched identity");
         let (tracked_train_id,): (i64,) = sqlx::query_as(
             "INSERT INTO tracked_trains \
-                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, train_uid, resolution_status) \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, trains_id, resolution_status) \
              VALUES ($1, $2, $3, $4, $5, 'schedule_matched') RETURNING id",
         )
         .bind(user_id)
-        .bind("2026-09-05".parse::<chrono::NaiveDate>().unwrap())
+        .bind(service_date)
         .bind("EUS")
         .bind("2026-09-05T18:15:00Z".parse::<DateTime<Utc>>().unwrap())
-        .bind("C88888") // schedule-matched train_uid, no train_id yet
+        .bind(trains_id) // already schedule-matched and linked, no train_id yet
         .fetch_one(&pool)
         .await
-        .expect("seed schedule-matched tracked_trains row");
+        .expect("seed schedule-matched tracked_trains row, already linked to a trains_id");
 
         let mut event = fixture_event(tracked_train_id, "dedup-only-train-id");
-        event.resolved_train_uid = None; // the exact gap this task closes
+        event.resolved_train_uid = None; // not re-supplied by this event
         event.resolved_train_id = Some("221832406".to_string());
 
         upsert_train_event(&pool, &event).await.expect("upsert train event");
@@ -2101,18 +2131,12 @@ mod db_tests {
         assert_eq!(
             state.train_uid,
             Some("C88888".to_string()),
-            "the schedule-matched train_uid must survive, COALESCE-preserved, not overwritten with NULL"
+            "the schedule-matched identity, already linked via trains_id, must still be visible \
+             through the joined trains row even though this event supplied no resolved_train_uid"
         );
 
-        // This resolution ends up with both a known train_uid ("C88888",
-        // preserved from the earlier schedule match) and a train_id, so
-        // upsert_train_event's Step A dual-write fires and creates a row in
-        // the shared `trains` table. cleanup_user only cleans
-        // tracked_train_tickets/tracked_trains/users, so this table needs
-        // its own cleanup here (same convention as
-        // crates/api/src/data/schedule_matching.rs and
-        // crates/api/src/data/trust_event_backlog_match.rs).
-        sqlx::query("DELETE FROM trains WHERE train_uid = 'C88888'")
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
             .execute(&pool)
             .await
             .ok();
@@ -2278,19 +2302,29 @@ mod db_tests {
     async fn a_resolution_with_no_known_train_uid_leaves_trains_id_null() {
         // The brief's accepted gap: a live-TRUST resolution that sets
         // resolved_train_id but never learned a train_uid at all (no prior
-        // schedule match seeded train_uid on the row, and this event carries
-        // no resolved_train_uid either) must NOT dual-write onto the shared
-        // `trains` table -- tracked_trains.trains_id must stay NULL. This is
-        // distinct from the
-        // upsert_train_event_with_only_resolved_train_id_resolves_and_preserves_the_existing_train_uid
-        // test above, which seeds a row that already has a known train_uid
-        // from a prior schedule match (so COALESCE preserves it and the
-        // dual-write correctly *does* fire for that case).
+        // schedule match linked a trains_id on the row, and this event
+        // carries no resolved_train_uid either) must NOT dual-write onto the
+        // shared `trains` table -- tracked_trains.trains_id must stay NULL.
+        // This is distinct from the
+        // upsert_train_event_with_only_resolved_train_id_resolves_via_the_existing_trains_id_link
+        // test above, which seeds a row that already has a trains_id linked
+        // from a prior schedule match (so the dual-write correctly *does*
+        // fire for that case).
+        //
+        // As of Task 22, this gap is WIDER than it used to be:
+        // `tracked_trains` no longer has its own `train_id` column for
+        // `TRACKED_TRAIN_STATE_SELECT` to fall back to (that COALESCE, and
+        // the write that fed it, are both gone -- see
+        // `flip_legacy_resolution`'s own doc comment). A resolution that
+        // never learns a train_uid now loses BOTH `train_uid` and
+        // `train_id` on the read model, not just `train_uid` -- there is no
+        // longer anywhere else in this schema for the real TRUST train_id
+        // to be recorded once `trains_id` can't be linked.
         let pool = connect().await;
         let user_id = "TEST-RESOLUTION-NO-KNOWN-TRAIN-UID";
         seed_user(&pool, user_id).await;
-        // No train_uid column set here at all -- this pin was never
-        // schedule-matched, unlike the sibling test's fixture.
+        // No prior schedule match -- this pin was never linked to a
+        // trains_id, unlike the sibling test's fixture.
         let tracking_id = seed_tracked_train(&pool, user_id).await;
 
         let mut event = fixture_event(tracking_id, "dedup-no-known-train-uid");
@@ -2307,35 +2341,13 @@ mod db_tests {
             state.resolution_status, "resolved",
             "the pin itself must still resolve"
         );
-        // Design spec's own "Named edge case" (§2 Step B): train_id known,
-        // train_uid never known, so trains_id stays permanently NULL and
-        // `tr.train_id` (the join) can never surface it. But
-        // TRACKED_TRAIN_STATE_SELECT's `COALESCE(tr.train_id, tt.train_id)`
-        // falls back to tracked_trains' own directly-written column for
-        // exactly this scenario, so the read model still shows the real
-        // TRUST train_id here -- only train_uid/schedule_* stay NULL (no
-        // fallback exists for those; see the COALESCE's own comment above
-        // TRACKED_TRAIN_STATE_SELECT).
         assert_eq!(
-            state.train_id,
-            Some("221832406".to_string()),
-            "COALESCE(tr.train_id, tt.train_id) must fall back to tracked_trains' own \
-             directly-written train_id when the shared trains row was never linked"
+            state.train_id, None,
+            "no trains row was ever linked, so the joined read model has nowhere left to read \
+             train_id from -- this widened gap is the direct, accepted consequence of Task 22 \
+             dropping tracked_trains' own train_id column and flip_legacy_resolution's write to it"
         );
         assert_eq!(state.train_uid, None, "train_uid was never known, so it must stay NULL");
-
-        let (own_train_id,): (Option<String>,) =
-            sqlx::query_as("SELECT train_id FROM tracked_trains WHERE id = $1")
-                .bind(tracking_id)
-                .fetch_one(&pool)
-                .await
-                .expect("read back tracked_trains.train_id directly");
-        assert_eq!(
-            own_train_id,
-            Some("221832406".to_string()),
-            "tracked_trains' own train_id column is still correctly set by upsert_train_event -- \
-             only the joined read model loses visibility into it"
-        );
 
         let (trains_id,): (Option<i64>,) =
             sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
@@ -2363,62 +2375,15 @@ mod db_tests {
     }
 
     // --- Step C cutover: reads now come from the joined `trains` row -----
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                get_by_tracking_id_reads_identity_from_the_joined_trains_row -- --ignored --test-threads=1`"]
-    async fn get_by_tracking_id_reads_identity_from_the_joined_trains_row_not_tracked_trains_own_stale_column()
-    {
-        let pool = connect().await;
-        let user_id = "TEST-STEP-C-CUTOVER";
-        seed_user(&pool, user_id).await;
-
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
-        let trains_id = crate::data::trains::find_or_create_train(&pool, "STEPC-UID", service_date)
-            .await
-            .expect("find_or_create_train");
-
-        // The row's OWN train_uid column is deliberately wrong -- proving
-        // the read below trusts the joined `trains` row, not this column.
-        let (tracked_train_id,): (i64,) = sqlx::query_as(
-            "INSERT INTO tracked_trains \
-                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, trains_id, train_uid) \
-             VALUES ($1, $2, 'EUS', $3, $4, 'STALE-WRONG-UID') RETURNING id",
-        )
-        .bind(user_id)
-        .bind(service_date)
-        .bind(service_date.and_hms_opt(19, 15, 0).unwrap().and_utc())
-        .bind(trains_id)
-        .fetch_one(&pool)
-        .await
-        .expect("seed tracked_trains row with a stale own train_uid");
-
-        let state = get_by_tracking_id(&pool, tracked_train_id)
-            .await
-            .expect("get_by_tracking_id")
-            .expect("row exists");
-        assert_eq!(
-            state.train_uid,
-            Some("STEPC-UID".to_string()),
-            "must read train_uid from the joined trains row, not tracked_trains' own stale column"
-        );
-
-        sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
-            .bind(tracked_train_id)
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM trains WHERE id = $1")
-            .bind(trains_id)
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM users WHERE id = $1")
-            .bind(user_id)
-            .execute(&pool)
-            .await
-            .ok();
-    }
+    //
+    // A prior test here (`get_by_tracking_id_reads_identity_from_the_joined_
+    // trains_row_not_tracked_trains_own_stale_column`) proved the read
+    // trusted the joined `trains` row over tracked_trains' own (deliberately
+    // seeded-wrong) `train_uid` column. As of Task 22, that column no longer
+    // exists at all -- there is no longer any "own stale column" left to
+    // seed or to accidentally read from, so the invariant that test proved
+    // is now structurally guaranteed by the schema itself. Removed rather
+    // than kept as dead weight.
 
     /// Legacy-pin regression guard: a pin still stuck at `trains_id IS NULL`
     /// (never resolved -- Task 7's backfill only ever touches
@@ -2452,248 +2417,16 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
     }
 
-    /// The Step D backfill job itself: batches `train_movement_events` and
-    /// `train_current_state` rows whose owning `tracked_trains.trains_id` is
-    /// set, populating their own `trains_id` to match. Rows whose owning
-    /// subscription's `trains_id` is itself `NULL` are skipped by the join
-    /// condition and left untouched. Returns the total number of rows
-    /// affected across both tables, so callers can assert idempotency (a
-    /// second pass against already-backfilled data must return 0).
-    ///
-    /// This is deliberately test-local, not a library function: nothing
-    /// else in this codebase will ever call it again after it has run once
-    /// against production. It is extracted only so the test's first pass
-    /// and idempotency-proving second pass share one code path instead of
-    /// maintaining two independent copies of the same SQL.
-    async fn run_backfill_pass(pool: &PgPool) -> u64 {
-        let mut total = 0;
-        loop {
-            let result = sqlx::query(
-                "WITH batch AS ( \
-                    SELECT tme.id, tt.trains_id AS new_trains_id \
-                    FROM train_movement_events tme \
-                    JOIN tracked_trains tt ON tt.id = tme.tracked_train_id \
-                    WHERE tme.trains_id IS NULL AND tt.trains_id IS NOT NULL \
-                    LIMIT 500 \
-                 ) \
-                 UPDATE train_movement_events tme SET trains_id = batch.new_trains_id \
-                 FROM batch WHERE tme.id = batch.id",
-            )
-            .execute(pool)
-            .await
-            .expect("backfill train_movement_events batch");
-            total += result.rows_affected();
-            if result.rows_affected() == 0 {
-                break;
-            }
-        }
-        loop {
-            let result = sqlx::query(
-                "WITH batch AS ( \
-                    SELECT cs.id, tt.trains_id AS new_trains_id \
-                    FROM train_current_state cs \
-                    JOIN tracked_trains tt ON tt.id = cs.tracked_train_id \
-                    WHERE cs.trains_id IS NULL AND tt.trains_id IS NOT NULL \
-                    LIMIT 500 \
-                 ) \
-                 UPDATE train_current_state cs SET trains_id = batch.new_trains_id \
-                 FROM batch WHERE cs.id = batch.id",
-            )
-            .execute(pool)
-            .await
-            .expect("backfill train_current_state batch");
-            total += result.rows_affected();
-            if result.rows_affected() == 0 {
-                break;
-            }
-        }
-        total
-    }
-
-    #[tokio::test]
-    #[ignore = "one-off Step D production backfill job, not a repeatable unit test; \
-                run manually, exactly once per environment, with \
-                `DATABASE_URL=... cargo test -p api run_step_d_backfill_of_movement_tables \
-                -- --ignored --test-threads=1 --nocapture` -- run AFTER Task 7's backfill"]
-    async fn run_step_d_backfill_of_movement_tables() {
-        let pool = connect().await;
-        let user_id = "TEST-STEP-D-BACKFILL";
-        sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
-        )
-        .bind(user_id)
-        .bind("step-d-backfill@example.com")
-        .bind(user_id)
-        .execute(&pool)
-        .await
-        .expect("seed fixture user");
-
-        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
-        let trains_id = crate::data::trains::find_or_create_train(&pool, "STEPD-UID", service_date)
-            .await
-            .expect("find_or_create_train");
-        let (tracked_train_id,): (i64,) = sqlx::query_as(
-            "INSERT INTO tracked_trains \
-                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, trains_id) \
-             VALUES ($1, $2, 'EUS', $3, $4) RETURNING id",
-        )
-        .bind(user_id)
-        .bind(service_date)
-        .bind(service_date.and_hms_opt(19, 15, 0).unwrap().and_utc())
-        .bind(trains_id)
-        .fetch_one(&pool)
-        .await
-        .expect("seed a resolved, already-repointed subscription");
-
-        sqlx::query(
-            "INSERT INTO train_movement_events (tracked_train_id, dedup_key, msg_type, raw_body) \
-             VALUES ($1, 'test-step-d-dedup', '0003', '{}'::jsonb)",
-        )
-        .bind(tracked_train_id)
-        .execute(&pool)
-        .await
-        .expect("seed a pre-existing movement row with no trains_id yet");
-        sqlx::query(
-            "INSERT INTO train_current_state (tracked_train_id, status) VALUES ($1, 'en_route')",
-        )
-        .bind(tracked_train_id)
-        .execute(&pool)
-        .await
-        .expect("seed a pre-existing current-state row with no trains_id yet");
-
-        // Brief's own named edge case: a subscription whose `trains_id` is
-        // itself NULL (unresolved -- no schedule match yet). Its
-        // movement/state rows must stay `trains_id IS NULL` permanently,
-        // skipped by the `tt.trains_id IS NOT NULL` join condition.
-        let (unresolved_tracked_train_id,): (i64,) = sqlx::query_as(
-            "INSERT INTO tracked_trains \
-                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, trains_id) \
-             VALUES ($1, $2, 'PAD', $3, NULL) RETURNING id",
-        )
-        .bind(user_id)
-        .bind(service_date)
-        .bind(service_date.and_hms_opt(20, 30, 0).unwrap().and_utc())
-        .fetch_one(&pool)
-        .await
-        .expect("seed an unresolved subscription with trains_id IS NULL");
-
-        sqlx::query(
-            "INSERT INTO train_movement_events (tracked_train_id, dedup_key, msg_type, raw_body) \
-             VALUES ($1, 'test-step-d-unresolved-dedup', '0003', '{}'::jsonb)",
-        )
-        .bind(unresolved_tracked_train_id)
-        .execute(&pool)
-        .await
-        .expect("seed a movement row under an unresolved subscription");
-        sqlx::query(
-            "INSERT INTO train_current_state (tracked_train_id, status) VALUES ($1, 'en_route')",
-        )
-        .bind(unresolved_tracked_train_id)
-        .execute(&pool)
-        .await
-        .expect("seed a current-state row under an unresolved subscription");
-
-        // --- the backfill job itself, run inline in this test ---
-        run_backfill_pass(&pool).await;
-
-        let (event_trains_id,): (Option<i64>,) =
-            sqlx::query_as("SELECT trains_id FROM train_movement_events WHERE dedup_key = 'test-step-d-dedup'")
-                .fetch_one(&pool)
-                .await
-                .expect("read back trains_id");
-        assert_eq!(event_trains_id, Some(trains_id));
-
-        let (state_trains_id,): (Option<i64>,) = sqlx::query_as(
-            "SELECT trains_id FROM train_current_state WHERE tracked_train_id = $1",
-        )
-        .bind(tracked_train_id)
-        .fetch_one(&pool)
-        .await
-        .expect("read back trains_id");
-        assert_eq!(state_trains_id, Some(trains_id));
-
-        // Edge case: the unresolved subscription's rows must be skipped by
-        // the `tt.trains_id IS NOT NULL` join condition and remain NULL.
-        let (unresolved_event_trains_id,): (Option<i64>,) = sqlx::query_as(
-            "SELECT trains_id FROM train_movement_events WHERE dedup_key = 'test-step-d-unresolved-dedup'",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("read back trains_id for unresolved-subscription movement row");
-        assert_eq!(
-            unresolved_event_trains_id, None,
-            "movement row under an unresolved (trains_id IS NULL) subscription must stay NULL"
-        );
-
-        let (unresolved_state_trains_id,): (Option<i64>,) = sqlx::query_as(
-            "SELECT trains_id FROM train_current_state WHERE tracked_train_id = $1",
-        )
-        .bind(unresolved_tracked_train_id)
-        .fetch_one(&pool)
-        .await
-        .expect("read back trains_id for unresolved-subscription current-state row");
-        assert_eq!(
-            unresolved_state_trains_id, None,
-            "current-state row under an unresolved (trains_id IS NULL) subscription must stay NULL"
-        );
-
-        // Test idempotency: run the SAME backfill pass a second time,
-        // against the already-backfilled data, and verify it's a true
-        // no-op (same code path as the first pass above, not a
-        // separately-maintained copy).
-        println!("First backfill complete. Running second pass to verify idempotency...");
-        let second_pass_total = run_backfill_pass(&pool).await;
-        assert_eq!(
-            second_pass_total, 0,
-            "second backfill pass must be a true no-op: no rows affected"
-        );
-        println!("Idempotency verified: second pass affected {} rows", second_pass_total);
-
-        // Verify data integrity: values should remain unchanged
-        let (event_trains_id_after,): (Option<i64>,) =
-            sqlx::query_as("SELECT trains_id FROM train_movement_events WHERE dedup_key = 'test-step-d-dedup'")
-                .fetch_one(&pool)
-                .await
-                .expect("read back trains_id after second pass");
-        assert_eq!(event_trains_id_after, Some(trains_id), "trains_id must not change on second pass");
-
-        let (state_trains_id_after,): (Option<i64>,) = sqlx::query_as(
-            "SELECT trains_id FROM train_current_state WHERE tracked_train_id = $1",
-        )
-        .bind(tracked_train_id)
-        .fetch_one(&pool)
-        .await
-        .expect("read back trains_id after second pass");
-        assert_eq!(state_trains_id_after, Some(trains_id), "trains_id must not change on second pass");
-
-        let (unresolved_event_trains_id_after,): (Option<i64>,) = sqlx::query_as(
-            "SELECT trains_id FROM train_movement_events WHERE dedup_key = 'test-step-d-unresolved-dedup'",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("read back trains_id for unresolved row after second pass");
-        assert_eq!(
-            unresolved_event_trains_id_after, None,
-            "unresolved-subscription movement row must remain NULL permanently"
-        );
-
-        let (unresolved_state_trains_id_after,): (Option<i64>,) = sqlx::query_as(
-            "SELECT trains_id FROM train_current_state WHERE tracked_train_id = $1",
-        )
-        .bind(unresolved_tracked_train_id)
-        .fetch_one(&pool)
-        .await
-        .expect("read back trains_id for unresolved current-state row after second pass");
-        assert_eq!(
-            unresolved_state_trains_id_after, None,
-            "unresolved-subscription current-state row must remain NULL permanently"
-        );
-
-        sqlx::query("DELETE FROM tracked_trains WHERE id = $1").bind(tracked_train_id).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM tracked_trains WHERE id = $1").bind(unresolved_tracked_train_id).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM trains WHERE id = $1").bind(trains_id).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.ok();
-    }
+    // The one-off Step D production backfill job that used to live here
+    // (`run_backfill_pass` + `run_step_d_backfill_of_movement_tables`,
+    // batching `trains_id` onto pre-existing `train_movement_events`/
+    // `train_current_state` rows keyed by their now-dropped
+    // `tracked_train_id` columns) already ran, exactly once, against this
+    // environment -- Task 22's own Step 1 dry-run count of 0 confirms
+    // nothing was left for it to do. Its own SQL joined on
+    // `tme.tracked_train_id`/`cs.tracked_train_id`, both dropped by this
+    // task's migration, so it can never run again; removed rather than
+    // left as permanently-broken dead code.
 
     // --- Task 11: split upsert_train_event into upsert_train_movement +
     // flip_legacy_resolution --------------------------------------------
@@ -2744,21 +2477,20 @@ mod db_tests {
                 .expect("a current-state row must exist for this trains_id even with zero subscribers");
         assert_eq!(status, "en_route");
 
-        // Also verify the movement-event row itself landed, trains_id-keyed,
-        // with no tracked_train_id at all -- the whole point of this
-        // function's split from upsert_train_event.
-        let (dedup_key, tracked_train_id): (String, Option<i64>) = sqlx::query_as(
-            "SELECT dedup_key, tracked_train_id FROM train_movement_events WHERE trains_id = $1",
+        // Also verify the movement-event row itself landed, trains_id-keyed
+        // -- the whole point of this function's split from
+        // upsert_train_event. As of Task 22, `train_movement_events` no
+        // longer has a `tracked_train_id` column at all to assert `NULL`
+        // on -- "with no tracked_train_id at all" is now structurally
+        // guaranteed by the schema itself, not just this row's own value.
+        let (dedup_key,): (String,) = sqlx::query_as(
+            "SELECT dedup_key FROM train_movement_events WHERE trains_id = $1",
         )
         .bind(trains_id)
         .fetch_one(&pool)
         .await
         .expect("a movement-event row must exist for this trains_id even with zero subscribers");
         assert_eq!(dedup_key, "test-nosub-dedup");
-        assert_eq!(
-            tracked_train_id, None,
-            "no tracked_trains row was ever created for this trains_id, so tracked_train_id must be NULL"
-        );
 
         sqlx::query("DELETE FROM trains WHERE id = $1").bind(trains_id).execute(&pool).await.ok();
     }
@@ -2867,8 +2599,8 @@ mod db_tests {
         let (tracked_train_id,): (i64,) = sqlx::query_as(
             "INSERT INTO tracked_trains \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure, trains_id, \
-                 train_uid, resolution_status) \
-             VALUES ($1, $2, 'EUS', $3, $4, 'DELEGATE-UID', 'resolved') RETURNING id",
+                 resolution_status) \
+             VALUES ($1, $2, 'EUS', $3, $4, 'resolved') RETURNING id",
         )
         .bind(user_id)
         .bind(service_date)
@@ -2923,9 +2655,8 @@ mod db_tests {
         let (tracked_train_id,): (i64,) = sqlx::query_as(
             "INSERT INTO tracked_trains \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure, \
-                 train_uid, train_id, trains_id, resolution_status) \
-             VALUES ($1, $2, 'WAT', $3, 'TEST-LIST-ACTIVE-TRAINS-ID-UID', \
-                     'TEST-LIST-ACTIVE-TRAINS-ID-TRAIN-ID', $4, 'resolved') \
+                 trains_id, resolution_status) \
+             VALUES ($1, $2, 'WAT', $3, $4, 'resolved') \
              RETURNING id",
         )
         .bind(user_id)
@@ -3141,15 +2872,19 @@ mod db_tests {
     /// Task 21's own headline scenario, proven end-to-end rather than
     /// merely claimed: two DIFFERENT users tracking the SAME physical
     /// train via `create_subscription_for_train` (Task 20's NR-primary
-    /// path, which deliberately never writes either row's own legacy
-    /// `tracked_trains.train_uid` -- see that function's doc comment) must
-    /// BOTH now come back from `list_active_tracked_trains` with a real
-    /// `train_uid`, sourced via this task's new `LEFT JOIN trains` rather
-    /// than the (as of this task, no-longer-written) `tracked_trains.train_uid`
-    /// column itself. Before this task, both rows would have surfaced
-    /// `train_uid: None` here -- neither is directly asserted by an
-    /// existing test, which is why this task's brief calls for a new one
-    /// rather than trusting the doc comment's own claim.
+    /// path, which deliberately never wrote either row's own legacy
+    /// `tracked_trains.train_uid` column even back when that column still
+    /// existed -- see that function's doc comment) must BOTH come back
+    /// from `list_active_tracked_trains` with a real `train_uid`, sourced
+    /// via the `LEFT JOIN trains` Task 21 added. Before that task, both
+    /// rows would have surfaced `train_uid: None` here -- neither was
+    /// directly asserted by an existing test at the time, which is why
+    /// that task's brief called for a new one rather than trusting the
+    /// doc comment's own claim. As of Task 22, the column this test used
+    /// to also assert was never written on either row no longer exists at
+    /// all -- that belt-and-braces check is now structurally guaranteed by
+    /// the schema itself, so it has been removed rather than kept as a
+    /// query against a column that can never come back.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 list_active_tracked_trains_surfaces_train_uid_for_every_subscriber_sharing_a_trains_id \
@@ -3178,32 +2913,12 @@ mod db_tests {
             .await
             .expect("second subscriber tracks the SAME physical train");
 
-        // Belt-and-braces per this task's own brief: confirm neither row's
-        // own legacy `tracked_trains.train_uid` column was ever written --
-        // if `list_active_tracked_trains` below saw `Some(train_uid)`
-        // straight off THIS column rather than the new `trains` join, this
-        // assertion would be the only thing catching that.
-        let (legacy_train_uid_1, legacy_train_uid_2): (Option<String>, Option<String>) = {
-            let a: (Option<String>,) =
-                sqlx::query_as("SELECT train_uid FROM tracked_trains WHERE id = $1")
-                    .bind(first_tracking_id)
-                    .fetch_one(&pool)
-                    .await
-                    .expect("read back first row's legacy train_uid column");
-            let b: (Option<String>,) =
-                sqlx::query_as("SELECT train_uid FROM tracked_trains WHERE id = $1")
-                    .bind(second_tracking_id)
-                    .fetch_one(&pool)
-                    .await
-                    .expect("read back second row's legacy train_uid column");
-            (a.0, b.0)
-        };
-        assert_eq!(
-            legacy_train_uid_1, None,
-            "create_subscription_for_train must never write its own legacy train_uid column"
-        );
-        assert_eq!(legacy_train_uid_2, None);
-
+        // A prior version of this test also belt-and-braces-confirmed
+        // neither row's own legacy `tracked_trains.train_uid` column was
+        // ever written directly. As of Task 22, that column no longer
+        // exists at all -- the check is now structurally guaranteed by the
+        // schema itself, so it has been removed rather than kept as a
+        // query against a column that can never come back.
         let refs = list_active_tracked_trains(&pool)
             .await
             .expect("list_active_tracked_trains");
@@ -3237,6 +2952,171 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, first_user_id).await;
+        cleanup_user(&pool, second_user_id).await;
+    }
+
+    // --- Task 22: Step D's final cutover -- live-TRUST resolution proven
+    // end-to-end AFTER the legacy column drop ---------------------------
+
+    /// Task 22's own required proof: a live-TRUST resolution (the real
+    /// `upsert_train_event` -> `flip_legacy_resolution` path trust-consumer
+    /// and trust-backlog-consumer both call) must still succeed end-to-end
+    /// once `tracked_trains.train_uid`/`train_id`/`resolved_at` and the
+    /// other four retired legacy columns are physically gone. Seeds a
+    /// fresh pin with `seed_tracked_train` (already updated by this same
+    /// task to write only columns that still exist), runs the real
+    /// resolution path, and asserts on the ordinary, still-present
+    /// `resolution_status`/`trains_id` columns and the joined read model --
+    /// nowhere in this test does any SQL of its own reference any of the
+    /// seven `tracked_trains` columns or the two `tracked_train_id`
+    /// columns this task's migration drops.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_live_trust_resolution_still_succeeds_end_to_end_after_the_legacy_column_drop \
+                -- --ignored --test-threads=1`"]
+    async fn a_live_trust_resolution_still_succeeds_end_to_end_after_the_legacy_column_drop() {
+        let pool = connect().await;
+        let user_id = "TEST-POST-DROP-RESOLUTION";
+        seed_user(&pool, user_id).await;
+        let tracking_id = seed_tracked_train(&pool, user_id).await;
+
+        let mut event = fixture_event(tracking_id, "dedup-post-drop-resolution");
+        event.resolved_train_uid = Some("TEST-POST-DROP-UID".to_string());
+        event.resolved_train_id = Some("TEST-POST-DROP-TRAIN-ID".to_string());
+
+        upsert_train_event(&pool, &event)
+            .await
+            .expect("a live-TRUST resolution must still succeed after the column drop");
+
+        let state = get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("get_by_tracking_id")
+            .expect("tracked train exists");
+        assert_eq!(
+            state.resolution_status, "resolved",
+            "the pin must still flip to resolved via the post-drop flip_legacy_resolution"
+        );
+        assert_eq!(
+            state.train_uid,
+            Some("TEST-POST-DROP-UID".to_string()),
+            "identity must be visible via the joined trains row, not any dropped tracked_trains column"
+        );
+        assert_eq!(state.train_id, Some("TEST-POST-DROP-TRAIN-ID".to_string()));
+        assert_eq!(
+            state.status,
+            Some("en_route".to_string()),
+            "upsert_train_movement's own shared-table write must also still fire, keyed on the \
+             freshly dual-written trains_id"
+        );
+
+        let (trains_id,): (Option<i64>,) =
+            sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
+                .bind(tracking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back trains_id");
+        let trains_id = trains_id.expect("the resolution must have linked a real trains_id");
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// The direct fix for the risk Task 21's review flagged, proven rather
+    /// than merely argued in a doc comment: before this task,
+    /// `flip_legacy_resolution`'s `UPDATE` wrote
+    /// `tracked_trains.train_uid = COALESCE($2, train_uid)` per
+    /// subscription row -- once two DIFFERENT subscribers shared one
+    /// physical train (Task 20's own headline scenario) and each one's
+    /// pin was independently resolved via live TRUST (e.g. a process
+    /// restart re-delivering the same Activation and causing both
+    /// subscribers' pins to resolve against the same `train_uid` and
+    /// `service_date`), the SECOND subscriber's `UPDATE` would collide
+    /// with `tracked_trains_resolved_identity`'s
+    /// `UNIQUE (train_uid, service_date) WHERE train_uid IS NOT NULL`
+    /// index and fail outright.
+    ///
+    /// This test seeds exactly that scenario -- two independent, still-
+    /// `pending` pins for two different users, sharing the same
+    /// `service_date` (both via `seed_tracked_train`) -- and resolves BOTH
+    /// with the identical `resolved_train_uid`/`resolved_train_id`, back
+    /// to back, with no cleanup in between. Both calls must succeed: the
+    /// index itself is dropped by this task's migration, and
+    /// `flip_legacy_resolution` no longer attempts the write that could
+    /// have hit it in the first place -- the shared identity link now
+    /// lives exclusively on `trains_id`, and `find_or_create_train`'s own
+    /// `ON CONFLICT (train_uid, service_date) DO UPDATE` makes a second
+    /// resolution against the same identity a safe, idempotent no-op.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                two_subscribers_sharing_a_physical_train_each_resolve_via_live_trust_without_a_unique_constraint_collision \
+                -- --ignored --test-threads=1`"]
+    async fn two_subscribers_sharing_a_physical_train_each_resolve_via_live_trust_without_a_unique_constraint_collision()
+     {
+        let pool = connect().await;
+        let first_user_id = "TEST-POST-DROP-COLLISION-USER-1";
+        let second_user_id = "TEST-POST-DROP-COLLISION-USER-2";
+        seed_user(&pool, first_user_id).await;
+        seed_user(&pool, second_user_id).await;
+
+        let first_tracking_id = seed_tracked_train(&pool, first_user_id).await;
+        let second_tracking_id = seed_tracked_train(&pool, second_user_id).await;
+
+        let mut first_event = fixture_event(first_tracking_id, "dedup-post-drop-collision-1");
+        first_event.resolved_train_uid = Some("TEST-POST-DROP-COLLISION-UID".to_string());
+        first_event.resolved_train_id = Some("TEST-POST-DROP-COLLISION-TRAIN-ID".to_string());
+        upsert_train_event(&pool, &first_event)
+            .await
+            .expect("the FIRST subscriber's live-TRUST resolution must succeed");
+
+        // Same train_uid, same service_date (both fixtures share
+        // seed_tracked_train's hardcoded "2026-09-02") -- exactly the
+        // collision shape Task 21's review flagged. Before this task, this
+        // second call's own UPDATE would have hit
+        // tracked_trains_resolved_identity's UNIQUE constraint.
+        let mut second_event = fixture_event(second_tracking_id, "dedup-post-drop-collision-2");
+        second_event.resolved_train_uid = Some("TEST-POST-DROP-COLLISION-UID".to_string());
+        second_event.resolved_train_id = Some("TEST-POST-DROP-COLLISION-TRAIN-ID".to_string());
+        upsert_train_event(&pool, &second_event)
+            .await
+            .expect(
+                "the SECOND subscriber sharing the same physical train must ALSO resolve, with \
+                 no unique-constraint collision -- this is the direct proof of Task 21's fix",
+            );
+
+        let (first_status, first_trains_id): (String, Option<i64>) = sqlx::query_as(
+            "SELECT resolution_status, trains_id FROM tracked_trains WHERE id = $1",
+        )
+        .bind(first_tracking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back first subscriber's row");
+        let (second_status, second_trains_id): (String, Option<i64>) = sqlx::query_as(
+            "SELECT resolution_status, trains_id FROM tracked_trains WHERE id = $1",
+        )
+        .bind(second_tracking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back second subscriber's row");
+
+        assert_eq!(first_status, "resolved");
+        assert_eq!(second_status, "resolved");
+        let trains_id = first_trains_id.expect("first subscriber must have a linked trains_id");
+        assert_eq!(
+            second_trains_id,
+            Some(trains_id),
+            "both subscribers must end up linked to the exact SAME shared trains row"
+        );
+
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
             .execute(&pool)
