@@ -17,6 +17,7 @@ import type {
   Suggestion,
   SessionInfo,
   TrackedTrainState,
+  PublicTrainState,
   TrackedTrainListItem,
   TrackedTrainTicket,
   DelayRepayEstimateResponse,
@@ -414,14 +415,31 @@ export async function getTrackedTrainById(id: number): Promise<TrackedTrainState
   return response.json() as Promise<TrackedTrainState>;
 }
 
-export async function getTrackedTrainByUidAndDate(uid: string, date: string): Promise<TrackedTrainState> {
+/** `GET /Train/by-uid/{uid}/{date}` -- PUBLIC and UNSCOPED, and typed as
+ * the `PublicTrainState` it actually returns.
+ *
+ * This used to be `getTrackedTrainByUidAndDate`, declared as returning
+ * `TrackedTrainState` and casting the body straight into it with no
+ * checking of any kind. That was wrong on both counts once the route
+ * became public: the response has an entirely different shape, and its
+ * `trainsId` (then named `id`) was being read by the calling page as a
+ * `trackingId` for the `/Train/{trackingId}` rename/delete/ticket routes,
+ * which key off `train_subscriptions.id` -- a different `BIGSERIAL` space
+ * that also starts at 1.
+ *
+ * No cookies are forwarded: there is no per-caller component to this
+ * response, and forwarding a session cookie would only imply otherwise.
+ * A 404 (no known train for that uid/date) still surfaces as
+ * `ApiNotFoundError` via `errorForResponse`; a 401 is not a reachable
+ * outcome for this route at all. */
+export async function getPublicTrainByUidAndDate(
+  uid: string,
+  date: string,
+): Promise<PublicTrainState> {
   const url = `${baseUrl()}/Train/by-uid/${encodeURIComponent(uid)}/${encodeURIComponent(date)}`;
-  const response = await fetch(url, {
-    cache: 'no-store',
-    ...(await cookieForwardInit()),
-  });
+  const response = await fetch(url, { cache: 'no-store' });
   if (!response.ok) throw errorForResponse(url, response);
-  return response.json() as Promise<TrackedTrainState>;
+  return response.json() as Promise<PublicTrainState>;
 }
 
 /** `GET /Train/mine`. Returns `null` on `401` (not logged in) --

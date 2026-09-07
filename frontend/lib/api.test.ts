@@ -19,7 +19,7 @@ import {
   getHistoryRetention,
   getStationName,
   getTrackedTrainById,
-  getTrackedTrainByUidAndDate,
+  getPublicTrainByUidAndDate,
   getTicketsForTrackedTrain,
   getMyTrackedTrains,
   getDelayRepayEstimate,
@@ -473,8 +473,7 @@ describe('api client', () => {
   // Decision 8 in the design spec: on /lines/[id], "not logged in" and
   // "logged in but not the owner" must render identically, so both a bare
   // 401 and a genuine 404 collapse into the same ApiNotFoundError -- unlike
-  // getTrackedTrainById/getTrackedTrainByUidAndDate below, which keep them
-  // distinct.
+  // getTrackedTrainById below, which keeps them distinct.
   it('getCustomLine collapses a 401 into ApiNotFoundError', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('unauthorized', { status: 401 })));
     await expect(getCustomLine('custom-my-commute')).rejects.toBeInstanceOf(ApiNotFoundError);
@@ -635,25 +634,21 @@ describe('api client', () => {
     expect(init.headers).toBeUndefined();
   });
 
-  it('getTrackedTrainByUidAndDate fetches the correct URL with no caching', async () => {
-    await getTrackedTrainByUidAndDate('C21373', '2026-08-28');
+  it('getPublicTrainByUidAndDate fetches the correct URL with no caching', async () => {
+    await getPublicTrainByUidAndDate('C21373', '2026-08-28');
     expect(fetch).toHaveBeenCalledWith(
       'http://test-api:8080/Train/by-uid/C21373/2026-08-28',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });
 
-  it('getTrackedTrainByUidAndDate forwards the incoming request cookies to the backend', async () => {
+  // The route is public and unscoped as of the shared-train-identity
+  // change -- nothing in its response varies by caller, so forwarding a
+  // session cookie would only imply otherwise. (It used to forward them,
+  // back when this route was ownership-gated.)
+  it('getPublicTrainByUidAndDate sends no Cookie header even when the visitor has one', async () => {
     incomingCookies.header = 'distant_signal_session=abc123';
-    await getTrackedTrainByUidAndDate('C21373', '2026-08-28');
-    expect(fetch).toHaveBeenCalledWith(
-      'http://test-api:8080/Train/by-uid/C21373/2026-08-28',
-      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
-    );
-  });
-
-  it('getTrackedTrainByUidAndDate sends no Cookie header when the visitor has no cookies at all', async () => {
-    await getTrackedTrainByUidAndDate('C21373', '2026-08-28');
+    await getPublicTrainByUidAndDate('C21373', '2026-08-28');
     const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
     expect(init.headers).toBeUndefined();
   });
@@ -668,14 +663,11 @@ describe('api client', () => {
     await expect(getTrackedTrainById(999)).rejects.toBeInstanceOf(ApiUnauthorizedError);
   });
 
-  it('getTrackedTrainByUidAndDate throws ApiNotFoundError on a 404', async () => {
+  it('getPublicTrainByUidAndDate throws ApiNotFoundError on a 404', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
-    await expect(getTrackedTrainByUidAndDate('C21373', '2026-08-28')).rejects.toBeInstanceOf(ApiNotFoundError);
-  });
-
-  it('getTrackedTrainByUidAndDate throws ApiUnauthorizedError specifically on a 401', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('unauthorized', { status: 401 })));
-    await expect(getTrackedTrainByUidAndDate('C21373', '2026-08-28')).rejects.toBeInstanceOf(ApiUnauthorizedError);
+    await expect(getPublicTrainByUidAndDate('C21373', '2026-08-28')).rejects.toBeInstanceOf(
+      ApiNotFoundError,
+    );
   });
 
   it('getTicketsForTrackedTrain fetches the correct URL, forwarding cookies, with no caching', async () => {

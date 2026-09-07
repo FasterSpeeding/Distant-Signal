@@ -373,16 +373,33 @@ export interface ScheduleCallingPoint {
   isHalfMinuteDeparture: boolean;
 }
 
-/** `GET /Train/{trackingId}` and `GET /Train/by-uid/{uid}/{date}`'s shared
- * response shape (`crates/api/src/data/train_tracking.rs`'s
- * `TrackedTrainState`, camelCase on the wire). `status` and every
+/** `GET /Train/{trackingId}`'s response shape
+ * (`crates/api/src/data/train_tracking.rs`'s `TrackedTrainState`,
+ * camelCase on the wire). NOT `GET /Train/by-uid/{uid}/{date}`'s any
+ * more -- that route is public and returns `PublicTrainState`. `status`
+ * and every
  * movement field are `null` until `resolutionStatus` is `'resolved'` and
  * `trust-consumer` has written a `train_current_state` row. Note there is
  * no `scheduledDeparture` field -- the backend's read query does not
  * select `pin_scheduled_departure`, only `serviceDate` (a date). See
  * `components/TrainJourney.tsx` for the full per-state rendering rules. */
-export interface TrackedTrainState {
+export interface TrackedTrainState extends TrainJourneyState {
+  // The `train_subscriptions.id` every `/Train/{trackingId}` route keys
+  // off. Lives here and NOT on `TrainJourneyState`, precisely so a public,
+  // subscription-less train can be rendered without one -- see
+  // `PublicTrainState` below.
   id: number;
+}
+
+/** Exactly the fields `components/TrainJourney.tsx` reads -- notably NOT
+ * `id`. Extracted so that page can render BOTH an owned subscription
+ * (`TrackedTrainState`, which extends this) and the public, shared-train
+ * view (`PublicTrainState`, adapted into this shape by
+ * `app/train/[uid]/[date]/page.tsx`) without either one having to
+ * fabricate a `trackingId` it doesn't have. See `PublicTrainState` below
+ * for the surrogate-key collision that made that distinction load-bearing
+ * rather than cosmetic. */
+export interface TrainJourneyState {
   serviceDate: string; // "YYYY-MM-DD"
   // `null` for a subscription created the NR-primary way
   // (`POST /Train/by-uid/{uid}/{date}/track`) against a shared `trains` row
@@ -419,6 +436,43 @@ export interface TrackedTrainState {
   // any parsed document (`crates/api/src/data/ticket_extraction.rs`), only
   // ever set via `RenameTrainButton`.
   customName: string | null;
+  // Optional here because `TrackedTrainState` genuinely has no such field
+  // (the backend's single-train read never selects
+  // `pin_scheduled_departure`) -- see `lib/trackingName.ts`.
+  pinScheduledDeparture?: string | null;
+}
+
+/** `GET /Train/by-uid/{uid}/{date}`'s response shape
+ * (`crates/api/src/data/trains.rs`'s `PublicTrainState`, camelCase). This
+ * route is PUBLIC and UNSCOPED as of the shared-train-identity change: it
+ * describes the shared, real-world train, and carries NO per-subscriber
+ * data at all -- no `customName`, no tickets, no notification state.
+ *
+ * `trainsId` is the shared `trains` row's own surrogate key. It is NOT a
+ * tracking id and must never be passed to `RenameTrainButton`,
+ * `DeleteTrainButton`, `TicketPanel` or any `/Train/{trackingId}` route:
+ * those all read their id as a `train_subscriptions.id`, a different
+ * `BIGSERIAL` space that also starts at 1, so the two collide freely. That
+ * is exactly the bug this field's old name (`id`) caused on
+ * `app/train/[uid]/[date]/page.tsx`. */
+export interface PublicTrainState {
+  trainsId: number;
+  trainUid: string;
+  serviceDate: string; // "YYYY-MM-DD"
+  originCrs: string | null;
+  originName: string | null;
+  destinationCrs: string | null;
+  destinationName: string | null;
+  scheduledDeparture: string | null; // RFC3339
+  callingPoints: ScheduleCallingPoint[] | null;
+  trainId: string | null;
+  status: JourneyStatus | null;
+  lastReportedLocation: string | null;
+  lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"
+  delayMinutes: number | null;
+  nextCallingPoint: string | null;
+  etaNext: string | null; // RFC3339
+  etaSource: EtaSource | null;
 }
 
 /** `GET /Train/mine`'s per-item response shape

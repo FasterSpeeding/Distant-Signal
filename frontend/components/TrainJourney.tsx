@@ -1,20 +1,26 @@
 import { Alert, Badge, Group, Loader, Stack, Text, Tooltip } from '@mantine/core';
 import { EtaBadge } from './EtaBadge';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
-import type { TrackedTrainState } from '@/lib/types';
+import type { TrainJourneyState } from '@/lib/types';
 
-/** Renders one `TrackedTrainState` through every state the backend can
+/** Renders one train's journey through every state the backend can
  * return, per
  * docs/superpowers/specs/2026-08-29-train-tracking-frontend-design.md
- * Decision 3's table. Shared by both `/train/by-id/[trackingId]` and
- * `/train/[uid]/[date]`.
+ * Decision 3's table. Shared by both `/train/by-id/[trackingId]` (which
+ * passes a `TrackedTrainState` -- one of the caller's own subscriptions)
+ * and `/train/[uid]/[date]` (which passes a `PublicTrainState` adapted
+ * into this shape). The prop is `TrainJourneyState`, NOT
+ * `TrackedTrainState`, specifically so the public page never has to invent
+ * an `id`/`trackingId` for a train nobody has subscribed to -- see
+ * `PublicTrainState`'s own doc comment in `lib/types.ts` for the
+ * surrogate-key collision that caused.
  *
  * The pin summary shown for `pending`/`unresolved` is `trackedTrainDisplayName`
  * -- the user's own custom name if they set one, otherwise the same
  * route + date default this rendered directly before custom names existed
  * (`TrackedTrainState` has no scheduled-departure clock-time field, so this
  * still never claims to show a scheduled time the backend doesn't return). */
-export function TrainJourney({ state }: { state: TrackedTrainState }) {
+export function TrainJourney({ state }: { state: TrainJourneyState }) {
   const pinSummary = (
     <Text size="sm" c="dimmed">
       {trackedTrainDisplayName(state)}
@@ -132,7 +138,7 @@ export function TrainJourney({ state }: { state: TrackedTrainState }) {
   );
 }
 
-function JourneyDetails({ state }: { state: TrackedTrainState }) {
+function JourneyDetails({ state }: { state: TrainJourneyState }) {
   const hasMovementData =
     state.lastReportedLocation !== null ||
     state.delayMinutes !== null ||

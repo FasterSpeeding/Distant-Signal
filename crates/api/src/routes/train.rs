@@ -2496,7 +2496,22 @@ mod db_tests {
         .await;
 
         assert_eq!(status, StatusCode::OK, "response: {body:?}");
-        assert_eq!(body.get("id").and_then(Value::as_i64), Some(trains_id));
+        // `trainsId`, NOT `id` (review finding C3): every `/Train/{trackingId}`
+        // route in this app reads its path id as a `train_subscriptions.id`,
+        // and both surrogate-key spaces are `BIGSERIAL` starting at 1. The
+        // old `id` name let this shared-row key be mistaken for a tracking
+        // id -- which is exactly what the frontend page for this route was
+        // doing. The absence of a bare `id` key is asserted explicitly
+        // below, so a future rename back to `id` fails here loudly.
+        assert_eq!(
+            body.get("trainsId").and_then(Value::as_i64),
+            Some(trains_id)
+        );
+        assert!(
+            body.get("id").is_none(),
+            "the public response must not carry a bare `id` that could be read as a \
+             tracking id: {body:?}"
+        );
         assert_eq!(
             body.get("trainUid").and_then(Value::as_str),
             Some("TEST-PUBLIC-BY-UID")

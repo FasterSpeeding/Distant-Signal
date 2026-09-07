@@ -116,7 +116,20 @@ pub async fn mark_train_resolved(
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicTrainState {
-    pub id: i64,
+    /// The SHARED `trains` row's own surrogate key, serialized as
+    /// `trainsId`. Deliberately NOT named `id`, which is what this struct
+    /// used to call it: every `/Train/{trackingId}` route in this app
+    /// interprets its path id as a `train_subscriptions.id`, a completely
+    /// different `BIGSERIAL` space that also starts at 1 -- and the
+    /// frontend page for this route was feeding this field straight into
+    /// `RenameTrainButton`/`DeleteTrainButton`/`TicketPanel` as a
+    /// `trackingId`, so a logged-in visitor could rename or delete an
+    /// unrelated subscription of their OWN that happened to share the
+    /// number. Ownership scoping made cross-user damage impossible, but not
+    /// same-user damage. The name is the fix on this side; the frontend no
+    /// longer renders those controls on this page at all (see
+    /// `frontend/app/train/[uid]/[date]/page.tsx`).
+    pub trains_id: i64,
     pub train_uid: String,
     pub service_date: NaiveDate,
     pub origin_crs: Option<String>,
@@ -147,7 +160,7 @@ pub async fn get_public_train_state(
     service_date: NaiveDate,
 ) -> anyhow::Result<Option<PublicTrainState>> {
     let row = sqlx::query_as::<_, PublicTrainState>(
-        "SELECT tr.id, tr.train_uid, tr.service_date, tr.origin_crs, so.name AS origin_name, \
+        "SELECT tr.id AS trains_id, tr.train_uid, tr.service_date, tr.origin_crs, so.name AS origin_name, \
                 tr.destination_crs, sd.name AS destination_name, tr.scheduled_departure, \
                 tr.calling_points, tr.train_id, \
                 cs.status, cs.last_reported_location, cs.last_event_type, cs.delay_minutes, \
@@ -351,7 +364,7 @@ mod db_tests {
             .expect("get_public_train_state")
             .expect("row should be found");
 
-        assert_eq!(state.id, trains_id);
+        assert_eq!(state.trains_id, trains_id);
         assert_eq!(state.train_uid, "TEST-PUBLIC-STATE-UID");
         assert_eq!(state.origin_crs, Some("EUS".to_string()));
         assert_eq!(state.destination_crs, Some("MKC".to_string()));
