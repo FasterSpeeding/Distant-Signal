@@ -17,6 +17,14 @@
 //! per-subscription data (`custom_name`, tickets, notification state)
 //! through it. Mounted directly (not under `/public`) to match the design
 //! doc's sketched URL shape for the eventual frontend page.
+//! `post_track_by_uid` (`POST /Train/by-uid/{train_uid}/{date}/track`,
+//! design spec §4, Task 20) is the NR-primary counterpart to `post_track`:
+//! back behind normal `AuthenticatedUser` session auth (this is a user
+//! creating their own subscription, not a service push), but unlike
+//! `post_track`'s legacy CRS+time flow it never passes through `pending`/
+//! `schedule_matched` -- identity is already known upfront, so it
+//! find-or-creates the shared `trains` row and links a subscription to it
+//! in the same request.
 
 use axum::Json;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
