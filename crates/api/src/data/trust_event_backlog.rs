@@ -610,6 +610,103 @@ mod db_tests {
             .ok();
     }
 
+    /// Corroborating proof, for THIS call path specifically, of the guard
+    /// documented on `upsert_train_movement`'s own doc comment (see
+    /// `train_tracking.rs`'s `an_out_of_order_event_does_not_regress_current_state`
+    /// for the direct, same-technique proof against that function itself).
+    /// `ingest_shared_movement` requires no production code change of its
+    /// own -- it already funnels every write through `upsert_train_movement`
+    /// (`ingest_shared_movements_batch`'s final write, above), so the guard
+    /// applies automatically; this test exists only to confirm that's
+    /// actually true end-to-end through THIS module's own public entry
+    /// point, not merely inferred from reading the call graph.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                an_out_of_order_ingest_shared_movement_call_does_not_regress_current_state \
+                -- --ignored --test-threads=1`"]
+    async fn an_out_of_order_ingest_shared_movement_call_does_not_regress_current_state() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+
+        let newer_movement = TrustBacklogEventMessage {
+            crs: Some("MKC".to_string()),
+            train_uid: Some("TEST-BACKLOG-OUT-OF-ORDER-UID".to_string()),
+            train_id: "TEST-BACKLOG-OUT-OF-ORDER-TID".to_string(),
+            service_date,
+            msg_type: "0003".to_string(),
+            event_type: Some("ARRIVAL".to_string()),
+            planned_timestamp: Some("2026-09-06T19:45:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T19:45:00Z".parse().unwrap()),
+            variation_status: Some("ON TIME".to_string()),
+            delay_minutes: Some(0),
+            dedup_key: "test-backlog-out-of-order-newer-dedup".to_string(),
+        };
+        ingest_shared_movement(&pool, &newer_movement)
+            .await
+            .expect("the newer movement's own ingest must succeed");
+
+        let (trains_id,): (i64,) = sqlx::query_as(
+            "SELECT id FROM trains WHERE train_uid = 'TEST-BACKLOG-OUT-OF-ORDER-UID'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("a shared trains row must have been created");
+
+        // A STALE Cancellation, arriving SECOND, timestamped BEFORE the
+        // movement above -- exactly the design doc's §1.3 scenario: this
+        // consumer's own batch redelivering an old message out of
+        // real-world order, or racing the live trust-consumer path for the
+        // same trains_id. Without the guard, `apply_cancellation` would
+        // flip a train that has already progressed (and, in reality, may
+        // never have been cancelled at all) to `status = 'cancelled'`.
+        let stale_cancellation = TrustBacklogEventMessage {
+            crs: None,
+            train_uid: Some("TEST-BACKLOG-OUT-OF-ORDER-UID".to_string()),
+            train_id: "TEST-BACKLOG-OUT-OF-ORDER-TID".to_string(),
+            service_date,
+            msg_type: "0002".to_string(),
+            event_type: None,
+            planned_timestamp: None,
+            actual_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            variation_status: None,
+            delay_minutes: None,
+            dedup_key: "test-backlog-out-of-order-stale-cancel-dedup".to_string(),
+        };
+        ingest_shared_movement(&pool, &stale_cancellation)
+            .await
+            .expect("the stale cancellation's call must succeed (a guarded no-op is not an error)");
+
+        let (status, last_reported_location, delay_minutes): (String, Option<String>, Option<i32>) =
+            sqlx::query_as(
+                "SELECT status, last_reported_location, delay_minutes \
+                 FROM train_current_state WHERE trains_id = $1",
+            )
+            .bind(trains_id)
+            .fetch_one(&pool)
+            .await
+            .expect("a current-state row must exist");
+        assert_eq!(
+            status, "en_route",
+            "the stale cancellation must not have regressed status to 'cancelled'"
+        );
+        assert_eq!(
+            last_reported_location,
+            Some("MKC".to_string()),
+            "the stale cancellation must not have touched the newer movement's location"
+        );
+        assert_eq!(
+            delay_minutes,
+            Some(0),
+            "the stale cancellation must not have regressed delay_minutes"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 ingest_shared_movement_is_a_no_op_with_no_known_train_uid -- --ignored`"]
@@ -1206,7 +1303,15 @@ mod db_tests {
             msg_type: "0002".to_string(),
             event_type: None,
             planned_timestamp: None,
-            actual_timestamp: None,
+            // A real Cancellation always carries TRUST's own `canx_timestamp`
+            // in this field (see `upsert_train_movement`'s own doc comment,
+            // and `crates/trust-backlog-consumer/src/process.rs`'s
+            // Cancellation construction) -- `None` here would be an
+            // unrealistic fixture as of the event-time monotonicity guard
+            // (Option C of the write-race design doc): this event's
+            // `event_time` must be at or after movement_a's (19:20) for its
+            // write to apply at all.
+            actual_timestamp: Some("2026-09-06T19:25:00Z".parse().unwrap()),
             variation_status: None,
             delay_minutes: None,
             dedup_key: "test-fallback-step3-cancel-a-dedup".to_string(),
@@ -1219,7 +1324,9 @@ mod db_tests {
             msg_type: "0002".to_string(),
             event_type: None,
             planned_timestamp: None,
-            actual_timestamp: None,
+            // Same reasoning as cancel_a's own comment -- at or after
+            // movement_b's actual_timestamp (20:03).
+            actual_timestamp: Some("2026-09-06T20:05:00Z".parse().unwrap()),
             variation_status: None,
             delay_minutes: None,
             dedup_key: "test-fallback-step3-cancel-b-dedup".to_string(),
@@ -1340,7 +1447,13 @@ mod db_tests {
             msg_type: "0002".to_string(),
             event_type: None,
             planned_timestamp: None,
-            actual_timestamp: None,
+            // A real Cancellation always carries TRUST's own `canx_timestamp`
+            // here (see `upsert_train_movement`'s own doc comment) -- `None`
+            // would be unrealistic as of the event-time monotonicity guard
+            // (Option C of the write-race design doc): this event's
+            // `event_time` must be at or after the movement's (19:20) for
+            // its write to apply at all.
+            actual_timestamp: Some("2026-09-06T19:25:00Z".parse().unwrap()),
             variation_status: None,
             delay_minutes: None,
             dedup_key: "test-causality-cancellation-dedup".to_string(),

@@ -503,11 +503,43 @@ pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<Tra
 /// below now delegates to for the legacy per-subscription path.
 /// `event.tracked_train_id` is ignored here on purpose -- this function's
 /// entire point is to not require one.
+///
+/// **Event-time monotonicity guard on the `train_current_state` write.**
+/// This function is the one place `trust-consumer`'s live write path and
+/// `trust-backlog-consumer`'s `ingest_shared_movement` write path converge
+/// (see `crates/api/src/data/trust_event_backlog.rs`) -- both are
+/// independent, continuously-running processes that can write the same
+/// `trains_id` in either order, with no coordination between them. Without
+/// a guard, whichever process's `UPDATE` commits last always wins,
+/// regardless of which one actually carries the more recent real-world
+/// event -- a lagging writer's stale update can silently overwrite a
+/// fresher one. Full analysis, including why this is a real (not
+/// theoretical) production risk and why the guard lives here rather than
+/// in either caller:
+/// `docs/superpowers/specs/2026-09-07-shared-train-status-write-race-design.md`
+/// (Option C).
+///
+/// The mechanism is **event-time monotonicity, not wall-clock/commit
+/// order**: `event_time` below is `COALESCE(event.actual_timestamp,
+/// event.planned_timestamp)` -- the incoming event's own real-world
+/// timestamp, not `NOW()` (which `updated_at` already records, and which
+/// provides no protection at all since it always advances forward
+/// regardless of which writer produced it). The `ON CONFLICT DO UPDATE`'s
+/// `WHERE EXCLUDED.event_time >= train_current_state.event_time OR
+/// train_current_state.event_time IS NULL` clause makes the whole `UPDATE`
+/// a no-op whenever the incoming event is older than what's already
+/// stored, independent of commit order between the two writers -- so this
+/// is NOT dead code or a redundant restatement of the `ON CONFLICT` target;
+/// it is the actual fix. `event_time` is also written into `SET` (from
+/// `EXCLUDED.event_time`, guarded by the same `WHERE`) so it only ever
+/// advances in lock-step with the row it guards.
 pub async fn upsert_train_movement(
     pool: &PgPool,
     trains_id: i64,
     event: &TrainMovementEventMessage,
 ) -> anyhow::Result<()> {
+    let event_time = event.actual_timestamp.or(event.planned_timestamp);
+
     sqlx::query(
         "INSERT INTO train_movement_events \
             (trains_id, dedup_key, msg_type, event_type, loc_stanox, loc_crs, \
@@ -531,8 +563,8 @@ pub async fn upsert_train_movement(
     sqlx::query(
         "INSERT INTO train_current_state \
             (trains_id, status, last_reported_location, last_event_type, \
-             delay_minutes, next_calling_point, eta_next, eta_source, updated_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) \
+             delay_minutes, next_calling_point, eta_next, eta_source, event_time, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()) \
          ON CONFLICT (trains_id) WHERE trains_id IS NOT NULL DO UPDATE SET \
             status                  = EXCLUDED.status, \
             last_reported_location  = EXCLUDED.last_reported_location, \
@@ -541,7 +573,10 @@ pub async fn upsert_train_movement(
             next_calling_point       = EXCLUDED.next_calling_point, \
             eta_next                 = EXCLUDED.eta_next, \
             eta_source               = EXCLUDED.eta_source, \
-            updated_at               = NOW()",
+            event_time               = EXCLUDED.event_time, \
+            updated_at               = NOW() \
+         WHERE EXCLUDED.event_time >= train_current_state.event_time \
+            OR train_current_state.event_time IS NULL",
     )
     .bind(trains_id)
     .bind(&event.status)
@@ -551,6 +586,7 @@ pub async fn upsert_train_movement(
     .bind(&event.next_calling_point)
     .bind(event.eta_next)
     .bind(&event.eta_source)
+    .bind(event_time)
     .execute(pool)
     .await?;
 
@@ -2684,6 +2720,243 @@ mod db_tests {
             "current-state upsert must still apply the second call's fresher values"
         );
         assert_eq!(last_reported_location, Some("CLJ".to_string()));
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    // --- Option C: event-time monotonicity guard, see
+    // docs/superpowers/specs/2026-09-07-shared-train-status-write-race-design.md
+    // -----------------------------------------------------------------------
+
+    /// The direct discriminating proof for the guard `upsert_train_movement`'s
+    /// own doc comment describes: `trust-consumer` and `trust-backlog-consumer`
+    /// both call this same function for the same `trains_id`, with no
+    /// coordination between them, so an OLDER event can genuinely reach
+    /// Postgres AFTER a NEWER one already wrote the row (one process lagging
+    /// behind the other -- see the design doc's §2). Before the `WHERE
+    /// EXCLUDED.event_time >= train_current_state.event_time OR
+    /// train_current_state.event_time IS NULL` guard existed, this second,
+    /// commit-order-later call would blindly win and regress the row back to
+    /// stale data; this test proves it no longer does, on
+    /// `status`/`last_reported_location`/`delay_minutes`/`event_time` alike.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                an_out_of_order_event_does_not_regress_current_state \
+                -- --ignored --test-threads=1`"]
+    async fn an_out_of_order_event_does_not_regress_current_state() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "OUT-OF-ORDER-UID", service_date)
+                .await
+                .expect("find_or_create_train");
+
+        let newer_event = TrainMovementEventMessage {
+            tracked_train_id: 0,
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: "test-out-of-order-newer-dedup".to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("ARRIVAL".to_string()),
+            loc_stanox: Some("87212".to_string()),
+            loc_crs: Some("MKC".to_string()),
+            planned_timestamp: Some("2026-09-06T19:45:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T19:45:00Z".parse().unwrap()),
+            variation_status: Some("ON TIME".to_string()),
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("MKC".to_string()),
+            last_event_type: Some("ARRIVAL".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: Some("BHM".to_string()),
+            eta_next: None,
+            eta_source: None,
+        };
+        upsert_train_movement(&pool, trains_id, &newer_event)
+            .await
+            .expect("the newer event's own write must succeed");
+
+        // An OLDER event (an earlier actual_timestamp), arriving SECOND --
+        // e.g. a lagging trust-consumer catching up on a Movement
+        // trust-backlog-consumer's own faster path already superseded.
+        let older_event = TrainMovementEventMessage {
+            tracked_train_id: 0,
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: "test-out-of-order-older-dedup".to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            loc_stanox: Some("72410".to_string()),
+            loc_crs: Some("EUS".to_string()),
+            planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            variation_status: Some("LATE".to_string()),
+            raw_body: serde_json::json!({}),
+            status: "cancelled".to_string(),
+            last_reported_location: Some("EUS".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(99),
+            next_calling_point: Some("CRE".to_string()),
+            eta_next: None,
+            eta_source: None,
+        };
+        upsert_train_movement(&pool, trains_id, &older_event)
+            .await
+            .expect("the older event's call must succeed (a guarded no-op is not an error)");
+
+        let (status, last_reported_location, delay_minutes, event_time): (
+            String,
+            Option<String>,
+            Option<i32>,
+            Option<DateTime<Utc>>,
+        ) = sqlx::query_as(
+            "SELECT status, last_reported_location, delay_minutes, event_time \
+             FROM train_current_state WHERE trains_id = $1",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back current-state row");
+
+        assert_eq!(
+            status, "en_route",
+            "the older event's status must not have overwritten the newer event's"
+        );
+        assert_eq!(
+            last_reported_location,
+            Some("MKC".to_string()),
+            "the older event's location must not have overwritten the newer event's"
+        );
+        assert_eq!(
+            delay_minutes,
+            Some(0),
+            "the older event's delay_minutes must not have overwritten the newer event's"
+        );
+        assert_eq!(
+            event_time,
+            Some("2026-09-06T19:45:00Z".parse::<DateTime<Utc>>().unwrap()),
+            "event_time itself must still reflect the newer event, not have regressed either"
+        );
+
+        // Also directly verify the movement-event ROWS themselves both
+        // landed -- the guard is scoped to the train_current_state upsert
+        // only, never to train_movement_events' own append-only insert.
+        let movement_events_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM train_movement_events WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count train_movement_events");
+        assert_eq!(
+            movement_events_count, 2,
+            "both events' own movement-event rows must still be recorded regardless of the \
+             current-state guard"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// Same-shape companion to the out-of-order test above, proving the new
+    /// guard does NOT interfere with the existing, expected in-order case:
+    /// each call carries a `event_time` newer than (or equal to) the last,
+    /// so every call's write must still apply normally, exactly as before
+    /// this guard existed.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                in_order_events_still_update_current_state_normally \
+                -- --ignored --test-threads=1`"]
+    async fn in_order_events_still_update_current_state_normally() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "IN-ORDER-UID", service_date)
+                .await
+                .expect("find_or_create_train");
+
+        let first_event = TrainMovementEventMessage {
+            tracked_train_id: 0,
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: "test-in-order-first-dedup".to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("DEPARTURE".to_string()),
+            loc_stanox: Some("72410".to_string()),
+            loc_crs: Some("EUS".to_string()),
+            planned_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T19:15:00Z".parse().unwrap()),
+            variation_status: Some("ON TIME".to_string()),
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("EUS".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(0),
+            next_calling_point: Some("MKC".to_string()),
+            eta_next: None,
+            eta_source: None,
+        };
+        upsert_train_movement(&pool, trains_id, &first_event)
+            .await
+            .expect("first, in-order event must succeed");
+
+        // A genuinely NEWER event, arriving second -- the ordinary,
+        // overwhelmingly common case this guard must not disturb.
+        let second_event = TrainMovementEventMessage {
+            tracked_train_id: 0,
+            resolved_train_uid: None,
+            resolved_train_id: None,
+            dedup_key: "test-in-order-second-dedup".to_string(),
+            msg_type: "0003".to_string(),
+            event_type: Some("ARRIVAL".to_string()),
+            loc_stanox: Some("87212".to_string()),
+            loc_crs: Some("MKC".to_string()),
+            planned_timestamp: Some("2026-09-06T19:45:00Z".parse().unwrap()),
+            actual_timestamp: Some("2026-09-06T19:45:00Z".parse().unwrap()),
+            variation_status: Some("LATE".to_string()),
+            raw_body: serde_json::json!({}),
+            status: "en_route".to_string(),
+            last_reported_location: Some("MKC".to_string()),
+            last_event_type: Some("ARRIVAL".to_string()),
+            delay_minutes: Some(3),
+            next_calling_point: Some("BHM".to_string()),
+            eta_next: None,
+            eta_source: None,
+        };
+        upsert_train_movement(&pool, trains_id, &second_event)
+            .await
+            .expect("second, newer event must succeed");
+
+        let (status, last_reported_location, delay_minutes, event_time): (
+            String,
+            Option<String>,
+            Option<i32>,
+            Option<DateTime<Utc>>,
+        ) = sqlx::query_as(
+            "SELECT status, last_reported_location, delay_minutes, event_time \
+             FROM train_current_state WHERE trains_id = $1",
+        )
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read back current-state row");
+
+        assert_eq!(
+            status, "en_route",
+            "the in-order case is unaffected by the new guard"
+        );
+        assert_eq!(last_reported_location, Some("MKC".to_string()));
+        assert_eq!(delay_minutes, Some(3));
+        assert_eq!(
+            event_time,
+            Some("2026-09-06T19:45:00Z".parse::<DateTime<Utc>>().unwrap())
+        );
 
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
