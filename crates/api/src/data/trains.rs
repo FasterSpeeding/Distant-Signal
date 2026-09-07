@@ -4,6 +4,8 @@
 //! path in this plan funnels through -- Step B's own one-off backfill uses
 //! the exact same `ON CONFLICT ... DO UPDATE ... RETURNING id` shape.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
@@ -28,6 +30,48 @@ pub async fn find_or_create_train(
     .fetch_one(pool)
     .await?;
     Ok(row.0)
+}
+
+/// Batch-shaped sibling of [`find_or_create_train`] -- one multi-row
+/// `INSERT ... SELECT * FROM UNNEST(...) ... ON CONFLICT DO UPDATE
+/// ... RETURNING` covering every DISTINCT `(train_uid, service_date)` pair
+/// in `pairs`, instead of one single-row `INSERT` per pair. `DO UPDATE`
+/// (never `DO NOTHING`) is what makes every input pair come back in the
+/// `RETURNING` set even when it already existed, exactly like the
+/// single-row version -- callers can rely on the returned map having
+/// exactly one entry per element of `pairs` (never fewer).
+///
+/// `pairs` MUST already be deduplicated by the caller: passing the same
+/// `(train_uid, service_date)` pair twice in one call is a caller bug,
+/// not something this function guards against -- `ingest_shared_movement`'s
+/// whole reason for calling this at all is to have already collapsed a
+/// batch's repeated identities down to their distinct pairs before this
+/// point.
+pub async fn find_or_create_trains_batch(
+    pool: &PgPool,
+    pairs: &[(String, NaiveDate)],
+) -> anyhow::Result<HashMap<(String, NaiveDate), i64>> {
+    if pairs.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let train_uids: Vec<&str> = pairs.iter().map(|(uid, _)| uid.as_str()).collect();
+    let service_dates: Vec<NaiveDate> = pairs.iter().map(|(_, date)| *date).collect();
+
+    let rows: Vec<(String, NaiveDate, i64)> = sqlx::query_as(
+        "INSERT INTO trains (train_uid, service_date) \
+         SELECT * FROM UNNEST($1::text[], $2::date[]) \
+         ON CONFLICT (train_uid, service_date) DO UPDATE SET train_uid = EXCLUDED.train_uid \
+         RETURNING train_uid, service_date, id",
+    )
+    .bind(&train_uids)
+    .bind(&service_dates)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(train_uid, service_date, id)| ((train_uid, service_date), id))
+        .collect())
 }
 
 /// Same idempotent shape as [`find_or_create_train`], but also mirrors a
@@ -90,6 +134,42 @@ pub async fn mark_train_resolved(
         .bind(train_id)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+/// Batch-shaped sibling of [`mark_train_resolved`] -- one `UPDATE ...
+/// FROM UNNEST(...)` covering every `(trains_id, train_id)` pair in
+/// `pairs`, instead of one single-row `UPDATE` per pair.
+///
+/// `pairs` MUST carry at most one entry per `trains_id` (the caller's
+/// responsibility, same as [`find_or_create_trains_batch`]'s dedup
+/// contract) -- if a batch has more than one event resolving to the same
+/// `trains_id`, the caller must already have collapsed those down to the
+/// LAST one in event order, matching what a sequential loop of
+/// [`mark_train_resolved`] calls would leave behind (each call plainly
+/// overwrites `train_id`, so only the final call's value survives).
+pub async fn mark_trains_resolved_batch(
+    pool: &PgPool,
+    pairs: &[(i64, String)],
+) -> anyhow::Result<()> {
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    let trains_ids: Vec<i64> = pairs.iter().map(|(id, _)| *id).collect();
+    let train_ids: Vec<&str> = pairs
+        .iter()
+        .map(|(_, train_id)| train_id.as_str())
+        .collect();
+
+    sqlx::query(
+        "UPDATE trains AS t SET train_id = u.train_id, resolved_at = NOW() \
+         FROM UNNEST($1::bigint[], $2::text[]) AS u(trains_id, train_id) \
+         WHERE t.id = u.trains_id",
+    )
+    .bind(&trains_ids)
+    .bind(&train_ids)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -233,6 +313,93 @@ mod db_tests {
         );
 
         sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-TRAINS-UID-1'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                find_or_create_trains_batch_dedups_and_resolves_every_distinct_pair \
+                -- --ignored"]
+    async fn find_or_create_trains_batch_dedups_and_resolves_every_distinct_pair() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+
+        // Seed one of the two identities up front, so this also proves the
+        // batched call resolves a PRE-EXISTING row via its ON CONFLICT
+        // branch, not just fresh inserts.
+        let pre_existing = find_or_create_train(&pool, "TEST-TRAINS-BATCH-UID-1", service_date)
+            .await
+            .expect("seed one identity");
+
+        let pairs = vec![
+            ("TEST-TRAINS-BATCH-UID-1".to_string(), service_date),
+            ("TEST-TRAINS-BATCH-UID-2".to_string(), service_date),
+        ];
+        let map = find_or_create_trains_batch(&pool, &pairs)
+            .await
+            .expect("find_or_create_trains_batch");
+
+        assert_eq!(map.len(), 2, "one entry per distinct pair");
+        assert_eq!(
+            map[&("TEST-TRAINS-BATCH-UID-1".to_string(), service_date)],
+            pre_existing,
+            "a pre-existing identity must resolve to its EXISTING id, not a new row"
+        );
+        let second_id = map[&("TEST-TRAINS-BATCH-UID-2".to_string(), service_date)];
+        assert_ne!(second_id, pre_existing);
+
+        sqlx::query("DELETE FROM trains WHERE train_uid IN ($1, $2)")
+            .bind("TEST-TRAINS-BATCH-UID-1")
+            .bind("TEST-TRAINS-BATCH-UID-2")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                mark_trains_resolved_batch_sets_train_id_for_every_pair -- --ignored"]
+    async fn mark_trains_resolved_batch_sets_train_id_for_every_pair() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let id_1 = find_or_create_train(&pool, "TEST-TRAINS-BATCH-RESOLVE-1", service_date)
+            .await
+            .expect("find_or_create_train");
+        let id_2 = find_or_create_train(&pool, "TEST-TRAINS-BATCH-RESOLVE-2", service_date)
+            .await
+            .expect("find_or_create_train");
+
+        mark_trains_resolved_batch(
+            &pool,
+            &[
+                (id_1, "221800001".to_string()),
+                (id_2, "221800002".to_string()),
+            ],
+        )
+        .await
+        .expect("mark_trains_resolved_batch");
+
+        let (train_id_1,): (Option<String>,) =
+            sqlx::query_as("SELECT train_id FROM trains WHERE id = $1")
+                .bind(id_1)
+                .fetch_one(&pool)
+                .await
+                .expect("read back trains row 1");
+        assert_eq!(train_id_1, Some("221800001".to_string()));
+
+        let (train_id_2,): (Option<String>,) =
+            sqlx::query_as("SELECT train_id FROM trains WHERE id = $1")
+                .bind(id_2)
+                .fetch_one(&pool)
+                .await
+                .expect("read back trains row 2");
+        assert_eq!(train_id_2, Some("221800002".to_string()));
+
+        sqlx::query("DELETE FROM trains WHERE id IN ($1, $2)")
+            .bind(id_1)
+            .bind(id_2)
             .execute(&pool)
             .await
             .ok();

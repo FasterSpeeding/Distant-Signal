@@ -277,15 +277,18 @@ async fn post_trust_event_backlog(
             .map_err(internal_error)?;
 
     // Additional, parallel write onto the shared trains/train_movement_events/
-    // train_current_state tables -- see ingest_shared_movement's own doc
-    // comment. A per-event failure here is logged and skipped, never
+    // train_current_state tables -- see ingest_shared_movements_batch's own
+    // doc comment (in particular, why this can safely call the whole
+    // batch through in one shot rather than looping call-per-event the way
+    // this used to). A per-event failure here is logged and skipped, never
     // propagated: this route's own contract (backlog archival) must not
     // start failing because of a problem in the newer, separate shared-store
     // write path.
-    for event in &events {
-        if let Err(err) =
-            crate::data::trust_event_backlog::ingest_shared_movement(&app.database, event).await
-        {
+    let shared_movement_results =
+        crate::data::trust_event_backlog::ingest_shared_movements_batch(&app.database, &events)
+            .await;
+    for (event, result) in events.iter().zip(shared_movement_results) {
+        if let Err(err) = result {
             tracing::warn!(error = ?err, train_id = %event.train_id, "failed to ingest shared movement");
         }
     }
