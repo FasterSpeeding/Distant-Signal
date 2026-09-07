@@ -1224,13 +1224,13 @@ mod db_tests {
         // would just be silent, unbounded fixture-data accumulation.
         sqlx::query(
             "DELETE FROM trains WHERE id IN \
-                (SELECT trains_id FROM tracked_trains WHERE user_id = $1 AND trains_id IS NOT NULL)",
+                (SELECT trains_id FROM train_subscriptions WHERE user_id = $1 AND trains_id IS NOT NULL)",
         )
         .bind(user_id)
         .execute(pool)
         .await
         .expect("cleanup fixture trains rows");
-        sqlx::query("DELETE FROM tracked_trains WHERE user_id = $1")
+        sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1")
             .bind(user_id)
             .execute(pool)
             .await
@@ -1299,7 +1299,7 @@ mod db_tests {
             None => None,
         };
         let (id,): (i64,) = sqlx::query_as(
-            "INSERT INTO tracked_trains \
+            "INSERT INTO train_subscriptions \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs, \
                  resolution_status, trains_id) \
              VALUES ($1, $2, $3, $4, $5, $6, $7) \
@@ -2705,7 +2705,7 @@ mod db_tests {
             Option<chrono::DateTime<chrono::Utc>>,
         ) = sqlx::query_as(
             "SELECT trains_id, resolution_status, pin_origin_crs, pin_scheduled_departure \
-             FROM tracked_trains WHERE id = $1",
+             FROM train_subscriptions WHERE id = $1",
         )
         .bind(tracking_id)
         .fetch_one(&pool)
@@ -2770,7 +2770,7 @@ mod db_tests {
             Option<String>,
             Option<chrono::DateTime<chrono::Utc>>,
         ) = sqlx::query_as(
-            "SELECT trains_id, pin_origin_crs, pin_scheduled_departure FROM tracked_trains \
+            "SELECT trains_id, pin_origin_crs, pin_scheduled_departure FROM train_subscriptions \
              WHERE id = $1",
         )
         .bind(tracking_id)
@@ -2833,7 +2833,7 @@ mod db_tests {
         );
 
         let (row_count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM tracked_trains WHERE id IN ($1, $2)",
+            "SELECT COUNT(*) FROM train_subscriptions WHERE id IN ($1, $2)",
         )
         .bind(first_tracking_id)
         .bind(second_tracking_id)
@@ -2892,7 +2892,7 @@ mod db_tests {
         );
 
         let (rejected_row_count,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM tracked_trains WHERE user_id = $1")
+            sqlx::query_as("SELECT COUNT(*) FROM train_subscriptions WHERE user_id = $1")
                 .bind("TEST-LEGACY-VALIDATION-STILL-ENFORCED")
                 .fetch_one(&pool)
                 .await

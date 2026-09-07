@@ -82,7 +82,7 @@ pub async fn create_pin(
     user_id: &str,
 ) -> anyhow::Result<i64> {
     let row: (i64,) = sqlx::query_as(
-        "INSERT INTO tracked_trains \
+        "INSERT INTO train_subscriptions \
             (user_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs, pin_operator) \
          VALUES ($1, $2, $3, $4, $5, $6) \
          RETURNING id",
@@ -173,7 +173,7 @@ pub async fn create_subscription_for_train(
     user_id: &str,
 ) -> anyhow::Result<i64> {
     let row: (i64,) = sqlx::query_as(
-        "INSERT INTO tracked_trains \
+        "INSERT INTO train_subscriptions \
             (user_id, trains_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs) \
          SELECT $1, tr.id, tr.service_date, tr.origin_crs, tr.scheduled_departure, tr.destination_crs \
          FROM trains tr WHERE tr.id = $2 \
@@ -484,7 +484,7 @@ pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<Tra
     let rows = sqlx::query_as::<_, TrackedTrainRow>(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_scheduled_departure, \
                 tt.resolution_status, tr.train_uid, tr.train_id, tt.trains_id \
-         FROM tracked_trains tt \
+         FROM train_subscriptions tt \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
          WHERE tt.resolution_status != 'unresolved' \
@@ -603,7 +603,7 @@ async fn flip_legacy_resolution(
     resolved_train_id: &str,
 ) -> anyhow::Result<Option<i64>> {
     let row: Option<(Option<i64>, chrono::NaiveDate)> = sqlx::query_as(
-        "UPDATE tracked_trains SET resolution_status = 'resolved' \
+        "UPDATE train_subscriptions SET resolution_status = 'resolved' \
          WHERE id = $1 RETURNING trains_id, service_date",
     )
     .bind(tracked_train_id)
@@ -617,7 +617,7 @@ async fn flip_legacy_resolution(
         (Some(id), _) => Some(id),
         (None, Some(train_uid)) => {
             let id = crate::data::trains::find_or_create_train(pool, train_uid, service_date).await?;
-            sqlx::query("UPDATE tracked_trains SET trains_id = $2 WHERE id = $1")
+            sqlx::query("UPDATE train_subscriptions SET trains_id = $2 WHERE id = $1")
                 .bind(tracked_train_id)
                 .bind(id)
                 .execute(pool)
@@ -662,7 +662,7 @@ pub async fn upsert_train_event(
         Some(id) => Some(id),
         None => {
             sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT trains_id FROM tracked_trains WHERE id = $1",
+                "SELECT trains_id FROM train_subscriptions WHERE id = $1",
             )
             .bind(event.tracked_train_id)
             .fetch_optional(pool)
@@ -704,7 +704,7 @@ pub async fn apply_schedule_match(
     tracked_train_id: i64,
 ) -> anyhow::Result<bool> {
     let result = sqlx::query(
-        "UPDATE tracked_trains SET resolution_status = 'schedule_matched' \
+        "UPDATE train_subscriptions SET resolution_status = 'schedule_matched' \
          WHERE id = $1 AND trains_id IS NULL AND resolution_status = 'pending'",
     )
     .bind(tracked_train_id)
@@ -750,7 +750,7 @@ pub async fn list_pending_pins_for_schedule_match(
 ) -> anyhow::Result<Vec<PendingSchedulePin>> {
     let rows = sqlx::query_as::<_, PendingSchedulePin>(
         "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure \
-         FROM tracked_trains WHERE trains_id IS NULL AND resolution_status = 'pending'",
+         FROM train_subscriptions WHERE trains_id IS NULL AND resolution_status = 'pending'",
     )
     .fetch_all(pool)
     .await?;
@@ -849,7 +849,7 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
            cs.status, cs.last_reported_location, cs.last_event_type, \
            cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source, \
            tt.custom_name \
-    FROM tracked_trains tt \
+    FROM train_subscriptions tt \
     LEFT JOIN trains tr ON tr.id = tt.trains_id \
     LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
     LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
@@ -911,7 +911,7 @@ pub async fn list_tracked_trains_for_user(
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 tt.pin_scheduled_departure, tt.resolution_status, tr.train_uid, \
                 cs.status, cs.delay_minutes, tt.tracked_at, tt.custom_name \
-         FROM tracked_trains tt \
+         FROM train_subscriptions tt \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
          LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs) \
@@ -974,7 +974,7 @@ pub async fn get_by_uid_and_date(
 /// layer, same as every other ownership check in this file; the route
 /// handler maps `false` to `404`, never `403`).
 pub async fn delete_tracked_train(pool: &PgPool, id: i64, user_id: &str) -> anyhow::Result<bool> {
-    let result = sqlx::query("DELETE FROM tracked_trains WHERE id = $1 AND user_id = $2")
+    let result = sqlx::query("DELETE FROM train_subscriptions WHERE id = $1 AND user_id = $2")
         .bind(id)
         .bind(user_id)
         .execute(pool)
@@ -1003,7 +1003,7 @@ pub async fn rename_tracked_train(
     custom_name: Option<&str>,
 ) -> anyhow::Result<bool> {
     let result =
-        sqlx::query("UPDATE tracked_trains SET custom_name = $1 WHERE id = $2 AND user_id = $3")
+        sqlx::query("UPDATE train_subscriptions SET custom_name = $1 WHERE id = $2 AND user_id = $3")
             .bind(custom_name)
             .bind(id)
             .bind(user_id)
@@ -1095,7 +1095,7 @@ pub async fn tracked_train_owner(
     pool: &PgPool,
     tracking_id: i64,
 ) -> anyhow::Result<Option<String>> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT user_id FROM tracked_trains WHERE id = $1")
+    let row: Option<(String,)> = sqlx::query_as("SELECT user_id FROM train_subscriptions WHERE id = $1")
         .bind(tracking_id)
         .fetch_optional(pool)
         .await?;
@@ -1493,7 +1493,7 @@ pub async fn list_tickets_for_user(
                 tt.resolution_status, tr.train_uid, \
                 cs.status, cs.delay_minutes, t.custom_name \
          FROM tracked_train_tickets t \
-         LEFT JOIN tracked_trains tt ON tt.id = t.tracked_train_id \
+         LEFT JOIN train_subscriptions tt ON tt.id = t.tracked_train_id \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
          LEFT JOIN stations so ON so.crs = UPPER(t.origin_crs) \
@@ -1674,7 +1674,7 @@ mod db_tests {
             .execute(pool)
             .await
             .expect("cleanup fixture tickets");
-        sqlx::query("DELETE FROM tracked_trains WHERE user_id = $1")
+        sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1")
             .bind(user_id)
             .execute(pool)
             .await
@@ -1690,7 +1690,7 @@ mod db_tests {
     /// (`crates/api/migrations/20260828120000_train_tracking.sql:40-76`).
     async fn seed_tracked_train(pool: &PgPool, user_id: &str) -> i64 {
         let (id,): (i64,) = sqlx::query_as(
-            "INSERT INTO tracked_trains (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+            "INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
              VALUES ($1, $2, $3, $4) RETURNING id",
         )
         .bind(user_id)
@@ -1994,7 +1994,7 @@ mod db_tests {
 
         async fn seed_with_origin(pool: &PgPool, user_id: &str, origin_crs: &str) -> i64 {
             let (id,): (i64,) = sqlx::query_as(
-                "INSERT INTO tracked_trains (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+                "INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
                  VALUES ($1, $2, $3, $4) RETURNING id",
             )
             .bind(user_id)
@@ -2103,7 +2103,7 @@ mod db_tests {
             .await
             .expect("find_or_create_train for the schedule-matched identity");
         let (tracked_train_id,): (i64,) = sqlx::query_as(
-            "INSERT INTO tracked_trains \
+            "INSERT INTO train_subscriptions \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure, trains_id, resolution_status) \
              VALUES ($1, $2, $3, $4, $5, 'schedule_matched') RETURNING id",
         )
@@ -2239,7 +2239,7 @@ mod db_tests {
 
         let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
         let (tracked_train_id,): (i64,) = sqlx::query_as(
-            "INSERT INTO tracked_trains (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+            "INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
              VALUES ($1, $2, $3, $4) RETURNING id",
         )
         .bind(user_id)
@@ -2275,7 +2275,7 @@ mod db_tests {
         upsert_train_event(&pool, &event).await.expect("upsert_train_event");
 
         let (trains_id,): (Option<i64>,) =
-            sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
+            sqlx::query_as("SELECT trains_id FROM train_subscriptions WHERE id = $1")
                 .bind(tracked_train_id)
                 .fetch_one(&pool)
                 .await
@@ -2291,7 +2291,7 @@ mod db_tests {
         assert_eq!(train_uid, "TEST-LIVE-UID");
         assert_eq!(train_id, Some("221832406".to_string()));
 
-        sqlx::query("DELETE FROM tracked_trains WHERE user_id = $1").bind(user_id).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1").bind(user_id).execute(&pool).await.ok();
         sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-LIVE-UID'").execute(&pool).await.ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.ok();
     }
@@ -2350,7 +2350,7 @@ mod db_tests {
         assert_eq!(state.train_uid, None, "train_uid was never known, so it must stay NULL");
 
         let (trains_id,): (Option<i64>,) =
-            sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
+            sqlx::query_as("SELECT trains_id FROM train_subscriptions WHERE id = $1")
                 .bind(tracking_id)
                 .fetch_one(&pool)
                 .await
@@ -2597,7 +2597,7 @@ mod db_tests {
             .await
             .expect("find_or_create_train");
         let (tracked_train_id,): (i64,) = sqlx::query_as(
-            "INSERT INTO tracked_trains \
+            "INSERT INTO train_subscriptions \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure, trains_id, \
                  resolution_status) \
              VALUES ($1, $2, 'EUS', $3, $4, 'resolved') RETURNING id",
@@ -2624,7 +2624,7 @@ mod db_tests {
                 .expect("upsert_train_event must delegate to upsert_train_movement, keyed on trains_id");
         assert_eq!(status, "en_route");
 
-        sqlx::query("DELETE FROM tracked_trains WHERE id = $1").bind(tracked_train_id).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1").bind(tracked_train_id).execute(&pool).await.ok();
         sqlx::query("DELETE FROM trains WHERE id = $1").bind(trains_id).execute(&pool).await.ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.ok();
     }
@@ -2653,7 +2653,7 @@ mod db_tests {
         .expect("find_or_create_train");
 
         let (tracked_train_id,): (i64,) = sqlx::query_as(
-            "INSERT INTO tracked_trains \
+            "INSERT INTO train_subscriptions \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure, \
                  trains_id, resolution_status) \
              VALUES ($1, $2, 'WAT', $3, $4, 'resolved') \
@@ -2680,7 +2680,7 @@ mod db_tests {
             "trains_id must round-trip through list_active_tracked_trains, not be dropped"
         );
 
-        sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
             .bind(tracked_train_id)
             .execute(&pool)
             .await
@@ -2724,7 +2724,7 @@ mod db_tests {
             String,
             chrono::DateTime<chrono::Utc>,
         ) = sqlx::query_as(
-            "SELECT trains_id, pin_origin_crs, pin_scheduled_departure FROM tracked_trains \
+            "SELECT trains_id, pin_origin_crs, pin_scheduled_departure FROM train_subscriptions \
              WHERE id = $1",
         )
         .bind(tracking_id)
@@ -2735,7 +2735,7 @@ mod db_tests {
         assert_eq!(pin_origin_crs, "EUS");
         assert_eq!(pin_scheduled_departure, scheduled_departure);
 
-        sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
             .bind(tracking_id)
             .execute(&pool)
             .await
@@ -2782,7 +2782,7 @@ mod db_tests {
             Option<String>,
             Option<chrono::DateTime<chrono::Utc>>,
         ) = sqlx::query_as(
-            "SELECT trains_id, pin_origin_crs, pin_scheduled_departure FROM tracked_trains \
+            "SELECT trains_id, pin_origin_crs, pin_scheduled_departure FROM train_subscriptions \
              WHERE id = $1",
         )
         .bind(tracking_id)
@@ -2793,7 +2793,7 @@ mod db_tests {
         assert_eq!(pin_origin_crs, None, "no schedule match yet -> NULL pin, not a default");
         assert_eq!(pin_scheduled_departure, None);
 
-        sqlx::query("DELETE FROM tracked_trains WHERE id = $1")
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
             .bind(tracking_id)
             .execute(&pool)
             .await
@@ -2846,7 +2846,7 @@ mod db_tests {
         );
 
         let (row_count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM tracked_trains WHERE trains_id = $1 AND user_id = $2",
+            "SELECT COUNT(*) FROM train_subscriptions WHERE trains_id = $1 AND user_id = $2",
         )
         .bind(trains_id)
         .bind(user_id)
@@ -2855,7 +2855,7 @@ mod db_tests {
         .expect("count subscriptions for this (trains_id, user_id) pair");
         assert_eq!(row_count, 2, "both calls' rows must actually persist");
 
-        sqlx::query("DELETE FROM tracked_trains WHERE id IN ($1, $2)")
+        sqlx::query("DELETE FROM train_subscriptions WHERE id IN ($1, $2)")
             .bind(first_tracking_id)
             .bind(second_tracking_id)
             .execute(&pool)
@@ -2946,7 +2946,7 @@ mod db_tests {
         assert_eq!(first_ref.trains_id, Some(trains_id));
         assert_eq!(second_ref.trains_id, Some(trains_id));
 
-        sqlx::query("DELETE FROM tracked_trains WHERE id IN ($1, $2)")
+        sqlx::query("DELETE FROM train_subscriptions WHERE id IN ($1, $2)")
             .bind(first_tracking_id)
             .bind(second_tracking_id)
             .execute(&pool)
@@ -3016,7 +3016,7 @@ mod db_tests {
         );
 
         let (trains_id,): (Option<i64>,) =
-            sqlx::query_as("SELECT trains_id FROM tracked_trains WHERE id = $1")
+            sqlx::query_as("SELECT trains_id FROM train_subscriptions WHERE id = $1")
                 .bind(tracking_id)
                 .fetch_one(&pool)
                 .await
@@ -3094,14 +3094,14 @@ mod db_tests {
             );
 
         let (first_status, first_trains_id): (String, Option<i64>) = sqlx::query_as(
-            "SELECT resolution_status, trains_id FROM tracked_trains WHERE id = $1",
+            "SELECT resolution_status, trains_id FROM train_subscriptions WHERE id = $1",
         )
         .bind(first_tracking_id)
         .fetch_one(&pool)
         .await
         .expect("read back first subscriber's row");
         let (second_status, second_trains_id): (String, Option<i64>) = sqlx::query_as(
-            "SELECT resolution_status, trains_id FROM tracked_trains WHERE id = $1",
+            "SELECT resolution_status, trains_id FROM train_subscriptions WHERE id = $1",
         )
         .bind(second_tracking_id)
         .fetch_one(&pool)
