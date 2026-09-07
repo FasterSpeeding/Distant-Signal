@@ -2,15 +2,21 @@
 //! authenticated session (`AuthenticatedUser`, from
 //! docs/superpowers/plans/2026-08-28-user-accounts-sso.md's Task 6) --
 //! every tracked train has a real owner from birth, per that plan's
-//! coordination fix to this one. State *reads* (`get_by_tracking_id`,
-//! `get_by_uid_and_date`) originally stayed unauthenticated/unscoped per
-//! Task 5's note on why that wasn't a strict "everything private" posture
-//! -- since retrofitted to require the caller own the pin (see the
-//! 2026-08-31 private-custom-lines-and-tracked-trains plan's Task 8; same
-//! 404-for-both-"missing"-and-"not-yours" convention as every other
-//! ownership check in this app, never `403`). Mounted directly (not under
-//! `/public`) to match the design doc's sketched URL shape for the
-//! eventual frontend page.
+//! coordination fix to this one. State *reads*: `get_by_tracking_id` stays
+//! ownership-gated (see the 2026-08-31 private-custom-lines-and-tracked-trains
+//! plan's Task 8; same 404-for-both-"missing"-and-"not-yours" convention as
+//! every other ownership check in this app, never `403`).
+//! `get_by_uid_and_date`, by contrast, is now PUBLIC and UNSCOPED -- a real,
+//! reviewed API-contract change
+//! (docs/superpowers/specs/2026-09-06-shared-train-identity-design.md §4,
+//! implemented by this repo's shared-train-identity plan's Task 19): a
+//! train is a shared, real-world entity, and anyone can look up its
+//! schedule/live status by `(train_uid, date)`. It reads only the shared
+//! `trains`/`train_current_state` tables (`crate::data::trains::get_public_train_state`),
+//! never `tracked_trains`, so no caller can ever see another user's private
+//! per-subscription data (`custom_name`, tickets, notification state)
+//! through it. Mounted directly (not under `/public`) to match the design
+//! doc's sketched URL shape for the eventual frontend page.
 
 use axum::Json;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
@@ -622,35 +628,33 @@ async fn post_tracked_train_name(
     }))
 }
 
+/// `GET /Train/by-uid/{uid}/{date}` -- PUBLIC and UNSCOPED. This is a real,
+/// reviewed API-contract change
+/// (docs/superpowers/specs/2026-09-06-shared-train-identity-design.md §4):
+/// this route used to require `AuthenticatedUser` and 404 unless the
+/// caller's own `tracked_trains` row matched: "your own tracked trains
+/// only, 404 for anyone else's." As of this task it's "anyone can look up
+/// any known train" -- no `AuthenticatedUser` extractor, no ownership
+/// check, no `tracked_trains` table anywhere in this call path at all. It
+/// reads only the shared `trains`/`train_current_state` rows via
+/// `crate::data::trains::get_public_train_state`, whose own `PublicTrainState`
+/// return type structurally carries no `custom_name`/ticket/notification
+/// field -- there is nothing in this response shape that COULD leak another
+/// user's private per-subscription data, regardless of caller.
 async fn get_by_uid_and_date(
     State(app): State<App>,
-    user: AuthenticatedUser,
     Path((train_uid, date)): Path<(String, NaiveDate)>,
-) -> Result<Json<train_tracking::TrackedTrainState>, (StatusCode, String)> {
-    let state = train_tracking::get_by_uid_and_date(&app.database, &train_uid, date)
+) -> Result<Json<crate::data::trains::PublicTrainState>, (StatusCode, String)> {
+    let state = crate::data::trains::get_public_train_state(&app.database, &train_uid, date)
         .await
-        .map_err(internal_error("read tracked train state"))?;
-    let Some(state) = state else {
-        return Err((
+        .map_err(internal_error("read public train state"))?;
+    match state {
+        Some(state) => Ok(Json(state)),
+        None => Err((
             StatusCode::NOT_FOUND,
-            "no resolved tracked train for that uid/date".to_string(),
-        ));
-    };
-
-    match train_tracking::tracked_train_owner(&app.database, state.id)
-        .await
-        .map_err(internal_error("check tracked train ownership"))?
-    {
-        Some(owner) if owner == user.id => {}
-        _ => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                "no resolved tracked train for that uid/date".to_string(),
-            ));
-        }
+            "no known train for that uid/date".to_string(),
+        )),
     }
-
-    Ok(Json(blend_darwin_eta(&app, state).await))
 }
 
 /// Best-effort overlay: if a live Darwin/LDBWS departure board sample for
@@ -2369,39 +2373,101 @@ mod db_tests {
         cleanup_user(&pool, "TEST-TICKET-DELETE-CASCADE-READS").await;
     }
 
-    // --- get_by_uid_and_date -------------------------------------------------
+    // --- get_by_uid_and_date -- PUBLIC and UNSCOPED (Task 19) -----------------
+    //
+    // This route used to require `AuthenticatedUser` and 404 for anyone but
+    // the pin's own owner (see git history for the three tests this section
+    // replaces: `get_by_uid_and_date_no_session_is_401`,
+    // `get_by_uid_and_date_a_non_owner_session_gets_the_same_404_as_unresolved`,
+    // `get_by_uid_and_date_an_unresolved_pair_is_404_with_the_unchanged_message`
+    // -- their own 401-for-anonymous / 404-for-non-owner assertions describe
+    // exactly the ownership contract this task deliberately removes). It is
+    // now public: reads `trains` directly via
+    // `crate::data::trains::get_public_train_state`, with no
+    // `tracked_trains` ownership check anywhere in the call path.
 
-    #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
-                get_by_uid_and_date -- --ignored --test-threads=1`"]
-    async fn get_by_uid_and_date_no_session_is_401() {
-        let pool = connect().await;
-        seed_session(&pool, "TEST-UIDDATE-401-OWNER").await;
-        let service_date: chrono::NaiveDate = "2026-08-29".parse().unwrap();
-        seed_tracked_train(
-            &pool,
-            "TEST-UIDDATE-401-OWNER",
-            Some("B11111"),
-            service_date,
+    /// Seeds a `trains` row directly (no owning `tracked_trains` row at
+    /// all) with a linked `train_current_state` row, proving this route
+    /// works for a train nobody has ever subscribed to -- the core claim of
+    /// "trains are shared entities" this task exists to enable. Returns the
+    /// new `trains.id`.
+    async fn seed_public_train(
+        pool: &PgPool,
+        train_uid: &str,
+        service_date: chrono::NaiveDate,
+    ) -> i64 {
+        let trains_id = crate::data::trains::find_or_create_train(pool, train_uid, service_date)
+            .await
+            .expect("find_or_create_train for fixture");
+        crate::data::trains::mark_train_resolved(pool, trains_id, "1A23")
+            .await
+            .expect("mark_train_resolved for fixture");
+        sqlx::query(
+            "INSERT INTO train_current_state \
+                (trains_id, status, last_reported_location, last_event_type, delay_minutes, \
+                 next_calling_point, updated_at) \
+             VALUES ($1, 'en_route', 'York', 'DEPARTURE', 12, 'Newcastle', NOW())",
         )
-        .await;
+        .bind(trains_id)
+        .execute(pool)
+        .await
+        .expect("insert fixture train_current_state row");
+        trains_id
+    }
 
-        let router = test_router(test_app(pool.clone()));
-        let (status, body) =
-            request(router, format!("/Train/by-uid/B11111/{service_date}"), None).await;
-
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-        assert_eq!(body, Value::String("no session".to_string()));
-
-        cleanup_user(&pool, "TEST-UIDDATE-401-OWNER").await;
+    async fn cleanup_public_train(pool: &PgPool, train_uid: &str) {
+        sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(pool)
+            .await
+            .ok();
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
-                get_by_uid_and_date -- --ignored --test-threads=1`"]
-    async fn get_by_uid_and_date_a_non_owner_session_gets_the_same_404_as_unresolved() {
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_is_public_and_unscoped -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_is_public_and_unscoped() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id = seed_public_train(&pool, "TEST-PUBLIC-BY-UID", service_date).await;
+
+        let router = test_router(test_app(pool.clone()));
+
+        // No Authorization header/session cookie at all -- this must
+        // succeed, not 401. No `tracked_trains` row of any kind exists for
+        // this train either -- this must succeed, not 404.
+        let (status, body) = request(
+            router,
+            format!("/Train/by-uid/TEST-PUBLIC-BY-UID/{service_date}"),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
+        assert_eq!(body.get("id").and_then(Value::as_i64), Some(trains_id));
+        assert_eq!(
+            body.get("trainUid").and_then(Value::as_str),
+            Some("TEST-PUBLIC-BY-UID")
+        );
+        assert_eq!(
+            body.get("lastReportedLocation").and_then(Value::as_str),
+            Some("York")
+        );
+        assert_eq!(body.get("delayMinutes").and_then(Value::as_i64), Some(12));
+
+        cleanup_public_train(&pool, "TEST-PUBLIC-BY-UID").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_a_session_cookie_does_not_gate_a_train_owned_by_someone_else \
+                -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_a_session_cookie_does_not_gate_a_train_owned_by_someone_else() {
+        // Inverts what this route used to assert: a caller who is logged
+        // in, but is NOT the subscriber who tracked this train, used to get
+        // the same 404 as "unknown". Now there's no ownership concept in
+        // this call path at all -- any authenticated (or anonymous) caller
+        // sees the same public row.
         let pool = connect().await;
         seed_session(&pool, "TEST-UIDDATE-OWNER").await;
         let other_token = seed_session(&pool, "TEST-UIDDATE-OTHER").await;
@@ -2416,10 +2482,10 @@ mod db_tests {
         )
         .await;
 
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(status, StatusCode::OK, "response: {body:?}");
         assert_eq!(
-            body,
-            Value::String("no resolved tracked train for that uid/date".to_string())
+            body.get("trainUid").and_then(Value::as_str),
+            Some("B22222")
         );
 
         cleanup_user(&pool, "TEST-UIDDATE-OWNER").await;
@@ -2427,72 +2493,104 @@ mod db_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
-                get_by_uid_and_date -- --ignored --test-threads=1`"]
-    async fn get_by_uid_and_date_an_unresolved_pair_is_404_with_the_unchanged_message() {
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_an_unknown_pair_is_404 -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_an_unknown_pair_is_404() {
         let pool = connect().await;
-        let token = seed_session(&pool, "TEST-UIDDATE-NOTFOUND").await;
 
         let router = test_router(test_app(pool.clone()));
+        // No session cookie at all -- must still 404, not 401: an unknown
+        // identity is a real "not found", independent of who's asking.
         let (status, body) = request(
             router,
             "/Train/by-uid/NOSUCHUID/2026-08-29".to_string(),
-            Some(&token),
+            None,
         )
         .await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(
             body,
-            Value::String("no resolved tracked train for that uid/date".to_string())
+            Value::String("no known train for that uid/date".to_string())
         );
-
-        cleanup_user(&pool, "TEST-UIDDATE-NOTFOUND").await;
     }
 
+    /// The security-critical test for this task: seeds a `tracked_trains`
+    /// row with a real subscriber's own private `custom_name`, linked (via
+    /// `trains_id`) to the exact same shared `trains` row the public route
+    /// reads. Proves that an anonymous caller -- and separately, a
+    /// different, authenticated user -- reading that train's public state
+    /// never sees that subscriber's `customName` (or any other
+    /// per-subscription field) anywhere in the response, no matter what
+    /// `tracked_trains` holds for it.
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
-                get_by_uid_and_date -- --ignored --test-threads=1`"]
-    async fn get_by_uid_and_date_the_owner_gets_full_state_with_the_darwin_overlay_applied() {
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_never_exposes_another_users_custom_name \
+                -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_never_exposes_another_users_custom_name() {
         let pool = connect().await;
-        let owner_token = seed_session(&pool, "TEST-UIDDATE-REAL-OWNER").await;
-        let service_date: chrono::NaiveDate = "2026-08-29".parse().unwrap();
+        seed_session(&pool, "TEST-UIDDATE-PRIVACY-OWNER").await;
+        let other_token = seed_session(&pool, "TEST-UIDDATE-PRIVACY-OTHER").await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
         let tracking_id = seed_tracked_train(
             &pool,
-            "TEST-UIDDATE-REAL-OWNER",
-            Some("B33333"),
+            "TEST-UIDDATE-PRIVACY-OWNER",
+            Some("B44444"),
             service_date,
         )
         .await;
-        seed_station_sample(&pool, "KGX", "EDB", "13:45").await;
+
+        // Give the owner's own subscription a private custom name -- this
+        // must never appear in the public route's response, to anyone.
+        let renamed = crate::data::train_tracking::rename_tracked_train(
+            &pool,
+            tracking_id,
+            "TEST-UIDDATE-PRIVACY-OWNER",
+            Some("My secret commute nickname"),
+        )
+        .await
+        .expect("set fixture custom_name");
+        assert!(renamed, "rename must succeed for the real owner");
 
         let router = test_router(test_app(pool.clone()));
-        let (status, body) = request(
-            router,
-            format!("/Train/by-uid/B33333/{service_date}"),
-            Some(&owner_token),
+
+        // Case 1: fully anonymous caller.
+        let (status, anon_body) = request(
+            router.clone(),
+            format!("/Train/by-uid/B44444/{service_date}"),
+            None,
         )
         .await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body.get("id").and_then(Value::as_i64), Some(tracking_id));
-        assert_eq!(body.get("trainUid").and_then(Value::as_str), Some("B33333"));
-        assert_eq!(
-            body.get("lastReportedLocation").and_then(Value::as_str),
-            Some("York")
-        );
-        assert_eq!(
-            body.get("etaSource").and_then(Value::as_str),
-            Some("darwin-estimated")
-        );
+        assert_eq!(status, StatusCode::OK, "response: {anon_body:?}");
         assert!(
-            body.get("etaNext").and_then(Value::as_str).is_some(),
-            "etaNext should be populated by the overlay: {body:?}"
+            anon_body.get("customName").is_none(),
+            "public response must never carry a customName field at all: {anon_body:?}"
+        );
+        let anon_raw = serde_json::to_string(&anon_body).unwrap();
+        assert!(
+            !anon_raw.contains("secret commute nickname"),
+            "the owner's private custom_name text leaked into the public response: {anon_raw}"
         );
 
-        cleanup_station_sample(&pool, "KGX").await;
-        cleanup_user(&pool, "TEST-UIDDATE-REAL-OWNER").await;
+        // Case 2: a different, authenticated user (not the owner).
+        let (status, other_body) = request(
+            router,
+            format!("/Train/by-uid/B44444/{service_date}"),
+            Some(&other_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {other_body:?}");
+        assert!(
+            other_body.get("customName").is_none(),
+            "public response must never carry a customName field at all: {other_body:?}"
+        );
+        let other_raw = serde_json::to_string(&other_body).unwrap();
+        assert!(
+            !other_raw.contains("secret commute nickname"),
+            "the owner's private custom_name text leaked into another user's response: {other_raw}"
+        );
+
+        cleanup_user(&pool, "TEST-UIDDATE-PRIVACY-OWNER").await;
+        cleanup_user(&pool, "TEST-UIDDATE-PRIVACY-OTHER").await;
     }
 }

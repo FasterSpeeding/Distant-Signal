@@ -5,6 +5,7 @@
 //! the exact same `ON CONFLICT ... DO UPDATE ... RETURNING id` shape.
 
 use chrono::{DateTime, NaiveDate, Utc};
+use serde::Serialize;
 use sqlx::PgPool;
 
 /// Finds or creates the `trains` row for `(train_uid, service_date)`,
@@ -120,6 +121,68 @@ pub async fn backfill_trains_id_for_resolved_rows(pool: &PgPool) -> anyhow::Resu
         }
     }
     Ok(())
+}
+
+/// The public, unscoped read-model for `GET /Train/by-uid/{uid}/{date}`
+/// (docs/superpowers/specs/2026-09-06-shared-train-identity-design.md §4).
+/// Unlike `train_tracking::TrackedTrainState` (which this route used to
+/// return), this carries no `custom_name`/pin fields at all -- those are
+/// per-subscriber private data with no place on a shared, public row.
+/// Darwin ETA blending (`crate::data::eta_blend`, wired into the legacy
+/// `TrackedTrainState` read paths) is deliberately NOT applied here --
+/// that helper operates on `TrackedTrainState`'s own pin-shaped input;
+/// wiring it into this new public shape is left as a fast-follow, not
+/// part of this task's own scope (only the ownership-check removal).
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicTrainState {
+    pub id: i64,
+    pub train_uid: String,
+    pub service_date: NaiveDate,
+    pub origin_crs: Option<String>,
+    pub origin_name: Option<String>,
+    pub destination_crs: Option<String>,
+    pub destination_name: Option<String>,
+    pub scheduled_departure: Option<DateTime<Utc>>,
+    pub calling_points: Option<serde_json::Value>,
+    pub train_id: Option<String>,
+    pub status: Option<String>,
+    pub last_reported_location: Option<String>,
+    pub last_event_type: Option<String>,
+    pub delay_minutes: Option<i32>,
+    pub next_calling_point: Option<String>,
+    pub eta_next: Option<DateTime<Utc>>,
+    pub eta_source: Option<String>,
+}
+
+/// Public, unscoped read for `(train_uid, service_date)` -- no
+/// `AuthenticatedUser`/ownership check anywhere in this call path. Reads
+/// `trains` directly (joined with the re-pointed `train_current_state` via
+/// `trains_id`, Task 9/11/14), never touches `tracked_trains` at all, so
+/// there is no code path here that could reach a subscriber's own
+/// `custom_name`/ticket/notification data.
+pub async fn get_public_train_state(
+    pool: &PgPool,
+    train_uid: &str,
+    service_date: NaiveDate,
+) -> anyhow::Result<Option<PublicTrainState>> {
+    let row = sqlx::query_as::<_, PublicTrainState>(
+        "SELECT tr.id, tr.train_uid, tr.service_date, tr.origin_crs, so.name AS origin_name, \
+                tr.destination_crs, sd.name AS destination_name, tr.scheduled_departure, \
+                tr.calling_points, tr.train_id, \
+                cs.status, cs.last_reported_location, cs.last_event_type, cs.delay_minutes, \
+                cs.next_calling_point, cs.eta_next, cs.eta_source \
+         FROM trains tr \
+         LEFT JOIN train_current_state cs ON cs.trains_id = tr.id \
+         LEFT JOIN stations so ON so.crs = UPPER(tr.origin_crs) \
+         LEFT JOIN stations sd ON sd.crs = UPPER(tr.destination_crs) \
+         WHERE tr.train_uid = $1 AND tr.service_date = $2",
+    )
+    .bind(train_uid)
+    .bind(service_date)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
 }
 
 #[cfg(test)]
@@ -370,6 +433,79 @@ mod db_tests {
             .ok();
         sqlx::query("DELETE FROM users WHERE id = $1")
             .bind(user_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_public_train_state_returns_none_for_no_matching_row -- --ignored"]
+    async fn get_public_train_state_returns_none_for_no_matching_row() {
+        let pool = connect().await;
+        let result = get_public_train_state(&pool, "NOSUCHUID", "2026-09-06".parse().unwrap())
+            .await
+            .expect("get_public_train_state");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_public_train_state_reads_the_shared_row_and_its_current_state -- --ignored"]
+    async fn get_public_train_state_reads_the_shared_row_and_its_current_state() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+        let scheduled_departure: chrono::DateTime<chrono::Utc> =
+            "2026-09-06T12:00:00Z".parse().unwrap();
+        let calling_points = serde_json::json!(["EUS", "MKC"]);
+
+        let trains_id = find_or_create_train_with_schedule_match(
+            &pool,
+            "TEST-PUBLIC-STATE-UID",
+            service_date,
+            "EUS",
+            scheduled_departure,
+            Some("MKC"),
+            "line-a",
+            &calling_points,
+        )
+        .await
+        .expect("seed a trains row via schedule match");
+        mark_train_resolved(&pool, trains_id, "1A23")
+            .await
+            .expect("mark_train_resolved");
+
+        sqlx::query(
+            "INSERT INTO train_current_state \
+                (trains_id, status, last_reported_location, last_event_type, delay_minutes, \
+                 next_calling_point, updated_at) \
+             VALUES ($1, 'en_route', 'Watford Junction', 'DEPARTURE', 4, 'MKC', NOW())",
+        )
+        .bind(trains_id)
+        .execute(&pool)
+        .await
+        .expect("seed fixture train_current_state row");
+
+        let state = get_public_train_state(&pool, "TEST-PUBLIC-STATE-UID", service_date)
+            .await
+            .expect("get_public_train_state")
+            .expect("row should be found");
+
+        assert_eq!(state.id, trains_id);
+        assert_eq!(state.train_uid, "TEST-PUBLIC-STATE-UID");
+        assert_eq!(state.origin_crs, Some("EUS".to_string()));
+        assert_eq!(state.destination_crs, Some("MKC".to_string()));
+        assert_eq!(state.train_id, Some("1A23".to_string()));
+        assert_eq!(state.status, Some("en_route".to_string()));
+        assert_eq!(
+            state.last_reported_location,
+            Some("Watford Junction".to_string())
+        );
+        assert_eq!(state.delay_minutes, Some(4));
+        assert_eq!(state.next_calling_point, Some("MKC".to_string()));
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
             .execute(&pool)
             .await
             .ok();
