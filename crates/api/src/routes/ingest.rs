@@ -453,7 +453,7 @@ async fn post_schedule_network_departures(
 /// `crates/schedule-reference`'s per-DELIVERY batch of CIF-derived
 /// per-DESTINATION departures -- the destination-keyed sibling of
 /// `post_schedule_network_departures` directly above, and the write side of
-/// the destination-first train search
+/// the calling-point-first train search
 /// (docs/superpowers/specs/2026-09-07-train-listing-page-design.md,
 /// Approach B, as revised by
 /// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md,
@@ -1255,14 +1255,16 @@ mod db_tests {
                 "destination_crs": "ZRB",
                 "scheduled": "08:22:00",
                 "train_uid": "C10001",
-                "origin_crs": "EUS"
+                "origin_crs": "EUS",
+                "true_origin_crs": "PAD"
             },
             {
                 "service_date": "2099-02-01",
                 "destination_crs": "ZRB",
                 "scheduled": "10:05:00",
                 "train_uid": "C10002",
-                "origin_crs": "CRE"
+                "origin_crs": "CRE",
+                "true_origin_crs": null
             }
         ]);
         let response = router
@@ -1284,15 +1286,16 @@ mod db_tests {
         let json: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
         assert_eq!(json["upserted"], 2);
 
-        let stored: Vec<(String, chrono::NaiveTime, String, String)> = sqlx::query_as(
-            "SELECT destination_crs, scheduled, train_uid, origin_crs \
+        let stored: Vec<(String, chrono::NaiveTime, String, String, Option<String>)> =
+            sqlx::query_as(
+                "SELECT destination_crs, scheduled, train_uid, origin_crs, true_origin_crs \
              FROM schedule_destination_departures \
              WHERE service_date = '2099-02-01' \
              ORDER BY scheduled",
-        )
-        .fetch_all(&pool)
-        .await
-        .expect("read back the upserted rows");
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("read back the upserted rows");
 
         assert_eq!(stored.len(), 2, "one stored row per posted departure");
         assert_eq!(stored[0].0, "ZRB");
@@ -1302,8 +1305,10 @@ mod db_tests {
         );
         assert_eq!(stored[0].2, "C10001");
         assert_eq!(stored[0].3, "EUS");
+        assert_eq!(stored[0].4, Some("PAD".to_string()));
         assert_eq!(stored[1].2, "C10002");
         assert_eq!(stored[1].3, "CRE");
+        assert_eq!(stored[1].4, None);
 
         delete_destination_departures_fixture(&pool, "2099-02-01").await;
     }

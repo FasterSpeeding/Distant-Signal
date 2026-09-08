@@ -1,7 +1,9 @@
-//! `GET /public/trains/search` -- destination-first, whole-network,
-//! CIF-SCHEDULE-derived train search. Backs the `/trains` listing page
-//! (docs/superpowers/specs/2026-09-07-train-listing-page-design.md,
-//! Approach B).
+//! `GET /public/trains/search` -- calling-point-first, whole-network,
+//! CIF-SCHEDULE-derived train search. Backs the `/trains` listing page.
+//! Generalizes the earlier destination-first search
+//! (docs/superpowers/specs/2026-09-07-train-listing-page-design.md) into a
+//! calling-point-first one -- see
+//! docs/superpowers/specs/2026-09-08-calling-point-train-search-design.md.
 //!
 //! Named `trains` (plural), deliberately distinct from this crate's
 //! `routes::train` (singular), which serves the authenticated, per-train
@@ -10,35 +12,31 @@
 //! that one.
 //!
 //! Reads `schedule_destination_departures` directly
-//! (`queries::search_schedule_destination_departures`) as a bounded index
-//! range scan with a keyset cursor. This is a publish-then-poll read of a
-//! table `schedule-reference` writes when a CIF delivery lands -- never a
-//! synchronous call into that service, per the design doc's §6.
+//! (`queries::search_schedule_calling_point_departures`) as a bounded index
+//! range scan (over `schedule_destination_departures_calling_point_idx`)
+//! with a keyset cursor. This is a publish-then-poll read of a table
+//! `schedule-reference` writes when a CIF delivery lands -- never a
+//! synchronous call into that service.
 //!
-//! **v1 filter set, and why it stops here.** `destination` is required;
-//! `origin` and the `from`/`to` time range are optional. There is
-//! deliberately NO operator filter: the CIF SCHEDULE feed's operator field
-//! is parsed-but-undecoded everywhere in this codebase, so a CIF-derived row
-//! has no operator to filter on at all (design doc §1.3/§6). There is
-//! deliberately NO date parameter: like `get_station_schedule_departures`,
-//! this is "always today, server-side" (design doc §6).
+//! **v1 filter set, and why it stops here.** `station` (any calling
+//! point -- boarding or alighting) is required; `origin` (the schedule's
+//! TRUE first calling point) and `destination` (the schedule's TRUE final
+//! calling point) are both optional, independent filters, along with the
+//! `from`/`to` time range. There is deliberately NO operator filter: the
+//! CIF SCHEDULE feed's operator field is parsed-but-undecoded everywhere in
+//! this codebase, so a CIF-derived row has no operator to filter on at all.
+//! There is deliberately NO date parameter: like
+//! `get_station_schedule_departures`, this is "always today, server-side".
 //!
 //! **This route owns the `now`-forward boundary**, which is the whole point
 //! of the storage shape behind it. The publish stores the entire rail day
-//! uncapped (`crates/schedule-reference`'s
-//! `publish_schedule_destination_departures` passes `NaiveTime::MIN`),
-//! because it fires once per CIF delivery -- roughly daily -- so a
-//! publish-time filter would freeze at whatever the clock read when the
+//! uncapped, because it fires once per CIF delivery -- roughly daily -- so
+//! a publish-time filter would freeze at whatever the clock read when the
 //! delivery landed. Evaluating `now` here means a search at 18:00 is
-//! correct at 18:00. See
-//! docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
-//! §1.3 and §3.
+//! correct at 18:00.
 //!
 //! **Pagination is a keyset cursor, not an offset.** `limit` bounds one
-//! page; `after` carries the last row of the previous page. Both exist
-//! because there is no cap anywhere else in this pipeline: a busy
-//! destination genuinely has thousands of trains in a day, and the honest
-//! way to show them is a page at a time rather than a silent truncation.
+//! page; `after` carries the last row of the previous page.
 
 use axum::Json;
 use axum::extract::{Query, State};
@@ -50,60 +48,57 @@ use serde_json::{Value, json};
 
 use crate::app::{App, Router};
 use crate::data::queries;
-use crate::data::queries::DestinationDepartureCursor;
-use crate::render::destination_departure_json;
+use crate::data::queries::CallingPointDepartureCursor;
+use crate::render::calling_point_departure_json;
 
 /// Page size when the caller does not ask for one.
-///
-/// 50 rather than the old flat 100: this is now a PAGE, not the whole
-/// answer, so it is sized for a first screenful plus room to scroll, and
-/// "Load more" covers the rest at no extra cost (the next page is another
-/// `LIMIT`-bounded index range scan, not a re-scan).
 const DEFAULT_SEARCH_LIMIT: i64 = 50;
 
 /// Hard ceiling on one page, clamped server-side rather than rejected.
 ///
-/// **Why a ceiling exists at all,** now that nothing else in this pipeline
-/// caps anything: this is an unauthenticated, unmetered public route over a
-/// table with ~377,000 rows per day. Without a ceiling, `?limit=1000000`
-/// is a free full-table scan and a ~20MB response for any anonymous
-/// caller. 200 is four default pages -- generous for any real client,
-/// including one that wants to render a whole morning at once.
+/// This is an unauthenticated, unmetered public route over a table with
+/// ~377,000 rows per day. Without a ceiling, `?limit=1000000` is a free
+/// full-table scan and a large response for any anonymous caller. 200 is
+/// four default pages -- generous for any real client.
 ///
-/// **Why clamp rather than 400:** an over-large `limit` is not a malformed
-/// input, it is an over-eager one, and the honest answer is "here are 200,
-/// with a cursor for the rest" rather than an error. That is the opposite
-/// call from `normalize_time`/`normalize_crs`, which DO 400 -- because
-/// there, silently dropping a filter would return MORE rows than the caller
-/// asked for, whereas clamping a limit only ever returns fewer, with a
-/// cursor saying so. A `limit` that is zero, negative or unparseable IS
-/// malformed and does 400.
+/// An over-large `limit` is clamped, not rejected -- the honest answer is
+/// "here are 200, with a cursor for the rest." A `limit` that is zero,
+/// negative or unparseable IS malformed and does 400.
+///
+/// That's an asymmetry with `from`, `to`, `destination`, `origin` and
+/// `station`, which all 400 on a bad value instead of silently ignoring it:
+/// clamping `limit` can only ever return FEWER rows than the caller asked
+/// for, and it's still a safe, honest answer because there's a cursor for
+/// the rest. Silently dropping a malformed filter like `destination` would
+/// do the opposite -- it would return MORE rows than the caller asked for,
+/// under a filter the caller thinks is still applied. That reads as a
+/// broken search, not a rejected input, so those fields 400 instead of
+/// clamping or ignoring.
 const MAX_SEARCH_LIMIT: i64 = 200;
 
 #[derive(Debug, Deserialize)]
 struct TrainSearchParams {
-    /// Required. A 3-letter CRS code; the search is keyed on it.
-    destination: String,
-    /// Optional. Matches the calling point a train departs FROM, which for
-    /// a mid-route result is an intermediate station, not the schedule's
-    /// own first station -- see `schedule_query::DestinationDeparture`'s
-    /// own doc comment.
+    /// Required. A 3-letter CRS code; the search is keyed on ANY station a
+    /// train calls at -- boarding or alighting, including where it starts
+    /// or ends -- not just where it departs from or terminates.
+    station: String,
+    /// Optional. Filters to schedules whose TRUE origin (their first
+    /// calling point) is this CRS -- NOT "any calling point along the
+    /// route", which is what `station` above already answers. See
+    /// `schedule_query::DestinationDeparture`'s own doc comment for the
+    /// `origin_crs`-vs-`true_origin_crs` distinction this filters on.
     origin: Option<String>,
+    /// Optional. Filters to schedules whose TRUE destination (their final
+    /// calling point) is this CRS.
+    destination: Option<String>,
     /// Optional, `"HH:MM"`, inclusive lower bound on scheduled departure.
-    /// Narrows the `now`-forward window; it can never widen it backwards
-    /// (a train that has already departed is not a search result).
+    /// Narrows the `now`-forward window; it can never widen it backwards.
     from: Option<String>,
     /// Optional, `"HH:MM"`, inclusive upper bound.
     to: Option<String>,
     /// Optional page size, 1..=`MAX_SEARCH_LIMIT`, defaulting to
     /// `DEFAULT_SEARCH_LIMIT`. Values above the maximum are clamped, not
     /// rejected; zero, negative and unparseable values are a `400`.
-    ///
-    /// Typed `Option<String>` rather than `Option<i64>` deliberately: with
-    /// `Option<i64>`, `?limit=abc` fails inside axum's `Query` extractor
-    /// and produces its generic deserialization error, which names neither
-    /// the field nor the expectation. Parsing it here keeps every 400 on
-    /// this route self-describing, exactly as `from`/`to` already are.
     limit: Option<String>,
     /// Optional opaque keyset cursor from a previous response's
     /// `nextCursor`. See `decode_cursor`.
@@ -114,14 +109,7 @@ pub fn router() -> Router {
     Router::new().route("/trains/search", axum::routing::get(get_trains_search))
 }
 
-/// Parses a caller-supplied `"HH:MM"` into a real `NaiveTime`, which is
-/// what the query now compares against a real `TIME` column. (Under the
-/// JSONB bucket this returned a `"HH:MM:SS"` string for a lexicographic
-/// comparison; there is no text comparison left to line up with.)
-///
-/// `Err` (a 400) rather than silently ignoring an unparseable value: a
-/// dropped filter would return MORE trains than asked for, which reads as a
-/// broken search rather than a rejected input.
+/// Parses a caller-supplied `"HH:MM"` into a real `NaiveTime`.
 fn normalize_time(label: &str, raw: &str) -> Result<chrono::NaiveTime, (StatusCode, String)> {
     chrono::NaiveTime::parse_from_str(raw, "%H:%M").map_err(|_| {
         (
@@ -131,10 +119,7 @@ fn normalize_time(label: &str, raw: &str) -> Result<chrono::NaiveTime, (StatusCo
     })
 }
 
-/// Validates and uppercases a CRS code. Rejecting rather than passing a
-/// malformed value through matters here because a non-CRS `destination`
-/// would otherwise be reported as an ordinary empty result, which
-/// misreports a caller error as a data gap.
+/// Validates and uppercases a CRS code.
 fn normalize_crs(label: &str, raw: &str) -> Result<String, (StatusCode, String)> {
     let trimmed = raw.trim();
     if trimmed.len() != 3 || !trimmed.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -146,10 +131,7 @@ fn normalize_crs(label: &str, raw: &str) -> Result<String, (StatusCode, String)>
     Ok(trimmed.to_ascii_uppercase())
 }
 
-/// Parses and bounds the page size. Over-large values are CLAMPED to
-/// `MAX_SEARCH_LIMIT`; zero, negative and unparseable values are a `400`.
-/// See `MAX_SEARCH_LIMIT`'s own doc comment for why those two inputs are
-/// treated differently.
+/// Parses and bounds the page size.
 fn normalize_limit(raw: Option<&str>) -> Result<i64, (StatusCode, String)> {
     let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(DEFAULT_SEARCH_LIMIT);
@@ -170,40 +152,26 @@ fn normalize_limit(raw: Option<&str>) -> Result<i64, (StatusCode, String)> {
 }
 
 /// Renders a keyset cursor for the wire: base64url-without-padding of
-/// `"HH:MM:SS|train_uid|origin_crs"`.
+/// `"HH:MM:SS|train_uid"`. Two parts, not three: `origin_crs` (the station
+/// being searched) is now the fixed equality filter for the whole query,
+/// not a value that varies within one page, so it carries no ordering
+/// information and doesn't belong in the cursor.
 ///
-/// Base64 makes the value visibly OPAQUE. That is the point of encoding it
-/// at all -- the three components are the trailing columns of
-/// `schedule_destination_departures`' primary key, an internal detail that
-/// must stay free to change, and a bare readable string invites a client to
-/// build one by hand and depend on it. It is not a security measure and
-/// deliberately is not signed: the cursor names a public timetable row on
-/// an unauthenticated route, so tampering can only reposition a reader
-/// within data they may already read in full.
-///
-/// `URL_SAFE_NO_PAD` is this crate's established engine
-/// (`crates/api/src/auth.rs:122-123`), and needs no percent-encoding in a
-/// query string.
-fn encode_cursor(cursor: &DestinationDepartureCursor) -> String {
+/// Base64 makes the value visibly OPAQUE, matching this crate's established
+/// posture for other cursors in this codebase. Not signed: the cursor names
+/// a public timetable row on an unauthenticated route.
+fn encode_cursor(cursor: &CallingPointDepartureCursor) -> String {
     URL_SAFE_NO_PAD.encode(format!(
-        "{}|{}|{}",
+        "{}|{}",
         cursor.scheduled.format("%H:%M:%S"),
-        cursor.train_uid,
-        cursor.origin_crs
+        cursor.train_uid
     ))
 }
 
-/// Inverse of `encode_cursor`. A malformed cursor is a `400`, never a
-/// silently-ignored one: ignoring it would restart the caller at page 1
-/// while their UI appended the result as page 2, duplicating every row on
-/// screen. That is the same reasoning `normalize_time` gives for rejecting
-/// an unparseable time rather than dropping the filter.
-///
-/// `train_uid` and `origin_crs` are passed through as-is rather than
-/// validated further: they are compared for ordering only, so a nonsense
-/// value yields an empty page rather than anything unsafe, and the query is
-/// parameterized.
-fn decode_cursor(raw: &str) -> Result<DestinationDepartureCursor, (StatusCode, String)> {
+/// Inverse of `encode_cursor`. A malformed cursor is a `400`, never
+/// silently ignored -- ignoring it would restart the caller at page 1
+/// while their UI appended the result as page 2, duplicating every row.
+fn decode_cursor(raw: &str) -> Result<CallingPointDepartureCursor, (StatusCode, String)> {
     let invalid = || {
         (
             StatusCode::BAD_REQUEST,
@@ -213,15 +181,14 @@ fn decode_cursor(raw: &str) -> Result<DestinationDepartureCursor, (StatusCode, S
     let bytes = URL_SAFE_NO_PAD.decode(raw).map_err(|_| invalid())?;
     let decoded = String::from_utf8(bytes).map_err(|_| invalid())?;
     let parts: Vec<&str> = decoded.split('|').collect();
-    let [scheduled, train_uid, origin_crs] = parts.as_slice() else {
+    let [scheduled, train_uid] = parts.as_slice() else {
         return Err(invalid());
     };
     let scheduled =
         chrono::NaiveTime::parse_from_str(scheduled, "%H:%M:%S").map_err(|_| invalid())?;
-    Ok(DestinationDepartureCursor {
+    Ok(CallingPointDepartureCursor {
         scheduled,
         train_uid: (*train_uid).to_string(),
-        origin_crs: (*origin_crs).to_string(),
     })
 }
 
@@ -229,12 +196,18 @@ async fn get_trains_search(
     State(app): State<App>,
     Query(params): Query<TrainSearchParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let destination = normalize_crs("destination", &params.destination)?;
+    let station = normalize_crs("station", &params.station)?;
     let origin = params
         .origin
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(|s| normalize_crs("origin", s))
+        .transpose()?;
+    let destination = params
+        .destination
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| normalize_crs("destination", s))
         .transpose()?;
     let from_time = params
         .from
@@ -257,32 +230,12 @@ async fn get_trains_search(
         .transpose()?;
 
     // "Always today, server-side" -- no date parameter exists on this route
-    // by design (design doc §6). Same posture and same expression as
-    // `routes::departures::get_station_schedule_departures`.
-    //
-    // `today` and `now` are deliberately read from ONE
+    // by design. `today` and `now` are deliberately read from ONE
     // `Utc::now().with_timezone(...)` call rather than two independent
-    // `Utc::now()` calls (one truncated to a UTC date, the other converted
-    // to London time-of-day). Two independent reads can disagree about
-    // which calendar day it is: between 23:00-00:00 UTC in British Summer
-    // Time, a UTC-derived `today` is still YESTERDAY while a
-    // London-derived `now` has already wrapped past midnight to `00:xx`.
-    // The query would then become `service_date = yesterday AND scheduled
-    // >= 00:30`, which matches nearly all of yesterday's already-departed
-    // trains as "upcoming" while making today's early-morning trains
-    // unreachable. Deriving both from the same London-local reading keeps
-    // the "yesterday vs. today" boundary and the "before now vs. after
-    // now" boundary in agreement, because they are the same clock.
-    //
-    // Europe/London LOCAL time, not UTC, and that is load-bearing: the
-    // stored `scheduled` values are London local civil time straight off
-    // the CIF body (`schedule_query::DestinationDeparture::scheduled`'s own
-    // doc comment says so explicitly), so comparing a UTC time-of-day
-    // against them would be an hour wrong every British Summer Time.
-    // `chrono_tz` is already a direct dependency of this crate and
-    // `chrono_tz::Europe::London` is already used in
-    // `crate::data::eta_blend` for the same reason -- no new dependency,
-    // and no hardcoded offset.
+    // `Utc::now()` calls -- see this same reasoning's original writeup in
+    // this route's git history (baa4e75) for why two independent reads can
+    // disagree about which calendar day it is around the UTC/London
+    // midnight boundary during British Summer Time.
     let london_now = chrono::Utc::now().with_timezone(&chrono_tz::Europe::London);
     let today = london_now.date_naive();
     let now = london_now.time();
@@ -291,12 +244,13 @@ async fn get_trains_search(
         None => now,
     };
 
-    let Some(page) = queries::search_schedule_destination_departures(
+    let Some(page) = queries::search_schedule_calling_point_departures(
         &app.database,
-        &destination,
+        &station,
         today,
         scheduled_from,
         origin.as_deref(),
+        destination.as_deref(),
         to_time,
         after.as_ref(),
         limit,
@@ -304,27 +258,17 @@ async fn get_trains_search(
     .await
     .map_err(internal_error)?
     else {
-        // 404 vs an empty `results` array is a real distinction here, not
-        // pedantry -- but note WHICH distinction it now draws. Under the
-        // flat table the probe is day-scoped, so this 404 means "no CIF
-        // publish has landed for today at all", and an unknown or
-        // train-less destination CRS gets a `200` with no results instead.
-        // See the addendum's §3 and §7 item 3, and Task 5's Interfaces
-        // block. The frontend renders different copy for each.
         return Err((
             StatusCode::NOT_FOUND,
             "no CIF-derived schedule data has been published for today".to_string(),
         ));
     };
 
-    // An envelope, not a bare array, because a bare array has nowhere to
-    // carry `nextCursor`. camelCase and hand-built with `json!()`, like
-    // every other response in this crate.
     Ok(Json(json!({
         "results": page
             .departures
             .iter()
-            .map(|row| destination_departure_json(row, &destination))
+            .map(|row| calling_point_departure_json(row, &station))
             .collect::<Vec<Value>>(),
         "nextCursor": page.next_cursor.as_ref().map(encode_cursor),
     })))
@@ -351,11 +295,6 @@ mod db_tests {
     use crate::auth::oidc::{OidcClient, OidcConfig};
     use crate::data::config::{LineCatalogue, ServiceArguments};
 
-    /// Copied from `routes::departures::db_tests::test_app`, per that
-    /// module's own doc comment ("colocated per-file rather than shared,
-    /// until a third file needs it too"). Every field is an inert
-    /// placeholder except `database`, which the caller supplies -- this
-    /// route touches nothing else on `App`.
     fn test_app(pool: PgPool) -> App {
         let config = ServiceArguments {
             bind_url: "0.0.0.0:0".to_string(),
@@ -424,10 +363,6 @@ mod db_tests {
             .expect("connect to postgres")
     }
 
-    /// Day-scoped, because the route's own existence probe is. Under the
-    /// flat table there is no per-destination row to delete, and leaving
-    /// another destination's rows behind for today would make the 404 test
-    /// silently pass through to a `200`.
     async fn delete_today(pool: &PgPool) {
         sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
             .bind(chrono::Utc::now().date_naive())
@@ -436,29 +371,9 @@ mod db_tests {
             .expect("cleanup today's schedule_destination_departures rows");
     }
 
-    /// One time in the past and two strictly in the future, relative to the
-    /// route's own London-local `now`.
-    ///
-    /// Computed at runtime, deliberately. This route applies its
-    /// `now`-forward filter at REQUEST time -- that is the entire point of
-    /// the storage shape behind it -- so a fixed wall-clock fixture like
-    /// "08:22" would pass in the morning and silently return nothing in the
-    /// afternoon. Anything asserting on visible rows must therefore be
-    /// relative.
     fn relative_times() -> (chrono::NaiveTime, chrono::NaiveTime, chrono::NaiveTime) {
         use chrono::Timelike;
 
-        // Truncated to whole minutes. Real CIF SCHEDULE data is always an
-        // exact minute (no seconds/microseconds component), and everything
-        // this route round-trips through the wire is minute- or
-        // second-granularity text (`from`/`to` are "HH:MM", the cursor is
-        // "HH:MM:SS"). `chrono::Utc::now()` itself carries microseconds, so
-        // seeding a fixture row with the untruncated value would insert
-        // sub-second precision the route's own encodings can never
-        // preserve -- a fixture-only mismatch (the cursor's "%H:%M:%S"
-        // encoding silently drops it, then compares unequal to the
-        // original row) that can never occur against real published data.
-        // Truncating here keeps the fixture representative.
         let now = chrono::Utc::now()
             .with_timezone(&chrono_tz::Europe::London)
             .time();
@@ -475,29 +390,31 @@ mod db_tests {
         (past, soon, later)
     }
 
-    /// Seeds today with: one already-departed row (which the route must
-    /// hide), and two future rows from two different origins (which it must
-    /// show, earliest first). The flat-shape successor to the original
-    /// plan's two-element JSONB bucket.
-    async fn seed_today(pool: &PgPool, destination_crs: &str) {
+    /// Seeds today with rows all sharing ONE `origin_crs` (`station_crs`,
+    /// the new required search key) but varying `destination_crs` and
+    /// `true_origin_crs`, so the two optional filters can be exercised
+    /// independently of the fixed station. One already-departed row (which
+    /// the route must hide), and two future rows.
+    async fn seed_today(pool: &PgPool, station_crs: &str) {
         delete_today(pool).await;
         let today = chrono::Utc::now().date_naive();
         let (past, soon, later) = relative_times();
-        for (scheduled, train_uid, origin_crs) in [
-            (past, "C10000", "EUS"),
-            (soon, "C10001", "EUS"),
-            (later, "C10002", "CRE"),
+        for (scheduled, train_uid, destination_crs, true_origin_crs) in [
+            (past, "C10000", "WAT", Some("PAD")),
+            (soon, "C10001", "WAT", Some("PAD")),
+            (later, "C10002", "BRI", Some("SWA")),
         ] {
             sqlx::query(
                 "INSERT INTO schedule_destination_departures \
-                    (service_date, destination_crs, scheduled, train_uid, origin_crs) \
-                 VALUES ($1, $2, $3, $4, $5)",
+                    (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
             )
             .bind(today)
             .bind(destination_crs)
             .bind(scheduled)
             .bind(train_uid)
-            .bind(origin_crs)
+            .bind(station_crs)
+            .bind(true_origin_crs)
             .execute(pool)
             .await
             .expect("seed fixture row");
@@ -519,9 +436,6 @@ mod db_tests {
         (status, String::from_utf8(body.to_vec()).unwrap())
     }
 
-    /// `results` out of the envelope, asserting the envelope's own shape on
-    /// the way through so every test that reads rows also proves the body
-    /// is not a bare array.
     fn results(body: &str) -> Vec<Value> {
         let json: Value = serde_json::from_str(body).unwrap();
         assert!(
@@ -539,26 +453,24 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_missing_destination_is_a_400() {
+    async fn trains_search_missing_station_is_a_400() {
         let pool = connect().await;
         let (status, _) = get(&pool, "/trains/search").await;
         assert_eq!(
             status,
             StatusCode::BAD_REQUEST,
-            "destination is required -- axum's Query extractor rejects the missing field"
+            "station is required -- axum's Query extractor rejects the missing field"
         );
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_malformed_destination_is_a_400_not_a_404() {
-        // The discriminating case: a caller error must not be reported as
-        // a data gap.
+    async fn trains_search_malformed_station_is_a_400_not_a_404() {
         let pool = connect().await;
-        let (status, body) = get(&pool, "/trains/search?destination=NOTACRS").await;
+        let (status, body) = get(&pool, "/trains/search?station=NOTACRS").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("destination"), "400 body should name the field: {body}");
+        assert!(body.contains("station"), "400 body should name the field: {body}");
     }
 
     #[tokio::test]
@@ -566,7 +478,7 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_malformed_time_is_a_400() {
         let pool = connect().await;
-        let (status, body) = get(&pool, "/trains/search?destination=ZRB&from=half+past+eight").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB&from=half+past+eight").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("from"), "400 body should name the field: {body}");
     }
@@ -575,20 +487,14 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_malformed_after_cursor_is_a_400() {
-        // A malformed cursor must NOT be silently ignored: ignoring it
-        // restarts the caller at page 1 while their UI appends the result
-        // as page 2, duplicating every row on screen. Two shapes are
-        // checked -- not-base64 at all, and valid base64 whose payload has
-        // the wrong number of parts.
         let pool = connect().await;
         seed_today(&pool, "ZRB").await;
 
-        let (status, body) = get(&pool, "/trains/search?destination=ZRB&after=!!!not-base64!!!").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB&after=!!!not-base64!!!").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("after"), "400 body should name the field: {body}");
 
-        // base64url of "nonsense" -- decodes cleanly, but is not a cursor.
-        let (status, _) = get(&pool, "/trains/search?destination=ZRB&after=bm9uc2Vuc2U").await;
+        let (status, _) = get(&pool, "/trains/search?station=ZRB&after=bm9uc2Vuc2U").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
         delete_today(&pool).await;
@@ -598,19 +504,16 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_rejects_a_zero_or_unparseable_limit_but_clamps_an_over_large_one() {
-        // The asymmetry `MAX_SEARCH_LIMIT`'s doc comment argues, pinned:
-        // an over-large limit is over-eager (clamp, and say so with a
-        // cursor), a zero or unparseable one is malformed (400).
         let pool = connect().await;
         seed_today(&pool, "ZRB").await;
 
-        let (status, _) = get(&pool, "/trains/search?destination=ZRB&limit=0").await;
+        let (status, _) = get(&pool, "/trains/search?station=ZRB&limit=0").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        let (status, body) = get(&pool, "/trains/search?destination=ZRB&limit=lots").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB&limit=lots").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("limit"), "400 body should name the field: {body}");
 
-        let (status, body) = get(&pool, "/trains/search?destination=ZRB&limit=99999").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB&limit=99999").await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -625,36 +528,23 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_nothing_published_for_today_is_a_404() {
-        // NOTE the changed meaning of this 404, and the changed assertion
-        // that follows from it. Under the flat table the existence probe is
-        // scoped to the DAY, not the destination, so this says "no CIF
-        // publish has landed for today at all" and no longer names a CRS.
-        // The companion test below pins the other half of that split.
-        //
-        // This test needs today's table to be genuinely empty. Run it
-        // against the local docker-compose database, not one a real
-        // `schedule-reference` has published into.
         let pool = connect().await;
         delete_today(&pool).await;
-        let (status, body) = get(&pool, "/trains/search?destination=ZRB").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(
             body.contains("today"),
-            "the 404 is about today's publish, not about the destination: {body}"
+            "the 404 is about today's publish, not about the station: {body}"
         );
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_unknown_destination_on_a_published_day_is_200_and_empty() {
-        // The other half of the changed split, and the reason it is a
-        // deliberate call rather than an accident: once today's timetable
-        // IS published, "nothing goes to ZRF" is a real answer, not a
-        // missing one. Do not "restore" this to a 404.
+    async fn trains_search_unknown_station_on_a_published_day_is_200_and_empty() {
         let pool = connect().await;
         seed_today(&pool, "ZRB").await;
-        let (status, body) = get(&pool, "/trains/search?destination=ZRF").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRF").await;
         assert_eq!(status, StatusCode::OK);
         assert!(results(&body).is_empty());
         assert!(next_cursor(&body).is_none());
@@ -667,7 +557,7 @@ mod db_tests {
     async fn trains_search_published_day_with_no_matches_is_200_with_an_empty_results_array() {
         let pool = connect().await;
         seed_today(&pool, "ZRB").await;
-        let (status, body) = get(&pool, "/trains/search?destination=ZRB&origin=ZZZ").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB&origin=ZZZ").await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -681,10 +571,10 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_renders_camel_case_rows_with_trimmed_time_and_the_destination_attached() {
+    async fn trains_search_renders_camel_case_rows_with_trimmed_time_and_station_attached() {
         let pool = connect().await;
         seed_today(&pool, "ZRB").await;
-        let (status, body) = get(&pool, "/trains/search?destination=zrb").await;
+        let (status, body) = get(&pool, "/trains/search?station=zrb").await;
         assert_eq!(status, StatusCode::OK);
         let rows = results(&body);
         let (_, soon, _) = relative_times();
@@ -696,11 +586,12 @@ mod db_tests {
             soon.format("%H:%M").to_string(),
             "seconds trimmed"
         );
-        assert_eq!(rows[0]["originCrs"], "EUS");
         assert_eq!(
-            rows[0]["destinationCrs"], "ZRB",
+            rows[0]["stationCrs"], "ZRB",
             "the lowercase query param is normalized and re-attached uppercase"
         );
+        assert_eq!(rows[0]["originCrs"], "PAD");
+        assert_eq!(rows[0]["destinationCrs"], "WAT");
         assert!(rows[0].get("origin_crs").is_none(), "no stray snake_case field");
 
         delete_today(&pool).await;
@@ -710,12 +601,9 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_hides_a_departure_that_has_already_gone() {
-        // The `now`-forward filter, which now lives HERE rather than at
-        // publish time. The fixture's 00:00 row is published and matches
-        // every other predicate; it must not be returned.
         let pool = connect().await;
         seed_today(&pool, "ZRB").await;
-        let (status, body) = get(&pool, "/trains/search?destination=ZRB").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::OK);
         let rows = results(&body);
         let uids: Vec<&str> = rows.iter().map(|r| r["uid"].as_str().unwrap()).collect();
@@ -729,12 +617,12 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_applies_origin_and_time_filters_together() {
+    async fn trains_search_applies_origin_destination_and_time_filters_together() {
         let pool = connect().await;
         seed_today(&pool, "ZRB").await;
         let (_, soon, later) = relative_times();
         let uri = format!(
-            "/trains/search?destination=ZRB&origin=CRE&from={}&to={}",
+            "/trains/search?station=ZRB&origin=SWA&destination=BRI&from={}&to={}",
             soon.format("%H:%M"),
             later.format("%H:%M")
         );
@@ -749,18 +637,81 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_origin_and_destination_are_independent_of_each_other() {
+        // The load-bearing new-behavior test: origin=PAD alone must match
+        // BOTH rows below, even though they go to different destinations --
+        // proving `origin` doesn't silently also constrain `destination`.
+        // `seed_today` only has one future PAD-origin row, so a fixture
+        // built from it can't discriminate this: a one-row, one-destination
+        // result is equally consistent with `origin` secretly also fixing
+        // the destination. This test therefore seeds its own two-row,
+        // same-origin/different-destination fixture inline, rather than
+        // extending `seed_today` and disturbing the exact future-row counts
+        // several other tests assert against that shared fixture.
+        let pool = connect().await;
+        delete_today(&pool).await;
+        let today = chrono::Utc::now().date_naive();
+        let (_, soon, later) = relative_times();
+        for (scheduled, train_uid, destination_crs) in
+            [(soon, "C20001", "WAT"), (later, "C20002", "BRI")]
+        {
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                    (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(today)
+            .bind(destination_crs)
+            .bind(scheduled)
+            .bind(train_uid)
+            .bind("ZRB")
+            .bind(Some("PAD"))
+            .execute(&pool)
+            .await
+            .expect("seed fixture row");
+        }
+
+        let (status, body) = get(&pool, "/trains/search?station=ZRB&origin=PAD").await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = results(&body);
+        assert_eq!(
+            rows.len(),
+            2,
+            "both rows true-originate at PAD despite different destinations: {rows:?}"
+        );
+        let uids: std::collections::BTreeSet<&str> =
+            rows.iter().map(|row| row["uid"].as_str().unwrap()).collect();
+        assert_eq!(
+            uids,
+            std::collections::BTreeSet::from(["C20001", "C20002"]),
+            "both PAD-origin rows must come back regardless of their differing destinations"
+        );
+        let destinations: std::collections::BTreeSet<&str> = rows
+            .iter()
+            .map(|row| row["destinationCrs"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            destinations,
+            std::collections::BTreeSet::from(["WAT", "BRI"]),
+            "origin=PAD must not silently also constrain destination"
+        );
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_returns_a_null_next_cursor_when_the_page_is_the_last_one() {
         let pool = connect().await;
         seed_today(&pool, "ZRB").await;
-        let (status, body) = get(&pool, "/trains/search?destination=ZRB").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(results(&body).len(), 2);
         let json: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
             json["nextCursor"],
             Value::Null,
-            "nextCursor is explicit JSON null on the last page, never omitted -- the frontend \
-             checks it to decide whether to render Load more"
+            "nextCursor is explicit JSON null on the last page, never omitted"
         );
         delete_today(&pool).await;
     }
@@ -769,14 +720,10 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_paginates_with_a_cursor_and_after_continues_from_it() {
-        // The end-to-end pagination contract Task 10's "Load more" button
-        // depends on: page 1 returns a cursor, feeding that cursor back as
-        // `after` returns the NEXT row (not a repeat, not a restart), and
-        // the final page reports no cursor.
         let pool = connect().await;
         seed_today(&pool, "ZRB").await;
 
-        let (status, first) = get(&pool, "/trains/search?destination=ZRB&limit=1").await;
+        let (status, first) = get(&pool, "/trains/search?station=ZRB&limit=1").await;
         assert_eq!(status, StatusCode::OK);
         let first_rows = results(&first);
         assert_eq!(first_rows.len(), 1);
@@ -785,7 +732,7 @@ mod db_tests {
 
         let (status, second) = get(
             &pool,
-            &format!("/trains/search?destination=ZRB&limit=1&after={cursor}"),
+            &format!("/trains/search?station=ZRB&limit=1&after={cursor}"),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -803,12 +750,6 @@ mod db_tests {
         delete_today(&pool).await;
     }
 
-    /// Whether `Europe::London` is currently observing British Summer Time
-    /// (a nonzero UTC offset right now). Used only by the discriminating
-    /// test below, to decide whether its core assertion can actually
-    /// distinguish the correct London-local `now` from a regressed bare-UTC
-    /// `now` at the moment the test happens to run -- see that test's own
-    /// doc comment for why the distinction only exists during BST.
     fn london_is_currently_ahead_of_utc() -> bool {
         use chrono::Offset;
 
@@ -824,34 +765,6 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_hides_a_departure_inside_the_utc_vs_london_gap() {
-        // Pins the exact regression a code review proved untested: `now`
-        // MUST come from `Utc::now().with_timezone(&Europe::London)`, not
-        // from bare `Utc::now().time()` (see `get_trains_search`'s own
-        // comment on `london_now`/`today`/`now`, and this module's header).
-        // Every other fixture in this file (`relative_times()`) seeds rows
-        // 30/60 minutes either side of the CORRECT London-local `now`, which
-        // is far enough from the UTC/London boundary that a live
-        // revert-and-rerun of the whole `trains_search` suite during BST
-        // confirmed reverting to bare UTC changes NOTHING: all 13
-        // pre-existing tests still passed. This test seeds a row strictly
-        // INSIDE the gap between the two clocks instead, so a regression
-        // back to bare UTC flips this test's own verdict.
-        //
-        // During British Summer Time, `Europe::London` reads exactly one
-        // hour AHEAD of UTC, so bare-UTC `now` is always an hour BEHIND the
-        // correct `now`. A row scheduled 20 minutes before the correct `now`
-        // has therefore already departed under the correct boundary
-        // (excluded) but still reads as 40 minutes in the FUTURE under a
-        // buggy bare-UTC boundary (included) -- the opposite verdict.
-        //
-        // This can only discriminate while the test happens to run during
-        // BST: outside BST `Europe::London` and UTC agree and there is no
-        // gap to pin a fixture inside. The `#[ignore]`d wiring already means
-        // this test only runs on demand against a live database, never
-        // gating CI on the calendar, so gating the core assertion on
-        // `london_is_currently_ahead_of_utc()` is an honest no-op outside
-        // BST rather than a flaky pass/fail -- it only attempts (and can
-        // only fail) the discrimination when BST is actually in effect.
         let pool = connect().await;
         delete_today(&pool).await;
 
@@ -876,19 +789,20 @@ mod db_tests {
 
         sqlx::query(
             "INSERT INTO schedule_destination_departures \
-                (service_date, destination_crs, scheduled, train_uid, origin_crs) \
-             VALUES ($1, $2, $3, $4, $5)",
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(today)
-        .bind("ZRB")
+        .bind("WAT")
         .bind(gap_time)
         .bind("C10099")
-        .bind("EUS")
+        .bind("ZRB")
+        .bind(Option::<&str>::None)
         .execute(&pool)
         .await
         .expect("seed the gap-row fixture");
 
-        let (status, body) = get(&pool, "/trains/search?destination=ZRB").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
         assert_eq!(status, StatusCode::OK);
         let uids: Vec<String> = results(&body)
             .iter()
@@ -900,16 +814,17 @@ mod db_tests {
                 !uids.contains(&"C10099".to_string()),
                 "during BST, a row scheduled 20 minutes before the correct London-local `now` \
                  has already departed and must be excluded; if this fails, `now` has regressed \
-                 to bare UTC time (an hour early during BST), under which this row would still \
-                 read as upcoming: {uids:?}"
+                 to bare UTC time: {uids:?}"
             );
         } else {
             // Not currently observing BST: `Europe::London` and UTC agree
-            // right now, so there is no gap to pin this fixture inside, and
-            // reverting to bare UTC would compute the SAME `now` this test
-            // just ran against. The assertion above is skipped rather than
-            // faked; see the doc comment on this test for why that is
-            // honest rather than a gap in coverage.
+            // outside BST, so there is no gap between the two clocks to pin
+            // this fixture inside -- reverting the route to bare UTC would
+            // compute the exact same `now` this test just ran against, and
+            // the assertion above would pass either way. There is nothing
+            // this test COULD discriminate in that window, so skipping the
+            // core assertion here is a true no-op, not a flaky pass/fail or
+            // a silently-lost coverage gap.
         }
 
         delete_today(&pool).await;

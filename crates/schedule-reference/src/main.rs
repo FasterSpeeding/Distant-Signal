@@ -362,17 +362,19 @@ fn schedule_network_departures_rows(
 ///   docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
 ///   §1 and §3.
 /// * **No sort**, because ordering is the read side's job now:
-///   `queries::search_schedule_destination_departures`'s `ORDER BY
-///   scheduled, train_uid, origin_crs` rides the destination table's own
-///   primary key. Sorting ~377,000 rows here would be wasted work.
+///   `queries::search_schedule_calling_point_departures`'s `ORDER BY
+///   scheduled, train_uid` rides
+///   `schedule_destination_departures_calling_point_idx`. Sorting ~377,000
+///   rows here would be wasted work.
 /// * **One row per departure**, because the destination is no longer a
 ///   bucket key -- it is a column, and a filter predicate, on a flat table.
 ///
 /// `service_date` is emitted on every row, unlike the four-key sketch in
 /// the addendum's §3, because the ingest handler's first statement is a
 /// `DELETE ... WHERE service_date = $1` and `common::ingest::post_batch`
-/// posts a bare array with nowhere else to carry the day. Budget ~80 bytes
-/// per entry when sizing the POST, not ~55.
+/// posts a bare array with nowhere else to carry the day. Budget ~90 bytes
+/// per entry when sizing the POST (including the ~10-byte `true_origin_crs`
+/// field), not ~55 or ~80.
 fn schedule_destination_departures_rows(
     mut by_destination: std::collections::HashMap<
         String,
@@ -390,6 +392,7 @@ fn schedule_destination_departures_rows(
                     "scheduled": d.scheduled,
                     "train_uid": d.uid,
                     "origin_crs": d.origin_crs,
+                    "true_origin_crs": d.true_origin_crs,
                 })
             })
         })
@@ -722,11 +725,13 @@ mod poll_once_tests {
                     uid: "U1".to_string(),
                     origin_crs: "EUS".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(8, 22, 0).unwrap(),
+                    true_origin_crs: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "U1".to_string(),
                     origin_crs: "CRE".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(10, 5, 0).unwrap(),
+                    true_origin_crs: None,
                 },
             ],
         );
@@ -736,6 +741,7 @@ mod poll_once_tests {
                 uid: "U2".to_string(),
                 origin_crs: "KGX".to_string(),
                 scheduled: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+                true_origin_crs: None,
             }],
         );
 
@@ -759,8 +765,9 @@ mod poll_once_tests {
                 "scheduled": "09:00:00",
                 "train_uid": "U2",
                 "origin_crs": "KGX",
+                "true_origin_crs": null,
             }),
-            "exactly five keys, named exactly as the table's columns are"
+            "exactly six keys, named exactly as the table's columns are"
         );
 
         // The same UID appears twice under MAN, once per departure-bearing
@@ -788,6 +795,47 @@ mod poll_once_tests {
     }
 
     #[test]
+    fn schedule_destination_departures_rows_includes_the_true_origin_crs_field() {
+        let mut by_destination: std::collections::HashMap<String, Vec<schedule_query::DestinationDeparture>> =
+            std::collections::HashMap::new();
+        by_destination.insert(
+            "MAN".to_string(),
+            vec![
+                schedule_query::DestinationDeparture {
+                    uid: "C11052".to_string(),
+                    origin_crs: "EUS".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(8, 22, 0).unwrap(),
+                    true_origin_crs: Some("EUS".to_string()),
+                },
+                schedule_query::DestinationDeparture {
+                    uid: "C11052".to_string(),
+                    origin_crs: "CRE".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(10, 5, 0).unwrap(),
+                    true_origin_crs: None,
+                },
+            ],
+        );
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 8).unwrap();
+
+        let rows = schedule_destination_departures_rows(by_destination, today);
+
+        let eus_row = rows
+            .iter()
+            .find(|r| r["origin_crs"] == "EUS")
+            .expect("EUS row present");
+        assert_eq!(eus_row["true_origin_crs"], "EUS");
+
+        let cre_row = rows
+            .iter()
+            .find(|r| r["origin_crs"] == "CRE")
+            .expect("CRE row present");
+        assert!(
+            cre_row["true_origin_crs"].is_null(),
+            "a None true_origin_crs must serialize as JSON null, not be omitted"
+        );
+    }
+
+    #[test]
     fn schedule_destination_departures_rows_is_uncapped_and_keeps_every_entry_of_a_huge_bucket() {
         // Regression guard against a reintroduced cap. The real busiest
         // destination holds ~9,634 entries for one day
@@ -805,6 +853,7 @@ mod poll_once_tests {
                     0,
                 )
                 .unwrap(),
+                true_origin_crs: None,
             })
             .collect();
         by_destination.insert("WAT".to_string(), departures);
@@ -822,8 +871,9 @@ mod poll_once_tests {
     #[test]
     fn schedule_destination_departures_rows_does_not_sort_and_does_not_need_to() {
         // Explicitly records that ordering is NOT this function's job any
-        // more. The read route's ORDER BY rides the table's primary key
-        // (queries::search_schedule_destination_departures), so a
+        // more. The read route's `ORDER BY scheduled, train_uid` rides
+        // `schedule_destination_departures_calling_point_idx`
+        // (queries::search_schedule_calling_point_departures), so a
         // publish-side sort would be pure wasted work over ~377,000 rows.
         // This test asserts the function is a faithful, order-preserving
         // flatten of each bucket rather than asserting a sort it must not do.
@@ -835,11 +885,13 @@ mod poll_once_tests {
                     uid: "LATE".to_string(),
                     origin_crs: "EUS".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+                    true_origin_crs: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "EARLY".to_string(),
                     origin_crs: "EUS".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(1, 0, 0).unwrap(),
+                    true_origin_crs: None,
                 },
             ],
         );

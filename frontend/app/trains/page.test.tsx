@@ -16,42 +16,44 @@ vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
 
 describe('TrainsPage', () => {
   // `getByRole('combobox', { name: ... })` here (rather than
-  // `getByLabelText`) for both Autocomplete fields: Mantine's Autocomplete
+  // `getByLabelText`) for the Autocomplete fields: Mantine's Autocomplete
   // always renders its options listbox in the DOM with
   // `aria-labelledby` pointing at the field's own label, even while closed
   // -- so `getByLabelText` resolves to *two* elements sharing that label
-  // (the input and the listbox), not one. Destination is additionally
+  // (the input and the listbox), not one. Station is additionally
   // `required`, which makes Mantine's InputLabel append a real (if
   // aria-hidden) " *" text node to the label, so its exact label text is
-  // "Destination station *", not "Destination station" -- a second,
-  // independent reason `getByLabelText('Destination station')` can't be
-  // used as-is. The accessible name computation behind role queries
-  // excludes aria-hidden content per the ARIA accname spec and targets only
-  // the `combobox` role (not the `listbox`), so `getByRole('combobox', {
-  // name: ... })` lands on exactly the one input in both cases. Neither
-  // issue came up in TrainSearchForm's own tests: those construct the
-  // component directly with props rather than through this label, and its
-  // only `getByLabelText` uses are the plain TextInput time fields, which
-  // have no listbox.
+  // "Station *", not "Station" -- a second, independent reason
+  // `getByLabelText('Station')` can't be used as-is. The accessible name
+  // computation behind role queries excludes aria-hidden content per the
+  // ARIA accname spec and targets only the `combobox` role (not the
+  // `listbox`), so `getByRole('combobox', { name: ... })` lands on exactly
+  // the one input in both cases. Neither issue came up in TrainSearchForm's
+  // own tests: those construct the component directly with props rather
+  // than through this label, and its only `getByLabelText` uses are the
+  // plain TextInput time fields, which have no listbox.
   it('renders the title and the search form', async () => {
     renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({}) }));
     expect(screen.getByRole('heading', { name: 'Find a Train' })).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Destination station' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Station' })).toBeInTheDocument();
   });
 
-  it('pre-fills the destination and origin from the query string, uppercased', async () => {
+  it('pre-fills the station, origin and destination from the query string, uppercased', async () => {
     renderWithMantine(
-      await TrainsPage({ searchParams: Promise.resolve({ destination: 'man', origin: 'eus' }) }),
+      await TrainsPage({
+        searchParams: Promise.resolve({ station: 'man', origin: 'eus', destination: 'wat' }),
+      }),
     );
-    expect(screen.getByRole('combobox', { name: 'Destination station' })).toHaveValue('MAN');
+    expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('MAN');
     expect(screen.getByRole('combobox', { name: 'Departing from (optional)' })).toHaveValue('EUS');
+    expect(screen.getByRole('combobox', { name: 'Terminating at (optional)' })).toHaveValue('WAT');
   });
 
   it('uses the first value when a query param is repeated', async () => {
     renderWithMantine(
-      await TrainsPage({ searchParams: Promise.resolve({ destination: ['MAN', 'EDB'] }) }),
+      await TrainsPage({ searchParams: Promise.resolve({ station: ['MAN', 'EDB'] }) }),
     );
-    expect(screen.getByRole('combobox', { name: 'Destination station' })).toHaveValue('MAN');
+    expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('MAN');
   });
 
   it('shows the ticket-attach explainer copy when arriving with a ticketId', async () => {

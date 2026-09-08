@@ -919,44 +919,43 @@ pub struct ScheduleDestinationDeparturesRow {
     pub scheduled: chrono::NaiveTime,
     pub train_uid: String,
     pub origin_crs: String,
+    pub true_origin_crs: Option<String>,
 }
 
-/// An opaque-to-the-caller position in one destination's ordered results:
-/// the last row of the page just returned. The next page is everything
-/// strictly after it under `ORDER BY scheduled, train_uid, origin_crs`.
+/// An opaque-to-the-caller position in one station's ordered results: the
+/// last row of the page just returned. The next page is everything
+/// strictly after it under `ORDER BY scheduled, train_uid`.
 ///
-/// All three components are needed, not just `scheduled`: many trains share
-/// a departure minute, so a time-only cursor would either skip the rest of
-/// a tied group or return it forever. The tuple is exactly the trailing
-/// three columns of `schedule_destination_departures`' primary key, in the
-/// same order, so the comparison rides the index instead of re-sorting.
+/// Two components, not three like the destination-keyed predecessor this
+/// replaces: `origin_crs` (the calling point / station being searched) is
+/// now the FIXED equality filter for the whole query, constant across
+/// every row of one response, so it carries no ordering information and
+/// would be a redundant cursor component. `train_uid` alone is a
+/// sufficient tiebreaker on `scheduled` because a schedule's `train_uid`
+/// is unique per `(service_date, origin_crs)` under normal CIF data (see
+/// the calling-point-search design doc's Open Question 2 for the one
+/// theoretical exception this doesn't try to rule out).
 ///
 /// `routes::trains` encodes this onto the wire and parses it back; nothing
 /// outside that module should construct one from user input without going
 /// through that parsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DestinationDepartureCursor {
+pub struct CallingPointDepartureCursor {
     pub scheduled: chrono::NaiveTime,
     pub train_uid: String,
-    pub origin_crs: String,
 }
 
-/// One page of destination-search results.
+/// One page of calling-point-search results.
 ///
-/// `departures` elements are deliberately `serde_json::Value` in the
-/// `{"uid", "origin_crs", "scheduled": "HH:MM:SS"}` shape, NOT the typed
-/// row: that is the exact element shape
-/// `crate::render::destination_departure_json` already reads, so the
-/// storage layer's move from a JSONB bucket to a flat table stops at this
-/// function and the render layer is untouched.
-///
-/// `next_cursor` is `Some` only when there is genuinely at least one more
-/// row -- the query fetches `limit + 1` to know that, rather than handing
-/// back a cursor that would yield an empty page.
+/// `departures` elements are `serde_json::Value` in the
+/// `{"uid", "destination_crs", "true_origin_crs", "scheduled": "HH:MM:SS"}`
+/// shape -- the exact element shape `crate::render::calling_point_departure_json`
+/// reads. `next_cursor` is `Some` only when there is genuinely at least one
+/// more row (the query fetches `limit + 1` to know that).
 #[derive(Debug, Clone)]
-pub struct DestinationDeparturePage {
+pub struct CallingPointDeparturePage {
     pub departures: Vec<serde_json::Value>,
-    pub next_cursor: Option<DestinationDepartureCursor>,
+    pub next_cursor: Option<CallingPointDepartureCursor>,
 }
 
 /// Replaces one CIF delivery's worth of per-destination departures.
@@ -1004,6 +1003,8 @@ pub async fn upsert_schedule_destination_departures(
     let scheduled: Vec<chrono::NaiveTime> = rows.iter().map(|r| r.scheduled).collect();
     let train_uids: Vec<&str> = rows.iter().map(|r| r.train_uid.as_str()).collect();
     let origin_crs: Vec<&str> = rows.iter().map(|r| r.origin_crs.as_str()).collect();
+    let true_origin_crs: Vec<Option<&str>> =
+        rows.iter().map(|r| r.true_origin_crs.as_deref()).collect();
 
     // Normally exactly one date. Handled as a set anyway so a batch that
     // straddles a rail-day boundary replaces both days rather than half of
@@ -1022,8 +1023,8 @@ pub async fn upsert_schedule_destination_departures(
 
     let result = sqlx::query(
         "INSERT INTO schedule_destination_departures \
-            (service_date, destination_crs, scheduled, train_uid, origin_crs) \
-         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::text[], $5::text[]) \
+            (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::text[], $5::text[], $6::text[]) \
          ON CONFLICT DO NOTHING",
     )
     .bind(&service_dates)
@@ -1031,6 +1032,7 @@ pub async fn upsert_schedule_destination_departures(
     .bind(&scheduled)
     .bind(&train_uids)
     .bind(&origin_crs)
+    .bind(&true_origin_crs)
     .execute(&mut *tx)
     .await?;
 
@@ -1066,84 +1068,77 @@ async fn schedule_destination_departures_published_for(
     Ok(probe.is_some())
 }
 
-/// The destination-first train search's one read: a bounded index range
-/// scan over `schedule_destination_departures`' primary key, with a keyset
-/// cursor.
+/// The calling-point-first train search's one read: a bounded index range
+/// scan over `schedule_destination_departures_calling_point_idx`, with a
+/// keyset cursor. Replaces `search_schedule_destination_departures`
+/// (destination-first) in place -- see
+/// docs/superpowers/specs/2026-09-08-calling-point-train-search-design.md.
 ///
-/// The `(service_date, destination_crs, scheduled, train_uid, origin_crs)`
-/// primary key is also this query's covering index, in exactly the order it
-/// is used: equality on the first two columns, a range on `scheduled`, and
-/// the trailing three as the total order the cursor rides. The worst real
-/// case -- London Waterloo, no origin filter, ~8,145 matching rows -- touches
-/// `limit + 1` index entries, not 8,145, so a busy destination costs the
-/// same as a quiet one. **Do not** replace the row-comparison cursor with
-/// `OFFSET`: an offset re-scans everything it skips, which is precisely the
-/// cost this shape exists to avoid.
+/// `station_crs` is REQUIRED and matches the `origin_crs` column -- already
+/// "the calling point of this row" (`schedule_query::DestinationDeparture`'s
+/// own doc comment), so no data-model change was needed for the primary
+/// key, only a new leading index. `true_origin_crs` and `destination_crs`
+/// are BOTH optional filters layered on top, independent of each other and
+/// of `station_crs`.
 ///
-/// `scheduled_from` is an INCLUSIVE lower bound and is the caller's
-/// already-combined `max(now, from)`. There is only one lower bound
-/// parameter, deliberately: `now` is not optional (a departure that has
-/// already gone is not a search result) and a caller-supplied `from` can
-/// only narrow further, never reach back past it. `to_time` is an
-/// INCLUSIVE upper bound. Both are real `NaiveTime`s compared against a
-/// real `TIME` column -- the old shape's lexicographic `"HH:MM:SS"` string
-/// comparison is gone along with the JSONB.
+/// `scheduled_from` is an INCLUSIVE lower bound, the caller's already-
+/// combined `max(now, from)`. `to_time` is an INCLUSIVE upper bound. Both
+/// carry the exact same reasoning as the predecessor query.
 ///
 /// `Ok(None)` means no CIF publish has landed for `service_date` at all
-/// (the caller maps that to a `404`). `Ok(Some(page))` with an empty
-/// `page.departures` means the day IS published and the filters matched
-/// nothing (a `200` with an empty `results` array). The probe only runs
-/// when the main query came back empty, so the common case is one round
-/// trip, not two.
+/// (maps to a 404). `Ok(Some(page))` with an empty `page.departures` means
+/// the day IS published and the filters matched nothing (a 200 with an
+/// empty `results` array). Reuses
+/// `schedule_destination_departures_published_for` unchanged -- that probe
+/// was already day-scoped, not destination-scoped, so it needs no change
+/// for the new leading column.
 #[allow(clippy::too_many_arguments)]
-pub async fn search_schedule_destination_departures(
+pub async fn search_schedule_calling_point_departures(
     pool: &PgPool,
-    destination_crs: &str,
+    station_crs: &str,
     service_date: chrono::NaiveDate,
     scheduled_from: chrono::NaiveTime,
-    origin_crs: Option<&str>,
+    true_origin_crs: Option<&str>,
+    destination_crs: Option<&str>,
     to_time: Option<chrono::NaiveTime>,
-    after: Option<&DestinationDepartureCursor>,
+    after: Option<&CallingPointDepartureCursor>,
     limit: i64,
-) -> Result<Option<DestinationDeparturePage>> {
-    // One extra row is fetched purely to learn whether a next page exists,
-    // so `next_cursor` is never handed back for an empty page.
+) -> Result<Option<CallingPointDeparturePage>> {
     let fetch = limit.saturating_add(1);
 
-    let rows: Vec<(String, String, chrono::NaiveTime)> = sqlx::query_as(
+    let rows: Vec<(String, String, Option<String>, chrono::NaiveTime)> = sqlx::query_as(
         r#"
-        SELECT train_uid, origin_crs, scheduled
+        SELECT train_uid, destination_crs, true_origin_crs, scheduled
         FROM schedule_destination_departures
         WHERE service_date = $1
-          AND destination_crs = $2
+          AND origin_crs = $2
           AND scheduled >= $3
-          AND ($4::text IS NULL OR origin_crs = $4)
-          AND ($5::time IS NULL OR scheduled <= $5)
-          AND ($6::time IS NULL
-               OR (scheduled, train_uid, origin_crs) > ($6, $7, $8))
-        ORDER BY scheduled, train_uid, origin_crs
+          AND ($4::text IS NULL OR true_origin_crs = $4)
+          AND ($5::text IS NULL OR destination_crs = $5)
+          AND ($6::time IS NULL OR scheduled <= $6)
+          AND ($7::time IS NULL
+               OR (scheduled, train_uid) > ($7, $8))
+        ORDER BY scheduled, train_uid
         LIMIT $9
         "#,
     )
     .bind(service_date)
-    .bind(destination_crs)
+    .bind(station_crs)
     .bind(scheduled_from)
-    .bind(origin_crs)
+    .bind(true_origin_crs)
+    .bind(destination_crs)
     .bind(to_time)
     .bind(after.map(|c| c.scheduled))
     .bind(after.map(|c| c.train_uid.as_str()))
-    .bind(after.map(|c| c.origin_crs.as_str()))
     .bind(fetch)
     .fetch_all(pool)
     .await?;
 
     if rows.is_empty() {
-        // Only now is the probe worth a round trip -- and it is the ONLY
-        // thing that separates a 404 from an empty 200.
         if !schedule_destination_departures_published_for(pool, service_date).await? {
             return Ok(None);
         }
-        return Ok(Some(DestinationDeparturePage {
+        return Ok(Some(CallingPointDeparturePage {
             departures: Vec::new(),
             next_cursor: None,
         }));
@@ -1157,32 +1152,29 @@ pub async fn search_schedule_destination_departures(
     };
 
     let next_cursor = if has_more {
-        page_rows.last().map(
-            |(train_uid, origin_crs, scheduled)| DestinationDepartureCursor {
+        page_rows
+            .last()
+            .map(|(train_uid, _, _, scheduled)| CallingPointDepartureCursor {
                 scheduled: *scheduled,
                 train_uid: train_uid.clone(),
-                origin_crs: origin_crs.clone(),
-            },
-        )
+            })
     } else {
         None
     };
 
-    // Rendered into the SAME element shape the JSONB bucket used to store,
-    // so `render::destination_departure_json` needs no change: `uid` (not
-    // `train_uid`), and `scheduled` as a fixed-width "HH:MM:SS" string.
     let departures = page_rows
         .iter()
-        .map(|(train_uid, origin_crs, scheduled)| {
+        .map(|(train_uid, destination_crs, true_origin_crs, scheduled)| {
             serde_json::json!({
                 "uid": train_uid,
-                "origin_crs": origin_crs,
+                "destination_crs": destination_crs,
+                "true_origin_crs": true_origin_crs,
                 "scheduled": scheduled.format("%H:%M:%S").to_string(),
             })
         })
         .collect();
 
-    Ok(Some(DestinationDeparturePage {
+    Ok(Some(CallingPointDeparturePage {
         departures,
         next_cursor,
     }))
@@ -2804,6 +2796,7 @@ mod schedule_destination_departures_query_tests {
         scheduled: chrono::NaiveTime,
         train_uid: &str,
         origin_crs: &str,
+        true_origin_crs: Option<&str>,
     ) -> ScheduleDestinationDeparturesRow {
         ScheduleDestinationDeparturesRow {
             service_date,
@@ -2811,6 +2804,7 @@ mod schedule_destination_departures_query_tests {
             scheduled,
             train_uid: train_uid.to_string(),
             origin_crs: origin_crs.to_string(),
+            true_origin_crs: true_origin_crs.map(str::to_string),
         }
     }
 
@@ -2820,9 +2814,30 @@ mod schedule_destination_departures_query_tests {
     /// single three-element JSONB bucket.
     fn fixture_rows(service_date: chrono::NaiveDate) -> Vec<ScheduleDestinationDeparturesRow> {
         vec![
-            row(service_date, "ZRD", time(8, 22), "C10001", "EUS"),
-            row(service_date, "ZRD", time(10, 5), "C10002", "CRE"),
-            row(service_date, "ZRD", time(18, 40), "C10003", "EUS"),
+            row(
+                service_date,
+                "ZRD",
+                time(8, 22),
+                "C10001",
+                "EUS",
+                Some("PAD"),
+            ),
+            row(
+                service_date,
+                "ZRD",
+                time(10, 5),
+                "C10002",
+                "CRE",
+                Some("SWA"),
+            ),
+            row(
+                service_date,
+                "ZRD",
+                time(18, 40),
+                "C10003",
+                "EUS",
+                Some("PAD"),
+            ),
         ]
     }
 
@@ -2847,8 +2862,8 @@ mod schedule_destination_departures_query_tests {
         delete_day(&pool, date).await;
 
         let first = vec![
-            row(date, "ZRB", time(8, 0), "OLD1", "EUS"),
-            row(date, "ZRC", time(9, 0), "OLD2", "CRE"),
+            row(date, "ZRB", time(8, 0), "OLD1", "EUS", None),
+            row(date, "ZRC", time(9, 0), "OLD2", "CRE", None),
         ];
         let inserted = upsert_schedule_destination_departures(&pool, &first)
             .await
@@ -2856,7 +2871,7 @@ mod schedule_destination_departures_query_tests {
         assert_eq!(inserted, 2);
 
         // The second publish drops ZRC entirely and changes ZRB's row.
-        let second = vec![row(date, "ZRB", time(9, 30), "NEW1", "CRE")];
+        let second = vec![row(date, "ZRB", time(9, 30), "NEW1", "CRE", None)];
         upsert_schedule_destination_departures(&pool, &second)
             .await
             .expect("second upsert");
@@ -2918,21 +2933,98 @@ mod schedule_destination_departures_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_with_nothing_published_for_the_day_is_none_not_an_empty_page() {
-        // The whole reason for the Option: `None` becomes a 404 ("no CIF
-        // publish has landed for today at all"), `Some(page)` with no rows
-        // becomes a `200` with an empty `results` array ("we have today's
-        // timetable and your filters matched nothing"). These are different
-        // facts and must never collapse.
+    async fn upsert_round_trips_true_origin_crs_including_a_null_value() {
         let pool = test_pool().await;
-        let date = fixture_date(3);
+        let date = fixture_date(20);
         delete_day(&pool, date).await;
 
-        let result = search_schedule_destination_departures(
+        upsert_schedule_destination_departures(
             &pool,
-            "ZRC",
+            &[
+                row(date, "ZRD", time(8, 0), "C30001", "EUS", Some("PAD")),
+                row(date, "ZRD", time(9, 0), "C30002", "CRE", None),
+            ],
+        )
+        .await
+        .expect("seed rows");
+
+        let stored: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT train_uid, true_origin_crs FROM schedule_destination_departures \
+             WHERE service_date = $1 ORDER BY train_uid",
+        )
+        .bind(date)
+        .fetch_all(&pool)
+        .await
+        .expect("read back");
+
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0], ("C30001".to_string(), Some("PAD".to_string())));
+        assert_eq!(
+            stored[1],
+            ("C30002".to_string(), None),
+            "an absent true_origin_crs must round-trip as SQL NULL, not an empty string"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    /// Three trains all callable-at "RDG" (the new required search key),
+    /// to two different destinations, from two different true origins --
+    /// exactly what's needed to prove `origin`/`destination` are
+    /// independent optional filters layered on a FIXED station, not the
+    /// primary key.
+    fn calling_point_fixture_rows(
+        service_date: chrono::NaiveDate,
+    ) -> Vec<ScheduleDestinationDeparturesRow> {
+        vec![
+            row(
+                service_date,
+                "WAT",
+                time(8, 22),
+                "C40001",
+                "RDG",
+                Some("PAD"),
+            ),
+            row(
+                service_date,
+                "WAT",
+                time(10, 5),
+                "C40002",
+                "RDG",
+                Some("SWA"),
+            ),
+            row(
+                service_date,
+                "BRI",
+                time(18, 40),
+                "C40003",
+                "RDG",
+                Some("PAD"),
+            ),
+        ]
+    }
+
+    async fn seed_calling_point(pool: &PgPool, service_date: chrono::NaiveDate) {
+        delete_day(pool, service_date).await;
+        upsert_schedule_destination_departures(pool, &calling_point_fixture_rows(service_date))
+            .await
+            .expect("seed calling-point fixture rows");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_with_nothing_published_for_the_day_is_none() {
+        let pool = test_pool().await;
+        let date = fixture_date(21);
+        delete_day(&pool, date).await;
+
+        let result = search_schedule_calling_point_departures(
+            &pool,
+            "RDG",
             date,
             any_time(),
+            None,
             None,
             None,
             None,
@@ -2945,79 +3037,18 @@ mod schedule_destination_departures_query_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_with_the_day_published_but_no_matching_rows_is_some_and_empty() {
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_with_no_filters_returns_every_row_for_that_station() {
         let pool = test_pool().await;
-        let date = fixture_date(4);
-        seed(&pool, date).await;
+        let date = fixture_date(22);
+        seed_calling_point(&pool, date).await;
 
-        // No fixture row has this origin.
-        let page = search_schedule_destination_departures(
+        let page = search_schedule_calling_point_departures(
             &pool,
-            "ZRD",
-            date,
-            any_time(),
-            Some("ZZZ"),
-            None,
-            None,
-            100,
-        )
-        .await
-        .expect("search")
-        .expect("the day IS published");
-        assert!(
-            page.departures.is_empty(),
-            "a published-but-unmatched day is Some(empty), never None"
-        );
-        assert!(page.next_cursor.is_none());
-
-        delete_day(&pool, date).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_with_an_unknown_destination_on_a_published_day_is_some_and_empty() {
-        // The deliberate semantic change the flat shape brings, pinned by a
-        // test so nobody "restores" the old behaviour by accident: an
-        // unknown destination CRS on a day that IS published is a `200`
-        // with no results, NOT a 404. 404 now means "no timetable for
-        // today at all". See the addendum's §3 and §7 item 3.
-        let pool = test_pool().await;
-        let date = fixture_date(5);
-        seed(&pool, date).await;
-
-        let page = search_schedule_destination_departures(
-            &pool,
-            "ZRF",
+            "RDG",
             date,
             any_time(),
             None,
-            None,
-            None,
-            100,
-        )
-        .await
-        .expect("search")
-        .expect("the day is published, even though this destination has no trains");
-        assert!(page.departures.is_empty());
-
-        delete_day(&pool, date).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_with_no_filters_returns_every_row_earliest_first_in_the_render_shape() {
-        let pool = test_pool().await;
-        let date = fixture_date(6);
-        seed(&pool, date).await;
-
-        let page = search_schedule_destination_departures(
-            &pool,
-            "ZRD",
-            date,
-            any_time(),
             None,
             None,
             None,
@@ -3031,37 +3062,43 @@ mod schedule_destination_departures_query_tests {
         assert_eq!(
             page.departures[0],
             serde_json::json!({
-                "uid": "C10001",
-                "origin_crs": "EUS",
+                "uid": "C40001",
+                "destination_crs": "WAT",
+                "true_origin_crs": "PAD",
                 "scheduled": "08:22:00",
             }),
-            "the element shape is exactly what render::destination_departure_json reads: \
-             `uid` (not `train_uid`), and `scheduled` as HH:MM:SS"
+            "element shape is exactly what render::calling_point_departure_json reads"
         );
-        assert_eq!(page.departures[1]["uid"], "C10002");
-        assert_eq!(page.departures[2]["uid"], "C10003");
-        assert!(
-            page.next_cursor.is_none(),
-            "the whole day fitted in one page, so there is no next cursor"
-        );
+        assert_eq!(page.departures[1]["uid"], "C40002");
+        assert_eq!(page.departures[2]["uid"], "C40003");
 
         delete_day(&pool, date).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_filters_by_origin_crs() {
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_only_returns_rows_for_the_requested_station() {
         let pool = test_pool().await;
-        let date = fixture_date(7);
-        seed(&pool, date).await;
-
-        let page = search_schedule_destination_departures(
+        let date = fixture_date(23);
+        delete_day(&pool, date).await;
+        upsert_schedule_destination_departures(
             &pool,
-            "ZRD",
+            &[
+                row(date, "WAT", time(8, 0), "C50001", "RDG", None),
+                row(date, "WAT", time(8, 5), "C50002", "SLO", None),
+            ],
+        )
+        .await
+        .expect("seed two-station fixture");
+
+        let page = search_schedule_calling_point_departures(
+            &pool,
+            "RDG",
             date,
             any_time(),
-            Some("CRE"),
+            None,
+            None,
             None,
             None,
             100,
@@ -3071,30 +3108,27 @@ mod schedule_destination_departures_query_tests {
         .expect("the day is published");
 
         assert_eq!(page.departures.len(), 1);
-        assert_eq!(page.departures[0]["uid"], "C10002");
-        assert_eq!(page.departures[0]["origin_crs"], "CRE");
+        assert_eq!(page.departures[0]["uid"], "C50001");
 
         delete_day(&pool, date).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_filters_by_an_inclusive_time_range() {
-        // Inclusive at BOTH ends, and discriminating about it: 10:05 is the
-        // exact lower bound here and must be returned, while 08:22 (below
-        // it) and 18:40 (above the upper bound) must not.
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_filters_by_true_origin_independent_of_destination() {
         let pool = test_pool().await;
-        let date = fixture_date(8);
-        seed(&pool, date).await;
+        let date = fixture_date(24);
+        seed_calling_point(&pool, date).await;
 
-        let page = search_schedule_destination_departures(
+        let page = search_schedule_calling_point_departures(
             &pool,
-            "ZRD",
+            "RDG",
             date,
-            time(10, 5),
+            any_time(),
+            Some("PAD"),
             None,
-            Some(time(12, 0)),
+            None,
             None,
             100,
         )
@@ -3102,30 +3136,72 @@ mod schedule_destination_departures_query_tests {
         .expect("search")
         .expect("the day is published");
 
-        assert_eq!(page.departures.len(), 1);
-        assert_eq!(page.departures[0]["uid"], "C10002");
+        let uids: Vec<&str> = page
+            .departures
+            .iter()
+            .map(|d| d["uid"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            uids,
+            vec!["C40001", "C40003"],
+            "PAD-origin filter matches trains to TWO different destinations"
+        );
 
         delete_day(&pool, date).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_excludes_rows_before_the_now_boundary() {
-        // New under this shape, and the reason the shape exists: the
-        // `now`-forward filter is applied HERE, at read time, not at
-        // publish time. `scheduled_from` is the route's own
-        // `max(now, from)`. At 11:00 only the 18:40 train remains.
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_filters_by_destination_independent_of_true_origin() {
         let pool = test_pool().await;
-        let date = fixture_date(9);
-        seed(&pool, date).await;
+        let date = fixture_date(25);
+        seed_calling_point(&pool, date).await;
 
-        let page = search_schedule_destination_departures(
+        let page = search_schedule_calling_point_departures(
             &pool,
-            "ZRD",
+            "RDG",
             date,
-            time(11, 0),
+            any_time(),
             None,
+            Some("WAT"),
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+
+        let uids: Vec<&str> = page
+            .departures
+            .iter()
+            .map(|d| d["uid"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            uids,
+            vec!["C40001", "C40002"],
+            "WAT-destination filter matches trains from TWO different true origins"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_combines_both_optional_filters() {
+        let pool = test_pool().await;
+        let date = fixture_date(26);
+        seed_calling_point(&pool, date).await;
+
+        let page = search_schedule_calling_point_departures(
+            &pool,
+            "RDG",
+            date,
+            any_time(),
+            Some("PAD"),
+            Some("WAT"),
             None,
             None,
             100,
@@ -3135,36 +3211,80 @@ mod schedule_destination_departures_query_tests {
         .expect("the day is published");
 
         assert_eq!(page.departures.len(), 1);
-        assert_eq!(page.departures[0]["uid"], "C10003");
+        assert_eq!(page.departures[0]["uid"], "C40001");
 
         delete_day(&pool, date).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_is_scoped_to_the_requested_service_date_only() {
-        // Proves the "always today, server-side" scoping: a stale day's
-        // rows must never leak through, and must not even make the
-        // existence probe say "published".
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_published_day_with_no_matching_filters_is_some_and_empty() {
+        // Pins the deliberate 404-vs-empty-200 split this function's own doc
+        // comment documents: the day IS published, but the filters simply
+        // matched nothing, so the result must be `Some(page)` with an empty
+        // `departures`, never `None`. Ported coverage for the branch the
+        // deleted destination-first equivalent
+        // (`search_with_the_day_published_but_no_matching_rows_is_some_and_empty`)
+        // used to pin.
         let pool = test_pool().await;
-        let date = fixture_date(10);
+        let date = fixture_date(30);
+        seed_calling_point(&pool, date).await;
+
+        // No fixture row has this destination.
+        let page = search_schedule_calling_point_departures(
+            &pool,
+            "RDG",
+            date,
+            any_time(),
+            None,
+            Some("ZZZ"),
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day IS published");
+
+        assert!(
+            page.departures.is_empty(),
+            "a published-but-unmatched day is Some(empty), never None"
+        );
+        assert!(page.next_cursor.is_none());
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_is_scoped_to_the_requested_service_date_only() {
+        // Ported from the deleted search_is_scoped_to_the_requested_service_date_only
+        // (destination-first predecessor) -- this coverage must not be lost
+        // just because the old test block was deleted wholesale. Proves the
+        // "always today, server-side" scoping: a stale day's rows must
+        // never leak through, and must not even make the existence probe
+        // say "published".
+        let pool = test_pool().await;
+        let date = fixture_date(29);
         let yesterday = date - chrono::Duration::days(1);
         delete_day(&pool, date).await;
         delete_day(&pool, yesterday).await;
 
         upsert_schedule_destination_departures(
             &pool,
-            &[row(yesterday, "ZRD", time(8, 0), "STALE", "EUS")],
+            &[row(yesterday, "WAT", time(8, 0), "STALE", "RDG", None)],
         )
         .await
         .expect("seed a stale day");
 
-        let result = search_schedule_destination_departures(
+        let result = search_schedule_calling_point_departures(
             &pool,
-            "ZRD",
+            "RDG",
             date,
             any_time(),
+            None,
             None,
             None,
             None,
@@ -3182,64 +3302,66 @@ mod schedule_destination_departures_query_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_applies_the_limit_and_returns_a_cursor_for_the_rest() {
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_filters_by_an_inclusive_time_range_and_excludes_before_now() {
         let pool = test_pool().await;
-        let date = fixture_date(11);
-        seed(&pool, date).await;
+        let date = fixture_date(27);
+        seed_calling_point(&pool, date).await;
 
-        let page = search_schedule_destination_departures(
+        // Lower bound 10:05 is inclusive and matches exactly; upper bound
+        // 12:00 excludes the 18:40 row.
+        let page = search_schedule_calling_point_departures(
             &pool,
-            "ZRD",
+            "RDG",
             date,
-            any_time(),
+            time(10, 5),
             None,
             None,
+            Some(time(12, 0)),
             None,
-            2,
+            100,
         )
         .await
         .expect("search")
         .expect("the day is published");
 
-        assert_eq!(page.departures.len(), 2, "limit caps the page");
-        assert_eq!(
-            page.departures[0]["uid"], "C10001",
-            "the limit keeps the EARLIEST rows -- ORDER BY runs before LIMIT"
-        );
-        assert_eq!(
-            page.next_cursor,
-            Some(DestinationDepartureCursor {
-                scheduled: time(10, 5),
-                train_uid: "C10002".to_string(),
-                origin_crs: "CRE".to_string(),
-            }),
-            "the cursor is the LAST row of this page, so the next page starts strictly after it"
-        );
+        assert_eq!(page.departures.len(), 1);
+        assert_eq!(page.departures[0]["uid"], "C40002");
 
         delete_day(&pool, date).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_keyset_cursor_pages_through_the_day_without_gaps_or_repeats() {
-        // The load-bearing pagination test. Pages of 1 through the three
-        // fixture rows: each page must yield exactly the next row, in
-        // order, and the final page must report no further cursor rather
-        // than handing back a cursor that would yield nothing.
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_keyset_cursor_pages_without_gaps_or_repeats_and_breaks_ties_on_train_uid()
+     {
+        // Two rows share one `scheduled` (09:00) at the SAME station, to
+        // prove train_uid alone is a sufficient tiebreaker now that
+        // origin_crs is fixed per query, not part of the ordering.
         let pool = test_pool().await;
-        let date = fixture_date(12);
-        seed(&pool, date).await;
+        let date = fixture_date(28);
+        delete_day(&pool, date).await;
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                row(date, "WAT", time(9, 0), "C60002", "RDG", None),
+                row(date, "WAT", time(9, 0), "C60001", "RDG", None),
+                row(date, "BRI", time(11, 0), "C60003", "RDG", None),
+            ],
+        )
+        .await
+        .expect("seed tied-time fixture");
 
         let mut seen: Vec<String> = Vec::new();
-        let mut cursor: Option<DestinationDepartureCursor> = None;
+        let mut cursor: Option<CallingPointDepartureCursor> = None;
         for _ in 0..5 {
-            let page = search_schedule_destination_departures(
+            let page = search_schedule_calling_point_departures(
                 &pool,
-                "ZRD",
+                "RDG",
                 date,
                 any_time(),
+                None,
                 None,
                 None,
                 cursor.as_ref(),
@@ -3248,7 +3370,6 @@ mod schedule_destination_departures_query_tests {
             .await
             .expect("search")
             .expect("the day is published");
-
             for departure in &page.departures {
                 seen.push(departure["uid"].as_str().unwrap().to_string());
             }
@@ -3260,76 +3381,12 @@ mod schedule_destination_departures_query_tests {
 
         assert_eq!(
             seen,
-            vec!["C10001", "C10002", "C10003"],
-            "every row exactly once, in scheduled order, across three pages"
+            vec!["C60001", "C60002", "C60003"],
+            "the 09:00 tie is broken by train_uid, and every row appears exactly once"
         );
         assert!(
             cursor.is_none(),
-            "the last page must NOT hand back a cursor -- there is nothing after it"
-        );
-
-        delete_day(&pool, date).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_cursor_breaks_ties_on_train_uid_then_origin_crs() {
-        // The reason the cursor is a three-part tuple and not just a time.
-        // Three rows share one `scheduled`; a time-only cursor would either
-        // skip two of them or loop forever. Paging one at a time must walk
-        // all three exactly once, in (train_uid, origin_crs) order.
-        let pool = test_pool().await;
-        let date = fixture_date(13);
-        delete_day(&pool, date).await;
-        upsert_schedule_destination_departures(
-            &pool,
-            &[
-                row(date, "ZRE", time(9, 0), "C20002", "CRE"),
-                row(date, "ZRE", time(9, 0), "C20001", "EUS"),
-                row(date, "ZRE", time(9, 0), "C20001", "CRE"),
-            ],
-        )
-        .await
-        .expect("seed tied rows");
-
-        let mut seen: Vec<(String, String)> = Vec::new();
-        let mut cursor: Option<DestinationDepartureCursor> = None;
-        for _ in 0..5 {
-            let page = search_schedule_destination_departures(
-                &pool,
-                "ZRE",
-                date,
-                any_time(),
-                None,
-                None,
-                cursor.as_ref(),
-                1,
-            )
-            .await
-            .expect("search")
-            .expect("the day is published");
-            for departure in &page.departures {
-                seen.push((
-                    departure["uid"].as_str().unwrap().to_string(),
-                    departure["origin_crs"].as_str().unwrap().to_string(),
-                ));
-            }
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                break;
-            }
-        }
-
-        assert_eq!(
-            seen,
-            vec![
-                ("C20001".to_string(), "CRE".to_string()),
-                ("C20001".to_string(), "EUS".to_string()),
-                ("C20002".to_string(), "CRE".to_string()),
-            ],
-            "ties on `scheduled` are broken by train_uid then origin_crs, matching the PK's \
-             own column order, and every tied row is visited exactly once"
+            "the last page must not hand back a cursor"
         );
 
         delete_day(&pool, date).await;

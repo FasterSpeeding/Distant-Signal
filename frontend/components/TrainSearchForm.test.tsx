@@ -11,36 +11,26 @@ vi.mock('next/navigation', () => ({
 }));
 
 /** Builds a `GET /public/trains/search` response body. The route returns an
- * ENVELOPE, not a bare array (Task 7): `results` plus a `nextCursor` that
- * is an explicit `null` on the last page. Every test that stubs a search
- * response goes through this, so no test can accidentally assert against
- * the pre-pagination bare-array shape. */
+ * ENVELOPE, not a bare array: `results` plus a `nextCursor` that is an
+ * explicit `null` on the last page. */
 function searchBody(
-  rows: Array<{ uid: string; scheduled: string; originCrs: string; destinationCrs: string }>,
+  rows: Array<{ uid: string; scheduled: string; stationCrs: string; originCrs: string | null; destinationCrs: string | null }>,
   nextCursor: string | null = null,
 ) {
   return JSON.stringify({ results: rows, nextCursor });
 }
 
 const PAGE_ONE = [
-  { uid: 'C10001', scheduled: '08:22', originCrs: 'EUS', destinationCrs: 'MAN' },
-  { uid: 'C10002', scheduled: '10:05', originCrs: 'CRE', destinationCrs: 'MAN' },
+  { uid: 'C10001', scheduled: '08:22', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'WAT' },
+  { uid: 'C10002', scheduled: '10:05', stationCrs: 'MAN', originCrs: 'CRE', destinationCrs: 'WAT' },
 ];
 const PAGE_TWO = [
-  { uid: 'C10003', scheduled: '11:40', originCrs: 'EUS', destinationCrs: 'MAN' },
+  { uid: 'C10003', scheduled: '11:40', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'WAT' },
 ];
 const PAGE_THREE = [
-  { uid: 'C10004', scheduled: '13:15', originCrs: 'CRE', destinationCrs: 'MAN' },
+  { uid: 'C10004', scheduled: '13:15', stationCrs: 'MAN', originCrs: 'CRE', destinationCrs: 'WAT' },
 ];
 
-/** Routes a mocked `fetch` by URL: the search call, the station-suggestion
- * calls both Autocompletes fire, and the track/attach calls
- * `TrackThisTrainButton` makes. `search` defaults to two rows and no next
- * page, so most tests only override the branch they care about.
- *
- * `search` receives the request URL so a test can answer page 1 and page 2
- * differently -- which is exactly what "Load more" needs to be tested
- * honestly. */
 function mockFetchByUrl(
   options: { search?: (url: string) => Response; track?: () => Response } = {},
 ) {
@@ -76,31 +66,31 @@ describe('TrainSearchForm', () => {
     pushMock.mockClear();
   });
 
-  it('does not search until a valid destination CRS is entered', () => {
+  it('does not search until a valid station CRS is entered', () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm />);
 
     expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
     expect(
-      screen.getByText('Enter a destination station above to search for trains.'),
+      screen.getByText('Enter a station above to search for trains that call there.'),
     ).toBeInTheDocument();
   });
 
-  it('sends only the destination when no optional filter is set', async () => {
+  it('sends only the station when no optional filter is set', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
-    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?destination=MAN'));
+    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
   });
 
   it('sends every optional filter it has, uppercased', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialDestination="man" initialOrigin="eus" />);
+    renderWithMantine(<TrainSearchForm initialStation="man" initialOrigin="eus" initialDestination="wat" />);
 
     fireEvent.change(screen.getByLabelText('From (optional)'), { target: { value: '09:00' } });
     fireEvent.change(screen.getByLabelText('To (optional)'), { target: { value: '12:00' } });
@@ -108,24 +98,44 @@ describe('TrainSearchForm', () => {
 
     await waitFor(() =>
       expect(searchCallUrl(fetchMock)).toBe(
-        '/api/trains/search?destination=MAN&origin=EUS&from=09%3A00&to=12%3A00',
+        '/api/trains/search?station=MAN&origin=EUS&destination=WAT&from=09%3A00&to=12%3A00',
       ),
     );
   });
 
   it('renders one row per result, with time, origin and destination', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
-    expect(await screen.findByText('08:22 · EUS → MAN')).toBeInTheDocument();
-    expect(screen.getByText('10:05 · CRE → MAN')).toBeInTheDocument();
+    expect(await screen.findByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
+    expect(screen.getByText('10:05 · CRE → MAN → WAT')).toBeInTheDocument();
+  });
+
+  it('renders a "?" placeholder when origin or destination is unknown', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        search: () =>
+          new Response(
+            searchBody([
+              { uid: 'C99999', scheduled: '09:00', stationCrs: 'MAN', originCrs: null, destinationCrs: 'WAT' },
+            ]),
+            { status: 200 },
+          ),
+      }),
+    );
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(await screen.findByText('09:00 · ? → MAN → WAT')).toBeInTheDocument();
   });
 
   it('links each row to the public train page for today', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
@@ -136,7 +146,7 @@ describe('TrainSearchForm', () => {
 
   it('renders a Track this train action on every row', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
@@ -147,7 +157,7 @@ describe('TrainSearchForm', () => {
   it("passes attachTicketId through, so the row's track action attaches the ticket", async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" attachTicketId={7} />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" attachTicketId={7} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     const buttons = await screen.findAllByRole('button', { name: 'Track this train' });
@@ -161,11 +171,9 @@ describe('TrainSearchForm', () => {
     );
   });
 
-  // The 404-vs-200-[] split the backend route draws deliberately (Task 7)
-  // has to survive into the UI, or it was pointless.
-  it('distinguishes "nothing published for this destination" from "no matches"', async () => {
+  it('distinguishes "nothing published for today" from "no matches"', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response('not found', { status: 404 }) }));
-    renderWithMantine(<TrainSearchForm initialDestination="ZZZ" />);
+    renderWithMantine(<TrainSearchForm initialStation="ZZZ" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
@@ -181,7 +189,7 @@ describe('TrainSearchForm', () => {
       'fetch',
       mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }),
     );
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
@@ -192,7 +200,7 @@ describe('TrainSearchForm', () => {
 
   it('shows an error state on a 500', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response('boom', { status: 500 }) }));
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
@@ -201,12 +209,9 @@ describe('TrainSearchForm', () => {
     ).toBeInTheDocument();
   });
 
-  // The honesty requirement carried over from TrackTrainForm's own CIF
-  // branch: these rows are timetable data, not live running information,
-  // and the UI must never imply otherwise.
   it('labels the results as scheduled timetable data, not live status', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
@@ -246,17 +251,13 @@ describe('TrainSearchForm', () => {
     expect(screen.queryByLabelText(/^Date/i)).not.toBeInTheDocument();
   });
 
-  // ---- Pagination. There is no cap anywhere in the backend any more, so
-  // a busy destination genuinely has more trains than one page; "Load more"
-  // is how the user reaches them, and these four tests are the contract.
-
   it('does not offer Load more when the response has no nextCursor', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
-    expect(await screen.findByText('08:22 · EUS → MAN')).toBeInTheDocument();
+    expect(await screen.findByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
@@ -267,7 +268,7 @@ describe('TrainSearchForm', () => {
         search: () => new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
       }),
     );
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
@@ -275,9 +276,6 @@ describe('TrainSearchForm', () => {
   });
 
   it('appends the next page rather than replacing the rows, and sends after=', async () => {
-    // The load-bearing assertion of the whole pagination change: APPEND.
-    // A "Load more" that replaced the list would look like it worked while
-    // silently losing page 1.
     const fetchMock = mockFetchByUrl({
       search: (url) =>
         url.includes('after=CURSOR1')
@@ -285,33 +283,29 @@ describe('TrainSearchForm', () => {
           : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
-    expect(await screen.findByText('11:40 · EUS → MAN')).toBeInTheDocument();
+    expect(await screen.findByText('11:40 · EUS → MAN → WAT')).toBeInTheDocument();
     expect(
-      screen.getByText('08:22 · EUS → MAN'),
+      screen.getByText('08:22 · EUS → MAN → WAT'),
       'page 1 must still be on screen -- Load more appends, it does not replace',
     ).toBeInTheDocument();
-    expect(screen.getByText('10:05 · CRE → MAN')).toBeInTheDocument();
+    expect(screen.getByText('10:05 · CRE → MAN → WAT')).toBeInTheDocument();
 
     const urls = searchCallUrls(fetchMock);
     expect(urls).toHaveLength(2);
-    expect(urls[0]).toBe('/api/trains/search?destination=MAN');
-    expect(urls[1]).toBe('/api/trains/search?destination=MAN&after=CURSOR1');
+    expect(urls[0]).toBe('/api/trains/search?station=MAN');
+    expect(urls[1]).toBe('/api/trains/search?station=MAN&after=CURSOR1');
 
-    // Exhausted: the second response's nextCursor was null.
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument(),
     );
   });
 
   it('uses the NEW cursor on a second Load more, not the first one again', async () => {
-    // Guards the specific bug an append-only implementation invites:
-    // keeping the cursor from the original search in state and re-sending
-    // it, which would fetch page 2 forever and duplicate its rows.
     const fetchMock = mockFetchByUrl({
       search: (url) => {
         if (url.includes('after=CURSOR2'))
@@ -322,29 +316,26 @@ describe('TrainSearchForm', () => {
       },
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
-    expect(await screen.findByText('11:40 · EUS → MAN')).toBeInTheDocument();
+    expect(await screen.findByText('11:40 · EUS → MAN → WAT')).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
-    expect(await screen.findByText('13:15 · CRE → MAN')).toBeInTheDocument();
+    expect(await screen.findByText('13:15 · CRE → MAN → WAT')).toBeInTheDocument();
 
     const urls = searchCallUrls(fetchMock);
     expect(urls).toHaveLength(3);
-    expect(urls[1]).toBe('/api/trains/search?destination=MAN&after=CURSOR1');
+    expect(urls[1]).toBe('/api/trains/search?station=MAN&after=CURSOR1');
     expect(
       urls[2],
       'the second Load more must use the cursor from the SECOND response',
-    ).toBe('/api/trains/search?destination=MAN&after=CURSOR2');
-    expect(screen.getAllByText('11:40 · EUS → MAN')).toHaveLength(1);
+    ).toBe('/api/trains/search?station=MAN&after=CURSOR2');
+    expect(screen.getAllByText('11:40 · EUS → MAN → WAT')).toHaveLength(1);
   });
 
   it('keeps the original filters on a Load more request', async () => {
-    // The cursor is positional, not self-describing: dropping `origin`
-    // or the time range on page 2 would silently widen the search
-    // mid-scroll.
     const fetchMock = mockFetchByUrl({
       search: (url) =>
         url.includes('after=')
@@ -352,7 +343,7 @@ describe('TrainSearchForm', () => {
           : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialDestination="man" initialOrigin="eus" />);
+    renderWithMantine(<TrainSearchForm initialStation="man" initialOrigin="eus" />);
 
     fireEvent.change(screen.getByLabelText('From (optional)'), { target: { value: '09:00' } });
     fireEvent.change(screen.getByLabelText('To (optional)'), { target: { value: '12:00' } });
@@ -361,13 +352,11 @@ describe('TrainSearchForm', () => {
 
     await waitFor(() => expect(searchCallUrls(fetchMock)).toHaveLength(2));
     expect(searchCallUrls(fetchMock)[1]).toBe(
-      '/api/trains/search?destination=MAN&origin=EUS&from=09%3A00&to=12%3A00&after=CURSOR1',
+      '/api/trains/search?station=MAN&origin=EUS&from=09%3A00&to=12%3A00&after=CURSOR1',
     );
   });
 
   it('starts a fresh search over rather than appending to the previous one', async () => {
-    // Pressing Search again after paginating must RESET, not append -- the
-    // opposite of Load more. Same append-vs-replace bug, mirrored.
     const fetchMock = mockFetchByUrl({
       search: (url) =>
         url.includes('after=')
@@ -375,17 +364,17 @@ describe('TrainSearchForm', () => {
           : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
-    expect(await screen.findByText('11:40 · EUS → MAN')).toBeInTheDocument();
+    expect(await screen.findByText('11:40 · EUS → MAN → WAT')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
     await waitFor(() =>
-      expect(screen.queryByText('11:40 · EUS → MAN')).not.toBeInTheDocument(),
+      expect(screen.queryByText('11:40 · EUS → MAN → WAT')).not.toBeInTheDocument(),
     );
-    expect(screen.getByText('08:22 · EUS → MAN')).toBeInTheDocument();
+    expect(screen.getByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
   });
 });
