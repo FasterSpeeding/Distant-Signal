@@ -847,8 +847,10 @@ mod poll_once_tests {
 
     #[test]
     fn schedule_destination_departures_rows_includes_the_destination_arrival_field() {
-        let mut by_destination: std::collections::HashMap<String, Vec<schedule_query::DestinationDeparture>> =
-            std::collections::HashMap::new();
+        let mut by_destination: std::collections::HashMap<
+            String,
+            Vec<schedule_query::DestinationDeparture>,
+        > = std::collections::HashMap::new();
         by_destination.insert(
             "MAN".to_string(),
             vec![

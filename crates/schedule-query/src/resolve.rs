@@ -412,7 +412,11 @@ mod tests {
         }
     }
 
-    fn calling_point_with_arrival(tiploc: &str, kind: CallingPointKind, arrival: &str) -> CallingPoint {
+    fn calling_point_with_arrival(
+        tiploc: &str,
+        kind: CallingPointKind,
+        arrival: &str,
+    ) -> CallingPoint {
         CallingPoint {
             tiploc: tiploc.to_string(),
             kind,
@@ -988,7 +992,8 @@ mod tests {
     }
 
     #[test]
-    fn departures_by_destination_crs_attaches_the_terminating_calling_points_arrival_to_every_entry() {
+    fn departures_by_destination_crs_attaches_the_terminating_calling_points_arrival_to_every_entry()
+     {
         // The load-bearing mirror of
         // departures_by_destination_crs_attaches_the_schedules_true_origin_to_every_one_of_its_entries,
         // but for the LAST calling point's booked_arrival instead of the
