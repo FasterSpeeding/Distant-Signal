@@ -920,6 +920,15 @@ pub struct ScheduleDestinationDeparturesRow {
     pub train_uid: String,
     pub origin_crs: String,
     pub true_origin_crs: Option<String>,
+    /// The schedule's terminating calling point's own `booked_arrival`,
+    /// mirroring `true_origin_crs`'s plumbing exactly -- see
+    /// `schedule_query::DestinationDeparture::destination_arrival`'s own
+    /// doc comment and
+    /// docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md.
+    /// Missing from the wire JSON deserializes as `None` (Option<T> fields
+    /// are optional-by-default for self-describing formats like JSON),
+    /// same as `true_origin_crs`.
+    pub destination_arrival: Option<chrono::NaiveTime>,
 }
 
 /// An opaque-to-the-caller position in one station's ordered results: the
@@ -1005,6 +1014,8 @@ pub async fn upsert_schedule_destination_departures(
     let origin_crs: Vec<&str> = rows.iter().map(|r| r.origin_crs.as_str()).collect();
     let true_origin_crs: Vec<Option<&str>> =
         rows.iter().map(|r| r.true_origin_crs.as_deref()).collect();
+    let destination_arrival: Vec<Option<chrono::NaiveTime>> =
+        rows.iter().map(|r| r.destination_arrival).collect();
 
     // Normally exactly one date. Handled as a set anyway so a batch that
     // straddles a rail-day boundary replaces both days rather than half of
@@ -1023,8 +1034,8 @@ pub async fn upsert_schedule_destination_departures(
 
     let result = sqlx::query(
         "INSERT INTO schedule_destination_departures \
-            (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
-         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::text[], $5::text[], $6::text[]) \
+            (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs, destination_arrival) \
+         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::text[], $5::text[], $6::text[], $7::time[]) \
          ON CONFLICT DO NOTHING",
     )
     .bind(&service_dates)
@@ -1033,6 +1044,7 @@ pub async fn upsert_schedule_destination_departures(
     .bind(&train_uids)
     .bind(&origin_crs)
     .bind(&true_origin_crs)
+    .bind(&destination_arrival)
     .execute(&mut *tx)
     .await?;
 
@@ -1085,6 +1097,17 @@ async fn schedule_destination_departures_published_for(
 /// combined `max(now, from)`. `to_time` is an INCLUSIVE upper bound. Both
 /// carry the exact same reasoning as the predecessor query.
 ///
+/// `destination_arrival_from`/`destination_arrival_to` are a SEPARATE
+/// inclusive bound pair on `destination_arrival`, independent of
+/// `scheduled_from`/`to_time` above -- the former is "when does the train
+/// reach `destination_crs`", the latter is "when is the train at
+/// `station_crs`". Both pairs may be supplied at once; neither widens or
+/// implies the other. The route layer (not this function) rejects either
+/// being set without `destination_crs` -- this function applies whatever
+/// it is given, filter-shaped, with no cross-field validation of its own,
+/// matching how it already treats every other Option argument here. See
+/// docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md.
+///
 /// `Ok(None)` means no CIF publish has landed for `service_date` at all
 /// (maps to a 404). `Ok(Some(page))` with an empty `page.departures` means
 /// the day IS published and the filters matched nothing (a 200 with an
@@ -1101,26 +1124,36 @@ pub async fn search_schedule_calling_point_departures(
     true_origin_crs: Option<&str>,
     destination_crs: Option<&str>,
     to_time: Option<chrono::NaiveTime>,
+    destination_arrival_from: Option<chrono::NaiveTime>,
+    destination_arrival_to: Option<chrono::NaiveTime>,
     after: Option<&CallingPointDepartureCursor>,
     limit: i64,
 ) -> Result<Option<CallingPointDeparturePage>> {
     let fetch = limit.saturating_add(1);
 
-    let rows: Vec<(String, String, Option<String>, chrono::NaiveTime)> = sqlx::query_as(
+    let rows: Vec<(
+        String,
+        String,
+        Option<String>,
+        chrono::NaiveTime,
+        Option<chrono::NaiveTime>,
+    )> = sqlx::query_as(
         r#"
-        SELECT train_uid, destination_crs, true_origin_crs, scheduled
-        FROM schedule_destination_departures
-        WHERE service_date = $1
-          AND origin_crs = $2
-          AND scheduled >= $3
-          AND ($4::text IS NULL OR true_origin_crs = $4)
-          AND ($5::text IS NULL OR destination_crs = $5)
-          AND ($6::time IS NULL OR scheduled <= $6)
-          AND ($7::time IS NULL
-               OR (scheduled, train_uid) > ($7, $8))
-        ORDER BY scheduled, train_uid
-        LIMIT $9
-        "#,
+            SELECT train_uid, destination_crs, true_origin_crs, scheduled, destination_arrival
+            FROM schedule_destination_departures
+            WHERE service_date = $1
+              AND origin_crs = $2
+              AND scheduled >= $3
+              AND ($4::text IS NULL OR true_origin_crs = $4)
+              AND ($5::text IS NULL OR destination_crs = $5)
+              AND ($6::time IS NULL OR scheduled <= $6)
+              AND ($7::time IS NULL OR destination_arrival >= $7)
+              AND ($8::time IS NULL OR destination_arrival <= $8)
+              AND ($9::time IS NULL
+                   OR (scheduled, train_uid) > ($9, $10))
+            ORDER BY scheduled, train_uid
+            LIMIT $11
+            "#,
     )
     .bind(service_date)
     .bind(station_crs)
@@ -1128,6 +1161,8 @@ pub async fn search_schedule_calling_point_departures(
     .bind(true_origin_crs)
     .bind(destination_crs)
     .bind(to_time)
+    .bind(destination_arrival_from)
+    .bind(destination_arrival_to)
     .bind(after.map(|c| c.scheduled))
     .bind(after.map(|c| c.train_uid.as_str()))
     .bind(fetch)
@@ -1152,26 +1187,29 @@ pub async fn search_schedule_calling_point_departures(
     };
 
     let next_cursor = if has_more {
-        page_rows
-            .last()
-            .map(|(train_uid, _, _, scheduled)| CallingPointDepartureCursor {
+        page_rows.last().map(
+            |(train_uid, _, _, scheduled, _)| CallingPointDepartureCursor {
                 scheduled: *scheduled,
                 train_uid: train_uid.clone(),
-            })
+            },
+        )
     } else {
         None
     };
 
     let departures = page_rows
         .iter()
-        .map(|(train_uid, destination_crs, true_origin_crs, scheduled)| {
-            serde_json::json!({
-                "uid": train_uid,
-                "destination_crs": destination_crs,
-                "true_origin_crs": true_origin_crs,
-                "scheduled": scheduled.format("%H:%M:%S").to_string(),
-            })
-        })
+        .map(
+            |(train_uid, destination_crs, true_origin_crs, scheduled, destination_arrival)| {
+                serde_json::json!({
+                    "uid": train_uid,
+                    "destination_crs": destination_crs,
+                    "true_origin_crs": true_origin_crs,
+                    "scheduled": scheduled.format("%H:%M:%S").to_string(),
+                    "destination_arrival": destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
+                })
+            },
+        )
         .collect();
 
     Ok(Some(CallingPointDeparturePage {
@@ -2772,6 +2810,12 @@ mod schedule_destination_departures_query_tests {
         chrono::NaiveDate::from_ymd_opt(2099, 1, day).expect("valid fixture date")
     }
 
+    /// `fixture_date`'s sibling for once January's 31 days of distinct
+    /// fixture dates run out.
+    fn fixture_date_feb(day: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2099, 2, day).expect("valid fixture date")
+    }
+
     fn time(h: u32, m: u32) -> chrono::NaiveTime {
         chrono::NaiveTime::from_hms_opt(h, m, 0).expect("valid fixture time")
     }
@@ -2797,6 +2841,7 @@ mod schedule_destination_departures_query_tests {
         train_uid: &str,
         origin_crs: &str,
         true_origin_crs: Option<&str>,
+        destination_arrival: Option<chrono::NaiveTime>,
     ) -> ScheduleDestinationDeparturesRow {
         ScheduleDestinationDeparturesRow {
             service_date,
@@ -2804,6 +2849,7 @@ mod schedule_destination_departures_query_tests {
             scheduled,
             train_uid: train_uid.to_string(),
             origin_crs: origin_crs.to_string(),
+            destination_arrival,
             true_origin_crs: true_origin_crs.map(str::to_string),
         }
     }
@@ -2821,6 +2867,7 @@ mod schedule_destination_departures_query_tests {
                 "C10001",
                 "EUS",
                 Some("PAD"),
+                None,
             ),
             row(
                 service_date,
@@ -2829,6 +2876,7 @@ mod schedule_destination_departures_query_tests {
                 "C10002",
                 "CRE",
                 Some("SWA"),
+                None,
             ),
             row(
                 service_date,
@@ -2837,6 +2885,7 @@ mod schedule_destination_departures_query_tests {
                 "C10003",
                 "EUS",
                 Some("PAD"),
+                None,
             ),
         ]
     }
@@ -2862,8 +2911,8 @@ mod schedule_destination_departures_query_tests {
         delete_day(&pool, date).await;
 
         let first = vec![
-            row(date, "ZRB", time(8, 0), "OLD1", "EUS", None),
-            row(date, "ZRC", time(9, 0), "OLD2", "CRE", None),
+            row(date, "ZRB", time(8, 0), "OLD1", "EUS", None, None),
+            row(date, "ZRC", time(9, 0), "OLD2", "CRE", None, None),
         ];
         let inserted = upsert_schedule_destination_departures(&pool, &first)
             .await
@@ -2871,7 +2920,7 @@ mod schedule_destination_departures_query_tests {
         assert_eq!(inserted, 2);
 
         // The second publish drops ZRC entirely and changes ZRB's row.
-        let second = vec![row(date, "ZRB", time(9, 30), "NEW1", "CRE", None)];
+        let second = vec![row(date, "ZRB", time(9, 30), "NEW1", "CRE", None, None)];
         upsert_schedule_destination_departures(&pool, &second)
             .await
             .expect("second upsert");
@@ -2941,8 +2990,8 @@ mod schedule_destination_departures_query_tests {
         upsert_schedule_destination_departures(
             &pool,
             &[
-                row(date, "ZRD", time(8, 0), "C30001", "EUS", Some("PAD")),
-                row(date, "ZRD", time(9, 0), "C30002", "CRE", None),
+                row(date, "ZRD", time(8, 0), "C30001", "EUS", Some("PAD"), None),
+                row(date, "ZRD", time(9, 0), "C30002", "CRE", None, None),
             ],
         )
         .await
@@ -2968,6 +3017,44 @@ mod schedule_destination_departures_query_tests {
         delete_day(&pool, date).await;
     }
 
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn upsert_round_trips_destination_arrival_including_a_null_value() {
+        let pool = test_pool().await;
+        let date = fixture_date(31);
+        delete_day(&pool, date).await;
+
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                row(date, "ZRD", time(8, 0), "C70001", "EUS", Some("EUS"), Some(time(11, 30))),
+                row(date, "ZRD", time(9, 0), "C70002", "CRE", None, None),
+            ],
+        )
+        .await
+        .expect("seed rows");
+
+        let stored: Vec<(String, Option<chrono::NaiveTime>)> = sqlx::query_as(
+            "SELECT train_uid, destination_arrival FROM schedule_destination_departures \
+             WHERE service_date = $1 ORDER BY train_uid",
+        )
+        .bind(date)
+        .fetch_all(&pool)
+        .await
+        .expect("read back");
+
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0], ("C70001".to_string(), Some(time(11, 30))));
+        assert_eq!(
+            stored[1],
+            ("C70002".to_string(), None),
+            "an absent destination_arrival must round-trip as SQL NULL, not a fabricated time"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
     /// Three trains all callable-at "RDG" (the new required search key),
     /// to two different destinations, from two different true origins --
     /// exactly what's needed to prove `origin`/`destination` are
@@ -2984,6 +3071,7 @@ mod schedule_destination_departures_query_tests {
                 "C40001",
                 "RDG",
                 Some("PAD"),
+                None,
             ),
             row(
                 service_date,
@@ -2992,6 +3080,7 @@ mod schedule_destination_departures_query_tests {
                 "C40002",
                 "RDG",
                 Some("SWA"),
+                None,
             ),
             row(
                 service_date,
@@ -3000,6 +3089,7 @@ mod schedule_destination_departures_query_tests {
                 "C40003",
                 "RDG",
                 Some("PAD"),
+                None,
             ),
         ]
     }
@@ -3028,6 +3118,8 @@ mod schedule_destination_departures_query_tests {
             None,
             None,
             None,
+            None,
+            None,
             100,
         )
         .await
@@ -3052,6 +3144,8 @@ mod schedule_destination_departures_query_tests {
             None,
             None,
             None,
+            None,
+            None,
             100,
         )
         .await
@@ -3066,6 +3160,7 @@ mod schedule_destination_departures_query_tests {
                 "destination_crs": "WAT",
                 "true_origin_crs": "PAD",
                 "scheduled": "08:22:00",
+                "destination_arrival": null,
             }),
             "element shape is exactly what render::calling_point_departure_json reads"
         );
@@ -3085,8 +3180,8 @@ mod schedule_destination_departures_query_tests {
         upsert_schedule_destination_departures(
             &pool,
             &[
-                row(date, "WAT", time(8, 0), "C50001", "RDG", None),
-                row(date, "WAT", time(8, 5), "C50002", "SLO", None),
+                row(date, "WAT", time(8, 0), "C50001", "RDG", None, None),
+                row(date, "WAT", time(8, 5), "C50002", "SLO", None, None),
             ],
         )
         .await
@@ -3097,6 +3192,8 @@ mod schedule_destination_departures_query_tests {
             "RDG",
             date,
             any_time(),
+            None,
+            None,
             None,
             None,
             None,
@@ -3127,6 +3224,8 @@ mod schedule_destination_departures_query_tests {
             date,
             any_time(),
             Some("PAD"),
+            None,
+            None,
             None,
             None,
             None,
@@ -3167,6 +3266,8 @@ mod schedule_destination_departures_query_tests {
             Some("WAT"),
             None,
             None,
+            None,
+            None,
             100,
         )
         .await
@@ -3202,6 +3303,8 @@ mod schedule_destination_departures_query_tests {
             any_time(),
             Some("PAD"),
             Some("WAT"),
+            None,
+            None,
             None,
             None,
             100,
@@ -3241,6 +3344,8 @@ mod schedule_destination_departures_query_tests {
             Some("ZZZ"),
             None,
             None,
+            None,
+            None,
             100,
         )
         .await
@@ -3274,7 +3379,15 @@ mod schedule_destination_departures_query_tests {
 
         upsert_schedule_destination_departures(
             &pool,
-            &[row(yesterday, "WAT", time(8, 0), "STALE", "RDG", None)],
+            &[row(
+                yesterday,
+                "WAT",
+                time(8, 0),
+                "STALE",
+                "RDG",
+                None,
+                None,
+            )],
         )
         .await
         .expect("seed a stale day");
@@ -3284,6 +3397,8 @@ mod schedule_destination_departures_query_tests {
             "RDG",
             date,
             any_time(),
+            None,
+            None,
             None,
             None,
             None,
@@ -3319,6 +3434,8 @@ mod schedule_destination_departures_query_tests {
             None,
             Some(time(12, 0)),
             None,
+            None,
+            None,
             100,
         )
         .await
@@ -3327,6 +3444,84 @@ mod schedule_destination_departures_query_tests {
 
         assert_eq!(page.departures.len(), 1);
         assert_eq!(page.departures[0]["uid"], "C40002");
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_filters_by_destination_arrival_independent_of_the_station_time_range()
+     {
+        let pool = test_pool().await;
+        let date = fixture_date_feb(1);
+        delete_day(&pool, date).await;
+        // Two trains both callable at RDG within the SAME scheduled
+        // (station) time window, but arriving at WAT 40 minutes apart --
+        // so only the destination_arrival bound, not scheduled/to_time,
+        // can tell them apart.
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                row(date, "WAT", time(8, 0), "C80001", "RDG", None, Some(time(8, 40))),
+                row(date, "WAT", time(8, 5), "C80002", "RDG", None, Some(time(9, 20))),
+            ],
+        )
+        .await
+        .expect("seed fixture");
+
+        let page = search_schedule_calling_point_departures(
+            &pool,
+            "RDG",
+            date,
+            any_time(),
+            None,
+            Some("WAT"),
+            None,
+            Some(time(9, 0)),
+            Some(time(9, 30)),
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+
+        assert_eq!(page.departures.len(), 1);
+        assert_eq!(page.departures[0]["uid"], "C80002");
+        assert_eq!(page.departures[0]["destination_arrival"], "09:20:00");
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_with_no_destination_arrival_bounds_ignores_a_null_destination_arrival()
+     {
+        let pool = test_pool().await;
+        let date = fixture_date_feb(2);
+        delete_day(&pool, date).await;
+        upsert_schedule_destination_departures(
+            &pool,
+            &[row(date, "WAT", time(8, 0), "C80003", "RDG", None, None)],
+        )
+        .await
+        .expect("seed fixture");
+
+        let page = search_schedule_calling_point_departures(
+            &pool, "RDG", date, any_time(), None, None, None, None, None, None, 100,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+
+        assert_eq!(
+            page.departures.len(),
+            1,
+            "no destination_from/to means the NULL row is still returned"
+        );
+        assert!(page.departures[0]["destination_arrival"].is_null());
 
         delete_day(&pool, date).await;
     }
@@ -3345,9 +3540,9 @@ mod schedule_destination_departures_query_tests {
         upsert_schedule_destination_departures(
             &pool,
             &[
-                row(date, "WAT", time(9, 0), "C60002", "RDG", None),
-                row(date, "WAT", time(9, 0), "C60001", "RDG", None),
-                row(date, "BRI", time(11, 0), "C60003", "RDG", None),
+                row(date, "WAT", time(9, 0), "C60002", "RDG", None, None),
+                row(date, "WAT", time(9, 0), "C60001", "RDG", None, None),
+                row(date, "BRI", time(11, 0), "C60003", "RDG", None, None),
             ],
         )
         .await
@@ -3361,6 +3556,8 @@ mod schedule_destination_departures_query_tests {
                 "RDG",
                 date,
                 any_time(),
+                None,
+                None,
                 None,
                 None,
                 None,
