@@ -26,6 +26,7 @@ interface TrainSearchRow {
   stationCrs: string;
   originCrs: string | null;
   destinationCrs: string | null;
+  destinationArrival: string | null;
 }
 
 /** The envelope `GET /public/trains/search` returns. Not a bare array: it
@@ -75,6 +76,15 @@ type Results =
  * schedule sources are "today only, server-side". Both are explicit
  * non-goals, not omissions to fill in later.
  *
+ * A second, independent time-range pair -- "Arrival from"/"Arrival to" --
+ * filters on when the train reaches Destination, as opposed to From/To
+ * above, which stay scoped to Station. It only renders once Destination is
+ * filled in: an arrival-time filter with nothing named to arrive at is
+ * ambiguous, and the backend 400s exactly that combination (see
+ * `crates/api/src/routes/trains.rs`'s own validation), so this component
+ * never lets the caller construct it. See
+ * docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md.
+ *
  * Fetches through the same-origin `/api/*` proxy, like every other Client
  * Component in this app (`API_BASE_URL` is server-only). */
 export function TrainSearchForm({
@@ -93,6 +103,8 @@ export function TrainSearchForm({
   const [destinationCrs, setDestinationCrs] = useState(initialDestination);
   const [fromTime, setFromTime] = useState('');
   const [toTime, setToTime] = useState('');
+  const [destinationArrivalFrom, setDestinationArrivalFrom] = useState('');
+  const [destinationArrivalTo, setDestinationArrivalTo] = useState('');
   const [results, setResults] = useState<Results>(null);
   const [searching, setSearching] = useState(false);
   // Separate from `searching` on purpose: a "Load more" in flight must not
@@ -109,8 +121,19 @@ export function TrainSearchForm({
   const destinationValid = destinationCrs.trim() === '' || CRS_PATTERN.test(destinationCrs.trim());
   const fromValid = fromTime.trim() === '' || TIME_PATTERN.test(fromTime.trim());
   const toValid = toTime.trim() === '' || TIME_PATTERN.test(toTime.trim());
+  const destinationArrivalFromValid =
+    destinationArrivalFrom.trim() === '' || TIME_PATTERN.test(destinationArrivalFrom.trim());
+  const destinationArrivalToValid =
+    destinationArrivalTo.trim() === '' || TIME_PATTERN.test(destinationArrivalTo.trim());
   const canSearch =
-    stationValid && originValid && destinationValid && fromValid && toValid && !searching;
+    stationValid &&
+    originValid &&
+    destinationValid &&
+    fromValid &&
+    toValid &&
+    destinationArrivalFromValid &&
+    destinationArrivalToValid &&
+    !searching;
 
   // Computed once per render rather than once per row: every result links
   // to the same calendar date, because this search is always "today"
@@ -125,7 +148,17 @@ export function TrainSearchForm({
   function searchParams() {
     const params = new URLSearchParams({ station: stationCrs.trim().toUpperCase() });
     if (originCrs.trim()) params.set('origin', originCrs.trim().toUpperCase());
-    if (destinationCrs.trim()) params.set('destination', destinationCrs.trim().toUpperCase());
+    if (destinationCrs.trim()) {
+      params.set('destination', destinationCrs.trim().toUpperCase());
+      // Gated on destination being set, not just on the fields having
+      // values: this is what makes clearing Destination drop any
+      // previously-entered arrival-time filter, without needing to also
+      // clear destinationArrivalFrom/To state -- the fields themselves
+      // unmount (see the conditional render below) but their state is
+      // deliberately remembered in case Destination is filled back in.
+      if (destinationArrivalFrom.trim()) params.set('destination_from', destinationArrivalFrom.trim());
+      if (destinationArrivalTo.trim()) params.set('destination_to', destinationArrivalTo.trim());
+    }
     if (fromTime.trim()) params.set('from', fromTime.trim());
     if (toTime.trim()) params.set('to', toTime.trim());
     return params;
@@ -338,6 +371,33 @@ export function TrainSearchForm({
           error={toTime.length > 0 && !toValid ? 'Must be a time like 12:00' : null}
         />
       </Group>
+      {destinationCrs.trim() !== '' && (
+        <Group grow align="flex-start">
+          <TextInput
+            label="Arrival from (optional)"
+            placeholder="09:00"
+            description="When the train reaches Terminating at above -- separate from From/To, which are about Station above."
+            value={destinationArrivalFrom}
+            onChange={(event) => setDestinationArrivalFrom(event.currentTarget.value)}
+            error={
+              destinationArrivalFrom.length > 0 && !destinationArrivalFromValid
+                ? 'Must be a time like 09:00'
+                : null
+            }
+          />
+          <TextInput
+            label="Arrival to (optional)"
+            placeholder="09:30"
+            value={destinationArrivalTo}
+            onChange={(event) => setDestinationArrivalTo(event.currentTarget.value)}
+            error={
+              destinationArrivalTo.length > 0 && !destinationArrivalToValid
+                ? 'Must be a time like 09:30'
+                : null
+            }
+          />
+        </Group>
+      )}
       <Group>
         <Button type="submit" disabled={!canSearch}>
           {searching ? 'Searching…' : 'Search'}

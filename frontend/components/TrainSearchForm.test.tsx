@@ -14,10 +14,20 @@ vi.mock('next/navigation', () => ({
  * ENVELOPE, not a bare array: `results` plus a `nextCursor` that is an
  * explicit `null` on the last page. */
 function searchBody(
-  rows: Array<{ uid: string; scheduled: string; stationCrs: string; originCrs: string | null; destinationCrs: string | null }>,
+  rows: Array<{
+    uid: string;
+    scheduled: string;
+    stationCrs: string;
+    originCrs: string | null;
+    destinationCrs: string | null;
+    destinationArrival?: string | null;
+  }>,
   nextCursor: string | null = null,
 ) {
-  return JSON.stringify({ results: rows, nextCursor });
+  return JSON.stringify({
+    results: rows.map((row) => ({ destinationArrival: null, ...row })),
+    nextCursor,
+  });
 }
 
 const PAGE_ONE = [
@@ -376,5 +386,49 @@ describe('TrainSearchForm', () => {
       expect(screen.queryByText('11:40 · EUS → MAN → WAT')).not.toBeInTheDocument(),
     );
     expect(screen.getByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
+  });
+
+  it('does not render the arrival-time filter until a destination is entered', () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    expect(screen.queryByLabelText('Arrival from (optional)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Arrival to (optional)')).not.toBeInTheDocument();
+  });
+
+  it('renders the arrival-time filter once a destination is entered', () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(<TrainSearchForm initialStation="MAN" initialDestination="WAT" />);
+
+    expect(screen.getByLabelText('Arrival from (optional)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Arrival to (optional)')).toBeInTheDocument();
+  });
+
+  it('sends destination_from/destination_to only when a destination is set', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm initialStation="man" initialDestination="wat" />);
+
+    fireEvent.change(screen.getByLabelText('Arrival from (optional)'), { target: { value: '09:00' } });
+    fireEvent.change(screen.getByLabelText('Arrival to (optional)'), { target: { value: '09:30' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() =>
+      expect(searchCallUrl(fetchMock)).toBe(
+        '/api/trains/search?station=MAN&destination=WAT&destination_from=09%3A00&destination_to=09%3A30',
+      ),
+    );
+  });
+
+  it('drops any previously-entered arrival-time filter once destination is cleared', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" initialDestination="WAT" />);
+
+    fireEvent.change(screen.getByLabelText('Arrival from (optional)'), { target: { value: '09:00' } });
+    fireEvent.change(screen.getByPlaceholderText('e.g. Manchester or MAN'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
   });
 });
