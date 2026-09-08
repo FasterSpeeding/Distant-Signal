@@ -73,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
             config.trust_event_backlog_retention_days,
             config.trains_retention_days,
             config.untracked_trains_retention_days,
+            config.schedule_destination_departures_retention_days,
             &mut dedup_ledger,
             config.full_coverage_enabled_default,
         )
@@ -185,6 +186,7 @@ async fn run_cycle(
     trust_event_backlog_retention_days: i64,
     trains_retention_days: i64,
     untracked_trains_retention_days: i64,
+    schedule_destination_departures_retention_days: i64,
     dedup_ledger: &mut SeenServiceLedger,
     full_coverage_enabled_default: bool,
 ) -> anyhow::Result<()> {
@@ -281,6 +283,21 @@ async fn run_cycle(
         "aggregator_trains_rows_pruned_total"
     ))
     .increment(trains_pruned);
+
+    // The CIF-derived destination-search table -- the one published product
+    // in this repo that genuinely accrues (~377,000 rows per service date,
+    // one row per departure) rather than wholesale-replacing a bounded key
+    // space. See queries::prune_schedule_destination_departures' own doc
+    // comment.
+    let schedule_destination_departures_pruned = queries::prune_schedule_destination_departures(
+        pool,
+        schedule_destination_departures_retention_days,
+    )
+    .await?;
+    metrics::counter!(common::metrics::metric_name(
+        "aggregator_schedule_destination_departures_rows_pruned_total"
+    ))
+    .increment(schedule_destination_departures_pruned);
 
     // Per-service dedup pass, folded together with the daily-stats write:
     // `dedup::dedup_new_sample_stats` is STATEFUL (it mutates `dedup_ledger`

@@ -90,6 +90,13 @@ spec:
             # default without that confirmation happening first.
             - name: TRUST_EVENT_BACKLOG_RETENTION_DAYS
               value: {{ .Values.aggregator.trustEventBacklogRetentionDays | quote }}
+            # NOT a licensing safeguard, unlike the setting directly above --
+            # purely disk. See
+            # Config::schedule_destination_departures_retention_days
+            # (crates/aggregator/src/config.rs) for why the default is 2
+            # rather than 1.
+            - name: SCHEDULE_DESTINATION_DEPARTURES_RETENTION_DAYS
+              value: {{ .Values.aggregator.scheduleDestinationDeparturesRetentionDays | quote }}
             - name: TRAINS_RETENTION_DAYS
               value: {{ .Values.aggregator.trainsRetentionDays | quote }}
             # Shorter tier for a trains row with NO train_subscriptions
