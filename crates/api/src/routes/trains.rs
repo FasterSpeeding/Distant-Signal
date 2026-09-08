@@ -96,6 +96,18 @@ struct TrainSearchParams {
     from: Option<String>,
     /// Optional, `"HH:MM"`, inclusive upper bound.
     to: Option<String>,
+    /// Optional, `"HH:MM"`, inclusive lower bound on the time the train
+    /// ARRIVES at `destination` -- a SEPARATE filter from `from`/`to`
+    /// above, which stay scoped to `station`. Requires `destination` to
+    /// be set; see this route's own validation below for why an
+    /// arrival-time filter with nothing named to arrive at 400s instead
+    /// of being silently ignored, mirroring `MAX_SEARCH_LIMIT`'s own
+    /// doc comment's reasoning for the other filters. See
+    /// docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md.
+    destination_from: Option<String>,
+    /// Optional, `"HH:MM"`, inclusive upper bound. Same `destination`
+    /// requirement as `destination_from`.
+    destination_to: Option<String>,
     /// Optional page size, 1..=`MAX_SEARCH_LIMIT`, defaulting to
     /// `DEFAULT_SEARCH_LIMIT`. Values above the maximum are clamped, not
     /// rejected; zero, negative and unparseable values are a `400`.
@@ -221,6 +233,30 @@ async fn get_trains_search(
         .filter(|s| !s.trim().is_empty())
         .map(|s| normalize_time("to", s))
         .transpose()?;
+    let destination_from_time = params
+        .destination_from
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| normalize_time("destination_from", s))
+        .transpose()?;
+    let destination_to_time = params
+        .destination_to
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| normalize_time("destination_to", s))
+        .transpose()?;
+    // Same "malformed input 400s, it is never silently ignored" posture
+    // this file's own doc comment already argues for `from`/`to`/
+    // `destination`/`origin`/`station` (lines 68-76): a destination-
+    // arrival filter with no destination to arrive AT is ambiguous
+    // input, not a wider search, so this 400s rather than quietly acting
+    // as though neither bound was set.
+    if (destination_from_time.is_some() || destination_to_time.is_some()) && destination.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "destination_from and destination_to require destination to be set".to_string(),
+        ));
+    }
     let limit = normalize_limit(params.limit.as_deref())?;
     let after = params
         .after
@@ -252,6 +288,8 @@ async fn get_trains_search(
         origin.as_deref(),
         destination.as_deref(),
         to_time,
+        destination_from_time,
+        destination_to_time,
         after.as_ref(),
         limit,
     )
@@ -486,6 +524,42 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_destination_from_without_destination_is_a_400() {
+        let pool = connect().await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB&destination_from=09:00").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("destination"), "400 body should name the field: {body}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_destination_to_without_destination_is_a_400() {
+        let pool = connect().await;
+        let (status, _) = get(&pool, "/trains/search?station=ZRB&destination_to=09:00").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_malformed_destination_from_is_a_400() {
+        let pool = connect().await;
+        let (status, body) = get(
+            &pool,
+            "/trains/search?station=ZRB&destination=WAT&destination_from=teatime",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("destination_from"),
+            "400 body should name the field: {body}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_malformed_after_cursor_is_a_400() {
         let pool = connect().await;
         seed_today(&pool, "ZRB").await;
@@ -631,6 +705,52 @@ mod db_tests {
         let rows = results(&body);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["uid"], "C10002");
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_filters_by_destination_arrival_independent_of_from_to() {
+        let pool = connect().await;
+        delete_today(&pool).await;
+        let today = chrono::Utc::now().date_naive();
+        let (_, soon, later) = relative_times();
+        // Both rows share the SAME scheduled (station) time, `soon` -- so
+        // only destination_from/destination_to, not from/to, can tell them
+        // apart. Their destination_arrival values reuse `soon`/`later`
+        // themselves (rather than adding further offsets) so this stays
+        // inside relative_times()'s own "at least an hour before midnight"
+        // guarantee.
+        for (train_uid, destination_arrival) in [("C90001", soon), ("C90002", later)] {
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                    (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs, destination_arrival) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            )
+            .bind(today)
+            .bind("WAT")
+            .bind(soon)
+            .bind(train_uid)
+            .bind("ZRB")
+            .bind(Option::<&str>::None)
+            .bind(destination_arrival)
+            .execute(&pool)
+            .await
+            .expect("seed fixture row");
+        }
+
+        let uri = format!(
+            "/trains/search?station=ZRB&destination=WAT&destination_from={}&destination_to={}",
+            later.format("%H:%M"),
+            later.format("%H:%M"),
+        );
+        let (status, body) = get(&pool, &uri).await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = results(&body);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["uid"], "C90002");
+
         delete_today(&pool).await;
     }
 
