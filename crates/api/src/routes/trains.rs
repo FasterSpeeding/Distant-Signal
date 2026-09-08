@@ -22,7 +22,13 @@
 //! point -- boarding or alighting) is required; `origin` (the schedule's
 //! TRUE first calling point) and `destination` (the schedule's TRUE final
 //! calling point) are both optional, independent filters, along with the
-//! `from`/`to` time range. There is deliberately NO operator filter: the
+//! `from`/`to` time range. `from`/`to` bound `station`'s own `scheduled`
+//! time; `destination_from`/`destination_to` are a SEPARATE, independent
+//! `"HH:MM"` bound pair on when the train ARRIVES at `destination`, and
+//! require `destination` to be set (a `400` otherwise -- see
+//! `TrainSearchParams::destination_from`'s own doc comment and
+//! docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md).
+//! There is deliberately NO operator filter: the
 //! CIF SCHEDULE feed's operator field is parsed-but-undecoded everywhere in
 //! this codebase, so a CIF-derived row has no operator to filter on at all.
 //! There is deliberately NO date parameter: like
@@ -750,6 +756,12 @@ mod db_tests {
         let rows = results(&body);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["uid"], "C90002");
+        assert_eq!(
+            rows[0]["destinationArrival"],
+            later.format("%H:%M").to_string(),
+            "the camelCase destinationArrival field must reach the actual HTTP response, \
+             trimmed to HH:MM like every other rendered time on this route"
+        );
 
         delete_today(&pool).await;
     }
