@@ -210,12 +210,21 @@ pub(crate) fn calling_point_departure_json(d: &Value, station_crs: &str) -> Valu
         .get("scheduled")
         .and_then(Value::as_str)
         .map(|s| s.chars().take(5).collect::<String>());
+    // `destination_arrival` is absent from `d` both when the key is
+    // missing and when it is JSON `null` -- either way this ends up
+    // `None`, and `json!`'s `None::<String>` still serializes as an
+    // explicit `null` below, matching `originCrs`'s own null handling.
+    let destination_arrival = d
+        .get("destination_arrival")
+        .and_then(Value::as_str)
+        .map(|s| s.chars().take(5).collect::<String>());
     json!({
         "uid": d.get("uid").cloned().unwrap_or(Value::Null),
         "scheduled": scheduled,
         "stationCrs": station_crs,
         "originCrs": d.get("true_origin_crs").cloned().unwrap_or(Value::Null),
         "destinationCrs": d.get("destination_crs").cloned().unwrap_or(Value::Null),
+        "destinationArrival": destination_arrival,
     })
 }
 
@@ -681,6 +690,37 @@ mod tests {
         let json = calling_point_departure_json(&row, "RDG");
         assert!(json["originCrs"].is_null());
         assert!(json.get("originCrs").is_some(), "must be explicit null, not omitted");
+    }
+
+    #[test]
+    fn calling_point_departure_json_renders_destination_arrival_trimmed_to_hh_mm() {
+        let row = serde_json::json!({
+            "uid": "C10001",
+            "destination_crs": "WAT",
+            "true_origin_crs": "PAD",
+            "scheduled": "08:22:00",
+            "destination_arrival": "11:30:00",
+        });
+        let json = calling_point_departure_json(&row, "RDG");
+        assert_eq!(json["destinationArrival"], "11:30");
+    }
+
+    #[test]
+    fn calling_point_departure_json_renders_a_null_destination_arrival_as_json_null_not_a_missing_key()
+     {
+        let row = serde_json::json!({
+            "uid": "C10002",
+            "destination_crs": "WAT",
+            "true_origin_crs": "PAD",
+            "scheduled": "10:05:00",
+            "destination_arrival": null,
+        });
+        let json = calling_point_departure_json(&row, "RDG");
+        assert!(json["destinationArrival"].is_null());
+        assert!(
+            json.get("destinationArrival").is_some(),
+            "must be explicit null, not omitted"
+        );
     }
 
     #[test]
