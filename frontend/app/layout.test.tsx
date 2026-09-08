@@ -113,3 +113,24 @@ describe('backend reachability threading', () => {
     expect(source).toMatch(/<Suspense fallback=\{<Text size="sm" c="dimmed">Log in<\/Text>\}>/);
   });
 });
+
+describe('the primary nav', () => {
+  // Source assertion, not a render: these links live inside RootLayout
+  // itself, which is unexported and awaits getDataFreshness() -- the same
+  // reason the `<Container component="main">` case above is written this
+  // way rather than rendered.
+  it('links to the new train-search page', () => {
+    const source = readFileSync('app/layout.tsx', 'utf8');
+    expect(source).toMatch(/<TextLink href="\/trains">Find a Train<\/TextLink>/);
+  });
+
+  // Regression guard: /trains is an ADDITION, not a replacement. The
+  // design doc's §4 is an explicit "no" on removing or hiding /track, and
+  // the two station/line entry points either side of the new link must
+  // survive it.
+  it('still links to the existing lines and stations pages', () => {
+    const source = readFileSync('app/layout.tsx', 'utf8');
+    expect(source).toMatch(/<TextLink href="\/lines">All Lines<\/TextLink>/);
+    expect(source).toMatch(/<TextLink href="\/stations">Station Lookup<\/TextLink>/);
+  });
+});

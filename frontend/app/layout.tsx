@@ -225,6 +225,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   <Group gap="lg">
                     <TextLink href="/lines">All Lines</TextLink>
                     <TextLink href="/stations">Station Lookup</TextLink>
+                    {/* The primary train-discovery surface. `/track` is
+                        still reachable (from here via /trains' own manual
+                        fallback link, from /stations/[crs], and from
+                        TicketEntryForm) but is no longer the first thing a
+                        visitor is pointed at -- see
+                        docs/superpowers/specs/2026-09-07-train-listing-page-design.md
+                        §4. */}
+                    <TextLink href="/trains">Find a Train</TextLink>
                     <TrackedTrainsNavItem />
                     <DataFreshnessNavItem freshness={freshness} />
                     <ThemeToggle />
