@@ -1145,7 +1145,11 @@ pub async fn search_schedule_calling_point_departures(
     }
 
     let has_more = rows.len() as i64 > limit;
-    let page_rows = if has_more { &rows[..limit as usize] } else { &rows[..] };
+    let page_rows = if has_more {
+        &rows[..limit as usize]
+    } else {
+        &rows[..]
+    };
 
     let next_cursor = if has_more {
         page_rows
@@ -2973,9 +2977,30 @@ mod schedule_destination_departures_query_tests {
         service_date: chrono::NaiveDate,
     ) -> Vec<ScheduleDestinationDeparturesRow> {
         vec![
-            row(service_date, "WAT", time(8, 22), "C40001", "RDG", Some("PAD")),
-            row(service_date, "WAT", time(10, 5), "C40002", "RDG", Some("SWA")),
-            row(service_date, "BRI", time(18, 40), "C40003", "RDG", Some("PAD")),
+            row(
+                service_date,
+                "WAT",
+                time(8, 22),
+                "C40001",
+                "RDG",
+                Some("PAD"),
+            ),
+            row(
+                service_date,
+                "WAT",
+                time(10, 5),
+                "C40002",
+                "RDG",
+                Some("SWA"),
+            ),
+            row(
+                service_date,
+                "BRI",
+                time(18, 40),
+                "C40003",
+                "RDG",
+                Some("PAD"),
+            ),
         ]
     }
 
@@ -2995,7 +3020,15 @@ mod schedule_destination_departures_query_tests {
         delete_day(&pool, date).await;
 
         let result = search_schedule_calling_point_departures(
-            &pool, "RDG", date, any_time(), None, None, None, None, 100,
+            &pool,
+            "RDG",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            None,
+            100,
         )
         .await
         .expect("search");
@@ -3011,7 +3044,15 @@ mod schedule_destination_departures_query_tests {
         seed_calling_point(&pool, date).await;
 
         let page = search_schedule_calling_point_departures(
-            &pool, "RDG", date, any_time(), None, None, None, None, 100,
+            &pool,
+            "RDG",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            None,
+            100,
         )
         .await
         .expect("search")
@@ -3052,7 +3093,15 @@ mod schedule_destination_departures_query_tests {
         .expect("seed two-station fixture");
 
         let page = search_schedule_calling_point_departures(
-            &pool, "RDG", date, any_time(), None, None, None, None, 100,
+            &pool,
+            "RDG",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            None,
+            100,
         )
         .await
         .expect("search")
@@ -3073,13 +3122,25 @@ mod schedule_destination_departures_query_tests {
         seed_calling_point(&pool, date).await;
 
         let page = search_schedule_calling_point_departures(
-            &pool, "RDG", date, any_time(), Some("PAD"), None, None, None, 100,
+            &pool,
+            "RDG",
+            date,
+            any_time(),
+            Some("PAD"),
+            None,
+            None,
+            None,
+            100,
         )
         .await
         .expect("search")
         .expect("the day is published");
 
-        let uids: Vec<&str> = page.departures.iter().map(|d| d["uid"].as_str().unwrap()).collect();
+        let uids: Vec<&str> = page
+            .departures
+            .iter()
+            .map(|d| d["uid"].as_str().unwrap())
+            .collect();
         assert_eq!(
             uids,
             vec!["C40001", "C40003"],
@@ -3098,13 +3159,25 @@ mod schedule_destination_departures_query_tests {
         seed_calling_point(&pool, date).await;
 
         let page = search_schedule_calling_point_departures(
-            &pool, "RDG", date, any_time(), None, Some("WAT"), None, None, 100,
+            &pool,
+            "RDG",
+            date,
+            any_time(),
+            None,
+            Some("WAT"),
+            None,
+            None,
+            100,
         )
         .await
         .expect("search")
         .expect("the day is published");
 
-        let uids: Vec<&str> = page.departures.iter().map(|d| d["uid"].as_str().unwrap()).collect();
+        let uids: Vec<&str> = page
+            .departures
+            .iter()
+            .map(|d| d["uid"].as_str().unwrap())
+            .collect();
         assert_eq!(
             uids,
             vec!["C40001", "C40002"],
@@ -3123,7 +3196,15 @@ mod schedule_destination_departures_query_tests {
         seed_calling_point(&pool, date).await;
 
         let page = search_schedule_calling_point_departures(
-            &pool, "RDG", date, any_time(), Some("PAD"), Some("WAT"), None, None, 100,
+            &pool,
+            "RDG",
+            date,
+            any_time(),
+            Some("PAD"),
+            Some("WAT"),
+            None,
+            None,
+            100,
         )
         .await
         .expect("search")
@@ -3131,6 +3212,46 @@ mod schedule_destination_departures_query_tests {
 
         assert_eq!(page.departures.len(), 1);
         assert_eq!(page.departures[0]["uid"], "C40001");
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_published_day_with_no_matching_filters_is_some_and_empty() {
+        // Pins the deliberate 404-vs-empty-200 split this function's own doc
+        // comment documents: the day IS published, but the filters simply
+        // matched nothing, so the result must be `Some(page)` with an empty
+        // `departures`, never `None`. Ported coverage for the branch the
+        // deleted destination-first equivalent
+        // (`search_with_the_day_published_but_no_matching_rows_is_some_and_empty`)
+        // used to pin.
+        let pool = test_pool().await;
+        let date = fixture_date(30);
+        seed_calling_point(&pool, date).await;
+
+        // No fixture row has this destination.
+        let page = search_schedule_calling_point_departures(
+            &pool,
+            "RDG",
+            date,
+            any_time(),
+            None,
+            Some("ZZZ"),
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day IS published");
+
+        assert!(
+            page.departures.is_empty(),
+            "a published-but-unmatched day is Some(empty), never None"
+        );
+        assert!(page.next_cursor.is_none());
 
         delete_day(&pool, date).await;
     }
@@ -3159,7 +3280,15 @@ mod schedule_destination_departures_query_tests {
         .expect("seed a stale day");
 
         let result = search_schedule_calling_point_departures(
-            &pool, "RDG", date, any_time(), None, None, None, None, 100,
+            &pool,
+            "RDG",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            None,
+            100,
         )
         .await
         .expect("search");
@@ -3182,7 +3311,15 @@ mod schedule_destination_departures_query_tests {
         // Lower bound 10:05 is inclusive and matches exactly; upper bound
         // 12:00 excludes the 18:40 row.
         let page = search_schedule_calling_point_departures(
-            &pool, "RDG", date, time(10, 5), None, None, Some(time(12, 0)), None, 100,
+            &pool,
+            "RDG",
+            date,
+            time(10, 5),
+            None,
+            None,
+            Some(time(12, 0)),
+            None,
+            100,
         )
         .await
         .expect("search")
@@ -3198,7 +3335,7 @@ mod schedule_destination_departures_query_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 search_calling_point -- --ignored --test-threads=1`"]
     async fn search_calling_point_keyset_cursor_pages_without_gaps_or_repeats_and_breaks_ties_on_train_uid()
-    {
+     {
         // Two rows share one `scheduled` (09:00) at the SAME station, to
         // prove train_uid alone is a sufficient tiebreaker now that
         // origin_crs is fixed per query, not part of the ordering.
@@ -3220,7 +3357,15 @@ mod schedule_destination_departures_query_tests {
         let mut cursor: Option<CallingPointDepartureCursor> = None;
         for _ in 0..5 {
             let page = search_schedule_calling_point_departures(
-                &pool, "RDG", date, any_time(), None, None, None, cursor.as_ref(), 1,
+                &pool,
+                "RDG",
+                date,
+                any_time(),
+                None,
+                None,
+                None,
+                cursor.as_ref(),
+                1,
             )
             .await
             .expect("search")
@@ -3239,7 +3384,10 @@ mod schedule_destination_departures_query_tests {
             vec!["C60001", "C60002", "C60003"],
             "the 09:00 tie is broken by train_uid, and every row appears exactly once"
         );
-        assert!(cursor.is_none(), "the last page must not hand back a cursor");
+        assert!(
+            cursor.is_none(),
+            "the last page must not hand back a cursor"
+        );
 
         delete_day(&pool, date).await;
     }
