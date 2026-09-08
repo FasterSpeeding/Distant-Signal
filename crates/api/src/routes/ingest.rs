@@ -453,7 +453,7 @@ async fn post_schedule_network_departures(
 /// `crates/schedule-reference`'s per-DELIVERY batch of CIF-derived
 /// per-DESTINATION departures -- the destination-keyed sibling of
 /// `post_schedule_network_departures` directly above, and the write side of
-/// the destination-first train search
+/// the calling-point-first train search
 /// (docs/superpowers/specs/2026-09-07-train-listing-page-design.md,
 /// Approach B, as revised by
 /// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md,

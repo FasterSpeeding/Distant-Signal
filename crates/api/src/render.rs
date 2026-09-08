@@ -181,23 +181,6 @@ pub(crate) fn schedule_departure_json(d: &Value) -> Value {
 }
 
 /// One `GET /public/trains/search` result row. Sibling of
-/// `schedule_departure_json` directly above, same "hand-built camelCase
-/// over an opaque JSONB element" convention, with two differences:
-///
-/// * it carries `originCrs` (the calling point this train departs FROM),
-///   which the origin-keyed sibling doesn't need because there the origin
-///   is the URL path segment; and
-/// * `destinationCrs` is supplied by the CALLER, not read out of `d` --
-///   it is the route's own required query parameter and is identical for
-///   every row of one response, so the search query does not bother to
-///   project it back out of the table (see
-///   `queries::search_schedule_destination_departures`, whose `SELECT`
-///   lists only `train_uid`, `origin_crs`, `scheduled`).
-///
-/// `scheduled` is trimmed from the stored `"HH:MM:SS"` to `"HH:MM"`,
-/// identical to `schedule_departure_json`, so both sources hand the
-/// frontend the same time shape.
-/// One `GET /public/trains/search` result row. Sibling of
 /// `schedule_departure_json` above, same "hand-built camelCase over an
 /// opaque JSONB element" convention. Replaces `destination_departure_json`
 /// (destination-first search) in place -- see

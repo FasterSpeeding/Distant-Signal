@@ -362,9 +362,10 @@ fn schedule_network_departures_rows(
 ///   docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
 ///   §1 and §3.
 /// * **No sort**, because ordering is the read side's job now:
-///   `queries::search_schedule_destination_departures`'s `ORDER BY
-///   scheduled, train_uid, origin_crs` rides the destination table's own
-///   primary key. Sorting ~377,000 rows here would be wasted work.
+///   `queries::search_schedule_calling_point_departures`'s `ORDER BY
+///   scheduled, train_uid` rides
+///   `schedule_destination_departures_calling_point_idx`. Sorting ~377,000
+///   rows here would be wasted work.
 /// * **One row per departure**, because the destination is no longer a
 ///   bucket key -- it is a column, and a filter predicate, on a flat table.
 ///
@@ -870,8 +871,9 @@ mod poll_once_tests {
     #[test]
     fn schedule_destination_departures_rows_does_not_sort_and_does_not_need_to() {
         // Explicitly records that ordering is NOT this function's job any
-        // more. The read route's ORDER BY rides the table's primary key
-        // (queries::search_schedule_destination_departures), so a
+        // more. The read route's `ORDER BY scheduled, train_uid` rides
+        // `schedule_destination_departures_calling_point_idx`
+        // (queries::search_schedule_calling_point_departures), so a
         // publish-side sort would be pure wasted work over ~377,000 rows.
         // This test asserts the function is a faithful, order-preserving
         // flatten of each bucket rather than asserting a sort it must not do.

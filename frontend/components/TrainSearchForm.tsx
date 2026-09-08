@@ -282,7 +282,7 @@ export function TrainSearchForm({
       <Autocomplete
         label="Station"
         placeholder="e.g. Reading or RDG"
-        description="Any station this train calls at, including where it starts or ends."
+        description="Any station this train calls at along its route."
         value={stationCrs}
         onChange={setStationCrs}
         data={stationSuggestions.map((s) => ({ value: s.code, label: s.code }))}

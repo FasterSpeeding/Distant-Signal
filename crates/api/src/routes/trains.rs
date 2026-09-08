@@ -64,6 +64,16 @@ const DEFAULT_SEARCH_LIMIT: i64 = 50;
 /// An over-large `limit` is clamped, not rejected -- the honest answer is
 /// "here are 200, with a cursor for the rest." A `limit` that is zero,
 /// negative or unparseable IS malformed and does 400.
+///
+/// That's an asymmetry with `from`, `to`, `destination`, `origin` and
+/// `station`, which all 400 on a bad value instead of silently ignoring it:
+/// clamping `limit` can only ever return FEWER rows than the caller asked
+/// for, and it's still a safe, honest answer because there's a cursor for
+/// the rest. Silently dropping a malformed filter like `destination` would
+/// do the opposite -- it would return MORE rows than the caller asked for,
+/// under a filter the caller thinks is still applied. That reads as a
+/// broken search, not a rejected input, so those fields 400 instead of
+/// clamping or ignoring.
 const MAX_SEARCH_LIMIT: i64 = 200;
 
 #[derive(Debug, Deserialize)]
@@ -628,17 +638,63 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_origin_and_destination_are_independent_of_each_other() {
-        // The load-bearing new-behavior test: origin=PAD alone matches
-        // BOTH remaining rows (both true-originate at PAD), even though
-        // they go to different destinations -- proving `origin` doesn't
-        // silently also constrain `destination`.
+        // The load-bearing new-behavior test: origin=PAD alone must match
+        // BOTH rows below, even though they go to different destinations --
+        // proving `origin` doesn't silently also constrain `destination`.
+        // `seed_today` only has one future PAD-origin row, so a fixture
+        // built from it can't discriminate this: a one-row, one-destination
+        // result is equally consistent with `origin` secretly also fixing
+        // the destination. This test therefore seeds its own two-row,
+        // same-origin/different-destination fixture inline, rather than
+        // extending `seed_today` and disturbing the exact future-row counts
+        // several other tests assert against that shared fixture.
         let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+        delete_today(&pool).await;
+        let today = chrono::Utc::now().date_naive();
+        let (_, soon, later) = relative_times();
+        for (scheduled, train_uid, destination_crs) in
+            [(soon, "C20001", "WAT"), (later, "C20002", "BRI")]
+        {
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                    (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(today)
+            .bind(destination_crs)
+            .bind(scheduled)
+            .bind(train_uid)
+            .bind("ZRB")
+            .bind(Some("PAD"))
+            .execute(&pool)
+            .await
+            .expect("seed fixture row");
+        }
+
         let (status, body) = get(&pool, "/trains/search?station=ZRB&origin=PAD").await;
         assert_eq!(status, StatusCode::OK);
         let rows = results(&body);
-        assert_eq!(rows.len(), 1, "only C10001 is both future AND PAD-originated");
-        assert_eq!(rows[0]["uid"], "C10001");
+        assert_eq!(
+            rows.len(),
+            2,
+            "both rows true-originate at PAD despite different destinations: {rows:?}"
+        );
+        let uids: std::collections::BTreeSet<&str> =
+            rows.iter().map(|row| row["uid"].as_str().unwrap()).collect();
+        assert_eq!(
+            uids,
+            std::collections::BTreeSet::from(["C20001", "C20002"]),
+            "both PAD-origin rows must come back regardless of their differing destinations"
+        );
+        let destinations: std::collections::BTreeSet<&str> = rows
+            .iter()
+            .map(|row| row["destinationCrs"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            destinations,
+            std::collections::BTreeSet::from(["WAT", "BRI"]),
+            "origin=PAD must not silently also constrain destination"
+        );
         delete_today(&pool).await;
     }
 
@@ -761,9 +817,14 @@ mod db_tests {
                  to bare UTC time: {uids:?}"
             );
         } else {
-            // Not currently observing BST: no gap to pin this fixture
-            // inside; see this test's history for why skipping here is
-            // honest rather than a coverage gap.
+            // Not currently observing BST: `Europe::London` and UTC agree
+            // outside BST, so there is no gap between the two clocks to pin
+            // this fixture inside -- reverting the route to bare UTC would
+            // compute the exact same `now` this test just ran against, and
+            // the assertion above would pass either way. There is nothing
+            // this test COULD discriminate in that window, so skipping the
+            // core assertion here is a true no-op, not a flaky pass/fail or
+            // a silently-lost coverage gap.
         }
 
         delete_today(&pool).await;

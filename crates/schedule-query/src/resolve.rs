@@ -219,7 +219,10 @@ pub fn departures_by_crs(
 /// non-cancelled, resolved schedule's `now`-forward, departure-bearing
 /// calling points, bucketed by the CRS of that schedule's own TERMINATING
 /// calling point rather than by each calling point's own CRS. Backs the
-/// destination-first whole-network train search
+/// calling-point-first whole-network train search (this function itself is
+/// unchanged and still literally buckets by destination; the
+/// calling-point-first framing is what the read side built on top of its
+/// output does with the result)
 /// (docs/superpowers/specs/2026-09-07-train-listing-page-design.md,
 /// Approach B).
 ///
