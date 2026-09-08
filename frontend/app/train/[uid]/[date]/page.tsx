@@ -3,6 +3,8 @@ import { notFound } from 'next/navigation';
 import { getPublicTrainByUidAndDate, ApiNotFoundError } from '@/lib/api';
 import { ShareButton } from '@/components/ShareButton';
 import { TrainJourney } from '@/components/TrainJourney';
+import { TrackThisTrainButton } from '@/components/TrackThisTrainButton';
+import { TextLink } from '@/components/TextLink';
 import type { PublicTrainState, TrainJourneyState } from '@/lib/types';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -100,12 +102,32 @@ export default async function TrackedTrainByUidPage({
     <Stack p="lg" gap="md">
       <Group justify="space-between">
         <Title order={1}>Train {uid}</Title>
-        <ShareButton />
+        <Group gap="sm">
+          {/* Shown to EVERY visitor, logged in or not -- the shared
+              "show the control to everyone, prompt on the real 401"
+              posture `PinToggle`/`TrackTrainForm` already establish via
+              useNeedsLogin/LoginPromptModal. No `attachTicketId`: this page
+              has no `ticketId` query-param convention and inventing one is
+              explicitly out of scope
+              (docs/superpowers/specs/2026-09-07-train-listing-page-design.md
+              §5/§6). Only /trains' own row action attaches tickets.
+
+              A logged-in visitor who ALREADY tracks this train gets no
+              special treatment, deliberately: `PublicTrainState` carries no
+              "you already have a subscription" hint, by design (it is the
+              shared, public train, with nothing per-subscriber on it).
+              Clicking again is harmless -- `create_subscription_for_train`
+              is idempotent per (user, train) and returns the existing
+              subscription, so both clicks land on the same
+              /train/by-id/{trackingId}. */}
+          <TrackThisTrainButton uid={uid} date={date} />
+          <ShareButton />
+        </Group>
       </Group>
       <TrainJourney state={toJourneyState(train)} />
       <Text size="sm" c="dimmed">
-        This is the public view of this service. To get updates about it, track it from{' '}
-        <a href="/track">Track a train</a>.
+        This is the public view of this service. Track it above to get updates, or{' '}
+        <TextLink href="/trains">Find a train</TextLink> going somewhere else.
       </Text>
     </Stack>
   );

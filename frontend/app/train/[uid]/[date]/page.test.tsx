@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import TrackedTrainByUidPage from './page';
 import * as api from '@/lib/api';
@@ -131,5 +131,80 @@ describe('TrackedTrainByUidPage success path', () => {
     expect(
       screen.getByText('Matched to a scheduled service — Train W12345 to Woking'),
     ).toBeInTheDocument();
+  });
+
+  it('renders a Track this train button for every visitor', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
+    renderWithMantine(
+      await TrackedTrainByUidPage({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) }),
+    );
+    expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
+  });
+
+  it('tracks by the uid and date from the URL, not from the response body', async () => {
+    // Discriminating: the fixture's own trainUid deliberately differs from
+    // the URL segment, so a component wired to the wrong source fails here.
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ trackingId: 42 }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
+      publicTrainState({ trainUid: 'DIFFERENT' }),
+    );
+    renderWithMantine(
+      await TrackedTrainByUidPage({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/Train/by-uid/W12345/2026-08-31/track',
+        expect.objectContaining({ method: 'POST' }),
+      ),
+    );
+  });
+
+  // The spec's own §5 exclusion, asserted rather than assumed: this page's
+  // CTA must never make a ticket-attach call, because this page has no
+  // ticketId convention to source one from.
+  it('makes no ticket-attach call after tracking', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ trackingId: 42 }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
+    renderWithMantine(
+      await TrackedTrainByUidPage({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const attachCalls = fetchMock.mock.calls.filter((args: unknown[]) =>
+      String(args[0]).includes('/attach'),
+    );
+    expect(attachCalls).toHaveLength(0);
+  });
+
+  it('still renders no owner actions alongside the new CTA', async () => {
+    // Regression guard on this page's whole reason for being read-only:
+    // Rename/Delete/tickets all key on a train_subscriptions.id this
+    // response does not carry (see the page's own doc comment). Adding a
+    // track CTA must not have opened that door.
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
+    renderWithMantine(
+      await TrackedTrainByUidPage({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) }),
+    );
+    expect(screen.queryByRole('button', { name: /Rename/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Delete/i })).not.toBeInTheDocument();
+  });
+
+  it('points at the new /trains page for finding other trains', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
+    renderWithMantine(
+      await TrackedTrainByUidPage({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) }),
+    );
+    expect(screen.getByRole('link', { name: 'Find a train' })).toHaveAttribute('href', '/trains');
   });
 });
