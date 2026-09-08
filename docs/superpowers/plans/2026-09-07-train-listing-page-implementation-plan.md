@@ -12,22 +12,35 @@ tracking it in one action.
 **Architecture:** A second grouping pass in `crates/schedule-query`
 (`departures_by_destination_crs`, sibling to the already-shipped
 `departures_by_crs`, run against the *same* transient, per-cycle
-`ScheduleIndex`) buckets every non-cancelled schedule's `now`-forward,
-departure-bearing calling points by their schedule's **destination** CRS
-instead of by their own origin CRS. `crates/schedule-reference` publishes
-that grouping on its existing 30-minute cycle to a new
-`POST /private/schedule-destination-departures` ingest route, which upserts
-a new `schedule_destination_departures` table — structurally a copy of
-`schedule_network_departures`'s own migration/ingest/read triple. A new
-public read route, `GET /public/trains/search?destination=&origin=&from=&to=`,
-filters that table's JSONB bucket server-side (a `LEFT JOIN LATERAL
-jsonb_array_elements` so "no published row" and "row published, filters
-matched nothing" stay distinguishable) and returns camelCase rows. On the
-frontend, a new client component `TrainSearchForm` drives that route through
-the existing same-origin `/api/*` proxy and renders each result with a link
-to `/train/{uid}/{today}` and a shared `TrackThisTrainButton` that calls
-`POST /Train/by-uid/{uid}/{date}/track` — with `TrackTrainForm`'s exact
-best-effort ticket-attach follow-up on `/trains`, and without it on
+`ScheduleIndex`) buckets every non-cancelled schedule's departure-bearing
+calling points by their schedule's **destination** CRS instead of by their
+own origin CRS. `crates/schedule-reference` then **flattens** that grouping
+— one JSON object per departure, each carrying its own `destination_crs`,
+uncapped, for the *whole rail day* (`NaiveTime::MIN`, not
+`london_local_time_now()`) — and publishes it once per CIF delivery to a new
+`POST /private/schedule-destination-departures` ingest route. That route
+wholesale-replaces the day in a new **flat, one-row-per-departure** table,
+`schedule_destination_departures (service_date, destination_crs, scheduled,
+train_uid, origin_crs)`, whose composite primary key is also the covering
+index for the only query shape the read side needs, in exactly the order it
+needs it — written with one `DELETE` by `service_date` plus one `UNNEST`
+bulk insert in a single transaction, not a per-row loop (~377,000 rows per
+day). A new public read route,
+`GET /public/trains/search?destination=&origin=&from=&to=&limit=&after=`,
+answers it with a bounded **index range scan** and a **keyset cursor** over
+`(scheduled, train_uid, origin_crs)`, applying the `now`-forward filter at
+*request* time (where the clock is actually correct) and returning the
+envelope `{results, nextCursor}` in camelCase; the 404-vs-`200 []` split is
+preserved by a cheap day-scoped existence probe. Because the flat table
+accrues a full day of rows per service date rather than ~2,500 bucket rows,
+a new `prune_schedule_destination_departures` job runs inside the
+aggregator's existing prune cycle. On the frontend, a new client component
+`TrainSearchForm` drives that route through the existing same-origin
+`/api/*` proxy, renders each result with a link to `/train/{uid}/{today}`
+and a shared `TrackThisTrainButton` that calls
+`POST /Train/by-uid/{uid}/{date}/track`, and offers a "Load more" control
+that re-requests with `after=` and **appends** — with `TrackTrainForm`'s
+exact best-effort ticket-attach follow-up on `/trains`, and without it on
 `/train/[uid]/[date]` (per the spec's own §5 exclusion).
 
 **Tech Stack:** Rust (`axum`, `sqlx` runtime-checked `query`/`query_as` — no
@@ -43,6 +56,47 @@ document). Its §3 **Recommendation — Approach B** is a settled decision this
 plan does not re-litigate: Approaches A and C are not built, not partially
 built, and not kept as fallbacks anywhere in this plan.
 
+**Spec addendum (supersedes part of the above):**
+`docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md`
+— also required reading, in full. Every reference to "the addendum" below
+means this document. Where the two disagree on **publish / storage / query
+mechanism**, the addendum wins; on everything else (the product decision,
+§4's "`/track` is not replaced", §5's CTA, §6's exclusion list) the original
+design doc stands unchanged.
+
+---
+
+> ## ⚠️ This plan was revised on 2026-09-07, after it had already begun
+>
+> **Read this before executing any task.** Tasks 1, 2, 4 and 5 of this plan
+> are **not** what they were when it was first written, and Tasks 3, 6, 7
+> and 10 have named changes. A thirteenth task was added.
+>
+> **Why:** this plan's own Task 1 — a controller-run gating diagnostic —
+> was run for real against the live production CIF delivery and returned
+> numbers the plan's own size check fails on. The busiest destination
+> (London Waterloo) buckets **9,634** departure-bearing calling points for
+> one day, with the next several busiest within the same order of magnitude,
+> so **no value of `MAX_DEPARTURES_PER_DESTINATION` is defensible**: any cap
+> that fits the payload truncates the busiest destinations to roughly the
+> first two hours after the daily CIF delivery landed, which — because the
+> publish fires once per *delivery*, not once per 30-minute *cycle* — means
+> a search for "trains to Waterloo" at 18:00 honestly returns nothing. Task
+> 1's own escape hatch ("stop and flag it back to the repo owner: the honest
+> fix would be pagination…") was exercised, and its output is
+> `docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md`,
+> whose **Approach C is accepted**.
+>
+> **What that means concretely:** the per-destination JSONB-bucket-with-a-cap
+> storage shape is replaced by a **flat, one-row-per-departure table**,
+> published **uncapped for the whole day**, with the `now`-forward filter and
+> pagination moved to the **read** side as an indexed range scan plus a
+> keyset cursor. The cap is deleted, not re-valued. Every revised task below
+> says so in its own header; the addendum's §5 table is the authoritative
+> task-by-task disposition, and this plan now matches it.
+
+---
+
 ## Decisions this plan resolves (the design doc's own §7 Open Questions)
 
 The design doc closed with six open questions. This plan resolves the two
@@ -50,13 +104,33 @@ that actually block implementation, and records why the other four are
 deliberately left alone.
 
 1. **Open Question 1 — the destination-keyed bucket's cap/cardinality is
-   unmeasured.** Resolved by **Task 1**, a controller-run diagnostic that
-   measures the real distribution against a real CIF extract *before* Task 4
-   hard-codes `MAX_DEPARTURES_PER_DESTINATION`. This mirrors the
-   shared-train-identity plan's own Task 6 precedent ("Backfill diagnostic —
-   count the un-repointable edge case before Step B runs"): a decision only a
-   human with the real data can make, turned into a real, executable,
-   explicitly-gated step rather than an assumption baked into a constant.
+   unmeasured.** **Resolved, and then re-resolved.** Task 1's controller-run
+   diagnostic was run for real against the live production CIF delivery, and
+   the answer is that **there is no defensible cap at all**: the busiest
+   destination buckets 9,634 departure-bearing calling points for one day and
+   the next several busiest are within the same order of magnitude, so a cap
+   that fits the payload truncates exactly the destinations a whole-network
+   destination search exists to serve — and, because the publish fires once
+   per CIF *delivery* rather than once per 30-minute *cycle*, it truncates
+   them to "the first N after the delivery landed", not "the next N from
+   now". The addendum's §1 and §3 work that through in full.
+
+   The resolution is therefore **not a number but a shape change**:
+   `MAX_DEPARTURES_PER_DESTINATION` is **deleted** (Task 4), the storage
+   becomes a flat one-row-per-departure table published uncapped for the
+   whole day (Task 2), and the `now`-forward filter plus pagination move to
+   the read side as an indexed range scan with a keyset cursor (Tasks 5 and
+   7). Nothing downstream hard-codes a cap any more.
+
+   **Task 1 survives, re-scoped, and now gates nothing but a publish
+   strategy.** It measures `Σ_d bucket_d` — the network-wide *sum* of
+   departure-bearing calling points for a whole day from `00:00`, not the
+   per-destination max — and multiplies by ~80 bytes. Its one remaining
+   output is a binary: single-POST (the default, expected ~21MB) versus the
+   addendum §3 chunked-publish fallback. It still mirrors the
+   shared-train-identity plan's Task 6 precedent (a real, executable,
+   controller-run measurement rather than an assumption), but it is **no
+   longer a gate on Task 4** — no constant depends on it.
 
 2. **Open Question 2 — is `train_tracking::create_subscription_for_train`
    idempotent for a second click by the same user on the same train?**
@@ -111,15 +185,21 @@ deliberately left alone.
      (the design doc's own §3 Approach B v1 scope and §6's "no true
      whole-network live-board destination search"), so no result row has two
      possible sources and there is nothing to merge or disambiguate.
-   - 4 is resolved by inspection rather than a task:
-     `schedule_network_departures` has **no** retention/pruning job anywhere
-     (confirmed — no `prune_schedule_network_departures` exists in
-     `crates/aggregator`, and `upsert_schedule_network_departures`
-     wholesale-replaces per `(crs, service_date)` each cycle). The new
-     sibling table gets exactly the same posture — per-key wholesale replace,
-     no pruning job — so parity is achieved by doing nothing, and Task 2's
-     migration says so in its own header comment rather than leaving a reader
-     to wonder.
+   - 4 **is resolved by a task — Task 13 — and this reverses the original
+     plan's answer.** The original reasoning was: `schedule_network_departures`
+     has no retention/pruning job anywhere (confirmed — no
+     `prune_schedule_network_departures` exists in `crates/aggregator`, and
+     `upsert_schedule_network_departures` wholesale-replaces per
+     `(crs, service_date)` each cycle), so parity is achieved by doing
+     nothing. That was sound for a ~2,500-row bucket table. It does **not**
+     survive the addendum's flat shape, which accrues roughly **377,000 rows
+     per service date, forever**, because the wholesale replace is now scoped
+     to one `service_date` and nothing ever deletes yesterday's. Task 13
+     therefore adds `prune_schedule_destination_departures` to
+     `crates/aggregator/src/queries.rs`, modelled on the existing
+     `prune_history`/`prune_trust_event_backlog` pair, with a **2-day**
+     default retention. Task 2's migration header comment states this
+     explicitly instead of the old "RETENTION: none, deliberately".
    - 5 **is** implemented, because it costs nothing here: Task 11's `/trains`
      page reads `?destination=`, `?origin=` and `?ticketId=` out of
      `searchParams` exactly the way `frontend/app/track/page.tsx:7,10-21`
@@ -133,9 +213,13 @@ deliberately left alone.
 
 ## Global Constraints
 
-These are the design doc's §6 exclusions, binding on **every** task below.
-If a task seems to need one of these, stop and re-read the design doc — it
-doesn't.
+These are the design doc's §6 exclusions **plus the addendum's own §6
+additions**, binding on **every** task below. If a task seems to need one of
+these, stop and re-read the design doc and the addendum — it doesn't.
+
+Nothing in the original §6 list assumed the JSONB-bucket storage shape, so
+the revision did not have to remove anything here; it only had to add the
+addendum's five further exclusions (the last five bullets below).
 
 - **No change to `/Train/track`, `TrackPinRequest`, or `post_track`'s
   matching logic.** This plan only adds a new discovery surface and a new
@@ -190,33 +274,82 @@ doesn't.
 - **Frontend tests** use Vitest + `@testing-library/react` +
   `renderWithMantine` (`frontend/test/render`), run via `npm test -- <file>`
   from the `frontend/` directory.
+- **No cap of any kind on the destination data** — not in
+  `schedule-query`, not in `schedule-reference`, not in the table. The
+  addendum's whole argument is that no cap value is defensible;
+  `MAX_DEPARTURES_PER_DESTINATION` does not exist in this plan any more and
+  must not be reintroduced under another name. `MAX_DEPARTURES_PER_STATION
+  = 10` in `crates/schedule-reference` belongs to the *other*, shipped
+  product and is untouched.
+- **No `COPY`-based or extension-based bulk loader.** An `UNNEST` insert is
+  sufficient at ~377,000 rows and stays inside the
+  runtime-checked-`sqlx`-only rule above (addendum §6).
+- **No partitioning of `schedule_destination_departures` by
+  `service_date`.** Named in the addendum's §7 item 5 as the standard
+  mitigation if write pressure bites; explicitly not designed there and not
+  built here.
+- **No consolidating the two CIF-derived departure tables.** The new flat
+  table would, uncapped, contain a superset of `schedule_network_departures`,
+  so deriving one from the other is plausible — and is explicitly deferred
+  (addendum §6 and §7 item 6). `schedule_network_departures`, its migration,
+  its `MAX_DEPARTURES_PER_STATION = 10`, `GET
+  /public/stations/{crs}/schedule-departures` and `TrackTrainForm`'s use of
+  either are all untouched by every task below.
+- **No fixing `schedule_network_departures`' own once-per-delivery
+  `now`-forward staleness.** Found while grounding the addendum (§1.3),
+  named there, and deliberately left alone: this plan's approach avoids
+  inheriting it rather than repairing it.
 
 ---
 
-## Task 1: Cap/cardinality diagnostic — measure the destination bucket before any constant is hard-coded
+## Task 1: Publish-volume diagnostic — measure `Σ_d bucket_d`, the whole-day network total
+
+> **REVISED per the addendum's §5 row 1.** This task used to pick a cap.
+> **It no longer does — there is no cap.** It measures one number, the
+> network-wide **sum** of departure-bearing calling points for a whole rail
+> day, and uses it to choose between a single POST and a chunked publish.
+> It is **no longer a gate on Task 4**: no constant anywhere depends on its
+> output. Tasks 2 through 13 can all begin before it has been run.
 
 **This task deliberately does not follow the TDD template.** There is no
-code to write and no commit to make: this is the design doc's own Open
-Question 1 ("Approach B's per-bucket cap and cardinality are unmeasured…
-This needs a real check against `timetable_full.zip` before an
-implementation plan commits to a specific cap") turned into a real,
-executable, gating step — the same shape as the shared-train-identity plan's
-Task 6.
+code to write and no commit to make: it is a real, executable measurement —
+the same shape as the shared-train-identity plan's Task 6 ("Backfill
+diagnostic — count the un-repointable edge case before Step B runs").
+
+Its original framing (the design doc's own Open Question 1, "Approach B's
+per-bucket cap and cardinality are unmeasured… This needs a real check
+against `timetable_full.zip` before an implementation plan commits to a
+specific cap") has been *answered*: the diagnostic was run, and the answer
+was that no cap is defensible. See the addendum's §1.1 for the numbers and
+§1.2 for the arithmetic correction that makes the uncapped whole-day publish
+viable. What survives is the *sizing* half of the question, restated
+correctly: the plan's original size check multiplied a worst-case bucket by
+*every* destination, which is not the real bound, because
+**every departure-bearing calling point is filed under exactly one
+destination bucket** (`departures_by_destination_crs` takes
+`resolved.calling_points.last()` once per schedule and uses that single
+value as the key for all of that schedule's entries). So the bound is a
+sum, not a product:
+
+```
+Σ_d bucket_d = total departure-bearing calling points network-wide, for the whole day
+```
 
 > **CONTROLLER-RUN. Do not delegate this task to an implementer subagent.**
 > It reads a real CIF extract (and, in its fallback form, production
 > database state). This session's standing rule is that production
 > database/SSH access is performed by the primary controlling agent
-> directly, never by a subagent working unsupervised. Task 4 must not be
-> dispatched until this task's number has been recorded.
+> directly, never by a subagent working unsupervised.
 
 **Files:** none created, none changed, nothing committed.
 
 **Interfaces:**
-- Produces: one number — the observed per-destination bucket size
-  distribution (max, and roughly the 99th percentile) — plus a recorded
-  decision on the value of `MAX_DEPARTURES_PER_DESTINATION`, consumed by
-  Task 4 Step 3, which hard-codes it.
+- Produces: one number — `Σ_d bucket_d`, the whole-day network-wide total of
+  departure-bearing calling points — and, from it, exactly one binary
+  decision recorded in this plan's execution record: **single POST** (the
+  default) or **chunked POST**. That decision is consumed by Task 4's
+  publish function and, only in the chunked case, by Task 6's handler.
+  Nothing else consumes anything from this task.
 
 - [ ] **Step 1: Get a real CIF extract, locally, without touching production**
 
@@ -237,15 +370,14 @@ ls -la timetable_full.zip
 kubectl cp <namespace>/<schedulefeed-pod>:/data/schedule-feed/<timestamp>/RJTTF<n>MCA.txt ./RJTTFMCA.txt -c schedule-reference
 ```
 
-- [ ] **Step 2: Run the destination-bucket histogram**
+- [ ] **Step 2: Run the destination histogram and take the SUM of its third column**
 
-This needs no new Rust and no new binary — the two facts the cap decision
-turns on (how many distinct trains terminate at the busiest destination, and
-how many departure-bearing calling points they contribute) are both readable
-straight off the CIF text. A `BS` record opens a schedule block, `LO`/`LI`
-records are its departure-bearing calling points, and the `LT` record's
-TIPLOC (bytes 3-9, 1-indexed, per `crates/schedule-query/src/records.rs`'s
-own offset documentation) is its destination:
+This needs no new Rust and no new binary. A `BS` record opens a schedule
+block, `LO`/`LI` records are its departure-bearing calling points, and the
+`LT` record's TIPLOC (bytes 3-9, 1-indexed, per
+`crates/schedule-query/src/records.rs`'s own offset documentation) is its
+destination. This is the **same command the original diagnostic ran** — only
+the way its output is read has changed:
 
 ```bash
 unzip -p timetable_full.zip 'RJTTF*MCA.txt' | awk '
@@ -255,57 +387,104 @@ unzip -p timetable_full.zip 'RJTTF*MCA.txt' | awk '
   /^LT/ { dest = substr($0, 3, 7); sub(/ +$/, "", dest);
           trains[dest]++; points[dest] += dep; next }
   END   { for (d in trains) printf "%s\t%d\t%d\n", d, trains[d], points[d] }
-' | sort -k3 -rn | head -30
+' | sort -k3 -rn | tee /tmp/dest-histogram.tsv | head -30
+
+# THE NUMBER THIS TASK EXISTS FOR: the SUM of the third column, not its max.
+awk -F'\t' '{ total += $3 } END { printf "sum_departure_points=%d\n", total }' \
+  /tmp/dest-histogram.tsv
 ```
 
 (If Step 1 produced a plain `RJTTFMCA.txt` instead of the zip, replace the
 `unzip -p …` prefix with `cat ./RJTTFMCA.txt`.)
 
 Columns are `TIPLOC`, `distinct schedule records terminating there`,
-`total departure-bearing calling points bucketed under it`. The third column
-is the one that matters — it is the direct analogue of what
-`departures_by_destination_crs` (Task 3) will put in one bucket.
+`total departure-bearing calling points bucketed under it`. **The third
+column's SUM is `Σ_d bucket_d`** — the total number of rows the flat table
+will hold for one service date, and the total number of JSON objects one
+publish POSTs. The per-destination *maximum* (the old framing) is no longer
+a decision input at all; keep the top-30 listing only as context for the
+execution record.
+
+If a real `resolve_for_date`-based count is preferred over the text scan,
+`crates/schedule-query/examples/inspect.rs` is the existing entry point for
+running this crate's real resolution against an extract; either form answers
+the question, and the text scan is the cheaper one.
 
 **Read the number correctly — it is an over-count, deliberately.** This awk
 pass counts *every* schedule record in the file, across every date range and
-days-of-week bitmask, with no STP-overlay resolution and no `now`-forward
-filter. The real per-cycle bucket for one date, after
-`resolve_for_date` picks one record per UID and the `now`-forward filter
-drops everything already departed, is **strictly smaller**. Erring high is
-the correct direction for a cap decision.
+days-of-week bitmask, with no STP-overlay resolution. The real per-day total,
+after `resolve_for_date` picks one record per UID, is **strictly smaller**
+(the addendum's §1.2 derives ~377,000 from the resolved 25,305 non-cancelled
+schedules). Erring high is the correct direction for a payload-size
+decision. Note that there is **no** `now`-forward shrinkage to subtract any
+more: Task 4 now publishes from `NaiveTime::MIN`, the whole day.
 
-- [ ] **Step 3: Record the number and decide the cap**
+- [ ] **Step 3: Record the number and decide single-POST versus chunked-POST**
 
-Write the top-30 output into this plan's execution record (a comment on the
-tracking issue/PR, or appended to this file's checklist) before Task 4 is
-dispatched. Then decide:
+Write `sum_departure_points` and the top-30 listing into this plan's
+execution record (a comment on the tracking issue/PR, or appended to this
+file's checklist). Then apply the size check — **which no longer has a
+stop-and-flag branch; the escape hatch has already been exercised and the
+addendum is its output**:
 
-- **If the largest third-column value is ≤ ~200:** set
-  `MAX_DEPARTURES_PER_DESTINATION = 200` in Task 4 Step 3, exactly as
-  written there. 200 is this plan's default because it is comfortably above
-  a "busiest terminus on the busiest day" over-count while still bounding
-  the publish payload — see the size check below.
-- **If it is materially larger (say, > 500):** raise the constant to the
-  next round number above the observed maximum *and* re-run the size check
-  below before dispatching Task 4. If the size check fails at that value,
-  stop and flag it back to the repo owner: the honest fix would be
-  pagination or a narrower `now`-forward window, both of which are their own
-  design pass and are not this plan's to invent unprompted.
+```
+payload_bytes ≈ sum_departure_points × ~80 bytes
+```
 
-**The size check** (run it with the chosen constant, not skipped): the
-publish is one batch-array POST of roughly
-`(distinct destination CRS codes) × (cap) × (~55 bytes per JSON entry)`.
-With ~2,500 CRS codes and a cap of 200 that is ~27MB — under the private
-router's real limit, `DefaultBodyLimit::max(100 * 1024 * 1024)`
-(`crates/api/src/routes/mod.rs:86`), with ~3.7x headroom. Redo this
-arithmetic against whatever cap Step 3 actually picks; if the product
-exceeds ~60MB, the cap is too high for a single-POST publish.
+> **~80, not the addendum's ~55.** The addendum's §3 sketches a four-key
+> row; Task 4's actual row carries `service_date` as a fifth key, because
+> the ingest handler's first statement is a `DELETE ... WHERE service_date =
+> $1` and `common::ingest::post_batch` posts a bare array with nowhere else
+> to carry the day. That is ~26 more bytes per entry. Task 4's Interfaces
+> block states the same figure and the same reason. Using the larger,
+> correct number here only makes this gate *more* conservative.
+
+- **If `payload_bytes` ≤ ~60MB (i.e. below ~750,000 entries): SINGLE
+  POST.** This is the expected case and the plan's default. The addendum's
+  derived estimate is ~377,000 entries, which at ~80 bytes is **~30MB**,
+  against the private router's real limit,
+  `DefaultBodyLimit::max(100 * 1024 * 1024)`
+  (`crates/api/src/routes/mod.rs:86`) — ~3.3x headroom. Task 4 ships exactly
+  as written and Task 6 needs no chunk semantics. Record "single POST" and
+  move on.
+- **If `payload_bytes` exceeds ~60MB (i.e. ~750,000+ entries): CHUNKED
+  POST.** Do **not** stop. `common::ingest::post_batch` takes `&[T]`, so the
+  fallback is zero new shared code — in Task 4's
+  `publish_schedule_destination_departures`, replace the single
+  `post_batch(…, &rows, …)` call with:
+
+  ```rust
+  // Chunked publish, adopted ONLY because Task 1's real measurement came
+  // in above ~60MB for a single body. Each chunk is its own POST; the
+  // per-service_date atomic replace therefore weakens from "one
+  // transaction" to "converges once every chunk has landed", which is why
+  // Task 6's handler must learn "the FIRST chunk of a publish clears the
+  // day" semantics alongside this change. See the addendum's §3,
+  // "Escape hatch if the revised measurement comes in high".
+  for chunk in rows.chunks(50_000) {
+      if let Err(err) = common::ingest::post_batch(
+          client,
+          &config.schedule_destination_departures_url,
+          internal_oauth,
+          chunk,
+          "schedule-derived destination departures rows",
+      )
+      .await
+      {
+          tracing::error!(error = ?err, "failed to publish a chunk of schedule-derived destination departures; will retry next cycle");
+          return;
+      }
+  }
+  ```
+
+  and implement Task 6's conditional note. Record "chunked POST" in the
+  execution record so Task 6's implementer knows to apply it.
 
 - [ ] **Step 4: Fallback ONLY if no CIF extract can be obtained**
 
 If Step 1 genuinely cannot produce an extract, the weaker proxy is a
 controller-run read of the already-published origin-keyed table, which at
-least bounds total per-cycle volume:
+least bounds the network-wide order of magnitude:
 
 ```bash
 psql "$DATABASE_URL" -c "
@@ -315,20 +494,35 @@ psql "$DATABASE_URL" -c "
   WHERE service_date = CURRENT_DATE;"
 ```
 
-`total_departures` here is capped at 10 per origin station, so it **cannot**
-answer the destination-cardinality question directly — it only tells you the
-network-wide per-cycle order of magnitude. Treat a result from this fallback
-as grounds for choosing the conservative end of the range (200), not as a
-substitute for Step 2. Run this yourself; do not hand it to a subagent.
+`total_departures` here is capped at 10 per origin station, so it is a
+**floor**, not the answer: it cannot see the calling points the cap already
+dropped. Treat a result from this fallback as confirmation of the order of
+magnitude only, and — because the derived ~30MB has ~3.3x headroom —
+default to **single POST** unless the fallback itself already
+implies more than ~750,000 entries. Run this yourself; do not hand it to a
+subagent.
 
 - [ ] **Step 5: No commit for this task**
 
-Nothing in the repository changed. Proceed to Task 2 immediately (it does
-not depend on this number); Task 4 is the one gated on it.
+Nothing in the repository changed. **No other task is blocked on this one.**
+Tasks 2, 3 and 13 have no dependency on it whatsoever; Task 4 reads its
+recorded decision only to pick between the single `post_batch` call it
+already contains and the chunked loop in Step 3 above, and Task 6 reads it
+only to decide whether to add first-chunk-clears-the-day semantics. If this
+task has not been run when Task 4 is dispatched, Task 4 ships the
+single-POST default and this task's result is applied afterwards as a small,
+localized amendment.
 
 ---
 
-## Task 2: Migration — `schedule_destination_departures`
+## Task 2: Migration — `schedule_destination_departures` (flat, one row per departure)
+
+> **REVISED per the addendum's §5 row 2.** Same file slot, **different
+> DDL**: the five-column flat table with a composite primary key, no
+> `departures JSONB` and no `updated_at`. The header comment's old
+> "RETENTION: none, deliberately" paragraph was correct for a ~2,500-row
+> bucket table and is false for this one; it is rewritten below to point at
+> Task 13.
 
 **Files:**
 - Create: `crates/api/migrations/20260907130000_schedule_destination_departures.sql`
@@ -340,11 +534,12 @@ not depend on this number); Task 4 is the one gated on it.
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: table `schedule_destination_departures (destination_crs TEXT NOT
-  NULL, service_date DATE NOT NULL, departures JSONB NOT NULL, updated_at
-  TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (destination_crs,
-  service_date))`. Tasks 5, 6 and 7 all depend on this migration having
-  applied.
+- Produces: table `schedule_destination_departures (service_date DATE NOT
+  NULL, destination_crs TEXT NOT NULL, scheduled TIME NOT NULL, train_uid
+  TEXT NOT NULL, origin_crs TEXT NOT NULL, PRIMARY KEY (service_date,
+  destination_crs, scheduled, train_uid, origin_crs))`. Tasks 5, 6, 7 and 13
+  all depend on this migration having applied. **Nothing else depends on
+  this task, and this task depends on nothing** — it can be done first.
 
 - [ ] **Step 1: Verify the table does not exist yet**
 
@@ -355,10 +550,11 @@ Expected: prints an empty result (`NULL`) — there is something real to build.
 
 ```sql
 -- ---------------------------------------------------------------------
--- One row per (destination_crs, service_date): every CIF-SCHEDULE-derived,
--- `now`-forward departure-bearing calling point of every non-cancelled
--- schedule TERMINATING at `destination_crs`, for one rail day, capped per
--- destination and published by schedule-reference on its existing cycle.
+-- ONE ROW PER DEPARTURE, not one row per destination bucket: every
+-- CIF-SCHEDULE-derived, departure-bearing calling point of every
+-- non-cancelled schedule TERMINATING at `destination_crs`, for one whole
+-- rail day, UNCAPPED, published by schedule-reference once per CIF
+-- delivery. Backs GET /public/trains/search.
 --
 -- The destination-keyed sibling of schedule_network_departures
 -- (20260904110000_schedule_network_departures.sql), which is keyed by the
@@ -371,38 +567,68 @@ Expected: prints an empty result (`NULL`) — there is something real to build.
 -- B (the recommended one), and §0 point 5 for why an origin-keyed bucket
 -- could not answer "which trains go to X".
 --
--- `departures` is opaque JSONB here -- a Vec<schedule_query::DestinationDeparture>
--- ({uid, origin_crs, scheduled}) -- and `api` never deserializes it into
--- that Rust type. Unlike its origin-keyed sibling, `api` does not merely
--- store and relay the blob: GET /public/trains/search filters INTO it with
--- jsonb_array_elements (see queries::search_schedule_destination_departures),
--- because a destination bucket is far larger than a station's next-10 and
--- shipping the whole thing to the client to filter would defeat the point.
--- The blob stays opaque to serde all the same -- only its `origin_crs` and
--- `scheduled` keys are ever named, in SQL.
+-- WHY FLAT AND NOT A JSONB BUCKET, which is what this table was first
+-- designed as. A destination bucket is enormous and its size is NOT
+-- knowable in advance: London Waterloo buckets ~9,634 departure-bearing
+-- calling points for one day, with the next several busiest destinations
+-- within the same order of magnitude, so no per-destination cap is
+-- defensible -- see
+-- docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+-- (§1 for the measurement, §3 Approach C for this shape). Worse, the
+-- publish fires once per CIF DELIVERY (roughly daily), not once per
+-- 30-minute cycle, so any earliest-first cap freezes at delivery time and
+-- is entirely in the past by the evening. Storing the rows instead of a
+-- capped bucket removes the cap, and moves both the `now`-forward filter
+-- and pagination to REQUEST time, where the clock is actually correct.
 --
--- `destination_crs` is deliberately NOT stored on each array element: it is
--- the bucket key and identical for every element, exactly as `crs` is for
--- schedule_network_departures. The read route re-attaches it to each
--- rendered row from the caller's own query parameter.
+-- THE PRIMARY KEY IS THE POINT. (service_date, destination_crs, scheduled,
+-- train_uid, origin_crs) is also the covering index for the only query
+-- shape the read route needs, in exactly the order it needs it: equality
+-- on the first two columns, a range scan on `scheduled`, and
+-- (scheduled, train_uid, origin_crs) as a total order for a keyset cursor.
+-- Waterloo therefore costs the same as Bootle Oriel Road: LIMIT + 1 index
+-- entries touched, never the whole day. Do not add a second index without
+-- a measured reason; do not reorder these columns.
 --
--- RETENTION: none, deliberately, and this matches its sibling exactly.
--- schedule_network_departures has no pruning job anywhere in this repo
--- (there is no prune_schedule_network_departures in crates/aggregator) --
--- each cycle wholesale-replaces the row for its own (key, service_date),
--- so the table's steady-state size is bounded by distinct CRS codes times
--- distinct service dates seen, and stale past-date rows are simply never
--- read (every read is scoped to CURRENT_DATE server-side). This table
--- adopts the same posture rather than inventing a second one. Design doc
--- §7 Open Question 4, resolved by inspection.
+-- `destination_crs` IS stored on every row here, unlike the bucket design
+-- it replaces (where it was the key and therefore implicit). It is a real
+-- column because it is a real filter predicate.
+--
+-- No `updated_at`: an ingest wholesale-replaces a whole service_date in one
+-- transaction (DELETE by service_date, then one UNNEST bulk INSERT -- see
+-- queries::upsert_schedule_destination_departures), so per-row write
+-- timestamps would all be identical and carry no information the
+-- service_date does not already carry.
+--
+-- RETENTION: REQUIRED, and pruned by the aggregator -- see
+-- crates/aggregator/src/queries.rs's prune_schedule_destination_departures
+-- and Config::schedule_destination_departures_retention_days (default 2).
+-- This deliberately DIVERGES from schedule_network_departures, which has
+-- no pruning job anywhere in this repo. That divergence is not an
+-- oversight: the sibling's wholesale replace is scoped per (crs,
+-- service_date) over ~2,500 CRS codes, so its steady-state size is
+-- trivial, whereas THIS table accrues roughly 377,000 rows for every
+-- service date it has ever seen and nothing would ever delete yesterday's.
+-- Every read is scoped to today, computed server-side, so nothing reads a
+-- past date and a 2-day window is ample -- 2 rather than 1 for safety
+-- around the rail-day/midnight boundary and around a CIF delivery that
+-- lands late. Design doc §7 Open Question 4, RE-resolved by the addendum's
+-- §3 "Retention becomes required" (it reverses the original plan's
+-- "retention: none, by parity" answer, which was sound only for the bucket
+-- shape).
+--
+-- Partitioning by service_date is the standard mitigation if the once-daily
+-- DELETE + bulk INSERT turns out to cost too much WAL or leave too much
+-- bloat. It is NAMED here and deliberately not built -- addendum §7 item 5.
 -- ---------------------------------------------------------------------
 
 CREATE TABLE schedule_destination_departures (
-    destination_crs TEXT        NOT NULL,
-    service_date    DATE        NOT NULL,
-    departures      JSONB       NOT NULL,
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (destination_crs, service_date)
+    service_date    DATE NOT NULL,
+    destination_crs TEXT NOT NULL,
+    scheduled       TIME NOT NULL,
+    train_uid       TEXT NOT NULL,
+    origin_crs      TEXT NOT NULL,
+    PRIMARY KEY (service_date, destination_crs, scheduled, train_uid, origin_crs)
 );
 ```
 
@@ -434,6 +660,21 @@ git commit -m "Add schedule_destination_departures table for destination-first t
 ---
 
 ## Task 3: `schedule-query` — `departures_by_destination_crs`
+
+> **KEPT, with exactly one correction, per the addendum's §5 row 3.** This
+> function is shape-agnostic — it returns an uncapped, unsorted
+> `HashMap<String, Vec<DestinationDeparture>>` and lets its caller decide
+> everything else — so the signature, the `DestinationDeparture` record and
+> **all seven tests in Step 1 survive verbatim**. The one change is in Step
+> 4's doc comment: its closing sentence about the caller capping each bucket
+> is false under the addendum and now cites it instead. The deliberate
+> drop-vs-degrade asymmetry for an unresolved destination TIPLOC is
+> unaffected and still right.
+>
+> Note that Task 4 will call this with `now = NaiveTime::MIN`, which makes
+> the `if departure < now` filter a no-op. That is a *caller's* decision, as
+> intended; do not remove the parameter or the filter — `departures_by_crs`
+> keeps the same shape and a future caller may want a real boundary.
 
 **Files:**
 - Modify: `crates/schedule-query/src/records.rs` (add `DestinationDeparture`
@@ -764,10 +1005,21 @@ In `crates/schedule-query/src/resolve.rs`, immediately after
 ///   just that entry, leaving the schedule's other entries in the bucket --
 ///   identical to `departures_by_crs`'s own per-calling-point drop.
 ///
-/// The caller caps each bucket (see
-/// `crates/schedule-reference/src/main.rs`'s
-/// `MAX_DEPARTURES_PER_DESTINATION`); this function itself is uncapped and
-/// unsorted, exactly like `departures_by_crs`.
+/// **There is no cap, here or anywhere downstream.** This function returns
+/// every matching calling point, unsorted, exactly like
+/// `departures_by_crs`, and its caller
+/// (`crates/schedule-reference/src/main.rs`'s
+/// `schedule_destination_departures_rows`) merely flattens the result --
+/// it does not sort, truncate, or bucket it. An earlier design capped each
+/// bucket at a constant; that was measured and rejected, because the
+/// busiest destination holds ~9,634 entries for one day and the next
+/// several busiest are within the same order of magnitude, so no cap value
+/// truncates honestly. See
+/// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+/// (§1 for the measurement, §3 Approach C for what replaced it): the whole
+/// day is published uncapped and the `now`-forward filter and pagination
+/// happen at READ time instead, as an indexed range scan with a keyset
+/// cursor. Do not reintroduce a cap in this function's caller.
 pub fn departures_by_destination_crs(
     index: &ScheduleIndex,
     date: NaiveDate,
@@ -849,11 +1101,32 @@ git commit -m "Add departures_by_destination_crs, the destination-keyed grouping
 
 ---
 
-## Task 4: `schedule-reference` — publish the destination-keyed buckets
+## Task 4: `schedule-reference` — publish the flat, uncapped, whole-day destination rows
 
-> **GATED ON TASK 1.** Do not start this task until Task 1's number has been
-> recorded and the cap decided. Step 3 hard-codes a constant whose value is
-> Task 1's output.
+> **REVISED per the addendum's §5 row 4, and NO LONGER GATED ON TASK 1.**
+> The original version of this task was gated because its Step 3 hard-coded
+> `MAX_DEPARTURES_PER_DESTINATION`. **That constant is deleted, not
+> re-valued**, so nothing here depends on Task 1's number and this task can
+> be dispatched immediately. Three things changed:
+>
+> 1. `schedule_destination_departures_rows` becomes a **flatten** — one JSON
+>    object per departure, each carrying its own `destination_crs` — instead
+>    of a sort + truncate + group-into-an-array.
+> 2. The `now` argument passed to `departures_by_destination_crs` changes
+>    from `london_local_time_now()` to `chrono::NaiveTime::MIN`: publish the
+>    whole rail day, and filter `now`-forward at *read* time instead.
+> 3. Its two cap-behaviour tests are deleted (they assert a cap that no
+>    longer exists) and replaced by tests for the flatten.
+>
+> Steps 4, 5 and 6 — the `publish_cif_derived_products` wiring, the config
+> field, and the Helm env var — are **unaffected** and carry through
+> verbatim.
+>
+> Task 1's only remaining influence on this task is the choice between the
+> single `post_batch` call written in Step 3 and the chunked loop in Task 1
+> Step 3. **Default to the single call.** If Task 1 has been run and
+> recorded "chunked POST", substitute that loop and also implement Task 6's
+> conditional note.
 
 **Files:**
 - Modify: `crates/schedule-reference/src/config.rs` (add
@@ -870,13 +1143,34 @@ git commit -m "Add departures_by_destination_crs, the destination-keyed grouping
 **Interfaces:**
 - Consumes: `schedule_query::departures_by_destination_crs(index, date, now,
   &tiploc_to_crs) -> HashMap<String, Vec<schedule_query::DestinationDeparture>>`
-  (Task 3); existing `common::ingest::post_batch`,
-  `london_local_time_now()`, `Config`.
+  (Task 3); existing `common::ingest::post_batch` and `Config`.
+  **`london_local_time_now()` is no longer used by this task's publish** —
+  it stays in the file for `publish_schedule_network_departures`, which is
+  untouched.
 - Produces: a batch-array POST to `config.schedule_destination_departures_url`
-  whose elements are `{"destination_crs": String, "service_date": "YYYY-MM-DD",
-  "departures": [{"uid", "origin_crs", "scheduled"}]}` — the exact body shape
-  Task 6's ingest route deserializes into
-  `queries::ScheduleDestinationDeparturesRow`.
+  whose elements are **one flat object per departure**:
+  `{"service_date": "YYYY-MM-DD", "destination_crs": String, "scheduled":
+  "HH:MM:SS", "train_uid": String, "origin_crs": String}` — the exact body
+  shape Task 6's ingest route deserializes into
+  `queries::ScheduleDestinationDeparturesRow` (Task 5), field-for-field.
+
+> **Why `service_date` is on every row**, when the addendum's §3 sketch
+> lists only four keys. The ingest side must know which service date a
+> publish replaces, because its first statement is `DELETE FROM
+> schedule_destination_departures WHERE service_date = $1` — and the route
+> takes no path segment, no query parameter and no envelope to carry it
+> (`common::ingest::post_batch` posts a bare array; changing that would
+> change shared code used by four other publishers). Deriving it from the
+> receiving service's own clock instead would reintroduce exactly the
+> clock-coupling this design moved *out* of the publish. So it is a real
+> per-row field, matching the table's own column.
+>
+> The honest cost: ~26 extra bytes per entry, so budget **~80 bytes per
+> entry**, not the addendum's ~55. At the derived ~377,000 entries that is
+> **~30MB**, still comfortably inside `DefaultBodyLimit::max(100 * 1024 *
+> 1024)` (`crates/api/src/routes/mod.rs:86`) with ~3.3x headroom, and still
+> under the ~60MB single-POST threshold. Task 1's Step 3 arithmetic uses
+> the same ~80 figure.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -887,47 +1181,26 @@ at line 566):
 
 ```rust
     #[test]
-    fn schedule_destination_departures_rows_sorts_earliest_first_and_caps_at_the_destination_limit() {
-        let mut by_destination = std::collections::HashMap::new();
-        let departures: Vec<schedule_query::DestinationDeparture> = (0..24)
-            .rev() // deliberately out of order
-            .map(|hour| schedule_query::DestinationDeparture {
-                uid: format!("U{hour:05}"),
-                origin_crs: "EUS".to_string(),
-                scheduled: chrono::NaiveTime::from_hms_opt(hour, 0, 0).unwrap(),
-            })
-            .collect();
-        by_destination.insert("MAN".to_string(), departures);
-
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
-        let rows = schedule_destination_departures_rows(by_destination, today);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["destination_crs"], "MAN");
-        assert_eq!(rows[0]["service_date"], "2026-09-07");
-        let row_departures = rows[0]["departures"].as_array().unwrap();
-        assert_eq!(
-            row_departures.len(),
-            std::cmp::min(24, MAX_DEPARTURES_PER_DESTINATION),
-            "capped at MAX_DEPARTURES_PER_DESTINATION"
-        );
-        assert_eq!(
-            row_departures[0]["uid"], "U00000",
-            "earliest-first after sort"
-        );
-        assert_eq!(row_departures[0]["origin_crs"], "EUS");
-    }
-
-    #[test]
-    fn schedule_destination_departures_rows_produces_one_row_per_destination_key() {
+    fn schedule_destination_departures_rows_produces_one_flat_row_per_departure_carrying_its_destination() {
+        // The load-bearing shape assertion: this function FLATTENS. Two
+        // destinations holding three departures between them produce THREE
+        // rows, not two, and each row names its own destination rather than
+        // inheriting it from a bucket key it no longer has.
         let mut by_destination = std::collections::HashMap::new();
         by_destination.insert(
             "MAN".to_string(),
-            vec![schedule_query::DestinationDeparture {
-                uid: "U1".to_string(),
-                origin_crs: "EUS".to_string(),
-                scheduled: chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
-            }],
+            vec![
+                schedule_query::DestinationDeparture {
+                    uid: "U1".to_string(),
+                    origin_crs: "EUS".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(8, 22, 0).unwrap(),
+                },
+                schedule_query::DestinationDeparture {
+                    uid: "U1".to_string(),
+                    origin_crs: "CRE".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(10, 5, 0).unwrap(),
+                },
+            ],
         );
         by_destination.insert(
             "EDB".to_string(),
@@ -939,98 +1212,173 @@ at line 566):
         );
 
         let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
-        let rows = schedule_destination_departures_rows(by_destination, today);
+        let mut rows = schedule_destination_departures_rows(by_destination, today);
+        // HashMap iteration order is unspecified; sort for a stable assert.
+        rows.sort_by_key(|r| {
+            (
+                r["destination_crs"].as_str().unwrap().to_string(),
+                r["scheduled"].as_str().unwrap().to_string(),
+            )
+        });
 
-        assert_eq!(rows.len(), 2);
-        let keys: Vec<&str> = rows
-            .iter()
-            .map(|r| r["destination_crs"].as_str().unwrap())
-            .collect();
-        assert!(keys.contains(&"MAN"));
-        assert!(keys.contains(&"EDB"));
+        assert_eq!(rows.len(), 3, "one row per DEPARTURE, not per destination");
+
+        assert_eq!(
+            rows[0],
+            serde_json::json!({
+                "service_date": "2026-09-07",
+                "destination_crs": "EDB",
+                "scheduled": "09:00:00",
+                "train_uid": "U2",
+                "origin_crs": "KGX",
+            }),
+            "exactly five keys, named exactly as the table's columns are"
+        );
+
+        // The same UID appears twice under MAN, once per departure-bearing
+        // calling point -- that is the whole point of the grouping, and the
+        // table's PK (which includes origin_crs) admits both.
+        assert_eq!(rows[1]["destination_crs"], "MAN");
+        assert_eq!(rows[1]["train_uid"], "U1");
+        assert_eq!(rows[1]["origin_crs"], "EUS");
+        assert_eq!(rows[1]["scheduled"], "08:22:00");
+        assert_eq!(rows[2]["destination_crs"], "MAN");
+        assert_eq!(rows[2]["train_uid"], "U1");
+        assert_eq!(rows[2]["origin_crs"], "CRE");
+        assert_eq!(rows[2]["scheduled"], "10:05:00");
+
         for row in &rows {
-            assert_eq!(row["service_date"], "2026-09-07");
+            assert!(
+                row.get("departures").is_none(),
+                "there is no nested departures array any more -- the shape is flat"
+            );
+            assert!(
+                row.get("uid").is_none(),
+                "the JSON key is train_uid (the column name), not DestinationDeparture::uid"
+            );
         }
     }
 
     #[test]
-    fn schedule_destination_departures_rows_keeps_the_earliest_entries_when_capping_a_mixed_origin_bucket() {
-        // Discriminating check on WHICH entries survive the cap, not just
-        // how many: a destination bucket mixes origins freely (that is the
-        // whole point of this grouping), so a naive truncate-before-sort
-        // would silently keep an arbitrary subset. Two origins, interleaved
-        // times, deliberately inserted latest-first.
+    fn schedule_destination_departures_rows_is_uncapped_and_keeps_every_entry_of_a_huge_bucket() {
+        // Regression guard against a reintroduced cap. The real busiest
+        // destination holds ~9,634 entries for one day
+        // (docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+        // §1.1), so 9,634 is used here deliberately rather than a round
+        // number: if anyone ever reintroduces a truncate, this fails.
         let mut by_destination = std::collections::HashMap::new();
-        let mut departures = Vec::new();
-        for hour in (0..MAX_DEPARTURES_PER_DESTINATION + 4).rev() {
-            departures.push(schedule_query::DestinationDeparture {
-                uid: format!("U{hour:05}"),
-                origin_crs: if hour % 2 == 0 { "EUS" } else { "CRE" }.to_string(),
-                // Minutes, so the count can exceed 24 without overflowing an hour.
+        let departures: Vec<schedule_query::DestinationDeparture> = (0..9_634u32)
+            .map(|i| schedule_query::DestinationDeparture {
+                uid: format!("U{i:05}"),
+                origin_crs: if i % 2 == 0 { "EUS" } else { "CRE" }.to_string(),
+                // Seconds since midnight, wrapped into a real 24h clock.
                 scheduled: chrono::NaiveTime::from_num_seconds_from_midnight_opt(
-                    (hour as u32) * 60,
+                    i % 86_400,
                     0,
                 )
                 .unwrap(),
-            });
-        }
-        by_destination.insert("MAN".to_string(), departures);
+            })
+            .collect();
+        by_destination.insert("WAT".to_string(), departures);
 
         let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
         let rows = schedule_destination_departures_rows(by_destination, today);
-        let row_departures = rows[0]["departures"].as_array().unwrap();
 
-        assert_eq!(row_departures.len(), MAX_DEPARTURES_PER_DESTINATION);
-        assert_eq!(row_departures[0]["uid"], "U00000");
         assert_eq!(
-            row_departures[MAX_DEPARTURES_PER_DESTINATION - 1]["uid"],
-            format!("U{:05}", MAX_DEPARTURES_PER_DESTINATION - 1),
-            "the cap must drop the LATEST entries, never an arbitrary subset"
+            rows.len(),
+            9_634,
+            "every entry must survive -- there is no cap, by design"
         );
+    }
+
+    #[test]
+    fn schedule_destination_departures_rows_does_not_sort_and_does_not_need_to() {
+        // Explicitly records that ordering is NOT this function's job any
+        // more. The read route's ORDER BY rides the table's primary key
+        // (queries::search_schedule_destination_departures), so a
+        // publish-side sort would be pure wasted work over ~377,000 rows.
+        // This test asserts the function is a faithful, order-preserving
+        // flatten of each bucket rather than asserting a sort it must not do.
+        let mut by_destination = std::collections::HashMap::new();
+        by_destination.insert(
+            "MAN".to_string(),
+            vec![
+                schedule_query::DestinationDeparture {
+                    uid: "LATE".to_string(),
+                    origin_crs: "EUS".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+                },
+                schedule_query::DestinationDeparture {
+                    uid: "EARLY".to_string(),
+                    origin_crs: "EUS".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(1, 0, 0).unwrap(),
+                },
+            ],
+        );
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
+        let rows = schedule_destination_departures_rows(by_destination, today);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0]["train_uid"], "LATE",
+            "input order within a bucket is preserved verbatim; no sort happens here"
+        );
+        assert_eq!(rows[1]["train_uid"], "EARLY");
     }
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cargo test -p schedule-reference schedule_destination_departures_rows`
-Expected: FAIL with a compile error — neither
-`schedule_destination_departures_rows` nor `MAX_DEPARTURES_PER_DESTINATION`
-exists yet.
+Expected: FAIL with a compile error — `schedule_destination_departures_rows`
+does not exist yet.
 
-- [ ] **Step 3: Add the constant and the pure row-shaping function**
+- [ ] **Step 3: Add the pure row-shaping function — and NO constant**
 
 In `crates/schedule-reference/src/main.rs`, immediately after
-`schedule_network_departures_rows` (which ends at line 329):
+`schedule_network_departures_rows` (which ends at line 329).
+
+> **Do not add a `MAX_DEPARTURES_PER_DESTINATION`.** An earlier draft of
+> this plan did, at 200; the measurement in the addendum's §1.1 killed it.
+> `MAX_DEPARTURES_PER_STATION = 10` a few lines above belongs to
+> `publish_schedule_network_departures` and is untouched — do not "restore
+> symmetry" by adding a destination-side twin.
 
 ```rust
-/// Per-destination bucket cap for the destination-keyed publish. **NOT a
-/// copy of `MAX_DEPARTURES_PER_STATION`, and deliberately much larger.**
-/// That constant is 10 because it mirrors `poller-ldbws`'s own `num_rows`
-/// default for a single station's departure board; a destination-keyed
-/// bucket aggregates every `now`-forward departure of every train
-/// terminating at one CRS, from anywhere on the network, which is a
-/// materially different and (before this feature) wholly unmeasured
-/// distribution -- the design doc's own §7 Open Question 1.
-///
-/// This value was set from a real measurement, not by precedent-matching:
-/// see Task 1 of
-/// docs/superpowers/plans/2026-09-07-train-listing-page-implementation-plan.md,
-/// which runs a destination histogram over a real CIF `MCA` extract and
-/// records the result before this constant is written. If you are changing
-/// it, re-run that diagnostic AND its payload-size check (the publish is
-/// one batch POST, bounded by `DefaultBodyLimit::max(100 * 1024 * 1024)` on
-/// `crates/api/src/routes/mod.rs`'s private router) rather than guessing.
-const MAX_DEPARTURES_PER_DESTINATION: usize = 200;
-
-/// Pure sort/cap/JSON-shaping logic, split out of
+/// Pure JSON-shaping logic, split out of
 /// `publish_schedule_destination_departures` purely so it is unit-testable
 /// without a mock HTTP server -- same convention as
 /// `schedule_network_departures_rows` directly above.
 ///
-/// Sort BEFORE truncate is load-bearing, not stylistic: a destination
-/// bucket mixes origins and times freely, so truncating first would keep an
-/// arbitrary `HashMap`-order subset rather than the next
-/// `MAX_DEPARTURES_PER_DESTINATION` trains.
+/// **A flatten, not a grouping.** Its sibling above emits one row per CRS
+/// key with a capped, sorted `departures` array inside it; this one emits
+/// one row per DEPARTURE, each carrying its own `destination_crs`, and
+/// there is no array, no sort and no cap anywhere in it. The three
+/// differences all have the same cause:
+///
+/// * **No cap**, because no cap value is defensible. London Waterloo
+///   buckets ~9,634 departure-bearing calling points for a single day and
+///   the next several busiest destinations are within the same order of
+///   magnitude, so any cap truncates precisely the destinations a
+///   whole-network destination search exists to serve. Worse, this publish
+///   fires once per CIF DELIVERY (roughly daily), not once per 30-minute
+///   cycle, so an earliest-first cap freezes at delivery time and is
+///   entirely in the past by the evening. See
+///   docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+///   §1 and §3.
+/// * **No sort**, because ordering is the read side's job now:
+///   `queries::search_schedule_destination_departures`'s `ORDER BY
+///   scheduled, train_uid, origin_crs` rides the destination table's own
+///   primary key. Sorting ~377,000 rows here would be wasted work.
+/// * **One row per departure**, because the destination is no longer a
+///   bucket key -- it is a column, and a filter predicate, on a flat table.
+///
+/// `service_date` is emitted on every row, unlike the four-key sketch in
+/// the addendum's §3, because the ingest handler's first statement is a
+/// `DELETE ... WHERE service_date = $1` and `common::ingest::post_batch`
+/// posts a bare array with nowhere else to carry the day. Budget ~80 bytes
+/// per entry when sizing the POST, not ~55.
 fn schedule_destination_departures_rows(
     mut by_destination: std::collections::HashMap<
         String,
@@ -1040,27 +1388,56 @@ fn schedule_destination_departures_rows(
 ) -> Vec<serde_json::Value> {
     by_destination
         .drain()
-        .map(|(destination_crs, mut departures)| {
-            departures.sort_by_key(|d| d.scheduled);
-            departures.truncate(MAX_DEPARTURES_PER_DESTINATION);
-            serde_json::json!({
-                "destination_crs": destination_crs,
-                "service_date": today,
-                "departures": departures,
+        .flat_map(|(destination_crs, departures)| {
+            departures.into_iter().map(move |d| {
+                serde_json::json!({
+                    "service_date": today,
+                    "destination_crs": destination_crs,
+                    "scheduled": d.scheduled,
+                    "train_uid": d.uid,
+                    "origin_crs": d.origin_crs,
+                })
             })
         })
         .collect()
 }
 
 /// The destination-keyed sibling of `publish_schedule_network_departures`
-/// directly above: same one-batch-array POST shape, same
-/// `london_local_time_now()` `now`-forward boundary, same
-/// `tiploc_to_crs` map built from this cycle's already-resolved
-/// `stanox_crs_records`, same log-and-continue error posture (a failed POST
-/// just means this cycle's grouping is discarded and rebuilt next cycle).
-/// Only the grouping key differs. See
+/// directly above: same one-batch-array POST shape, same `tiploc_to_crs`
+/// map built from this cycle's already-resolved `stanox_crs_records`, same
+/// log-and-continue error posture (a failed POST just means this delivery's
+/// grouping is discarded and rebuilt when the next one lands). See
 /// docs/superpowers/specs/2026-09-07-train-listing-page-design.md,
-/// Approach B.
+/// Approach B, as revised by
+/// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md,
+/// Approach C.
+///
+/// **Two deliberate differences from the sibling, both easy to "fix" back
+/// by mistake:**
+///
+/// 1. `now` is `chrono::NaiveTime::MIN`, NOT `london_local_time_now()`.
+///    That is not an oversight and it is not a placeholder -- it publishes
+///    the WHOLE rail day, on purpose. The sibling's publish-time
+///    `now`-forward filter is evaluated exactly once per CIF delivery
+///    (roughly daily -- `poll_once` returns early unless the delivery
+///    directory changed, `main.rs:101-107`), so whatever the clock happened
+///    to read when the delivery landed becomes the boundary for the rest of
+///    the day. For a next-10-per-station board that is a tolerable
+///    staleness; for a destination search it silently empties the busiest
+///    destinations by evening. So this product publishes everything and
+///    `GET /public/trains/search` applies `scheduled >= now` at REQUEST
+///    time, where the clock is actually correct. If you change this back to
+///    `london_local_time_now()`, you reintroduce that bug. See the
+///    addendum's §1.3.
+/// 2. The rows are flat and uncapped (see
+///    `schedule_destination_departures_rows`), so this is a much larger
+///    body than the sibling's: ~377,000 objects, ~30MB. That is inside
+///    `DefaultBodyLimit::max(100 * 1024 * 1024)`
+///    (`crates/api/src/routes/mod.rs:86`) with ~3.3x headroom. If a future
+///    measurement pushes it past ~60MB, chunk it with
+///    `for chunk in rows.chunks(50_000)` and teach the ingest handler
+///    "the first chunk clears the day" -- addendum §3's documented
+///    fallback, and Task 1 Step 3 of this plan.
 async fn publish_schedule_destination_departures(
     client: &Client,
     config: &Config,
@@ -1078,7 +1455,9 @@ async fn publish_schedule_destination_departures(
             )
         })
         .collect();
-    let now = london_local_time_now();
+    // Midnight, i.e. no publish-time `now`-forward filter at all -- see this
+    // function's own doc comment, point 1. Deliberate; do not "fix".
+    let now = chrono::NaiveTime::MIN;
 
     let by_destination =
         schedule_query::departures_by_destination_crs(index, today, now, &tiploc_to_crs);
@@ -1187,53 +1566,132 @@ git commit -m "Publish CIF-derived destination-keyed departures from schedule-re
 
 ---
 
-## Task 5: `api` data layer — upsert and filtered search
+## Task 5: `api` data layer — bulk upsert and keyset-paginated indexed search
+
+> **REWRITTEN per the addendum's §5 row 5 and its §3.** Everything in this
+> task changed shape:
+>
+> - `ScheduleDestinationDeparturesRow` becomes **flat scalar fields**, with
+>   **no `serde_json::Value` anywhere**.
+> - The upsert becomes, in **one transaction**, a `DELETE` by `service_date`
+>   plus **one `UNNEST` bulk `INSERT`** — not the sibling's per-row
+>   `INSERT ... ON CONFLICT` loop, which would be ~377,000 round trips.
+> - The search becomes the addendum's **indexed range scan with a keyset
+>   cursor**, not a `LEFT JOIN LATERAL jsonb_array_elements`.
+> - The 404-vs-`200 []` split is preserved by a **day-scoped existence
+>   probe**, which deliberately changes its semantics — see the note below.
+>
+> Every test in this task is rewritten around the flat shape; none of the
+> original coverage is dropped, and four tests are added (keyset paging,
+> last-page cursor, the `now` boundary, and an empty-batch guard).
 
 **Files:**
-- Modify: `crates/api/src/data/queries.rs` (add the row struct, the upsert
-  and the search function immediately after
-  `latest_schedule_network_departures`, which ends at line 895; add a new
+- Modify: `crates/api/src/data/queries.rs` (add the two structs, the row
+  struct, the upsert and the search function immediately after
+  `latest_schedule_network_departures`, which ends at line 897; add a new
   test module at the end of the file)
 
 **Interfaces:**
 - Consumes: table `schedule_destination_departures` (Task 2).
 - Produces:
-  - `pub struct ScheduleDestinationDeparturesRow { pub destination_crs:
-    String, pub service_date: chrono::NaiveDate, pub departures:
-    serde_json::Value }` (`Debug + Clone + Deserialize`) — consumed by
-    Task 6's ingest handler as a `Json<Vec<…>>` body.
+  - `pub struct ScheduleDestinationDeparturesRow { pub service_date:
+    chrono::NaiveDate, pub destination_crs: String, pub scheduled:
+    chrono::NaiveTime, pub train_uid: String, pub origin_crs: String }`
+    (`Debug + Clone + Deserialize`) — consumed by Task 6's ingest handler as
+    a `Json<Vec<…>>` body, and matching Task 4's published JSON
+    field-for-field.
+  - `pub struct DestinationDepartureCursor { pub scheduled:
+    chrono::NaiveTime, pub train_uid: String, pub origin_crs: String }`
+    (`Debug + Clone + PartialEq + Eq`) — the keyset cursor, consumed by
+    Task 7, which encodes and decodes it on the wire.
+  - `pub struct DestinationDeparturePage { pub departures:
+    Vec<serde_json::Value>, pub next_cursor:
+    Option<DestinationDepartureCursor> }` (`Debug + Clone`).
   - `pub async fn upsert_schedule_destination_departures(pool: &PgPool, rows:
     &[ScheduleDestinationDeparturesRow]) -> Result<u64>` — consumed by
     Task 6.
   - `pub async fn search_schedule_destination_departures(pool: &PgPool,
-    destination_crs: &str, service_date: chrono::NaiveDate, origin_crs:
-    Option<&str>, from_time: Option<&str>, to_time: Option<&str>, limit: i64)
-    -> Result<Option<Vec<serde_json::Value>>>` — consumed by Task 7.
-    `None` means "no row published for this `(destination_crs,
-    service_date)` at all" (the 404 case); `Some(vec![])` means "published,
-    but nothing matched the filters" (the `200 []` case). `from_time`/
-    `to_time` are `"HH:MM:SS"` strings, compared lexicographically against
-    the stored `scheduled` values (which serde writes as `"HH:MM:SS"`) —
-    that ordering is identical to chronological ordering for a fixed-width
-    24-hour clock string, which is why no cast is needed.
+    destination_crs: &str, service_date: chrono::NaiveDate, scheduled_from:
+    chrono::NaiveTime, origin_crs: Option<&str>, to_time:
+    Option<chrono::NaiveTime>, after: Option<&DestinationDepartureCursor>,
+    limit: i64) -> Result<Option<DestinationDeparturePage>>` — consumed by
+    Task 7.
+
+> **The three outcomes, and how the return type keeps them apart.** The
+> original `Option<Vec<…>>` distinguished two facts; this shape
+> distinguishes the same two, plus pagination:
+>
+> | Outcome | Return | Route's response |
+> |---|---|---|
+> | No CIF publish has landed for `service_date` at all | `Ok(None)` | `404` |
+> | Day published, filters matched nothing | `Ok(Some(page))` with `page.departures.is_empty()` | `200 {"results": [], "nextCursor": null}` |
+> | Day published, rows found | `Ok(Some(page))` with rows, `next_cursor` set iff more remain | `200 {"results": [...], "nextCursor": "…"}` |
+>
+> **This deliberately changes the 404's meaning**, and the change must be a
+> conscious call rather than a side effect (the addendum's §3 and §7 item 3
+> argue it, and this plan accepts it). Under the old bucket shape the probe
+> was per-destination, so an unknown destination CRS 404'd. Under a flat
+> table an empty result set is empty either way, so the probe is scoped to
+> the **day**: `404` now means *"we do not have today's timetable"*, and an
+> unknown or train-less destination CRS returns `200` with an empty
+> `results` array — *"we have today's timetable and nothing goes there"*.
+> Those are genuinely different answers and this is the more honest split;
+> it does, however, diverge from `get_station_schedule_departures`'s
+> behaviour, which is unchanged and stays as it is.
+
+> **Why `departures` stays `Vec<serde_json::Value>` when the storage is now
+> typed.** So that Task 7's `render::destination_departure_json` and both of
+> its tests survive **verbatim**, exactly as the addendum's §5 row 7
+> requires. This function builds each element with `json!()` from the typed
+> query result, in the same `{"uid", "origin_crs", "scheduled":
+> "HH:MM:SS"}` shape the render function already reads — so the storage
+> change stops at this file's boundary and the render layer never learns
+> about it. The keys are `uid`/`origin_crs`/`scheduled` (the render
+> function's contract), not `train_uid`/`origin_crs`/`scheduled` (the
+> table's columns); the one-line mapping is in the code below.
 
 - [ ] **Step 1: Write the failing tests**
 
 Add this new module at the very end of `crates/api/src/data/queries.rs`:
 
+> **Two conventions this module follows that are easy to get wrong.**
+>
+> 1. The pool helper is named **`test_pool()`**, not `connect()` — that is
+>    this file's own local convention, shared by its three existing
+>    `*_query_tests` modules (`incident_query_tests`,
+>    `schedule_feed_ingest_query_tests`, `stanox_crs_lookup_query_tests`),
+>    as `stanox_crs_lookup_query_tests`' own doc comment states explicitly.
+>    Task 6 and Task 7's modules live in `routes/*.rs` and use `connect()`,
+>    matching *their* files. Follow the file you are in.
+> 2. **Every test gets its own `service_date`**, and the dates are in
+>    **2099**. This is load-bearing, not fussiness. The existence probe is
+>    scoped to the *day*, not to the destination, so two tests sharing a
+>    `service_date` would see each other's rows and the
+>    "nothing published" test would spuriously pass through to
+>    `Some(empty)`. A far-future year additionally guarantees no collision
+>    with real published data in a shared development database — which
+>    matters now in a way it did not under the per-destination bucket, for
+>    exactly the same reason.
+
 ```rust
 /// Tested at the query level rather than through a route harness -- same
 /// posture as this file's other `*_query_tests` modules. The real SQL here
-/// (the `LEFT JOIN LATERAL jsonb_array_elements` that keeps "no published
-/// row" and "published but nothing matched" distinguishable, plus the three
-/// optional filters) is exactly what needs live-database coverage;
+/// (an indexed range scan over the destination table's own primary key,
+/// three optional predicates, a keyset cursor, and the day-scoped existence
+/// probe that keeps "no publish today" and "published but nothing matched"
+/// distinguishable) is exactly what needs live-database coverage;
 /// `routes/trains.rs`'s handler is a thin parse/render wrapper over it.
+///
+/// Every test here owns a distinct `service_date` in 2099, because the
+/// existence probe is day-scoped: sharing a date between tests would let
+/// one test's fixture answer another's "is anything published?" question,
+/// and a real service date could let PRODUCTION data answer it.
 #[cfg(test)]
 mod schedule_destination_departures_query_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
 
-    async fn connect() -> PgPool {
+    async fn test_pool() -> PgPool {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
         PgPoolOptions::new()
@@ -1242,159 +1700,293 @@ mod schedule_destination_departures_query_tests {
             .expect("connect to postgres")
     }
 
-    async fn delete_fixture(pool: &PgPool, destination_crs: &str) {
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE destination_crs = $1")
-            .bind(destination_crs)
+    /// A distinct, far-future fixture date per test. See this module's own
+    /// doc comment for why both properties matter.
+    fn fixture_date(day: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2099, 1, day).expect("valid fixture date")
+    }
+
+    fn time(h: u32, m: u32) -> chrono::NaiveTime {
+        chrono::NaiveTime::from_hms_opt(h, m, 0).expect("valid fixture time")
+    }
+
+    /// Midnight -- the lower bound that admits everything, used wherever a
+    /// test is not itself about the `now`-forward boundary.
+    fn any_time() -> chrono::NaiveTime {
+        chrono::NaiveTime::MIN
+    }
+
+    async fn delete_day(pool: &PgPool, service_date: chrono::NaiveDate) {
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+            .bind(service_date)
             .execute(pool)
             .await
             .expect("cleanup fixture schedule_destination_departures rows");
     }
 
-    fn fixture_date() -> chrono::NaiveDate {
-        chrono::NaiveDate::from_ymd_opt(2026, 9, 7).unwrap()
+    fn row(
+        service_date: chrono::NaiveDate,
+        destination_crs: &str,
+        scheduled: chrono::NaiveTime,
+        train_uid: &str,
+        origin_crs: &str,
+    ) -> ScheduleDestinationDeparturesRow {
+        ScheduleDestinationDeparturesRow {
+            service_date,
+            destination_crs: destination_crs.to_string(),
+            scheduled,
+            train_uid: train_uid.to_string(),
+            origin_crs: origin_crs.to_string(),
+        }
     }
 
-    /// Three trains to one destination from two origins, at three times --
-    /// enough to discriminate all three filters independently.
-    async fn seed_fixture(pool: &PgPool, destination_crs: &str) {
-        delete_fixture(pool, destination_crs).await;
-        let departures = serde_json::json!([
-            {"uid": "C10001", "origin_crs": "EUS", "scheduled": "08:22:00"},
-            {"uid": "C10002", "origin_crs": "CRE", "scheduled": "10:05:00"},
-            {"uid": "C10003", "origin_crs": "EUS", "scheduled": "18:40:00"},
-        ]);
-        sqlx::query(
-            "INSERT INTO schedule_destination_departures \
-                (destination_crs, service_date, departures) VALUES ($1, $2, $3)",
-        )
-        .bind(destination_crs)
-        .bind(fixture_date())
-        .bind(departures)
-        .execute(pool)
-        .await
-        .expect("seed fixture row");
+    /// Three trains to ZRD from two origins at three times -- enough to
+    /// discriminate the origin filter, the time bounds and the ordering
+    /// independently. The flat-shape equivalent of the original plan's
+    /// single three-element JSONB bucket.
+    fn fixture_rows(service_date: chrono::NaiveDate) -> Vec<ScheduleDestinationDeparturesRow> {
+        vec![
+            row(service_date, "ZRD", time(8, 22), "C10001", "EUS"),
+            row(service_date, "ZRD", time(10, 5), "C10002", "CRE"),
+            row(service_date, "ZRD", time(18, 40), "C10003", "EUS"),
+        ]
+    }
+
+    async fn seed(pool: &PgPool, service_date: chrono::NaiveDate) {
+        delete_day(pool, service_date).await;
+        upsert_schedule_destination_departures(pool, &fixture_rows(service_date))
+            .await
+            .expect("seed fixture rows");
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn upsert_wholesale_replaces_an_existing_row_for_the_same_key() {
-        let pool = connect().await;
-        delete_fixture(&pool, "ZRB").await;
+    async fn upsert_wholesale_replaces_the_whole_service_date() {
+        // The flat-shape successor to the bucket table's
+        // "wholesale-replaces an existing row for the same key" test. The
+        // unit of replacement is now the DAY, not one (destination_crs,
+        // service_date) key -- a fresh delivery's grouping supersedes the
+        // prior one entirely, including destinations that vanished from it.
+        let pool = test_pool().await;
+        let date = fixture_date(1);
+        delete_day(&pool, date).await;
 
-        let first = vec![ScheduleDestinationDeparturesRow {
-            destination_crs: "ZRB".to_string(),
-            service_date: fixture_date(),
-            departures: serde_json::json!([{"uid": "OLD", "origin_crs": "EUS", "scheduled": "08:00:00"}]),
-        }];
-        let upserted = upsert_schedule_destination_departures(&pool, &first)
+        let first = vec![
+            row(date, "ZRB", time(8, 0), "OLD1", "EUS"),
+            row(date, "ZRC", time(9, 0), "OLD2", "CRE"),
+        ];
+        let inserted = upsert_schedule_destination_departures(&pool, &first)
             .await
             .expect("first upsert");
-        assert_eq!(upserted, 1);
+        assert_eq!(inserted, 2);
 
-        let second = vec![ScheduleDestinationDeparturesRow {
-            destination_crs: "ZRB".to_string(),
-            service_date: fixture_date(),
-            departures: serde_json::json!([{"uid": "NEW", "origin_crs": "CRE", "scheduled": "09:00:00"}]),
-        }];
+        // The second publish drops ZRC entirely and changes ZRB's row.
+        let second = vec![row(date, "ZRB", time(9, 30), "NEW1", "CRE")];
         upsert_schedule_destination_departures(&pool, &second)
             .await
             .expect("second upsert");
 
-        let (stored,): (serde_json::Value,) = sqlx::query_as(
-            "SELECT departures FROM schedule_destination_departures \
-             WHERE destination_crs = 'ZRB' AND service_date = $1",
+        let stored: Vec<(String, chrono::NaiveTime, String)> = sqlx::query_as(
+            "SELECT destination_crs, scheduled, train_uid \
+             FROM schedule_destination_departures WHERE service_date = $1 \
+             ORDER BY destination_crs",
         )
-        .bind(fixture_date())
-        .fetch_one(&pool)
+        .bind(date)
+        .fetch_all(&pool)
         .await
         .expect("read back");
+
         assert_eq!(
-            stored.as_array().unwrap().len(),
+            stored.len(),
             1,
-            "a fresh cycle wholesale-replaces the bucket, never merges into it"
+            "a fresh publish wholesale-replaces the whole service_date, never merges into it"
         );
-        assert_eq!(stored[0]["uid"], "NEW");
+        assert_eq!(stored[0].0, "ZRB");
+        assert_eq!(stored[0].1, time(9, 30));
+        assert_eq!(stored[0].2, "NEW1");
 
-        delete_fixture(&pool, "ZRB").await;
+        delete_day(&pool, date).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_with_no_published_row_is_none_not_an_empty_vec() {
-        // The whole reason for the Option: `None` becomes a 404 ("nothing
-        // published for this destination today"), `Some(vec![])` becomes a
-        // `200 []` ("published, but your filters matched nothing"). These
-        // are different facts and must never collapse.
-        let pool = connect().await;
-        delete_fixture(&pool, "ZRC").await;
+    async fn upsert_with_an_empty_batch_does_not_wipe_the_day() {
+        // Guards the one way a DELETE-then-INSERT upsert can destroy real
+        // data that a per-row ON CONFLICT loop never could: a publish that
+        // produced no rows (a parse failure upstream, an empty grouping)
+        // must be a no-op, NOT "delete today's timetable".
+        let pool = test_pool().await;
+        let date = fixture_date(2);
+        seed(&pool, date).await;
 
-        let result =
-            search_schedule_destination_departures(&pool, "ZRC", fixture_date(), None, None, None, 100)
-                .await
-                .expect("search");
-        assert!(result.is_none());
+        let affected = upsert_schedule_destination_departures(&pool, &[])
+            .await
+            .expect("empty upsert");
+        assert_eq!(affected, 0);
+
+        let (remaining,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM schedule_destination_departures WHERE service_date = $1",
+        )
+        .bind(date)
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(
+            remaining, 3,
+            "an empty batch must leave the day untouched, never clear it"
+        );
+
+        delete_day(&pool, date).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_with_a_published_row_but_no_matches_is_some_empty_vec() {
-        let pool = connect().await;
-        seed_fixture(&pool, "ZRC").await;
+    async fn search_with_nothing_published_for_the_day_is_none_not_an_empty_page() {
+        // The whole reason for the Option: `None` becomes a 404 ("no CIF
+        // publish has landed for today at all"), `Some(page)` with no rows
+        // becomes a `200` with an empty `results` array ("we have today's
+        // timetable and your filters matched nothing"). These are different
+        // facts and must never collapse.
+        let pool = test_pool().await;
+        let date = fixture_date(3);
+        delete_day(&pool, date).await;
 
         let result = search_schedule_destination_departures(
             &pool,
             "ZRC",
-            fixture_date(),
-            Some("ZZZ"), // no fixture row has this origin
+            date,
+            any_time(),
+            None,
             None,
             None,
             100,
         )
         .await
         .expect("search");
-        assert_eq!(
-            result,
-            Some(Vec::new()),
-            "a published-but-unmatched bucket is Some(empty), never None"
-        );
-
-        delete_fixture(&pool, "ZRC").await;
+        assert!(result.is_none());
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_with_no_filters_returns_every_entry_earliest_first() {
-        let pool = connect().await;
-        seed_fixture(&pool, "ZRD").await;
+    async fn search_with_the_day_published_but_no_matching_rows_is_some_and_empty() {
+        let pool = test_pool().await;
+        let date = fixture_date(4);
+        seed(&pool, date).await;
 
-        let rows =
-            search_schedule_destination_departures(&pool, "ZRD", fixture_date(), None, None, None, 100)
-                .await
-                .expect("search")
-                .expect("row is published");
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0]["uid"], "C10001");
-        assert_eq!(rows[1]["uid"], "C10002");
-        assert_eq!(rows[2]["uid"], "C10003");
+        // No fixture row has this origin.
+        let page = search_schedule_destination_departures(
+            &pool,
+            "ZRD",
+            date,
+            any_time(),
+            Some("ZZZ"),
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day IS published");
+        assert!(
+            page.departures.is_empty(),
+            "a published-but-unmatched day is Some(empty), never None"
+        );
+        assert!(page.next_cursor.is_none());
 
-        delete_fixture(&pool, "ZRD").await;
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_with_an_unknown_destination_on_a_published_day_is_some_and_empty() {
+        // The deliberate semantic change the flat shape brings, pinned by a
+        // test so nobody "restores" the old behaviour by accident: an
+        // unknown destination CRS on a day that IS published is a `200`
+        // with no results, NOT a 404. 404 now means "no timetable for
+        // today at all". See the addendum's §3 and §7 item 3.
+        let pool = test_pool().await;
+        let date = fixture_date(5);
+        seed(&pool, date).await;
+
+        let page = search_schedule_destination_departures(
+            &pool,
+            "ZRF",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published, even though this destination has no trains");
+        assert!(page.departures.is_empty());
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_with_no_filters_returns_every_row_earliest_first_in_the_render_shape() {
+        let pool = test_pool().await;
+        let date = fixture_date(6);
+        seed(&pool, date).await;
+
+        let page = search_schedule_destination_departures(
+            &pool,
+            "ZRD",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+
+        assert_eq!(page.departures.len(), 3);
+        assert_eq!(
+            page.departures[0],
+            serde_json::json!({
+                "uid": "C10001",
+                "origin_crs": "EUS",
+                "scheduled": "08:22:00",
+            }),
+            "the element shape is exactly what render::destination_departure_json reads: \
+             `uid` (not `train_uid`), and `scheduled` as HH:MM:SS"
+        );
+        assert_eq!(page.departures[1]["uid"], "C10002");
+        assert_eq!(page.departures[2]["uid"], "C10003");
+        assert!(
+            page.next_cursor.is_none(),
+            "the whole day fitted in one page, so there is no next cursor"
+        );
+
+        delete_day(&pool, date).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_destination_departures -- --ignored --test-threads=1`"]
     async fn search_filters_by_origin_crs() {
-        let pool = connect().await;
-        seed_fixture(&pool, "ZRD").await;
+        let pool = test_pool().await;
+        let date = fixture_date(7);
+        seed(&pool, date).await;
 
-        let rows = search_schedule_destination_departures(
+        let page = search_schedule_destination_departures(
             &pool,
             "ZRD",
-            fixture_date(),
+            date,
+            any_time(),
             Some("CRE"),
             None,
             None,
@@ -1402,90 +1994,271 @@ mod schedule_destination_departures_query_tests {
         )
         .await
         .expect("search")
-        .expect("row is published");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["uid"], "C10002");
-        assert_eq!(rows[0]["origin_crs"], "CRE");
+        .expect("the day is published");
 
-        delete_fixture(&pool, "ZRD").await;
+        assert_eq!(page.departures.len(), 1);
+        assert_eq!(page.departures[0]["uid"], "C10002");
+        assert_eq!(page.departures[0]["origin_crs"], "CRE");
+
+        delete_day(&pool, date).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_destination_departures -- --ignored --test-threads=1`"]
     async fn search_filters_by_an_inclusive_time_range() {
-        // Inclusive at BOTH ends, and discriminating about it: 10:05:00 is
-        // the exact lower bound here and must be returned, while 08:22:00
-        // (below it) and 18:40:00 (above the upper bound) must not.
-        let pool = connect().await;
-        seed_fixture(&pool, "ZRE").await;
+        // Inclusive at BOTH ends, and discriminating about it: 10:05 is the
+        // exact lower bound here and must be returned, while 08:22 (below
+        // it) and 18:40 (above the upper bound) must not.
+        let pool = test_pool().await;
+        let date = fixture_date(8);
+        seed(&pool, date).await;
 
-        let rows = search_schedule_destination_departures(
+        let page = search_schedule_destination_departures(
             &pool,
-            "ZRE",
-            fixture_date(),
+            "ZRD",
+            date,
+            time(10, 5),
             None,
-            Some("10:05:00"),
-            Some("12:00:00"),
+            Some(time(12, 0)),
+            None,
             100,
         )
         .await
         .expect("search")
-        .expect("row is published");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["uid"], "C10002");
+        .expect("the day is published");
 
-        delete_fixture(&pool, "ZRE").await;
+        assert_eq!(page.departures.len(), 1);
+        assert_eq!(page.departures[0]["uid"], "C10002");
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_excludes_rows_before_the_now_boundary() {
+        // New under this shape, and the reason the shape exists: the
+        // `now`-forward filter is applied HERE, at read time, not at
+        // publish time. `scheduled_from` is the route's own
+        // `max(now, from)`. At 11:00 only the 18:40 train remains.
+        let pool = test_pool().await;
+        let date = fixture_date(9);
+        seed(&pool, date).await;
+
+        let page = search_schedule_destination_departures(
+            &pool,
+            "ZRD",
+            date,
+            time(11, 0),
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+
+        assert_eq!(page.departures.len(), 1);
+        assert_eq!(page.departures[0]["uid"], "C10003");
+
+        delete_day(&pool, date).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_destination_departures -- --ignored --test-threads=1`"]
     async fn search_is_scoped_to_the_requested_service_date_only() {
-        // Proves the "always today, server-side" scoping: a stale bucket
-        // from a different service_date must never leak through.
-        let pool = connect().await;
-        delete_fixture(&pool, "ZRF").await;
+        // Proves the "always today, server-side" scoping: a stale day's
+        // rows must never leak through, and must not even make the
+        // existence probe say "published".
+        let pool = test_pool().await;
+        let date = fixture_date(10);
+        let yesterday = date - chrono::Duration::days(1);
+        delete_day(&pool, date).await;
+        delete_day(&pool, yesterday).await;
 
-        let yesterday = fixture_date() - chrono::Duration::days(1);
-        sqlx::query(
-            "INSERT INTO schedule_destination_departures \
-                (destination_crs, service_date, departures) VALUES ('ZRF', $1, $2)",
+        upsert_schedule_destination_departures(
+            &pool,
+            &[row(yesterday, "ZRD", time(8, 0), "STALE", "EUS")],
         )
-        .bind(yesterday)
-        .bind(serde_json::json!([{"uid": "STALE", "origin_crs": "EUS", "scheduled": "08:00:00"}]))
-        .execute(&pool)
         .await
-        .expect("seed a stale fixture row");
+        .expect("seed a stale day");
 
-        let result =
-            search_schedule_destination_departures(&pool, "ZRF", fixture_date(), None, None, None, 100)
-                .await
-                .expect("search");
-        assert!(result.is_none(), "yesterday's bucket must not answer today's query");
+        let result = search_schedule_destination_departures(
+            &pool,
+            "ZRD",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+        assert!(
+            result.is_none(),
+            "yesterday's rows must not answer today's query, nor satisfy today's existence probe"
+        );
 
-        delete_fixture(&pool, "ZRF").await;
+        delete_day(&pool, yesterday).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn search_applies_the_limit() {
-        let pool = connect().await;
-        seed_fixture(&pool, "ZRE").await;
+    async fn search_applies_the_limit_and_returns_a_cursor_for_the_rest() {
+        let pool = test_pool().await;
+        let date = fixture_date(11);
+        seed(&pool, date).await;
 
-        let rows =
-            search_schedule_destination_departures(&pool, "ZRE", fixture_date(), None, None, None, 2)
-                .await
-                .expect("search")
-                .expect("row is published");
-        assert_eq!(rows.len(), 2, "limit caps the result");
+        let page = search_schedule_destination_departures(
+            &pool,
+            "ZRD",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            2,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+
+        assert_eq!(page.departures.len(), 2, "limit caps the page");
         assert_eq!(
-            rows[0]["uid"], "C10001",
-            "the limit keeps the EARLIEST entries -- ORDER BY runs before LIMIT"
+            page.departures[0]["uid"], "C10001",
+            "the limit keeps the EARLIEST rows -- ORDER BY runs before LIMIT"
+        );
+        assert_eq!(
+            page.next_cursor,
+            Some(DestinationDepartureCursor {
+                scheduled: time(10, 5),
+                train_uid: "C10002".to_string(),
+                origin_crs: "CRE".to_string(),
+            }),
+            "the cursor is the LAST row of this page, so the next page starts strictly after it"
         );
 
-        delete_fixture(&pool, "ZRE").await;
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_keyset_cursor_pages_through_the_day_without_gaps_or_repeats() {
+        // The load-bearing pagination test. Pages of 1 through the three
+        // fixture rows: each page must yield exactly the next row, in
+        // order, and the final page must report no further cursor rather
+        // than handing back a cursor that would yield nothing.
+        let pool = test_pool().await;
+        let date = fixture_date(12);
+        seed(&pool, date).await;
+
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<DestinationDepartureCursor> = None;
+        for _ in 0..5 {
+            let page = search_schedule_destination_departures(
+                &pool,
+                "ZRD",
+                date,
+                any_time(),
+                None,
+                None,
+                cursor.as_ref(),
+                1,
+            )
+            .await
+            .expect("search")
+            .expect("the day is published");
+
+            for departure in &page.departures {
+                seen.push(departure["uid"].as_str().unwrap().to_string());
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        assert_eq!(
+            seen,
+            vec!["C10001", "C10002", "C10003"],
+            "every row exactly once, in scheduled order, across three pages"
+        );
+        assert!(
+            cursor.is_none(),
+            "the last page must NOT hand back a cursor -- there is nothing after it"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_cursor_breaks_ties_on_train_uid_then_origin_crs() {
+        // The reason the cursor is a three-part tuple and not just a time.
+        // Three rows share one `scheduled`; a time-only cursor would either
+        // skip two of them or loop forever. Paging one at a time must walk
+        // all three exactly once, in (train_uid, origin_crs) order.
+        let pool = test_pool().await;
+        let date = fixture_date(13);
+        delete_day(&pool, date).await;
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                row(date, "ZRE", time(9, 0), "C20002", "CRE"),
+                row(date, "ZRE", time(9, 0), "C20001", "EUS"),
+                row(date, "ZRE", time(9, 0), "C20001", "CRE"),
+            ],
+        )
+        .await
+        .expect("seed tied rows");
+
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let mut cursor: Option<DestinationDepartureCursor> = None;
+        for _ in 0..5 {
+            let page = search_schedule_destination_departures(
+                &pool,
+                "ZRE",
+                date,
+                any_time(),
+                None,
+                None,
+                cursor.as_ref(),
+                1,
+            )
+            .await
+            .expect("search")
+            .expect("the day is published");
+            for departure in &page.departures {
+                seen.push((
+                    departure["uid"].as_str().unwrap().to_string(),
+                    departure["origin_crs"].as_str().unwrap().to_string(),
+                ));
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                ("C20001".to_string(), "CRE".to_string()),
+                ("C20001".to_string(), "EUS".to_string()),
+                ("C20002".to_string(), "CRE".to_string()),
+            ],
+            "ties on `scheduled` are broken by train_uid then origin_crs, matching the PK's \
+             own column order, and every tied row is visited exactly once"
+        );
+
+        delete_day(&pool, date).await;
     }
 }
 ```
@@ -1493,137 +2266,307 @@ mod schedule_destination_departures_query_tests {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cargo test -p api schedule_destination_departures -- --ignored`
-Expected: FAIL with a compile error — neither
-`ScheduleDestinationDeparturesRow`,
-`upsert_schedule_destination_departures`, nor
+Expected: FAIL with a compile error — none of
+`ScheduleDestinationDeparturesRow`, `DestinationDepartureCursor`,
+`DestinationDeparturePage`, `upsert_schedule_destination_departures` or
 `search_schedule_destination_departures` is defined.
 
-- [ ] **Step 3: Implement all three items**
+- [ ] **Step 3: Implement the two structs, the bulk upsert and the search**
 
 In `crates/api/src/data/queries.rs`, immediately after
-`latest_schedule_network_departures` (which ends at line 895):
+`latest_schedule_network_departures` (which ends at line 897):
 
 ```rust
-/// One `POST /private/schedule-destination-departures` batch element --
-/// query-scoped, deserialized straight off the request body by
+/// One `POST /private/schedule-destination-departures` batch element -- one
+/// DEPARTURE, not one destination bucket. Query-scoped, deserialized
+/// straight off the request body by
 /// `routes::ingest::post_schedule_destination_departures`. Defined here
 /// (the data layer), not in `routes/ingest.rs`, so the data layer never
 /// depends on a route-layer type -- same direction as every other
-/// dependency between these two files, and the exact shape of
-/// `ScheduleNetworkDeparturesRow` above.
+/// dependency between these two files.
+///
+/// Deliberately NOT shaped like `ScheduleNetworkDeparturesRow` above, which
+/// carries an opaque `serde_json::Value` bucket. Every field here is a flat
+/// scalar mapping one-to-one onto a column of
+/// `schedule_destination_departures`, because the destination product needs
+/// to be FILTERED and PAGINATED in SQL rather than stored and relayed
+/// whole. See
+/// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+/// §3 for why the bucket shape could not work here.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScheduleDestinationDeparturesRow {
-    pub destination_crs: String,
     pub service_date: chrono::NaiveDate,
-    pub departures: serde_json::Value,
+    pub destination_crs: String,
+    pub scheduled: chrono::NaiveTime,
+    pub train_uid: String,
+    pub origin_crs: String,
 }
 
-/// Upserts one cycle's batch of per-destination CIF-derived departures --
-/// wholesale replaces any existing row for each `(destination_crs,
-/// service_date)`, never merges (a fresh cycle's grouping pass supersedes
-/// the prior one entirely). Same one-transaction, one
-/// `INSERT ... ON CONFLICT` per row shape as
-/// `upsert_schedule_network_departures` directly above.
+/// An opaque-to-the-caller position in one destination's ordered results:
+/// the last row of the page just returned. The next page is everything
+/// strictly after it under `ORDER BY scheduled, train_uid, origin_crs`.
+///
+/// All three components are needed, not just `scheduled`: many trains share
+/// a departure minute, so a time-only cursor would either skip the rest of
+/// a tied group or return it forever. The tuple is exactly the trailing
+/// three columns of `schedule_destination_departures`' primary key, in the
+/// same order, so the comparison rides the index instead of re-sorting.
+///
+/// `routes::trains` encodes this onto the wire and parses it back; nothing
+/// outside that module should construct one from user input without going
+/// through that parsing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DestinationDepartureCursor {
+    pub scheduled: chrono::NaiveTime,
+    pub train_uid: String,
+    pub origin_crs: String,
+}
+
+/// One page of destination-search results.
+///
+/// `departures` elements are deliberately `serde_json::Value` in the
+/// `{"uid", "origin_crs", "scheduled": "HH:MM:SS"}` shape, NOT the typed
+/// row: that is the exact element shape
+/// `crate::render::destination_departure_json` already reads, so the
+/// storage layer's move from a JSONB bucket to a flat table stops at this
+/// function and the render layer is untouched.
+///
+/// `next_cursor` is `Some` only when there is genuinely at least one more
+/// row -- the query fetches `limit + 1` to know that, rather than handing
+/// back a cursor that would yield an empty page.
+#[derive(Debug, Clone)]
+pub struct DestinationDeparturePage {
+    pub departures: Vec<serde_json::Value>,
+    pub next_cursor: Option<DestinationDepartureCursor>,
+}
+
+/// Replaces one CIF delivery's worth of per-destination departures.
+///
+/// **Deliberately NOT shaped like `upsert_schedule_network_departures`
+/// above.** That one loops a single-row `INSERT ... ON CONFLICT` per row
+/// inside a transaction, which is correct for its ~2,500 rows and would be
+/// ~377,000 round trips here. This is instead, in ONE transaction:
+///
+/// 1. `DELETE FROM schedule_destination_departures WHERE service_date =
+///    ANY(...)` over the batch's distinct service dates, then
+/// 2. one multi-row `INSERT ... SELECT * FROM UNNEST(...)`.
+///
+/// The pair preserves the same "wholesale replace, never merged" posture
+/// both existing CIF-derived products document, just at day granularity
+/// instead of per-key. `UNNEST` follows this crate's own established batch
+/// pattern -- see `crate::data::trains::find_or_create_trains_batch` and
+/// `mark_trains_resolved_batch` for the identical
+/// build-parallel-Vecs-then-bind style. Five bind parameters regardless of
+/// row count, so the 65,535-parameter protocol ceiling is not in play.
+///
+/// **An empty `rows` is a no-op, and that is load-bearing.** A publish that
+/// produced nothing (an upstream parse failure, a delivery with no
+/// schedules) must not be allowed to delete a service date's real
+/// timetable. The per-row `ON CONFLICT` loop it replaces could not have
+/// this bug; a DELETE-then-INSERT can, so it is guarded and tested
+/// (`upsert_with_an_empty_batch_does_not_wipe_the_day`).
+///
+/// `ON CONFLICT DO NOTHING` on the insert: the primary key covers all five
+/// columns, so a conflict can only mean the publisher emitted a
+/// byte-identical duplicate. Dropping it silently is strictly better than
+/// failing a ~377,000-row batch over one pathological schedule. The return
+/// value is therefore rows actually INSERTED, which may be under
+/// `rows.len()` in that case.
 pub async fn upsert_schedule_destination_departures(
     pool: &PgPool,
     rows: &[ScheduleDestinationDeparturesRow],
 ) -> Result<u64> {
-    let mut tx = pool.begin().await?;
-    let mut count = 0u64;
+    if rows.is_empty() {
+        return Ok(0);
+    }
 
-    for row in rows {
-        sqlx::query(
-            r#"
-            INSERT INTO schedule_destination_departures
-                (destination_crs, service_date, departures, updated_at)
-            VALUES ($1, $2, $3, now())
-            ON CONFLICT (destination_crs, service_date) DO UPDATE SET
-                departures = EXCLUDED.departures,
-                updated_at = EXCLUDED.updated_at
-            "#,
-        )
-        .bind(&row.destination_crs)
-        .bind(row.service_date)
-        .bind(&row.departures)
+    let service_dates: Vec<chrono::NaiveDate> = rows.iter().map(|r| r.service_date).collect();
+    let destination_crs: Vec<&str> = rows.iter().map(|r| r.destination_crs.as_str()).collect();
+    let scheduled: Vec<chrono::NaiveTime> = rows.iter().map(|r| r.scheduled).collect();
+    let train_uids: Vec<&str> = rows.iter().map(|r| r.train_uid.as_str()).collect();
+    let origin_crs: Vec<&str> = rows.iter().map(|r| r.origin_crs.as_str()).collect();
+
+    // Normally exactly one date. Handled as a set anyway so a batch that
+    // straddles a rail-day boundary replaces both days rather than half of
+    // one -- and so the DELETE can never be wider than what is being
+    // written.
+    let mut distinct_dates = service_dates.clone();
+    distinct_dates.sort_unstable();
+    distinct_dates.dedup();
+
+    let mut tx = pool.begin().await?;
+
+    sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = ANY($1::date[])")
+        .bind(&distinct_dates)
         .execute(&mut *tx)
         .await?;
 
-        count += 1;
-    }
+    let result = sqlx::query(
+        "INSERT INTO schedule_destination_departures \
+            (service_date, destination_crs, scheduled, train_uid, origin_crs) \
+         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::text[], $5::text[]) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(&service_dates)
+    .bind(&destination_crs)
+    .bind(&scheduled)
+    .bind(&train_uids)
+    .bind(&origin_crs)
+    .execute(&mut *tx)
+    .await?;
 
     tx.commit().await?;
-    Ok(count)
+    Ok(result.rows_affected())
 }
 
-/// The destination-first train search's one read. Filters INSIDE the
-/// published JSONB bucket rather than returning the whole blob for the
-/// caller to filter: a destination bucket holds up to
-/// `MAX_DEPARTURES_PER_DESTINATION` entries (see
-/// `crates/schedule-reference/src/main.rs`), far more than
-/// `schedule_network_departures`' next-10, so shipping it whole would
-/// defeat the point of a server-side search.
+/// Cheap, day-scoped existence probe backing the 404-versus-`200 []` split.
 ///
-/// `Ok(None)` means no row is published for `(destination_crs,
-/// service_date)` at all -- the caller maps that to a `404`, the same
-/// honesty split `get_station_schedule_departures` already draws.
-/// `Ok(Some(vec![]))` means a row IS published but nothing in it matched
-/// the filters -- a `200 []`. The `LEFT JOIN LATERAL` (rather than a plain
-/// comma join) is exactly what keeps those two distinguishable in ONE
-/// round trip: an unmatched-but-published row still yields one result row,
-/// carrying a `NULL` element.
+/// **Scoped to the DAY, not to the destination**, and that is a deliberate
+/// semantic change from the bucket shape this replaces. Under a flat table
+/// an empty result set is empty whether the destination is unknown or the
+/// timetable is missing, so the only honest thing left to probe is whether
+/// today's CIF publish landed at all. Consequently `404` now means "we do
+/// not have today's timetable" and an unknown or train-less destination CRS
+/// returns an empty `200`. See
+/// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+/// §3 and §7 item 3 -- this diverges from
+/// `routes::departures::get_station_schedule_departures`' own split, which
+/// is unchanged.
 ///
-/// `from_time`/`to_time` are `"HH:MM:SS"` strings and are compared as text
-/// against the stored `scheduled` values, which serde writes in the same
-/// fixed-width form. For a 24-hour clock in that format, lexicographic and
-/// chronological order are identical, so no `::time` cast is needed -- and
-/// avoiding one keeps the filter usable against the raw JSONB text without
-/// per-row parsing. Both bounds are INCLUSIVE.
+/// One indexed lookup: `service_date` is the primary key's leading column.
+async fn schedule_destination_departures_published_for(
+    pool: &PgPool,
+    service_date: chrono::NaiveDate,
+) -> Result<bool> {
+    let probe: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM schedule_destination_departures WHERE service_date = $1 LIMIT 1",
+    )
+    .bind(service_date)
+    .fetch_optional(pool)
+    .await?;
+    Ok(probe.is_some())
+}
+
+/// The destination-first train search's one read: a bounded index range
+/// scan over `schedule_destination_departures`' primary key, with a keyset
+/// cursor.
+///
+/// The `(service_date, destination_crs, scheduled, train_uid, origin_crs)`
+/// primary key is also this query's covering index, in exactly the order it
+/// is used: equality on the first two columns, a range on `scheduled`, and
+/// the trailing three as the total order the cursor rides. The worst real
+/// case -- London Waterloo, no origin filter, ~8,145 matching rows -- touches
+/// `limit + 1` index entries, not 8,145, so a busy destination costs the
+/// same as a quiet one. **Do not** replace the row-comparison cursor with
+/// `OFFSET`: an offset re-scans everything it skips, which is precisely the
+/// cost this shape exists to avoid.
+///
+/// `scheduled_from` is an INCLUSIVE lower bound and is the caller's
+/// already-combined `max(now, from)`. There is only one lower bound
+/// parameter, deliberately: `now` is not optional (a departure that has
+/// already gone is not a search result) and a caller-supplied `from` can
+/// only narrow further, never reach back past it. `to_time` is an
+/// INCLUSIVE upper bound. Both are real `NaiveTime`s compared against a
+/// real `TIME` column -- the old shape's lexicographic `"HH:MM:SS"` string
+/// comparison is gone along with the JSONB.
+///
+/// `Ok(None)` means no CIF publish has landed for `service_date` at all
+/// (the caller maps that to a `404`). `Ok(Some(page))` with an empty
+/// `page.departures` means the day IS published and the filters matched
+/// nothing (a `200` with an empty `results` array). The probe only runs
+/// when the main query came back empty, so the common case is one round
+/// trip, not two.
+#[allow(clippy::too_many_arguments)]
 pub async fn search_schedule_destination_departures(
     pool: &PgPool,
     destination_crs: &str,
     service_date: chrono::NaiveDate,
+    scheduled_from: chrono::NaiveTime,
     origin_crs: Option<&str>,
-    from_time: Option<&str>,
-    to_time: Option<&str>,
+    to_time: Option<chrono::NaiveTime>,
+    after: Option<&DestinationDepartureCursor>,
     limit: i64,
-) -> Result<Option<Vec<serde_json::Value>>> {
-    use sqlx::Row;
-    let rows = sqlx::query(
+) -> Result<Option<DestinationDeparturePage>> {
+    // One extra row is fetched purely to learn whether a next page exists,
+    // so `next_cursor` is never handed back for an empty page.
+    let fetch = limit.saturating_add(1);
+
+    let rows: Vec<(String, String, chrono::NaiveTime)> = sqlx::query_as(
         r#"
-        SELECT elem
-        FROM schedule_destination_departures d
-        LEFT JOIN LATERAL jsonb_array_elements(d.departures) AS elem
-            ON ($3::text IS NULL OR elem->>'origin_crs' = $3)
-           AND ($4::text IS NULL OR elem->>'scheduled' >= $4)
-           AND ($5::text IS NULL OR elem->>'scheduled' <= $5)
-        WHERE d.destination_crs = $1 AND d.service_date = $2
-        ORDER BY elem->>'scheduled'
-        LIMIT $6
+        SELECT train_uid, origin_crs, scheduled
+        FROM schedule_destination_departures
+        WHERE service_date = $1
+          AND destination_crs = $2
+          AND scheduled >= $3
+          AND ($4::text IS NULL OR origin_crs = $4)
+          AND ($5::time IS NULL OR scheduled <= $5)
+          AND ($6::time IS NULL
+               OR (scheduled, train_uid, origin_crs) > ($6, $7, $8))
+        ORDER BY scheduled, train_uid, origin_crs
+        LIMIT $9
         "#,
     )
-    .bind(destination_crs)
     .bind(service_date)
+    .bind(destination_crs)
+    .bind(scheduled_from)
     .bind(origin_crs)
-    .bind(from_time)
     .bind(to_time)
-    .bind(limit)
+    .bind(after.map(|c| c.scheduled))
+    .bind(after.map(|c| c.train_uid.as_str()))
+    .bind(after.map(|c| c.origin_crs.as_str()))
+    .bind(fetch)
     .fetch_all(pool)
     .await?;
 
     if rows.is_empty() {
-        return Ok(None);
+        // Only now is the probe worth a round trip -- and it is the ONLY
+        // thing that separates a 404 from an empty 200.
+        if !schedule_destination_departures_published_for(pool, service_date).await? {
+            return Ok(None);
+        }
+        return Ok(Some(DestinationDeparturePage {
+            departures: Vec::new(),
+            next_cursor: None,
+        }));
     }
 
-    let mut matched = Vec::with_capacity(rows.len());
-    for row in rows {
-        // NULL only for the single placeholder row a published-but-unmatched
-        // bucket yields from the LEFT JOIN -- skipped, leaving Some(vec![]).
-        let elem: Option<serde_json::Value> = row.try_get("elem")?;
-        if let Some(elem) = elem {
-            matched.push(elem);
-        }
-    }
-    Ok(Some(matched))
+    let has_more = rows.len() as i64 > limit;
+    let page_rows = if has_more {
+        &rows[..limit as usize]
+    } else {
+        &rows[..]
+    };
+
+    let next_cursor = if has_more {
+        page_rows
+            .last()
+            .map(|(train_uid, origin_crs, scheduled)| DestinationDepartureCursor {
+                scheduled: *scheduled,
+                train_uid: train_uid.clone(),
+                origin_crs: origin_crs.clone(),
+            })
+    } else {
+        None
+    };
+
+    // Rendered into the SAME element shape the JSONB bucket used to store,
+    // so `render::destination_departure_json` needs no change: `uid` (not
+    // `train_uid`), and `scheduled` as a fixed-width "HH:MM:SS" string.
+    let departures = page_rows
+        .iter()
+        .map(|(train_uid, origin_crs, scheduled)| {
+            serde_json::json!({
+                "uid": train_uid,
+                "origin_crs": origin_crs,
+                "scheduled": scheduled.format("%H:%M:%S").to_string(),
+            })
+        })
+        .collect();
+
+    Ok(Some(DestinationDeparturePage {
+        departures,
+        next_cursor,
+    }))
 }
 ```
 
@@ -1631,7 +2574,7 @@ pub async fn search_schedule_destination_departures(
 
 Run:
 `DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres cargo test -p api schedule_destination_departures -- --ignored --test-threads=1 --nocapture`
-Expected: PASS — all eight new tests.
+Expected: PASS — all twelve tests in the new module.
 
 - [ ] **Step 5: Run the full crate suite to confirm no regression**
 
@@ -1643,12 +2586,31 @@ matching every other live-database test in this file.
 
 ```bash
 git add crates/api/src/data/queries.rs
-git commit -m "Add upsert/search queries for schedule_destination_departures"
+git commit -m "Add flat-table upsert and keyset-paginated search for schedule_destination_departures"
 ```
 
 ---
 
 ## Task 6: `api` ingest route — `POST /private/schedule-destination-departures`
+
+> **KEPT ALMOST ENTIRELY, per the addendum's §5 row 6.** The route path, the
+> method, the `internal_oauth_group_schedule_reference` authorization, the
+> `UpsertResponse` shape and the `app.rs` registration are **all unchanged**.
+> The only change is that the body type now follows Task 5's flat row
+> struct, so this task's `db_tests` seed and assertions change with it.
+>
+> **Conditional, and only if Task 1 says so:** *IF Task 1's real measurement
+> requires chunking, this handler must additionally treat the FIRST chunk of
+> a publish as the one that clears the day* — i.e. only the first POST in a
+> batch of chunked POSTs performs the
+> `DELETE FROM schedule_destination_departures WHERE service_date = $1`, and
+> subsequent chunks in the same publish only INSERT. *Implement this only if
+> Task 1's controller-run result requires it; the default (a single POST)
+> needs no such handling.* Concretely, that would mean a query parameter or
+> header on the request distinguishing first-chunk from continuation, and a
+> second data-layer entry point next to
+> `upsert_schedule_destination_departures` that skips the `DELETE` — do not
+> build either speculatively. Task 1 Step 3 records which path was taken.
 
 **Files:**
 - Modify: `crates/api/src/routes/ingest.rs` (add the route to `router()`,
@@ -1680,9 +2642,15 @@ sibling (the module's `delete_fixture`-style helper for that table is at
 lines 1094-1101 — this test brings its own, for the new table):
 
 ```rust
-    async fn delete_destination_departures_fixture(pool: &PgPool, destination_crs: &str) {
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE destination_crs = $1")
-            .bind(destination_crs)
+    /// Day-scoped, like the upsert itself -- the unit of replacement for
+    /// this table is a whole `service_date`, not one destination's rows.
+    /// The fixture date is in 2099 for the same reason Task 5's are: it
+    /// must not collide with a real published day in a shared development
+    /// database. See `queries::schedule_destination_departures_query_tests`'
+    /// own module doc comment.
+    async fn delete_destination_departures_fixture(pool: &PgPool, service_date: &str) {
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1::date")
+            .bind(service_date)
             .execute(pool)
             .await
             .expect("cleanup fixture schedule_destination_departures rows");
@@ -1691,18 +2659,34 @@ lines 1094-1101 — this test brings its own, for the new table):
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 post_schedule_destination_departures -- --ignored --test-threads=1`"]
-    async fn post_schedule_destination_departures_upserts_the_row() {
+    async fn post_schedule_destination_departures_upserts_the_rows() {
         let pool = connect().await;
-        delete_destination_departures_fixture(&pool, "ZRB").await;
+        delete_destination_departures_fixture(&pool, "2099-02-01").await;
 
         let router: axum::Router = crate::app::Router::new()
             .merge(router())
             .with_state(test_app(pool.clone()));
-        let body = serde_json::json!([{
-            "destination_crs": "ZRB",
-            "service_date": "2026-09-07",
-            "departures": [{"uid": "C10001", "origin_crs": "EUS", "scheduled": "08:22:00"}]
-        }]);
+        // Flat: one JSON object per DEPARTURE, exactly as
+        // schedule-reference's `schedule_destination_departures_rows`
+        // emits them (Task 4) and exactly as
+        // `queries::ScheduleDestinationDeparturesRow` deserializes them.
+        // Two rows, so "one row per departure" is actually discriminated.
+        let body = serde_json::json!([
+            {
+                "service_date": "2099-02-01",
+                "destination_crs": "ZRB",
+                "scheduled": "08:22:00",
+                "train_uid": "C10001",
+                "origin_crs": "EUS"
+            },
+            {
+                "service_date": "2099-02-01",
+                "destination_crs": "ZRB",
+                "scheduled": "10:05:00",
+                "train_uid": "C10002",
+                "origin_crs": "CRE"
+            }
+        ]);
         let response = router
             .oneshot(
                 Request::builder()
@@ -1720,19 +2704,30 @@ lines 1094-1101 — this test brings its own, for the new table):
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
-        assert_eq!(json["upserted"], 1);
+        assert_eq!(json["upserted"], 2);
 
-        let (stored,): (serde_json::Value,) = sqlx::query_as(
-            "SELECT departures FROM schedule_destination_departures \
-             WHERE destination_crs = 'ZRB' AND service_date = '2026-09-07'",
+        let stored: Vec<(String, chrono::NaiveTime, String, String)> = sqlx::query_as(
+            "SELECT destination_crs, scheduled, train_uid, origin_crs \
+             FROM schedule_destination_departures \
+             WHERE service_date = '2099-02-01' \
+             ORDER BY scheduled",
         )
-        .fetch_one(&pool)
+        .fetch_all(&pool)
         .await
-        .expect("read back the upserted row");
-        assert_eq!(stored[0]["uid"], "C10001");
-        assert_eq!(stored[0]["origin_crs"], "EUS");
+        .expect("read back the upserted rows");
 
-        delete_destination_departures_fixture(&pool, "ZRB").await;
+        assert_eq!(stored.len(), 2, "one stored row per posted departure");
+        assert_eq!(stored[0].0, "ZRB");
+        assert_eq!(
+            stored[0].1,
+            chrono::NaiveTime::from_hms_opt(8, 22, 0).unwrap()
+        );
+        assert_eq!(stored[0].2, "C10001");
+        assert_eq!(stored[0].3, "EUS");
+        assert_eq!(stored[1].2, "C10002");
+        assert_eq!(stored[1].3, "CRE");
+
+        delete_destination_departures_fixture(&pool, "2099-02-01").await;
     }
 ```
 
@@ -1770,14 +2765,22 @@ Immediately after `post_schedule_network_departures` (which ends at line
 447):
 
 ```rust
-/// `crates/schedule-reference`'s per-cycle batch of CIF-derived
+/// `crates/schedule-reference`'s per-DELIVERY batch of CIF-derived
 /// per-DESTINATION departures -- the destination-keyed sibling of
 /// `post_schedule_network_departures` directly above, and the write side of
 /// the destination-first train search
 /// (docs/superpowers/specs/2026-09-07-train-listing-page-design.md,
-/// Approach B). POST only: no service reads this table back over HTTP --
+/// Approach B, as revised by
+/// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md,
+/// Approach C). POST only: no service reads this table back over HTTP --
 /// `api` serves it straight off Postgres via
 /// `routes::trains::get_trains_search`.
+///
+/// The body is FLAT -- one element per departure, ~377,000 of them, ~30MB
+/// -- not one element per destination with an array inside it. The whole
+/// batch replaces its service date in one transaction inside
+/// `upsert_schedule_destination_departures`; this handler adds no logic of
+/// its own beyond that call, deliberately.
 async fn post_schedule_destination_departures(
     State(app): State<App>,
     Json(rows): Json<Vec<ScheduleDestinationDeparturesRow>>,
@@ -1830,6 +2833,29 @@ git commit -m "Add POST /private/schedule-destination-departures ingest route"
 
 ## Task 7: `api` public route — `GET /public/trains/search`
 
+> **CHANGED ADDITIVELY, per the addendum's §5 row 7.** Everything this route
+> already did, it still does. **Surviving verbatim, do not touch:** the route
+> path; the required `destination` and optional `origin`/`from`/`to`
+> parameters; the camelCase wire shape
+> `{uid, scheduled: "HH:MM", originCrs, destinationCrs}`;
+> `render.rs`'s `destination_departure_json`; and **both** of its render
+> tests (Steps 1 and 3 of this task are unchanged from the original plan).
+>
+> **Three additions:**
+> 1. a `limit` query parameter — default 50, hard maximum 200, clamped
+>    server-side;
+> 2. an opaque `after` cursor query parameter;
+> 3. consequently, the response body becomes the envelope
+>    `{results: [...], nextCursor: string | null}` instead of a bare JSON
+>    array. That envelope is the only change that ripples to the frontend
+>    (Task 10).
+>
+> The 404 keeps its status code but changes its *meaning*, inherited from
+> Task 5's day-scoped existence probe: it now means "no CIF publish has
+> landed for today at all", and an unknown destination CRS returns a `200`
+> with an empty `results` array. Task 5's Interfaces block argues that
+> change; this task's tests pin it.
+
 **Files:**
 - Create: `crates/api/src/routes/trains.rs`
 - Modify: `crates/api/src/routes/mod.rs:7-24` (add `pub mod trains;`),
@@ -1841,18 +2867,47 @@ git commit -m "Add POST /private/schedule-destination-departures ingest route"
 
 **Interfaces:**
 - Consumes: `queries::search_schedule_destination_departures(pool,
-  destination_crs, service_date, origin_crs, from_time, to_time, limit) ->
-  Result<Option<Vec<serde_json::Value>>>` (Task 5).
+  destination_crs, service_date, scheduled_from, origin_crs, to_time, after,
+  limit) -> Result<Option<queries::DestinationDeparturePage>>`, plus
+  `queries::DestinationDepartureCursor` (Task 5).
 - Produces:
   - `pub(crate) fn destination_departure_json(d: &serde_json::Value,
     destination_crs: &str) -> serde_json::Value`, rendering
-    `{uid, scheduled: "HH:MM", originCrs, destinationCrs}`.
-  - `GET /public/trains/search?destination={CRS}&origin={CRS}&from=HH:MM&to=HH:MM`
-    — `destination` required, the other three optional. `200` with a JSON
-    array of the above shape; `400` on a malformed parameter; `404` when no
-    bucket is published for `(destination, today)`. Unauthenticated, like
-    every other read in `public_router()`. Consumed by Task 10's
-    `TrainSearchForm` via the same-origin `/api/*` proxy.
+    `{uid, scheduled: "HH:MM", originCrs, destinationCrs}` — **unchanged
+    from the original plan**.
+  - `GET /public/trains/search?destination={CRS}&origin={CRS}&from=HH:MM&to=HH:MM&limit={1..200}&after={cursor}`
+    — `destination` required, the other five optional. `200` with
+    `{"results": [ … ], "nextCursor": string | null}`; `400` on any
+    malformed parameter, including a malformed `after`; `404` when no CIF
+    publish has landed for today at all. Unauthenticated, like every other
+    read in `public_router()`. Consumed by Task 10's `TrainSearchForm` via
+    the same-origin `/api/*` proxy.
+
+> **Cursor encoding, decided here.** `after` is
+> **base64url-without-padding of `"HH:MM:SS|train_uid|origin_crs"`**.
+>
+> - *Why base64url and not the bare delimited string:* it makes the value
+>   visibly opaque, so a client is not tempted to construct or mutate one by
+>   hand and thereby depend on the ordering key — which is an internal
+>   implementation detail of the table's primary key and must stay free to
+>   change. `URL_SAFE_NO_PAD` needs no percent-encoding in a query string.
+> - *Why this crate can:* `base64 = "0.22"` is already a direct dependency
+>   of `crates/api`, and `base64::engine::general_purpose::URL_SAFE_NO_PAD`
+>   is this crate's established engine (`crates/api/src/auth.rs:122-123`,
+>   `crates/api/src/auth/internal_oauth.rs:25-26`). No new dependency.
+> - *Why not a signed or encrypted token:* there is nothing to protect. The
+>   cursor names a public timetable row on a public, unauthenticated route;
+>   tampering with one can only reposition the reader within data they may
+>   already read in full.
+> - *Validation, and what a malformed cursor does:* **`400`**, matching this
+>   route's existing posture for every other malformed input (`normalize_crs`
+>   and `normalize_time` both already 400 rather than silently ignoring, for
+>   the reason stated in their doc comments — a dropped filter returns MORE
+>   rows than asked for, which reads as a broken search). A cursor fails
+>   validation if it is not valid base64url, is not valid UTF-8, does not
+>   split into exactly three `|`-separated parts, or its first part does not
+>   parse as `%H:%M:%S`. Silently ignoring one would restart the user at
+>   page 1 while their UI appended it as page 2, duplicating every row.
 
 - [ ] **Step 1: Write the failing render test**
 
@@ -1918,9 +2973,11 @@ In `crates/api/src/render.rs`, immediately after `schedule_departure_json`
 ///   which the origin-keyed sibling doesn't need because there the origin
 ///   is the URL path segment; and
 /// * `destinationCrs` is supplied by the CALLER, not read out of `d` --
-///   it is the storage bucket's key, identical for every element, and is
-///   deliberately not duplicated into each stored element (see
-///   `20260907130000_schedule_destination_departures.sql`).
+///   it is the route's own required query parameter and is identical for
+///   every row of one response, so the search query does not bother to
+///   project it back out of the table (see
+///   `queries::search_schedule_destination_departures`, whose `SELECT`
+///   lists only `train_uid`, `origin_crs`, `scheduled`).
 ///
 /// `scheduled` is trimmed from the stored `"HH:MM:SS"` to `"HH:MM"`,
 /// identical to `schedule_departure_json`, so both sources hand the
@@ -1955,11 +3012,11 @@ Create `crates/api/src/routes/trains.rs`:
 //! published timetable data and shares no state, auth model or types with
 //! that one.
 //!
-//! Reads `schedule_destination_departures` directly, filtering inside the
-//! published JSONB bucket (`queries::search_schedule_destination_departures`).
-//! This is a publish-then-poll read of a table `schedule-reference` writes
-//! on its own cycle -- never a synchronous call into that service, per the
-//! design doc's §6.
+//! Reads `schedule_destination_departures` directly
+//! (`queries::search_schedule_destination_departures`) as a bounded index
+//! range scan with a keyset cursor. This is a publish-then-poll read of a
+//! table `schedule-reference` writes when a CIF delivery lands -- never a
+//! synchronous call into that service, per the design doc's §6.
 //!
 //! **v1 filter set, and why it stops here.** `destination` is required;
 //! `origin` and the `from`/`to` time range are optional. There is
@@ -1968,24 +3025,63 @@ Create `crates/api/src/routes/trains.rs`:
 //! has no operator to filter on at all (design doc §1.3/§6). There is
 //! deliberately NO date parameter: like `get_station_schedule_departures`,
 //! this is "always today, server-side" (design doc §6).
+//!
+//! **This route owns the `now`-forward boundary**, which is the whole point
+//! of the storage shape behind it. The publish stores the entire rail day
+//! uncapped (`crates/schedule-reference`'s
+//! `publish_schedule_destination_departures` passes `NaiveTime::MIN`),
+//! because it fires once per CIF delivery -- roughly daily -- so a
+//! publish-time filter would freeze at whatever the clock read when the
+//! delivery landed. Evaluating `now` here means a search at 18:00 is
+//! correct at 18:00. See
+//! docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+//! §1.3 and §3.
+//!
+//! **Pagination is a keyset cursor, not an offset.** `limit` bounds one
+//! page; `after` carries the last row of the previous page. Both exist
+//! because there is no cap anywhere else in this pipeline: a busy
+//! destination genuinely has thousands of trains in a day, and the honest
+//! way to show them is a page at a time rather than a silent truncation.
 
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::app::{App, Router};
 use crate::data::queries;
+use crate::data::queries::DestinationDepartureCursor;
 use crate::render::destination_departure_json;
 
-/// Hard ceiling on one response's row count, independent of the
-/// publish-side per-bucket cap (`MAX_DEPARTURES_PER_DESTINATION` in
-/// `crates/schedule-reference`). Two separate concerns: that one bounds
-/// what is STORED per cycle, this one bounds what a single unauthenticated
-/// request can pull. There is no pagination in v1 (design doc §3's
-/// Approach B scope), so this is a flat cap, not a page size.
-const MAX_SEARCH_RESULTS: i64 = 100;
+/// Page size when the caller does not ask for one.
+///
+/// 50 rather than the old flat 100: this is now a PAGE, not the whole
+/// answer, so it is sized for a first screenful plus room to scroll, and
+/// "Load more" covers the rest at no extra cost (the next page is another
+/// `LIMIT`-bounded index range scan, not a re-scan).
+const DEFAULT_SEARCH_LIMIT: i64 = 50;
+
+/// Hard ceiling on one page, clamped server-side rather than rejected.
+///
+/// **Why a ceiling exists at all,** now that nothing else in this pipeline
+/// caps anything: this is an unauthenticated, unmetered public route over a
+/// table with ~377,000 rows per day. Without a ceiling, `?limit=1000000`
+/// is a free full-table scan and a ~20MB response for any anonymous
+/// caller. 200 is four default pages -- generous for any real client,
+/// including one that wants to render a whole morning at once.
+///
+/// **Why clamp rather than 400:** an over-large `limit` is not a malformed
+/// input, it is an over-eager one, and the honest answer is "here are 200,
+/// with a cursor for the rest" rather than an error. That is the opposite
+/// call from `normalize_time`/`normalize_crs`, which DO 400 -- because
+/// there, silently dropping a filter would return MORE rows than the caller
+/// asked for, whereas clamping a limit only ever returns fewer, with a
+/// cursor saying so. A `limit` that is zero, negative or unparseable IS
+/// malformed and does 400.
+const MAX_SEARCH_LIMIT: i64 = 200;
 
 #[derive(Debug, Deserialize)]
 struct TrainSearchParams {
@@ -1997,34 +3093,50 @@ struct TrainSearchParams {
     /// own doc comment.
     origin: Option<String>,
     /// Optional, `"HH:MM"`, inclusive lower bound on scheduled departure.
+    /// Narrows the `now`-forward window; it can never widen it backwards
+    /// (a train that has already departed is not a search result).
     from: Option<String>,
     /// Optional, `"HH:MM"`, inclusive upper bound.
     to: Option<String>,
+    /// Optional page size, 1..=`MAX_SEARCH_LIMIT`, defaulting to
+    /// `DEFAULT_SEARCH_LIMIT`. Values above the maximum are clamped, not
+    /// rejected; zero, negative and unparseable values are a `400`.
+    ///
+    /// Typed `Option<String>` rather than `Option<i64>` deliberately: with
+    /// `Option<i64>`, `?limit=abc` fails inside axum's `Query` extractor
+    /// and produces its generic deserialization error, which names neither
+    /// the field nor the expectation. Parsing it here keeps every 400 on
+    /// this route self-describing, exactly as `from`/`to` already are.
+    limit: Option<String>,
+    /// Optional opaque keyset cursor from a previous response's
+    /// `nextCursor`. See `decode_cursor`.
+    after: Option<String>,
 }
 
 pub fn router() -> Router {
     Router::new().route("/trains/search", axum::routing::get(get_trains_search))
 }
 
-/// Normalizes a caller-supplied `"HH:MM"` into the `"HH:MM:SS"` form the
-/// stored `scheduled` values use, so the query's text comparison lines up.
+/// Parses a caller-supplied `"HH:MM"` into a real `NaiveTime`, which is
+/// what the query now compares against a real `TIME` column. (Under the
+/// JSONB bucket this returned a `"HH:MM:SS"` string for a lexicographic
+/// comparison; there is no text comparison left to line up with.)
+///
 /// `Err` (a 400) rather than silently ignoring an unparseable value: a
 /// dropped filter would return MORE trains than asked for, which reads as a
 /// broken search rather than a rejected input.
-fn normalize_time(label: &str, raw: &str) -> Result<String, (StatusCode, String)> {
-    chrono::NaiveTime::parse_from_str(raw, "%H:%M")
-        .map(|t| t.format("%H:%M:%S").to_string())
-        .map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("{label} must be a time of day in HH:MM form"),
-            )
-        })
+fn normalize_time(label: &str, raw: &str) -> Result<chrono::NaiveTime, (StatusCode, String)> {
+    chrono::NaiveTime::parse_from_str(raw, "%H:%M").map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("{label} must be a time of day in HH:MM form"),
+        )
+    })
 }
 
 /// Validates and uppercases a CRS code. Rejecting rather than passing a
 /// malformed value through matters here because a non-CRS `destination`
-/// would otherwise 404 with "nothing published for this destination", which
+/// would otherwise be reported as an ordinary empty result, which
 /// misreports a caller error as a data gap.
 fn normalize_crs(label: &str, raw: &str) -> Result<String, (StatusCode, String)> {
     let trimmed = raw.trim();
@@ -2037,10 +3149,89 @@ fn normalize_crs(label: &str, raw: &str) -> Result<String, (StatusCode, String)>
     Ok(trimmed.to_ascii_uppercase())
 }
 
+/// Parses and bounds the page size. Over-large values are CLAMPED to
+/// `MAX_SEARCH_LIMIT`; zero, negative and unparseable values are a `400`.
+/// See `MAX_SEARCH_LIMIT`'s own doc comment for why those two inputs are
+/// treated differently.
+fn normalize_limit(raw: Option<&str>) -> Result<i64, (StatusCode, String)> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(DEFAULT_SEARCH_LIMIT);
+    };
+    let parsed: i64 = raw.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "limit must be a positive whole number".to_string(),
+        )
+    })?;
+    if parsed < 1 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "limit must be a positive whole number".to_string(),
+        ));
+    }
+    Ok(parsed.min(MAX_SEARCH_LIMIT))
+}
+
+/// Renders a keyset cursor for the wire: base64url-without-padding of
+/// `"HH:MM:SS|train_uid|origin_crs"`.
+///
+/// Base64 makes the value visibly OPAQUE. That is the point of encoding it
+/// at all -- the three components are the trailing columns of
+/// `schedule_destination_departures`' primary key, an internal detail that
+/// must stay free to change, and a bare readable string invites a client to
+/// build one by hand and depend on it. It is not a security measure and
+/// deliberately is not signed: the cursor names a public timetable row on
+/// an unauthenticated route, so tampering can only reposition a reader
+/// within data they may already read in full.
+///
+/// `URL_SAFE_NO_PAD` is this crate's established engine
+/// (`crates/api/src/auth.rs:122-123`), and needs no percent-encoding in a
+/// query string.
+fn encode_cursor(cursor: &DestinationDepartureCursor) -> String {
+    URL_SAFE_NO_PAD.encode(format!(
+        "{}|{}|{}",
+        cursor.scheduled.format("%H:%M:%S"),
+        cursor.train_uid,
+        cursor.origin_crs
+    ))
+}
+
+/// Inverse of `encode_cursor`. A malformed cursor is a `400`, never a
+/// silently-ignored one: ignoring it would restart the caller at page 1
+/// while their UI appended the result as page 2, duplicating every row on
+/// screen. That is the same reasoning `normalize_time` gives for rejecting
+/// an unparseable time rather than dropping the filter.
+///
+/// `train_uid` and `origin_crs` are passed through as-is rather than
+/// validated further: they are compared for ordering only, so a nonsense
+/// value yields an empty page rather than anything unsafe, and the query is
+/// parameterized.
+fn decode_cursor(raw: &str) -> Result<DestinationDepartureCursor, (StatusCode, String)> {
+    let invalid = || {
+        (
+            StatusCode::BAD_REQUEST,
+            "after must be a cursor returned by a previous search".to_string(),
+        )
+    };
+    let bytes = URL_SAFE_NO_PAD.decode(raw).map_err(|_| invalid())?;
+    let decoded = String::from_utf8(bytes).map_err(|_| invalid())?;
+    let parts: Vec<&str> = decoded.split('|').collect();
+    let [scheduled, train_uid, origin_crs] = parts.as_slice() else {
+        return Err(invalid());
+    };
+    let scheduled =
+        chrono::NaiveTime::parse_from_str(scheduled, "%H:%M:%S").map_err(|_| invalid())?;
+    Ok(DestinationDepartureCursor {
+        scheduled,
+        train_uid: (*train_uid).to_string(),
+        origin_crs: (*origin_crs).to_string(),
+    })
+}
+
 async fn get_trains_search(
     State(app): State<App>,
     Query(params): Query<TrainSearchParams>,
-) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+) -> Result<Json<Value>, (StatusCode, String)> {
     let destination = normalize_crs("destination", &params.destination)?;
     let origin = params
         .origin
@@ -2060,41 +3251,78 @@ async fn get_trains_search(
         .filter(|s| !s.trim().is_empty())
         .map(|s| normalize_time("to", s))
         .transpose()?;
+    let limit = normalize_limit(params.limit.as_deref())?;
+    let after = params
+        .after
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(decode_cursor)
+        .transpose()?;
 
     // "Always today, server-side" -- no date parameter exists on this route
     // by design (design doc §6). Same posture and same expression as
     // `routes::departures::get_station_schedule_departures`.
     let today = chrono::Utc::now().date_naive();
 
-    let Some(rows) = queries::search_schedule_destination_departures(
+    // The `now`-forward boundary, evaluated HERE rather than at publish
+    // time -- see this module's own doc comment. `from` can only narrow it
+    // further, never reach back past it, so the effective lower bound is
+    // the later of the two.
+    //
+    // Europe/London LOCAL time, not UTC, and that is load-bearing: the
+    // stored `scheduled` values are London local civil time straight off
+    // the CIF body (`schedule_query::DestinationDeparture::scheduled`'s own
+    // doc comment says so explicitly), so comparing a UTC time-of-day
+    // against them would be an hour wrong every British Summer Time.
+    // `chrono_tz` is already a direct dependency of this crate and
+    // `chrono_tz::Europe::London` is already used in
+    // `crate::data::eta_blend` for the same reason -- no new dependency,
+    // and no hardcoded offset.
+    let now = chrono::Utc::now()
+        .with_timezone(&chrono_tz::Europe::London)
+        .time();
+    let scheduled_from = match from_time {
+        Some(from) => std::cmp::max(now, from),
+        None => now,
+    };
+
+    let Some(page) = queries::search_schedule_destination_departures(
         &app.database,
         &destination,
         today,
+        scheduled_from,
         origin.as_deref(),
-        from_time.as_deref(),
-        to_time.as_deref(),
-        MAX_SEARCH_RESULTS,
+        to_time,
+        after.as_ref(),
+        limit,
     )
     .await
     .map_err(internal_error)?
     else {
-        // 404 vs `200 []` is a real distinction here, not pedantry: the
-        // former means this destination has no published timetable data at
-        // all today (it may not be in `stanox_crs`, or the cycle may not
-        // have run yet), the latter means it does and the caller's filters
-        // simply excluded everything. The frontend renders different copy
-        // for each.
+        // 404 vs an empty `results` array is a real distinction here, not
+        // pedantry -- but note WHICH distinction it now draws. Under the
+        // flat table the probe is day-scoped, so this 404 means "no CIF
+        // publish has landed for today at all", and an unknown or
+        // train-less destination CRS gets a `200` with no results instead.
+        // See the addendum's §3 and §7 item 3, and Task 5's Interfaces
+        // block. The frontend renders different copy for each.
         return Err((
             StatusCode::NOT_FOUND,
-            format!("no CIF-derived schedule data for destination: {destination}"),
+            "no CIF-derived schedule data has been published for today".to_string(),
         ));
     };
 
-    Ok(Json(
-        rows.iter()
+    // An envelope, not a bare array, because a bare array has nowhere to
+    // carry `nextCursor`. camelCase and hand-built with `json!()`, like
+    // every other response in this crate.
+    Ok(Json(json!({
+        "results": page
+            .departures
+            .iter()
             .map(|row| destination_departure_json(row, &destination))
-            .collect(),
-    ))
+            .collect::<Vec<Value>>(),
+        "nextCursor": page.next_cursor.as_ref().map(encode_cursor),
+    })))
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
@@ -2220,31 +3448,69 @@ mod db_tests {
             .expect("connect to postgres")
     }
 
-    async fn delete_fixture(pool: &PgPool, destination_crs: &str) {
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE destination_crs = $1")
-            .bind(destination_crs)
+    /// Day-scoped, because the route's own existence probe is. Under the
+    /// flat table there is no per-destination row to delete, and leaving
+    /// another destination's rows behind for today would make the 404 test
+    /// silently pass through to a `200`.
+    async fn delete_today(pool: &PgPool) {
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+            .bind(chrono::Utc::now().date_naive())
             .execute(pool)
             .await
-            .expect("cleanup fixture schedule_destination_departures rows");
+            .expect("cleanup today's schedule_destination_departures rows");
     }
 
+    /// One time in the past and two strictly in the future, relative to the
+    /// route's own London-local `now`.
+    ///
+    /// Computed at runtime, deliberately. This route applies its
+    /// `now`-forward filter at REQUEST time -- that is the entire point of
+    /// the storage shape behind it -- so a fixed wall-clock fixture like
+    /// "08:22" would pass in the morning and silently return nothing in the
+    /// afternoon. Anything asserting on visible rows must therefore be
+    /// relative.
+    fn relative_times() -> (chrono::NaiveTime, chrono::NaiveTime, chrono::NaiveTime) {
+        let now = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .time();
+        let past = chrono::NaiveTime::MIN;
+        let (soon, soon_wrapped) = now.overflowing_add_signed(chrono::Duration::minutes(30));
+        let (later, later_wrapped) = now.overflowing_add_signed(chrono::Duration::minutes(60));
+        assert!(
+            soon_wrapped == 0 && later_wrapped == 0 && now > past,
+            "these tests need at least an hour before midnight and a moment after it; \
+             re-run outside 23:00-00:01 Europe/London"
+        );
+        (past, soon, later)
+    }
+
+    /// Seeds today with: one already-departed row (which the route must
+    /// hide), and two future rows from two different origins (which it must
+    /// show, earliest first). The flat-shape successor to the original
+    /// plan's two-element JSONB bucket.
     async fn seed_today(pool: &PgPool, destination_crs: &str) {
-        delete_fixture(pool, destination_crs).await;
+        delete_today(pool).await;
         let today = chrono::Utc::now().date_naive();
-        let departures = serde_json::json!([
-            {"uid": "C10001", "origin_crs": "EUS", "scheduled": "08:22:00"},
-            {"uid": "C10002", "origin_crs": "CRE", "scheduled": "10:05:00"},
-        ]);
-        sqlx::query(
-            "INSERT INTO schedule_destination_departures \
-                (destination_crs, service_date, departures) VALUES ($1, $2, $3)",
-        )
-        .bind(destination_crs)
-        .bind(today)
-        .bind(departures)
-        .execute(pool)
-        .await
-        .expect("seed fixture row");
+        let (past, soon, later) = relative_times();
+        for (scheduled, train_uid, origin_crs) in [
+            (past, "C10000", "EUS"),
+            (soon, "C10001", "EUS"),
+            (later, "C10002", "CRE"),
+        ] {
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                    (service_date, destination_crs, scheduled, train_uid, origin_crs) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(today)
+            .bind(destination_crs)
+            .bind(scheduled)
+            .bind(train_uid)
+            .bind(origin_crs)
+            .execute(pool)
+            .await
+            .expect("seed fixture row");
+        }
     }
 
     async fn get(pool: &PgPool, uri: &str) -> (StatusCode, String) {
@@ -2260,6 +3526,23 @@ mod db_tests {
             .await
             .unwrap();
         (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    /// `results` out of the envelope, asserting the envelope's own shape on
+    /// the way through so every test that reads rows also proves the body
+    /// is not a bare array.
+    fn results(body: &str) -> Vec<Value> {
+        let json: Value = serde_json::from_str(body).unwrap();
+        assert!(
+            json.is_object() && json.get("results").is_some() && json.get("nextCursor").is_some(),
+            "the body is an envelope with exactly `results` and `nextCursor`: {json}"
+        );
+        json["results"].as_array().cloned().unwrap()
+    }
+
+    fn next_cursor(body: &str) -> Option<String> {
+        let json: Value = serde_json::from_str(body).unwrap();
+        json["nextCursor"].as_str().map(str::to_string)
     }
 
     #[tokio::test]
@@ -2280,7 +3563,7 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_malformed_destination_is_a_400_not_a_404() {
         // The discriminating case: a caller error must not be reported as
-        // "no data for that destination".
+        // a data gap.
         let pool = connect().await;
         let (status, body) = get(&pool, "/trains/search?destination=NOTACRS").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2300,30 +3583,108 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_no_published_row_for_today_is_404_naming_the_destination() {
+    async fn trains_search_malformed_after_cursor_is_a_400() {
+        // A malformed cursor must NOT be silently ignored: ignoring it
+        // restarts the caller at page 1 while their UI appends the result
+        // as page 2, duplicating every row on screen. Two shapes are
+        // checked -- not-base64 at all, and valid base64 whose payload has
+        // the wrong number of parts.
         let pool = connect().await;
-        delete_fixture(&pool, "ZRB").await;
-        let (status, body) = get(&pool, "/trains/search?destination=ZRB").await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert!(body.contains("ZRB"), "404 body should name the CRS: {body}");
-        delete_fixture(&pool, "ZRB").await;
+        seed_today(&pool, "ZRB").await;
+
+        let (status, body) = get(&pool, "/trains/search?destination=ZRB&after=!!!not-base64!!!").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("after"), "400 body should name the field: {body}");
+
+        // base64url of "nonsense" -- decodes cleanly, but is not a cursor.
+        let (status, _) = get(&pool, "/trains/search?destination=ZRB&after=bm9uc2Vuc2U").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        delete_today(&pool).await;
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_published_row_with_no_matches_is_200_empty_array() {
+    async fn trains_search_rejects_a_zero_or_unparseable_limit_but_clamps_an_over_large_one() {
+        // The asymmetry `MAX_SEARCH_LIMIT`'s doc comment argues, pinned:
+        // an over-large limit is over-eager (clamp, and say so with a
+        // cursor), a zero or unparseable one is malformed (400).
+        let pool = connect().await;
+        seed_today(&pool, "ZRB").await;
+
+        let (status, _) = get(&pool, "/trains/search?destination=ZRB&limit=0").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, body) = get(&pool, "/trains/search?destination=ZRB&limit=lots").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("limit"), "400 body should name the field: {body}");
+
+        let (status, body) = get(&pool, "/trains/search?destination=ZRB&limit=99999").await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "an over-large limit is clamped to MAX_SEARCH_LIMIT, never rejected"
+        );
+        assert_eq!(results(&body).len(), 2, "the fixture only has two future rows");
+
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_nothing_published_for_today_is_a_404() {
+        // NOTE the changed meaning of this 404, and the changed assertion
+        // that follows from it. Under the flat table the existence probe is
+        // scoped to the DAY, not the destination, so this says "no CIF
+        // publish has landed for today at all" and no longer names a CRS.
+        // The companion test below pins the other half of that split.
+        //
+        // This test needs today's table to be genuinely empty. Run it
+        // against the local docker-compose database, not one a real
+        // `schedule-reference` has published into.
+        let pool = connect().await;
+        delete_today(&pool).await;
+        let (status, body) = get(&pool, "/trains/search?destination=ZRB").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            body.contains("today"),
+            "the 404 is about today's publish, not about the destination: {body}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_unknown_destination_on_a_published_day_is_200_and_empty() {
+        // The other half of the changed split, and the reason it is a
+        // deliberate call rather than an accident: once today's timetable
+        // IS published, "nothing goes to ZRF" is a real answer, not a
+        // missing one. Do not "restore" this to a 404.
+        let pool = connect().await;
+        seed_today(&pool, "ZRB").await;
+        let (status, body) = get(&pool, "/trains/search?destination=ZRF").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(results(&body).is_empty());
+        assert!(next_cursor(&body).is_none());
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_published_day_with_no_matches_is_200_with_an_empty_results_array() {
         let pool = connect().await;
         seed_today(&pool, "ZRB").await;
         let (status, body) = get(&pool, "/trains/search?destination=ZRB&origin=ZZZ").await;
         assert_eq!(
             status,
             StatusCode::OK,
-            "published-but-unmatched is a 200 [], never a 404"
+            "published-but-unmatched is a 200 with an empty results array, never a 404"
         );
-        let json: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(json, serde_json::json!([]));
-        delete_fixture(&pool, "ZRB").await;
+        assert!(results(&body).is_empty());
+        assert!(next_cursor(&body).is_none());
+        delete_today(&pool).await;
     }
 
     #[tokio::test]
@@ -2334,19 +3695,46 @@ mod db_tests {
         seed_today(&pool, "ZRB").await;
         let (status, body) = get(&pool, "/trains/search?destination=zrb").await;
         assert_eq!(status, StatusCode::OK);
-        let json: Value = serde_json::from_str(&body).unwrap();
+        let rows = results(&body);
+        let (_, soon, _) = relative_times();
 
-        assert_eq!(json.as_array().unwrap().len(), 2);
-        assert_eq!(json[0]["uid"], "C10001");
-        assert_eq!(json[0]["scheduled"], "08:22", "seconds trimmed");
-        assert_eq!(json[0]["originCrs"], "EUS");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["uid"], "C10001");
         assert_eq!(
-            json[0]["destinationCrs"], "ZRB",
+            rows[0]["scheduled"],
+            soon.format("%H:%M").to_string(),
+            "seconds trimmed"
+        );
+        assert_eq!(rows[0]["originCrs"], "EUS");
+        assert_eq!(
+            rows[0]["destinationCrs"], "ZRB",
             "the lowercase query param is normalized and re-attached uppercase"
         );
-        assert!(json[0].get("origin_crs").is_none(), "no stray snake_case field");
+        assert!(rows[0].get("origin_crs").is_none(), "no stray snake_case field");
 
-        delete_fixture(&pool, "ZRB").await;
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_hides_a_departure_that_has_already_gone() {
+        // The `now`-forward filter, which now lives HERE rather than at
+        // publish time. The fixture's 00:00 row is published and matches
+        // every other predicate; it must not be returned.
+        let pool = connect().await;
+        seed_today(&pool, "ZRB").await;
+        let (status, body) = get(&pool, "/trains/search?destination=ZRB").await;
+        assert_eq!(status, StatusCode::OK);
+        let uids: Vec<&str> = results(&body)
+            .iter()
+            .map(|r| r["uid"].as_str().unwrap())
+            .collect();
+        assert!(
+            !uids.contains(&"C10000"),
+            "an already-departed row must not be returned: {uids:?}"
+        );
+        delete_today(&pool).await;
     }
 
     #[tokio::test]
@@ -2355,13 +3743,75 @@ mod db_tests {
     async fn trains_search_applies_origin_and_time_filters_together() {
         let pool = connect().await;
         seed_today(&pool, "ZRB").await;
-        let (status, body) =
-            get(&pool, "/trains/search?destination=ZRB&origin=CRE&from=09:00&to=11:00").await;
+        let (_, soon, later) = relative_times();
+        let uri = format!(
+            "/trains/search?destination=ZRB&origin=CRE&from={}&to={}",
+            soon.format("%H:%M"),
+            later.format("%H:%M")
+        );
+        let (status, body) = get(&pool, &uri).await;
         assert_eq!(status, StatusCode::OK);
+        let rows = results(&body);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["uid"], "C10002");
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_returns_a_null_next_cursor_when_the_page_is_the_last_one() {
+        let pool = connect().await;
+        seed_today(&pool, "ZRB").await;
+        let (status, body) = get(&pool, "/trains/search?destination=ZRB").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(results(&body).len(), 2);
         let json: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(json.as_array().unwrap().len(), 1);
-        assert_eq!(json[0]["uid"], "C10002");
-        delete_fixture(&pool, "ZRB").await;
+        assert_eq!(
+            json["nextCursor"],
+            Value::Null,
+            "nextCursor is explicit JSON null on the last page, never omitted -- the frontend \
+             checks it to decide whether to render Load more"
+        );
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_paginates_with_a_cursor_and_after_continues_from_it() {
+        // The end-to-end pagination contract Task 10's "Load more" button
+        // depends on: page 1 returns a cursor, feeding that cursor back as
+        // `after` returns the NEXT row (not a repeat, not a restart), and
+        // the final page reports no cursor.
+        let pool = connect().await;
+        seed_today(&pool, "ZRB").await;
+
+        let (status, first) = get(&pool, "/trains/search?destination=ZRB&limit=1").await;
+        assert_eq!(status, StatusCode::OK);
+        let first_rows = results(&first);
+        assert_eq!(first_rows.len(), 1);
+        assert_eq!(first_rows[0]["uid"], "C10001");
+        let cursor = next_cursor(&first).expect("a second page exists, so a cursor is returned");
+
+        let (status, second) = get(
+            &pool,
+            &format!("/trains/search?destination=ZRB&limit=1&after={cursor}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let second_rows = results(&second);
+        assert_eq!(second_rows.len(), 1);
+        assert_eq!(
+            second_rows[0]["uid"], "C10002",
+            "`after` must continue from the cursor, not restart at page 1"
+        );
+        assert!(
+            next_cursor(&second).is_none(),
+            "the last page must not hand back a cursor"
+        );
+
+        delete_today(&pool).await;
     }
 }
 ```
@@ -2380,23 +3830,40 @@ mod db_tests {
 
 Run:
 `DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres cargo test -p api trains_search destination_departure_json -- --ignored --test-threads=1`
-Expected: PASS — seven route tests plus the two render tests. (The two render
-tests are not `#[ignore]`d; run them separately with
+Expected: PASS — twelve route tests plus the two render tests. (The two
+render tests are not `#[ignore]`d; run them separately with
 `cargo test -p api destination_departure_json` if the combined invocation's
 `--ignored` flag skips them.)
+
+`--test-threads=1` is not optional here, and for a new reason: several of
+these tests assert on the contents of *today* in a table whose existence
+probe is day-scoped, so they would see each other's fixtures if run
+concurrently. Run them against the local docker-compose database, not one a
+real `schedule-reference` has published into.
 
 - [ ] **Step 8: Manually verify against a running local stack**
 
 ```bash
 docker compose up -d --build api
-curl -s "http://localhost:8080/public/trains/search?destination=MAN" | jq .
-curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:8080/public/trains/search?destination=ZZZ"
+
+# The envelope, and the two new parameters.
+curl -s "http://localhost:8080/public/trains/search?destination=MAN&limit=2" | jq .
+
+# Feed the cursor back in: the second page must not repeat the first.
+CURSOR=$(curl -s "http://localhost:8080/public/trains/search?destination=MAN&limit=2" | jq -r .nextCursor)
+curl -s "http://localhost:8080/public/trains/search?destination=MAN&limit=2&after=$CURSOR" | jq .
+
 curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:8080/public/trains/search"
+curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:8080/public/trains/search?destination=MAN&after=nonsense"
+curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:8080/public/trains/search?destination=MAN&limit=0"
 ```
 
-Expected: the first returns a JSON array (or a 404 body if
-`schedule-reference` has not published a cycle yet — either confirms the
-route is reachable); the second `404`; the third `400`.
+Expected: the first returns `{"results": [...], "nextCursor": "…"}` (or a
+`404` if no CIF publish has landed for today yet — either confirms the route
+is reachable); the second returns a *different* two rows; the last three all
+`400`. Note that `?destination=ZZZ` is now a `200` with an empty `results`
+array rather than a `404`, once today's data is published — that is the
+deliberate semantic change, not a regression.
 
 - [ ] **Step 9: Commit**
 
@@ -3101,6 +4568,23 @@ git commit -m "Add TrackThisTrainButton, the shared NR-primary track CTA"
 
 ## Task 10: `TrainSearchForm` — the filter form and result list
 
+> **CHANGED MINIMALLY, and frontend-only, per the addendum's §5 row 10.**
+> Everything in this task stands: both `Autocomplete`s,
+> `searchStations`/`useSuggestions`, the row rendering, the
+> `/train/{uid}/{today}` link, `TrackThisTrainButton` with `attachTicketId`,
+> the `/track` manual fallback, and every existing test. Two additions:
+>
+> 1. the component reads the envelope `{results, nextCursor}` instead of a
+>    bare array (Task 7); and
+> 2. it renders a **"Load more"** control, shown only when `nextCursor` is
+>    non-null, which re-requests with `after=` and **appends** to the
+>    existing rows rather than replacing them.
+>
+> This is where the pagination burden honestly lands, and it costs a button.
+> It is also the only place in the whole revision where a *user-visible*
+> change appears — which is the point: nothing is silently truncated any
+> more, so the UI has to offer the rest.
+
 **Files:**
 - Create: `frontend/components/TrainSearchForm.tsx`
 - Test: `frontend/components/TrainSearchForm.test.tsx`
@@ -3135,27 +4619,47 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
+/** Builds a `GET /public/trains/search` response body. The route returns an
+ * ENVELOPE, not a bare array (Task 7): `results` plus a `nextCursor` that
+ * is an explicit `null` on the last page. Every test that stubs a search
+ * response goes through this, so no test can accidentally assert against
+ * the pre-pagination bare-array shape. */
+function searchBody(
+  rows: Array<{ uid: string; scheduled: string; originCrs: string; destinationCrs: string }>,
+  nextCursor: string | null = null,
+) {
+  return JSON.stringify({ results: rows, nextCursor });
+}
+
+const PAGE_ONE = [
+  { uid: 'C10001', scheduled: '08:22', originCrs: 'EUS', destinationCrs: 'MAN' },
+  { uid: 'C10002', scheduled: '10:05', originCrs: 'CRE', destinationCrs: 'MAN' },
+];
+const PAGE_TWO = [
+  { uid: 'C10003', scheduled: '11:40', originCrs: 'EUS', destinationCrs: 'MAN' },
+];
+const PAGE_THREE = [
+  { uid: 'C10004', scheduled: '13:15', originCrs: 'CRE', destinationCrs: 'MAN' },
+];
+
 /** Routes a mocked `fetch` by URL: the search call, the station-suggestion
  * calls both Autocompletes fire, and the track/attach calls
- * `TrackThisTrainButton` makes. `search` defaults to two rows so most tests
- * only override the branch they care about. */
+ * `TrackThisTrainButton` makes. `search` defaults to two rows and no next
+ * page, so most tests only override the branch they care about.
+ *
+ * `search` receives the request URL so a test can answer page 1 and page 2
+ * differently -- which is exactly what "Load more" needs to be tested
+ * honestly. */
 function mockFetchByUrl(
-  options: { search?: () => Response; track?: () => Response } = {},
+  options: { search?: (url: string) => Response; track?: () => Response } = {},
 ) {
   const {
-    search = () =>
-      new Response(
-        JSON.stringify([
-          { uid: 'C10001', scheduled: '08:22', originCrs: 'EUS', destinationCrs: 'MAN' },
-          { uid: 'C10002', scheduled: '10:05', originCrs: 'CRE', destinationCrs: 'MAN' },
-        ]),
-        { status: 200 },
-      ),
+    search = () => new Response(searchBody(PAGE_ONE), { status: 200 }),
     track = () => new Response(JSON.stringify({ trackingId: 42 }), { status: 200 }),
   } = options;
   return vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.startsWith('/api/trains/search')) return Promise.resolve(search());
+    if (url.startsWith('/api/trains/search')) return Promise.resolve(search(url));
     if (url.startsWith('/api/stations?')) return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
     if (/\/api\/Train\/tickets\/\d+\/attach$/.test(url))
       return Promise.resolve(new Response(JSON.stringify({ ticketId: 7, trackedTrainId: 42 }), { status: 200 }));
@@ -3164,12 +4668,16 @@ function mockFetchByUrl(
   });
 }
 
+function searchCallUrls(fetchMock: ReturnType<typeof vi.fn>): string[] {
+  return fetchMock.mock.calls
+    .map((args: unknown[]) => String(args[0]))
+    .filter((url: string) => url.startsWith('/api/trains/search'));
+}
+
 function searchCallUrl(fetchMock: ReturnType<typeof vi.fn>): string {
-  const call = fetchMock.mock.calls.find((args: unknown[]) =>
-    String(args[0]).startsWith('/api/trains/search'),
-  );
-  if (!call) throw new Error('no /api/trains/search call recorded');
-  return String(call[0]);
+  const urls = searchCallUrls(fetchMock);
+  if (urls.length === 0) throw new Error('no /api/trains/search call recorded');
+  return urls[0];
 }
 
 describe('TrainSearchForm', () => {
@@ -3278,7 +4786,10 @@ describe('TrainSearchForm', () => {
   });
 
   it('says so when the search succeeds but matches nothing', async () => {
-    vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response('[]', { status: 200 }) }));
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }),
+    );
     renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
@@ -3343,6 +4854,149 @@ describe('TrainSearchForm', () => {
 
     expect(screen.queryByLabelText(/^Date/i)).not.toBeInTheDocument();
   });
+
+  // ---- Pagination. There is no cap anywhere in the backend any more, so
+  // a busy destination genuinely has more trains than one page; "Load more"
+  // is how the user reaches them, and these four tests are the contract.
+
+  it('does not offer Load more when the response has no nextCursor', async () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(await screen.findByText('08:22 · EUS → MAN')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
+
+  it('offers Load more when the response carries a nextCursor', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        search: () => new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
+      }),
+    );
+    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(await screen.findByRole('button', { name: 'Load more' })).toBeInTheDocument();
+  });
+
+  it('appends the next page rather than replacing the rows, and sends after=', async () => {
+    // The load-bearing assertion of the whole pagination change: APPEND.
+    // A "Load more" that replaced the list would look like it worked while
+    // silently losing page 1.
+    const fetchMock = mockFetchByUrl({
+      search: (url) =>
+        url.includes('after=CURSOR1')
+          ? new Response(searchBody(PAGE_TWO, null), { status: 200 })
+          : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText('11:40 · EUS → MAN')).toBeInTheDocument();
+    expect(
+      screen.getByText('08:22 · EUS → MAN'),
+      'page 1 must still be on screen -- Load more appends, it does not replace',
+    ).toBeInTheDocument();
+    expect(screen.getByText('10:05 · CRE → MAN')).toBeInTheDocument();
+
+    const urls = searchCallUrls(fetchMock);
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toBe('/api/trains/search?destination=MAN');
+    expect(urls[1]).toBe('/api/trains/search?destination=MAN&after=CURSOR1');
+
+    // Exhausted: the second response's nextCursor was null.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument(),
+    );
+  });
+
+  it('uses the NEW cursor on a second Load more, not the first one again', async () => {
+    // Guards the specific bug an append-only implementation invites:
+    // keeping the cursor from the original search in state and re-sending
+    // it, which would fetch page 2 forever and duplicate its rows.
+    const fetchMock = mockFetchByUrl({
+      search: (url) => {
+        if (url.includes('after=CURSOR2'))
+          return new Response(searchBody(PAGE_THREE, null), { status: 200 });
+        if (url.includes('after=CURSOR1'))
+          return new Response(searchBody(PAGE_TWO, 'CURSOR2'), { status: 200 });
+        return new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 });
+      },
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('11:40 · EUS → MAN')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText('13:15 · CRE → MAN')).toBeInTheDocument();
+
+    const urls = searchCallUrls(fetchMock);
+    expect(urls).toHaveLength(3);
+    expect(urls[1]).toBe('/api/trains/search?destination=MAN&after=CURSOR1');
+    expect(urls[2]).toBe(
+      '/api/trains/search?destination=MAN&after=CURSOR2',
+      'the second Load more must use the cursor from the SECOND response',
+    );
+    expect(screen.getAllByText('11:40 · EUS → MAN')).toHaveLength(1);
+  });
+
+  it('keeps the original filters on a Load more request', async () => {
+    // The cursor is positional, not self-describing: dropping `origin`
+    // or the time range on page 2 would silently widen the search
+    // mid-scroll.
+    const fetchMock = mockFetchByUrl({
+      search: (url) =>
+        url.includes('after=')
+          ? new Response(searchBody(PAGE_TWO, null), { status: 200 })
+          : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm initialDestination="man" initialOrigin="eus" />);
+
+    fireEvent.change(screen.getByLabelText('From (optional)'), { target: { value: '09:00' } });
+    fireEvent.change(screen.getByLabelText('To (optional)'), { target: { value: '12:00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+
+    await waitFor(() => expect(searchCallUrls(fetchMock)).toHaveLength(2));
+    expect(searchCallUrls(fetchMock)[1]).toBe(
+      '/api/trains/search?destination=MAN&origin=EUS&from=09%3A00&to=12%3A00&after=CURSOR1',
+    );
+  });
+
+  it('starts a fresh search over rather than appending to the previous one', async () => {
+    // Pressing Search again after paginating must RESET, not append -- the
+    // opposite of Load more. Same append-vs-replace bug, mirrored.
+    const fetchMock = mockFetchByUrl({
+      search: (url) =>
+        url.includes('after=')
+          ? new Response(searchBody(PAGE_TWO, null), { status: 200 })
+          : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm initialDestination="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('11:40 · EUS → MAN')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() =>
+      expect(screen.queryByText('11:40 · EUS → MAN')).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText('08:22 · EUS → MAN')).toBeInTheDocument();
+  });
 });
 ```
 
@@ -3386,12 +5040,31 @@ interface TrainSearchRow {
   destinationCrs: string;
 }
 
+/** The envelope `GET /public/trains/search` returns. Not a bare array: it
+ * has to carry `nextCursor`, because the backend publishes and stores the
+ * whole day uncapped and hands it back a page at a time. `nextCursor` is an
+ * explicit `null` on the last page, never omitted. */
+interface TrainSearchResponse {
+  results: TrainSearchRow[];
+  nextCursor: string | null;
+}
+
 /** Exactly one of five mutually-exclusive states, checked top to bottom by
  * `resultsContent` below. `'unpublished'` and an empty `rows` array are
  * genuinely different facts and get different copy -- the backend route
- * draws that 404-vs-`200 []` distinction on purpose (Task 7) and collapsing
- * it here would waste it. */
-type Results = { rows: TrainSearchRow[] } | 'unpublished' | 'error' | null;
+ * draws that 404-vs-empty-results distinction on purpose (Task 7) and
+ * collapsing it here would waste it.
+ *
+ * `nextCursor` lives INSIDE the success variant rather than in its own
+ * `useState`, so it cannot survive a state transition it does not belong
+ * to: a fresh search, an error, or an unpublished response all discard it
+ * automatically, and there is no way to render "Load more" next to an error
+ * or next to page 1 of a search that has since been re-run. */
+type Results =
+  | { rows: TrainSearchRow[]; nextCursor: string | null }
+  | 'unpublished'
+  | 'error'
+  | null;
 
 /** Destination-first, whole-network train search -- the `/trains` page's
  * one interactive component
@@ -3400,8 +5073,11 @@ type Results = { rows: TrainSearchRow[] } | 'unpublished' | 'error' | null;
  *
  * Deliberately NOT a replacement for `TrackTrainForm`, and it does not try
  * to be: this searches published CIF timetable data by destination and
- * cannot see a train that isn't in it (a capped bucket, a station missing
- * from `stanox_crs`, a same-day amendment). `/track`'s manual-entry form
+ * cannot see a train that isn't in it (a station missing from
+ * `stanox_crs`, a same-day amendment landing after the last CIF delivery).
+ * Note that "the result list was truncated" is NOT on that list any more:
+ * nothing is capped, and everything past the first page is reachable with
+ * Load more. `/track`'s manual-entry form
  * remains the honest fallback for exactly those gaps, and this component
  * links to it explicitly rather than pretending they don't exist -- §4 of
  * the design doc is a direct "no" on full replacement.
@@ -3430,6 +5106,10 @@ export function TrainSearchForm({
   const [toTime, setToTime] = useState('');
   const [results, setResults] = useState<Results>(null);
   const [searching, setSearching] = useState(false);
+  // Separate from `searching` on purpose: a "Load more" in flight must not
+  // blank the rows already on screen the way `resultsContent`'s
+  // `searching` branch does, and must not re-disable the Search button.
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const { suggestions: destinationSuggestions } = useSuggestions(destinationCrs, searchStations);
   const { suggestions: originSuggestions } = useSuggestions(originCrs, searchStations);
@@ -3452,20 +5132,28 @@ export function TrainSearchForm({
   // `app/track/page.tsx` already reads.
   const manualHref = attachTicketId !== undefined ? `/track?ticketId=${attachTicketId}` : '/track';
 
+  /** The current filter set as query parameters. Shared by the initial
+   * search and by "Load more" so that page 2 is unambiguously a
+   * continuation of page 1's query -- the cursor is positional, not
+   * self-describing, so dropping a filter here would silently widen the
+   * search mid-scroll. */
+  function searchParams() {
+    const params = new URLSearchParams({ destination: destinationCrs.trim().toUpperCase() });
+    if (originCrs.trim()) params.set('origin', originCrs.trim().toUpperCase());
+    if (fromTime.trim()) params.set('from', fromTime.trim());
+    if (toTime.trim()) params.set('to', toTime.trim());
+    return params;
+  }
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (!canSearch) return;
     setSearching(true);
     try {
-      const params = new URLSearchParams({ destination: destinationCrs.trim().toUpperCase() });
-      if (originCrs.trim()) params.set('origin', originCrs.trim().toUpperCase());
-      if (fromTime.trim()) params.set('from', fromTime.trim());
-      if (toTime.trim()) params.set('to', toTime.trim());
-
-      const response = await fetch(`/api/trains/search?${params.toString()}`);
+      const response = await fetch(`/api/trains/search?${searchParams().toString()}`);
       if (response.status === 404) {
-        // A real, distinct fact, not an error: nothing is published for
-        // this destination today. Never collapsed into "no matches".
+        // A real, distinct fact, not an error: no CIF publish has landed
+        // for today at all. Never collapsed into "no matches".
         setResults('unpublished');
         return;
       }
@@ -3473,12 +5161,60 @@ export function TrainSearchForm({
         setResults('error');
         return;
       }
-      const rows: TrainSearchRow[] = await response.json();
-      setResults({ rows });
+      const body: TrainSearchResponse = await response.json();
+      // REPLACE, not append -- a fresh search starts over. The mirror of
+      // `handleLoadMore` below, and the two must not be merged.
+      setResults({ rows: body.results, nextCursor: body.nextCursor });
     } catch {
       setResults('error');
     } finally {
       setSearching(false);
+    }
+  }
+
+  /** Fetches the next page and APPENDS it.
+   *
+   * Only reachable when `results` is a success state carrying a non-null
+   * `nextCursor`, so it re-reads that state at call time rather than
+   * trusting a captured value -- which is also what makes a second click
+   * use the SECOND response's cursor rather than the first's.
+   *
+   * A failed "Load more" deliberately does NOT blow away the rows already
+   * on screen: it leaves them, drops the cursor so the button disappears,
+   * and lets the user re-run the search if they want. Replacing a good
+   * partial list with a full-width error would be a worse outcome than
+   * showing fewer trains. */
+  async function handleLoadMore() {
+    if (results === null || results === 'error' || results === 'unpublished') return;
+    if (results.nextCursor === null || loadingMore) return;
+
+    setLoadingMore(true);
+    try {
+      const params = searchParams();
+      params.set('after', results.nextCursor);
+      const response = await fetch(`/api/trains/search?${params.toString()}`);
+      if (!response.ok) {
+        setResults((current) =>
+          current !== null && current !== 'error' && current !== 'unpublished'
+            ? { rows: current.rows, nextCursor: null }
+            : current,
+        );
+        return;
+      }
+      const body: TrainSearchResponse = await response.json();
+      setResults((current) =>
+        current !== null && current !== 'error' && current !== 'unpublished'
+          ? { rows: [...current.rows, ...body.results], nextCursor: body.nextCursor }
+          : current,
+      );
+    } catch {
+      setResults((current) =>
+        current !== null && current !== 'error' && current !== 'unpublished'
+          ? { rows: current.rows, nextCursor: null }
+          : current,
+      );
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -3558,6 +5294,26 @@ export function TrainSearchForm({
             ))}
           </Stack>
         </ScrollArea>
+        {/* Only when the server said there IS more. `nextCursor` is an
+            explicit null on the last page, so this disappears on its own
+            once the day is exhausted -- there is no separate "has more"
+            flag to keep in sync. The plain "variant=default" Button is
+            deliberate: the visual treatment of Load more is implementation
+            /design-review, exactly as the rest of this page's styling is
+            (addendum §6). */}
+        {results.nextCursor !== null && (
+          <Group>
+            <Button
+              variant="default"
+              size="xs"
+              onClick={handleLoadMore}
+              disabled={loadingMore}
+              loading={loadingMore}
+            >
+              Load more
+            </Button>
+          </Group>
+        )}
       </>
     );
   }
@@ -3632,7 +5388,8 @@ export function TrainSearchForm({
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run (from `frontend/`): `npm test -- TrainSearchForm.test.tsx`
-Expected: PASS, all 15 tests.
+Expected: PASS, all 21 tests — the original 15 plus the six pagination
+tests.
 
 - [ ] **Step 5: Commit**
 
@@ -4090,139 +5847,628 @@ git commit -m "Add the Track this train CTA to the public train page"
 
 ---
 
-## Self-review notes (performed on this plan before handoff)
+## Task 13: `prune_schedule_destination_departures` — retention for the flat table
 
-**1. Spec coverage**, section by section against
-`docs/superpowers/specs/2026-09-07-train-listing-page-design.md`:
+> **NEW, per the addendum's §5 "NEW" row and its §3 "Retention becomes
+> required" section.** This task did not exist in the original plan, and it
+> exists now for exactly one reason: the addendum's storage change turns a
+> ~2,500-row table into one that gains **~377,000 rows for every service
+> date and never loses any**. The original plan resolved the design doc's
+> Open Question 4 by inspection — the sibling `schedule_network_departures`
+> has no pruning job, so the new table gets none either — and that reasoning
+> was correct for a bucket table whose wholesale replace was scoped per
+> `(crs, service_date)` over a bounded key space. It does not survive a flat
+> table whose wholesale replace is scoped to one day.
 
-- **§2 Goal and scope.** The realistic-filter table's verdicts are all
-  honoured: Origin — yes, and optional (Task 7's `origin` param, Task 10's
-  "Departing from (optional)" field); Date — out of scope for v1, and no
-  date parameter exists anywhere in Tasks 7/10/11; Time-of-day range —
-  implemented as the inclusive `from`/`to` pair (Tasks 5/7/10); Destination
-  — the new backend work, Tasks 2-7; Operator — **not built**, per the
-  table's "CIF rows have no operator field at all" and §6, with Task 10
-  carrying an explicit `renders no operator filter at all` test so a future
-  reader can't mistake the omission for an oversight. The result-row content
-  bullets are covered by Task 10's row markup (time, origin → destination,
-  a `/train/{uid}/{date}` link, a Track action) minus the "live-status
-  summary" bullet, which is deliberately absent: §3's Approach B v1 is
-  CIF-derived only, and fabricating a delay badge for a timetable row is the
-  exact dishonesty §6's no-merging rule exists to prevent — Task 10's copy
-  says so on the page.
-- **§3 Approach B.** Grouping function — Task 3; publish on the existing
-  cycle — Task 4; new table copy-adjacent to
-  `schedule_network_departures`'s migration — Task 2; new ingest route —
-  Task 6; new public `GET /public/trains/search` filtering server-side —
-  Tasks 5+7. The section's own "needs its own sizing pass, not an assumed
-  reuse of `MAX_DEPARTURES_PER_STATION = 10`" is Task 1, gating Task 4. The
-  "operator stays unavailable" and "LDBWS coverage is not extended" caveats
-  are both in Global Constraints and neither is contradicted by any task.
-- **§4 The `/track` replacement question.** `/track` is not deleted, hidden,
-  redirected, or modified by any task in this plan — `TrackTrainForm.tsx`
-  and `app/track/page.tsx` appear in no task's Files list. `/trains` becomes
-  the primary discovery surface (Task 11's nav entry, and Task 12's page
-  copy now pointing there). `TrackTrainForm` is kept as the explicit
-  fallback, reachable from `/trains` itself via Task 10's "Can't find your
-  train? Track it manually" link, which carries `?ticketId=` through. The
-  ticket-attach parity fix §4 calls for is Task 9's `attachTicketId` branch,
-  which mirrors `TrackTrainForm.tsx:319-335` including its swallow-on-failure
-  behaviour, proven by two tests (reject, and 409).
-- **§5 The `/train/[uid]/[date]` CTA.** Every bullet: visible to every
-  visitor with the `useNeedsLogin`/`LoginPromptModal` posture (Task 9's
-  component, Task 12's placement); calls
-  `POST /Train/by-uid/{uid}/{date}/track` with no body; navigates to
-  `/train/by-id/{trackingId}` on success; `markNeedsLogin()` +
-  `LoginPromptModal` on 401; **no** ticket-attach parameter (Task 12 asserts
-  its absence); no special treatment for a visitor who already tracks the
-  train — with the difference that this plan no longer has to *assume* the
-  repeat click is safe, because Task 8 made it so.
-- **§6 Explicitly out of scope.** All ten bullets are reproduced verbatim in
-  Global Constraints. Checked against every task: no task touches
-  `/Train/track`/`TrackPinRequest`/`post_track`; no task decodes `BX`,
-  operator or headcode; no task adds a date parameter; Task 3's function is
-  a plain stack-local pass with no cache or `static`; Task 7 reads Postgres
-  only, never `schedule-reference`; `poller-ldbws` appears in no task; no
-  task queries `station_samples`; no task merges two sources; no task adds a
-  `ticketId` convention to `/train/[uid]/[date]`; every component ships
-  complete Mantine markup.
-- **§7 Open questions.** 1 and 2 are resolved by Tasks 1 and 8 respectively
-  and written up in "Decisions this plan resolves"; 3 is void under a
-  CIF-only v1; 4 is resolved by inspection and recorded in Task 2's
-  migration header; 5 is implemented in Task 11; 6 is inherited and
-  untouched.
+> **ORDERING: this task depends ONLY on Task 2** (the table must exist). It
+> is independent of Tasks 1, 3, 4, 5, 6, 7, 8, 9, 10, 11 and 12 — it shares
+> no function, type, route or file with any of them — and may be executed at
+> any time after Task 2, **including in parallel with the work on Tasks
+> 3-12**. Nothing depends on it in turn.
+
+**Files:**
+- Modify: `crates/aggregator/src/queries.rs` (add
+  `prune_schedule_destination_departures` immediately after
+  `prune_trust_event_backlog`, which ends at line 511; add one test to the
+  existing `#[cfg(test)] mod tests`, next to
+  `prune_trust_event_backlog_deletes_only_rows_older_than_the_retention_window`
+  at line 3106)
+- Modify: `crates/aggregator/src/config.rs` (add
+  `schedule_destination_departures_retention_days` immediately after
+  `trains_retention_days`, which ends at line 108)
+- Modify: `crates/aggregator/src/main.rs` (one new `run_cycle` parameter at
+  line 185, one new argument at the call site at line 74, one new prune call
+  beside the existing ones at line 269)
+- Modify: `charts/distant-signal/templates/aggregator-deployment.yaml:91-92`
+  (add the env var after `TRUST_EVENT_BACKLOG_RETENTION_DAYS`) and
+  `charts/distant-signal/values.yaml:660` (add the value after
+  `trustEventBacklogRetentionDays`)
+
+**Interfaces:**
+- Consumes: table `schedule_destination_departures` (Task 2).
+- Produces: `pub async fn prune_schedule_destination_departures(pool:
+  &PgPool, retention_days: i64) -> Result<u64>`, called once per aggregator
+  cycle from `run_cycle`. Nothing else consumes it.
+
+> **Retention default: 2 days.** The addendum's §7 item 4 leaves this as an
+> explicit human call between 1 and 2 and this plan picks **2**, for the
+> reasons it names:
+>
+> - Every read of this table is scoped to today, computed server-side, so
+>   *nothing* reads a past date and the window only has to cover the
+>   producer, not the consumer.
+> - 1 day matches `trust_event_backlog_retention_days`, but that default
+>   exists to enforce an **RDM licensing safeguard** for TRUST Train
+>   Movements data — see `Config::trust_event_backlog_retention_days`' own
+>   doc comment and the loud per-cycle warning `run_cycle` emits when it is
+>   raised. **That reasoning does not apply here at all**: CIF SCHEDULE
+>   timetable data is not under that clause, and copying the number would
+>   copy a constraint that isn't real while dropping the safety margin that
+>   is. Do **not** add a warning of that kind to this field.
+> - 2 is safer at the two edges that actually bite: the rail day crossing
+>   midnight (CIF schedules carry past-midnight calling points, and
+>   `service_date` is a rail day, not a calendar day), and a CIF delivery
+>   that lands late — where a 1-day window could delete the only published
+>   day shortly before its replacement arrives.
+>
+> Two days of this table is roughly 750,000 rows and ~80-120MB including the
+> index, which is unremarkable for Postgres to hold.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to the existing `#[cfg(test)] mod tests` in
+`crates/aggregator/src/queries.rs`, immediately after
+`prune_trust_event_backlog_deletes_only_rows_older_than_the_retention_window`
+(which ends at line 3138). It mirrors that test's structure exactly — same
+`#[ignore]` shape, same inline `PgPoolOptions` connect, same seed-two-rows /
+assert-one-pruned / assert-the-other-survives / explicit-`DELETE`-cleanup
+body — with the one necessary difference that this table is pruned by a
+`DATE` column against `CURRENT_DATE`, not by a `TIMESTAMPTZ` against `NOW()`,
+so the fixture dates are computed relative to today rather than hardcoded.
+
+```rust
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p aggregator \
+                prune_schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn prune_schedule_destination_departures_deletes_only_rows_older_than_the_retention_window()
+    {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new().connect(&database_url).await.unwrap();
+
+        // Relative to CURRENT_DATE, not hardcoded: the predicate is
+        // `service_date < CURRENT_DATE - $1`, so a fixed date would flip
+        // this test's meaning as the calendar moved.
+        let today = chrono::Utc::now().date_naive();
+        let stale = today - chrono::Duration::days(5);
+        let fresh = today - chrono::Duration::days(1);
+
+        for (service_date, train_uid) in [(stale, "TEST-PRUNE-OLD"), (fresh, "TEST-PRUNE-NEW")] {
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                    (service_date, destination_crs, scheduled, train_uid, origin_crs) \
+                 VALUES ($1, 'ZRB', '08:00:00', $2, 'EUS')",
+            )
+            .bind(service_date)
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .expect("seed fixture rows");
+        }
+
+        let pruned = prune_schedule_destination_departures(&pool, 2)
+            .await
+            .expect("prune");
+        assert_eq!(
+            pruned, 1,
+            "only the 5-day-old row should be pruned at a 2-day retention"
+        );
+
+        let remaining: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM schedule_destination_departures \
+             WHERE train_uid = 'TEST-PRUNE-NEW'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            remaining.0, 1,
+            "yesterday's rows are inside a 2-day window and must survive"
+        );
+
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures \
+             WHERE train_uid IN ('TEST-PRUNE-OLD', 'TEST-PRUNE-NEW')",
+        )
+        .execute(&pool)
+        .await
+        .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p aggregator \
+                prune_schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn prune_schedule_destination_departures_never_deletes_todays_rows() {
+        // The discriminating case, and the one that would actually hurt: a
+        // retention window is only ever allowed to reach into the PAST.
+        // Deleting today's rows would blank the live search between one CIF
+        // delivery and the next, which no retention value should ever be
+        // able to do.
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = PgPoolOptions::new().connect(&database_url).await.unwrap();
+
+        let today = chrono::Utc::now().date_naive();
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs) \
+             VALUES ($1, 'ZRB', '08:00:00', 'TEST-PRUNE-TODAY', 'EUS')",
+        )
+        .bind(today)
+        .execute(&pool)
+        .await
+        .expect("seed today's fixture row");
+
+        // Even at the most aggressive value this config field allows.
+        prune_schedule_destination_departures(&pool, 0)
+            .await
+            .expect("prune");
+
+        let remaining: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM schedule_destination_departures \
+             WHERE train_uid = 'TEST-PRUNE-TODAY'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            remaining.0, 1,
+            "today's rows must survive any retention value -- the predicate is strictly \
+             `service_date < CURRENT_DATE - $1`, never `<=`"
+        );
+
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-PRUNE-TODAY'",
+        )
+        .execute(&pool)
+        .await
+        .ok();
+    }
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `cargo test -p aggregator prune_schedule_destination_departures -- --ignored`
+Expected: FAIL with a compile error — `prune_schedule_destination_departures`
+is not defined.
+
+- [ ] **Step 3: Add the prune function**
+
+In `crates/aggregator/src/queries.rs`, immediately after
+`prune_trust_event_backlog` (which ends at line 511):
+
+```rust
+/// Prunes `schedule_destination_departures` rows for service dates older
+/// than `retention_days`.
+///
+/// **This table is the one CIF-derived published product that genuinely
+/// needs pruning**, and that is a deliberate divergence from its sibling
+/// `schedule_network_departures`, which has no pruning job anywhere in this
+/// repo. The sibling's wholesale replace is scoped per `(crs,
+/// service_date)` over ~2,500 CRS codes, so its steady-state size is
+/// trivial. This one holds ONE ROW PER DEPARTURE -- roughly 377,000 rows
+/// per service date -- and its wholesale replace is scoped to a single day,
+/// so without this job every day the service has ever seen accumulates
+/// forever. See
+/// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+/// §3, "Retention becomes required".
+///
+/// Nothing reads a past service date: every read of this table computes
+/// `today` server-side (`crates/api/src/routes/trains.rs`), so the window
+/// exists to protect the PRODUCER's edges, not a consumer -- see
+/// `Config::schedule_destination_departures_retention_days` for why the
+/// default is 2 rather than 1.
+///
+/// Modelled on `prune_history` and `prune_trust_event_backlog` directly
+/// above, with the one difference that this table's age column is a `DATE`
+/// (`service_date`, a rail day) rather than a `TIMESTAMPTZ`, so the
+/// comparison is against `CURRENT_DATE`. The comparison is strictly `<`,
+/// never `<=`: today's rows must survive any retention value, including 0.
+///
+/// A single unbatched `DELETE`, unlike `prune_trains` a little further down
+/// -- which loops in `PRUNE_TRAINS_BATCH`-sized chunks. That is the right
+/// call here and worth stating: this deletes at most one service date's
+/// worth of rows per run once the window is steady, it runs against a table
+/// nothing reads for past dates, and the aggregator's cycle is a forgiving
+/// place to spend the time. If lock duration or WAL volume ever does bite,
+/// the addendum's §7 item 5 names `service_date` partitioning with a
+/// partition swap as the standard mitigation -- reach for that rather than
+/// for a batching loop.
+pub async fn prune_schedule_destination_departures(
+    pool: &PgPool,
+    retention_days: i64,
+) -> Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM schedule_destination_departures \
+         WHERE service_date < CURRENT_DATE - ($1 || ' days')::interval",
+    )
+    .bind(retention_days.to_string())
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+```
+
+- [ ] **Step 4: Add the config field**
+
+In `crates/aggregator/src/config.rs`, immediately after
+`trains_retention_days` (which ends at line 108):
+
+```rust
+    /// How long to keep `schedule_destination_departures` rows before
+    /// pruning them, in whole service dates.
+    ///
+    /// **2, not 1**, and the difference matters. 1 would match
+    /// `trust_event_backlog_retention_days` above, but that default exists
+    /// to enforce an RDM licensing safeguard for TRUST Train Movements
+    /// data -- a constraint that does not apply to CIF SCHEDULE timetable
+    /// data at all. Copying the number would copy a restriction that isn't
+    /// real here while giving up the margin that is: `service_date` is a
+    /// RAIL day, which crosses midnight, and a CIF delivery can land late,
+    /// so a 1-day window can delete the only published day shortly before
+    /// its replacement arrives. 2 covers both edges.
+    ///
+    /// Nothing reads a past service date -- every read computes `today`
+    /// server-side -- so this window protects the producer's edges, not a
+    /// consumer, and there is no reason to raise it further. At ~377,000
+    /// rows per day, 2 days is ~750,000 rows and ~80-120MB with the index.
+    ///
+    /// Unlike `trust_event_backlog_retention_days` there is deliberately NO
+    /// warning emitted when this is configured higher: nothing legal is at
+    /// stake, only disk.
+    #[arg(long, env, default_value_t = 2)]
+    pub schedule_destination_departures_retention_days: i64,
+```
+
+- [ ] **Step 5: Wire it into the existing prune cycle**
+
+Three edits in `crates/aggregator/src/main.rs`, all of them mechanical.
+
+First, the `run_cycle` signature (currently line 185, after
+`trains_retention_days`) — note the function already carries
+`#[allow(clippy::too_many_arguments)]`, so no new attribute is needed:
+
+```rust
+    trains_retention_days: i64,
+    schedule_destination_departures_retention_days: i64,
+```
+
+Second, the call site inside the poll loop (currently line 74, after
+`config.trains_retention_days`):
+
+```rust
+            config.trains_retention_days,
+            config.schedule_destination_departures_retention_days,
+```
+
+Third, the prune call itself, immediately after the `prune_trains` block
+(currently lines 269-273), matching that block's metric-emitting shape
+exactly:
+
+```rust
+    // The CIF-derived destination-search table -- the one published product
+    // in this repo that genuinely accrues (~377,000 rows per service date,
+    // one row per departure) rather than wholesale-replacing a bounded key
+    // space. See queries::prune_schedule_destination_departures' own doc
+    // comment, and
+    // docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+    // §3.
+    let schedule_destination_departures_pruned = queries::prune_schedule_destination_departures(
+        pool,
+        schedule_destination_departures_retention_days,
+    )
+    .await?;
+    metrics::counter!(common::metrics::metric_name(
+        "aggregator_schedule_destination_departures_rows_pruned_total"
+    ))
+    .increment(schedule_destination_departures_pruned);
+```
+
+- [ ] **Step 6: Add the chart env var and its value**
+
+Three of the aggregator's four retention settings are already chart-exposed
+rather than left on their compiled-in defaults, so this one is too.
+
+In `charts/distant-signal/templates/aggregator-deployment.yaml`, immediately
+after the `TRUST_EVENT_BACKLOG_RETENTION_DAYS` block (lines 91-92):
+
+```yaml
+            # Train-listing-page plan, Task 13. NOT a licensing safeguard,
+            # unlike the setting directly above -- purely disk. See
+            # Config::schedule_destination_departures_retention_days
+            # (crates/aggregator/src/config.rs) for why the default is 2
+            # rather than 1.
+            - name: SCHEDULE_DESTINATION_DEPARTURES_RETENTION_DAYS
+              value: {{ .Values.aggregator.scheduleDestinationDeparturesRetentionDays | quote }}
+```
+
+And in `charts/distant-signal/values.yaml`, immediately after
+`trustEventBacklogRetentionDays: 1` (line 660):
+
+```yaml
+  # -- How long to keep schedule_destination_departures rows, in whole
+  # service dates. This table holds one row per departure (~377,000 per
+  # day) and its wholesale replace is scoped to a single service date, so
+  # unlike schedule_network_departures it genuinely accrues and genuinely
+  # needs pruning. 2 rather than 1 to stay safe across the rail day's
+  # midnight boundary and a late CIF delivery; nothing reads a past
+  # service date, so there is no reason to raise it.
+  scheduleDestinationDeparturesRetentionDays: 2
+```
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run:
+`DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres cargo test -p aggregator prune_schedule_destination_departures -- --ignored --test-threads=1`
+Expected: PASS — both new tests.
+
+Then the full crate, to prove the `run_cycle` signature change compiles
+everywhere it is called:
+
+Run: `cargo test -p aggregator`
+Expected: PASS, no regressions.
+
+Then the chart lint, so the template edit is proven syntactically valid:
+
+```bash
+helm lint charts/distant-signal
+```
+
+Expected: `1 chart(s) linted, 0 chart(s) failed`.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/aggregator/src/queries.rs crates/aggregator/src/config.rs crates/aggregator/src/main.rs charts/distant-signal/templates/aggregator-deployment.yaml charts/distant-signal/values.yaml
+git commit -m "Prune schedule_destination_departures on the aggregator's existing cycle"
+```
+
+---
+## Self-review notes (re-performed on this plan after the 2026-09-07 revision)
+
+This section replaces the original plan's self-review. It re-runs the same
+four checks, now against **both** source documents, plus a fifth covering the
+revision itself.
+
+**0. Revision coverage — the addendum's §5 table, row by row.** All thirteen
+tasks are accounted for and match it:
+
+| Addendum §5 says | This plan now has |
+|---|---|
+| **1** changed, re-scoped: measures `Σ_d bucket_d`, no cap, chooses single vs. chunked POST, still controller-run, no commit, **do not stop** | Task 1, retitled "Publish-volume diagnostic"; Step 2 takes the **sum** of the histogram's third column; Step 3's gate is single-POST vs. chunked-POST with the `rows.chunks(50_000)` code written out; the stop-and-flag branch is gone; the header states it no longer gates Task 4 |
+| **2** changed: the five-column flat table with the composite PK, no `departures JSONB`; the "RETENTION: none" paragraph rewritten to point at the new pruning task | Task 2, DDL copied verbatim from addendum §3; header comment rewritten, with a RETENTION paragraph naming `prune_schedule_destination_departures` and `Config::schedule_destination_departures_retention_days` |
+| **3** kept, one correction: signature, record and all seven tests verbatim; the `MAX_DEPARTURES_PER_DESTINATION` sentence must cite the addendum instead | Task 3, header note stating exactly that; Steps 1-3 and 5-7 untouched; only Step 4's closing doc-comment paragraph rewritten |
+| **4** changed: constant **deleted**; `schedule_destination_departures_rows` becomes a flatten; two cap tests go, the third becomes "one row per departure carrying its destination"; `now` → `NaiveTime::MIN`; **Steps 4, 5, 6 unaffected**; no longer gated on Task 1 | Task 4, all of it; Steps 4 (wiring), 5 (config field) and 6 (Helm env var) carried through unchanged; three replacement tests; an explicit "do not add a constant" callout |
+| **5** changed: flat scalar fields, `DELETE`+`UNNEST` in one transaction, indexed range scan with keyset cursor, `after` in the signature, day-scoped existence probe, `db_tests` rewritten, `ZRB`-`ZRF` still holds | Task 5, rewritten end to end; twelve tests, all `ZRB`-`ZRF` |
+| **6** kept, one conditional: path, method, authorization, `UpsertResponse`, `app.rs` registration unchanged; only the body type follows Task 5; first-chunk-clears-the-day **iff** Task 1 forces chunking | Task 6; Steps 3, 4 (bar its doc comment), 5 unchanged; the conditional is written as a conditional, with an explicit "do not build either speculatively" |
+| **7** changed additively: path, `destination`/`origin`/`from`/`to`, the camelCase wire shape, `destination_departure_json` and **both** render tests verbatim; add `limit` (default 50, max 200) and an opaque `after`; response becomes `{results, nextCursor}` | Task 7; Steps 1-3 untouched; `limit`/`after`/envelope added in Steps 4 and 6 |
+| **8, 9, 11, 12** unaffected | Untouched. Verified by `git diff` producing **no hunks** inside any of the four sections |
+| **10** changed minimally, frontend-only: read `{results, nextCursor}`, render a "Load more" that re-requests with `after=` | Task 10; everything else carried through; six added tests |
+| **NEW** `prune_schedule_destination_departures`, modelled on `prune_history`, config field, prune-cycle wiring, a `db_tests` test | Task 13 |
+
+**1. Spec coverage.**
+
+*Against the original design doc* — unchanged from the previous review
+except where the addendum overrides, so only the deltas are restated here:
+
+- **§2 Goal and scope.** Every verdict in the realistic-filter table still
+  holds: Origin — yes, optional; Date — out of scope, no date parameter
+  anywhere; Time-of-day range — the inclusive `from`/`to` pair, now real
+  `NaiveTime` values against a real `TIME` column; Destination — Tasks 2-7;
+  Operator — not built, with Task 10's `renders no operator filter at all`
+  test still guarding the omission. The "live-status summary" bullet remains
+  deliberately absent for the same reason as before.
+- **§3 Approach B.** The *product* decision is untouched; its *mechanism*
+  sentences ("published… into a new table, copy-adjacent to
+  `schedule_network_departures`'s own migration and POST/GET route shape",
+  and "a decision on the result cap's shape") are the two the addendum
+  supersedes, and this plan now follows the addendum on both. Its "needs its
+  own sizing pass, not an assumed reuse of `MAX_DEPARTURES_PER_STATION = 10`"
+  is Task 1 — which **was run**, and whose answer was "no cap".
+- **§4, §5.** Untouched by the revision; Tasks 8, 9, 11 and 12 are unchanged
+  and the previous review's findings for them stand as written.
+- **§6.** All ten bullets remain in Global Constraints and none is
+  contradicted. Re-checked specifically against the new work: Task 5 reads
+  Postgres only; Task 13 touches the aggregator's own prune cycle and no
+  poller; no task adds a date parameter, decodes an operator, holds a
+  resident index, or merges two sources.
+- **§7 Open questions.** 1 is resolved by Task 1 and then *re-resolved* by
+  the addendum (there is no cap); 2 by Task 8; 3 is void under a CIF-only
+  v1; **4 is now resolved by Task 13 rather than by inspection, reversing
+  the original answer**, and both "Decisions this plan resolves" item 3 and
+  Task 2's migration header say so explicitly; 5 is Task 11; 6 is inherited
+  and untouched.
+
+*Against the addendum:*
+
+- **§1.1 measurement, §1.2 the corrected `Σ` bound, §1.3 once-per-delivery.**
+  All three are load-bearing in the plan rather than merely cited: §1.1 is
+  the reason Task 4 deletes the constant and the reason Task 4's
+  uncapped-bucket test uses 9,634 specifically; §1.2 is Task 1's whole
+  re-scoping; §1.3 is why Task 4 passes `NaiveTime::MIN` and why Task 7 owns
+  the `now` boundary.
+- **§3 Approach C.** The DDL, the read query, the `UNNEST` upsert, the
+  existence probe and the chunking fallback are all reproduced as real code.
+- **§6 out of scope.** Five of its bullets were not in the original Global
+  Constraints and are now added there verbatim in substance (no `COPY`
+  loader, no partitioning, no consolidating the two tables, no fixing the
+  sibling's staleness, no cap under any name).
+- **§7 open questions/risks.** 1 → Task 1's gate. 2 (`NaiveTime::MIN` and
+  midnight-crossing schedules) → named in Task 4's doc comment as "made more
+  observable, not made worse", inherited unchanged from `departures_by_crs`.
+  3 (the 404 semantics change) → **taken as an explicit approval**, argued in
+  Task 5's Interfaces block and pinned by two tests in each of Tasks 5 and 7.
+  4 (retention default) → decided: **2 days**, with the reasoning written
+  into Task 13, the config field's doc comment and `values.yaml`. 5 (write
+  pressure) → named in Task 2's migration comment and Task 13's function
+  doc, with partitioning named as the mitigation and deliberately not built.
+  6 (deriving the sibling table) → Global Constraints, explicitly deferred.
+  7 (VSTP) → inherited, untouched.
 
 **2. Placeholder scan.** No "TBD", "TODO", "implement later", "add
 appropriate error handling", "similar to Task N", or "write tests for the
-above" appears anywhere. Every code step contains literal code. Two things
-this pass found and fixed inline rather than reported:
+above" appears anywhere. Every code step contains literal code, including
+every step this revision rewrote. Two notes:
 
-- Task 7 Step 6 originally referred readers to
-  `crates/api/src/routes/departures.rs:162-219` to paste `test_app` from,
-  via a fake `use … as _;` line. That is exactly the "steps that describe
-  what to do without showing how" failure mode, so the complete
-  `fn test_app(pool: PgPool) -> App` body is now written out in the task.
-- Task 11 Step 5 originally said "use whichever helper the file's existing
-  nav assertions already use", a deferred decision. Reading
-  `frontend/app/layout.test.tsx` settled it: the nav's static links live
-  inside the unexported, un-renderable `RootLayout`, and that file already
-  has a `readFileSync('app/layout.tsx', 'utf8')` source-assertion precedent
-  (line 75-77) for exactly this. The step now contains the real test.
+- **The one value previously flagged as "decided outside the plan text" is
+  gone.** The old review's closing paragraph defended
+  `MAX_DEPARTURES_PER_DESTINATION = 200` as a real default with a gate. That
+  constant no longer exists, and nothing has replaced it: there is now **no
+  value anywhere in this plan that Task 1 decides**. Task 1 chooses between
+  two fully-written code paths (a single `post_batch` call in Task 4 Step 3,
+  or the chunked loop in Task 1 Step 3), which is a branch, not a blank.
+- **Task 6's conditional is a conditional, not a placeholder.** It states
+  the exact semantics to add, names where they would go, and says explicitly
+  not to build them speculatively. The default path is complete without it.
 
-The one remaining value that is intentionally decided outside the plan text
-is Task 4's `MAX_DEPARTURES_PER_DESTINATION = 200`, and that is not a
-placeholder: it is a real, working default with an explicit
-confirm-or-replace gate (Task 1) and a stated arithmetic criterion, which is
-the writing-plans-sanctioned way to represent a decision only the repo owner
-can make with real data.
+Four things this pass found and fixed inline rather than reported:
 
-**3. Type and signature consistency across tasks.**
-- `DestinationDeparture { uid: String, origin_crs: String, scheduled:
-  NaiveTime }` (Task 3) is what Task 4's `schedule_destination_departures_rows`
-  serializes, giving JSON keys `uid`/`origin_crs`/`scheduled` — exactly the
-  keys Task 5's SQL names (`elem->>'origin_crs'`, `elem->>'scheduled'`),
-  Task 5's test fixtures use, and Task 7's `destination_departure_json`
-  reads.
-- Task 4's POST body element `{destination_crs, service_date, departures}`
-  matches Task 5's `ScheduleDestinationDeparturesRow` field-for-field, which
-  is what Task 6's handler deserializes.
-- `search_schedule_destination_departures(pool, destination_crs,
-  service_date, origin_crs, from_time, to_time, limit) ->
-  Result<Option<Vec<Value>>>` (Task 5) is called with exactly that arity and
-  those types by Task 7, whose `let … else` destructures the `Option` into
-  the 404 branch.
-- `destination_departure_json(d, destination_crs)` (Task 7) emits
-  `{uid, scheduled, originCrs, destinationCrs}`, which is exactly Task 10's
-  `TrainSearchRow` interface and exactly what Task 10's test fixtures
-  produce.
+- **The addendum's four-key publish row cannot work.** Its §3 sketches
+  `{destination_crs, origin_crs, scheduled, train_uid}`, but the ingest
+  handler's first statement is `DELETE ... WHERE service_date = $1` and
+  `common::ingest::post_batch` posts a bare array with nowhere else to carry
+  the day. Deriving it from the receiving service's clock would reintroduce
+  the clock-coupling this whole design moves out of the publish. `service_date`
+  is therefore a fifth per-row key, matching the table's own column — and the
+  per-entry size budget rises from the addendum's ~55 bytes to **~80**, so
+  Task 1's threshold is now ~750,000 entries rather than ~1,000,000, and the
+  expected payload ~30MB rather than ~21MB. Still ~3.3x inside the router's
+  100MB limit. Stated in Task 4's Interfaces block and Task 1 Step 3.
+- **`legacy_backfill.rs` is not the `UNNEST` precedent.** The brief pointed
+  at it; it has none. The real in-crate precedent is
+  `crates/api/src/data/trains.rs`' `find_or_create_trains_batch` (`:50-75`)
+  and `mark_trains_resolved_batch` (`:140-174`), whose
+  build-parallel-`Vec`s-then-`.bind()` style Task 5 follows exactly.
+  `legacy_backfill.rs` *is* cited correctly elsewhere — `prune_trains`' own
+  `PRUNE_TRAINS_BATCH` doc comment names it as its batching precedent — which
+  is probably where the confusion came from.
+- **The day-scoped existence probe breaks test isolation, in two different
+  ways.** Under the old per-destination bucket, tests could share a
+  `service_date` and stay independent; they cannot now. Task 5's tests
+  therefore each own a **distinct `service_date` in 2099** — far-future so a
+  shared development database's real published data cannot answer their
+  "is anything published?" question either — and Task 7's route tests, which
+  are forced onto the real "today", delete the **whole day** rather than one
+  destination's rows and carry an explicit note that they need a database
+  `schedule-reference` has not published into. Both modules' doc comments
+  state the reasoning.
+- **Task 7's route tests could not use fixed wall-clock times.** With the
+  `now`-forward filter moved to request time, a fixture at "08:22" passes in
+  the morning and returns nothing in the afternoon. The tests now compute
+  fixtures relative to London-local `now` via a `relative_times()` helper,
+  with an explicit assertion telling the runner to re-run outside
+  23:00-00:01. This is a direct, non-obvious consequence of the addendum's
+  §1.3 that nothing in the addendum calls out.
+
+One further correctness fix, worth separating because it is a bug rather
+than a plan-mechanics issue: **Task 7 computes `now` in `Europe/London`, not
+UTC.** The stored `scheduled` values are London local civil time straight
+off the CIF body (`DestinationDeparture::scheduled`'s own doc comment says
+so), so a UTC time-of-day comparison would be an hour wrong all summer.
+`chrono-tz` is already a direct dependency of `crates/api` and
+`chrono_tz::Europe::London` is already used in `data/eta_blend.rs` for the
+same reason, so this costs nothing. `today` remains
+`chrono::Utc::now().date_naive()`, unchanged and matching
+`get_station_schedule_departures` — deliberately not widened here.
+
+Two comments inside Task 7's *render* code describe its input as "an opaque
+JSONB element". Those are left **verbatim**, as the addendum requires, and
+they remain correct in the sense that matters: `destination_departure_json`
+still receives a `serde_json::Value` whose schema it does not own and must
+not assume, which is exactly what its defensive null-handling test exists to
+prove. Only the value's *producer* changed.
+
+**3. Type and signature consistency across all thirteen tasks.**
+- `DestinationDeparture { uid, origin_crs, scheduled }` (Task 3) is what
+  Task 4's flatten reads, emitting JSON keys
+  `service_date`/`destination_crs`/`scheduled`/`train_uid`/`origin_crs` —
+  which is exactly, field for field, Task 5's
+  `ScheduleDestinationDeparturesRow`, which is what Task 6's handler
+  deserializes and Task 6's test body posts. Note the deliberate rename at
+  that boundary: `DestinationDeparture::uid` becomes the JSON/column
+  `train_uid`, and Task 4's test asserts the absence of a stray `uid` key.
+- Task 5's `search_schedule_destination_departures(pool, destination_crs,
+  service_date, scheduled_from, origin_crs, to_time, after, limit) ->
+  Result<Option<DestinationDeparturePage>>` is called with exactly that
+  arity and those types by Task 7, whose `let … else` destructures the
+  `Option` into the 404 branch.
+- `to_time` is `Option<chrono::NaiveTime>` on both sides, and Task 7's
+  `normalize_time` was changed to return `NaiveTime` rather than the old
+  `String` so it does. `scheduled_from` is non-optional on both sides.
+- `DestinationDepartureCursor { scheduled, train_uid, origin_crs }` (Task 5)
+  is constructed by Task 5's query, asserted structurally by Task 5's
+  `search_applies_the_limit_and_returns_a_cursor_for_the_rest`, and
+  encoded/decoded by Task 7's `encode_cursor`/`decode_cursor` — which are
+  exact inverses over the same three fields in the same order.
+- `DestinationDeparturePage { departures, next_cursor }`'s `departures`
+  elements are `{uid, origin_crs, scheduled: "HH:MM:SS"}`, which is exactly
+  what Task 7's **unchanged** `destination_departure_json` reads and what
+  Task 5's `search_with_no_filters_…` test asserts literally.
+- `destination_departure_json(d, destination_crs)` emits
+  `{uid, scheduled: "HH:MM", originCrs, destinationCrs}` — exactly Task 10's
+  `TrainSearchRow` interface and exactly what Task 10's fixtures produce.
+- The envelope `{results, nextCursor}` is produced by Task 7's handler,
+  asserted by Task 7's `results()`/`next_cursor()` test helpers, and
+  consumed by Task 10's `TrainSearchResponse` — same two field names, same
+  `string | null` for the cursor, on both sides.
+- `prune_schedule_destination_departures(pool, retention_days) ->
+  Result<u64>` (Task 13) matches `prune_history`/`prune_trust_event_backlog`
+  exactly, and its new `run_cycle` parameter is added in the same position
+  in the signature and at the call site.
 - `TrackThisTrainButton({ uid, date, attachTicketId?, size? })` (Task 9) is
-  called by Task 10 with all four props (`size="xs"`) and by Task 12 with
-  two — never with a prop it doesn't declare.
+  called by Task 10 with all four props and by Task 12 with two — unchanged.
 - `TrainSearchForm({ initialDestination?, initialOrigin?, attachTicketId? })`
-  (Task 10) is called by Task 11 with exactly those three.
+  (Task 10) is called by Task 11 with exactly those three — unchanged. The
+  pagination state is entirely internal, so Task 11 needs no edit at all.
 - `create_subscription_for_train(pool, trains_id, user_id) ->
-  anyhow::Result<i64>` (Task 8) keeps its exact existing signature, so
-  `post_track_by_uid` (`crates/api/src/routes/train.rs:699-702`) needs no
-  change and none is planned.
-- Route path segments are consistent between Rust and the frontend:
+  anyhow::Result<i64>` (Task 8) keeps its exact existing signature.
+- Route path segments agree everywhere:
   `/private/schedule-destination-departures` (Task 6 route, Task 4 config
-  default, Task 6 app.rs auth entry, Task 4 Helm env all agree);
+  default, Task 6 `app.rs` auth entry, Task 4 Helm env);
   `/public/trains/search` (Task 7) reaches the frontend as
   `/api/trains/search` through the proxy's `/public/` prefixing rule, which
-  Task 10 uses verbatim; `/Train/by-uid/{uid}/{date}/track` reaches it as
-  `/api/Train/by-uid/…` through the proxy's `Train`-passthrough rule, which
-  Task 9 uses verbatim.
+  Task 10 uses verbatim including its new `after=` parameter.
+- Env var and Helm value names agree: `SCHEDULE_DESTINATION_DEPARTURES_URL`
+  ↔ `schedule_destination_departures_url` (Task 4);
+  `SCHEDULE_DESTINATION_DEPARTURES_RETENTION_DAYS` ↔
+  `schedule_destination_departures_retention_days` ↔
+  `aggregator.scheduleDestinationDeparturesRetentionDays` (Task 13).
 
-**4. Ordering check.** Task 1 gates Task 4 (stated in both). Tasks 2→5→6 and
-2→5→7 are strict data dependencies. Task 3 gates Task 4. Task 8 gates Tasks
-9-12 (stated in Task 8's own header and in "Decisions this plan resolves").
-Task 9 gates Tasks 10 and 12. Task 10 gates Task 11. Tasks 2 and 3 are
-independent of each other and of Task 1, so work can begin immediately while
-Task 1's diagnostic is being run.
+**4. Ordering check.** The revision loosened the graph rather than tightening
+it:
+
+- **Task 1 now gates nothing.** It was the plan's only hard gate; Task 4 no
+  longer depends on its output for any value, only for a choice between two
+  written code paths, and Task 4's default is complete without it. Tasks 2,
+  3 and 13 never depended on it.
+- Strict data dependencies: 2→5→6, 2→5→7, 2→13, 3→4.
+- Task 8 gates Tasks 9-12 (stated in Task 8's own header and in "Decisions
+  this plan resolves"). Task 9 gates Tasks 10 and 12. Task 10 gates Task 11.
+- **Task 13 is a leaf on both sides**: it needs only Task 2 and nothing
+  needs it, so it can run in parallel with all of Tasks 3-12.
+- Tasks 2 and 3 are independent of each other and of everything else, so
+  work can begin immediately on either.
 
 **5. Global Constraints self-check.** Every new query uses runtime-checked
-`sqlx::query`/`query_as` (no `query!`); every new JSON response goes through
-a hand-built `json!()` render function; every live-DB test uses the
-`#[tokio::test] #[ignore]` + manual `connect()` pattern with explicit
-`DELETE` cleanup and no `#[sqlx::test]`; the fixture CRS codes claimed
-(`ZRB`-`ZRF`) collide with nothing already in use.
+`sqlx::query`/`query_as` — including Task 5's `UNNEST` insert and Task 13's
+`DELETE`, neither of which uses a `query!` macro or the `.sqlx` cache. Every
+new JSON response goes through a hand-built `json!()`; Task 7's envelope is
+built that way too rather than by deriving `Serialize` on a new struct. Every
+live-DB test uses the `#[tokio::test] #[ignore]` + manual pool pattern with
+explicit `DELETE` cleanup and no `#[sqlx::test]` — with the per-file naming
+difference now called out where it bites (`test_pool()` in
+`data/queries.rs`, `connect()` in `routes/*.rs` and
+`aggregator/src/queries.rs`'s inline form). The fixture CRS codes claimed are
+still exactly `ZRB`-`ZRF`, no new ones, and Task 13 reuses `ZRB`. No task
+introduces a cap under any name; no task adds a `COPY` loader, a partition,
+or a change to `schedule_network_departures`.
