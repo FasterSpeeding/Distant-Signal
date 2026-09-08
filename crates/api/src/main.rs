@@ -12,6 +12,7 @@ async fn main() -> anyhow::Result<()> {
     let app = AppState::init().await?;
 
     tokio::spawn(schedule_match_sweep_loop(app.clone()));
+    tokio::spawn(reconciliation_sweep_loop(app.clone()));
 
     // Permissive ORIGIN, deliberately non-credentialed. The four
     // line-status endpoints and /public/health are intentionally public,
@@ -144,6 +145,43 @@ async fn schedule_match_sweep_loop(app: App) {
             Ok(_) => {}
             Err(err) => {
                 tracing::error!(error = ?err, "schedule-match sweep failed; will retry next interval");
+            }
+        }
+    }
+}
+
+/// Periodic retry of two independent, confirmed stalls in tracked-train
+/// state -- see
+/// docs/superpowers/specs/2026-09-08-tracked-train-reconciliation-design.md.
+/// Mirrors `schedule_match_sweep_loop`'s own shape exactly: same "a
+/// request/response server also runs a background interval loop" pattern
+/// this workspace already established.
+async fn reconciliation_sweep_loop(app: App) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+        app.config.reconciliation_sweep_interval_secs,
+    ));
+    let grace_period = chrono::Duration::minutes(app.config.schedule_enrichment_grace_minutes);
+    loop {
+        interval.tick().await;
+        match data::reconciliation::run_reconciliation_sweep(
+            &app.database,
+            &app.schedule_crs_line_index,
+            grace_period,
+        )
+        .await
+        {
+            Ok(result)
+                if result.resolution_status_reconciled > 0 || result.schedule_enrichment_matched > 0 =>
+            {
+                tracing::info!(
+                    resolution_status_reconciled = result.resolution_status_reconciled,
+                    schedule_enrichment_matched = result.schedule_enrichment_matched,
+                    "reconciliation sweep made progress on stuck tracked-train state"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::error!(error = ?err, "reconciliation sweep failed; will retry next interval");
             }
         }
     }
