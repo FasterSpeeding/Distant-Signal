@@ -2941,16 +2941,19 @@ mod db_tests {
     /// Explicit idempotency check at the HTTP layer, mirroring the
     /// data-layer test of the same name in `train_tracking::db_tests`: the
     /// SAME authenticated caller hits this route twice for the SAME
-    /// `(train_uid, date)`, with no reset in between. Result: two distinct
-    /// `trackingId`s, i.e. two separate subscriptions -- this route is NOT
-    /// idempotent, matching `POST /Train/track`'s own long-established
-    /// non-dedup behavior. Documented here as observed real behavior, not
-    /// assumed.
+    /// `(train_uid, date)`, with no reset in between. Result: the SAME
+    /// `trackingId` both times, i.e. one subscription -- this route calls
+    /// `create_subscription_for_train`, which was made idempotent per
+    /// `(user_id, trains_id)` so that a "Track this train" button a user
+    /// can click twice no longer produces duplicate subscriptions,
+    /// duplicate `/track/mine` entries and duplicate notification streams.
+    /// This test previously asserted the opposite (two distinct ids); it
+    /// was inverted alongside the fix, not reverted.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                post_track_by_uid_called_twice_creates_two_separate_subscriptions \
+                post_track_by_uid_called_twice_returns_the_same_subscription \
                 -- --ignored --test-threads=1`"]
-    async fn post_track_by_uid_called_twice_creates_two_separate_subscriptions() {
+    async fn post_track_by_uid_called_twice_returns_the_same_subscription() {
         let pool = connect().await;
         let token = seed_session(&pool, "TEST-TRACK-BY-UID-TWICE").await;
         let router = test_router(test_app(pool.clone()));
@@ -2977,21 +2980,19 @@ mod db_tests {
             .and_then(Value::as_i64)
             .expect("trackingId present on second call");
 
-        assert_ne!(
+        assert_eq!(
             first_tracking_id, second_tracking_id,
-            "this route is not idempotent -- a second call for the same (uid, date) by the \
-             same user creates a second, separate subscription rather than returning the \
-             first one"
+            "this route must be idempotent -- a second call for the same (uid, date) by the \
+             same user returns the EXISTING subscription rather than creating a second one"
         );
 
         let (row_count,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM train_subscriptions WHERE id IN ($1, $2)")
+            sqlx::query_as("SELECT COUNT(*) FROM train_subscriptions WHERE id = $1")
                 .bind(first_tracking_id)
-                .bind(second_tracking_id)
                 .fetch_one(&pool)
                 .await
-                .expect("count both subscription rows");
-        assert_eq!(row_count, 2, "both calls' rows must actually persist");
+                .expect("count the subscription row");
+        assert_eq!(row_count, 1, "exactly one row must exist after two calls");
 
         cleanup_user(&pool, "TEST-TRACK-BY-UID-TWICE").await;
         cleanup_public_train(&pool, "TEST-TRACK-BY-UID-TWICE-UID").await;

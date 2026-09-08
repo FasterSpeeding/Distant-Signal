@@ -159,25 +159,63 @@ pub async fn create_pin(
 /// without also having the other) and the correct exclusion for this new
 /// NR-primary shape.
 ///
-/// NOT idempotent by `(trains_id, user_id)` -- every call inserts a new
-/// row, same as `create_pin`'s own long-established behavior for the
-/// legacy path (calling `POST /Train/track` twice for the same pin already
-/// creates two independent rows today; nothing in this schema has ever
-/// deduped subscriptions by identity). Calling this twice for the same
-/// train therefore creates two separate subscriptions, each independently
-/// rename/delete-able -- see this function's own `db_tests` for the test
-/// that proves this explicitly, rather than assuming either way.
+/// **Idempotent by `(user_id, trains_id)`.** A second call for the same
+/// user and the same shared train returns that user's EXISTING subscription
+/// id rather than inserting another row -- so a user who clicks "Track this
+/// train" twice (a repeat click, a back-navigate, a second tab) ends up
+/// with one subscription, one `/track/mine` entry and one notification
+/// stream, and is navigated to the same `/train/by-id/{trackingId}` both
+/// times.
+///
+/// Scoped to ONE user: two different users tracking the same physical train
+/// still get two independent subscriptions, which is this endpoint's own
+/// headline scenario and the entire reason the shared `trains` table
+/// exists.
+///
+/// Deliberately NOT backed by a `UNIQUE (user_id, trains_id)` index, and
+/// this is a considered rejection rather than an oversight. Four unrelated
+/// paths already do a bare `UPDATE train_subscriptions SET trains_id = $2
+/// WHERE id = $1` (`data/schedule_matching.rs`'s `attempt_schedule_match`,
+/// `data/trust_event_backlog_match.rs` in two places, and this file's own
+/// live-resolution write), and `create_pin` above has never deduplicated
+/// legacy CRS+time pins -- so a user holding two legacy pins that later
+/// resolve to the same physical train is reachable today, and a global
+/// unique index would turn each of those `UPDATE`s into a hard failure
+/// inside schedule matching, backlog matching and live TRUST resolution.
+///
+/// The honest residual limitation, stated rather than papered over: under
+/// READ COMMITTED, two genuinely simultaneous in-flight calls can both
+/// observe no existing row and both insert. This closes the ordinary
+/// repeat-click case, not a true concurrent double-submit; the frontend
+/// closes that one the way every other mutating control in this app does,
+/// by disabling the button while its request is in flight
+/// (`frontend/components/TrackThisTrainButton.tsx`).
 pub async fn create_subscription_for_train(
     pool: &PgPool,
     trains_id: i64,
     user_id: &str,
 ) -> anyhow::Result<i64> {
+    // One statement, not a SELECT-then-INSERT round trip: the `inserted`
+    // CTE's `NOT EXISTS (SELECT 1 FROM existing)` guard means the INSERT
+    // never fires when a subscription is already there, and the final
+    // UNION ALL yields exactly one row either way -- so `fetch_one` still
+    // errors (RowNotFound) for a `trains_id` that names no `trains` row,
+    // exactly as the previous plain `INSERT ... SELECT` did.
     let row: (i64,) = sqlx::query_as(
-        "INSERT INTO train_subscriptions \
-            (user_id, trains_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs) \
-         SELECT $1, tr.id, tr.service_date, tr.origin_crs, tr.scheduled_departure, tr.destination_crs \
-         FROM trains tr WHERE tr.id = $2 \
-         RETURNING id",
+        "WITH existing AS ( \
+             SELECT id FROM train_subscriptions \
+             WHERE user_id = $1 AND trains_id = $2 \
+             ORDER BY id LIMIT 1 \
+         ), \
+         inserted AS ( \
+             INSERT INTO train_subscriptions \
+                 (user_id, trains_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs) \
+             SELECT $1, tr.id, tr.service_date, tr.origin_crs, tr.scheduled_departure, tr.destination_crs \
+             FROM trains tr \
+             WHERE tr.id = $2 AND NOT EXISTS (SELECT 1 FROM existing) \
+             RETURNING id \
+         ) \
+         SELECT id FROM existing UNION ALL SELECT id FROM inserted",
     )
     .bind(user_id)
     .bind(trains_id)
@@ -3494,20 +3532,20 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
     }
 
-    /// Explicit idempotency check (per this plan's own lessons-learned
-    /// posture on this exact question): calls the SAME real function twice,
-    /// against the SAME already-existing `trains_id` and `user_id`, with no
-    /// reset in between, and asserts on what ACTUALLY happens rather than
-    /// assuming either "same row" or "duplicate". Result: two distinct
-    /// `tracked_trains` rows -- this function has no `ON CONFLICT`/existence
-    /// check of any kind, matching `create_pin`'s own long-established
-    /// non-dedup behavior for the legacy path (see this function's own doc
-    /// comment).
+    /// Explicit idempotency check. This test previously asserted the
+    /// OPPOSITE -- that two calls produced two rows -- which was an honest
+    /// record of the behaviour at the time, not a requirement. A
+    /// train-listing feature turned that behaviour into a real user-facing
+    /// bug (a "Track this train" button a user can click twice), so the
+    /// function was fixed and this test inverted alongside it. See this
+    /// task's own header, which also records why a
+    /// `UNIQUE (user_id, trains_id)` index was rejected in favour of this
+    /// in-function fix.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                create_subscription_for_train_called_twice_creates_two_separate_subscriptions \
+                create_subscription_for_train_called_twice_returns_the_same_subscription \
                 -- --ignored --test-threads=1`"]
-    async fn create_subscription_for_train_called_twice_creates_two_separate_subscriptions() {
+    async fn create_subscription_for_train_called_twice_returns_the_same_subscription() {
         let pool = connect().await;
         let user_id = "TEST-NR-PRIMARY-TRACK-TWICE";
         seed_user(&pool, user_id).await;
@@ -3515,7 +3553,7 @@ mod db_tests {
         let trains_id = crate::data::trains::find_or_create_train(
             &pool,
             "TEST-NR-PRIMARY-TWICE-UID",
-            "2026-09-06".parse().unwrap(),
+            "2026-09-07".parse().unwrap(),
         )
         .await
         .expect("seed a trains row");
@@ -3527,10 +3565,10 @@ mod db_tests {
             .await
             .expect("second create_subscription_for_train call, same trains_id and user_id");
 
-        assert_ne!(
+        assert_eq!(
             first_tracking_id, second_tracking_id,
-            "this function is NOT idempotent -- calling it twice for the same (trains_id, \
-             user_id) creates two distinct subscription rows, not one shared/returned row"
+            "a repeat call for the same (trains_id, user_id) must return the EXISTING \
+             subscription, not create a second one"
         );
 
         let (row_count,): (i64,) = sqlx::query_as(
@@ -3541,11 +3579,111 @@ mod db_tests {
         .fetch_one(&pool)
         .await
         .expect("count subscriptions for this (trains_id, user_id) pair");
-        assert_eq!(row_count, 2, "both calls' rows must actually persist");
+        assert_eq!(row_count, 1, "exactly one row must exist after two calls");
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(first_tracking_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Discriminating counterpart: idempotency is scoped to ONE user. Two
+    /// different users tracking the same physical train is this endpoint's
+    /// own headline scenario (the whole point of the shared `trains` table)
+    /// and must still produce two independent subscriptions.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                create_subscription_for_train_is_not_shared_between_users \
+                -- --ignored --test-threads=1`"]
+    async fn create_subscription_for_train_is_not_shared_between_users() {
+        let pool = connect().await;
+        let user_a = "TEST-NR-PRIMARY-SHARED-A";
+        let user_b = "TEST-NR-PRIMARY-SHARED-B";
+        seed_user(&pool, user_a).await;
+        seed_user(&pool, user_b).await;
+
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-NR-PRIMARY-SHARED-UID",
+            "2026-09-07".parse().unwrap(),
+        )
+        .await
+        .expect("seed a trains row");
+
+        let a = create_subscription_for_train(&pool, trains_id, user_a)
+            .await
+            .expect("user A subscribes");
+        let b = create_subscription_for_train(&pool, trains_id, user_b)
+            .await
+            .expect("user B subscribes to the same train");
+
+        assert_ne!(
+            a, b,
+            "two users tracking one train must still get two independent subscriptions"
+        );
 
         sqlx::query("DELETE FROM train_subscriptions WHERE id IN ($1, $2)")
-            .bind(first_tracking_id)
-            .bind(second_tracking_id)
+            .bind(a)
+            .bind(b)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
+    }
+
+    /// Guards the one thing the existing-row-wins CTE could plausibly get
+    /// wrong: the returned id must be the row that actually exists, usable
+    /// as a real tracking id, not a stale/duplicated value. Reads the row
+    /// back through the same ownership query every `/Train/{trackingId}`
+    /// route uses.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                create_subscription_for_train_repeat_call_returns_a_usable_tracking_id \
+                -- --ignored --test-threads=1`"]
+    async fn create_subscription_for_train_repeat_call_returns_a_usable_tracking_id() {
+        let pool = connect().await;
+        let user_id = "TEST-NR-PRIMARY-USABLE-ID";
+        seed_user(&pool, user_id).await;
+
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-NR-PRIMARY-USABLE-UID",
+            "2026-09-07".parse().unwrap(),
+        )
+        .await
+        .expect("seed a trains row");
+
+        create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("first call");
+        let returned = create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("second call");
+
+        let owner = tracked_train_owner(&pool, returned)
+            .await
+            .expect("ownership lookup");
+        assert_eq!(
+            owner,
+            Some(user_id.to_string()),
+            "the returned id must resolve to a real, caller-owned subscription"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(returned)
             .execute(&pool)
             .await
             .ok();
