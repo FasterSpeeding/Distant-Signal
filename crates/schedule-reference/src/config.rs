@@ -52,6 +52,20 @@ pub struct Config {
     )]
     pub schedule_network_departures_url: String,
 
+    /// The `api` crate's ingestion endpoint for this service's fourth
+    /// responsibility: the destination-keyed, CIF-derived whole-network
+    /// train-search publish. See
+    /// docs/superpowers/specs/2026-09-07-train-listing-page-design.md,
+    /// Approach B. POST-only, no GET pair -- same shape as
+    /// `schedule_network_departures_url` directly above, and reusing the
+    /// same `internal_oauth_group_schedule_reference` writer credential.
+    #[arg(
+        long,
+        env,
+        default_value = "http://api:8080/private/schedule-destination-departures"
+    )]
+    pub schedule_destination_departures_url: String,
+
     /// The static line catalogue -- same `--lines-dir`/`LINES_DIR`
     /// value_parser pattern as `crates/aggregator/src/config.rs`'s own
     /// field of the same name. Used to build the per-line TIPLOC set this

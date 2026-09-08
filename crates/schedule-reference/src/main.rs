@@ -211,6 +211,18 @@ async fn publish_cif_derived_products(
         internal_oauth,
     )
     .await;
+    // Third CIF-derived product off the SAME one-per-cycle ScheduleIndex
+    // and the SAME `today` -- the design doc's Approach B is explicit that
+    // this must not trigger a second parse or a resident index.
+    publish_schedule_destination_departures(
+        client,
+        config,
+        &index,
+        today,
+        stanox_crs_records,
+        internal_oauth,
+    )
+    .await;
 }
 
 /// UNCHANGED per-line publish logic (per-line loop, per-line individual
@@ -326,6 +338,136 @@ fn schedule_network_departures_rows(
             serde_json::json!({ "crs": crs, "service_date": today, "departures": departures })
         })
         .collect()
+}
+
+/// Pure JSON-shaping logic, split out of
+/// `publish_schedule_destination_departures` purely so it is unit-testable
+/// without a mock HTTP server -- same convention as
+/// `schedule_network_departures_rows` directly above.
+///
+/// **A flatten, not a grouping.** Its sibling above emits one row per CRS
+/// key with a capped, sorted `departures` array inside it; this one emits
+/// one row per DEPARTURE, each carrying its own `destination_crs`, and
+/// there is no array, no sort and no cap anywhere in it. The three
+/// differences all have the same cause:
+///
+/// * **No cap**, because no cap value is defensible. London Waterloo
+///   buckets ~9,634 departure-bearing calling points for a single day and
+///   the next several busiest destinations are within the same order of
+///   magnitude, so any cap truncates precisely the destinations a
+///   whole-network destination search exists to serve. Worse, this publish
+///   fires once per CIF DELIVERY (roughly daily), not once per 30-minute
+///   cycle, so an earliest-first cap freezes at delivery time and is
+///   entirely in the past by the evening. See
+///   docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+///   §1 and §3.
+/// * **No sort**, because ordering is the read side's job now:
+///   `queries::search_schedule_destination_departures`'s `ORDER BY
+///   scheduled, train_uid, origin_crs` rides the destination table's own
+///   primary key. Sorting ~377,000 rows here would be wasted work.
+/// * **One row per departure**, because the destination is no longer a
+///   bucket key -- it is a column, and a filter predicate, on a flat table.
+///
+/// `service_date` is emitted on every row, unlike the four-key sketch in
+/// the addendum's §3, because the ingest handler's first statement is a
+/// `DELETE ... WHERE service_date = $1` and `common::ingest::post_batch`
+/// posts a bare array with nowhere else to carry the day. Budget ~80 bytes
+/// per entry when sizing the POST, not ~55.
+fn schedule_destination_departures_rows(
+    mut by_destination: std::collections::HashMap<
+        String,
+        Vec<schedule_query::DestinationDeparture>,
+    >,
+    today: chrono::NaiveDate,
+) -> Vec<serde_json::Value> {
+    by_destination
+        .drain()
+        .flat_map(|(destination_crs, departures)| {
+            departures.into_iter().map(move |d| {
+                serde_json::json!({
+                    "service_date": today,
+                    "destination_crs": destination_crs,
+                    "scheduled": d.scheduled,
+                    "train_uid": d.uid,
+                    "origin_crs": d.origin_crs,
+                })
+            })
+        })
+        .collect()
+}
+
+/// The destination-keyed sibling of `publish_schedule_network_departures`
+/// directly above: same one-batch-array POST shape, same `tiploc_to_crs`
+/// map built from this cycle's already-resolved `stanox_crs_records`, same
+/// log-and-continue error posture (a failed POST just means this delivery's
+/// grouping is discarded and rebuilt when the next one lands). See
+/// docs/superpowers/specs/2026-09-07-train-listing-page-design.md,
+/// Approach B, as revised by
+/// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md,
+/// Approach C.
+///
+/// **Two deliberate differences from the sibling, both easy to "fix" back
+/// by mistake:**
+///
+/// 1. `now` is `chrono::NaiveTime::MIN`, NOT `london_local_time_now()`.
+///    That is not an oversight and it is not a placeholder -- it publishes
+///    the WHOLE rail day, on purpose. The sibling's publish-time
+///    `now`-forward filter is evaluated exactly once per CIF delivery
+///    (roughly daily -- `poll_once` returns early unless the delivery
+///    directory changed, `main.rs:101-107`), so whatever the clock happened
+///    to read when the delivery landed becomes the boundary for the rest of
+///    the day. For a next-10-per-station board that is a tolerable
+///    staleness; for a destination search it silently empties the busiest
+///    destinations by evening. So this product publishes everything and
+///    `GET /public/trains/search` applies `scheduled >= now` at REQUEST
+///    time, where the clock is actually correct. If you change this back to
+///    `london_local_time_now()`, you reintroduce that bug. See the
+///    addendum's §1.3.
+/// 2. The rows are flat and uncapped (see
+///    `schedule_destination_departures_rows`), so this is a much larger
+///    body than the sibling's: ~377,000 objects, ~30MB. That is inside
+///    `DefaultBodyLimit::max(100 * 1024 * 1024)`
+///    (`crates/api/src/routes/mod.rs:86`) with ~3.3x headroom. If a future
+///    measurement pushes it past ~60MB, chunk it with
+///    `for chunk in rows.chunks(50_000)` and teach the ingest handler
+///    "the first chunk clears the day" -- addendum §3's documented
+///    fallback, and Task 1 Step 3 of this plan.
+async fn publish_schedule_destination_departures(
+    client: &Client,
+    config: &Config,
+    index: &schedule_query::ScheduleIndex,
+    today: chrono::NaiveDate,
+    stanox_crs_records: &[common::StanoxCrsRecord],
+    internal_oauth: &common::oauth_client::OAuthTokenCache,
+) {
+    let tiploc_to_crs: std::collections::HashMap<String, String> = stanox_crs_records
+        .iter()
+        .map(|r| {
+            (
+                schedule_query::normalize_tiploc(&r.tiploc).to_string(),
+                r.crs.clone(),
+            )
+        })
+        .collect();
+    // Midnight, i.e. no publish-time `now`-forward filter at all -- see this
+    // function's own doc comment, point 1. Deliberate; do not "fix".
+    let now = chrono::NaiveTime::MIN;
+
+    let by_destination =
+        schedule_query::departures_by_destination_crs(index, today, now, &tiploc_to_crs);
+    let rows = schedule_destination_departures_rows(by_destination, today);
+
+    if let Err(err) = common::ingest::post_batch(
+        client,
+        &config.schedule_destination_departures_url,
+        internal_oauth,
+        &rows,
+        "schedule-derived destination departures rows",
+    )
+    .await
+    {
+        tracing::error!(error = ?err, "failed to publish schedule-derived destination departures; will retry next cycle");
+    }
 }
 
 /// The CIF `booked_departure`/`booked_arrival` fields
@@ -563,5 +705,153 @@ mod poll_once_tests {
         for row in &rows {
             assert_eq!(row["service_date"], "2026-09-04");
         }
+    }
+
+    #[test]
+    fn schedule_destination_departures_rows_produces_one_flat_row_per_departure_carrying_its_destination()
+     {
+        // The load-bearing shape assertion: this function FLATTENS. Two
+        // destinations holding three departures between them produce THREE
+        // rows, not two, and each row names its own destination rather than
+        // inheriting it from a bucket key it no longer has.
+        let mut by_destination = std::collections::HashMap::new();
+        by_destination.insert(
+            "MAN".to_string(),
+            vec![
+                schedule_query::DestinationDeparture {
+                    uid: "U1".to_string(),
+                    origin_crs: "EUS".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(8, 22, 0).unwrap(),
+                },
+                schedule_query::DestinationDeparture {
+                    uid: "U1".to_string(),
+                    origin_crs: "CRE".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(10, 5, 0).unwrap(),
+                },
+            ],
+        );
+        by_destination.insert(
+            "EDB".to_string(),
+            vec![schedule_query::DestinationDeparture {
+                uid: "U2".to_string(),
+                origin_crs: "KGX".to_string(),
+                scheduled: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            }],
+        );
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
+        let mut rows = schedule_destination_departures_rows(by_destination, today);
+        // HashMap iteration order is unspecified; sort for a stable assert.
+        rows.sort_by_key(|r| {
+            (
+                r["destination_crs"].as_str().unwrap().to_string(),
+                r["scheduled"].as_str().unwrap().to_string(),
+            )
+        });
+
+        assert_eq!(rows.len(), 3, "one row per DEPARTURE, not per destination");
+
+        assert_eq!(
+            rows[0],
+            serde_json::json!({
+                "service_date": "2026-09-07",
+                "destination_crs": "EDB",
+                "scheduled": "09:00:00",
+                "train_uid": "U2",
+                "origin_crs": "KGX",
+            }),
+            "exactly five keys, named exactly as the table's columns are"
+        );
+
+        // The same UID appears twice under MAN, once per departure-bearing
+        // calling point -- that is the whole point of the grouping, and the
+        // table's PK (which includes origin_crs) admits both.
+        assert_eq!(rows[1]["destination_crs"], "MAN");
+        assert_eq!(rows[1]["train_uid"], "U1");
+        assert_eq!(rows[1]["origin_crs"], "EUS");
+        assert_eq!(rows[1]["scheduled"], "08:22:00");
+        assert_eq!(rows[2]["destination_crs"], "MAN");
+        assert_eq!(rows[2]["train_uid"], "U1");
+        assert_eq!(rows[2]["origin_crs"], "CRE");
+        assert_eq!(rows[2]["scheduled"], "10:05:00");
+
+        for row in &rows {
+            assert!(
+                row.get("departures").is_none(),
+                "there is no nested departures array any more -- the shape is flat"
+            );
+            assert!(
+                row.get("uid").is_none(),
+                "the JSON key is train_uid (the column name), not DestinationDeparture::uid"
+            );
+        }
+    }
+
+    #[test]
+    fn schedule_destination_departures_rows_is_uncapped_and_keeps_every_entry_of_a_huge_bucket() {
+        // Regression guard against a reintroduced cap. The real busiest
+        // destination holds ~9,634 entries for one day
+        // (docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+        // §1.1), so 9,634 is used here deliberately rather than a round
+        // number: if anyone ever reintroduces a truncate, this fails.
+        let mut by_destination = std::collections::HashMap::new();
+        let departures: Vec<schedule_query::DestinationDeparture> = (0..9_634u32)
+            .map(|i| schedule_query::DestinationDeparture {
+                uid: format!("U{i:05}"),
+                origin_crs: if i % 2 == 0 { "EUS" } else { "CRE" }.to_string(),
+                // Seconds since midnight, wrapped into a real 24h clock.
+                scheduled: chrono::NaiveTime::from_num_seconds_from_midnight_opt(
+                    i % 86_400,
+                    0,
+                )
+                .unwrap(),
+            })
+            .collect();
+        by_destination.insert("WAT".to_string(), departures);
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
+        let rows = schedule_destination_departures_rows(by_destination, today);
+
+        assert_eq!(
+            rows.len(),
+            9_634,
+            "every entry must survive -- there is no cap, by design"
+        );
+    }
+
+    #[test]
+    fn schedule_destination_departures_rows_does_not_sort_and_does_not_need_to() {
+        // Explicitly records that ordering is NOT this function's job any
+        // more. The read route's ORDER BY rides the table's primary key
+        // (queries::search_schedule_destination_departures), so a
+        // publish-side sort would be pure wasted work over ~377,000 rows.
+        // This test asserts the function is a faithful, order-preserving
+        // flatten of each bucket rather than asserting a sort it must not do.
+        let mut by_destination = std::collections::HashMap::new();
+        by_destination.insert(
+            "MAN".to_string(),
+            vec![
+                schedule_query::DestinationDeparture {
+                    uid: "LATE".to_string(),
+                    origin_crs: "EUS".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+                },
+                schedule_query::DestinationDeparture {
+                    uid: "EARLY".to_string(),
+                    origin_crs: "EUS".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(1, 0, 0).unwrap(),
+                },
+            ],
+        );
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
+        let rows = schedule_destination_departures_rows(by_destination, today);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0]["train_uid"], "LATE",
+            "input order within a bucket is preserved verbatim; no sort happens here"
+        );
+        assert_eq!(rows[1]["train_uid"], "EARLY");
     }
 }
