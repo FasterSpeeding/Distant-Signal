@@ -239,8 +239,8 @@ export function TrainSearchForm({
     if (results === 'unpublished') {
       return (
         <Text size="sm" c="dimmed">
-          No scheduled timetable data is available for that destination today — it may not be a
-          station this feed covers, or today&apos;s timetable may not have been published yet.
+          Today&apos;s scheduled timetable data isn&apos;t available yet — it may not have been
+          published, or that destination may not be a station this feed covers.
         </Text>
       );
     }
@@ -368,10 +368,12 @@ export function TrainSearchForm({
       {/* `component="div"`, not the default `<p>`: `TextLink` renders its
           own Mantine `<Text>` (a `<p>` by default), so wrapping it in an
           ordinary `<Text>` here would nest a `<p>` inside a `<p>` --
-          invalid HTML and a React hydration warning (see the same fix's
-          rationale in `TicketPanel.tsx`). This is the one spot in this
-          component that needs prose text and an inline `TextLink` in the
-          same line, so the wrapper tag changes instead of the content. */}
+          invalid HTML and a React hydration warning. `TicketPanel.tsx` hits
+          the same underlying anti-pattern but fixes it differently (it
+          omits the wrapping `<Text>` entirely), because it has no
+          surrounding prose to keep; this line has real prose both before
+          and after the link, so the wrapper can't just be dropped -- it
+          changes tag instead, to `component="div"`. */}
       <Text size="sm" c="dimmed" component="div">
         Can&apos;t find your train? <TextLink href={manualHref}>Track it manually</TextLink> by
         entering its origin station and departure time.

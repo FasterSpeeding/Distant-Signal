@@ -125,7 +125,12 @@ export default async function TrackedTrainByUidPage({
         </Group>
       </Group>
       <TrainJourney state={toJourneyState(train)} />
-      <Text size="sm" c="dimmed">
+      {/* `component="div"`, not the default `<p>`: `TextLink` renders its
+          own Mantine `<Text>` (a `<p>` by default), so wrapping it in an
+          ordinary `<Text>` here would nest a `<p>` inside a `<p>` --
+          invalid HTML and a React hydration warning. Same fix, same
+          reasoning, as `TrainSearchForm.tsx`'s manual-fallback line. */}
+      <Text size="sm" c="dimmed" component="div">
         This is the public view of this service. Track it above to get updates, or{' '}
         <TextLink href="/trains">Find a train</TextLink> going somewhere else.
       </Text>

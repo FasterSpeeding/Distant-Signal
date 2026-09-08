@@ -171,7 +171,7 @@ describe('TrainSearchForm', () => {
 
     expect(
       await screen.findByText(
-        /No scheduled timetable data is available for that destination today/,
+        /Today's scheduled timetable data isn't available yet/,
       ),
     ).toBeInTheDocument();
   });

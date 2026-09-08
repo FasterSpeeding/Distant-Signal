@@ -6,8 +6,8 @@ import { TrainSearchForm } from '@/components/TrainSearchForm';
  *
  * Ships ALONGSIDE `/track`, never replacing it: `/track`'s manual-entry
  * form is the honest fallback for every gap this search cannot close (a
- * station outside the CIF-derived data, a train past the per-destination
- * cap, a same-day amendment), and both `/stations/[crs]`'s "Track a train
+ * station outside the CIF-derived data, a same-day amendment), and both
+ * `/stations/[crs]`'s "Track a train
  * from here" link and `TicketEntryForm`'s standalone-ticket flow still
  * point at it unchanged. See §4's explicit "do not delete or hide /track".
  *

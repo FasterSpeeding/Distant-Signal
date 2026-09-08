@@ -259,12 +259,20 @@ async fn get_trains_search(
     // "Always today, server-side" -- no date parameter exists on this route
     // by design (design doc §6). Same posture and same expression as
     // `routes::departures::get_station_schedule_departures`.
-    let today = chrono::Utc::now().date_naive();
-
-    // The `now`-forward boundary, evaluated HERE rather than at publish
-    // time -- see this module's own doc comment. `from` can only narrow it
-    // further, never reach back past it, so the effective lower bound is
-    // the later of the two.
+    //
+    // `today` and `now` are deliberately read from ONE
+    // `Utc::now().with_timezone(...)` call rather than two independent
+    // `Utc::now()` calls (one truncated to a UTC date, the other converted
+    // to London time-of-day). Two independent reads can disagree about
+    // which calendar day it is: between 23:00-00:00 UTC in British Summer
+    // Time, a UTC-derived `today` is still YESTERDAY while a
+    // London-derived `now` has already wrapped past midnight to `00:xx`.
+    // The query would then become `service_date = yesterday AND scheduled
+    // >= 00:30`, which matches nearly all of yesterday's already-departed
+    // trains as "upcoming" while making today's early-morning trains
+    // unreachable. Deriving both from the same London-local reading keeps
+    // the "yesterday vs. today" boundary and the "before now vs. after
+    // now" boundary in agreement, because they are the same clock.
     //
     // Europe/London LOCAL time, not UTC, and that is load-bearing: the
     // stored `scheduled` values are London local civil time straight off
@@ -275,9 +283,9 @@ async fn get_trains_search(
     // `chrono_tz::Europe::London` is already used in
     // `crate::data::eta_blend` for the same reason -- no new dependency,
     // and no hardcoded offset.
-    let now = chrono::Utc::now()
-        .with_timezone(&chrono_tz::Europe::London)
-        .time();
+    let london_now = chrono::Utc::now().with_timezone(&chrono_tz::Europe::London);
+    let today = london_now.date_naive();
+    let now = london_now.time();
     let scheduled_from = match from_time {
         Some(from) => std::cmp::max(now, from),
         None => now,
