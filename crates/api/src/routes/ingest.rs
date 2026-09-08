@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
 use crate::data::queries;
-use crate::data::queries::ScheduleNetworkDeparturesRow;
+use crate::data::queries::{ScheduleDestinationDeparturesRow, ScheduleNetworkDeparturesRow};
 use crate::data::train_tracking as queries_train_tracking;
 
 pub fn router() -> Router {
@@ -88,6 +88,10 @@ pub fn router() -> Router {
         .route(
             "/schedule-network-departures",
             axum::routing::post(post_schedule_network_departures),
+        )
+        .route(
+            "/schedule-destination-departures",
+            axum::routing::post(post_schedule_destination_departures),
         )
         .route(
             "/island-of-ireland-stations",
@@ -441,6 +445,32 @@ async fn post_schedule_network_departures(
     Json(rows): Json<Vec<ScheduleNetworkDeparturesRow>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
     let upserted = queries::upsert_schedule_network_departures(&app.database, &rows)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(UpsertResponse { upserted }))
+}
+
+/// `crates/schedule-reference`'s per-DELIVERY batch of CIF-derived
+/// per-DESTINATION departures -- the destination-keyed sibling of
+/// `post_schedule_network_departures` directly above, and the write side of
+/// the destination-first train search
+/// (docs/superpowers/specs/2026-09-07-train-listing-page-design.md,
+/// Approach B, as revised by
+/// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md,
+/// Approach C). POST only: no service reads this table back over HTTP --
+/// `api` serves it straight off Postgres via
+/// `routes::trains::get_trains_search`.
+///
+/// The body is FLAT -- one element per departure, ~377,000 of them, ~30MB
+/// -- not one element per destination with an array inside it. The whole
+/// batch replaces its service date in one transaction inside
+/// `upsert_schedule_destination_departures`; this handler adds no logic of
+/// its own beyond that call, deliberately.
+async fn post_schedule_destination_departures(
+    State(app): State<App>,
+    Json(rows): Json<Vec<ScheduleDestinationDeparturesRow>>,
+) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
+    let upserted = queries::upsert_schedule_destination_departures(&app.database, &rows)
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
@@ -1188,6 +1218,94 @@ mod db_tests {
         assert_eq!(rows[0].0[0]["uid"], "C99999");
 
         delete_network_departures_fixture(&pool, "ZQW").await;
+    }
+
+    /// Day-scoped, like the upsert itself -- the unit of replacement for
+    /// this table is a whole `service_date`, not one destination's rows.
+    /// The fixture date is in 2099 for the same reason Task 5's are: it
+    /// must not collide with a real published day in a shared development
+    /// database. See `queries::schedule_destination_departures_query_tests`'
+    /// own module doc comment.
+    async fn delete_destination_departures_fixture(pool: &PgPool, service_date: &str) {
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1::date")
+            .bind(service_date)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture schedule_destination_departures rows");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                post_schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn post_schedule_destination_departures_upserts_the_rows() {
+        let pool = connect().await;
+        delete_destination_departures_fixture(&pool, "2099-02-01").await;
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        // Flat: one JSON object per DEPARTURE, exactly as
+        // schedule-reference's `schedule_destination_departures_rows`
+        // emits them (Task 4) and exactly as
+        // `queries::ScheduleDestinationDeparturesRow` deserializes them.
+        // Two rows, so "one row per departure" is actually discriminated.
+        let body = serde_json::json!([
+            {
+                "service_date": "2099-02-01",
+                "destination_crs": "ZRB",
+                "scheduled": "08:22:00",
+                "train_uid": "C10001",
+                "origin_crs": "EUS"
+            },
+            {
+                "service_date": "2099-02-01",
+                "destination_crs": "ZRB",
+                "scheduled": "10:05:00",
+                "train_uid": "C10002",
+                "origin_crs": "CRE"
+            }
+        ]);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/schedule-destination-departures")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
+        assert_eq!(json["upserted"], 2);
+
+        let stored: Vec<(String, chrono::NaiveTime, String, String)> = sqlx::query_as(
+            "SELECT destination_crs, scheduled, train_uid, origin_crs \
+             FROM schedule_destination_departures \
+             WHERE service_date = '2099-02-01' \
+             ORDER BY scheduled",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read back the upserted rows");
+
+        assert_eq!(stored.len(), 2, "one stored row per posted departure");
+        assert_eq!(stored[0].0, "ZRB");
+        assert_eq!(
+            stored[0].1,
+            chrono::NaiveTime::from_hms_opt(8, 22, 0).unwrap()
+        );
+        assert_eq!(stored[0].2, "C10001");
+        assert_eq!(stored[0].3, "EUS");
+        assert_eq!(stored[1].2, "C10002");
+        assert_eq!(stored[1].3, "CRE");
+
+        delete_destination_departures_fixture(&pool, "2099-02-01").await;
     }
 
     #[tokio::test]

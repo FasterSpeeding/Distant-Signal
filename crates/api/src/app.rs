@@ -233,6 +233,16 @@ pub(crate) fn build_internal_oauth_routes(
             Method::POST,
             vec![config.internal_oauth_group_schedule_reference.clone()],
         ),
+        // POST-only, same as /schedule-network-departures directly above,
+        // and reusing schedule-reference's EXISTING writer credential --
+        // the same one /stanox-crs, /schedule-line-population and
+        // /schedule-network-departures already use. A fourth product from
+        // the same producer is not a fourth identity.
+        (
+            "/schedule-destination-departures",
+            Method::POST,
+            vec![config.internal_oauth_group_schedule_reference.clone()],
+        ),
         // Same group, both methods -- this producer reading back its own
         // last write, not a second caller (see Correction 2).
         (
