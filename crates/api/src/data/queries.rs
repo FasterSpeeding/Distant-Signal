@@ -919,6 +919,7 @@ pub struct ScheduleDestinationDeparturesRow {
     pub scheduled: chrono::NaiveTime,
     pub train_uid: String,
     pub origin_crs: String,
+    pub true_origin_crs: Option<String>,
 }
 
 /// An opaque-to-the-caller position in one destination's ordered results:
@@ -1004,6 +1005,8 @@ pub async fn upsert_schedule_destination_departures(
     let scheduled: Vec<chrono::NaiveTime> = rows.iter().map(|r| r.scheduled).collect();
     let train_uids: Vec<&str> = rows.iter().map(|r| r.train_uid.as_str()).collect();
     let origin_crs: Vec<&str> = rows.iter().map(|r| r.origin_crs.as_str()).collect();
+    let true_origin_crs: Vec<Option<&str>> =
+        rows.iter().map(|r| r.true_origin_crs.as_deref()).collect();
 
     // Normally exactly one date. Handled as a set anyway so a batch that
     // straddles a rail-day boundary replaces both days rather than half of
@@ -1022,8 +1025,8 @@ pub async fn upsert_schedule_destination_departures(
 
     let result = sqlx::query(
         "INSERT INTO schedule_destination_departures \
-            (service_date, destination_crs, scheduled, train_uid, origin_crs) \
-         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::text[], $5::text[]) \
+            (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::text[], $5::text[], $6::text[]) \
          ON CONFLICT DO NOTHING",
     )
     .bind(&service_dates)
@@ -1031,6 +1034,7 @@ pub async fn upsert_schedule_destination_departures(
     .bind(&scheduled)
     .bind(&train_uids)
     .bind(&origin_crs)
+    .bind(&true_origin_crs)
     .execute(&mut *tx)
     .await?;
 
@@ -2804,6 +2808,7 @@ mod schedule_destination_departures_query_tests {
         scheduled: chrono::NaiveTime,
         train_uid: &str,
         origin_crs: &str,
+        true_origin_crs: Option<&str>,
     ) -> ScheduleDestinationDeparturesRow {
         ScheduleDestinationDeparturesRow {
             service_date,
@@ -2811,6 +2816,7 @@ mod schedule_destination_departures_query_tests {
             scheduled,
             train_uid: train_uid.to_string(),
             origin_crs: origin_crs.to_string(),
+            true_origin_crs: true_origin_crs.map(str::to_string),
         }
     }
 
@@ -2820,9 +2826,30 @@ mod schedule_destination_departures_query_tests {
     /// single three-element JSONB bucket.
     fn fixture_rows(service_date: chrono::NaiveDate) -> Vec<ScheduleDestinationDeparturesRow> {
         vec![
-            row(service_date, "ZRD", time(8, 22), "C10001", "EUS"),
-            row(service_date, "ZRD", time(10, 5), "C10002", "CRE"),
-            row(service_date, "ZRD", time(18, 40), "C10003", "EUS"),
+            row(
+                service_date,
+                "ZRD",
+                time(8, 22),
+                "C10001",
+                "EUS",
+                Some("PAD"),
+            ),
+            row(
+                service_date,
+                "ZRD",
+                time(10, 5),
+                "C10002",
+                "CRE",
+                Some("SWA"),
+            ),
+            row(
+                service_date,
+                "ZRD",
+                time(18, 40),
+                "C10003",
+                "EUS",
+                Some("PAD"),
+            ),
         ]
     }
 
@@ -2847,8 +2874,8 @@ mod schedule_destination_departures_query_tests {
         delete_day(&pool, date).await;
 
         let first = vec![
-            row(date, "ZRB", time(8, 0), "OLD1", "EUS"),
-            row(date, "ZRC", time(9, 0), "OLD2", "CRE"),
+            row(date, "ZRB", time(8, 0), "OLD1", "EUS", None),
+            row(date, "ZRC", time(9, 0), "OLD2", "CRE", None),
         ];
         let inserted = upsert_schedule_destination_departures(&pool, &first)
             .await
@@ -2856,7 +2883,7 @@ mod schedule_destination_departures_query_tests {
         assert_eq!(inserted, 2);
 
         // The second publish drops ZRC entirely and changes ZRB's row.
-        let second = vec![row(date, "ZRB", time(9, 30), "NEW1", "CRE")];
+        let second = vec![row(date, "ZRB", time(9, 30), "NEW1", "CRE", None)];
         upsert_schedule_destination_departures(&pool, &second)
             .await
             .expect("second upsert");
@@ -2910,6 +2937,44 @@ mod schedule_destination_departures_query_tests {
         assert_eq!(
             remaining, 3,
             "an empty batch must leave the day untouched, never clear it"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn upsert_round_trips_true_origin_crs_including_a_null_value() {
+        let pool = test_pool().await;
+        let date = fixture_date(20);
+        delete_day(&pool, date).await;
+
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                row(date, "ZRD", time(8, 0), "C30001", "EUS", Some("PAD")),
+                row(date, "ZRD", time(9, 0), "C30002", "CRE", None),
+            ],
+        )
+        .await
+        .expect("seed rows");
+
+        let stored: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT train_uid, true_origin_crs FROM schedule_destination_departures \
+             WHERE service_date = $1 ORDER BY train_uid",
+        )
+        .bind(date)
+        .fetch_all(&pool)
+        .await
+        .expect("read back");
+
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0], ("C30001".to_string(), Some("PAD".to_string())));
+        assert_eq!(
+            stored[1],
+            ("C30002".to_string(), None),
+            "an absent true_origin_crs must round-trip as SQL NULL, not an empty string"
         );
 
         delete_day(&pool, date).await;
@@ -3155,7 +3220,7 @@ mod schedule_destination_departures_query_tests {
 
         upsert_schedule_destination_departures(
             &pool,
-            &[row(yesterday, "ZRD", time(8, 0), "STALE", "EUS")],
+            &[row(yesterday, "ZRD", time(8, 0), "STALE", "EUS", None)],
         )
         .await
         .expect("seed a stale day");
@@ -3285,9 +3350,9 @@ mod schedule_destination_departures_query_tests {
         upsert_schedule_destination_departures(
             &pool,
             &[
-                row(date, "ZRE", time(9, 0), "C20002", "CRE"),
-                row(date, "ZRE", time(9, 0), "C20001", "EUS"),
-                row(date, "ZRE", time(9, 0), "C20001", "CRE"),
+                row(date, "ZRE", time(9, 0), "C20002", "CRE", None),
+                row(date, "ZRE", time(9, 0), "C20001", "EUS", None),
+                row(date, "ZRE", time(9, 0), "C20001", "CRE", None),
             ],
         )
         .await
