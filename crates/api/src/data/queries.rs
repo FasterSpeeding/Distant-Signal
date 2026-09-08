@@ -896,6 +896,298 @@ pub async fn latest_schedule_network_departures(
         .map_err(Into::into)
 }
 
+/// One `POST /private/schedule-destination-departures` batch element -- one
+/// DEPARTURE, not one destination bucket. Query-scoped, deserialized
+/// straight off the request body by
+/// `routes::ingest::post_schedule_destination_departures`. Defined here
+/// (the data layer), not in `routes/ingest.rs`, so the data layer never
+/// depends on a route-layer type -- same direction as every other
+/// dependency between these two files.
+///
+/// Deliberately NOT shaped like `ScheduleNetworkDeparturesRow` above, which
+/// carries an opaque `serde_json::Value` bucket. Every field here is a flat
+/// scalar mapping one-to-one onto a column of
+/// `schedule_destination_departures`, because the destination product needs
+/// to be FILTERED and PAGINATED in SQL rather than stored and relayed
+/// whole. See
+/// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+/// §3 for why the bucket shape could not work here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScheduleDestinationDeparturesRow {
+    pub service_date: chrono::NaiveDate,
+    pub destination_crs: String,
+    pub scheduled: chrono::NaiveTime,
+    pub train_uid: String,
+    pub origin_crs: String,
+}
+
+/// An opaque-to-the-caller position in one destination's ordered results:
+/// the last row of the page just returned. The next page is everything
+/// strictly after it under `ORDER BY scheduled, train_uid, origin_crs`.
+///
+/// All three components are needed, not just `scheduled`: many trains share
+/// a departure minute, so a time-only cursor would either skip the rest of
+/// a tied group or return it forever. The tuple is exactly the trailing
+/// three columns of `schedule_destination_departures`' primary key, in the
+/// same order, so the comparison rides the index instead of re-sorting.
+///
+/// `routes::trains` encodes this onto the wire and parses it back; nothing
+/// outside that module should construct one from user input without going
+/// through that parsing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DestinationDepartureCursor {
+    pub scheduled: chrono::NaiveTime,
+    pub train_uid: String,
+    pub origin_crs: String,
+}
+
+/// One page of destination-search results.
+///
+/// `departures` elements are deliberately `serde_json::Value` in the
+/// `{"uid", "origin_crs", "scheduled": "HH:MM:SS"}` shape, NOT the typed
+/// row: that is the exact element shape
+/// `crate::render::destination_departure_json` already reads, so the
+/// storage layer's move from a JSONB bucket to a flat table stops at this
+/// function and the render layer is untouched.
+///
+/// `next_cursor` is `Some` only when there is genuinely at least one more
+/// row -- the query fetches `limit + 1` to know that, rather than handing
+/// back a cursor that would yield an empty page.
+#[derive(Debug, Clone)]
+pub struct DestinationDeparturePage {
+    pub departures: Vec<serde_json::Value>,
+    pub next_cursor: Option<DestinationDepartureCursor>,
+}
+
+/// Replaces one CIF delivery's worth of per-destination departures.
+///
+/// **Deliberately NOT shaped like `upsert_schedule_network_departures`
+/// above.** That one loops a single-row `INSERT ... ON CONFLICT` per row
+/// inside a transaction, which is correct for its ~2,500 rows and would be
+/// ~377,000 round trips here. This is instead, in ONE transaction:
+///
+/// 1. `DELETE FROM schedule_destination_departures WHERE service_date =
+///    ANY(...)` over the batch's distinct service dates, then
+/// 2. one multi-row `INSERT ... SELECT * FROM UNNEST(...)`.
+///
+/// The pair preserves the same "wholesale replace, never merged" posture
+/// both existing CIF-derived products document, just at day granularity
+/// instead of per-key. `UNNEST` follows this crate's own established batch
+/// pattern -- see `crate::data::trains::find_or_create_trains_batch` and
+/// `mark_trains_resolved_batch` for the identical
+/// build-parallel-Vecs-then-bind style. Five bind parameters regardless of
+/// row count, so the 65,535-parameter protocol ceiling is not in play.
+///
+/// **An empty `rows` is a no-op, and that is load-bearing.** A publish that
+/// produced nothing (an upstream parse failure, a delivery with no
+/// schedules) must not be allowed to delete a service date's real
+/// timetable. The per-row `ON CONFLICT` loop it replaces could not have
+/// this bug; a DELETE-then-INSERT can, so it is guarded and tested
+/// (`upsert_with_an_empty_batch_does_not_wipe_the_day`).
+///
+/// `ON CONFLICT DO NOTHING` on the insert: the primary key covers all five
+/// columns, so a conflict can only mean the publisher emitted a
+/// byte-identical duplicate. Dropping it silently is strictly better than
+/// failing a ~377,000-row batch over one pathological schedule. The return
+/// value is therefore rows actually INSERTED, which may be under
+/// `rows.len()` in that case.
+pub async fn upsert_schedule_destination_departures(
+    pool: &PgPool,
+    rows: &[ScheduleDestinationDeparturesRow],
+) -> Result<u64> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let service_dates: Vec<chrono::NaiveDate> = rows.iter().map(|r| r.service_date).collect();
+    let destination_crs: Vec<&str> = rows.iter().map(|r| r.destination_crs.as_str()).collect();
+    let scheduled: Vec<chrono::NaiveTime> = rows.iter().map(|r| r.scheduled).collect();
+    let train_uids: Vec<&str> = rows.iter().map(|r| r.train_uid.as_str()).collect();
+    let origin_crs: Vec<&str> = rows.iter().map(|r| r.origin_crs.as_str()).collect();
+
+    // Normally exactly one date. Handled as a set anyway so a batch that
+    // straddles a rail-day boundary replaces both days rather than half of
+    // one -- and so the DELETE can never be wider than what is being
+    // written.
+    let mut distinct_dates = service_dates.clone();
+    distinct_dates.sort_unstable();
+    distinct_dates.dedup();
+
+    let mut tx = pool.begin().await?;
+
+    sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = ANY($1::date[])")
+        .bind(&distinct_dates)
+        .execute(&mut *tx)
+        .await?;
+
+    let result = sqlx::query(
+        "INSERT INTO schedule_destination_departures \
+            (service_date, destination_crs, scheduled, train_uid, origin_crs) \
+         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::text[], $5::text[]) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(&service_dates)
+    .bind(&destination_crs)
+    .bind(&scheduled)
+    .bind(&train_uids)
+    .bind(&origin_crs)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(result.rows_affected())
+}
+
+/// Cheap, day-scoped existence probe backing the 404-versus-`200 []` split.
+///
+/// **Scoped to the DAY, not to the destination**, and that is a deliberate
+/// semantic change from the bucket shape this replaces. Under a flat table
+/// an empty result set is empty whether the destination is unknown or the
+/// timetable is missing, so the only honest thing left to probe is whether
+/// today's CIF publish landed at all. Consequently `404` now means "we do
+/// not have today's timetable" and an unknown or train-less destination CRS
+/// returns an empty `200`. See
+/// docs/superpowers/specs/2026-09-07-train-listing-destination-search-sizing-design.md
+/// §3 and §7 item 3 -- this diverges from
+/// `routes::departures::get_station_schedule_departures`' own split, which
+/// is unchanged.
+///
+/// One indexed lookup: `service_date` is the primary key's leading column.
+async fn schedule_destination_departures_published_for(
+    pool: &PgPool,
+    service_date: chrono::NaiveDate,
+) -> Result<bool> {
+    let probe: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM schedule_destination_departures WHERE service_date = $1 LIMIT 1",
+    )
+    .bind(service_date)
+    .fetch_optional(pool)
+    .await?;
+    Ok(probe.is_some())
+}
+
+/// The destination-first train search's one read: a bounded index range
+/// scan over `schedule_destination_departures`' primary key, with a keyset
+/// cursor.
+///
+/// The `(service_date, destination_crs, scheduled, train_uid, origin_crs)`
+/// primary key is also this query's covering index, in exactly the order it
+/// is used: equality on the first two columns, a range on `scheduled`, and
+/// the trailing three as the total order the cursor rides. The worst real
+/// case -- London Waterloo, no origin filter, ~8,145 matching rows -- touches
+/// `limit + 1` index entries, not 8,145, so a busy destination costs the
+/// same as a quiet one. **Do not** replace the row-comparison cursor with
+/// `OFFSET`: an offset re-scans everything it skips, which is precisely the
+/// cost this shape exists to avoid.
+///
+/// `scheduled_from` is an INCLUSIVE lower bound and is the caller's
+/// already-combined `max(now, from)`. There is only one lower bound
+/// parameter, deliberately: `now` is not optional (a departure that has
+/// already gone is not a search result) and a caller-supplied `from` can
+/// only narrow further, never reach back past it. `to_time` is an
+/// INCLUSIVE upper bound. Both are real `NaiveTime`s compared against a
+/// real `TIME` column -- the old shape's lexicographic `"HH:MM:SS"` string
+/// comparison is gone along with the JSONB.
+///
+/// `Ok(None)` means no CIF publish has landed for `service_date` at all
+/// (the caller maps that to a `404`). `Ok(Some(page))` with an empty
+/// `page.departures` means the day IS published and the filters matched
+/// nothing (a `200` with an empty `results` array). The probe only runs
+/// when the main query came back empty, so the common case is one round
+/// trip, not two.
+#[allow(clippy::too_many_arguments)]
+pub async fn search_schedule_destination_departures(
+    pool: &PgPool,
+    destination_crs: &str,
+    service_date: chrono::NaiveDate,
+    scheduled_from: chrono::NaiveTime,
+    origin_crs: Option<&str>,
+    to_time: Option<chrono::NaiveTime>,
+    after: Option<&DestinationDepartureCursor>,
+    limit: i64,
+) -> Result<Option<DestinationDeparturePage>> {
+    // One extra row is fetched purely to learn whether a next page exists,
+    // so `next_cursor` is never handed back for an empty page.
+    let fetch = limit.saturating_add(1);
+
+    let rows: Vec<(String, String, chrono::NaiveTime)> = sqlx::query_as(
+        r#"
+        SELECT train_uid, origin_crs, scheduled
+        FROM schedule_destination_departures
+        WHERE service_date = $1
+          AND destination_crs = $2
+          AND scheduled >= $3
+          AND ($4::text IS NULL OR origin_crs = $4)
+          AND ($5::time IS NULL OR scheduled <= $5)
+          AND ($6::time IS NULL
+               OR (scheduled, train_uid, origin_crs) > ($6, $7, $8))
+        ORDER BY scheduled, train_uid, origin_crs
+        LIMIT $9
+        "#,
+    )
+    .bind(service_date)
+    .bind(destination_crs)
+    .bind(scheduled_from)
+    .bind(origin_crs)
+    .bind(to_time)
+    .bind(after.map(|c| c.scheduled))
+    .bind(after.map(|c| c.train_uid.as_str()))
+    .bind(after.map(|c| c.origin_crs.as_str()))
+    .bind(fetch)
+    .fetch_all(pool)
+    .await?;
+
+    if rows.is_empty() {
+        // Only now is the probe worth a round trip -- and it is the ONLY
+        // thing that separates a 404 from an empty 200.
+        if !schedule_destination_departures_published_for(pool, service_date).await? {
+            return Ok(None);
+        }
+        return Ok(Some(DestinationDeparturePage {
+            departures: Vec::new(),
+            next_cursor: None,
+        }));
+    }
+
+    let has_more = rows.len() as i64 > limit;
+    let page_rows = if has_more {
+        &rows[..limit as usize]
+    } else {
+        &rows[..]
+    };
+
+    let next_cursor = if has_more {
+        page_rows.last().map(
+            |(train_uid, origin_crs, scheduled)| DestinationDepartureCursor {
+                scheduled: *scheduled,
+                train_uid: train_uid.clone(),
+                origin_crs: origin_crs.clone(),
+            },
+        )
+    } else {
+        None
+    };
+
+    // Rendered into the SAME element shape the JSONB bucket used to store,
+    // so `render::destination_departure_json` needs no change: `uid` (not
+    // `train_uid`), and `scheduled` as a fixed-width "HH:MM:SS" string.
+    let departures = page_rows
+        .iter()
+        .map(|(train_uid, origin_crs, scheduled)| {
+            serde_json::json!({
+                "uid": train_uid,
+                "origin_crs": origin_crs,
+                "scheduled": scheduled.format("%H:%M:%S").to_string(),
+            })
+        })
+        .collect();
+
+    Ok(Some(DestinationDeparturePage {
+        departures,
+        next_cursor,
+    }))
+}
+
 /// Upserts one line's full-coverage stats row -- wholesale replaces any
 /// existing row for that `line_id` (a live snapshot, never merged/append).
 pub async fn upsert_full_coverage_line_stats(
@@ -2453,5 +2745,593 @@ mod stanox_crs_lookup_query_tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+    }
+}
+
+/// Tested at the query level rather than through a route harness -- same
+/// posture as this file's other `*_query_tests` modules. The real SQL here
+/// (an indexed range scan over the destination table's own primary key,
+/// three optional predicates, a keyset cursor, and the day-scoped existence
+/// probe that keeps "no publish today" and "published but nothing matched"
+/// distinguishable) is exactly what needs live-database coverage;
+/// `routes/trains.rs`'s handler is a thin parse/render wrapper over it.
+///
+/// Every test here owns a distinct `service_date` in 2099, because the
+/// existence probe is day-scoped: sharing a date between tests would let
+/// one test's fixture answer another's "is anything published?" question,
+/// and a real service date could let PRODUCTION data answer it.
+#[cfg(test)]
+mod schedule_destination_departures_query_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    /// A distinct, far-future fixture date per test. See this module's own
+    /// doc comment for why both properties matter.
+    fn fixture_date(day: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2099, 1, day).expect("valid fixture date")
+    }
+
+    fn time(h: u32, m: u32) -> chrono::NaiveTime {
+        chrono::NaiveTime::from_hms_opt(h, m, 0).expect("valid fixture time")
+    }
+
+    /// Midnight -- the lower bound that admits everything, used wherever a
+    /// test is not itself about the `now`-forward boundary.
+    fn any_time() -> chrono::NaiveTime {
+        chrono::NaiveTime::MIN
+    }
+
+    async fn delete_day(pool: &PgPool, service_date: chrono::NaiveDate) {
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+            .bind(service_date)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture schedule_destination_departures rows");
+    }
+
+    fn row(
+        service_date: chrono::NaiveDate,
+        destination_crs: &str,
+        scheduled: chrono::NaiveTime,
+        train_uid: &str,
+        origin_crs: &str,
+    ) -> ScheduleDestinationDeparturesRow {
+        ScheduleDestinationDeparturesRow {
+            service_date,
+            destination_crs: destination_crs.to_string(),
+            scheduled,
+            train_uid: train_uid.to_string(),
+            origin_crs: origin_crs.to_string(),
+        }
+    }
+
+    /// Three trains to ZRD from two origins at three times -- enough to
+    /// discriminate the origin filter, the time bounds and the ordering
+    /// independently. The flat-shape equivalent of the original plan's
+    /// single three-element JSONB bucket.
+    fn fixture_rows(service_date: chrono::NaiveDate) -> Vec<ScheduleDestinationDeparturesRow> {
+        vec![
+            row(service_date, "ZRD", time(8, 22), "C10001", "EUS"),
+            row(service_date, "ZRD", time(10, 5), "C10002", "CRE"),
+            row(service_date, "ZRD", time(18, 40), "C10003", "EUS"),
+        ]
+    }
+
+    async fn seed(pool: &PgPool, service_date: chrono::NaiveDate) {
+        delete_day(pool, service_date).await;
+        upsert_schedule_destination_departures(pool, &fixture_rows(service_date))
+            .await
+            .expect("seed fixture rows");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn upsert_wholesale_replaces_the_whole_service_date() {
+        // The flat-shape successor to the bucket table's
+        // "wholesale-replaces an existing row for the same key" test. The
+        // unit of replacement is now the DAY, not one (destination_crs,
+        // service_date) key -- a fresh delivery's grouping supersedes the
+        // prior one entirely, including destinations that vanished from it.
+        let pool = test_pool().await;
+        let date = fixture_date(1);
+        delete_day(&pool, date).await;
+
+        let first = vec![
+            row(date, "ZRB", time(8, 0), "OLD1", "EUS"),
+            row(date, "ZRC", time(9, 0), "OLD2", "CRE"),
+        ];
+        let inserted = upsert_schedule_destination_departures(&pool, &first)
+            .await
+            .expect("first upsert");
+        assert_eq!(inserted, 2);
+
+        // The second publish drops ZRC entirely and changes ZRB's row.
+        let second = vec![row(date, "ZRB", time(9, 30), "NEW1", "CRE")];
+        upsert_schedule_destination_departures(&pool, &second)
+            .await
+            .expect("second upsert");
+
+        let stored: Vec<(String, chrono::NaiveTime, String)> = sqlx::query_as(
+            "SELECT destination_crs, scheduled, train_uid \
+             FROM schedule_destination_departures WHERE service_date = $1 \
+             ORDER BY destination_crs",
+        )
+        .bind(date)
+        .fetch_all(&pool)
+        .await
+        .expect("read back");
+
+        assert_eq!(
+            stored.len(),
+            1,
+            "a fresh publish wholesale-replaces the whole service_date, never merges into it"
+        );
+        assert_eq!(stored[0].0, "ZRB");
+        assert_eq!(stored[0].1, time(9, 30));
+        assert_eq!(stored[0].2, "NEW1");
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn upsert_with_an_empty_batch_does_not_wipe_the_day() {
+        // Guards the one way a DELETE-then-INSERT upsert can destroy real
+        // data that a per-row ON CONFLICT loop never could: a publish that
+        // produced no rows (a parse failure upstream, an empty grouping)
+        // must be a no-op, NOT "delete today's timetable".
+        let pool = test_pool().await;
+        let date = fixture_date(2);
+        seed(&pool, date).await;
+
+        let affected = upsert_schedule_destination_departures(&pool, &[])
+            .await
+            .expect("empty upsert");
+        assert_eq!(affected, 0);
+
+        let (remaining,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM schedule_destination_departures WHERE service_date = $1",
+        )
+        .bind(date)
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(
+            remaining, 3,
+            "an empty batch must leave the day untouched, never clear it"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_with_nothing_published_for_the_day_is_none_not_an_empty_page() {
+        // The whole reason for the Option: `None` becomes a 404 ("no CIF
+        // publish has landed for today at all"), `Some(page)` with no rows
+        // becomes a `200` with an empty `results` array ("we have today's
+        // timetable and your filters matched nothing"). These are different
+        // facts and must never collapse.
+        let pool = test_pool().await;
+        let date = fixture_date(3);
+        delete_day(&pool, date).await;
+
+        let result = search_schedule_destination_departures(
+            &pool,
+            "ZRC",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_with_the_day_published_but_no_matching_rows_is_some_and_empty() {
+        let pool = test_pool().await;
+        let date = fixture_date(4);
+        seed(&pool, date).await;
+
+        // No fixture row has this origin.
+        let page = search_schedule_destination_departures(
+            &pool,
+            "ZRD",
+            date,
+            any_time(),
+            Some("ZZZ"),
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day IS published");
+        assert!(
+            page.departures.is_empty(),
+            "a published-but-unmatched day is Some(empty), never None"
+        );
+        assert!(page.next_cursor.is_none());
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_with_an_unknown_destination_on_a_published_day_is_some_and_empty() {
+        // The deliberate semantic change the flat shape brings, pinned by a
+        // test so nobody "restores" the old behaviour by accident: an
+        // unknown destination CRS on a day that IS published is a `200`
+        // with no results, NOT a 404. 404 now means "no timetable for
+        // today at all". See the addendum's §3 and §7 item 3.
+        let pool = test_pool().await;
+        let date = fixture_date(5);
+        seed(&pool, date).await;
+
+        let page = search_schedule_destination_departures(
+            &pool,
+            "ZRF",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published, even though this destination has no trains");
+        assert!(page.departures.is_empty());
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_with_no_filters_returns_every_row_earliest_first_in_the_render_shape() {
+        let pool = test_pool().await;
+        let date = fixture_date(6);
+        seed(&pool, date).await;
+
+        let page = search_schedule_destination_departures(
+            &pool,
+            "ZRD",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+
+        assert_eq!(page.departures.len(), 3);
+        assert_eq!(
+            page.departures[0],
+            serde_json::json!({
+                "uid": "C10001",
+                "origin_crs": "EUS",
+                "scheduled": "08:22:00",
+            }),
+            "the element shape is exactly what render::destination_departure_json reads: \
+             `uid` (not `train_uid`), and `scheduled` as HH:MM:SS"
+        );
+        assert_eq!(page.departures[1]["uid"], "C10002");
+        assert_eq!(page.departures[2]["uid"], "C10003");
+        assert!(
+            page.next_cursor.is_none(),
+            "the whole day fitted in one page, so there is no next cursor"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_filters_by_origin_crs() {
+        let pool = test_pool().await;
+        let date = fixture_date(7);
+        seed(&pool, date).await;
+
+        let page = search_schedule_destination_departures(
+            &pool,
+            "ZRD",
+            date,
+            any_time(),
+            Some("CRE"),
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+
+        assert_eq!(page.departures.len(), 1);
+        assert_eq!(page.departures[0]["uid"], "C10002");
+        assert_eq!(page.departures[0]["origin_crs"], "CRE");
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_filters_by_an_inclusive_time_range() {
+        // Inclusive at BOTH ends, and discriminating about it: 10:05 is the
+        // exact lower bound here and must be returned, while 08:22 (below
+        // it) and 18:40 (above the upper bound) must not.
+        let pool = test_pool().await;
+        let date = fixture_date(8);
+        seed(&pool, date).await;
+
+        let page = search_schedule_destination_departures(
+            &pool,
+            "ZRD",
+            date,
+            time(10, 5),
+            None,
+            Some(time(12, 0)),
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+
+        assert_eq!(page.departures.len(), 1);
+        assert_eq!(page.departures[0]["uid"], "C10002");
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_excludes_rows_before_the_now_boundary() {
+        // New under this shape, and the reason the shape exists: the
+        // `now`-forward filter is applied HERE, at read time, not at
+        // publish time. `scheduled_from` is the route's own
+        // `max(now, from)`. At 11:00 only the 18:40 train remains.
+        let pool = test_pool().await;
+        let date = fixture_date(9);
+        seed(&pool, date).await;
+
+        let page = search_schedule_destination_departures(
+            &pool,
+            "ZRD",
+            date,
+            time(11, 0),
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+
+        assert_eq!(page.departures.len(), 1);
+        assert_eq!(page.departures[0]["uid"], "C10003");
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_is_scoped_to_the_requested_service_date_only() {
+        // Proves the "always today, server-side" scoping: a stale day's
+        // rows must never leak through, and must not even make the
+        // existence probe say "published".
+        let pool = test_pool().await;
+        let date = fixture_date(10);
+        let yesterday = date - chrono::Duration::days(1);
+        delete_day(&pool, date).await;
+        delete_day(&pool, yesterday).await;
+
+        upsert_schedule_destination_departures(
+            &pool,
+            &[row(yesterday, "ZRD", time(8, 0), "STALE", "EUS")],
+        )
+        .await
+        .expect("seed a stale day");
+
+        let result = search_schedule_destination_departures(
+            &pool,
+            "ZRD",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+        assert!(
+            result.is_none(),
+            "yesterday's rows must not answer today's query, nor satisfy today's existence probe"
+        );
+
+        delete_day(&pool, yesterday).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_applies_the_limit_and_returns_a_cursor_for_the_rest() {
+        let pool = test_pool().await;
+        let date = fixture_date(11);
+        seed(&pool, date).await;
+
+        let page = search_schedule_destination_departures(
+            &pool,
+            "ZRD",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            2,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+
+        assert_eq!(page.departures.len(), 2, "limit caps the page");
+        assert_eq!(
+            page.departures[0]["uid"], "C10001",
+            "the limit keeps the EARLIEST rows -- ORDER BY runs before LIMIT"
+        );
+        assert_eq!(
+            page.next_cursor,
+            Some(DestinationDepartureCursor {
+                scheduled: time(10, 5),
+                train_uid: "C10002".to_string(),
+                origin_crs: "CRE".to_string(),
+            }),
+            "the cursor is the LAST row of this page, so the next page starts strictly after it"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_keyset_cursor_pages_through_the_day_without_gaps_or_repeats() {
+        // The load-bearing pagination test. Pages of 1 through the three
+        // fixture rows: each page must yield exactly the next row, in
+        // order, and the final page must report no further cursor rather
+        // than handing back a cursor that would yield nothing.
+        let pool = test_pool().await;
+        let date = fixture_date(12);
+        seed(&pool, date).await;
+
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<DestinationDepartureCursor> = None;
+        for _ in 0..5 {
+            let page = search_schedule_destination_departures(
+                &pool,
+                "ZRD",
+                date,
+                any_time(),
+                None,
+                None,
+                cursor.as_ref(),
+                1,
+            )
+            .await
+            .expect("search")
+            .expect("the day is published");
+
+            for departure in &page.departures {
+                seen.push(departure["uid"].as_str().unwrap().to_string());
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        assert_eq!(
+            seen,
+            vec!["C10001", "C10002", "C10003"],
+            "every row exactly once, in scheduled order, across three pages"
+        );
+        assert!(
+            cursor.is_none(),
+            "the last page must NOT hand back a cursor -- there is nothing after it"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                schedule_destination_departures -- --ignored --test-threads=1`"]
+    async fn search_cursor_breaks_ties_on_train_uid_then_origin_crs() {
+        // The reason the cursor is a three-part tuple and not just a time.
+        // Three rows share one `scheduled`; a time-only cursor would either
+        // skip two of them or loop forever. Paging one at a time must walk
+        // all three exactly once, in (train_uid, origin_crs) order.
+        let pool = test_pool().await;
+        let date = fixture_date(13);
+        delete_day(&pool, date).await;
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                row(date, "ZRE", time(9, 0), "C20002", "CRE"),
+                row(date, "ZRE", time(9, 0), "C20001", "EUS"),
+                row(date, "ZRE", time(9, 0), "C20001", "CRE"),
+            ],
+        )
+        .await
+        .expect("seed tied rows");
+
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let mut cursor: Option<DestinationDepartureCursor> = None;
+        for _ in 0..5 {
+            let page = search_schedule_destination_departures(
+                &pool,
+                "ZRE",
+                date,
+                any_time(),
+                None,
+                None,
+                cursor.as_ref(),
+                1,
+            )
+            .await
+            .expect("search")
+            .expect("the day is published");
+            for departure in &page.departures {
+                seen.push((
+                    departure["uid"].as_str().unwrap().to_string(),
+                    departure["origin_crs"].as_str().unwrap().to_string(),
+                ));
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                ("C20001".to_string(), "CRE".to_string()),
+                ("C20001".to_string(), "EUS".to_string()),
+                ("C20002".to_string(), "CRE".to_string()),
+            ],
+            "ties on `scheduled` are broken by train_uid then origin_crs, matching the PK's \
+             own column order, and every tied row is visited exactly once"
+        );
+
+        delete_day(&pool, date).await;
     }
 }
