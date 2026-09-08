@@ -36,7 +36,9 @@ export function TrainJourney({ state }: { state: TrainJourneyState }) {
         </Group>
         {pinSummary}
         <Text size="sm" c="dimmed">
-          This train hasn&apos;t been matched to a live service yet. This page updates automatically.
+          This train hasn&apos;t been matched to a live service yet — that&apos;s normal if it hasn&apos;t
+          started running. Network Rail typically doesn&apos;t report a service until shortly before it
+          departs. This page updates automatically.
         </Text>
       </Stack>
     );
