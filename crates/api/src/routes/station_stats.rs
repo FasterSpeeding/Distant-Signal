@@ -225,6 +225,8 @@ mod db_tests {
             vapid_public_key: "test-vapid-public-key".to_string(),
             full_coverage_enabled_default,
             schedule_match_interval_secs: 300,
+            reconciliation_sweep_interval_secs: 300,
+            schedule_enrichment_grace_minutes: 30,
         };
 
         std::sync::Arc::new(AppState {
