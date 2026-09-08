@@ -22,6 +22,7 @@ pub mod samples;
 pub mod stanox_crs;
 pub mod station_stats;
 pub mod train;
+pub mod trains;
 
 pub fn public_router() -> Router {
     // `health::router()` already declares its own `/health` route, so this
@@ -60,6 +61,7 @@ pub fn public_router() -> Router {
         .merge(station_stats::router())
         .merge(departures::router())
         .merge(stanox_crs::router())
+        .merge(trains::router())
 }
 
 /// Takes the app state directly (rather than picking it up later via

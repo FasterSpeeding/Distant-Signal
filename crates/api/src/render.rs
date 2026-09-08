@@ -180,6 +180,36 @@ pub(crate) fn schedule_departure_json(d: &Value) -> Value {
     })
 }
 
+/// One `GET /public/trains/search` result row. Sibling of
+/// `schedule_departure_json` directly above, same "hand-built camelCase
+/// over an opaque JSONB element" convention, with two differences:
+///
+/// * it carries `originCrs` (the calling point this train departs FROM),
+///   which the origin-keyed sibling doesn't need because there the origin
+///   is the URL path segment; and
+/// * `destinationCrs` is supplied by the CALLER, not read out of `d` --
+///   it is the route's own required query parameter and is identical for
+///   every row of one response, so the search query does not bother to
+///   project it back out of the table (see
+///   `queries::search_schedule_destination_departures`, whose `SELECT`
+///   lists only `train_uid`, `origin_crs`, `scheduled`).
+///
+/// `scheduled` is trimmed from the stored `"HH:MM:SS"` to `"HH:MM"`,
+/// identical to `schedule_departure_json`, so both sources hand the
+/// frontend the same time shape.
+pub(crate) fn destination_departure_json(d: &Value, destination_crs: &str) -> Value {
+    let scheduled = d
+        .get("scheduled")
+        .and_then(Value::as_str)
+        .map(|s| s.chars().take(5).collect::<String>());
+    json!({
+        "uid": d.get("uid").cloned().unwrap_or(Value::Null),
+        "scheduled": scheduled,
+        "originCrs": d.get("origin_crs").cloned().unwrap_or(Value::Null),
+        "destinationCrs": destination_crs,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,6 +643,42 @@ mod tests {
             json.get("destination_crs").is_none(),
             "no stray snake_case field"
         );
+    }
+
+    #[test]
+    fn destination_departure_json_maps_snake_case_to_camel_case_and_reattaches_the_destination() {
+        let raw = serde_json::json!({
+            "uid": "C11052",
+            "origin_crs": "EUS",
+            "scheduled": "08:22:00",
+        });
+        let json = destination_departure_json(&raw, "MAN");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "uid": "C11052",
+                "scheduled": "08:22",
+                "originCrs": "EUS",
+                "destinationCrs": "MAN",
+            })
+        );
+        assert!(
+            json.get("origin_crs").is_none(),
+            "no stray snake_case field"
+        );
+    }
+
+    #[test]
+    fn destination_departure_json_renders_a_missing_field_as_null_rather_than_omitting_it() {
+        // Same defensive posture as schedule_departure_json: the stored
+        // blob is opaque JSONB written by another service, so a missing key
+        // must produce an explicit null rather than a differently-shaped
+        // object the frontend's own row type would silently mis-parse.
+        let json = destination_departure_json(&serde_json::json!({}), "MAN");
+        assert!(json["uid"].is_null());
+        assert!(json["originCrs"].is_null());
+        assert!(json["scheduled"].is_null());
+        assert_eq!(json["destinationCrs"], "MAN");
     }
 
     #[test]
