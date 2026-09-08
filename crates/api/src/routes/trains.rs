@@ -802,4 +802,116 @@ mod db_tests {
 
         delete_today(&pool).await;
     }
+
+    /// Whether `Europe::London` is currently observing British Summer Time
+    /// (a nonzero UTC offset right now). Used only by the discriminating
+    /// test below, to decide whether its core assertion can actually
+    /// distinguish the correct London-local `now` from a regressed bare-UTC
+    /// `now` at the moment the test happens to run -- see that test's own
+    /// doc comment for why the distinction only exists during BST.
+    fn london_is_currently_ahead_of_utc() -> bool {
+        use chrono::Offset;
+
+        chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .offset()
+            .fix()
+            .local_minus_utc()
+            != 0
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_hides_a_departure_inside_the_utc_vs_london_gap() {
+        // Pins the exact regression a code review proved untested: `now`
+        // MUST come from `Utc::now().with_timezone(&Europe::London)`, not
+        // from bare `Utc::now().time()` (see `get_trains_search`'s own
+        // comment on `london_now`/`today`/`now`, and this module's header).
+        // Every other fixture in this file (`relative_times()`) seeds rows
+        // 30/60 minutes either side of the CORRECT London-local `now`, which
+        // is far enough from the UTC/London boundary that a live
+        // revert-and-rerun of the whole `trains_search` suite during BST
+        // confirmed reverting to bare UTC changes NOTHING: all 13
+        // pre-existing tests still passed. This test seeds a row strictly
+        // INSIDE the gap between the two clocks instead, so a regression
+        // back to bare UTC flips this test's own verdict.
+        //
+        // During British Summer Time, `Europe::London` reads exactly one
+        // hour AHEAD of UTC, so bare-UTC `now` is always an hour BEHIND the
+        // correct `now`. A row scheduled 20 minutes before the correct `now`
+        // has therefore already departed under the correct boundary
+        // (excluded) but still reads as 40 minutes in the FUTURE under a
+        // buggy bare-UTC boundary (included) -- the opposite verdict.
+        //
+        // This can only discriminate while the test happens to run during
+        // BST: outside BST `Europe::London` and UTC agree and there is no
+        // gap to pin a fixture inside. The `#[ignore]`d wiring already means
+        // this test only runs on demand against a live database, never
+        // gating CI on the calendar, so gating the core assertion on
+        // `london_is_currently_ahead_of_utc()` is an honest no-op outside
+        // BST rather than a flaky pass/fail -- it only attempts (and can
+        // only fail) the discrimination when BST is actually in effect.
+        let pool = connect().await;
+        delete_today(&pool).await;
+
+        let is_bst = london_is_currently_ahead_of_utc();
+        let today = chrono::Utc::now().date_naive();
+        let london_time = {
+            use chrono::Timelike;
+
+            let t = chrono::Utc::now()
+                .with_timezone(&chrono_tz::Europe::London)
+                .time();
+            chrono::NaiveTime::from_hms_opt(t.hour(), t.minute(), 0)
+                .expect("valid time from valid hour/minute")
+        };
+        let (gap_time, wrapped) =
+            london_time.overflowing_sub_signed(chrono::Duration::minutes(20));
+        assert!(
+            wrapped == 0 && london_time >= chrono::NaiveTime::from_hms_opt(0, 20, 0).unwrap(),
+            "this test needs at least 20 minutes since London midnight; re-run outside \
+             00:00-00:20 Europe/London"
+        );
+
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(today)
+        .bind("ZRB")
+        .bind(gap_time)
+        .bind("C10099")
+        .bind("EUS")
+        .execute(&pool)
+        .await
+        .expect("seed the gap-row fixture");
+
+        let (status, body) = get(&pool, "/trains/search?destination=ZRB").await;
+        assert_eq!(status, StatusCode::OK);
+        let uids: Vec<String> = results(&body)
+            .iter()
+            .map(|row| row["uid"].as_str().unwrap().to_string())
+            .collect();
+
+        if is_bst {
+            assert!(
+                !uids.contains(&"C10099".to_string()),
+                "during BST, a row scheduled 20 minutes before the correct London-local `now` \
+                 has already departed and must be excluded; if this fails, `now` has regressed \
+                 to bare UTC time (an hour early during BST), under which this row would still \
+                 read as upcoming: {uids:?}"
+            );
+        } else {
+            // Not currently observing BST: `Europe::London` and UTC agree
+            // right now, so there is no gap to pin this fixture inside, and
+            // reverting to bare UTC would compute the SAME `now` this test
+            // just ran against. The assertion above is skipped rather than
+            // faked; see the doc comment on this test for why that is
+            // honest rather than a gap in coverage.
+        }
+
+        delete_today(&pool).await;
+    }
 }
