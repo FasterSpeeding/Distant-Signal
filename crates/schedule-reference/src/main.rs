@@ -372,9 +372,12 @@ fn schedule_network_departures_rows(
 /// `service_date` is emitted on every row, unlike the four-key sketch in
 /// the addendum's §3, because the ingest handler's first statement is a
 /// `DELETE ... WHERE service_date = $1` and `common::ingest::post_batch`
-/// posts a bare array with nowhere else to carry the day. Budget ~90 bytes
+/// posts a bare array with nowhere else to carry the day. Budget ~100 bytes
 /// per entry when sizing the POST (including the ~10-byte `true_origin_crs`
-/// field), not ~55 or ~80.
+/// field and the ~10-byte `destination_arrival` field added alongside it,
+/// see
+/// docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md),
+/// not ~55 or ~80.
 fn schedule_destination_departures_rows(
     mut by_destination: std::collections::HashMap<
         String,
@@ -393,6 +396,7 @@ fn schedule_destination_departures_rows(
                     "train_uid": d.uid,
                     "origin_crs": d.origin_crs,
                     "true_origin_crs": d.true_origin_crs,
+                    "destination_arrival": d.destination_arrival,
                 })
             })
         })
@@ -726,12 +730,14 @@ mod poll_once_tests {
                     origin_crs: "EUS".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(8, 22, 0).unwrap(),
                     true_origin_crs: None,
+                    destination_arrival: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "U1".to_string(),
                     origin_crs: "CRE".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(10, 5, 0).unwrap(),
                     true_origin_crs: None,
+                    destination_arrival: None,
                 },
             ],
         );
@@ -742,6 +748,7 @@ mod poll_once_tests {
                 origin_crs: "KGX".to_string(),
                 scheduled: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
                 true_origin_crs: None,
+                destination_arrival: None,
             }],
         );
 
@@ -766,8 +773,9 @@ mod poll_once_tests {
                 "train_uid": "U2",
                 "origin_crs": "KGX",
                 "true_origin_crs": null,
+                "destination_arrival": null,
             }),
-            "exactly six keys, named exactly as the table's columns are"
+            "exactly seven keys, named exactly as the table's columns are"
         );
 
         // The same UID appears twice under MAN, once per departure-bearing
@@ -806,12 +814,14 @@ mod poll_once_tests {
                     origin_crs: "EUS".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(8, 22, 0).unwrap(),
                     true_origin_crs: Some("EUS".to_string()),
+                    destination_arrival: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C11052".to_string(),
                     origin_crs: "CRE".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(10, 5, 0).unwrap(),
                     true_origin_crs: None,
+                    destination_arrival: None,
                 },
             ],
         );
@@ -836,6 +846,49 @@ mod poll_once_tests {
     }
 
     #[test]
+    fn schedule_destination_departures_rows_includes_the_destination_arrival_field() {
+        let mut by_destination: std::collections::HashMap<String, Vec<schedule_query::DestinationDeparture>> =
+            std::collections::HashMap::new();
+        by_destination.insert(
+            "MAN".to_string(),
+            vec![
+                schedule_query::DestinationDeparture {
+                    uid: "C11052".to_string(),
+                    origin_crs: "EUS".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(8, 22, 0).unwrap(),
+                    true_origin_crs: Some("EUS".to_string()),
+                    destination_arrival: Some(chrono::NaiveTime::from_hms_opt(11, 30, 0).unwrap()),
+                },
+                schedule_query::DestinationDeparture {
+                    uid: "C99999".to_string(),
+                    origin_crs: "CRE".to_string(),
+                    scheduled: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+                    true_origin_crs: None,
+                    destination_arrival: None,
+                },
+            ],
+        );
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 8).unwrap();
+
+        let rows = schedule_destination_departures_rows(by_destination, today);
+
+        let c11052_row = rows
+            .iter()
+            .find(|r| r["train_uid"] == "C11052")
+            .expect("C11052 row present");
+        assert_eq!(c11052_row["destination_arrival"], "11:30:00");
+
+        let c99999_row = rows
+            .iter()
+            .find(|r| r["train_uid"] == "C99999")
+            .expect("C99999 row present");
+        assert!(
+            c99999_row["destination_arrival"].is_null(),
+            "a None destination_arrival must serialize as JSON null, not be omitted"
+        );
+    }
+
+    #[test]
     fn schedule_destination_departures_rows_is_uncapped_and_keeps_every_entry_of_a_huge_bucket() {
         // Regression guard against a reintroduced cap. The real busiest
         // destination holds ~9,634 entries for one day
@@ -854,6 +907,7 @@ mod poll_once_tests {
                 )
                 .unwrap(),
                 true_origin_crs: None,
+                destination_arrival: None,
             })
             .collect();
         by_destination.insert("WAT".to_string(), departures);
@@ -886,12 +940,14 @@ mod poll_once_tests {
                     origin_crs: "EUS".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
                     true_origin_crs: None,
+                    destination_arrival: None,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "EARLY".to_string(),
                     origin_crs: "EUS".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(1, 0, 0).unwrap(),
                     true_origin_crs: None,
+                    destination_arrival: None,
                 },
             ],
         );
