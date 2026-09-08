@@ -250,6 +250,42 @@ pub struct PublicTrainState {
     pub eta_source: Option<String>,
 }
 
+/// Whether `(train_uid, service_date)` is a real, CIF-published scheduled
+/// train, per `schedule_destination_departures` -- the same product the
+/// `/trains` search page itself reads
+/// (`queries::search_schedule_destination_departures`). The sole caller is
+/// `routes::train::get_by_uid_and_date`'s read-triggered `find_or_create_train`
+/// upsert: a GET must be able to conjure a shared `trains` row into
+/// existence for an identity a search result actually pointed at (see that
+/// route's own doc comment for the bug this closes), but never for an
+/// arbitrary string someone puts in the URL -- this is the gate that tells
+/// those two cases apart.
+///
+/// Deliberately a bare existence probe scoped to `train_uid` +
+/// `service_date` only, ignoring `destination_crs`/`origin_crs`/`scheduled`
+/// entirely -- unlike `queries::search_schedule_destination_departures`,
+/// which is a real paginated search, this only ever needs a yes/no answer.
+/// `schedule_destination_departures`' primary key leads with
+/// `service_date`, so this still rides an index range scan on that column
+/// before filtering `train_uid` -- bounded by one rail day's worth of rows
+/// (retention is 2 days; see that table's own migration), not a full-table
+/// scan.
+pub async fn is_known_scheduled_train(
+    pool: &PgPool,
+    train_uid: &str,
+    service_date: NaiveDate,
+) -> anyhow::Result<bool> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM schedule_destination_departures \
+         WHERE train_uid = $1 AND service_date = $2 LIMIT 1",
+    )
+    .bind(train_uid)
+    .bind(service_date)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
 /// Public, unscoped read for `(train_uid, service_date)` -- no
 /// `AuthenticatedUser`/ownership check anywhere in this call path. Reads
 /// `trains` directly (joined with the re-pointed `train_current_state` via
@@ -571,5 +607,50 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                is_known_scheduled_train_is_false_for_an_unpublished_uid -- --ignored"]
+    async fn is_known_scheduled_train_is_false_for_an_unpublished_uid() {
+        let pool = connect().await;
+        let known = is_known_scheduled_train(&pool, "NOSUCHUID", "2026-09-06".parse().unwrap())
+            .await
+            .expect("is_known_scheduled_train");
+        assert!(!known, "a uid never published by CIF must not read as known");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                is_known_scheduled_train_is_true_for_a_published_row -- --ignored"]
+    async fn is_known_scheduled_train_is_true_for_a_published_row() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-06".parse().unwrap();
+
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs) \
+             VALUES ($1, 'EDB', '12:00:00', 'TEST-SCHED-KNOWN-UID', 'KGX')",
+        )
+        .bind(service_date)
+        .execute(&pool)
+        .await
+        .expect("seed fixture schedule_destination_departures row");
+
+        let known =
+            is_known_scheduled_train(&pool, "TEST-SCHED-KNOWN-UID", service_date)
+                .await
+                .expect("is_known_scheduled_train");
+        assert!(
+            known,
+            "a uid CIF actually published for this service_date must read as known"
+        );
+
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-SCHED-KNOWN-UID'",
+        )
+        .execute(&pool)
+        .await
+        .ok();
     }
 }

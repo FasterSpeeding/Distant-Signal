@@ -16,7 +16,11 @@
 //! never `tracked_trains`, so no caller can ever see another user's private
 //! per-subscription data (`custom_name`, tickets, notification state)
 //! through it. Mounted directly (not under `/public`) to match the design
-//! doc's sketched URL shape for the eventual frontend page.
+//! doc's sketched URL shape for the eventual frontend page. It also
+//! read-triggers the same idempotent `find_or_create_train` upsert
+//! `post_track_by_uid` uses, gated by
+//! `crate::data::trains::is_known_scheduled_train` -- see its own doc
+//! comment for the "View live status" 404 bug this closes.
 //! `post_track_by_uid` (`POST /Train/by-uid/{train_uid}/{date}/track`,
 //! design spec §4, Task 20) is the NR-primary counterpart to `post_track`:
 //! back behind normal `AuthenticatedUser` session auth (this is a user
@@ -653,13 +657,55 @@ async fn post_tracked_train_name(
 /// return type structurally carries no `custom_name`/ticket/notification
 /// field -- there is nothing in this response shape that COULD leak another
 /// user's private per-subscription data, regardless of caller.
+///
+/// READ-TRIGGERED UPSERT (bug fix, post-Task-19): the `/trains` search page
+/// links every result straight here using a `(train_uid, service_date)` it
+/// read off `schedule_destination_departures` -- a table populated for
+/// every scheduled train regardless of tracking status. A `trains` row,
+/// however, has only ever been created by `find_or_create_train`, reachable
+/// (before this fix) solely from `post_track_by_uid` or live TRUST/backlog
+/// resolution -- so a real, just-searched train that nobody had tracked yet
+/// and that hadn't activated in TRUST yet had NO `trains` row, and this
+/// route 404'd on a completely valid search result. Fixed the same way
+/// `post_track_by_uid` (below) already creates its own `trains` row: on a
+/// miss, call the exact same idempotent `find_or_create_train` upsert --
+/// just without `post_track_by_uid`'s subsequent
+/// `create_subscription_for_train`, since this is a read, not a track
+/// request, and needs no `AuthenticatedUser` at all.
+///
+/// That upsert is gated by `crate::data::trains::is_known_scheduled_train`
+/// first, so this can only conjure a `trains` row into existence for an
+/// identity CIF actually published -- never for an arbitrary string in the
+/// URL. This deliberately differs from `post_track_by_uid`, which calls
+/// `find_or_create_train` unconditionally with no such gate: that route
+/// requires a real session (a garbage uid there is, at worst, one
+/// authenticated user creating one throwaway row they can already see and
+/// delete), where this one is reachable by anyone, unauthenticated, so an
+/// ungated version would let any caller mint arbitrary `trains` rows for
+/// made-up identities by hitting this URL in a loop.
 async fn get_by_uid_and_date(
     State(app): State<App>,
     Path((train_uid, date)): Path<(String, NaiveDate)>,
 ) -> Result<Json<crate::data::trains::PublicTrainState>, (StatusCode, String)> {
-    let state = crate::data::trains::get_public_train_state(&app.database, &train_uid, date)
+    let mut state = crate::data::trains::get_public_train_state(&app.database, &train_uid, date)
         .await
         .map_err(internal_error("read public train state"))?;
+
+    if state.is_none() {
+        let known =
+            crate::data::trains::is_known_scheduled_train(&app.database, &train_uid, date)
+                .await
+                .map_err(internal_error("check schedule for train"))?;
+        if known {
+            crate::data::trains::find_or_create_train(&app.database, &train_uid, date)
+                .await
+                .map_err(internal_error("find or create train"))?;
+            state = crate::data::trains::get_public_train_state(&app.database, &train_uid, date)
+                .await
+                .map_err(internal_error("read public train state"))?;
+        }
+    }
+
     match state {
         Some(state) => Ok(Json(state)),
         None => Err((
@@ -2706,6 +2752,87 @@ mod db_tests {
             body,
             Value::String("no known train for that uid/date".to_string())
         );
+    }
+
+    /// Reproduces the "View live status 404s on a real search result" bug
+    /// this task fixes: a `(train_uid, service_date)` that IS
+    /// search-visible (present in `schedule_destination_departures`, the
+    /// same table `/trains` search reads) but has never been tracked and
+    /// has no `trains` row at all yet -- the exact state a train sits in
+    /// between being searched and either being tracked or activating in
+    /// TRUST. Before the fix this 404'd identically to a wholly unknown
+    /// uid (`get_by_uid_and_date_an_unknown_pair_is_404` above); after it,
+    /// the route read-triggers `find_or_create_train` and returns the new,
+    /// bare shared row.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_creates_the_shared_row_for_a_search_visible_train \
+                -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_creates_the_shared_row_for_a_search_visible_train() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let train_uid = "TEST-SEARCH-VISIBLE-UID";
+
+        // Seed ONLY `schedule_destination_departures` (what the search page
+        // reads) -- deliberately no `trains` row, no `tracked_trains` row,
+        // nothing else. This is the fixture the bug report describes: "a
+        // real, valid search result" with no prior tracking/TRUST activity.
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs) \
+             VALUES ($1, 'EDB', '12:00:00', $2, 'KGX')",
+        )
+        .bind(service_date)
+        .bind(train_uid)
+        .execute(&pool)
+        .await
+        .expect("seed fixture schedule_destination_departures row");
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = request(
+            router,
+            format!("/Train/by-uid/{train_uid}/{service_date}"),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a search-visible train must no longer 404: {body:?}"
+        );
+        assert_eq!(body.get("trainUid").and_then(Value::as_str), Some(train_uid));
+        assert!(
+            body.get("trainsId").and_then(Value::as_i64).is_some(),
+            "the read must have created and returned a real shared trains row: {body:?}"
+        );
+
+        // A second read must be idempotent -- no duplicate-row error, same
+        // `trainsId` both times.
+        let router = test_router(test_app(pool.clone()));
+        let (status, second_body) = request(
+            router,
+            format!("/Train/by-uid/{train_uid}/{service_date}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response: {second_body:?}");
+        assert_eq!(
+            second_body.get("trainsId"),
+            body.get("trainsId"),
+            "a repeat read must resolve to the SAME trains row, not create a second one"
+        );
+
+        sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = $1")
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     /// The security-critical test for this task: seeds a `tracked_trains`
