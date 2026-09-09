@@ -31,15 +31,21 @@
 //! There is deliberately NO operator filter: the
 //! CIF SCHEDULE feed's operator field is parsed-but-undecoded everywhere in
 //! this codebase, so a CIF-derived row has no operator to filter on at all.
-//! There is deliberately NO date parameter: like
-//! `get_station_schedule_departures`, this is "always today, server-side".
+//! `date` (`"YYYY-MM-DD"`, optional) selects which `service_date` this
+//! search runs against, defaulting to today -- but only within a bounded
+//! window (`SEARCH_WINDOW_BACKWARD_DAYS`/`SEARCH_WINDOW_FORWARD_DAYS`
+//! below), not the whole published timetable: a date outside that window
+//! is a `400`. See
+//! docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md.
 //!
 //! **This route owns the `now`-forward boundary**, which is the whole point
 //! of the storage shape behind it. The publish stores the entire rail day
 //! uncapped, because it fires once per CIF delivery -- roughly daily -- so
 //! a publish-time filter would freeze at whatever the clock read when the
 //! delivery landed. Evaluating `now` here means a search at 18:00 is
-//! correct at 18:00.
+//! correct at 18:00. **This boundary only applies when `date` resolves to
+//! today** -- browsing any other day in the window has no "now" to be
+//! forward of, and returns the whole day instead.
 //!
 //! **Pagination is a keyset cursor, not an offset.** `limit` bounds one
 //! page; `after` carries the last row of the previous page.
@@ -82,12 +88,39 @@ const DEFAULT_SEARCH_LIMIT: i64 = 50;
 /// clamping or ignoring.
 const MAX_SEARCH_LIMIT: i64 = 200;
 
+/// Forward search window, in days: the furthest future `date` this route
+/// will accept. Must be kept in sync by hand with `schedule-reference`'s
+/// own forward-publish loop
+/// (`crates/schedule-reference/src/main.rs::DESTINATION_DEPARTURES_FORWARD_DAYS`)
+/// -- there is no shared constant across the crate boundary, matching this
+/// codebase's existing per-crate-constant convention. See
+/// docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md §1.2.
+const SEARCH_WINDOW_FORWARD_DAYS: i64 = 7;
+
+/// Backward search window, in days. Must not exceed
+/// `Config::schedule_destination_departures_retention_days`
+/// (`crates/aggregator/src/config.rs`, currently 8, one more than this
+/// value) or a date this route claims to support could 404 anyway because
+/// its rows have already been pruned.
+const SEARCH_WINDOW_BACKWARD_DAYS: i64 = 7;
+
 #[derive(Debug, Deserialize)]
 struct TrainSearchParams {
     /// Required. A 3-letter CRS code; the search is keyed on ANY station a
     /// train calls at -- boarding or alighting, including where it starts
     /// or ends -- not just where it departs from or terminates.
     station: String,
+    /// Optional, `"YYYY-MM-DD"`. Selects which `service_date` this search
+    /// runs against; defaults to today (London-local, computed from the
+    /// same single `Utc::now()` read this handler already uses for
+    /// everything else -- see this file's own module doc comment on
+    /// timezone handling and git history `baa4e75`/`8250a9a`). Must be
+    /// within `SEARCH_WINDOW_BACKWARD_DAYS` days ago and
+    /// `SEARCH_WINDOW_FORWARD_DAYS` days from today, inclusive, or this
+    /// 400s -- a date outside the supported window is a request this
+    /// deployment has already decided it can never answer, not a "nothing
+    /// found" case, so it is NOT a 404.
+    date: Option<String>,
     /// Optional. Filters to schedules whose TRUE origin (their first
     /// calling point) is this CRS -- NOT "any calling point along the
     /// route", which is what `station` above already answers. See
@@ -135,6 +168,31 @@ fn normalize_time(label: &str, raw: &str) -> Result<chrono::NaiveTime, (StatusCo
             format!("{label} must be a time of day in HH:MM form"),
         )
     })
+}
+
+/// Parses and window-bounds a caller-supplied `"YYYY-MM-DD"` `date`
+/// against `today`. `today` is always the caller's single
+/// `Utc::now().with_timezone(&Europe::London)`-derived value -- see this
+/// function's own call site for why a second `Utc::now()` read must never
+/// be introduced here.
+fn normalize_date(
+    raw: &str,
+    today: chrono::NaiveDate,
+) -> Result<chrono::NaiveDate, (StatusCode, String)> {
+    let parsed = chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
+        .map_err(|_| (StatusCode::BAD_REQUEST, "date must be YYYY-MM-DD".to_string()))?;
+    let earliest = today - chrono::Duration::days(SEARCH_WINDOW_BACKWARD_DAYS);
+    let latest = today + chrono::Duration::days(SEARCH_WINDOW_FORWARD_DAYS);
+    if parsed < earliest || parsed > latest {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "date must be within {SEARCH_WINDOW_BACKWARD_DAYS} days ago and \
+                 {SEARCH_WINDOW_FORWARD_DAYS} days from today"
+            ),
+        ));
+    }
+    Ok(parsed)
 }
 
 /// Validates and uppercases a CRS code.
@@ -271,25 +329,42 @@ async fn get_trains_search(
         .map(decode_cursor)
         .transpose()?;
 
-    // "Always today, server-side" -- no date parameter exists on this route
-    // by design. `today` and `now` are deliberately read from ONE
+    // `today` and `now` are deliberately read from ONE
     // `Utc::now().with_timezone(...)` call rather than two independent
     // `Utc::now()` calls -- see this same reasoning's original writeup in
     // this route's git history (baa4e75) for why two independent reads can
     // disagree about which calendar day it is around the UTC/London
-    // midnight boundary during British Summer Time.
+    // midnight boundary during British Summer Time. `date` (if supplied)
+    // is validated against THIS SAME `today`, never a second, independently
+    // computed one -- see
+    // docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md §6.
     let london_now = chrono::Utc::now().with_timezone(&chrono_tz::Europe::London);
     let today = london_now.date_naive();
     let now = london_now.time();
-    let scheduled_from = match from_time {
-        Some(from) => std::cmp::max(now, from),
-        None => now,
+
+    let service_date = match params.date.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(raw) => normalize_date(raw, today)?,
+        None => today,
+    };
+
+    // The `now`-forward default only makes sense when searching TODAY --
+    // for any other date, forward or backward, there is no "now" to be
+    // forward of, and applying today's clock time to a different date's
+    // rows would silently and incorrectly filter them by the wrong day's
+    // clock. See the design doc's §5.
+    let scheduled_from = if service_date == today {
+        match from_time {
+            Some(from) => std::cmp::max(now, from),
+            None => now,
+        }
+    } else {
+        from_time.unwrap_or(chrono::NaiveTime::MIN)
     };
 
     let Some(page) = queries::search_schedule_calling_point_departures(
         &app.database,
         &station,
-        today,
+        service_date,
         scheduled_from,
         origin.as_deref(),
         destination.as_deref(),
@@ -302,9 +377,14 @@ async fn get_trains_search(
     .await
     .map_err(internal_error)?
     else {
+        let day_description = if service_date == today {
+            "today".to_string()
+        } else {
+            service_date.format("%Y-%m-%d").to_string()
+        };
         return Err((
             StatusCode::NOT_FOUND,
-            "no CIF-derived schedule data has been published for today".to_string(),
+            format!("no CIF-derived schedule data has been published for {day_description}"),
         ));
     };
 
@@ -962,5 +1042,269 @@ mod db_tests {
         }
 
         delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_malformed_date_is_a_400() {
+        let pool = connect().await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB&date=not-a-date").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("date"), "400 body should name the field: {body}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_rejects_a_date_outside_the_supported_window() {
+        let pool = connect().await;
+        let today = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .date_naive();
+        let too_far_future = today + chrono::Duration::days(8);
+        let too_far_past = today - chrono::Duration::days(8);
+
+        let (status, body) = get(
+            &pool,
+            &format!("/trains/search?station=ZRB&date={}", too_far_future.format("%Y-%m-%d")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("date"), "400 body should name the field: {body}");
+
+        let (status, body) = get(
+            &pool,
+            &format!("/trains/search?station=ZRB&date={}", too_far_past.format("%Y-%m-%d")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("date"), "400 body should name the field: {body}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_accepts_a_date_exactly_at_the_edge_of_the_window() {
+        let pool = connect().await;
+        let today = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .date_naive();
+        let edge_future = today + chrono::Duration::days(7);
+        let edge_past = today - chrono::Duration::days(7);
+
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE service_date IN ($1, $2)",
+        )
+        .bind(edge_future)
+        .bind(edge_past)
+        .execute(&pool)
+        .await
+        .expect("cleanup edge-date fixtures");
+
+        for (date, uid) in [(edge_future, "C30001"), (edge_past, "C30002")] {
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                    (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(date)
+            .bind("WAT")
+            .bind(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap())
+            .bind(uid)
+            .bind("ZRB")
+            .bind(Option::<&str>::None)
+            .execute(&pool)
+            .await
+            .expect("seed edge-date fixture row");
+
+            let (status, body) = get(
+                &pool,
+                &format!("/trains/search?station=ZRB&date={}", date.format("%Y-%m-%d")),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "exactly 7 days out must be inside the window: {body}");
+            let rows = results(&body);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["uid"], uid);
+        }
+
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE service_date IN ($1, $2)",
+        )
+        .bind(edge_future)
+        .bind(edge_past)
+        .execute(&pool)
+        .await
+        .expect("cleanup edge-date fixtures");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_applies_now_forward_only_when_date_is_today() {
+        let pool = connect().await;
+        let today = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .date_naive();
+        let tomorrow = today + chrono::Duration::days(1);
+
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+            .bind(tomorrow)
+            .execute(&pool)
+            .await
+            .expect("cleanup tomorrow's fixture");
+
+        // A row scheduled at the very start of tomorrow -- long "in the
+        // past" relative to today's current clock time, which is exactly
+        // the case that must NOT be now-forward-filtered once `date` picks
+        // a day other than today.
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(tomorrow)
+        .bind("WAT")
+        .bind(chrono::NaiveTime::from_hms_opt(0, 5, 0).unwrap())
+        .bind("C30003")
+        .bind("ZRB")
+        .bind(Option::<&str>::None)
+        .execute(&pool)
+        .await
+        .expect("seed tomorrow's early-morning fixture row");
+
+        let (status, body) = get(
+            &pool,
+            &format!("/trains/search?station=ZRB&date={}", tomorrow.format("%Y-%m-%d")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let uids: Vec<String> = results(&body)
+            .iter()
+            .map(|row| row["uid"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            uids.contains(&"C30003".to_string()),
+            "a 00:05 row on a FUTURE date must not be hidden by today's now-forward filter: {uids:?}"
+        );
+
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+            .bind(tomorrow)
+            .execute(&pool)
+            .await
+            .expect("cleanup tomorrow's fixture");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_uses_from_as_a_plain_bound_with_no_now_floor_on_a_non_today_date() {
+        // Coverage for the `else` branch's `Some(from) => ...` arm
+        // specifically -- `trains_search_applies_now_forward_only_when_date_is_today`
+        // above only exercises that branch's `None` arm (no `from` supplied
+        // at all). This test supplies `from` explicitly alongside a
+        // non-today `date` and proves it is used as a PLAIN inclusive lower
+        // bound with NO `max(now, from)` floor applied, per this route's
+        // own doc comment on `scheduled_from` (trains.rs:350-362).
+        let pool = connect().await;
+        let today = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .date_naive();
+        let tomorrow = today + chrono::Duration::days(1);
+
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+            .bind(tomorrow)
+            .execute(&pool)
+            .await
+            .expect("cleanup tomorrow's fixture");
+
+        // A row scheduled at the very start of tomorrow. If `from` were
+        // wrongly combined with TODAY's `now` via `max(now, from)`, this row
+        // would be excluded any time after 00:05 today -- which is true for
+        // nearly the entire day, so this fixture reliably discriminates the
+        // bug this test is guarding against.
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(tomorrow)
+        .bind("WAT")
+        .bind(chrono::NaiveTime::from_hms_opt(0, 5, 0).unwrap())
+        .bind("C30004")
+        .bind("ZRB")
+        .bind(Option::<&str>::None)
+        .execute(&pool)
+        .await
+        .expect("seed tomorrow's early-morning fixture row");
+
+        let (status, body) = get(
+            &pool,
+            &format!(
+                "/trains/search?station=ZRB&date={}&from=00:00",
+                tomorrow.format("%Y-%m-%d")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let uids: Vec<String> = results(&body)
+            .iter()
+            .map(|row| row["uid"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            uids.contains(&"C30004".to_string()),
+            "an explicit from=00:00 on a FUTURE date must be a plain lower bound, with no \
+             now-based floor leaking in from today's clock: {uids:?}"
+        );
+
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+            .bind(tomorrow)
+            .execute(&pool)
+            .await
+            .expect("cleanup tomorrow's fixture");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_omitting_date_still_defaults_to_today() {
+        let pool = connect().await;
+        seed_today(&pool, "ZRB").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            results(&body).len(),
+            2,
+            "identical to the existing today-only behavior when `date` is absent"
+        );
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_404_for_an_unpublished_in_window_date_names_that_date() {
+        let pool = connect().await;
+        let today = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .date_naive();
+        let target = today + chrono::Duration::days(3);
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+            .bind(target)
+            .execute(&pool)
+            .await
+            .expect("ensure target date has no rows");
+
+        let (status, body) = get(
+            &pool,
+            &format!("/trains/search?station=ZRB&date={}", target.format("%Y-%m-%d")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            body.contains(&target.format("%Y-%m-%d").to_string()),
+            "the 404 should name the actually-requested date, not always say 'today': {body}"
+        );
     }
 }

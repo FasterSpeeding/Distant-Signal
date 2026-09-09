@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from 'react';
 import { Alert, Autocomplete, Button, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
+import { DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { TextLink } from './TextLink';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
@@ -10,6 +11,26 @@ import { useSuggestions } from '@/lib/useSuggestions';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** Mirrors the backend's exact window --
+ * `crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
+ * `SEARCH_WINDOW_BACKWARD_DAYS` -- computed once per render from `dayjs()`,
+ * consistent with this file's existing `today` computation just below.
+ *
+ * Anchored to the BROWSER's local clock, not `Europe/London` like the
+ * server's own window -- this codebase has no timezone-aware date library
+ * anywhere in `frontend/` to anchor it with (the server-side equivalent,
+ * `chrono-tz`, is Rust-only). For a viewer whose device clock isn't
+ * UK-local, this can disagree with the server by a day at either edge; a
+ * resulting 400 fails gracefully into the existing generic error copy
+ * rather than crashing, so this is a known imprecision, not a data-
+ * integrity risk. */
+function dateWindow() {
+  return {
+    minDate: dayjs().subtract(7, 'day').format('YYYY-MM-DD'),
+    maxDate: dayjs().add(7, 'day').format('YYYY-MM-DD'),
+  };
+}
 
 /** Wire shape of `GET /public/trains/search`
  * (`crates/api/src/render.rs::calling_point_departure_json`).
@@ -47,12 +68,30 @@ interface TrainSearchResponse {
  * `nextCursor` lives INSIDE the success variant rather than in its own
  * `useState`, so it cannot survive a state transition it does not belong
  * to: a fresh search, an error, or an unpublished response all discard it
- * automatically. */
+ * automatically. `date` lives here for the same reason: it is the RAW
+ * `dateValue` that was submitted with THIS search -- `''` when no date was
+ * picked, exactly mirroring the condition `searchParams()` itself uses to
+ * decide whether to include a `date` query param at all -- captured once at
+ * submit time and carried forward untouched by `handleLoadMore`. Never
+ * re-read live from the `dateValue` picker state at render time, which can
+ * drift out from under already-displayed rows if the caller moves the date
+ * picker without pressing Search again. See `resolvedDate` for turning this
+ * into an actual calendar date for a link or an API call. */
 type Results =
-  | { rows: TrainSearchRow[]; nextCursor: string | null }
+  | { rows: TrainSearchRow[]; nextCursor: string | null; date: string }
   | 'unpublished'
   | 'error'
   | null;
+
+/** Turns a `Results` success variant's raw `date` (`''` meaning "no date was
+ * picked, defaulted to today") into an actual `"YYYY-MM-DD"` to put in a
+ * link or hand to `TrackThisTrainButton`. Only the `''` branch reads the
+ * clock, and only to name the SAME "no date picked" default `searchParams()`
+ * itself would have applied at submit time -- it does not reintroduce a live
+ * read of `dateValue`. */
+function resolvedDate(rawDate: string): string {
+  return rawDate || dayjs().format('YYYY-MM-DD');
+}
 
 /** Calling-point-first, whole-network train search -- the `/trains` page's
  * one interactive component. Generalizes the earlier destination-first
@@ -70,11 +109,13 @@ type Results =
  * those gaps, and this component links to it explicitly.
  *
  * Filter set, and why it stops here: Station is required (it is the
- * server-side search key). Origin, Destination and a From/To time range
- * are all optional. There is no Operator filter -- CIF rows carry no
- * operator field at all. There is no Date filter -- both of this app's
- * schedule sources are "today only, server-side". Both are explicit
- * non-goals, not omissions to fill in later.
+ * server-side search key). Origin, Destination, Date and a From/To time
+ * range are all optional. There is no Operator filter -- CIF rows carry
+ * no operator field at all, an explicit non-goal, not an omission to fill
+ * in later. Date defaults to today and is bounded to a roughly week-either-
+ * side window (`crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
+ * `SEARCH_WINDOW_BACKWARD_DAYS`) -- see
+ * docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md.
  *
  * A second, independent time-range pair -- "Arrival from"/"Arrival to" --
  * filters on when the train reaches Destination, as opposed to From/To
@@ -91,21 +132,32 @@ export function TrainSearchForm({
   initialStation = '',
   initialOrigin = '',
   initialDestination = '',
+  initialDate = '',
   attachTicketId,
 }: {
   initialStation?: string;
   initialOrigin?: string;
   initialDestination?: string;
+  initialDate?: string;
   attachTicketId?: number;
 }) {
   const [stationCrs, setStationCrs] = useState(initialStation);
   const [originCrs, setOriginCrs] = useState(initialOrigin);
   const [destinationCrs, setDestinationCrs] = useState(initialDestination);
+  const [dateValue, setDateValue] = useState<string | null>(initialDate || null);
   const [fromTime, setFromTime] = useState('');
   const [toTime, setToTime] = useState('');
   const [destinationArrivalFrom, setDestinationArrivalFrom] = useState('');
   const [destinationArrivalTo, setDestinationArrivalTo] = useState('');
   const [results, setResults] = useState<Results>(null);
+  // The RAW `dateValue` submitted with the last search that came back
+  // 404/unpublished, captured at submit time -- separate from `results`
+  // because the `'unpublished'` variant carries no payload of its own to
+  // carry a `date` field on. Only ever read by the 'unpublished' branch of
+  // `resultsContent` below; never read live from `dateValue` there, for the
+  // same reason `results`' own `date` field exists (see `Results`' doc
+  // comment).
+  const [unpublishedDate, setUnpublishedDate] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   // Separate from `searching` on purpose: a "Load more" in flight must not
   // blank the rows already on screen the way `resultsContent`'s
@@ -135,18 +187,15 @@ export function TrainSearchForm({
     destinationArrivalToValid &&
     !searching;
 
-  // Computed once per render rather than once per row: every result links
-  // to the same calendar date, because this search is always "today"
-  // (server-side).
-  const today = dayjs().format('YYYY-MM-DD');
-
   const manualHref = attachTicketId !== undefined ? `/track?ticketId=${attachTicketId}` : '/track';
+  const { minDate, maxDate } = dateWindow();
 
   /** The current filter set as query parameters. Shared by the initial
    * search and by "Load more" so that page 2 is unambiguously a
    * continuation of page 1's query. */
   function searchParams() {
     const params = new URLSearchParams({ station: stationCrs.trim().toUpperCase() });
+    if (dateValue) params.set('date', dateValue);
     if (originCrs.trim()) params.set('origin', originCrs.trim().toUpperCase());
     if (destinationCrs.trim()) {
       params.set('destination', destinationCrs.trim().toUpperCase());
@@ -168,10 +217,17 @@ export function TrainSearchForm({
     event.preventDefault();
     if (!canSearch) return;
     setSearching(true);
+    // Captured synchronously, BEFORE the `await` below -- this is what makes
+    // it "the date that was actually searched" rather than a live read that
+    // could reflect a picker change the caller made while the request was
+    // in flight. Mirrors what `searchParams()` itself just read into the
+    // request that's about to go out.
+    const submittedDateValue = dateValue;
     try {
       const response = await fetch(`/api/trains/search?${searchParams().toString()}`);
       if (response.status === 404) {
         setResults('unpublished');
+        setUnpublishedDate(submittedDateValue);
         return;
       }
       if (!response.ok) {
@@ -179,7 +235,7 @@ export function TrainSearchForm({
         return;
       }
       const body: TrainSearchResponse = await response.json();
-      setResults({ rows: body.results, nextCursor: body.nextCursor });
+      setResults({ rows: body.results, nextCursor: body.nextCursor, date: submittedDateValue || '' });
     } catch {
       setResults('error');
     } finally {
@@ -191,15 +247,28 @@ export function TrainSearchForm({
     if (results === null || results === 'error' || results === 'unpublished') return;
     if (results.nextCursor === null || loadingMore) return;
 
+    // Page 1's actual raw date (`''` meaning "none picked"), not whatever
+    // the picker shows right now -- the caller may have moved `dateValue`
+    // after searching but before pressing "Load more". `searchParams()`
+    // itself would read live `dateValue`, so its own `date` handling is
+    // overridden below to match page 1 exactly: present with page 1's
+    // value, or absent, never a stale-vs-live mismatch either way. This
+    // keeps this request unambiguously "page 2 of the same search".
+    const pageOneDate = results.date;
     setLoadingMore(true);
     try {
       const params = searchParams();
+      if (pageOneDate) {
+        params.set('date', pageOneDate);
+      } else {
+        params.delete('date');
+      }
       params.set('after', results.nextCursor);
       const response = await fetch(`/api/trains/search?${params.toString()}`);
       if (!response.ok) {
         setResults((current) =>
           current !== null && current !== 'error' && current !== 'unpublished'
-            ? { rows: current.rows, nextCursor: null }
+            ? { rows: current.rows, nextCursor: null, date: current.date }
             : current,
         );
         return;
@@ -207,13 +276,13 @@ export function TrainSearchForm({
       const body: TrainSearchResponse = await response.json();
       setResults((current) =>
         current !== null && current !== 'error' && current !== 'unpublished'
-          ? { rows: [...current.rows, ...body.results], nextCursor: body.nextCursor }
+          ? { rows: [...current.rows, ...body.results], nextCursor: body.nextCursor, date: current.date }
           : current,
       );
     } catch {
       setResults((current) =>
         current !== null && current !== 'error' && current !== 'unpublished'
-          ? { rows: current.rows, nextCursor: null }
+          ? { rows: current.rows, nextCursor: null, date: current.date }
           : current,
       );
     } finally {
@@ -253,8 +322,9 @@ export function TrainSearchForm({
     if (results === 'unpublished') {
       return (
         <Text size="sm" c="dimmed">
-          Today&apos;s scheduled timetable data isn&apos;t available yet — it may not have been
-          published, or that station may not be one this feed covers.
+          {unpublishedDate
+            ? `Scheduled timetable data for ${unpublishedDate} isn't available yet — it may not have been published, or that station may not be one this feed covers.`
+            : "Today's scheduled timetable data isn't available yet — it may not have been published, or that station may not be one this feed covers."}
         </Text>
       );
     }
@@ -265,6 +335,10 @@ export function TrainSearchForm({
         </Text>
       );
     }
+    // The date the rows on screen were ACTUALLY searched with -- computed
+    // once here from `results.date`, never from live `dateValue`. See
+    // `resolvedDate`'s own doc comment.
+    const displayDate = resolvedDate(results.date);
     return (
       <>
         <Text size="sm" c="dimmed">
@@ -279,12 +353,12 @@ export function TrainSearchForm({
                   {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationCrs ?? '?'}
                 </Text>
                 <Group gap="sm" wrap="nowrap">
-                  <TextLink href={`/train/${encodeURIComponent(row.uid)}/${today}`}>
+                  <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>
                     View live status
                   </TextLink>
                   <TrackThisTrainButton
                     uid={row.uid}
-                    date={today}
+                    date={displayDate}
                     attachTicketId={attachTicketId}
                     size="xs"
                   />
@@ -326,6 +400,16 @@ export function TrainSearchForm({
         }}
         error={stationCrs.length > 0 && !stationValid ? 'Must be a 3-letter CRS code' : null}
         required
+      />
+      <DatePickerInput
+        label="Date (optional)"
+        placeholder="Today"
+        description="Search a different day, up to a week either side of today."
+        value={dateValue}
+        onChange={setDateValue}
+        minDate={minDate}
+        maxDate={maxDate}
+        clearable
       />
       <Autocomplete
         label="Departing from (optional)"

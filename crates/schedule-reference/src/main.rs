@@ -163,6 +163,27 @@ async fn poll_once(
     Ok(())
 }
 
+/// Forward publish window, in days, for `schedule_destination_departures`:
+/// how many days beyond today this service also computes and publishes on
+/// every cycle. See
+/// docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md §1.2.
+/// The route-side search window
+/// (`crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`) must be
+/// kept in sync with this value by hand -- there is no shared constant
+/// across the `api`/`schedule-reference` crate boundary, matching this
+/// codebase's existing per-crate-constant convention (e.g.
+/// `MAX_DEPARTURES_PER_STATION` here vs. `MAX_SEARCH_LIMIT` in `api`).
+const DESTINATION_DEPARTURES_FORWARD_DAYS: i64 = 7;
+
+/// `today..=today+forward_days`, inclusive, today first. Pure and
+/// unit-testable without a mock HTTP server or a `ScheduleIndex`, same
+/// convention as `lines_to_publish` just below it in this file.
+fn forward_publish_dates(today: chrono::NaiveDate, forward_days: i64) -> Vec<chrono::NaiveDate> {
+    (0..=forward_days)
+        .map(|offset| today + chrono::Duration::days(offset))
+        .collect()
+}
+
 /// Task 3's (whole-network-trip-search plan) shared wrapper: builds the
 /// whole-network `ScheduleIndex` ONCE from this delivery's `BS`/`BX`/`LO`/
 /// `LI`/`CR`/`LT` records, then runs BOTH CIF-derived publishes off that
@@ -211,18 +232,25 @@ async fn publish_cif_derived_products(
         internal_oauth,
     )
     .await;
-    // Third CIF-derived product off the SAME one-per-cycle ScheduleIndex
-    // and the SAME `today` -- the design doc's Approach B is explicit that
-    // this must not trigger a second parse or a resident index.
-    publish_schedule_destination_departures(
-        client,
-        config,
-        &index,
-        today,
-        stanox_crs_records,
-        internal_oauth,
-    )
-    .await;
+    // Third CIF-derived product off the SAME one-per-cycle ScheduleIndex --
+    // the design doc's Approach B is explicit that this must not trigger a
+    // second parse or a resident index. Unlike the two products above,
+    // this one publishes a WINDOW of dates, not just `today`: see
+    // docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md
+    // §1/§2. `publish_schedule_destination_departures` itself is
+    // unmodified -- it already accepts an arbitrary date; only the number
+    // of times it's called per cycle changes.
+    for date in forward_publish_dates(today, DESTINATION_DEPARTURES_FORWARD_DAYS) {
+        publish_schedule_destination_departures(
+            client,
+            config,
+            &index,
+            date,
+            stanox_crs_records,
+            internal_oauth,
+        )
+        .await;
+    }
 }
 
 /// UNCHANGED per-line publish logic (per-line loop, per-line individual
@@ -608,6 +636,28 @@ mod poll_once_tests {
             role: "minor".to_string(),
             segment: None,
         }
+    }
+
+    #[test]
+    fn forward_publish_dates_returns_today_through_today_plus_n_inclusive() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
+        let dates = forward_publish_dates(today, 3);
+        assert_eq!(
+            dates,
+            vec![
+                chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 9, 10).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 9, 11).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 9, 12).unwrap(),
+            ],
+            "today plus 0..=3 days, in order, today first"
+        );
+    }
+
+    #[test]
+    fn forward_publish_dates_with_zero_forward_days_is_just_today() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
+        assert_eq!(forward_publish_dates(today, 0), vec![today]);
     }
 
     #[test]

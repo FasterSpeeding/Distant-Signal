@@ -49,6 +49,18 @@ describe('TrainsPage', () => {
     expect(screen.getByRole('combobox', { name: 'Terminating at (optional)' })).toHaveValue('WAT');
   });
 
+  // Real, unmocked DatePickerInput (this file doesn't mock '@mantine/dates',
+  // unlike TrainSearchForm.test.tsx) -- same `getByDisplayValue` approach
+  // HistoryRangePicker.test.tsx already uses for the same component, since
+  // its rendered <input>'s accessible name/role queries don't apply the
+  // way Autocomplete's combobox role does.
+  it('pre-fills the date from the query string', async () => {
+    renderWithMantine(
+      await TrainsPage({ searchParams: Promise.resolve({ station: 'man', date: '2026-09-16' }) }),
+    );
+    expect(screen.getByDisplayValue('2026-09-16')).toBeInTheDocument();
+  });
+
   it('uses the first value when a query param is repeated', async () => {
     renderWithMantine(
       await TrainsPage({ searchParams: Promise.resolve({ station: ['MAN', 'EDB'] }) }),

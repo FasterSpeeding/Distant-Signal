@@ -20,16 +20,18 @@ export default async function TrainsPage({
     station?: string | string[];
     origin?: string | string[];
     destination?: string | string[];
+    date?: string | string[];
     ticketId?: string | string[];
   }>;
 }) {
-  const { station, origin, destination, ticketId } = await searchParams;
+  const { station, origin, destination, date, ticketId } = await searchParams;
   // Next.js supplies a `string[]` for a repeated query param -- fall back
   // to the first value rather than letting `.toUpperCase()` throw on an
   // array. Same handling as `app/track/page.tsx:10-13`.
   const stationParam = Array.isArray(station) ? station[0] : station;
   const originParam = Array.isArray(origin) ? origin[0] : origin;
   const destinationParam = Array.isArray(destination) ? destination[0] : destination;
+  const dateParam = Array.isArray(date) ? date[0] : date;
   const ticketIdParam = Array.isArray(ticketId) ? ticketId[0] : ticketId;
   const attachTicketId = ticketIdParam && /^\d+$/.test(ticketIdParam) ? Number(ticketIdParam) : undefined;
 
@@ -45,6 +47,7 @@ export default async function TrainsPage({
         initialStation={stationParam?.toUpperCase()}
         initialOrigin={originParam?.toUpperCase()}
         initialDestination={destinationParam?.toUpperCase()}
+        initialDate={dateParam}
         attachTicketId={attachTicketId}
       />
     </Stack>
