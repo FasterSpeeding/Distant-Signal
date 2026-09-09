@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from 'react';
 import { Alert, Autocomplete, Button, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
+import { DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { TextLink } from './TextLink';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
@@ -10,6 +11,18 @@ import { useSuggestions } from '@/lib/useSuggestions';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** Mirrors the backend's exact window --
+ * `crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
+ * `SEARCH_WINDOW_BACKWARD_DAYS` -- so the picker can never construct a
+ * request the server will 400. Computed once per render from `dayjs()`,
+ * consistent with this file's existing `today` computation just below. */
+function dateWindow() {
+  return {
+    minDate: dayjs().subtract(7, 'day').format('YYYY-MM-DD'),
+    maxDate: dayjs().add(7, 'day').format('YYYY-MM-DD'),
+  };
+}
 
 /** Wire shape of `GET /public/trains/search`
  * (`crates/api/src/render.rs::calling_point_departure_json`).
@@ -70,11 +83,13 @@ type Results =
  * those gaps, and this component links to it explicitly.
  *
  * Filter set, and why it stops here: Station is required (it is the
- * server-side search key). Origin, Destination and a From/To time range
- * are all optional. There is no Operator filter -- CIF rows carry no
- * operator field at all. There is no Date filter -- both of this app's
- * schedule sources are "today only, server-side". Both are explicit
- * non-goals, not omissions to fill in later.
+ * server-side search key). Origin, Destination, Date and a From/To time
+ * range are all optional. There is no Operator filter -- CIF rows carry
+ * no operator field at all, an explicit non-goal, not an omission to fill
+ * in later. Date defaults to today and is bounded to a roughly week-either-
+ * side window (`crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
+ * `SEARCH_WINDOW_BACKWARD_DAYS`) -- see
+ * docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md.
  *
  * A second, independent time-range pair -- "Arrival from"/"Arrival to" --
  * filters on when the train reaches Destination, as opposed to From/To
@@ -91,16 +106,19 @@ export function TrainSearchForm({
   initialStation = '',
   initialOrigin = '',
   initialDestination = '',
+  initialDate = '',
   attachTicketId,
 }: {
   initialStation?: string;
   initialOrigin?: string;
   initialDestination?: string;
+  initialDate?: string;
   attachTicketId?: number;
 }) {
   const [stationCrs, setStationCrs] = useState(initialStation);
   const [originCrs, setOriginCrs] = useState(initialOrigin);
   const [destinationCrs, setDestinationCrs] = useState(initialDestination);
+  const [dateValue, setDateValue] = useState<string | null>(initialDate || null);
   const [fromTime, setFromTime] = useState('');
   const [toTime, setToTime] = useState('');
   const [destinationArrivalFrom, setDestinationArrivalFrom] = useState('');
@@ -135,10 +153,9 @@ export function TrainSearchForm({
     destinationArrivalToValid &&
     !searching;
 
-  // Computed once per render rather than once per row: every result links
-  // to the same calendar date, because this search is always "today"
-  // (server-side).
-  const today = dayjs().format('YYYY-MM-DD');
+  // Every result links to the DATE THAT WAS ACTUALLY SEARCHED -- not
+  // always today, now that a search can target a different day.
+  const searchedDate = dateValue || dayjs().format('YYYY-MM-DD');
 
   const manualHref = attachTicketId !== undefined ? `/track?ticketId=${attachTicketId}` : '/track';
 
@@ -147,6 +164,7 @@ export function TrainSearchForm({
    * continuation of page 1's query. */
   function searchParams() {
     const params = new URLSearchParams({ station: stationCrs.trim().toUpperCase() });
+    if (dateValue) params.set('date', dateValue);
     if (originCrs.trim()) params.set('origin', originCrs.trim().toUpperCase());
     if (destinationCrs.trim()) {
       params.set('destination', destinationCrs.trim().toUpperCase());
@@ -253,8 +271,9 @@ export function TrainSearchForm({
     if (results === 'unpublished') {
       return (
         <Text size="sm" c="dimmed">
-          Today&apos;s scheduled timetable data isn&apos;t available yet — it may not have been
-          published, or that station may not be one this feed covers.
+          {dateValue
+            ? `Scheduled timetable data for ${dateValue} isn't available yet — it may not have been published, or that station may not be one this feed covers.`
+            : "Today's scheduled timetable data isn't available yet — it may not have been published, or that station may not be one this feed covers."}
         </Text>
       );
     }
@@ -279,12 +298,12 @@ export function TrainSearchForm({
                   {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationCrs ?? '?'}
                 </Text>
                 <Group gap="sm" wrap="nowrap">
-                  <TextLink href={`/train/${encodeURIComponent(row.uid)}/${today}`}>
+                  <TextLink href={`/train/${encodeURIComponent(row.uid)}/${searchedDate}`}>
                     View live status
                   </TextLink>
                   <TrackThisTrainButton
                     uid={row.uid}
-                    date={today}
+                    date={searchedDate}
                     attachTicketId={attachTicketId}
                     size="xs"
                   />
@@ -326,6 +345,16 @@ export function TrainSearchForm({
         }}
         error={stationCrs.length > 0 && !stationValid ? 'Must be a 3-letter CRS code' : null}
         required
+      />
+      <DatePickerInput
+        label="Date (optional)"
+        placeholder="Today"
+        description="Search a different day, up to a week either side of today."
+        value={dateValue}
+        onChange={setDateValue}
+        minDate={dateWindow().minDate}
+        maxDate={dateWindow().maxDate}
+        clearable
       />
       <Autocomplete
         label="Departing from (optional)"

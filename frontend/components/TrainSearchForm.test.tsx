@@ -10,6 +10,35 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
+// See TrackTrainForm.test.tsx's identical mock (lines 62-97) for why a
+// thin stand-in is used instead of driving the real popover calendar:
+// fireEvent.change needs a real <input>, and DatePickerInput's real
+// control isn't one. Keeps the same onChange(string | null) contract
+// TrainSearchForm actually depends on.
+vi.mock('@mantine/dates', () => ({
+  DatePickerInput: ({
+    label,
+    value,
+    onChange,
+    description,
+  }: {
+    label: string;
+    value: string | null;
+    onChange: (value: string | null) => void;
+    description?: string;
+  }) => (
+    <div>
+      <label htmlFor="test-search-date">{label}</label>
+      <input
+        id="test-search-date"
+        value={value ?? ''}
+        onChange={(event) => onChange(event.target.value || null)}
+      />
+      {description && <p>{description}</p>}
+    </div>
+  ),
+}));
+
 /** Builds a `GET /public/trains/search` response body. The route returns an
  * ENVELOPE, not a bare array: `results` plus a `nextCursor` that is an
  * explicit `null` on the last page. */
@@ -88,6 +117,29 @@ describe('TrainSearchForm', () => {
   });
 
   it('sends only the station when no optional filter is set', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+  });
+
+  it('includes the selected date in the search request', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.change(screen.getByLabelText('Date (optional)'), { target: { value: '2026-09-16' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() =>
+      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&date=2026-09-16'),
+    );
+  });
+
+  it('omits date from the search request when no date is picked', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
@@ -252,13 +304,6 @@ describe('TrainSearchForm', () => {
     renderWithMantine(<TrainSearchForm />);
 
     expect(screen.queryByLabelText(/Operator/i)).not.toBeInTheDocument();
-  });
-
-  it('renders no date filter at all', () => {
-    vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm />);
-
-    expect(screen.queryByLabelText(/^Date/i)).not.toBeInTheDocument();
   });
 
   it('does not offer Load more when the response has no nextCursor', async () => {
