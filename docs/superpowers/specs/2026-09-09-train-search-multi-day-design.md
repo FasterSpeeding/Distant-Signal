@@ -1,732 +1,502 @@
-# Design: Multi-Day Train Search (`GET /public/trains/search?date=`)
+# Design: Multi-Day `GET /public/trains/search`
 
 **Status: design proposal, approved for implementation by the requesting
-session — same no-separate-human-sign-off posture this pipeline's
-immediate predecessor document already took
-(`docs/superpowers/specs/2026-09-08-calling-point-train-search-design.md`,
-its own Status line).**
+session (no separate human sign-off step in this pipeline) -- same posture
+as `2026-09-08-calling-point-train-search-design.md`.** This document turns
+the calling-point-first `/trains` search (`2026-09-07-train-listing-page-design.md`,
+as revised by `2026-09-07-train-listing-destination-search-sizing-design.md`
+and generalized by `2026-09-08-calling-point-train-search-design.md` and
+`2026-09-08-destination-arrival-time-filter-design.md`) from "always today,
+server-side" into "today, or a nearby day the caller names."
 
-Product request, verbatim intent: `GET /public/trains/search` (backing the
-`/trains` page) is CIF-SCHEDULE-derived and meant to search over the WHOLE
-published timetable, not just trains happening soon — but today it is
-hardcoded to "always today, server-side"
-(`crates/api/src/routes/trains.rs`'s own module doc, lines 34-35: "There is
-deliberately NO date parameter"). This document extends the search to a
-caller-chosen day, bounded by a real forward/backward window, while keeping
-every constraint the three immediate predecessor documents already
-established (no resident index, no synchronous cross-service call, publish-
-then-poll, `now`-forward evaluated at request time, keyset pagination).
-
-Required reading consumed in full before this document was written:
-`crates/api/src/routes/trains.rs` (whole file, including `db_tests`);
-`crates/api/src/data/queries.rs` (the whole `schedule_destination_departures`
-section, `:900-1230`); `crates/api/src/render.rs`
-(`calling_point_departure_json`); `crates/schedule-reference/src/main.rs`
-(whole file, including `poll_once_tests`); `crates/schedule-query/src/
-resolve.rs` (`resolve_for_date`, `schedules_touching`, `schedule_for_uid`,
-`departures_by_destination_crs`, and the `ScheduleIndex` they hang off);
-`crates/aggregator/src/queries.rs::prune_schedule_destination_departures`;
+Required reading consumed in full before this document was written: all
+four design docs named above; `crates/api/src/routes/trains.rs` (whole
+file, including `db_tests`); `crates/api/src/data/queries.rs`'s whole
+`schedule_destination_departures` section (`:900-1220`+ its `db_tests`);
 `crates/api/migrations/20260907130000_schedule_destination_departures.sql`,
-`20260908120000_schedule_destination_departures_calling_point_search.sql`,
-`20260908130000_schedule_destination_departures_destination_arrival.sql`;
-`frontend/components/TrainSearchForm.tsx`, `TrainSearchForm.test.tsx`,
-`frontend/app/trains/page.tsx`; `frontend/app/lines/[id]/history/
-HistoryRangePicker.tsx` and `frontend/components/TrackTrainForm.tsx` (for
-this codebase's existing `@mantine/dates` usage); commits `baa4e75` and
-`8250a9a` (the UTC-vs-London-local skew fix and its regression test) and
-their diffs; and, for the architecture this document builds directly on:
-`docs/superpowers/specs/2026-09-07-train-listing-page-design.md`,
-`2026-09-07-train-listing-destination-search-sizing-design.md`,
-`2026-09-08-calling-point-train-search-design.md`,
-`2026-09-08-destination-arrival-time-filter-design.md`,
-`2026-09-06-schedule-line-population-future-dates-design.md`,
-`2026-09-06-schedule-line-population-past-dates-design.md`.
+`20260908120000_..._calling_point_search.sql`,
+`20260908130000_..._destination_arrival.sql`; `crates/schedule-reference/src/main.rs`
+(`publish_cif_derived_products`, `publish_schedule_destination_departures`,
+`schedule_destination_departures_rows`, `london_local_time_now`/
+`london_local_time_at`); `crates/schedule-query/src/resolve.rs` (all of it,
+including `resolve_for_date`, `schedules_touching`, `schedule_for_uid`,
+`departures_by_destination_crs`); `crates/aggregator/src/queries.rs::prune_schedule_destination_departures`
+and its `Config::schedule_destination_departures_retention_days`;
+`frontend/components/TrainSearchForm.tsx` and its test; `frontend/components/TrackTrainForm.tsx`
+and `frontend/app/lines/[id]/history/HistoryRangePicker.tsx` (existing
+`@mantine/dates` usage); commits `baa4e75` and `8250a9a` in full (`git show`),
+for the exact UTC/London date-time skew bug class this document must not
+reintroduce.
 
-## 0. Confirming the constraint the brief asked to verify
+## 0. The load-bearing finding: this needs no schema change and no index
+change, and that is a real design decision, not an oversight
 
-`crates/schedule-reference/src/main.rs:202` computes `let today =
-chrono::Utc::now().date_naive();` once per cycle and
-`publish_cif_derived_products` (`:176-226`) passes that single date into
-`publish_schedule_destination_departures` (`:442-478`), which in turn calls
-`schedule_query::departures_by_destination_crs(index, today, NaiveTime::MIN,
-&tiploc_to_crs)` exactly once. Combined with
-`crates/aggregator/src/queries.rs::prune_schedule_destination_departures`
-deleting `WHERE service_date < CURRENT_DATE - retention_days` (default `2`,
-`crates/aggregator/src/config.rs:132`), the table holds roughly today,
-yesterday, and the day before, and nothing else. **Confirmed: changing the
-route's params to accept a date is a no-op today** — there is nothing to
-read for any other date. This document's center of mass is therefore the
-*publish* side, not the route.
+The brief's own framing assumes `from`/`to` become full datetimes, which
+would make `service_date` a range predicate and force reordering the
+leading index. §5 below picks a different wire shape -- one explicit,
+optional `date=YYYY-MM-DD` parameter, layered on top of the existing
+`"HH:MM"` `from`/`to`/`destination_from`/`destination_to` pairs, unchanged
+in format -- precisely *because* every request this route serves still
+names exactly one rail day. Under that shape `service_date` remains an
+**equality** predicate in every query, exactly as it is today; it is simply
+no longer hardcoded to `chrono::Utc::now()`'s date. §4 shows why that means
+`schedule_destination_departures_calling_point_idx`
+(`service_date, origin_crs, scheduled, train_uid`) needs no reordering, and
+no new column is needed anywhere. The only real code changes are: (1) a
+bounded forward-publish loop in `schedule-reference`, (2) threading a
+caller-supplied `service_date` through `routes::trains`/`queries.rs` instead
+of always computing `today`, and (3) a `date` control in `TrainSearchForm`.
+No migration file is part of this plan.
 
-**Also confirmed, and this is what makes the rest of this document
-tractable**: `schedule_query::resolve_for_date` (`resolve.rs:42-70`),
-`schedules_touching` (`:77-96`) and `schedule_for_uid` (`:361-364`) are
-already fully date-parametric — `date` is a bare parameter compared only
-against each `RawSchedule`'s own `date_from`/`date_to`/`days_of_week`, with
-no `>= today` or `== today` special-casing anywhere in that crate.
-`departures_by_destination_crs` (`:263-...`) is the same shape: `date` and
-`now` are independent caller-supplied parameters, already used today with
-`now = NaiveTime::MIN` to mean "no `now`-forward filter, publish the whole
-day" (`main.rs:461`, its own doc comment point 1). **Nothing in
-`schedule-query` needs to change.** The entire gap is that
-`schedule-reference`'s `main.rs` only ever calls these functions with one
-`NaiveDate` per cycle, and that `routes/trains.rs` only ever reads one
-`service_date`. Both of those are mechanical, bounded changes — see §2 and
-§4.
+## 1. How many days forward, and how many back
 
-## 1. How many days, and why
+**Recommendation: publish `today..=today+6` (7 calendar days, configurable),
+read-accessible back to whatever the existing 2-day retention window still
+holds. No change to retention.**
 
-### 1.1 The cost multiplier that bounds this decision
+This table's cost profile is not comparable to `schedule_line_population`'s
+(the only other data product in this codebase with a "future dates" scoping
+document, `2026-09-06-schedule-line-population-future-dates-design.md`,
+which reasoned about its 14-30 day recommendation against **109 rows/day**).
+`schedule_destination_departures` is **~377,000 rows/day**
+(`2026-09-07-train-listing-destination-search-sizing-design.md` §1.2's own
+derivation: 25,305 non-cancelled schedules/day × 14.9 mean departure-bearing
+calling points/schedule) -- a **~3,459x** larger per-day cost. The
+14-30-day range recommended there does not transfer here by analogy; it has
+to be re-derived against this table's own numbers.
 
-This table is not `schedule_line_population` (~109 rows/service_date). It is
-the flat, one-row-per-departure-bearing-calling-point table the sizing
-addendum built specifically because no cap is defensible:
-`schedule_destination_departures_rows`'s own doc comment
-(`main.rs:344-380`) puts the real, measured figure at **~377,000 rows per
-service date**, ~30MB at the current (post-`true_origin_crs`/
-`destination_arrival`) ~80 bytes/row, budgeted at ~100 bytes/row (~37.7MB)
-for headroom. Every day this document adds to the window multiplies that
-number directly — there is no sub-linear trick available, because the whole
-point of the flat shape (§3 of the calling-point doc's required reading) is
-that it refuses to cap or bucket.
+**Publish-payload arithmetic, extending the calling-point-search design's
+own "~80 bytes, not ~55" per-entry estimate** (`main.rs`'s own doc comment
+on `publish_schedule_destination_departures`, post-`true_origin_crs`/
+`destination_arrival`):
 
-### 1.2 Recommendation: 7 days forward, 1 day backward
+| N (forward days published per cycle) | Rows/cycle | Payload/cycle (≈80B/row) | Steady-state table rows (N forward + 2 backward) |
+|---|---|---|---|
+| 1 (today only, current behavior) | 377,000 | ~30MB | ~1,131,000 (3 days) |
+| 3 | 1,131,000 | ~90.5MB | ~1,885,000 (5 days) |
+| 7 (recommended) | 2,639,000 | ~211MB | ~3,393,000 (9 days) |
+| 14 | 5,278,000 | ~422MB | ~6,032,000 (16 days) |
+| 30 | 11,310,000 | ~905MB | ~12,064,000 (32 days) |
 
-**Forward: `today..=today+6` (7 calendar days, inclusive of today).**
-Backward: no publish change at all — "yesterday" is already resident under
-the existing `retention_days = 2` default (§1.4), formalized here as an
-explicitly supported, tested query value rather than an accidental leftover.
-No date further back than yesterday is supported (§1.5).
+Table+index storage, using the sizing addendum's own "~40-60MB of
+table+index per service date" figure: at N=7, roughly `9 × 50MB ≈ 450MB`
+steady-state -- comfortably small for Postgres, and not the binding
+constraint. **The real cost that scales with N is publish-time write
+traffic** (the DELETE+UNNEST-INSERT pair, once per CIF delivery, i.e.
+roughly once a day -- `2026-09-07-...-sizing-design.md` §1.3), not storage.
 
-**The arithmetic, stated plainly, as this repo's own sibling documents
-always do:**
+Why 7, not 14 or 30: the product need named in this feature's brief is
+"search a different day," i.e. short-term trip planning (checking next
+Tuesday, this weekend) -- a materially different use case from the
+tracked-train-pin feature the 14-30 day sibling document was scoped for,
+where a pin can legitimately be created arbitrarily far in advance and
+needs to eventually resolve no matter how far out it was made. A search UI
+has no equivalent "must eventually work, however far out" obligation: a
+user planning a trip a month away can simply search again closer to the
+date. Seven days is a full week of lookahead at roughly a third of N=14's
+or a twelfth of N=30's publish-write cost, and -- per this section's own
+honesty convention -- is a reasoned choice pending real usage data, not a
+derived one. It is a plain config value
+(`Config::schedule_destination_departures_forward_days`, default `7`,
+mirroring `schedule_destination_departures_retention_days`'s own shape),
+changeable without a migration or a code change if real usage ever argues
+for more.
 
-| | Per day | × 7 (forward window) |
-|---|---|---|
-| Rows | ~377,000 | ~2,639,000 |
-| Publish payload (at ~80 bytes/row, current real figure) | ~30.2MB | ~211MB total, but **split across 7 independent POSTs, one per date** (§2.2) — each individually ~30MB, comfortably under the 100MB `DefaultBodyLimit::max` (`crates/api/src/routes/mod.rs:86`) |
-| Publish payload (at the ~100 bytes/row budgeted figure) | ~37.7MB | ~264MB total, same per-call split — each call still ~38MB |
-| Table+index storage (addendum's own ~40-60MB/day figure, bumped slightly for the two extra columns) | ~50-60MB | ~350-420MB resident for the forward window alone |
+**Backward: no change to `schedule_destination_departures_retention_days`
+(default 2).** The existing backward-pruning job already retains today and
+roughly the prior two days; nothing in this feature needs to extend that
+window. Critically, extending *read* access to that window costs nothing
+new and carries none of `2026-09-06-schedule-line-population-past-dates-design.md`'s
+risk: that document's "Regime B" danger (reconstructing a date from a later,
+possibly-already-corrected CIF extract, silently losing an expired STP
+overlay) applies only to *computing* a past date's data after the fact.
+This feature does no such reconstruction -- it only exposes, via `date`,
+rows that `schedule-reference` already wrote **on that day itself**, the
+same "Regime A" case that document already found "provably as accurate as
+present-day resolution... no new correctness risk to document." A caller
+asking for `date` further back than the retention window simply gets this
+route's existing, unmodified 404 ("no CIF publish has landed for that day"),
+same as a future date beyond the forward window -- see §2 and §5.
 
-Including the 1-2 days the existing retention window keeps behind "today"
-(§1.4), steady-state residency is roughly **8-9 distinct service dates,
-~3.2-3.4M rows, ~450-540MB of table+index** — comfortably inside what this
-service already handles every cycle for its other from-scratch rebuilds
-(`stanox_crs`, ~3,100 rows, fully rewritten every cycle; the whole-network
-research doc's own comparison point, cited by the schedule_line_population
-future-dates doc, §1, for the identical argument). The genuinely new cost is
-**publish-call count and compute**, not storage — see §1.3 and §2.
+## 2. Proactive N-day publish loop, not on-demand compute -- the existing
+"publish-then-poll, never synchronous" posture is kept, not reopened
 
-**Why 7, not 14-30 (the sibling `schedule_line_population` document's own
-recommended range) and not more:** that document's recommendation was sized
-against a table costing **~109 rows/service_date** — a table three and a
-half thousand times smaller per day than this one. Its own Dimension 3
-explicitly flags "the real unknown is bytes-per-row" for that table and
-treats `schedule_network_departures`'s ~2,500-row/day, capped shape as the
-*safe* comparison point, contrasting it with `schedule_line_population`'s
-own larger, uncapped rows. `schedule_destination_departures` is already the
-larger, uncapped case that document worried about, and at `377,000 ×
-(40-60) MB` per day-equivalent cost, a 14-30 day window (`5.28M-11.3M`
-rows, `1.7-2.3GB`, `280-540MB` publish payload per date... compounding to
-needing real, careful chunked-publish engineering at a larger scale) is a
-materially bigger bet for a search/discovery feature than it was for the
-pin-matching correctness gap that motivated the sibling document (where an
-unresolved pin sitting wrong for weeks is a correctness bug, not just an
-absent nicety). A search feature's failure mode for "the window isn't wide
-enough yet" is "the user sees an honest 404 for a date too far out" — not a
-silent wrong answer — so there is no correctness argument compelling a wide
-window the way there was for pin-matching. **7 days (today plus the next
-six) is chosen as a deliberately bounded first step**, consistent with this
-codebase's own repeated "ship the honest partial thing, revisit with real
-usage" pattern (named explicitly in the original train-listing-page design
-doc's Recommendation section and the whole-network research doc before it).
-A week covers the single most commonly cited real use ("what's running
-Thursday") without the multi-hundred-megabyte-per-date publish throughput
-this document would otherwise have to design carefully around on day one.
+The module doc's "no date parameter... publish-then-poll, never
+synchronous" stance (`trains.rs` lines 14-19, 34-35) was written for the
+single-day case. Re-examined here for a *bounded* forward window, it holds
+just as strongly, for reasons that are if anything sharper than the
+sibling's:
 
-### 1.3 Publish-compute cost at N=7
+- **On-demand compute for a far-future date would require `api` to gain a
+  dependency it does not have today.** `2026-09-06-schedule-line-population-future-dates-design.md`'s
+  Approach B already identified this cost precisely (for a ~109-row/day
+  product) and rejected it: either `api` links `schedule_query` and rebuilds
+  a `ScheduleIndex` from the raw ~707MB CIF delivery itself (new I/O, new
+  deployment dependency, duplicated responsibility), or `schedule-reference`
+  grows a synchronous "compute this date now" HTTP endpoint it has never had
+  (it has no inbound HTTP server at all today -- confirmed, it only ever
+  POSTs out). Both costs apply unchanged here, and apply *worse*: this
+  product's resolve pass touches the whole network (~25,305 schedules),
+  not one line's subset, so an on-demand path would be markedly more
+  expensive per request, against an **unauthenticated public route** with
+  no existing rate limiting beyond `MAX_SEARCH_LIMIT`'s clamp.
+- **Correctness without new invalidation machinery.** The future-dates
+  sibling's Dimension 4 finding transfers directly: a proactive,
+  recompute-the-whole-window-every-cycle design gets VSTP/STP-overlay
+  correction pickup for free (every in-window date is re-derived from the
+  newest `ScheduleIndex` on every processed delivery, exactly like `today`
+  already is), with no separate "did this date change" check. An on-demand
+  or cache-on-first-use path would not get this for free and would need to
+  reinvent the same "recompute everything, every cycle" logic just to stay
+  correct -- more moving parts for no benefit.
+- **Minimal, mechanical extension of already-correct code.** `departures_by_destination_crs`
+  (`resolve.rs`) already takes a bare `NaiveDate` parameter and has no
+  date-dependent assumption beyond what `resolve_for_date` (also already
+  date-agnostic, confirmed by reading it -- see §4) provides. Extending the
+  publish loop to call it N times instead of once is not new architecture.
 
-`departures_by_destination_crs` runs once per `(date)` over the SAME
-per-cycle `ScheduleIndex` (`main.rs:194`, built once, shared across every
-CIF-derived product exactly as it is today — Task 3 of the whole-network-
-trip-search plan's own finding, reconfirmed by the schedule_line_population
-future-dates document's Dimension 2). Going from 1 date to 7 means this
-resolve pass runs 7× per cycle instead of once — each iteration paying the
-same bounded, already-characterized `O(total UIDs in index)` cost the
-existing single-date publish already pays. This publish fires **once per
-CIF delivery, roughly daily** (`config.rs:19-23`'s own doc comment,
-reconfirmed by the sizing addendum's §1.3), not once per 30-minute poll
-tick, so a 7× multiplier of an already-cheap, once-daily pass is not
-expected to threaten the 1800-second tick budget. Not independently
-benchmarked in this pass — per the sibling documents' own consistent
-posture, this is named as something to watch via the already-emitted
-`schedule_reference_cycle_duration_seconds` histogram (`main.rs:49-52`)
-after shipping, not something this document claims to have measured.
+**Decision: extend `publish_schedule_destination_departures` to be called
+once per date in `today..=today+forward_days-1`**, each call scoped to
+exactly one `service_date`, **not** one combined multi-day call. This is a
+deliberate shape choice, not an afterthought: because
+`upsert_schedule_destination_departures`'s DELETE-then-UNNEST-INSERT is
+already, today, scoped to "the batch's own distinct service dates" (a
+single `ANY($dates)` DELETE already generalized to a set, per its own doc
+comment), publishing **one date per POST** means every cycle's publish
+payload stays at the already-measured ~30MB/date regardless of how large
+`forward_days` is -- **the 50,000-row chunking escape hatch the sizing
+addendum names as its fallback is never needed**, because no single POST
+ever exceeds one day's ~377,000 rows. This is strictly simpler than
+chunking a combined N-day batch and needs zero changes to the ingest
+route (`routes::ingest::post_schedule_destination_departures`) or to
+`upsert_schedule_destination_departures` itself -- both already operate
+correctly on a single date's rows, which is exactly what each of the N
+calls now sends.
 
-### 1.4 Backward: "yesterday" is free, already-correct, and needs no publish change
+Dates beyond the forward window remain genuinely unsupported -- a search for
+`date` 30 days out gets the same honest 404 as today's "not published yet,"
+with no special-cased rejection message. This mirrors the future-dates
+sibling's own honestly-stated limit: "a pin for a date beyond the window is
+no better off than today... every approach considered here shares some
+version of this limit."
 
-`prune_schedule_destination_departures(pool, retention_days)` deletes `WHERE
-service_date < CURRENT_DATE - retention_days` with a default of `2`
-(`aggregator/src/config.rs:132`, `queries.rs:544-552`'s own doc comment).
-That means, at any point in the prune cycle, rows survive while
-`service_date >= CURRENT_DATE - 2` — today, yesterday, **and** the day
-before yesterday are all resident right up until the next prune run trims
-the oldest one. Critically, yesterday's row was written *on* yesterday,
-from *yesterday's own* live CIF extract — this is exactly Regime A from
-`2026-09-06-schedule-line-population-past-dates-design.md`'s Decision 3
-(the case that document found genuinely risk-free), not Regime B
-(reconstruction from today's extract, which is where that document's real,
-unresolved STP-overlay risk lives). Reading yesterday's already-published
-row back today carries no correctness risk beyond what today's own read
-already carries. **Recommendation: allow `date` to resolve to yesterday,
-formalizing what retention already provides, with zero publish-side
-change and zero retention-config change** (the existing default of `2`
-already guarantees yesterday survives until the very end of its day,
-per the "strictly `<`, never `<=`" comparison `queries.rs:550`'s own doc
-comment calls out).
+## 3. Retention/pruning: no new job, and here is why explicitly
 
-### 1.5 Explicitly not supported: further back than yesterday
+**Forward days need no pruning job.** A date that ages out of the forward
+window (yesterday's `today+6` becomes today's `today+5`, etc.) does not need
+active deletion the way a sibling table's trailing edge does -- it simply
+*becomes* a nearer date next cycle and keeps being recomputed like any other
+in-window date, until it eventually becomes "today" itself and then ages
+into the **backward** retention window, which already has an active pruning
+job (`prune_schedule_destination_departures`, unchanged, `(default 2)` days).
+Concretely: no date is ever skipped, double-published, or left to rot --
+every date from `today-2` (retained) through `today+6` (published) is
+covered by exactly one of the two existing mechanisms (backward: delete
+after 2 days; forward: recompute fresh every cycle until it becomes
+"today"), and nothing new needs to be built to connect them. This directly
+answers the brief's own hint ("probably not [needed] -- future days age
+into 'today' naturally -- but say so explicitly").
 
-Going back two or more days would mean either (a) bumping
-`retention_days` further, trading the "protect the producer's edges"
-margin that default exists for against an unrelated consumer-facing
-feature, or (b) reconstructing a pruned date from today's extract — which
-is exactly Regime B, the past-dates document's own named, unresolved,
-"silently confidently wrong" risk (a short-term STP overlay whose own
-validity window has fully elapsed may simply no longer be present in a
-later extract, and `resolve_for_date`'s `min_by_key` would happily fall
-through to a surviving `Permanent` base pattern with no signal it might be
-wrong). This document does not reopen that question; it is out of scope
-here exactly as it was scoped out there.
+**No change to `prune_schedule_destination_departures` itself.** Its
+`WHERE service_date < CURRENT_DATE - ($1 || ' days')::interval` predicate is
+already independent of how many *forward* days exist in the table at any
+moment -- it only ever looks backward from `CURRENT_DATE`. Extending the
+forward publish window does not change what that job considers "old."
 
-## 2. Publish mechanism: extend the existing loop, per date, not on-demand
+## 4. Index/query shape: unchanged, because `service_date` stays an equality
+predicate
 
-### 2.1 Re-examining "publish-then-poll, never synchronous" for this case — the answer is still no, including for far-future dates
+The brief poses this conditionally: *if* `from`/`to` become datetimes
+spanning multiple `service_date` values, a range-scan-friendly,
+station-first `(origin_crs, service_date, scheduled, train_uid)` ordering
+would be needed instead of the current
+`(service_date, origin_crs, scheduled, train_uid)`. Worked through
+directly, for completeness, because the brief asks for the reasoning rather
+than an assertion:
 
-`routes/trains.rs`'s own module doc (`:14-19`) states the route "owns the
-`now`-forward boundary" and is "a publish-then-poll read... never a
-synchronous call." The brief asks whether that argument still holds once
-dates further into the future are in play, since those are queried more
-rarely. It does, for the same reason
-`2026-09-06-schedule-line-population-future-dates-design.md`'s Dimension 4
-already worked out for the sibling table: an on-demand, compute-on-first-
-request path only avoids wasted work if it *never* needs to be
-re-validated — but it does, because a later CIF delivery can correct an
-already-published future date (a VSTP/STP-overlay change), and the only way
-an on-demand cache would pick that up is by re-resolving on every new
-delivery anyway, which is simply Approach A (fixed window, recomputed every
-cycle) with extra moving parts and no net simplification. On-demand compute
-also requires `api` to gain a dependency it does not have today — either
-linking `schedule_query` and holding a `ScheduleIndex` itself (duplicating
-`schedule-reference`'s job and requiring access to the CIF delivery files
-`api` has never read), or a new synchronous request/response endpoint on
-`schedule-reference`, which has no inbound HTTP server at all today (it
-only ever POSTs out). Both are genuinely new architecture, not an extension
-of the existing pattern, and neither is justified for a 7-day window this
-small. **Decision: extend the existing proactive-publish loop, unchanged
-in kind, to cover 7 dates instead of 1. No on-demand path, for any date in
-the supported window or beyond it.**
+- With `service_date` leading and made a **range** (not equality), Postgres
+  can range-scan across dates but cannot use `origin_crs` as a second
+  index-level equality seek within that range under the classic single-seek
+  btree plan this codebase's other indexes rely on -- it would fall back to
+  filtering `origin_crs` row-by-row across every station's rows for every
+  date in range, which is exactly the "Waterloo costs the same as Bootle
+  Oriel Road" property the current design deliberately built and measured
+  for (`2026-09-07-...-sizing-design.md` §3, Approach C) being lost for the
+  new multi-day case.
+- Reordering to `(origin_crs, service_date, scheduled, train_uid)` would fix
+  that (equality-seek on `origin_crs`, then an ordered range walk across
+  `(service_date, scheduled)`) **without regressing the single-day case**:
+  for a same-day query, both orderings are leading-equality-then-equality,
+  which Postgres treats identically regardless of which equality column
+  comes first.
 
-### 2.2 The loop, and the already-correct chunking boundary
+**This reasoning is moot under this document's actual wire-shape decision
+(§5): `date` selects exactly one `service_date` per request, never a range,
+so `service_date` stays an equality predicate in every query this route
+ever issues, identical in shape to today's.** The existing index needs no
+reordering and no migration. This is the direct payoff of choosing a single
+`date` parameter over full datetime fields -- it was evaluated, not assumed,
+and the conditional case above is recorded so a future change to the wire
+shape (if `from`/`to` ever genuinely need to span days) knows exactly what
+index change that would require.
 
-`publish_schedule_destination_departures` (`main.rs:442-478`) changes from
-resolving and posting exactly `today` to looping over a small pure helper:
+`resolve_for_date`/`schedules_touching`/`schedule_for_uid`
+(`crates/schedule-query/src/resolve.rs:42-70, 77-96, 361-364`) are confirmed,
+by direct reading, to already be fully date-parametric with no "today"
+special-casing anywhere -- `resolve_for_date`'s own filter is a bare
+`date_from <= date && date <= date_to && days_of_week[weekday]` comparison,
+identical in cost and behavior for any date within a schedule's validity
+window. No `schedule_query` change is needed for a bounded forward window,
+consistent with `2026-09-06-schedule-line-population-future-dates-design.md`'s
+identical finding for that sibling product.
+
+## 5. Wire/API shape: one optional `date=YYYY-MM-DD`, not full datetimes
+
+**Decision: add a single optional query parameter, `date`, in the same
+`YYYY-MM-DD` form already used by `/train/{uid}/{date}`'s path segment.
+`from`/`to`/`destination_from`/`destination_to` are unchanged --
+`"HH:MM"`, scoped to `date` exactly as they are scoped to "today" now.**
+Confirming the brief's own alternative framing: yes, this is simpler and
+less disruptive than turning every time field into an independent datetime.
+Reasons, concretely:
+
+- **All four existing time fields already implicitly share one day.** Origin
+  time (`from`/`to`) and destination-arrival time (`destination_from`/
+  `destination_to`) are both, today, scoped to the same single rail day.
+  Turning each into an independent datetime would mean parsing and
+  validating four datetimes per request for information ("which day") that
+  is identical across all four -- pure duplication, and four more
+  opportunities to disagree with each other (e.g. a caller who sets `from`'s
+  date to one day and `destination_from`'s to another, a case with no
+  sensible meaning this route would then have to reject).
+- **Avoids repeating the DST-parsing hazard four times.** Parsing a
+  caller-supplied *local* datetime string into a civil instant is exactly
+  the class of operation `crates/api/src/data/eta_blend.rs::london_to_utc`
+  exists for, specifically because it is ambiguous/nonexistent across a BST
+  transition (`LocalResult`-handling, cited directly in this route's own
+  sibling function `london_local_time_at`'s doc comment). A bare calendar
+  `date` has no such ambiguity -- `NaiveDate::parse_from_str` is a total,
+  unambiguous function. Four independent datetime fields would need this
+  handling four times over; one `date` field needs it zero times.
+- **Matches this codebase's existing convention for "which rail day."**
+  `/train/{uid}/{date}`, `GET /public/lines/{id}/schedule?date=`, and the
+  aggregator's own `service_date`-keyed tables all already treat "which
+  day" as a bare calendar date, never a datetime. `date=YYYY-MM-DD` is the
+  same established shape, not a new one.
+- **No effect on §4's index analysis** -- covered above.
+
+**Breaking change, deliberately, no compatibility shim.** Same posture this
+route's own predecessor docs already took
+(`2026-09-08-calling-point-train-search-design.md` §6, `2026-09-07-...-sizing-design.md`
+§5 Task 7 row): `GET /public/trains/search` has exactly one caller in this
+repository, `TrainSearchForm.tsx`, updated in lockstep by this same plan.
+Nothing about this change is actually breaking in the wire-format sense,
+though -- `date` is purely additive and optional, defaulting to today
+exactly as today's hardcoded behavior already does. The only real
+behavioral change for an *existing* caller that omits `date` is none at
+all: identical request, identical response.
+
+**Cursor/pagination shape: unchanged, two parts, `"HH:MM:SS|train_uid"`.**
+`encode_cursor`/`decode_cursor` (`trains.rs`) do not need a third component.
+The brief's own concern -- "a cursor that only carries a time, not a date,
+will misbehave once results can span multiple days" -- does not apply under
+this wire shape: one request, and therefore one page and its cursor, are
+always scoped to exactly one `date`. A "Load more" request reuses the same
+`date` query parameter (via `TrainSearchForm`'s existing `searchParams()` +
+`after` pattern, which already re-sends every filter including the new
+`date`), so the cursor never needs to disambiguate which day it belongs to
+-- the request it's attached to already says so.
+
+**404-vs-200[] semantics: unchanged, now keyed on the caller's `date`
+instead of always today's.** `schedule_destination_departures_published_for`
+already takes `service_date` as a real parameter; passing through the
+caller's resolved date (defaulted or explicit) instead of always `today`
+is the entire change needed there.
+
+## 6. Timezone correctness: preserving the `baa4e75`/`8250a9a` invariant
+
+**The exact bug class `baa4e75` fixed**: `today` and `now` must never be
+derived from two independent `Utc::now()` reads, because during British
+Summer Time a UTC-truncated date and a London-converted time-of-day can
+disagree about which calendar day it is in the 23:00-00:00 UTC window,
+silently reclassifying yesterday's departed trains as upcoming. The fix was
+to read `Utc::now().with_timezone(&Europe::London)` exactly once and derive
+both `today` and `now` from that single value. `8250a9a` then proved the
+existing test suite could not actually detect a regression of this fix (all
+13 pre-existing fixtures sit 30-60 minutes from the correct `now`, far
+outside the one-hour BST gap) and added a fixture seeded *inside* that gap.
+
+**This feature's new code must preserve the same single-read invariant, and
+extend it with one new comparison rather than a second clock read.** The
+route already computes `london_now`/`today`/`now` from one reading
+(`trains.rs`, unchanged by this feature). The only new logic is:
 
 ```rust
-/// Every calendar day this service proactively computes and publishes
-/// `schedule_destination_departures` for, starting from `today`. A pure
-/// function (no I/O) so the window size is unit-testable in isolation --
-/// same "pure logic split out of the I/O function" convention as
-/// `lines_to_publish`/`schedule_destination_departures_rows` in this same
-/// file.
-const DESTINATION_DEPARTURES_FORWARD_DAYS: i64 = 7;
+let service_date = match params.date {
+    Some(raw) => parse_date("date", raw)?,   // NaiveDate::parse_from_str, total/unambiguous
+    None => today,                            // the SAME `today` already derived above
+};
 
-fn dates_to_publish(today: chrono::NaiveDate) -> impl Iterator<Item = chrono::NaiveDate> {
-    (0..DESTINATION_DEPARTURES_FORWARD_DAYS).map(move |offset| today + chrono::Duration::days(offset))
-}
+let scheduled_from = if service_date == today {
+    // Exactly today's existing behavior, unchanged.
+    match from_time { Some(from) => std::cmp::max(now, from), None => now }
+} else {
+    // A named day that isn't "right now" has no now-forward boundary to
+    // apply at all -- `from`/`to` alone bound the window.
+    from_time.unwrap_or(chrono::NaiveTime::MIN)
+};
 ```
 
-— then, inside `publish_schedule_destination_departures`, one
-`departures_by_destination_crs` call and one `post_batch` call **per date**,
-not one call covering every date at once:
+The load-bearing property: `service_date == today` compares the caller's
+parsed date against the **same** `today` value already produced by the
+single `london_now` read that `baa4e75` introduced -- there is no second,
+independent "is this today" computation anywhere, and therefore no new
+opportunity for the two clocks to disagree. A caller explicitly passing
+`date=<today's own date, spelled out>` must behave byte-for-byte identically
+to omitting `date` entirely, because both paths resolve to the identical
+comparison.
 
-```rust
-for date in dates_to_publish(today) {
-    let by_destination =
-        schedule_query::departures_by_destination_crs(index, date, chrono::NaiveTime::MIN, &tiploc_to_crs);
-    let rows = schedule_destination_departures_rows(by_destination, date);
-    if let Err(err) = common::ingest::post_batch(
-        client,
-        &config.schedule_destination_departures_url,
-        internal_oauth,
-        &rows,
-        "schedule-derived destination departures rows",
-    )
-    .await
-    {
-        tracing::error!(error = ?err, service_date = %date, "failed to publish schedule-derived destination departures for this date; other dates in this cycle are unaffected, will retry next cycle");
-    }
-}
-```
+**New tests required, mirroring `8250a9a`'s own rigor:**
 
-**This is a smaller, simpler mechanism than the "chunk a too-big publish
-and teach the ingest handler `first-chunk-clears-the-day` semantics"
-fallback both `main.rs`'s own doc comment (`:436-441`) and the sizing
-addendum (§3, "Escape hatch") already anticipated — and it supersedes that
-fallback rather than needing it.** That fallback was designed for a
-*different* problem: a single day's ~377,000 rows someday exceeding the
-100MB limit on their own, which would require splitting *one day's* rows
-across multiple POSTs and teaching `upsert_schedule_destination_departures`
-to distinguish "first chunk, clear the day" from "later chunk, append
-only." Extending to 7 *days* does not have that problem at all: each day's
-~30-38MB is already, individually, comfortably under the 100MB limit
-(§1.2's table), so the natural, already-correct chunking boundary is the
-calendar day itself, and **`upsert_schedule_destination_departures` needs
-no change whatsoever.** Its existing behavior — `DELETE FROM
-schedule_destination_departures WHERE service_date = ANY($1)` over the
-batch's own distinct dates, then `UNNEST`-insert
-(`crates/api/src/data/queries.rs:1002-1053`) — already wholesale-replaces
-exactly one service date correctly when the batch it's given happens to
-contain rows for exactly one date, which is precisely what each of the
-7 per-date calls now sends it. This is a genuinely pleasant, confirmed
-consequence of the data layer's existing per-batch-scoped DELETE, not a
-new property being added for this feature.
+1. `trains_search_with_an_explicit_date_equal_to_today_behaves_identically_to_omitting_date`
+   -- seeds the existing BST-gap fixture from `8250a9a`
+   (`trains_search_hides_a_departure_inside_the_utc_vs_london_gap`'s own
+   20-minutes-before-`now` row) and asserts the SAME exclusion when `date=`
+   is passed explicitly as today's date, proving the two code paths are one
+   path, not two that happen to agree today and could silently diverge
+   later.
+2. `trains_search_with_a_future_date_does_not_apply_the_now_forward_floor`
+   -- seeds a row at `00:05` on `today+1` and asserts it IS returned
+   regardless of what `now` currently is in London, proving the floor does
+   not leak across the day boundary into a different `service_date`.
+3. `trains_search_with_a_past_date_within_retention_returns_that_days_rows`
+   -- seeds `today-1` (still inside the existing 2-day retention window)
+   and confirms `date=<today-1>` returns it, proving retained backward data
+   is genuinely reachable once `date` exists, not merely retained-but-unused
+   (today's route has no way to read it at all).
+4. `trains_search_with_a_date_outside_the_published_window_returns_404` --
+   a syntactically valid but never-published date (e.g. `today+30`) gets the
+   existing "no CIF publish has landed for that day" 404, proving no special
+   out-of-window rejection logic needed to be invented (§2).
+5. `trains_search_rejects_a_malformed_date` -- `date=not-a-date` is a `400`,
+   matching every other malformed-input field's existing posture on this
+   route (`trains.rs`'s own doc comment on why malformed input 400s rather
+   than being silently ignored, applied here too: silently ignoring a bad
+   `date` would search "today" under a filter the caller believes names a
+   different day -- the same "reads as a broken search" failure mode
+   already rejected for `from`/`to`/`destination`/`origin`/`station`).
 
-**Per-date error isolation is a deliberate, new improvement, not
-incidental.** Looping with `tracing::error!` + implicit `continue` (the
-loop simply moves to the next iteration) means a transient POST failure for
-one date (say, `today+4`) does not prevent the other six dates in that
-cycle from publishing correctly. The monolithic single-POST version this
-replaces could only fail or succeed as a whole; this version degrades
-per-date, which is strictly better given there is now something to degrade.
+All five are `#[tokio::test] #[ignore]`, DB-backed, run the same way the
+existing `trains_search_*` suite already is:
+`DATABASE_URL=postgres://lucy@localhost:5432/distant_signal_test cargo test -p api -- --ignored --test-threads=1`.
 
-**No change to `schedule_destination_departures_rows`, to
-`departures_by_destination_crs`, or to `schedule_query` at all** — every
-per-date call reuses the SAME already-correct, already-tested
-row-shaping/flatten function, just called 7 times with different `date`
-values instead of once with `today`.
+## 7. `schedule-reference` changes, concretely
 
-### 2.3 No change to `schedule_network_departures`
+- `Config`: new field `schedule_destination_departures_forward_days: i64`,
+  default `7`, doc comment mirroring
+  `schedule_destination_departures_retention_days`'s own style ("1
+  reproduces today's existing single-day behavior; raising this multiplies
+  per-cycle publish-write cost roughly linearly -- see
+  `2026-09-09-train-search-multi-day-design.md` §1 before raising it").
+  Wired through the same Helm-values/env-var mechanism as the retention
+  field.
+- `publish_cif_derived_products`: after computing `today` (unchanged), loop
+  `for offset in 0..config.schedule_destination_departures_forward_days { let service_date = today + chrono::Duration::days(offset); publish_schedule_destination_departures(client, config, &index, service_date, stanox_crs_records, internal_oauth).await; }`
+  -- replacing the single current call. `schedule_line_population` and
+  `schedule_network_departures` publishes are **untouched** -- this spec
+  does not extend either (the future-dates sibling document explicitly
+  recommends against extending `schedule_network_departures`, and
+  `schedule_line_population`'s own future-dates work remains its own
+  separate, not-yet-implemented scoping document this spec does not
+  implement).
+- `publish_schedule_destination_departures`/`schedule_destination_departures_rows`:
+  rename the `today: NaiveDate` parameter to `service_date: NaiveDate` for
+  clarity (it no longer always means "today"); no behavioral change to
+  either function's body. `now = NaiveTime::MIN` stays exactly as today --
+  unrelated to this change, still means "publish the whole rail day,
+  uncapped," unaffected by which day is being published.
+- Each of the N per-cycle calls keeps the existing log-and-continue error
+  posture (`tracing::error!` + "will retry next cycle") independently --
+  one date's POST failing does not block the others in the same cycle.
 
-Exactly the same conclusion the sibling future-dates document already
-reached for this same question (its own §4, "`schedule_network_departures`
-should NOT be extended by this same project"): it is a different table for
-a different job (a live next-few-departures picker, capped at 10/station),
-and its cap/correctness tradeoffs are unrelated to this document's. Not
-touched here.
+## 8. Frontend (`TrainSearchForm.tsx`)
 
-## 3. Retention/pruning: no change required, stated explicitly rather than left implicit
+- New optional field, **Date**, using `@mantine/dates`'s `DatePickerInput`
+  (already used by `HistoryRangePicker.tsx`; `DateTimePicker` is the wrong
+  component here -- this route takes a bare calendar date, not a
+  datetime). No `minDate`/`maxDate` constraint, matching this codebase's
+  existing "trust the server's honest 404 over a client-side guess at the
+  valid range" posture (`TrackTrainForm`'s own unconstrained
+  `DateTimePicker`, cited in the future-dates sibling document). Label
+  "Date (optional)", description "Defaults to today. Supports a roughly
+  week-ahead window, plus the last couple of days."
+- New state `date: string | null` (string form, `YYYY-MM-DD`, matching
+  `HistoryRangePicker`'s own `DateStringValue` convention rather than a
+  `Date` object).
+- `searchParams()`: `if (date) params.set('date', date);` -- gated on
+  presence exactly like every other optional field on this form.
+- **Correctness fix, not purely additive**: every result row today links to
+  a hardcoded `const today = dayjs().format('YYYY-MM-DD')` for both
+  `/train/{uid}/{today}` and `TrackThisTrainButton`'s `date` prop, because
+  results were always for today. Once `date` can be any day, **both call
+  sites must use the actually-searched date, not always today's** -- the
+  effective date is `date || dayjs().format('YYYY-MM-DD')`, computed once
+  and threaded into both. This is a real bug this feature would otherwise
+  introduce (linking a tomorrow search's results back to today's train
+  page), not a hypothetical -- flagged explicitly because it is easy to
+  miss, since the existing code already "happens to work" by virtue of only
+  ever searching today.
+- 404 ("unpublished") copy: reword to name "that date" rather than always
+  "Today's," e.g. "That date's scheduled timetable data isn't available --
+  it may be too far ahead or behind, or it may not have been published
+  yet." Matches `baa4e75`'s own precedent of keeping this copy honest about
+  what the 404 actually means.
+- New tests: omitting `date` behaves identically to today (regression);
+  picking a date threads through to both the search request and the result
+  rows' links/track buttons (the correctness fix above); clearing `date`
+  after picking one returns to "today" semantics.
 
-**Forward direction: nothing needed.** A date published under the 7-day
-window ages into "today" naturally as the calendar advances, exactly the
-same finding the schedule_line_population future-dates document already
-made for its own sibling table (§4 of that document: "`schedule_network_
-departures`... future days age into 'today' naturally"). There is no
-forward-edge table to prune — the per-date wholesale-replace (§2.2) already
-means a date that falls out of the 7-day window simply stops being
-re-published; it is not actively deleted by anything, it just stops being
-refreshed, and the EXISTING trailing-edge prune job (below) is what
-eventually removes it once it is old enough.
+## 9. Explicitly out of scope
 
-**Backward direction: `prune_schedule_destination_departures` and its
-default of `2` are unchanged.** §1.4 already established that this default
-already keeps exactly the one backward day (`yesterday`) this document adds
-support for, with margin to spare. No config change, no code change.
+- **Any change to `schedule_line_population` or `schedule_network_departures`**,
+  their own future-dates questions, or `full-coverage-consumer`'s "today +
+  tomorrow" fetch. All untouched; `schedule_line_population`'s own
+  future-dates scoping document remains unimplemented and separate.
+- **Reconstructing a past date from today's CIF extract** (the past-dates
+  sibling's "Regime B"). This feature only ever reads what was retained
+  from the day it was originally published; nothing is recomputed after the
+  fact for a past date.
+- **Extending `schedule_destination_departures_retention_days`.** Left at
+  its current default (2); a future product ask for a longer backward
+  window is a one-line config change with proportional, well-understood
+  storage cost, not bundled here.
+- **A `destination_from`/`destination_to` question about rail-day
+  crossing** (an overnight service whose arrival nominally falls on the
+  next calendar day). Unaffected by and unrelated to this change --
+  `destination_arrival`'s existing semantics (a plain `TIME` scoped to the
+  same `service_date` as everything else on that row) are untouched.
+- **Any operator filter, LDBWS/live-board multi-day search, or resident
+  whole-network index.** All remain binding non-goals from every
+  predecessor document in this chain.
+- **A migration file.** Per §0, none is needed.
+- **Rate limiting or auth on `GET /public/trains/search`.** Unchanged;
+  `MAX_SEARCH_LIMIT`'s existing clamp is this route's only such control,
+  untouched by this feature.
 
-**Net effect: zero changes anywhere in `crates/aggregator`.** This is a
-positive, confirmed finding, stated explicitly per the brief's own
-instruction not to leave it implicit: the existing retention job was sized
-for "protect the producer's edges around the midnight/delivery-timing
-boundary," and it turns out to already be exactly the right shape for "keep
-one day of read-side backward lookback" too, for the same underlying reason
-(both needs are satisfied by "don't delete a date's row the instant the
-calendar moves past it").
+## 10. Open questions / risks
 
-## 4. Index/query shape: no change, because of the wire-shape decision in §5
-
-The brief's own framing (point 4) worried that a multi-day search would
-turn `service_date` from an equality into a range, forcing a reconsideration
-of the existing `(service_date, origin_crs, scheduled, train_uid)` index
-order in favor of a station-first `(origin_crs, service_date, scheduled,
-train_uid)` one. That concern is real **only if one search request can
-itself span multiple `service_date` values** — and §5 deliberately chooses
-a wire shape where it cannot: one `date` parameter, resolved to exactly one
-`NaiveDate`, still an equality filter on every single request, exactly as
-today. Under that shape, `service_date` never becomes a range within a
-query; it simply takes a caller-chosen value instead of a hardcoded one.
-
-**Working through the rejected alternative's own index reasoning, because
-the brief asked for it shown rather than asserted:** if `from`/`to` had
-instead become full datetimes capable of spanning a day boundary within one
-request, `service_date` genuinely would become a range bound
-`(service_date, scheduled) BETWEEN (d1, t1) AND (d2, t2)`. Under the
-*current* column order `(service_date, origin_crs, scheduled, train_uid)`,
-a btree index can only use a *leading* column as a range condition if every
-column before it is an equality and use trailing columns as index
-conditions at all if every column before THEM is equality too (the
-leftmost-prefix rule) — so a `service_date` *range* as the very first column
-would mean `origin_crs` could no longer be pushed down as an index
-condition, only as a post-filter: the scan would walk every row across the
-whole date range at every station, not just the searched one. Reordering to
-`(origin_crs, service_date, scheduled, train_uid)` would fix that (equality
-on `origin_crs` first, then `service_date` as a range immediately after it
-still qualifies under the leftmost-prefix rule), **and would cost nothing
-for today's existing single-day equality query**, since two equality
-columns in either relative order are equally optimal for a btree. That
-reordering would have been the right call *if* the wire shape required a
-genuine date range per query. It is not needed under the wire shape this
-document actually picks (§5), so **no migration, no index change, here.**
-This reasoning is recorded so a future document that *does* want a true
-date-range-per-query search (e.g. "show me this whole week in one page")
-does not have to re-derive it.
-
-**Confirmed directly: every function this feature touches already takes
-`service_date` as a real, non-hardcoded parameter.**
-`search_schedule_calling_point_departures` (`queries.rs:1119-1131`),
-`schedule_destination_departures_published_for`
-(`queries.rs:1070-1081`) both already accept `service_date:
-chrono::NaiveDate` as an ordinary argument — they were written this way
-from the calling-point design doc onward, never hardcoded to "today"
-internally. **This means the entire `crates/api/src/data/queries.rs` data
-layer needs zero changes for this feature.** Only `routes/trains.rs`
-changes: it currently always passes `today` into these already-generic
-functions; it will instead pass whichever date the request resolves to.
-This mirrors, almost exactly, the schedule_line_population future-dates
-document's own Dimension 5 finding ("no caller anywhere assumes 'only one
-date row exists at a time'... every read site already scopes by the exact
-date it needs") — the same foresight pays off here a second time.
-
-## 5. Wire shape: one `date` param, not datetime `from`/`to`
-
-**Decision: add one new, optional query parameter, `date` (`"YYYY-MM-DD"`),
-defaulting to today (London-local) when absent. `from`/`to` and
-`destination_from`/`destination_to` stay exactly `"HH:MM"` time-of-day, now
-interpreted as bounds within whichever day `date` resolves to, rather than
-always today.**
-
-This is chosen over turning `from`/`to` (and, for consistency,
-`destination_from`/`destination_to`) into full datetimes, for three
-concrete reasons:
-
-1. **It is additive, not a breaking change to four existing fields.** Every
-   existing caller of this route (today: exactly `TrainSearchForm.tsx`) that
-   never sends `date` gets byte-for-byte the same behavior as before — the
-   existing `db_tests` assertions about `from`/`to`/`destination_from`/
-   `destination_to` parsing and semantics do not need to change at all, only
-   gain siblings for the new `date`-bearing cases.
-2. **It composes correctly with the SEPARATE `destination_from`/
-   `destination_to` pair already layered on top of `from`/`to`** (per the
-   task's own instruction to confirm this for consistency). Both pairs stay
-   pure time-of-day, both scoped to the SAME one `date` the whole request
-   resolves to — `destination_arrival` is a column on the same
-   per-`service_date` row as `scheduled`, so there is exactly one day in
-   play per request, and one `date` param cleanly scopes both time-range
-   pairs at once. Had `from`/`to` become independent datetimes while
-   `destination_from`/`destination_to` stayed bare times, the two pairs
-   would have silently disagreed about which calendar day they apply to
-   whenever a search crossed midnight — a real new ambiguity this shape
-   avoids by construction, not by convention.
-3. **It keeps `service_date` an equality in the query, not a range** — see
-   §4's full reasoning for why that is also what keeps the index and the
-   data layer untouched.
-
-### 5.1 Route changes (`crates/api/src/routes/trains.rs`)
-
-- `TrainSearchParams` gains `date: Option<String>`.
-- New helper, mirroring `normalize_time`/`normalize_crs`'s existing shape:
-
-  ```rust
-  fn normalize_date(label: &str, raw: &str) -> Result<chrono::NaiveDate, (StatusCode, String)> {
-      chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").map_err(|_| {
-          (StatusCode::BAD_REQUEST, format!("{label} must be a date in YYYY-MM-DD form"))
-      })
-  }
-  ```
-
-  Same "malformed input 400s, never silently ignored" posture this file's
-  own module doc already argues for every other field.
-
-- The `now`/`today` computation keeps its existing single-`Utc::now()`-call
-  shape (§6 — this is the one piece of code this document's own brief
-  explicitly warns is delicate) and gains a conditional:
-
-  ```rust
-  let london_now = chrono::Utc::now().with_timezone(&chrono_tz::Europe::London);
-  let today = london_now.date_naive();
-  let now = london_now.time();
-
-  let requested_date = params
-      .date
-      .as_deref()
-      .filter(|s| !s.trim().is_empty())
-      .map(|s| normalize_date("date", s))
-      .transpose()?;
-  let service_date = requested_date.unwrap_or(today);
-
-  // `now`-forward only makes sense for TODAY. A future day hasn't started
-  // yet -- clamping it to the current clock time would hide its entire
-  // morning for no reason. A past day is entirely over -- clamping it to
-  // "now" would hide everything (today's wall-clock time is always later
-  // than any time on a day that's already finished), making the whole
-  // backward-lookback feature in §1.4 pointless. Only when the requested
-  // day IS today does "now" mean anything at all.
-  let scheduled_from = if service_date == today {
-      match from_time {
-          Some(from) => std::cmp::max(now, from),
-          None => now,
-      }
-  } else {
-      from_time.unwrap_or(chrono::NaiveTime::MIN)
-  };
-  ```
-
-- `search_schedule_calling_point_departures` and the existence probe are
-  called with `service_date` instead of the old bare `today` — both already
-  take it as a parameter (§4), so this is the entire diff to the call site.
-- The 404 body names the actual resolved date, not a hardcoded "today":
-  `format!("no CIF-derived schedule data has been published for {}",
-  service_date.format("%Y-%m-%d"))`. This is a deliberate, visible change to
-  existing test `trains_search_nothing_published_for_today_is_a_404`'s
-  assertion (`body.contains("today")` no longer holds when `date` is
-  explicit) — that test is updated to assert against the now-resolved
-  date string for its no-`date`-param case (which is still literally
-  today, so a test asserting the literal ISO date it computes itself
-  continues to prove the same thing), and a new sibling test covers the
-  explicit-future-date 404 case by asserting the SPECIFIC requested date
-  string appears in the body.
-- Module doc comment (lines 34-35, "There is deliberately NO date
-  parameter: like `get_station_schedule_departures`, this is 'always today,
-  server-side'") is rewritten to describe the new, bounded window instead of
-  asserting its absence.
-- `calling_point_departure_json` (`render.rs`) gains a `service_date:
-  chrono::NaiveDate` parameter, alongside its existing `station_crs` one,
-  and emits a new `"serviceDate": "YYYY-MM-DD"` field on every row — the
-  same "attach a whole-response constant onto every row at render time"
-  convention `stationCrs` already established, not a new pattern. This is
-  necessary, not cosmetic: see §7 for why the frontend needs this on every
-  row rather than trusting its own request-time `date` state.
-
-### 5.2 Cursor: unchanged, and here is why that is still correct
-
-`encode_cursor`/`decode_cursor` stay `"HH:MM:SS|train_uid"`, exactly as
-today. This file's own existing doc comment on `encode_cursor`
-(`trains.rs:172-180`) already states the precedent this decision rests on:
-"`origin_crs`... is now the fixed equality filter for the whole query, not a
-value that varies within one page, so it carries no ordering information
-and doesn't belong in the cursor." `date` (resolved to `service_date`) is
-exactly such a fixed equality filter, constant across every row of one
-paginated response — by the SAME reasoning already applied to `station` in
-the predecessor document, it does not belong in the cursor either. The
-caller is already responsible for resending every other filter param
-(`station`, `origin`, `destination`, etc.) unchanged on a "Load more"
-request; `date` joins that same existing contract, not a new one.
-
-## 6. Timezone correctness: the exact failure mode this document must not reintroduce
-
-Commits `baa4e75`/`8250a9a` fixed a bug where `today` and `now` were read
-from two independent `chrono::Utc::now()` calls, which could disagree about
-which calendar day it was near the UTC/London midnight boundary during BST
-— the regression test added by `8250a9a`,
-`trains_search_hides_a_departure_inside_the_utc_vs_london_gap`, pins this
-down by seeding a row 20 minutes before the correct London-local `now` and
-asserting it is excluded specifically during BST.
-
-This document's design (§5.1) **keeps the single `london_now` read
-completely intact** — `today` and `now` are still two fields split off
-ONE `Utc::now().with_timezone(...)` call, exactly as today; nothing about
-adding `date` touches that. The only new risk surface is the **conditional**
-around it: whether `scheduled_from` clamps to `now` depends on `service_date
-== today`, and `today` here is always the SAME already-correctly-computed
-London-local date used everywhere else in this function. The caller-
-supplied `date` itself is a bare, timezone-free `YYYY-MM-DD` civil date —
-parsed with no timezone arithmetic at all (`NaiveDate::parse_from_str`,
-§5.1) — so there is no second opportunity for a UTC/London mismatch to creep
-in on the *input* side; the only comparison that matters is `NaiveDate ==
-NaiveDate`, unambiguous regardless of DST.
-
-**New tests this document adds specifically for this risk, alongside the
-existing (unmodified) `..._hides_a_departure_inside_the_utc_vs_london_gap`
-regression test:**
-
-- `trains_search_omitting_date_matches_explicitly_passing_todays_own_date`
-  — proves the default-resolution path and the explicit-date path are one
-  code path, not two that could independently drift: the SAME request
-  sent with no `date` and with `date=<today's own correctly-computed
-  London-local date>` must return byte-identical results.
-- `trains_search_a_future_date_is_not_clamped_to_the_current_time_of_day`
-  — seed a row for `today+1` at a time-of-day EARLIER than the current
-  wall-clock time; assert it IS returned (proves `now` does not leak across
-  a day boundary the way a naive `max(now, from)` applied unconditionally
-  would have hidden it).
-- `trains_search_yesterday_returns_the_whole_day_not_just_what_remains`
-  — seed rows for `today-1` both before AND after the current time-of-day;
-  assert BOTH are returned (proves the backward-lookback window in §1.4 is
-  not silently neutered by an incorrectly-applied `now`-forward filter,
-  which would otherwise make it return nothing useful at all, since every
-  time on a day that has already fully elapsed is "before now").
-- `trains_search_malformed_date_is_a_400` and
-  `trains_search_a_date_beyond_the_published_window_is_a_404_naming_that_date`
-  — ordinary input-validation coverage, matching this file's existing
-  pattern for every other field.
-
-No change is made to `normalize_time`, to the existing `scheduled_from`
-computation's reliance on one `london_now` read, or to the existing BST
-regression test — this document adds a condition around that logic, it does
-not touch its internals.
-
-## 7. Frontend (`frontend/components/TrainSearchForm.tsx`, `TrainSearchForm.test.tsx`, `frontend/app/trains/page.tsx`)
-
-### 7.1 Date picker: reuse `@mantine/dates`' `DatePickerInput`, single mode
-
-`@mantine/dates` is already a dependency (`frontend/package.json`) and
-already used twice in this codebase: `DateTimePicker` in
-`TrackTrainForm.tsx` (date+time, for a pin's scheduled departure) and
-`DatePickerInput` with `type="range"` in `HistoryRangePicker.tsx` (a date
-*range*, for the history page). This feature needs neither of those shapes
-— one single calendar date, no time component (time-of-day is already
-handled by the existing `from`/`to` `TextInput`s). **Use `DatePickerInput`
-in its default (single-date) mode**, the same component `HistoryRangePicker`
-already imports, just without `type="range"`:
-
-```tsx
-import { DatePickerInput } from '@mantine/dates';
-// ...
-const [date, setDate] = useState<string | null>(initialDate ?? null);
-// ...
-<DatePickerInput
-  label="Date (optional)"
-  placeholder="Today"
-  description="Defaults to today. Searches the published timetable for any day in the upcoming week, or yesterday."
-  value={date}
-  onChange={setDate}
-  clearable
-/>
-```
-
-`value`/`onChange` use `@mantine/dates`' own `DateStringValue` (`"YYYY-MM-DD"
-| null`) shape — the same string shape `HistoryRangePicker`'s `value` state
-already uses (`useState<[string | null, string | null]>`), so this needs no
-new date-formatting utility; `date` (when non-null) is sent verbatim as the
-`date` query param.
-
-### 7.2 A real, necessary fix: per-row links must use the SEARCHED date, not the client's own "today"
-
-`TrainSearchForm.tsx:141` currently computes `const today =
-dayjs().format('YYYY-MM-DD')` once per render and uses it for BOTH the
-`/train/{uid}/{today}` link (`:282`) and `TrackThisTrainButton`'s `date`
-prop (`:287`), on the (currently true) assumption that every result is for
-today. **Once a caller can search a different day, that assumption breaks**:
-searching tomorrow and clicking "View live status" or "Track this train" on
-a result would silently link to TODAY's `(uid, date)` pair instead of
-tomorrow's — a real, wrong-train-identity bug, not a cosmetic one, since
-`/train/{uid}/{date}` and `POST /Train/by-uid/{uid}/{date}/track` are both
-keyed on the exact `(uid, service_date)` pair.
-
-**Fix: use `row.serviceDate` (§5.1's new per-row field) instead of the
-component-level `today` constant**, for both the link and the button:
-
-```tsx
-<TextLink href={`/train/${encodeURIComponent(row.uid)}/${row.serviceDate}`}>
-  View live status
-</TextLink>
-<TrackThisTrainButton uid={row.uid} date={row.serviceDate} attachTicketId={attachTicketId} size="xs" />
-```
-
-This is why §5.1 puts `serviceDate` on every row rather than only in the
-form's own request-time state: a row already in view from page 1 of a
-"Load more" sequence must keep linking correctly even if, hypothetically,
-the form's own `date` state were to change before the user clicks it (it
-can't today, since the date field is disabled mid-search the same way every
-other field implicitly is via `searching`/`canSearch`, but trusting the
-server-echoed value per row is strictly more robust than trusting client
-state to stay in sync, and costs nothing).
-
-### 7.3 Everything else
-
-- `TrainSearchRow` gains `serviceDate: string`.
-- `searchParams()` sets `date` only when non-empty, same optional-param
-  pattern `origin`/`destination`/`from`/`to` already use; `handleLoadMore`
-  needs no change beyond that, since it already reuses `searchParams()`
-  verbatim and therefore already resends `date` unchanged across pages
-  (§5.2).
-- `canSearch` gains no new validity check: `@mantine/dates`' `DatePickerInput`
-  cannot produce a malformed string the way a free-text `TextInput` can, so
-  there is no client-side `dateValid` needed — only the server's `400` for
-  a genuinely malformed value guards that path, consistent with how this
-  component already leans on the backend for some validation classes.
-- `resultsContent()`'s `'unpublished'` copy (`:253-258`, currently "Today's
-  scheduled timetable data isn't available yet...") becomes date-aware,
-  e.g. "Scheduled timetable data for that date isn't available — it may not
-  have been published, be outside the searchable window, or that station
-  may not be one this feed covers."
-- `frontend/app/trains/page.tsx`: `searchParams` type gains `date?: string |
-  string[]`, destructured and passed as `initialDate`, same pattern as
-  `initialStation`/`initialOrigin`/`initialDestination`.
-- `TrainSearchForm.test.tsx`: existing tests are unaffected (no `date`
-  sent → default behavior, unchanged wire contract); new tests cover
-  sending `date` in `searchParams()` when set, omitting it when cleared,
-  and — the regression this document exists to prevent — that a result
-  row's "View live status" link and `TrackThisTrainButton` use
-  `row.serviceDate`, not a client-computed "today", including a test that
-  explicitly sets `serviceDate` to a DIFFERENT value than the client's own
-  current date and asserts the link/button still use the row's value.
-
-## 8. Explicitly out of scope
-
-- **Any per-query date RANGE (e.g. "this whole week in one response").**
-  §5 picks a single-`date`-per-request shape specifically to avoid this;
-  §4 records the index-reordering work a future document would need if this
-  is ever revisited.
-- **Further backward lookback than yesterday, or any reconstruction of a
-  pruned date.** §1.5; this is the past-dates sibling document's own
-  unresolved Regime B risk, not reopened here.
-- **Extending `schedule_network_departures`'s own window or cap.** §2.3;
-  unrelated table, unrelated job, explicitly declined by the sibling
-  future-dates document already and not reopened here.
-- **Any change to `schedule_query`, its `ScheduleIndex`, `resolve_for_date`,
-  `schedules_touching`, or `schedule_for_uid`.** All already fully
-  date-parametric (§0); nothing here needed a change.
-- **Any change to the table's schema, primary key, or either existing
-  index.** §4; the wire-shape decision in §5 makes this unnecessary.
-- **Any change to `crates/aggregator`**, including
-  `prune_schedule_destination_departures`'s retention default. §3;
-  already exactly the right shape.
-- **Operator filtering, LDBWS/live-board search, the pure-terminus gap, or
-  any other constraint already declined by the three immediate predecessor
-  documents.** All still binding, all untouched.
-- **Measuring real `schedule_reference_cycle_duration_seconds` impact before
-  shipping.** Named in §1.3/§2 as a post-ship observation, matching this
-  repo's own established posture of shipping a reasoned-but-unbenchmarked
-  bounded change and watching the existing metric, not gating on a new one.
-
-## 9. Open questions / risks
-
-1. **7 days forward is a reasoned choice, not a measured one**, exactly like
-   the sibling future-dates document's own 14-30-day range for
-   `schedule_line_population`. If real usage shows users routinely want
-   further out, widening `DESTINATION_DEPARTURES_FORWARD_DAYS` is a
-   single-constant change with linearly predictable cost, per §1.2's table
-   — revisit with real query-date-distribution data once this ships, the
-   same way the sibling document named its own future metric need.
-2. **Publish-call count going from 1 to 7 per cycle is new, unmeasured
-   latency**, even though each call is independent and the cycle itself
-   runs roughly once a day. Not expected to be a problem (§1.3) but not
-   independently benchmarked here.
-3. **The 404 semantics already diverged from `get_station_schedule_
-   departures`'s** under the calling-point-search predecessor document
-   (§3 of the sizing addendum); this document does not reopen that, but a
-   caller requesting a date genuinely outside the 7-day-forward/1-day-
-   backward window gets the SAME 404 shape as "no publish landed at all,"
-   with no way to distinguish "this date is simply unsupported" from "this
-   date's delivery failed to process" from the response alone. Named, not
-   solved — matches this table's existing posture of not distinguishing
-   those cases for any date, not a new gap this document introduces.
-4. **`DatePickerInput`'s own min/max-selectable-date props are not wired to
-   the 7-day-forward/1-day-backward window** in §7.1's sketch, meaning a
-   user COULD pick a date outside the supported range in the UI and receive
-   an honest 404 rather than being prevented from picking it at all. Left
-   as an implementation-time UX polish (`minDate`/`maxDate` props already
-   exist on this Mantine component and could be wired to the same
-   7-day/1-day constants this document names), not a correctness gap —
-   matches this component's own existing "visual/UX treatment is
-   implementation/design-review, not fixed in the design doc" convention.
+1. **`forward_days = 7` is a reasoned default, not a measured one** -- same
+   honesty posture as the future-dates sibling's own 14-30-day range. No
+   metric exists in this codebase for how far ahead users actually search
+   (distinct from how far ahead they *pin*, which the sibling document
+   already flags as unmeasured too). Worth revisiting with real usage data
+   once this ships.
+2. **Per-cycle publish-write cost at N=7 (~211MB total writes, once daily,
+   across 7 independent ~30MB POSTs) is not independently benchmarked** --
+   bounded by the same reasoning the sizing addendum already applied to
+   N=1, but a real `schedule_reference_cycle_duration_seconds` comparison
+   before/after this ships is cheap to obtain and should gate raising
+   `forward_days` further.
+3. **Whether product ever wants backward search beyond the existing 2-day
+   retention.** Named as a non-goal (§9), not ruled out for later -- a
+   simple, independent config change if asked for.
