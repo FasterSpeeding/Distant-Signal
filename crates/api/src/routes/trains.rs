@@ -1071,12 +1071,13 @@ mod db_tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("date"), "400 body should name the field: {body}");
 
-        let (status, _) = get(
+        let (status, body) = get(
             &pool,
             &format!("/trains/search?station=ZRB&date={}", too_far_past.format("%Y-%m-%d")),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("date"), "400 body should name the field: {body}");
     }
 
     #[tokio::test]
@@ -1184,6 +1185,75 @@ mod db_tests {
         assert!(
             uids.contains(&"C30003".to_string()),
             "a 00:05 row on a FUTURE date must not be hidden by today's now-forward filter: {uids:?}"
+        );
+
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+            .bind(tomorrow)
+            .execute(&pool)
+            .await
+            .expect("cleanup tomorrow's fixture");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_uses_from_as_a_plain_bound_with_no_now_floor_on_a_non_today_date() {
+        // Coverage for the `else` branch's `Some(from) => ...` arm
+        // specifically -- `trains_search_applies_now_forward_only_when_date_is_today`
+        // above only exercises that branch's `None` arm (no `from` supplied
+        // at all). This test supplies `from` explicitly alongside a
+        // non-today `date` and proves it is used as a PLAIN inclusive lower
+        // bound with NO `max(now, from)` floor applied, per this route's
+        // own doc comment on `scheduled_from` (trains.rs:350-362).
+        let pool = connect().await;
+        let today = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .date_naive();
+        let tomorrow = today + chrono::Duration::days(1);
+
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
+            .bind(tomorrow)
+            .execute(&pool)
+            .await
+            .expect("cleanup tomorrow's fixture");
+
+        // A row scheduled at the very start of tomorrow. If `from` were
+        // wrongly combined with TODAY's `now` via `max(now, from)`, this row
+        // would be excluded any time after 00:05 today -- which is true for
+        // nearly the entire day, so this fixture reliably discriminates the
+        // bug this test is guarding against.
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(tomorrow)
+        .bind("WAT")
+        .bind(chrono::NaiveTime::from_hms_opt(0, 5, 0).unwrap())
+        .bind("C30004")
+        .bind("ZRB")
+        .bind(Option::<&str>::None)
+        .execute(&pool)
+        .await
+        .expect("seed tomorrow's early-morning fixture row");
+
+        let (status, body) = get(
+            &pool,
+            &format!(
+                "/trains/search?station=ZRB&date={}&from=00:00",
+                tomorrow.format("%Y-%m-%d")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let uids: Vec<String> = results(&body)
+            .iter()
+            .map(|row| row["uid"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            uids.contains(&"C30004".to_string()),
+            "an explicit from=00:00 on a FUTURE date must be a plain lower bound, with no \
+             now-based floor leaking in from today's clock: {uids:?}"
         );
 
         sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date = $1")
