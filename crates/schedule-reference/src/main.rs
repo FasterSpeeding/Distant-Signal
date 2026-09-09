@@ -222,7 +222,15 @@ async fn publish_cif_derived_products(
     // population, not this publish step.
     let today = chrono::Utc::now().date_naive();
 
-    publish_schedule_line_population(client, config, &index, today, internal_oauth).await;
+    publish_schedule_line_population(
+        client,
+        config,
+        &index,
+        today,
+        stanox_crs_records,
+        internal_oauth,
+    )
+    .await;
     publish_schedule_network_departures(
         client,
         config,
@@ -253,34 +261,40 @@ async fn publish_cif_derived_products(
     }
 }
 
-/// UNCHANGED per-line publish logic (per-line loop, per-line individual
-/// POST) -- only its own signature changed: `index`/`today` are now
-/// shared, caller-supplied inputs (built once by
+/// Per-line publish logic (per-line loop, per-line individual POST):
+/// `index`/`today` are shared, caller-supplied inputs (built once by
 /// `publish_cif_derived_products`) rather than rebuilt here on every call.
-/// Behavior-preserving: the JSON body shape (`line_id`/`service_date`/
-/// `population`), the per-line filtering predicate (`lines_to_publish`,
-/// untouched), and the individual-object POST (`post_schedule_line_population`,
-/// untouched) are all byte-for-byte the same as before this plan's Task 3.
-/// The lint suppression below is a direct, unavoidable consequence of that
-/// byte-for-byte constraint: `index` is now `&ScheduleIndex` (caller-
-/// supplied) rather than an owned `ScheduleIndex` built locally, so the
-/// loop body's unchanged `&index` (see Task 3 Step 5's own diff check)
-/// trips `clippy::needless_borrow` -- fixing the lint would mean editing
-/// the loop body, which the plan's Step 5 forbids.
+/// The JSON body shape (`line_id`/`service_date`/`population`) and the
+/// individual-object POST (`post_schedule_line_population`) are unchanged
+/// from before this plan's Task 3.
+///
+/// As of the 2026-09-09 tiploc-schedule-matching-gap fix, this now also
+/// takes `stanox_crs_records` (the same real, CIF-derived data
+/// `publish_schedule_network_departures`/`publish_schedule_destination_departures`
+/// already invert into a `tiploc_to_crs` map, just below) and resolves each
+/// line's TIPLOC filter list -- and `lines_to_publish`'s own inclusion
+/// predicate -- from it, via `crs_to_tiploc_map`/`line_tiplocs`, rather
+/// than from the TOML `tiploc` field. See `lines_to_publish`'s doc comment
+/// for why: the TOML field is documentation/display metadata only and was
+/// never a reliable proxy for "does this station appear in real CIF data."
+///
+/// The lint suppression below predates this fix (Task 3 Step 5's own
+/// byte-for-byte constraint on this loop, since relaxed by this change):
+/// `index` is `&ScheduleIndex` (caller-supplied) rather than an owned
+/// `ScheduleIndex` built locally, so the loop body's `&index` trips
+/// `clippy::needless_borrow`.
 #[allow(clippy::needless_borrow)]
 async fn publish_schedule_line_population(
     client: &Client,
     config: &Config,
     index: &schedule_query::ScheduleIndex,
     today: chrono::NaiveDate,
+    stanox_crs_records: &[common::StanoxCrsRecord],
     internal_oauth: &common::oauth_client::OAuthTokenCache,
 ) {
-    for line in lines_to_publish(&config.lines) {
-        let tiplocs: Vec<&str> = line
-            .stations
-            .iter()
-            .filter_map(|s| s.tiploc.as_deref())
-            .collect();
+    let crs_to_tiploc = crs_to_tiploc_map(stanox_crs_records);
+    for line in lines_to_publish(&config.lines, &crs_to_tiploc) {
+        let tiplocs = line_tiplocs(line, &crs_to_tiploc);
         let resolved = schedule_query::schedules_touching(&index, &tiplocs, today);
         let population: Vec<schedule_query::LinePopulationEntry> =
             resolved.into_iter().map(Into::into).collect();
@@ -300,6 +314,42 @@ async fn publish_schedule_line_population(
             tracing::error!(error = ?err, line_id = %line.id, "failed to publish schedule line population; will retry next cycle");
         }
     }
+}
+
+/// Real, CIF-derived CRS -> TIPLOC(s) map, inverted from
+/// `stanox_crs_records` -- the mirror image of the `tiploc_to_crs` map
+/// `publish_schedule_network_departures`/`publish_schedule_destination_departures`
+/// already build from the same data, just keyed the other way round. A CRS
+/// can resolve to more than one TIPLOC in practice (multiple STANOX rows
+/// can share a CRS, e.g. different platforms/areas of one physical
+/// location -- see `queries::list_stanox_crs_for_crs`'s own doc in
+/// `crates/api`), so this is `Vec<String>`-valued, not a single TIPLOC.
+fn crs_to_tiploc_map(
+    stanox_crs_records: &[common::StanoxCrsRecord],
+) -> std::collections::HashMap<String, Vec<String>> {
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for record in stanox_crs_records {
+        map.entry(record.crs.to_uppercase())
+            .or_default()
+            .push(record.tiploc.clone());
+    }
+    map
+}
+
+/// One line's real TIPLOC filter list for `schedule_query::schedules_touching`,
+/// resolved per-station from the real, CIF-derived `crs_to_tiploc` map --
+/// NOT from the TOML `tiploc` field (see `lines_to_publish`'s doc comment
+/// for why that field is no longer used for this).
+fn line_tiplocs<'a>(
+    line: &common::LineDefinition,
+    crs_to_tiploc: &'a std::collections::HashMap<String, Vec<String>>,
+) -> Vec<&'a str> {
+    line.stations
+        .iter()
+        .filter_map(|s| crs_to_tiploc.get(&s.crs.to_uppercase()))
+        .flatten()
+        .map(String::as_str)
+        .collect()
 }
 
 /// The whole-network trip-search design doc's Decision 1: every
@@ -524,16 +574,33 @@ fn london_local_time_now() -> chrono::NaiveTime {
     london_local_time_at(chrono::Utc::now())
 }
 
-/// Every catalogued line with at least one `tiploc`-bearing station -- a
-/// line with zero TIPLOCs trivially produces an empty `schedules_touching`
+/// Every catalogued line with at least one station resolvable to a real,
+/// CIF-derived TIPLOC via `crs_to_tiploc` (built from this cycle's own
+/// `stanox_crs_records` by `crs_to_tiploc_map`) -- a line with zero
+/// resolvable TIPLOCs trivially produces an empty `schedules_touching`
 /// result, harmless (if pointless) to publish, so this doesn't bother
 /// filtering it out for correctness, only to avoid a wasted POST.
-fn lines_to_publish(
-    lines: &[common::LineDefinition],
-) -> impl Iterator<Item = &common::LineDefinition> {
-    lines
-        .iter()
-        .filter(|l| l.stations.iter().any(|s| s.tiploc.is_some()))
+///
+/// As of the 2026-09-09 tiploc-schedule-matching-gap fix, this predicate no
+/// longer looks at the TOML `tiploc` field at all (previously: "a line with
+/// at least one `tiploc`-bearing station"). That field is hand-curated,
+/// optional, and largely absent -- 39 of 109 `lines/*.toml` files have it
+/// set on precisely zero stations (all of ScotRail, Southeastern,
+/// Merseyrail, London Overground, Heathrow Express, and others) -- so
+/// gating a whole line's publish on it silently dropped
+/// `schedule_line_population` for those lines entirely, even though the
+/// real `stanox_crs` table (this function's new `crs_to_tiploc` input) had
+/// everything needed to resolve them. The TOML `tiploc` field is now purely
+/// documentation/display metadata; see `lines/SCHEMA.md`.
+fn lines_to_publish<'a>(
+    lines: &'a [common::LineDefinition],
+    crs_to_tiploc: &std::collections::HashMap<String, Vec<String>>,
+) -> impl Iterator<Item = &'a common::LineDefinition> {
+    lines.iter().filter(move |l| {
+        l.stations
+            .iter()
+            .any(|s| crs_to_tiploc.contains_key(&s.crs.to_uppercase()))
+    })
 }
 
 /// A single-object POST (not a batch array) -- `common::ingest::post_batch`
@@ -638,6 +705,24 @@ mod poll_once_tests {
         }
     }
 
+    /// Builds the real, CIF-derived `crs_to_tiploc` map `lines_to_publish`/
+    /// `line_tiplocs` now consult, straight from `(crs, tiploc)` pairs --
+    /// deliberately NOT built via `crs_to_tiploc_map` itself in most of
+    /// these tests, so the fixture doesn't depend on the function under
+    /// test.
+    fn fixture_crs_to_tiploc(
+        pairs: &[(&str, &str)],
+    ) -> std::collections::HashMap<String, Vec<String>> {
+        let mut map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for (crs, tiploc) in pairs {
+            map.entry(crs.to_uppercase())
+                .or_default()
+                .push(tiploc.to_string());
+        }
+        map
+    }
+
     #[test]
     fn forward_publish_dates_returns_today_through_today_plus_n_inclusive() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
@@ -661,7 +746,7 @@ mod poll_once_tests {
     }
 
     #[test]
-    fn lines_to_publish_includes_a_line_with_at_least_one_tiploc_bearing_station() {
+    fn lines_to_publish_includes_a_line_with_at_least_one_real_cif_tiploc_bearing_station() {
         let lines = vec![fixture_line(
             "zzz-with-tiploc",
             vec![
@@ -669,18 +754,103 @@ mod poll_once_tests {
                 fixture_station("ZZB", Some("ZZBTPL")),
             ],
         )];
-        let published: Vec<&str> = lines_to_publish(&lines).map(|l| l.id.as_str()).collect();
+        let crs_to_tiploc = fixture_crs_to_tiploc(&[("ZZB", "ZZBTPL")]);
+        let published: Vec<&str> = lines_to_publish(&lines, &crs_to_tiploc)
+            .map(|l| l.id.as_str())
+            .collect();
         assert_eq!(published, vec!["zzz-with-tiploc"]);
     }
 
     #[test]
-    fn lines_to_publish_excludes_a_line_with_no_tiploc_bearing_station_at_all() {
+    fn lines_to_publish_excludes_a_line_with_no_real_cif_tiploc_bearing_station_at_all() {
         let lines = vec![fixture_line(
             "zzz-no-tiploc",
             vec![fixture_station("ZZA", None), fixture_station("ZZB", None)],
         )];
-        let published: Vec<&str> = lines_to_publish(&lines).map(|l| l.id.as_str()).collect();
+        let crs_to_tiploc = fixture_crs_to_tiploc(&[]);
+        let published: Vec<&str> = lines_to_publish(&lines, &crs_to_tiploc)
+            .map(|l| l.id.as_str())
+            .collect();
         assert!(published.is_empty());
+    }
+
+    /// The actual regression test for the tiploc-schedule-matching-gap bug
+    /// (2026-09-09): a station whose TOML entry carries no `tiploc` at all
+    /// -- exactly the 39-of-109 `lines/*.toml` files case the live-
+    /// production investigation found -- must still be published, because
+    /// its real TIPLOC comes from the CIF-derived `crs_to_tiploc` map, not
+    /// from this TOML field. Before this fix, `lines_to_publish` looked
+    /// only at `s.tiploc.is_some()`, so this exact line (no station has a
+    /// TOML `tiploc`) would have been silently dropped from
+    /// `schedule_line_population` entirely, even with a matching real
+    /// `stanox_crs` record for ZZA.
+    #[test]
+    fn lines_to_publish_includes_a_line_whose_toml_has_no_tiploc_but_has_a_real_cif_tiploc_record()
+     {
+        let lines = vec![fixture_line(
+            "zzz-toml-tiploc-less-but-real",
+            vec![fixture_station("ZZA", None)],
+        )];
+        let crs_to_tiploc = fixture_crs_to_tiploc(&[("ZZA", "ZZATPL")]);
+        let published: Vec<&str> = lines_to_publish(&lines, &crs_to_tiploc)
+            .map(|l| l.id.as_str())
+            .collect();
+        assert_eq!(published, vec!["zzz-toml-tiploc-less-but-real"]);
+    }
+
+    #[test]
+    fn line_tiplocs_resolves_from_the_real_crs_to_tiploc_map_not_the_toml_field() {
+        let line = fixture_line(
+            "zzz-mixed",
+            vec![
+                fixture_station("ZZA", None), // no TOML tiploc, but a real CIF record
+                fixture_station("ZZB", Some("ZZB-TOML-TPL")), // TOML tiploc is ignored now
+            ],
+        );
+        let crs_to_tiploc =
+            fixture_crs_to_tiploc(&[("ZZA", "ZZA-REAL-TPL"), ("ZZB", "ZZB-REAL-TPL")]);
+        let mut tiplocs = line_tiplocs(&line, &crs_to_tiploc);
+        tiplocs.sort_unstable();
+        assert_eq!(tiplocs, vec!["ZZA-REAL-TPL", "ZZB-REAL-TPL"]);
+    }
+
+    #[test]
+    fn line_tiplocs_can_resolve_multiple_real_tiplocs_for_one_crs() {
+        // A CRS can map to more than one real STANOX/TIPLOC (e.g. different
+        // platforms/areas of one physical station) -- see
+        // `crs_to_tiploc_map`'s own doc comment.
+        let line = fixture_line("zzz-multi", vec![fixture_station("ZZA", None)]);
+        let crs_to_tiploc = fixture_crs_to_tiploc(&[("ZZA", "ZZA-ONE"), ("ZZA", "ZZA-TWO")]);
+        let mut tiplocs = line_tiplocs(&line, &crs_to_tiploc);
+        tiplocs.sort_unstable();
+        assert_eq!(tiplocs, vec!["ZZA-ONE", "ZZA-TWO"]);
+    }
+
+    #[test]
+    fn crs_to_tiploc_map_inverts_stanox_crs_records_uppercasing_the_crs_key() {
+        let records = vec![
+            common::StanoxCrsRecord {
+                stanox: "S1".to_string(),
+                crs: "znt".to_string(),
+                tiploc: "ZNOTIPLOC".to_string(),
+                station_name: "TEST STATION".to_string(),
+                source_sequence: 1,
+            },
+            common::StanoxCrsRecord {
+                stanox: "S2".to_string(),
+                crs: "ZNT".to_string(),
+                tiploc: "ZNOTIPLOC2".to_string(),
+                station_name: "TEST STATION".to_string(),
+                source_sequence: 1,
+            },
+        ];
+        let map = crs_to_tiploc_map(&records);
+        let mut tiplocs = map.get("ZNT").cloned().unwrap_or_default();
+        tiplocs.sort_unstable();
+        assert_eq!(
+            tiplocs,
+            vec!["ZNOTIPLOC".to_string(), "ZNOTIPLOC2".to_string()]
+        );
     }
 
     #[test]
