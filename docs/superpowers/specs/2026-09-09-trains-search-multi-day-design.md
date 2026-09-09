@@ -111,10 +111,17 @@ latest `ScheduleIndex` every time a new delivery is processed (§3 below).
 ### 1.2 Chosen window: 7 days forward, 7 days back
 
 **Forward: `N = 7`** (today, today+1, …, today+7 — 8 calendar days
-published per cycle). **Backward: `schedule_destination_departures_retention_days`
-raised from `2` to `7`** (today, today−1, …, today−7 retained — 8 calendar
-days resident). Together, 15 distinct calendar days resident at steady
-state (today is counted once).
+published per cycle). **Backward: the search window is 7 days
+(today−1, …, today−7), but `schedule_destination_departures_retention_days`
+is raised from `2` to `8`, one day more than the window needs** — the same
+"+1 day of safety margin around the rail-day/midnight boundary and a late
+CIF delivery" reasoning this config field's own existing doc comment already
+gives for why today's default is 2 rather than 1 (`crates/aggregator/src/config.rs:115-121`).
+Without that margin, a date exactly 7 days back could be pruned by
+`aggregator`'s own cycle moments before a request for it lands, turning a
+documented-as-supported date into a flaky, timing-dependent 404. Together,
+16 distinct calendar days resident at steady state (today + 7 forward + 8
+backward-retained, today counted once).
 
 Reasoning:
 
@@ -175,12 +182,12 @@ steady-state accrual, not a one-time cost).
 **Storage, backward direction (retained longer, not new data):** today's
 default (`retention_days = 2`) already keeps ~3 calendar days resident
 (today, today−1, today−2) ≈ 3 × ~75MB ≈ ~225MB baseline. Raising retention
-to 7 keeps ~8 calendar days (today through today−7) ≈ 8 × ~75MB ≈ ~600MB —
-**~375MB of net *new* storage**, at **zero** additional publish or compute
+to 8 keeps ~9 calendar days (today through today−8) ≈ 9 × ~75MB ≈ ~675MB —
+**~450MB of net *new* storage**, at **zero** additional publish or compute
 cost (§1.1).
 
-**Total steady-state footprint under this design: 15 days × ~75MB/day ≈
-~1.1GB**, versus today's ~225MB baseline — roughly a 5x increase in this
+**Total steady-state footprint under this design: 16 days × ~75MB/day ≈
+~1.2GB**, versus today's ~225MB baseline — roughly a 5x increase in this
 one table's resident size. This is the number a human sign-off should see
 stated plainly, per the brief's own instruction, rather than left implicit.
 
@@ -275,10 +282,14 @@ is needed.
 by `retention_days` and needs **zero code changes** — only its config
 default. `crates/aggregator/src/config.rs:131`'s
 `schedule_destination_departures_retention_days` default changes from `2` to
-`7` (and the corresponding Helm chart default,
-`charts/distant-signal/templates/aggregator-deployment.yaml:95-98`, if it
-pins a literal value rather than deferring to the binary's own default —
-confirmed during implementation, not assumed here).
+`8` (§1.2's one-day safety margin beyond the 7-day search window), together
+with `charts/distant-signal/values.yaml`'s
+`aggregator.scheduleDestinationDeparturesRetentionDays: 2`, which the Helm
+chart (`charts/distant-signal/templates/aggregator-deployment.yaml:95-98`)
+passes through as a literal env var default independent of the binary's own
+`#[arg(default_value_t = ...)]` — both must move together or a real
+deployment keeps running at the old value regardless of the binary's new
+default.
 
 ## 4. Index/query shape: unchanged, because `service_date` stays an equality predicate
 
@@ -479,8 +490,9 @@ back, not their shape).
 1. **Window: 7 days forward, 7 days back** (§1) — chosen for a
    search/browse feature's realistic horizon, not the pin-matching
    correctness problem the 14-30-day sibling recommendation was solving.
-   ~377,000 rows/day × 15 resident days ≈ 5.7M rows, ≈ ~1.1GB table+index,
-   versus today's ~225MB baseline (§1.3).
+   ~377,000 rows/day × 16 resident days (7 forward + today + 8 retained
+   backward, the extra retained day a safety margin) ≈ 6M rows, ≈ ~1.2GB
+   table+index, versus today's ~225MB baseline (§1.3).
 2. **Publish-side: extend the loop, not on-demand** (§2) — a small,
    mechanical change (`publish_schedule_destination_departures` is already
    date-parametric); on-demand rejected for the same reasons the
