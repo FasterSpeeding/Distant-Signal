@@ -117,18 +117,28 @@ pub struct Config {
     /// data at all. Copying the number would copy a restriction that isn't
     /// real here while giving up the margin that is: `service_date` is a
     /// RAIL day, which crosses midnight, and a CIF delivery can land late,
-    /// so a 1-day window can delete the only published day shortly before
-    /// its replacement arrives. 2 covers both edges.
+    /// so a too-tight window can delete a still-searchable day shortly
+    /// before its replacement arrives.
     ///
-    /// Nothing reads a past service date -- every read computes `today`
-    /// server-side -- so this window protects the producer's edges, not a
-    /// consumer, and there is no reason to raise it further. At ~377,000
-    /// rows per day, 2 days is ~750,000 rows and ~80-120MB with the index.
+    /// `GET /public/trains/search` can now search up to 7 days INTO THE
+    /// PAST (`crates/api/src/routes/trains.rs::SEARCH_WINDOW_BACKWARD_DAYS`)
+    /// -- unlike the "nothing reads a past service date" reasoning this
+    /// default used to be justified by, this window now has a real reader.
+    /// 8, not 7: one extra day of safety margin beyond the search window,
+    /// the same reasoning this field's default has always used (previously
+    /// "2 rather than 1" for the identical reason), so a boundary date
+    /// can't flake into a 404 if `aggregator`'s prune cycle runs against
+    /// that date moments before a request for it lands. See
+    /// docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md
+    /// §1.2/§3.
+    ///
+    /// At ~377,000 rows per day, 8 days is ~3,016,000 rows and roughly
+    /// 600-675MB with the index (§1.3 of the design doc above).
     ///
     /// Unlike `trust_event_backlog_retention_days` there is deliberately NO
     /// warning emitted when this is configured higher: nothing legal is at
     /// stake, only disk.
-    #[arg(long, env, default_value_t = 2)]
+    #[arg(long, env, default_value_t = 8)]
     pub schedule_destination_departures_retention_days: i64,
 
     /// How long to keep a `trains` row (and its cascaded
