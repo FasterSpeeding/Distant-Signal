@@ -226,7 +226,14 @@ async fn get_line_trains(
         ));
     };
 
-    let entries = population.as_array().cloned().unwrap_or_default();
+    // `population` is already owned here -- destructure it directly rather
+    // than `.as_array().cloned()`, which would clone the whole array (a
+    // line's full daily service list; size unmeasured, see the spec's Open
+    // question 1) just to unwrap it.
+    let entries = match population {
+        Value::Array(entries) => entries,
+        _ => Vec::new(),
+    };
     let uids: Vec<String> = entries
         .iter()
         .filter_map(|e| e.get("uid").and_then(Value::as_str).map(str::to_string))

@@ -247,6 +247,13 @@ pub(crate) fn calling_point_departure_json(d: &Value, station_crs: &str) -> Valu
 /// (spec §5.3, Decision point 3); a caller wanting a specific train's full
 /// overlay still calls `GET /Train/by-uid/{uid}/{date}` for that one
 /// train.
+///
+/// Maintenance note: `liveStatus`'s field list is hand-picked from
+/// `PublicTrainState`, not a serialization of the whole struct (a plain
+/// `Json(state)` can't drop `calling_points`/`journey_stops` the way this
+/// function deliberately does) -- a future field added to
+/// `PublicTrainState` will NOT automatically appear here. Update this
+/// function's own `json!` block too if that ever matters for this route.
 pub(crate) fn line_train_json(
     entry: &Value,
     live: Option<&crate::data::trains::PublicTrainState>,
