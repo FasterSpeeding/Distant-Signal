@@ -500,7 +500,7 @@ back, not their shape).
    enough that there's no real savings to justify the new architecture.
 3. **Retention: forward needs nothing (ages in naturally, stated
    explicitly, §3); backward is a one-line config default change**
-   (`retention_days` 2 → 7), zero new code.
+   (`retention_days` 2 → 8), zero new code.
 4. **Index/query shape: unchanged** (§4) — `service_date` stays an equality
    predicate because one search is pinned to exactly one day (§0), so the
    existing `(service_date, origin_crs, scheduled, train_uid)` ordering

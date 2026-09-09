@@ -3785,6 +3785,7 @@ mod schedule_destination_departures_query_tests {
                     train_uid: "TEST-JS-CPD".to_string(),
                     origin_crs: "RDG".to_string(),
                     true_origin_crs: Some("RDG".to_string()),
+                    destination_arrival: None,
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date,
@@ -3793,6 +3794,7 @@ mod schedule_destination_departures_query_tests {
                     train_uid: "TEST-JS-CPD".to_string(),
                     origin_crs: "SLO".to_string(),
                     true_origin_crs: Some("RDG".to_string()),
+                    destination_arrival: None,
                 },
             ],
         )

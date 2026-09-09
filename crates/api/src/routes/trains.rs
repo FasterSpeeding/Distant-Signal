@@ -131,7 +131,12 @@ struct TrainSearchParams {
     /// calling point) is this CRS.
     destination: Option<String>,
     /// Optional, `"HH:MM"`, inclusive lower bound on scheduled departure.
-    /// Narrows the `now`-forward window; it can never widen it backwards.
+    /// When the resolved `date` is today, this narrows the `now`-forward
+    /// window; it can never widen it backwards. For any other date there
+    /// is no `now`-forward floor to narrow -- `from` is a plain inclusive
+    /// lower bound (see `scheduled_from`'s computation in
+    /// `get_trains_search`, which gates the `max(now, from)` behavior on
+    /// `service_date == today`).
     from: Option<String>,
     /// Optional, `"HH:MM"`, inclusive upper bound.
     to: Option<String>,
@@ -179,8 +184,12 @@ fn normalize_date(
     raw: &str,
     today: chrono::NaiveDate,
 ) -> Result<chrono::NaiveDate, (StatusCode, String)> {
-    let parsed = chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
-        .map_err(|_| (StatusCode::BAD_REQUEST, "date must be YYYY-MM-DD".to_string()))?;
+    let parsed = chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "date must be YYYY-MM-DD".to_string(),
+        )
+    })?;
     let earliest = today - chrono::Duration::days(SEARCH_WINDOW_BACKWARD_DAYS);
     let latest = today + chrono::Duration::days(SEARCH_WINDOW_FORWARD_DAYS);
     if parsed < earliest || parsed > latest {

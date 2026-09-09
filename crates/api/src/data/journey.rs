@@ -339,6 +339,7 @@ mod db_tests {
                     train_uid: "TEST-JRN-FB".to_string(),
                     origin_crs: "RDG".to_string(),
                     true_origin_crs: Some("RDG".to_string()),
+                    destination_arrival: None,
                 },
                 crate::data::queries::ScheduleDestinationDeparturesRow {
                     service_date,
@@ -347,6 +348,7 @@ mod db_tests {
                     train_uid: "TEST-JRN-FB".to_string(),
                     origin_crs: "SLO".to_string(),
                     true_origin_crs: Some("RDG".to_string()),
+                    destination_arrival: None,
                 },
             ],
         )
@@ -430,6 +432,7 @@ mod db_tests {
                 train_uid: "TEST-JRN-OV".to_string(),
                 origin_crs: "RDG".to_string(),
                 true_origin_crs: Some("RDG".to_string()),
+                destination_arrival: None,
             }],
         )
         .await
@@ -632,6 +635,7 @@ mod db_tests {
                 train_uid: "TEST-JRN-PASS".to_string(),
                 origin_crs: "RDG".to_string(),
                 true_origin_crs: Some("RDG".to_string()),
+                destination_arrival: None,
             }],
         )
         .await
@@ -717,6 +721,7 @@ mod db_tests {
                 train_uid: "TEST-JRN-NOMATCH".to_string(),
                 origin_crs: "RDG".to_string(),
                 true_origin_crs: Some("RDG".to_string()),
+                destination_arrival: None,
             }],
         )
         .await
