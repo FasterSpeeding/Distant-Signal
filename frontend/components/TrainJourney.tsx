@@ -1,26 +1,40 @@
 import { Alert, Badge, Group, Loader, Stack, Text, Tooltip } from '@mantine/core';
 import { EtaBadge } from './EtaBadge';
+import { JourneyTimeline } from './JourneyTimeline';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import type { TrainJourneyState } from '@/lib/types';
 
 /** Renders one train's journey through every state the backend can
  * return, per
  * docs/superpowers/specs/2026-08-29-train-tracking-frontend-design.md
- * Decision 3's table. Shared by both `/train/by-id/[trackingId]` (which
- * passes a `TrackedTrainState` -- one of the caller's own subscriptions)
- * and `/train/[uid]/[date]` (which passes a `PublicTrainState` adapted
- * into this shape). The prop is `TrainJourneyState`, NOT
- * `TrackedTrainState`, specifically so the public page never has to invent
- * an `id`/`trackingId` for a train nobody has subscribed to -- see
- * `PublicTrainState`'s own doc comment in `lib/types.ts` for the
- * surrogate-key collision that caused.
- *
- * The pin summary shown for `pending`/`unresolved` is `trackedTrainDisplayName`
- * -- the user's own custom name if they set one, otherwise the same
- * route + date default this rendered directly before custom names existed
- * (`TrackedTrainState` has no scheduled-departure clock-time field, so this
- * still never claims to show a scheduled time the backend doesn't return). */
+ * Decision 3's original table, revised by
+ * docs/superpowers/specs/2026-09-08-journey-timetable-overlay-design.md:
+ * the scheduled timetable (`state.journeyStops`) is now the PRIMARY,
+ * always-shown structure whenever it's available (i.e. whenever
+ * `trainUid` is known -- `schedule_matched` or any `resolved` sub-state),
+ * rendered once at the top level via `JourneyTimeline`, rather than nested
+ * inside only the `resolved`+`en_route` branch the way the old
+ * `JourneyDetails` denormalized summary was. `StatusMessage` below is the
+ * original per-state switch, kept for its status copy/alerts, MINUS the
+ * old `JourneyDetails` call (superseded by `JourneyTimeline` for any state
+ * that has `journeyStops`). `JourneyDetails` itself is kept as a fallback
+ * for the one state where `journeyStops` can still be `null` despite a
+ * known `trainUid` -- a real train that isn't itself a CIF-published
+ * schedule that day (see the design doc §1's named gap). */
 export function TrainJourney({ state }: { state: TrainJourneyState }) {
+  return (
+    <Stack gap="sm">
+      <StatusMessage state={state} />
+      {state.journeyStops ? (
+        <JourneyTimeline stops={state.journeyStops} />
+      ) : (
+        state.resolutionStatus === 'resolved' && <JourneyDetails state={state} />
+      )}
+    </Stack>
+  );
+}
+
+function StatusMessage({ state }: { state: TrainJourneyState }) {
   const pinSummary = (
     <Text size="sm" c="dimmed">
       {trackedTrainDisplayName(state)}
@@ -107,16 +121,10 @@ export function TrainJourney({ state }: { state: TrainJourneyState }) {
         </Alert>
         <Text fw={500}>Train {state.trainUid}</Text>
         {pinSummary}
-        <JourneyDetails state={state} />
       </Stack>
     );
   }
 
-  // 'en_route' or 'completed' share the same "current position" rendering
-  // -- 'completed' is kept as a real branch even though no current
-  // trust-consumer code path produces it yet (see this plan's Global
-  // Constraints and Status note), so it's forward-compatible rather than
-  // dead code the day journey.rs gets real completion detection.
   const mayHaveFinished =
     state.status === 'completed' || (state.status === 'en_route' && state.nextCallingPoint === null);
 
@@ -135,11 +143,15 @@ export function TrainJourney({ state }: { state: TrainJourneyState }) {
           inference, not a confirmed status from Network Rail.
         </Alert>
       )}
-      <JourneyDetails state={state} />
     </Stack>
   );
 }
 
+/** Fallback for the one gap the design doc's §1 names: a resolved train
+ * with no `journeyStops` at all (not itself a CIF-published schedule that
+ * day). Unchanged from the pre-restructuring version, minus its own
+ * now-redundant "no movement data" early return duplicating what
+ * `TrainJourney` above already gates on via `resolutionStatus === 'resolved'`. */
 function JourneyDetails({ state }: { state: TrainJourneyState }) {
   const hasMovementData =
     state.lastReportedLocation !== null ||
