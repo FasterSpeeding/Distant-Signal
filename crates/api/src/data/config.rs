@@ -275,4 +275,29 @@ pub struct ServiceArguments {
     /// `ServiceArguments` fields in this file.
     #[arg(long, env, default_value_t = 300)]
     pub schedule_match_interval_secs: u64,
+
+    /// How often the reconciliation sweep re-attempts (1) flipping a
+    /// `train_subscriptions` row stuck at `resolution_status = 'pending'`
+    /// once `train_movement_events` proves the train was tracked, and (2)
+    /// schedule-enriching an NR-primary tracked train from
+    /// `schedule_destination_departures` when TRUST backlog had nothing at
+    /// track-creation time. See
+    /// docs/superpowers/specs/2026-09-08-tracked-train-reconciliation-design.md
+    /// Decision 5. 300s default, reusing `schedule_match_interval_secs`'s
+    /// own reasoning for the identical class of concern -- both halves of
+    /// this sweep are cheap enough at this cadence not to matter, and
+    /// frequent enough that a stuck row is fixed within a rail day's
+    /// working hours.
+    #[arg(long, env, default_value_t = 300)]
+    pub reconciliation_sweep_interval_secs: u64,
+
+    /// How long past a candidate's true origin departure the schedule-
+    /// enrichment half of the reconciliation sweep waits before attempting
+    /// a CIF-only match -- a courtesy to the live TRUST/backlog paths' own
+    /// normal resolution window (`common::MATCH_TOLERANCE`, ±20 minutes),
+    /// not a data-availability requirement. See the design doc's Decision
+    /// 3. 30 minutes default, at the upper (more conservative) end of that
+    /// document's own suggested 15-30 minute range.
+    #[arg(long, env, default_value_t = 30)]
+    pub schedule_enrichment_grace_minutes: i64,
 }

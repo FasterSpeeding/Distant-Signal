@@ -8,6 +8,7 @@ pub mod notifications;
 pub mod notifier_forward_queue;
 pub mod preferences;
 pub mod queries;
+pub mod reconciliation;
 pub mod reference;
 pub mod samples;
 pub mod schedule_matching;
