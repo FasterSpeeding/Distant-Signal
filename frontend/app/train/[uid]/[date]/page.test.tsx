@@ -4,7 +4,7 @@ import { renderWithMantine } from '@/test/render';
 import TrackedTrainByUidPage, { toJourneyState } from './page';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
-import type { PublicTrainState, TrackedTrainListItem, TrackedTrainState } from '@/lib/types';
+import type { PublicTrainState, TrackedTrainListItem } from '@/lib/types';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -92,36 +92,6 @@ function trackedTrainListItem(overrides: Partial<TrackedTrainListItem> = {}): Tr
     status: 'en_route',
     delayMinutes: 0,
     trackedAt: '2026-08-31T10:00:00Z',
-    customName: null,
-    ...overrides,
-  };
-}
-
-/** `GET /Train/{trackingId}`'s response shape -- the owner-scoped detail
- * `getTrackedTrainById` resolves once a `TrackedTrainListItem` match is
- * found. */
-function trackedTrainState(overrides: Partial<TrackedTrainState> = {}): TrackedTrainState {
-  return {
-    id: 7,
-    serviceDate: '2026-08-31',
-    pinOriginCrs: 'WAT',
-    pinDestinationCrs: 'WOK',
-    pinOriginName: null,
-    pinDestinationName: null,
-    resolutionStatus: 'resolved',
-    trainUid: 'W12345',
-    trainId: '1A23',
-    status: 'en_route',
-    lastReportedLocation: 'Woking',
-    lastEventType: 'DEPARTURE',
-    delayMinutes: 0,
-    nextCallingPoint: 'Basingstoke',
-    etaNext: null,
-    etaSource: null,
-    scheduleDestinationCrs: null,
-    scheduleDestinationName: null,
-    scheduleCallingPoints: null,
-    journeyStops: null,
     customName: null,
     ...overrides,
   };
@@ -313,24 +283,38 @@ describe('TrackedTrainByUidPage tracking overlay', () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
       trackedTrainListItem({ id: 7, trainUid: 'W12345', serviceDate: '2026-08-31' }),
     ]);
-    vi.mocked(api.getTrackedTrainById).mockResolvedValue(trackedTrainState({ id: 7 }));
     await renderPage();
     expect(screen.queryByRole('button', { name: 'Track this train' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Rename/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
     // ShareButton stays regardless of ownership.
     expect(screen.getByRole('button', { name: /share/i })).toBeInTheDocument();
-    expect(api.getTrackedTrainById).toHaveBeenCalledWith(7);
+    // Finding 4: `TrackedTrainListItem` (the `GET /Train/mine` match)
+    // already carries everything the owner controls/journey overlay need
+    // -- no second `GET /Train/{id}` fetch should ever fire.
+    expect(api.getTrackedTrainById).not.toHaveBeenCalled();
   });
 
-  // Race: the subscription existed when GET /Train/mine was read, but was
-  // deleted before the follow-up GET /Train/{id} landed. Must degrade to
-  // the ordinary public view, not error the whole page.
-  it('falls back to the plain public view when the detail fetch 404s after a list match', async () => {
+  // Finding 1: a renamed/pinned train's custom name must show on the
+  // overlay -- `toJourneyState(train)` alone hardcodes `customName: null`
+  // (there's nothing per-subscriber on the public response to read it
+  // from), so the page must overlay the visitor's own `customName` from
+  // the `GET /Train/mine` match once one is found.
+  it('shows the tracking owner custom name on the overlay', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
-      trackedTrainListItem({ id: 7, trainUid: 'W12345', serviceDate: '2026-08-31' }),
+      trackedTrainListItem({ id: 7, trainUid: 'W12345', serviceDate: '2026-08-31', customName: 'My commute' }),
     ]);
-    vi.mocked(api.getTrackedTrainById).mockRejectedValue(new ApiNotFoundError('gone'));
+    await renderPage();
+    expect(screen.getByText('My commute')).toBeInTheDocument();
+  });
+
+  // Finding 2: `getMyTrackedTrains()` is an auxiliary "am I tracking this?"
+  // check, not the primary content of this public page -- a transient
+  // failure of it (matching app/page.tsx's own `.catch(() => null)`
+  // precedent) must degrade to the plain public view for every visitor,
+  // not crash the whole page.
+  it('falls back to the plain public view when getMyTrackedTrains() itself fails', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockRejectedValue(new Error('boom'));
     await renderPage();
     expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Rename/i })).not.toBeInTheDocument();
