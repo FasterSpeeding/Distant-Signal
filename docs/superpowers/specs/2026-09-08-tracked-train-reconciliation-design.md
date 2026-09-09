@@ -469,12 +469,29 @@ impossible to tune one without the other.
   `L78659` live example itself). Explicitly not attempted — Decision 1
   explains why asserting `'resolved'` with no observed data to back it
   would be dishonest, not merely incomplete.
-- **A UID-keyed reverse schedule index**, or any change to how
-  `schedule_destination_departures` itself is populated, indexed, or
-  retained. This fix is a new *reader* of that table, using its existing
-  `(service_date, origin_crs, scheduled, train_uid)` index
-  (`schedule_destination_departures_calling_point_idx`) via an exact-match
-  `train_uid`+`service_date` lookup — no new index needed.
+- **Any change to how `schedule_destination_departures` itself is
+  populated or retained.** This fix is a new *reader* of that table only.
+
+  **Correction applied during final whole-branch review**: this bullet
+  originally also claimed no new *index* was needed, reasoning that the
+  existing `(service_date, origin_crs, scheduled, train_uid)` calling-point
+  index would serve `true_origin_departure`'s lookup. Checked again and
+  found wrong: that index (and the table's primary key,
+  `(service_date, destination_crs, scheduled, train_uid, origin_crs)`)
+  both lead with columns other than `train_uid`, so neither can seek on it
+  — `true_origin_departure`'s `WHERE train_uid = $1 AND service_date = $2`
+  degenerates to a scan of the whole day's rows (up to ~377k at national
+  scale) per candidate per sweep tick. A new index,
+  `schedule_destination_departures_train_uid_idx (service_date, train_uid)`
+  (`crates/api/migrations/20260908140000_schedule_destination_departures_train_uid_idx.sql`),
+  was added to fix this — this IS the UID-keyed reverse schedule index
+  `2026-09-06-shared-train-identity-design.md` §1 named as an accepted,
+  deferred gap, added now that this fix gives it a concrete, justified
+  caller (it also benefits `trains::is_known_scheduled_train`'s identical
+  lookup shape). `list_trains_needing_schedule_enrichment`'s candidate
+  query was additionally bounded to `schedule_destination_departures`' own
+  2-day retention window, so an older, permanently-unenrichable subscribed
+  row stops being re-selected as a candidate on every sweep tick.
 - **Broad, subscriber-less schedule enrichment** for every `trains` row
   this system has ever observed. Decision 2 explicitly scopes to
   subscriber-referenced rows only; a general-purpose backfill is a

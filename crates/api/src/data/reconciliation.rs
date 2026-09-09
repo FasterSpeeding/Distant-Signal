@@ -50,6 +50,16 @@ struct EnrichmentCandidate {
     service_date: NaiveDate,
 }
 
+/// Bounded to a `service_date` within `schedule_destination_departures`'
+/// own retention window (2 days by default, `crates/aggregator`'s
+/// `schedule_destination_departures_retention_days`) -- the only source
+/// [`true_origin_departure`] can ever read from. Without this bound, an
+/// older subscribed-but-unmatched `trains` row (nothing left to enrich it
+/// from at all, CIF data long pruned) would be re-selected as a candidate,
+/// and re-fail `true_origin_departure`, on every single sweep tick for as
+/// long as `trains_retention_days` (30 days) keeps the row alive --
+/// guaranteed-futile repeated work. Found by this plan's own final
+/// whole-branch review.
 async fn list_trains_needing_schedule_enrichment(
     pool: &PgPool,
 ) -> anyhow::Result<Vec<EnrichmentCandidate>> {
@@ -57,7 +67,8 @@ async fn list_trains_needing_schedule_enrichment(
         "SELECT DISTINCT tr.id, tr.train_uid, tr.service_date \
          FROM trains tr \
          JOIN train_subscriptions ts ON ts.trains_id = tr.id \
-         WHERE tr.schedule_matched_at IS NULL",
+         WHERE tr.schedule_matched_at IS NULL \
+           AND tr.service_date >= CURRENT_DATE - INTERVAL '2 days'",
     )
     .fetch_all(pool)
     .await?;
@@ -320,6 +331,36 @@ mod db_tests {
             .ok();
     }
 
+    /// A `service_date` guaranteed to fall inside
+    /// `list_trains_needing_schedule_enrichment`'s `CURRENT_DATE - INTERVAL
+    /// '2 days'` bound regardless of when this test runs -- a fixed
+    /// historical date (this module's own tests used to hardcode
+    /// `2020-01-01`) would otherwise be silently excluded by that bound the
+    /// moment it landed, turning every "skips" test green for the wrong
+    /// reason instead of red for the right one.
+    fn recent_service_date() -> chrono::NaiveDate {
+        chrono::Utc::now().date_naive() - chrono::Duration::days(1)
+    }
+
+    /// The real UTC instant a `service_date`'s local (`Europe/London`)
+    /// wall-clock time converts to -- same conversion
+    /// `retry_schedule_enrichment_for_nr_primary_trains` itself applies
+    /// internally, so a test's `now` fixture stays correct year-round
+    /// (BST vs GMT) without the test author having to reason about the
+    /// offset by hand.
+    fn london_departure_utc(
+        service_date: chrono::NaiveDate,
+        hour: u32,
+        minute: u32,
+    ) -> chrono::DateTime<chrono::Utc> {
+        crate::data::eta_blend::london_to_utc(
+            service_date
+                .and_hms_opt(hour, minute, 0)
+                .expect("valid local time"),
+        )
+        .expect("a real London local time")
+    }
+
     fn population_json(uid: &str, tiploc: &str, departure: &str) -> serde_json::Value {
         serde_json::json!([{
             "uid": uid,
@@ -543,7 +584,7 @@ mod db_tests {
         let pool = connect().await;
         let user_id = "TEST-RECON-STALL2-A";
         let train_uid = "TEST-RECON-STALL2-UID-A";
-        let service_date: chrono::NaiveDate = "2020-01-01".parse().unwrap();
+        let service_date = recent_service_date();
         let (trains_id, _subscription_id, crs_line_index) = seed_enrichment_fixture(
             &pool,
             user_id,
@@ -558,7 +599,7 @@ mod db_tests {
 
         // 1 hour after the 09:00 scheduled departure -- comfortably past
         // the 30-minute grace period.
-        let now: chrono::DateTime<chrono::Utc> = "2020-01-01T10:00:00Z".parse().unwrap();
+        let now = london_departure_utc(service_date, 9, 0) + chrono::Duration::hours(1);
         let matched = retry_schedule_enrichment_for_nr_primary_trains(
             &pool,
             &crs_line_index,
@@ -593,7 +634,7 @@ mod db_tests {
         let pool = connect().await;
         let user_id = "TEST-RECON-STALL2-B";
         let train_uid = "TEST-RECON-STALL2-UID-B";
-        let service_date: chrono::NaiveDate = "2020-01-01".parse().unwrap();
+        let service_date = recent_service_date();
         let (trains_id, _subscription_id, crs_line_index) = seed_enrichment_fixture(
             &pool,
             user_id,
@@ -608,7 +649,7 @@ mod db_tests {
 
         // Only 10 minutes after the 09:00 scheduled departure -- inside a
         // 30-minute grace period.
-        let now: chrono::DateTime<chrono::Utc> = "2020-01-01T09:10:00Z".parse().unwrap();
+        let now = london_departure_utc(service_date, 9, 0) + chrono::Duration::minutes(10);
         let matched = retry_schedule_enrichment_for_nr_primary_trains(
             &pool,
             &crs_line_index,
@@ -642,7 +683,7 @@ mod db_tests {
     async fn retry_schedule_enrichment_skips_a_trains_row_with_no_subscriber() {
         let pool = connect().await;
         let train_uid = "TEST-RECON-STALL2-UID-C";
-        let service_date: chrono::NaiveDate = "2020-01-01".parse().unwrap();
+        let service_date = recent_service_date();
         // A trains row with real schedule data available, but no
         // train_subscriptions row referencing it at all -- Decision 2's
         // scoping must exclude it.
@@ -658,7 +699,7 @@ mod db_tests {
         .await
         .expect("seed schedule_destination_departures");
 
-        let now: chrono::DateTime<chrono::Utc> = "2020-01-01T12:00:00Z".parse().unwrap();
+        let now = london_departure_utc(service_date, 9, 0) + chrono::Duration::hours(3);
         let matched = retry_schedule_enrichment_for_nr_primary_trains(
             &pool,
             &HashMap::new(),
@@ -695,12 +736,12 @@ mod db_tests {
         let pool = connect().await;
         let user_id = "TEST-RECON-STALL2-D";
         let train_uid = "TEST-RECON-STALL2-UID-D";
-        let service_date: chrono::NaiveDate = "2020-01-01".parse().unwrap();
+        let service_date = recent_service_date();
         seed_user(&pool, user_id).await;
         let trains_id = seed_train(&pool, train_uid, service_date).await;
         seed_pending_subscription(&pool, user_id, service_date, trains_id).await;
 
-        let now: chrono::DateTime<chrono::Utc> = "2020-01-01T12:00:00Z".parse().unwrap();
+        let now = london_departure_utc(service_date, 12, 0);
         let matched = retry_schedule_enrichment_for_nr_primary_trains(
             &pool,
             &HashMap::new(),
@@ -717,5 +758,63 @@ mod db_tests {
         assert!(read_schedule_matched_at(&pool, trains_id).await.is_none());
 
         cleanup(&pool, user_id, train_uid).await;
+    }
+
+    /// Finding 1 of this plan's final whole-branch review: schedule
+    /// enrichment writing the shared `trains` row alone is not enough --
+    /// the subscriber's own `train_subscriptions.resolution_status` must
+    /// also advance, or `/train/by-id/{trackingId}` (the page a just-
+    /// tracked NR-primary user is actually sent to) keeps rendering
+    /// "Waiting to hear from Network Rail" forever even after the shared
+    /// row is fully enriched.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                retry_schedule_enrichment_advances_the_subscribers_own_resolution_status \
+                -- --ignored`"]
+    async fn retry_schedule_enrichment_advances_the_subscribers_own_resolution_status() {
+        let pool = connect().await;
+        let user_id = "TEST-RECON-STALL2-E";
+        let train_uid = "TEST-RECON-STALL2-UID-E";
+        let service_date = recent_service_date();
+        let (_trains_id, subscription_id, crs_line_index) = seed_enrichment_fixture(
+            &pool,
+            user_id,
+            train_uid,
+            service_date,
+            "EUS",
+            "TEST-RECON-STANOX-E",
+            "test-recon-line-e",
+            "09:00",
+        )
+        .await;
+
+        let now = london_departure_utc(service_date, 9, 0) + chrono::Duration::hours(1);
+        let matched = retry_schedule_enrichment_for_nr_primary_trains(
+            &pool,
+            &crs_line_index,
+            chrono::Duration::minutes(30),
+            now,
+        )
+        .await
+        .expect("retry_schedule_enrichment_for_nr_primary_trains");
+        assert!(matched >= 1, "at least this fixture's row must be matched");
+
+        let status = read_resolution_status(&pool, subscription_id).await;
+        assert_eq!(
+            status, "schedule_matched",
+            "the subscriber's own resolution_status must advance once the shared trains row is \
+             enriched, not just the trains row itself -- otherwise /train/by-id/{{trackingId}} \
+             stays stuck on 'Waiting to hear from Network Rail' forever"
+        );
+
+        cleanup_enrichment_fixture(
+            &pool,
+            user_id,
+            train_uid,
+            "TEST-RECON-STANOX-E",
+            "test-recon-line-e",
+            service_date,
+        )
+        .await;
     }
 }
