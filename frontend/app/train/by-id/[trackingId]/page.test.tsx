@@ -145,4 +145,16 @@ describe('TrackedTrainByIdPage success path', () => {
     await expect(renderPage('42')).rejects.toThrow('NEXT_REDIRECT:/train/W12345/2026-09-08');
     expect(redirectMock).toHaveBeenCalledWith('/train/W12345/2026-09-08');
   });
+
+  // Finding 6: `getPublicTrainByUidAndDate` (lib/api.ts) encodes this exact
+  // (uid, date) pair before building its own request URL -- this redirect
+  // must do the same, or a uid/date containing a URL-unsafe character
+  // builds a broken path.
+  it('encodes the uid/date path segments before redirecting', async () => {
+    vi.mocked(api.getTrackedTrainById).mockResolvedValue(
+      trackedTrainState({ resolutionStatus: 'resolved', trainUid: 'W12 45', serviceDate: '2026-09-08' }),
+    );
+    await expect(renderPage('42')).rejects.toThrow('NEXT_REDIRECT:/train/W12%2045/2026-09-08');
+    expect(redirectMock).toHaveBeenCalledWith('/train/W12%2045/2026-09-08');
+  });
 });

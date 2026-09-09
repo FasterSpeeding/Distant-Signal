@@ -4,9 +4,7 @@ import { getTrackedTrainById, ApiNotFoundError, ApiUnauthorizedError } from '@/l
 import { TrainJourney } from '@/components/TrainJourney';
 import { TicketPanel } from '@/components/TicketPanel';
 import { LoginLink } from '@/components/LoginLink';
-import { DeleteTrainButton } from '@/components/DeleteTrainButton';
-import { RenameTrainButton } from '@/components/RenameTrainButton';
-import { trackedTrainDisplayName } from '@/lib/trackingName';
+import { TrackedTrainOwnerControls } from '@/components/TrackedTrainOwnerControls';
 
 export default async function TrackedTrainByIdPage({
   params,
@@ -58,7 +56,11 @@ export default async function TrackedTrainByIdPage({
   // to the local render below unchanged: there is no canonical URL to send
   // them to yet.
   if (state.resolutionStatus === 'resolved' && state.trainUid) {
-    redirect(`/train/${state.trainUid}/${state.serviceDate}`);
+    // encodeURIComponent, matching `getPublicTrainByUidAndDate` (lib/api.ts),
+    // which encodes this identical (uid, date) pair before building its own
+    // request URL -- without it, a uid/date containing a URL-unsafe
+    // character (e.g. a space) would build a broken redirect target.
+    redirect(`/train/${encodeURIComponent(state.trainUid)}/${encodeURIComponent(state.serviceDate)}`);
   }
 
   return (
@@ -66,12 +68,7 @@ export default async function TrackedTrainByIdPage({
       <Group justify="space-between">
         <Title order={1}>Tracking Train {trackingId}</Title>
         <Group gap="xs">
-          <RenameTrainButton
-            trackingId={state.id}
-            customName={state.customName}
-            defaultName={trackedTrainDisplayName(state)}
-          />
-          <DeleteTrainButton trackingId={state.id} />
+          <TrackedTrainOwnerControls train={state} />
         </Group>
       </Group>
       <TrainJourney state={state} />
