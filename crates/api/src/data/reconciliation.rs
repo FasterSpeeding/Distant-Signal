@@ -125,19 +125,19 @@ pub async fn retry_schedule_enrichment_for_nr_primary_trains(
     let mut matched = 0u64;
 
     for candidate in candidates {
-        let origin = match true_origin_departure(pool, &candidate.train_uid, candidate.service_date).await
-        {
-            Ok(Some(origin)) => origin,
-            Ok(None) => continue,
-            Err(err) => {
-                tracing::warn!(
-                    error = ?err,
-                    trains_id = candidate.id,
-                    "schedule-enrichment lookup failed for this train; will retry next sweep"
-                );
-                continue;
-            }
-        };
+        let origin =
+            match true_origin_departure(pool, &candidate.train_uid, candidate.service_date).await {
+                Ok(Some(origin)) => origin,
+                Ok(None) => continue,
+                Err(err) => {
+                    tracing::warn!(
+                        error = ?err,
+                        trains_id = candidate.id,
+                        "schedule-enrichment lookup failed for this train; will retry next sweep"
+                    );
+                    continue;
+                }
+            };
         let (origin_crs, scheduled) = origin;
 
         let Some(scheduled_departure) = london_to_utc(candidate.service_date.and_time(scheduled))
@@ -386,7 +386,8 @@ mod db_tests {
         .expect("seed schedule_destination_departures");
 
         let trains_id = seed_train(pool, train_uid, service_date).await;
-        let subscription_id = seed_pending_subscription(pool, user_id, service_date, trains_id).await;
+        let subscription_id =
+            seed_pending_subscription(pool, user_id, service_date, trains_id).await;
 
         let mut crs_line_index = HashMap::new();
         crs_line_index.insert(origin_crs.to_string(), vec![line_id.to_string()]);
@@ -394,7 +395,10 @@ mod db_tests {
         (trains_id, subscription_id, crs_line_index)
     }
 
-    async fn read_schedule_matched_at(pool: &PgPool, trains_id: i64) -> Option<chrono::DateTime<chrono::Utc>> {
+    async fn read_schedule_matched_at(
+        pool: &PgPool,
+        trains_id: i64,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
         let schedule_matched_at: Option<chrono::DateTime<chrono::Utc>> =
             sqlx::query_scalar("SELECT schedule_matched_at FROM trains WHERE id = $1")
                 .bind(trains_id)
@@ -418,12 +422,14 @@ mod db_tests {
             .execute(pool)
             .await
             .ok();
-        sqlx::query("DELETE FROM schedule_line_population WHERE line_id = $1 AND service_date = $2")
-            .bind(line_id)
-            .bind(service_date)
-            .execute(pool)
-            .await
-            .ok();
+        sqlx::query(
+            "DELETE FROM schedule_line_population WHERE line_id = $1 AND service_date = $2",
+        )
+        .bind(line_id)
+        .bind(service_date)
+        .execute(pool)
+        .await
+        .ok();
         sqlx::query("DELETE FROM stanox_crs WHERE stanox = $1")
             .bind(stanox)
             .execute(pool)
@@ -436,14 +442,15 @@ mod db_tests {
                 reconcile_stuck_resolution_status_flips_a_pending_row_with_movement_events_to_resolved \
                 -- --ignored`"]
     async fn reconcile_stuck_resolution_status_flips_a_pending_row_with_movement_events_to_resolved()
-    {
+     {
         let pool = connect().await;
         let user_id = "TEST-RECON-STALL1-A";
         let train_uid = "TEST-RECON-STALL1-UID-A";
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
         seed_user(&pool, user_id).await;
         let trains_id = seed_train(&pool, train_uid, service_date).await;
-        let subscription_id = seed_pending_subscription(&pool, user_id, service_date, trains_id).await;
+        let subscription_id =
+            seed_pending_subscription(&pool, user_id, service_date, trains_id).await;
         seed_movement_event(&pool, trains_id, "TEST-RECON-DEDUP-A").await;
 
         let flipped = reconcile_stuck_resolution_status(&pool)
@@ -465,7 +472,7 @@ mod db_tests {
                 reconcile_stuck_resolution_status_leaves_a_pending_row_with_no_movement_events_untouched \
                 -- --ignored`"]
     async fn reconcile_stuck_resolution_status_leaves_a_pending_row_with_no_movement_events_untouched()
-    {
+     {
         // The L78659 live-example variant: a genuinely missed Activation,
         // zero train_movement_events rows. This must NOT be flipped --
         // there is no honest evidence the train ever ran (design doc
@@ -476,7 +483,8 @@ mod db_tests {
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
         seed_user(&pool, user_id).await;
         let trains_id = seed_train(&pool, train_uid, service_date).await;
-        let subscription_id = seed_pending_subscription(&pool, user_id, service_date, trains_id).await;
+        let subscription_id =
+            seed_pending_subscription(&pool, user_id, service_date, trains_id).await;
 
         reconcile_stuck_resolution_status(&pool)
             .await
@@ -609,7 +617,10 @@ mod db_tests {
         )
         .await
         .expect("retry_schedule_enrichment_for_nr_primary_trains");
-        assert_eq!(matched, 0, "still inside the grace period; must not be touched yet");
+        assert_eq!(
+            matched, 0,
+            "still inside the grace period; must not be touched yet"
+        );
 
         assert!(read_schedule_matched_at(&pool, trains_id).await.is_none());
 
@@ -656,7 +667,10 @@ mod db_tests {
         )
         .await
         .expect("retry_schedule_enrichment_for_nr_primary_trains");
-        assert_eq!(matched, 0, "an unsubscribed trains row must never be a candidate");
+        assert_eq!(
+            matched, 0,
+            "an unsubscribed trains row must never be a candidate"
+        );
 
         assert!(read_schedule_matched_at(&pool, trains_id).await.is_none());
 
@@ -677,7 +691,7 @@ mod db_tests {
                 retry_schedule_enrichment_skips_a_trains_row_with_no_schedule_destination_departures_data \
                 -- --ignored`"]
     async fn retry_schedule_enrichment_skips_a_trains_row_with_no_schedule_destination_departures_data()
-    {
+     {
         let pool = connect().await;
         let user_id = "TEST-RECON-STALL2-D";
         let train_uid = "TEST-RECON-STALL2-UID-D";
@@ -695,7 +709,10 @@ mod db_tests {
         )
         .await
         .expect("retry_schedule_enrichment_for_nr_primary_trains");
-        assert_eq!(matched, 0, "no CIF data exists for this train; nothing to enrich from");
+        assert_eq!(
+            matched, 0,
+            "no CIF data exists for this train; nothing to enrich from"
+        );
 
         assert!(read_schedule_matched_at(&pool, trains_id).await.is_none());
 

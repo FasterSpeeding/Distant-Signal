@@ -171,7 +171,8 @@ async fn reconciliation_sweep_loop(app: App) {
         .await
         {
             Ok(result)
-                if result.resolution_status_reconciled > 0 || result.schedule_enrichment_matched > 0 =>
+                if result.resolution_status_reconciled > 0
+                    || result.schedule_enrichment_matched > 0 =>
             {
                 tracing::info!(
                     resolution_status_reconciled = result.resolution_status_reconciled,
