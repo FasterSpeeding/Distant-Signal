@@ -240,6 +240,47 @@ describe('TrainJourney', () => {
     expect(screen.getByRole('list', { name: 'Journey timeline' })).toBeInTheDocument();
   });
 
+  it('resolved + en_route with journeyStops present: renders JourneyDetails live summary AND JourneyTimeline together', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'en_route',
+          lastReportedLocation: 'Clapham Junction',
+          lastEventType: 'DEPARTURE',
+          delayMinutes: 4,
+          nextCallingPoint: 'Woking',
+          etaNext: '2026-08-28T18:41:00Z',
+          etaSource: 'trust-propagated',
+          journeyStops: [
+            {
+              crs: 'RDG',
+              name: 'Reading',
+              tiploc: null,
+              kind: 'Origin',
+              scheduledArrival: null,
+              scheduledDeparture: '2026-09-08T08:00:00Z',
+              actualArrival: null,
+              actualDeparture: null,
+              lastEventType: null,
+              variationStatus: null,
+              delayMinutes: null,
+            },
+          ],
+        })}
+      />,
+    );
+    // JourneyDetails' live summary must still render (Finding 1 regression coverage).
+    expect(screen.getByText(/Clapham Junction/)).toBeInTheDocument();
+    expect(screen.getByText('4m late')).toBeInTheDocument();
+    expect(screen.getByText('Next calling point: Woking')).toBeInTheDocument();
+    expect(screen.getByText(/ETA/)).toBeInTheDocument();
+    // ...alongside the timeline, not instead of it.
+    expect(screen.getByRole('list', { name: 'Journey timeline' })).toBeInTheDocument();
+    expect(screen.getByText('Reading')).toBeInTheDocument();
+  });
+
   it('renders no JourneyTimeline for pending, even if journeyStops were somehow non-null', () => {
     renderWithMantine(
       <TrainJourney

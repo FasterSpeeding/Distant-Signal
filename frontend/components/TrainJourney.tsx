@@ -15,21 +15,21 @@ import type { TrainJourneyState } from '@/lib/types';
  * rendered once at the top level via `JourneyTimeline`, rather than nested
  * inside only the `resolved`+`en_route` branch the way the old
  * `JourneyDetails` denormalized summary was. `StatusMessage` below is the
- * original per-state switch, kept for its status copy/alerts, MINUS the
- * old `JourneyDetails` call (superseded by `JourneyTimeline` for any state
- * that has `journeyStops`). `JourneyDetails` itself is kept as a fallback
- * for the one state where `journeyStops` can still be `null` despite a
- * known `trainUid` -- a real train that isn't itself a CIF-published
- * schedule that day (see the design doc §1's named gap). */
+ * original per-state switch, kept for its status copy/alerts.
+ * `JourneyDetails`'s live-summary content (ETA badge, last-reported
+ * location, overall delay, next calling point) renders ALONGSIDE
+ * `JourneyTimeline`, not instead of it, whenever `resolutionStatus ===
+ * 'resolved'` -- per the design doc §4's requirement that the existing
+ * top-level `EtaBadge`/"Last reported" summary stay visible even for the
+ * common case of a resolved, en_route train that also has `journeyStops`.
+ * `JourneyTimeline` renders additionally whenever `journeyStops` is
+ * non-null, independent of `JourneyDetails`. */
 export function TrainJourney({ state }: { state: TrainJourneyState }) {
   return (
     <Stack gap="sm">
       <StatusMessage state={state} />
-      {state.journeyStops ? (
-        <JourneyTimeline stops={state.journeyStops} />
-      ) : (
-        state.resolutionStatus === 'resolved' && <JourneyDetails state={state} />
-      )}
+      {state.resolutionStatus === 'resolved' && <JourneyDetails state={state} />}
+      {state.journeyStops && <JourneyTimeline stops={state.journeyStops} />}
     </Stack>
   );
 }
@@ -125,6 +125,11 @@ function StatusMessage({ state }: { state: TrainJourneyState }) {
     );
   }
 
+  // 'en_route' or 'completed' share the same "current position" rendering
+  // -- 'completed' is kept as a real branch even though no current
+  // trust-consumer code path produces it yet (see this plan's Global
+  // Constraints and Status note), so it's forward-compatible rather than
+  // dead code the day journey.rs gets real completion detection.
   const mayHaveFinished =
     state.status === 'completed' || (state.status === 'en_route' && state.nextCallingPoint === null);
 
@@ -147,7 +152,12 @@ function StatusMessage({ state }: { state: TrainJourneyState }) {
   );
 }
 
-/** Fallback for the one gap the design doc's §1 names: a resolved train
+/** The existing live-summary content (ETA badge, last-reported location,
+ * overall delay, next calling point) -- rendered for every `resolved`
+ * state, regardless of whether `journeyStops` is also present, per the
+ * design doc §4's requirement that this summary stay visible alongside
+ * `JourneyTimeline`, not be superseded by it. This also remains the ONLY
+ * rendering for the one gap the design doc's §1 names: a resolved train
  * with no `journeyStops` at all (not itself a CIF-published schedule that
  * day). Unchanged from the pre-restructuring version, minus its own
  * now-redundant "no movement data" early return duplicating what

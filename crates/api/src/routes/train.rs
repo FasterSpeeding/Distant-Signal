@@ -954,20 +954,31 @@ async fn attach_journey_stops(
 /// `PublicTrainState.train_uid` is a bare `String` (always present once any
 /// `trains` row exists at all, per `get_public_train_state`'s `SELECT
 /// tr.train_uid`), so it cannot itself signal "train_uid unknown" the way
-/// `TrackedTrainState.train_uid: Option<String>` can. The real gate here is
-/// the SAME one `app/train/[uid]/[date]/page.tsx`'s own `toJourneyState`
-/// already uses to derive `resolutionStatus` (`train.trainId ? 'resolved' :
-/// train.originCrs ? 'schedule_matched' : 'pending'`) -- i.e. "is there a
-/// schedule match OR a live resolution," not "is `train_uid` non-null."
+/// `TrackedTrainState.train_uid: Option<String>` can.
+///
+/// Unlike `attach_journey_stops` above, this has NO early-return gate on
+/// `train_id`/`origin_crs`. A gate mirroring the frontend's
+/// `toJourneyState` "pending" check (`train.trainId ? 'resolved' :
+/// train.originCrs ? 'schedule_matched' : 'pending'`) was tried here and
+/// removed (final whole-branch review, Finding 3): `GET
+/// /public/trains/search` results link straight to `/train/{uid}/{date}`,
+/// which `get_by_uid_and_date` above serves for a not-yet-seen train by
+/// calling the BARE `find_or_create_train` (not the schedule-match
+/// version) after `is_known_scheduled_train` has already confirmed the
+/// train really is a CIF-published schedule for that day -- so the
+/// resulting row has `origin_crs: None`/`train_id: None` even though the
+/// identity is provably real. Excluding a genuinely-unknown/`pending`
+/// train (design doc §1's stated reasoning: no reliable way to know which
+/// CIF schedule a real-world service corresponds to without a known
+/// identity) doesn't apply on this route -- the identity here is the
+/// URL's own `(train_uid, date)`, already validated by
+/// `is_known_scheduled_train`/`get_public_train_state` finding a row at
+/// all. `build_journey_stops` already returns `Ok(None)` safely when
+/// neither source has anything, so no replacement gate is needed.
 async fn attach_journey_stops_public(
     app: &App,
     mut state: crate::data::trains::PublicTrainState,
 ) -> crate::data::trains::PublicTrainState {
-    if state.train_id.is_none() && state.origin_crs.is_none() {
-        // Neither a live resolution nor a schedule match has happened yet
-        // -- same "pending" gate `toJourneyState` (frontend) already uses.
-        return state;
-    }
     match crate::data::journey::build_journey_stops(
         &app.database,
         state.trains_id,
@@ -2946,6 +2957,28 @@ mod db_tests {
             body.get("trainsId").and_then(Value::as_i64).is_some(),
             "the read must have created and returned a real shared trains row: {body:?}"
         );
+        // Regression coverage for the final whole-branch review's Finding
+        // 3: this row was created BARE (`origin_crs`/`train_id` both
+        // `None`) by the read-triggered `find_or_create_train` above, but
+        // the identity IS provably CIF-scheduled (the same
+        // `schedule_destination_departures` row seeded above), so
+        // `attach_journey_stops_public` must not gate `journeyStops` to
+        // `null` on `origin_crs`/`train_id` being unset -- it must still
+        // build a fallback stop list from `schedule_destination_departures`.
+        let stops = body
+            .get("journeyStops")
+            .expect("journeyStops present")
+            .as_array()
+            .expect("journeyStops must be a non-null array for a provably CIF-scheduled train, \
+                     even when found via the bare find_or_create_train path");
+        assert_eq!(
+            stops.len(),
+            2,
+            "the seeded origin row (KGX) plus the synthetic EDB terminus"
+        );
+        assert_eq!(stops[0]["crs"], Value::String("KGX".to_string()));
+        assert_eq!(stops[1]["crs"], Value::String("EDB".to_string()));
+        assert_eq!(stops[1]["kind"], Value::String("Terminate".to_string()));
 
         // A second read must be idempotent -- no duplicate-row error, same
         // `trainsId` both times.

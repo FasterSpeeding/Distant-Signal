@@ -101,11 +101,17 @@ pub async fn build_journey_stops(
                     crs: Some(row.origin_crs.clone()),
                     name: None,
                     tiploc: None,
-                    kind: Some(if Some(row.origin_crs.as_str()) == row.true_origin_crs.as_deref() {
-                        schedule_query::CallingPointKind::Origin
-                    } else {
-                        schedule_query::CallingPointKind::Intermediate
-                    }),
+                    kind: Some(
+                        if row
+                            .true_origin_crs
+                            .as_deref()
+                            .is_some_and(|true_origin| true_origin.eq_ignore_ascii_case(&row.origin_crs))
+                        {
+                            schedule_query::CallingPointKind::Origin
+                        } else {
+                            schedule_query::CallingPointKind::Intermediate
+                        },
+                    ),
                     scheduled_arrival: None,
                     scheduled_departure: london_to_utc(service_date.and_time(row.scheduled)),
                     actual_arrival: None,
@@ -184,10 +190,31 @@ pub async fn build_journey_stops(
             _ => {}
         }
 
+        // Pair scheduled and actual times by WHICH kind of time is actually
+        // known, driven by `last_event_type` -- not a blind "prefer
+        // departure" rule applied independently to each side. Pairing an
+        // ARRIVAL-only actual time against a booked DEPARTURE (or vice
+        // versa) silently inverts the sign for any stop with a dwell time
+        // between its booked arrival and booked departure (a real
+        // Intermediate calling point).
+        let (actual_reference, scheduled_reference) = match stop.last_event_type.as_deref() {
+            Some("DEPARTURE") | Some("PASS") => (
+                stop.actual_departure.or(stop.actual_arrival),
+                stop.scheduled_departure.or(stop.scheduled_arrival),
+            ),
+            Some("ARRIVAL") => (
+                stop.actual_arrival.or(stop.actual_departure),
+                stop.scheduled_arrival.or(stop.scheduled_departure),
+            ),
+            _ => (
+                stop.actual_departure.or(stop.actual_arrival),
+                stop.scheduled_departure.or(stop.scheduled_arrival),
+            ),
+        };
         // Same delay formula trust-consumer's own forward-propagation uses
-        // (`process.rs`: `(a - p).num_minutes()`) -- positive means late.
-        let scheduled_reference = stop.scheduled_departure.or(stop.scheduled_arrival);
-        let actual_reference = stop.actual_departure.or(stop.actual_arrival);
+        // (`crates/trust-consumer/src/process.rs:708`:
+        // `derived.delay_minutes = Some((a - p).num_minutes() as i32)`) --
+        // positive means late.
         stop.delay_minutes = match (actual_reference, scheduled_reference) {
             (Some(a), Some(s)) => Some((a - s).num_minutes() as i32),
             _ => None,
@@ -445,6 +472,301 @@ mod db_tests {
             .await
             .ok();
         sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-OV'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// Regression test for the final whole-branch review's Finding 2: a
+    /// stop with BOTH a booked arrival (10:00 London) and a booked
+    /// departure (10:02 London) -- a real Intermediate calling point with
+    /// a dwell time -- gets an `ARRIVAL`-only movement event one minute
+    /// LATE. Under the old, buggy code (`scheduled_reference =
+    /// stop.scheduled_departure.or(stop.scheduled_arrival)`, unconditional
+    /// "prefer departure"), this would have paired the actual ARRIVAL
+    /// (09:01 UTC) against the booked DEPARTURE (09:02 UTC), computing
+    /// `09:01 - 09:02 = -1 minute` (`Some(-1)`, rendering as "1m early"
+    /// for a train that arrived late). The fix pairs by
+    /// `last_event_type` instead, so this asserts `Some(1)` (correctly
+    /// late), NOT `Some(-1)`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                build_journey_stops_overlays_an_arrival_event_pairing_arrival_with_arrival_not_departure \
+                -- --ignored --test-threads=1`"]
+    async fn build_journey_stops_overlays_an_arrival_event_pairing_arrival_with_arrival_not_departure() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(&pool, "TEST-JRN-ARR", service_date)
+            .await
+            .expect("find_or_create_train");
+
+        crate::data::queries::upsert_stanox_crs(
+            &pool,
+            &[
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JRN-ARR-1".to_string(),
+                    crs: "PAD".to_string(),
+                    tiploc: "TEST-JRN-ARR-ORIGIN".to_string(),
+                    station_name: "PADDINGTON".to_string(),
+                    source_sequence: 1,
+                },
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JRN-ARR-2".to_string(),
+                    crs: "TSA".to_string(),
+                    tiploc: "TEST-JRN-ARR-MID".to_string(),
+                    station_name: "TEST STATION A".to_string(),
+                    source_sequence: 1,
+                },
+            ],
+        )
+        .await
+        .expect("seed stanox_crs");
+
+        // Booked arrival 10:00 London, booked departure 10:02 London --
+        // 2026-09-08 is within BST (UTC+1), so 09:00Z/09:02Z respectively.
+        let calling_points = serde_json::json!([
+            {
+                "tiploc": "TEST-JRN-ARR-ORIGIN",
+                "kind": "Origin",
+                "bookedArrival": null,
+                "bookedDeparture": "09:00:00",
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            },
+            {
+                "tiploc": "TEST-JRN-ARR-MID",
+                "kind": "Intermediate",
+                "bookedArrival": "10:00:00",
+                "bookedDeparture": "10:02:00",
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            }
+        ]);
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+
+        sqlx::query(
+            "INSERT INTO train_movement_events \
+                (trains_id, dedup_key, msg_type, event_type, loc_crs, planned_timestamp, \
+                 actual_timestamp, variation_status, raw_body) \
+             VALUES ($1, 'k-arr-1', '0001', 'ARRIVAL', 'TSA', '2026-09-08T09:00:00Z', \
+                     '2026-09-08T09:01:00Z', 'LATE', '{}'::jsonb)",
+        )
+        .bind(trains_id)
+        .execute(&pool)
+        .await
+        .expect("seed train_movement_events");
+
+        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-ARR", service_date, Some(&calling_points))
+            .await
+            .expect("build_journey_stops")
+            .expect("Some stops from calling_points_json");
+
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[1].crs.as_deref(), Some("TSA"));
+        assert_eq!(stops[1].last_event_type.as_deref(), Some("ARRIVAL"));
+        assert_eq!(
+            stops[1].actual_arrival,
+            "2026-09-08T09:01:00Z".parse().ok()
+        );
+        assert_eq!(
+            stops[1].delay_minutes,
+            Some(1),
+            "must pair actual ARRIVAL (09:01Z) against booked ARRIVAL (09:00Z) -> 1 minute late; \
+             the old buggy code paired it against booked DEPARTURE (09:02Z) -> Some(-1), \
+             falsely rendering as \"1m early\""
+        );
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-ARR-%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// §6(d): a `PASS` event sets both `actual_arrival` and
+    /// `actual_departure` to the same instant (a passing train's arrival
+    /// and departure are the same instant for display purposes), and
+    /// `delay_minutes` is computed correctly against whichever scheduled
+    /// time is available (the fallback source here only ever has
+    /// `scheduled_departure`).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                build_journey_stops_overlays_a_pass_event_setting_both_actual_times \
+                -- --ignored --test-threads=1`"]
+    async fn build_journey_stops_overlays_a_pass_event_setting_both_actual_times() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(&pool, "TEST-JRN-PASS", service_date)
+            .await
+            .expect("find_or_create_train");
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-PASS'")
+            .execute(&pool)
+            .await
+            .ok();
+
+        crate::data::queries::upsert_schedule_destination_departures(
+            &pool,
+            &[crate::data::queries::ScheduleDestinationDeparturesRow {
+                service_date,
+                destination_crs: "WAT".to_string(),
+                scheduled: "08:00:00".parse().unwrap(),
+                train_uid: "TEST-JRN-PASS".to_string(),
+                origin_crs: "RDG".to_string(),
+                true_origin_crs: Some("RDG".to_string()),
+            }],
+        )
+        .await
+        .expect("seed schedule_destination_departures");
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+
+        sqlx::query(
+            "INSERT INTO train_movement_events \
+                (trains_id, dedup_key, msg_type, event_type, loc_crs, planned_timestamp, \
+                 actual_timestamp, variation_status, raw_body) \
+             VALUES ($1, 'k-pass-1', '0002', 'PASS', 'RDG', '2026-09-08T07:00:00Z', \
+                     '2026-09-08T07:02:00Z', 'LATE', '{}'::jsonb)",
+        )
+        .bind(trains_id)
+        .execute(&pool)
+        .await
+        .expect("seed train_movement_events");
+
+        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-PASS", service_date, None)
+            .await
+            .expect("build_journey_stops")
+            .expect("Some stops");
+
+        assert_eq!(stops.len(), 2, "RDG + synthetic WAT terminus");
+        assert_eq!(stops[0].crs.as_deref(), Some("RDG"));
+        assert_eq!(stops[0].last_event_type.as_deref(), Some("PASS"));
+        let expected_instant: Option<DateTime<Utc>> = "2026-09-08T07:02:00Z".parse().ok();
+        assert_eq!(stops[0].actual_arrival, expected_instant);
+        assert_eq!(stops[0].actual_departure, expected_instant);
+        assert_eq!(
+            stops[0].delay_minutes,
+            Some(2),
+            "actual 2 minutes after this event's own planned time, via scheduled_departure \
+             (the only scheduled time this fallback source has)"
+        );
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-PASS'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// §6(e): a movement event whose `loc_crs` matches NO stop in the base
+    /// list is silently dropped -- no panic, no stray extra stop, and none
+    /// of the real stops' `actual_*`/`delay_minutes` fields get corrupted
+    /// by it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                build_journey_stops_silently_drops_an_event_whose_loc_crs_matches_no_stop \
+                -- --ignored --test-threads=1`"]
+    async fn build_journey_stops_silently_drops_an_event_whose_loc_crs_matches_no_stop() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NOMATCH", service_date)
+            .await
+            .expect("find_or_create_train");
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-NOMATCH'")
+            .execute(&pool)
+            .await
+            .ok();
+
+        crate::data::queries::upsert_schedule_destination_departures(
+            &pool,
+            &[crate::data::queries::ScheduleDestinationDeparturesRow {
+                service_date,
+                destination_crs: "WAT".to_string(),
+                scheduled: "08:00:00".parse().unwrap(),
+                train_uid: "TEST-JRN-NOMATCH".to_string(),
+                origin_crs: "RDG".to_string(),
+                true_origin_crs: Some("RDG".to_string()),
+            }],
+        )
+        .await
+        .expect("seed schedule_destination_departures");
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+
+        // 'ZZZ' is not RDG (the base stop) nor WAT (the synthetic
+        // terminus) -- an unscheduled diversion location, or a
+        // STANOX->CRS translation that doesn't line up with either
+        // source's own CRS.
+        sqlx::query(
+            "INSERT INTO train_movement_events \
+                (trains_id, dedup_key, msg_type, event_type, loc_crs, planned_timestamp, \
+                 actual_timestamp, variation_status, raw_body) \
+             VALUES ($1, 'k-nomatch-1', '0001', 'ARRIVAL', 'ZZZ', '2026-09-08T09:00:00Z', \
+                     '2026-09-08T09:05:00Z', 'LATE', '{}'::jsonb)",
+        )
+        .bind(trains_id)
+        .execute(&pool)
+        .await
+        .expect("seed train_movement_events");
+
+        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-NOMATCH", service_date, None)
+            .await
+            .expect("build_journey_stops")
+            .expect("Some stops");
+
+        assert_eq!(stops.len(), 2, "RDG + synthetic WAT terminus, no stray 'ZZZ' stop appended");
+        assert_eq!(stops[0].crs.as_deref(), Some("RDG"));
+        assert_eq!(stops[0].actual_arrival, None);
+        assert_eq!(stops[0].actual_departure, None);
+        assert_eq!(stops[0].last_event_type, None);
+        assert_eq!(stops[0].delay_minutes, None);
+        assert_eq!(stops[1].crs.as_deref(), Some("WAT"));
+        assert_eq!(stops[1].actual_arrival, None);
+        assert_eq!(stops[1].actual_departure, None);
+        assert_eq!(stops[1].last_event_type, None);
+        assert_eq!(stops[1].delay_minutes, None);
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-NOMATCH'")
             .execute(&pool)
             .await
             .ok();
