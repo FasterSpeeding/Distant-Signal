@@ -31,7 +31,7 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  * `'unresolved'` is deliberately unreachable here: that status records a
  * subscriber's pin having been given up on, which is meaningless for a
  * shared train. */
-function toJourneyState(train: PublicTrainState): TrainJourneyState {
+export function toJourneyState(train: PublicTrainState): TrainJourneyState {
   return {
     serviceDate: train.serviceDate,
     pinOriginCrs: train.originCrs,
@@ -53,6 +53,7 @@ function toJourneyState(train: PublicTrainState): TrainJourneyState {
     etaNext: train.etaNext,
     etaSource: train.etaSource,
     customName: null,
+    journeyStops: train.journeyStops,
   };
 }
 

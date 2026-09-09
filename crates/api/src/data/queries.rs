@@ -768,6 +768,31 @@ pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String
     Ok(row.map(|(crs,)| crs))
 }
 
+/// Batched sibling of `crs_for_tiploc` -- one `WHERE UPPER(tiploc) =
+/// ANY($1)` query resolving every distinct TIPLOC in a calling-point list,
+/// instead of one query per TIPLOC. Mirrors the existing single/batch
+/// pairing convention `trains::find_or_create_train`/
+/// `find_or_create_trains_batch` already establishes. Keys are
+/// `UPPER(tiploc)`; a TIPLOC with no `stanox_crs` row is simply absent from
+/// the map (degrade, don't fabricate -- same posture `crs_for_tiploc`
+/// already has for a single lookup).
+pub async fn crs_for_tiplocs_batch(
+    pool: &PgPool,
+    tiplocs: &[String],
+) -> Result<HashMap<String, String>> {
+    if tiplocs.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let upper: Vec<String> = tiplocs.iter().map(|t| t.to_uppercase()).collect();
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT DISTINCT UPPER(tiploc), UPPER(crs) FROM stanox_crs WHERE UPPER(tiploc) = ANY($1)",
+    )
+    .bind(&upper)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
 /// Upserts one line's population for one service date -- wholesale
 /// replaces any existing row for that `(line_id, service_date)` (a fresh
 /// CIF read supersedes the prior one entirely, never merged). `population`
@@ -1050,6 +1075,42 @@ pub async fn upsert_schedule_destination_departures(
 
     tx.commit().await?;
     Ok(result.rows_affected())
+}
+
+/// One `schedule_destination_departures` row for one train_uid/service_date,
+/// used to reconstruct a scheduled stop list when `trains.calling_points`
+/// hasn't been populated by schedule-matching (`crates/api/src/data/journey.rs`'s
+/// fallback source -- see
+/// docs/superpowers/specs/2026-09-08-journey-timetable-overlay-design.md §0.2).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CallingPointDepartureRow {
+    pub origin_crs: String,
+    pub scheduled: chrono::NaiveTime,
+    pub true_origin_crs: Option<String>,
+    pub destination_crs: Option<String>,
+}
+
+/// Every departure-bearing calling point of `train_uid`'s schedule on
+/// `service_date`, chronological. See `CallingPointDepartureRow`'s doc
+/// comment for why this exists; see the design doc §0.2 for why the
+/// schedule's own terminus is NOT among these rows (no `booked_departure`
+/// for a `Terminate` calling point) -- the caller appends it separately.
+pub async fn list_calling_point_departures_for_train(
+    pool: &PgPool,
+    train_uid: &str,
+    service_date: chrono::NaiveDate,
+) -> Result<Vec<CallingPointDepartureRow>> {
+    let rows = sqlx::query_as::<_, CallingPointDepartureRow>(
+        "SELECT origin_crs, scheduled, true_origin_crs, destination_crs \
+         FROM schedule_destination_departures \
+         WHERE train_uid = $1 AND service_date = $2 \
+         ORDER BY scheduled",
+    )
+    .bind(train_uid)
+    .bind(service_date)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }
 
 /// Cheap, day-scoped existence probe backing the 404-versus-`200 []` split.
@@ -1806,6 +1867,69 @@ pub async fn lines_currently_reporting_incident(
     .fetch_all(pool)
     .await?;
     Ok(rows)
+}
+
+// --- Movement Events Queries ---
+
+/// One `train_movement_events` row, already collapsed to the latest
+/// (`received_at`-DESC) event per distinct `loc_crs` for one `trains_id` --
+/// the per-stop live overlay source
+/// (docs/superpowers/specs/2026-09-08-journey-timetable-overlay-design.md
+/// §0.4/§3.3). `loc_crs` is never `NULL` here (`WHERE loc_crs IS NOT NULL`
+/// below) -- a message whose STANOX never translated to a CRS has nothing
+/// to key an overlay row on and is dropped, same "degrade, don't attach to
+/// the wrong stop" posture as everywhere else in this data model.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MovementEventRow {
+    pub loc_crs: String,
+    pub event_type: Option<String>,
+    pub planned_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub actual_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub variation_status: Option<String>,
+}
+
+/// `DISTINCT ON (UPPER(loc_crs))` keeps only the most-recently-`received_at`
+/// event for each location -- so a location visited with an ARRIVAL then
+/// later a DEPARTURE collapses to the DEPARTURE (the more complete, more
+/// recent report), matching this app's existing "last reported" framing
+/// (`train_current_state.last_reported_location`/`last_event_type`)
+/// extended to a per-location granularity.
+pub async fn latest_movement_event_per_location(
+    pool: &PgPool,
+    trains_id: i64,
+) -> Result<Vec<MovementEventRow>> {
+    let rows = sqlx::query_as::<_, MovementEventRow>(
+        "SELECT DISTINCT ON (UPPER(loc_crs)) UPPER(loc_crs) AS loc_crs, event_type, \
+                planned_timestamp, actual_timestamp, variation_status \
+         FROM train_movement_events \
+         WHERE trains_id = $1 AND loc_crs IS NOT NULL \
+         ORDER BY UPPER(loc_crs), received_at DESC",
+    )
+    .bind(trains_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// `crs -> name` for every code in `crs_codes` that has a `stations` row --
+/// batched sibling of the `LEFT JOIN stations` pattern used everywhere else
+/// in this data model (`pin_origin_name`, etc.), for a stop list built from
+/// several separate CRS codes rather than one join target. A code with no
+/// reference row is simply absent from the map.
+pub async fn station_names_for_crs_batch(
+    pool: &PgPool,
+    crs_codes: &[String],
+) -> Result<HashMap<String, String>> {
+    if crs_codes.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let upper: Vec<String> = crs_codes.iter().map(|c| c.to_uppercase()).collect();
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT UPPER(crs), name FROM stations WHERE UPPER(crs) = ANY($1)")
+            .bind(&upper)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -2776,6 +2900,56 @@ mod stanox_crs_lookup_query_tests {
             .await
             .expect("cleanup");
     }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                crs_for_tiplocs_batch_resolves_every_known_tiploc_and_omits_unknown_ones \
+                -- --ignored --test-threads=1`"]
+    async fn crs_for_tiplocs_batch_resolves_every_known_tiploc_and_omits_unknown_ones() {
+        let pool = test_pool().await;
+        upsert_stanox_crs(
+            &pool,
+            &[
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JS-CRE".to_string(),
+                    crs: "CRE".to_string(),
+                    tiploc: "TEST-JS-CREWE".to_string(),
+                    station_name: "CREWE".to_string(),
+                    source_sequence: 1,
+                },
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JS-EUS".to_string(),
+                    crs: "EUS".to_string(),
+                    tiploc: "TEST-JS-EUSTON".to_string(),
+                    station_name: "EUSTON".to_string(),
+                    source_sequence: 1,
+                },
+            ],
+        )
+        .await
+        .expect("seed stanox_crs");
+
+        let result = crs_for_tiplocs_batch(
+            &pool,
+            &[
+                "test-js-crewe".to_string(),
+                "TEST-JS-EUSTON".to_string(),
+                "TEST-JS-UNKNOWN".to_string(),
+            ],
+        )
+        .await
+        .expect("crs_for_tiplocs_batch");
+
+        assert_eq!(result.get("TEST-JS-CREWE"), Some(&"CRE".to_string()));
+        assert_eq!(result.get("TEST-JS-EUSTON"), Some(&"EUS".to_string()));
+        assert_eq!(result.get("TEST-JS-UNKNOWN"), None);
+        assert_eq!(result.len(), 2);
+
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JS-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
 }
 
 /// Tested at the query level rather than through a route harness -- same
@@ -3587,5 +3761,146 @@ mod schedule_destination_departures_query_tests {
         );
 
         delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_calling_point_departures_for_train_returns_rows_ordered_by_scheduled_time \
+                -- --ignored --test-threads=1`"]
+    async fn list_calling_point_departures_for_train_returns_rows_ordered_by_scheduled_time() {
+        let pool = test_pool().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JS-CPD'")
+            .execute(&pool)
+            .await
+            .ok();
+
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                ScheduleDestinationDeparturesRow {
+                    service_date,
+                    destination_crs: "WAT".to_string(),
+                    scheduled: "10:15:00".parse().unwrap(),
+                    train_uid: "TEST-JS-CPD".to_string(),
+                    origin_crs: "RDG".to_string(),
+                    true_origin_crs: Some("RDG".to_string()),
+                },
+                ScheduleDestinationDeparturesRow {
+                    service_date,
+                    destination_crs: "WAT".to_string(),
+                    scheduled: "10:32:00".parse().unwrap(),
+                    train_uid: "TEST-JS-CPD".to_string(),
+                    origin_crs: "SLO".to_string(),
+                    true_origin_crs: Some("RDG".to_string()),
+                },
+            ],
+        )
+        .await
+        .expect("seed schedule_destination_departures");
+
+        let rows = list_calling_point_departures_for_train(&pool, "TEST-JS-CPD", service_date)
+            .await
+            .expect("list_calling_point_departures_for_train");
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].origin_crs, "RDG");
+        assert_eq!(rows[0].true_origin_crs.as_deref(), Some("RDG"));
+        assert_eq!(rows[0].destination_crs.as_deref(), Some("WAT"));
+        assert_eq!(rows[1].origin_crs, "SLO");
+
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JS-CPD'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+}
+
+#[cfg(test)]
+mod journey_timetable_overlay_query_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                latest_movement_event_per_location_dedups_to_the_most_recently_received_event \
+                -- --ignored --test-threads=1`"]
+    async fn latest_movement_event_per_location_dedups_to_the_most_recently_received_event() {
+        let pool = test_pool().await;
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-JS-MOVE",
+            "2026-09-08".parse().unwrap(),
+        )
+        .await
+        .expect("find_or_create_train");
+
+        sqlx::query(
+            "INSERT INTO train_movement_events \
+                (trains_id, dedup_key, msg_type, event_type, loc_crs, planned_timestamp, \
+                 actual_timestamp, variation_status, raw_body, received_at) \
+             VALUES \
+                ($1, 'k1', '0003', 'ARRIVAL', 'rdg', '2026-09-08T09:15:00Z', '2026-09-08T09:17:00Z', \
+                 'LATE', '{}'::jsonb, NOW() - interval '2 minutes'), \
+                ($1, 'k2', '0003', 'DEPARTURE', 'RDG', '2026-09-08T09:20:00Z', '2026-09-08T09:23:00Z', \
+                 'LATE', '{}'::jsonb, NOW())",
+        )
+        .bind(trains_id)
+        .execute(&pool)
+        .await
+        .expect("seed train_movement_events");
+
+        let rows = latest_movement_event_per_location(&pool, trains_id)
+            .await
+            .expect("latest_movement_event_per_location");
+
+        assert_eq!(rows.len(), 1, "one location, dedup to its latest event");
+        assert_eq!(rows[0].loc_crs, "RDG");
+        assert_eq!(rows[0].event_type.as_deref(), Some("DEPARTURE"));
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                station_names_for_crs_batch_resolves_known_codes_and_omits_unknown_ones \
+                -- --ignored --test-threads=1`"]
+    async fn station_names_for_crs_batch_resolves_known_codes_and_omits_unknown_ones() {
+        let pool = test_pool().await;
+
+        sqlx::query("INSERT INTO stations (crs, name) VALUES ('JTO', 'TEST STATION') ON CONFLICT (crs) DO NOTHING")
+            .execute(&pool)
+            .await
+            .expect("seed test station");
+
+        let names = station_names_for_crs_batch(&pool, &["jto".to_string(), "ZZZ".to_string()])
+            .await
+            .expect("station_names_for_crs_batch");
+
+        assert!(names.contains_key("JTO"), "JTO test station should be found");
+        assert!(!names.contains_key("ZZZ"));
+
+        sqlx::query("DELETE FROM stations WHERE crs = 'JTO'")
+            .execute(&pool)
+            .await
+            .ok();
     }
 }

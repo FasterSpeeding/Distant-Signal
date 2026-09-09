@@ -248,6 +248,19 @@ pub struct PublicTrainState {
     pub next_calling_point: Option<String>,
     pub eta_next: Option<DateTime<Utc>>,
     pub eta_source: Option<String>,
+    /// See `train_tracking::TrackedTrainState::journey_stops`'s doc
+    /// comment -- same contract, populated the same "read row, then
+    /// overlay" way by `routes::train::get_by_uid_and_date`. This struct
+    /// already carries `trains_id` on the wire (unlike `TrackedTrainState`,
+    /// where it's an internal-only addition), so no extra field is needed
+    /// to know which `trains_id` to key the overlay query on. `#[sqlx(skip)]`,
+    /// not `#[sqlx(default)]` -- see
+    /// `train_tracking::TrackedTrainState::journey_stops`'s doc comment for
+    /// why: `JourneyStop` doesn't implement `sqlx::Type`/`Decode`, and
+    /// `#[sqlx(default)]`'s generated code still needs that bound even
+    /// though this column is never selected.
+    #[sqlx(skip)]
+    pub journey_stops: Option<Vec<crate::data::journey::JourneyStop>>,
 }
 
 /// Whether `(train_uid, service_date)` is a real, CIF-published scheduled

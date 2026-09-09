@@ -969,6 +969,35 @@ pub struct TrackedTrainState {
     pub eta_next: Option<DateTime<Utc>>,
     pub eta_source: Option<String>,
     pub custom_name: Option<String>,
+    /// The shared `trains` row's own surrogate key, needed to read
+    /// `train_movement_events` for this train's live overlay -- internal
+    /// plumbing for `routes::train`'s journey-stops attachment, never sent
+    /// to the frontend (this struct already uses a *different* `id` for
+    /// the tracking id, so exposing a second, differently-scoped `id`-like
+    /// field on the wire would repeat exactly the confusion
+    /// `PublicTrainState::trains_id`'s own doc comment describes).
+    #[serde(skip_serializing)]
+    pub trains_id: Option<i64>,
+    /// The merged scheduled-timetable + live-overlay stop list -- `None`
+    /// until `train_uid` is known, or if neither backing source has
+    /// anything for this train (see
+    /// docs/superpowers/specs/2026-09-08-journey-timetable-overlay-design.md
+    /// §1). Populated by `routes::train`'s handlers AFTER this struct is
+    /// read from the DB (same "read row, then overlay a computed field"
+    /// pattern `blend_darwin_eta` already uses for `eta_next`/`eta_source`
+    /// on this same struct) -- never selected directly by
+    /// `TRACKED_TRAIN_STATE_SELECT`, hence `#[sqlx(skip)]`. NOT
+    /// `#[sqlx(default)]`: the derived `FromRow` impl still emits a
+    /// `try_get::<#ty, _>(..)` call for a `#[sqlx(default)]` field and only
+    /// swallows the resulting `ColumnNotFound` error at runtime, so it
+    /// still requires `JourneyStop: sqlx::Type<Postgres> +
+    /// sqlx::Decode<Postgres>` at compile time -- a bound this
+    /// never-decoded, pure computed/serialization type deliberately
+    /// doesn't satisfy. `#[sqlx(skip)]` instead emits a bare
+    /// `Default::default()` with no such bound, which is what "this column
+    /// is never in the SELECT" actually needs.
+    #[sqlx(skip)]
+    pub journey_stops: Option<Vec<crate::data::journey::JourneyStop>>,
 }
 
 // `LEFT JOIN`, never `JOIN`: a CRS with no reference row (a code the
@@ -1014,6 +1043,7 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
            tt.resolution_status, tr.train_uid, tr.train_id, \
            tr.destination_crs AS schedule_destination_crs, ssd.name AS schedule_destination_name, \
            tr.calling_points AS schedule_calling_points, \
+           tr.id AS trains_id, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
            cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source, \
            tt.custom_name \

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import TrackedTrainByUidPage from './page';
+import TrackedTrainByUidPage, { toJourneyState } from './page';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import type { PublicTrainState } from '@/lib/types';
@@ -45,6 +45,7 @@ function publicTrainState(overrides: Partial<PublicTrainState> = {}): PublicTrai
     nextCallingPoint: 'Basingstoke',
     etaNext: null,
     etaSource: null,
+    journeyStops: null,
     ...overrides,
   };
 }
@@ -206,5 +207,45 @@ describe('TrackedTrainByUidPage success path', () => {
       await TrackedTrainByUidPage({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) }),
     );
     expect(screen.getByRole('link', { name: 'Find a train' })).toHaveAttribute('href', '/trains');
+  });
+});
+
+describe('toJourneyState', () => {
+  it('carries journeyStops through unchanged from PublicTrainState', () => {
+    const stop = {
+      crs: 'RDG',
+      name: 'Reading',
+      tiploc: null,
+      kind: 'Origin' as const,
+      scheduledArrival: null,
+      scheduledDeparture: '2026-09-08T08:00:00Z',
+      actualArrival: null,
+      actualDeparture: null,
+      lastEventType: null,
+      variationStatus: null,
+      delayMinutes: null,
+    };
+    const result = toJourneyState({
+      trainsId: 1,
+      trainUid: 'X12345',
+      serviceDate: '2026-09-08',
+      originCrs: 'RDG',
+      originName: 'Reading',
+      destinationCrs: 'WAT',
+      destinationName: 'London Waterloo',
+      scheduledDeparture: '2026-09-08T08:00:00Z',
+      callingPoints: null,
+      trainId: null,
+      status: null,
+      lastReportedLocation: null,
+      lastEventType: null,
+      delayMinutes: null,
+      nextCallingPoint: null,
+      etaNext: null,
+      etaSource: null,
+      journeyStops: [stop],
+    });
+
+    expect(result.journeyStops).toEqual([stop]);
   });
 });

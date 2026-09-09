@@ -373,6 +373,28 @@ export interface ScheduleCallingPoint {
   isHalfMinuteDeparture: boolean;
 }
 
+export type JourneyStopKind = 'Origin' | 'Intermediate' | 'Terminate';
+
+/** One calling point of a train's journey, booked schedule merged with the
+ * latest reported live data for that location --
+ * `crates/api/src/data/journey.rs`'s `JourneyStop`, camelCase on the wire.
+ * `null` fields mean "not yet known" (a stop not yet reached has no
+ * `actual*`/`delayMinutes`), never a fabricated value -- see
+ * docs/superpowers/specs/2026-09-08-journey-timetable-overlay-design.md §2. */
+export interface JourneyStop {
+  crs: string | null;
+  name: string | null;
+  tiploc: string | null;
+  kind: JourneyStopKind | null;
+  scheduledArrival: string | null; // RFC3339
+  scheduledDeparture: string | null; // RFC3339
+  actualArrival: string | null; // RFC3339
+  actualDeparture: string | null; // RFC3339
+  lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"
+  variationStatus: string | null;
+  delayMinutes: number | null;
+}
+
 /** `GET /Train/{trackingId}`'s response shape
  * (`crates/api/src/data/train_tracking.rs`'s `TrackedTrainState`,
  * camelCase on the wire). NOT `GET /Train/by-uid/{uid}/{date}`'s any
@@ -440,6 +462,11 @@ export interface TrainJourneyState {
   // (the backend's single-train read never selects
   // `pin_scheduled_departure`) -- see `lib/trackingName.ts`.
   pinScheduledDeparture?: string | null;
+  // The merged scheduled-timetable + live-overlay stop list -- `null`
+  // until `trainUid` is known, or if neither backing source has anything
+  // for this train. See `components/JourneyTimeline.tsx` and
+  // docs/superpowers/specs/2026-09-08-journey-timetable-overlay-design.md §1.
+  journeyStops: JourneyStop[] | null;
 }
 
 /** `GET /Train/by-uid/{uid}/{date}`'s response shape
@@ -473,6 +500,7 @@ export interface PublicTrainState {
   nextCallingPoint: string | null;
   etaNext: string | null; // RFC3339
   etaSource: EtaSource | null;
+  journeyStops: JourneyStop[] | null;
 }
 
 /** `GET /Train/mine`'s per-item response shape

@@ -571,7 +571,9 @@ async fn get_by_tracking_id(
         .await
         .map_err(internal_error("read tracked train state"))?;
     match state {
-        Some(state) => Ok(Json(blend_darwin_eta(&app, state).await)),
+        Some(state) => Ok(Json(
+            attach_journey_stops(&app, blend_darwin_eta(&app, state).await).await,
+        )),
         None => Err((
             StatusCode::NOT_FOUND,
             "no tracked train with that id".to_string(),
@@ -707,7 +709,7 @@ async fn get_by_uid_and_date(
     }
 
     match state {
-        Some(state) => Ok(Json(state)),
+        Some(state) => Ok(Json(attach_journey_stops_public(&app, state).await)),
         None => Err((
             StatusCode::NOT_FOUND,
             "no known train for that uid/date".to_string(),
@@ -911,6 +913,85 @@ async fn blend_darwin_eta(
     {
         state.eta_next = Some(eta);
         state.eta_source = Some("darwin-estimated".to_string());
+    }
+    state
+}
+
+/// Attaches `journey_stops` to an already-fetched `TrackedTrainState`,
+/// mirroring `blend_darwin_eta`'s own "read row, then overlay a computed
+/// field" shape on the same struct. Only attempted once `train_uid`/
+/// `trains_id` are both known (§1 of the design doc) -- a `pending`/
+/// `unresolved` state has neither, and this returns `state` unchanged for
+/// it, same as `blend_darwin_eta`'s own early-return branches. A DB error
+/// building the overlay degrades to `journey_stops: None` rather than
+/// failing the whole request -- the same best-effort posture
+/// `blend_darwin_eta` already has for its own overlay.
+async fn attach_journey_stops(
+    app: &App,
+    mut state: train_tracking::TrackedTrainState,
+) -> train_tracking::TrackedTrainState {
+    let (Some(trains_id), Some(train_uid)) = (state.trains_id, state.train_uid.clone()) else {
+        return state;
+    };
+    match crate::data::journey::build_journey_stops(
+        &app.database,
+        trains_id,
+        &train_uid,
+        state.service_date,
+        state.schedule_calling_points.as_ref(),
+    )
+    .await
+    {
+        Ok(stops) => state.journey_stops = stops,
+        Err(err) => {
+            tracing::warn!(error = ?err, trains_id, "could not build journey stops");
+        }
+    }
+    state
+}
+
+/// Public-route sibling of `attach_journey_stops`, for `PublicTrainState`.
+/// `PublicTrainState.train_uid` is a bare `String` (always present once any
+/// `trains` row exists at all, per `get_public_train_state`'s `SELECT
+/// tr.train_uid`), so it cannot itself signal "train_uid unknown" the way
+/// `TrackedTrainState.train_uid: Option<String>` can.
+///
+/// Unlike `attach_journey_stops` above, this has NO early-return gate on
+/// `train_id`/`origin_crs`. A gate mirroring the frontend's
+/// `toJourneyState` "pending" check (`train.trainId ? 'resolved' :
+/// train.originCrs ? 'schedule_matched' : 'pending'`) was tried here and
+/// removed (final whole-branch review, Finding 3): `GET
+/// /public/trains/search` results link straight to `/train/{uid}/{date}`,
+/// which `get_by_uid_and_date` above serves for a not-yet-seen train by
+/// calling the BARE `find_or_create_train` (not the schedule-match
+/// version) after `is_known_scheduled_train` has already confirmed the
+/// train really is a CIF-published schedule for that day -- so the
+/// resulting row has `origin_crs: None`/`train_id: None` even though the
+/// identity is provably real. Excluding a genuinely-unknown/`pending`
+/// train (design doc §1's stated reasoning: no reliable way to know which
+/// CIF schedule a real-world service corresponds to without a known
+/// identity) doesn't apply on this route -- the identity here is the
+/// URL's own `(train_uid, date)`, already validated by
+/// `is_known_scheduled_train`/`get_public_train_state` finding a row at
+/// all. `build_journey_stops` already returns `Ok(None)` safely when
+/// neither source has anything, so no replacement gate is needed.
+async fn attach_journey_stops_public(
+    app: &App,
+    mut state: crate::data::trains::PublicTrainState,
+) -> crate::data::trains::PublicTrainState {
+    match crate::data::journey::build_journey_stops(
+        &app.database,
+        state.trains_id,
+        &state.train_uid,
+        state.service_date,
+        state.calling_points.as_ref(),
+    )
+    .await
+    {
+        Ok(stops) => state.journey_stops = stops,
+        Err(err) => {
+            tracing::warn!(error = ?err, trains_id = state.trains_id, "could not build journey stops");
+        }
     }
     state
 }
@@ -1129,6 +1210,8 @@ mod tests {
             eta_next: Some(fixed_instant()),
             eta_source: Some("darwin-estimated".to_string()),
             custom_name: None,
+            trains_id: Some(1),
+            journey_stops: None,
         }
     }
 
@@ -2240,6 +2323,74 @@ mod db_tests {
         cleanup_user(&pool, "TEST-TRACKID-REAL-OWNER").await;
     }
 
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_by_tracking_id_includes_journey_stops -- --ignored --test-threads=1`"]
+    async fn get_by_tracking_id_includes_journey_stops_once_a_schedule_match_exists() {
+        let pool = connect().await;
+        let user_id = "TEST-JS-ROUTE-OWNER";
+        let token = seed_session(&pool, user_id).await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+
+        // `find_or_create_train_with_schedule_match` seeds a `trains` row with
+        // real `calling_points`, exactly like a successful schedule match would.
+        let calling_points = serde_json::json!([
+            {
+                "tiploc": "TEST-JSR-ORIGIN",
+                "kind": "Origin",
+                "bookedArrival": null,
+                "bookedDeparture": "09:00:00",
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            }
+        ]);
+        let trains_id = crate::data::trains::find_or_create_train_with_schedule_match(
+            &pool,
+            "TEST-JSR-UID",
+            service_date,
+            "KGX",
+            service_date.and_hms_opt(9, 0, 0).unwrap().and_utc(),
+            None,
+            "line-a",
+            &calling_points,
+        )
+        .await
+        .expect("seed a schedule-matched trains row");
+
+        let (tracking_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO train_subscriptions \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, resolution_status, trains_id) \
+             VALUES ($1, $2, 'KGX', $3, 'schedule_matched', $4) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(service_date)
+        .bind(service_date.and_hms_opt(9, 0, 0).unwrap().and_utc())
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed fixture train_subscriptions row");
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = request(router, format!("/Train/{tracking_id}"), Some(&token)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let stops = body
+            .get("journeyStops")
+            .expect("journeyStops present")
+            .as_array()
+            .expect("array");
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0]["crs"],
+            Value::Null,
+            "TEST-JSR-ORIGIN has no stanox_crs row in this fixture"
+        );
+        assert_eq!(stops[0]["kind"], Value::String("Origin".to_string()));
+
+        cleanup_user(&pool, user_id).await;
+    }
+
     // --- delete_tracked_train -------------------------------------------------
 
     /// Issues `DELETE /Train/{trackingId}`, optionally with a session
@@ -2808,6 +2959,28 @@ mod db_tests {
             body.get("trainsId").and_then(Value::as_i64).is_some(),
             "the read must have created and returned a real shared trains row: {body:?}"
         );
+        // Regression coverage for the final whole-branch review's Finding
+        // 3: this row was created BARE (`origin_crs`/`train_id` both
+        // `None`) by the read-triggered `find_or_create_train` above, but
+        // the identity IS provably CIF-scheduled (the same
+        // `schedule_destination_departures` row seeded above), so
+        // `attach_journey_stops_public` must not gate `journeyStops` to
+        // `null` on `origin_crs`/`train_id` being unset -- it must still
+        // build a fallback stop list from `schedule_destination_departures`.
+        let stops = body
+            .get("journeyStops")
+            .expect("journeyStops present")
+            .as_array()
+            .expect("journeyStops must be a non-null array for a provably CIF-scheduled train, \
+                     even when found via the bare find_or_create_train path");
+        assert_eq!(
+            stops.len(),
+            2,
+            "the seeded origin row (KGX) plus the synthetic EDB terminus"
+        );
+        assert_eq!(stops[0]["crs"], Value::String("KGX".to_string()));
+        assert_eq!(stops[1]["crs"], Value::String("EDB".to_string()));
+        assert_eq!(stops[1]["kind"], Value::String("Terminate".to_string()));
 
         // A second read must be idempotent -- no duplicate-row error, same
         // `trainsId` both times.
