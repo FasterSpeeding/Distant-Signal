@@ -13,17 +13,22 @@
 //! no longer an `isOwner` flag for the frontend to branch on: any `200`
 //! from this endpoint is by construction the real owner's own line.
 
+use std::collections::HashMap;
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::app::{App, Router};
 use crate::auth::{AuthenticatedUser, OptionalAuthenticatedUser};
 use crate::data::{
     custom_lines::{self, NewCustomLine},
     queries,
+    trains::{self, PublicTrainState},
 };
+use crate::render::line_train_json;
 
 pub fn router() -> Router {
     Router::new()
@@ -42,6 +47,7 @@ pub fn router() -> Router {
             "/lines/{id}/schedule",
             axum::routing::get(get_line_schedule),
         )
+        .route("/lines/{id}/trains", axum::routing::get(get_line_trains))
 }
 
 #[derive(Debug, Serialize)]
@@ -182,6 +188,77 @@ async fn get_line_schedule(
     };
 
     Ok(Json(population))
+}
+
+/// `GET /public/lines/{id}/trains?date=`: every scheduled UID on line `id`
+/// for one rail day (from `schedule_line_population`, the same source
+/// `get_line_schedule` reads), each paired with its live status from the
+/// shared `trains`/`train_current_state` tables where one already exists.
+/// See docs/superpowers/specs/2026-09-09-mcp-schedule-data-follow-up-design.md
+/// §5.3 for the full design.
+///
+/// Closes the gap between `get_line_schedule` (schedule only, one line at
+/// a time) and `routes::train::get_by_uid_and_date` (schedule + live
+/// status, but one train at a time): without this route, "what's running
+/// on this line right now" costs one `GET /Train/by-uid` call per
+/// scheduled service. This route costs exactly two queries regardless of
+/// how many trains the line has: one for the population, one batched
+/// `trains::get_public_train_states_for_line` covering every UID in it.
+///
+/// Same 404 semantics as `get_line_schedule` -- an unknown/not-yet-
+/// published `(id, date)` 404s naming both. Unlike `get_by_uid_and_date`,
+/// this handler never writes: a UID with no existing `trains` row simply
+/// renders `liveStatus: null` (an honest, expected gap -- see the spec's
+/// Open question 2), never triggering a `find_or_create_train` upsert.
+async fn get_line_trains(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(query): Query<ScheduleQuery>,
+) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let service_date = resolve_schedule_date(query.date, chrono::Utc::now().date_naive());
+    let Some(population) = queries::get_schedule_line_population(&app.database, &id, service_date)
+        .await
+        .map_err(internal_error)?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("no CIF-derived schedule population for line {id} on {service_date}"),
+        ));
+    };
+
+    // `population` is already owned here -- destructure it directly rather
+    // than `.as_array().cloned()`, which would clone the whole array (a
+    // line's full daily service list; size unmeasured, see the spec's Open
+    // question 1) just to unwrap it.
+    let entries = match population {
+        Value::Array(entries) => entries,
+        _ => Vec::new(),
+    };
+    let uids: Vec<String> = entries
+        .iter()
+        .filter_map(|e| e.get("uid").and_then(Value::as_str).map(str::to_string))
+        .collect();
+
+    let live_states = trains::get_public_train_states_for_line(&app.database, &uids, service_date)
+        .await
+        .map_err(internal_error)?;
+    let live_by_uid: HashMap<&str, &PublicTrainState> = live_states
+        .iter()
+        .map(|s| (s.train_uid.as_str(), s))
+        .collect();
+
+    let result: Vec<Value> = entries
+        .iter()
+        .map(|entry| {
+            let live = entry
+                .get("uid")
+                .and_then(Value::as_str)
+                .and_then(|uid| live_by_uid.get(uid).copied());
+            line_train_json(entry, live)
+        })
+        .collect();
+
+    Ok(Json(result))
 }
 
 async fn get_line_definition(
@@ -1629,5 +1706,166 @@ mod db_tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         delete_schedule_population_fixture(&pool, "test-schedule-2a-stale").await;
+    }
+
+    /// Issues `GET /public/lines/{id}/trains`, with an optional `?date=`
+    /// query string. Mirrors `get_line_schedule`'s own request-building.
+    async fn get_line_trains(
+        router: axum::Router,
+        id: &str,
+        date: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let uri = match date {
+            Some(date) => format!("/public/lines/{id}/trains?date={date}"),
+            None => format!("/public/lines/{id}/trains"),
+        };
+        let request = Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .expect("build request");
+        let response = router.oneshot(request).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+        });
+        (status, value)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                trains_no_row_for_the_line_and_date_is_404_naming_both -- --ignored`"]
+    async fn trains_no_row_for_the_line_and_date_is_404_naming_both() {
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, "test-trains-3-missing").await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = get_line_trains(router, "test-trains-3-missing", None).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let body = body
+            .as_str()
+            .expect("404 body is a plain string")
+            .to_string();
+        assert!(body.contains("test-trains-3-missing"), "body: {body}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                trains_a_population_with_no_trains_rows_returns_every_entry_with_null_live_status \
+                -- --ignored`"]
+    async fn trains_a_population_with_no_trains_rows_returns_every_entry_with_null_live_status() {
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, "test-trains-3-no-live").await;
+        sqlx::query("DELETE FROM trains WHERE train_uid IN ('TEST-TRAINS-3-A', 'TEST-TRAINS-3-B')")
+            .execute(&pool)
+            .await
+            .ok();
+
+        let today = chrono::Utc::now().date_naive();
+        let population = serde_json::json!([
+            {"uid": "TEST-TRAINS-3-A", "calling_points": [{"tiploc": "PADTON", "kind": "Origin", "booked_arrival": null, "booked_departure": "08:15:00", "is_half_minute_arrival": false, "is_half_minute_departure": false}]},
+            {"uid": "TEST-TRAINS-3-B", "calling_points": []},
+        ]);
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind("test-trains-3-no-live")
+        .bind(today)
+        .bind(&population)
+        .execute(&pool)
+        .await
+        .expect("seed fixture population row");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = get_line_trains(router, "test-trains-3-no-live", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let entries = body.as_array().expect("body is a JSON array");
+        assert_eq!(entries.len(), 2);
+        for entry in entries {
+            assert!(entry["liveStatus"].is_null(), "entry: {entry:?}");
+        }
+        assert_eq!(entries[0]["uid"], "TEST-TRAINS-3-A");
+        assert_eq!(
+            entries[0]["callingPoints"],
+            population[0]["calling_points"],
+            "callingPoints must be the raw population entry, unchanged"
+        );
+
+        delete_schedule_population_fixture(&pool, "test-trains-3-no-live").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                trains_a_uid_with_an_existing_trains_row_gets_its_live_status_attached \
+                -- --ignored`"]
+    async fn trains_a_uid_with_an_existing_trains_row_gets_its_live_status_attached() {
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, "test-trains-3-live").await;
+        sqlx::query("DELETE FROM trains WHERE train_uid = 'TEST-TRAINS-3-LIVE'")
+            .execute(&pool)
+            .await
+            .ok();
+
+        let today = chrono::Utc::now().date_naive();
+        let population = serde_json::json!([
+            {"uid": "TEST-TRAINS-3-LIVE", "calling_points": []},
+        ]);
+        sqlx::query(
+            "INSERT INTO schedule_line_population (line_id, service_date, population) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind("test-trains-3-live")
+        .bind(today)
+        .bind(&population)
+        .execute(&pool)
+        .await
+        .expect("seed fixture population row");
+
+        let trains_id: (i64,) = sqlx::query_as(
+            "INSERT INTO trains (train_uid, service_date, train_id) \
+             VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind("TEST-TRAINS-3-LIVE")
+        .bind(today)
+        .bind("1B22")
+        .fetch_one(&pool)
+        .await
+        .expect("seed fixture trains row");
+        sqlx::query(
+            "INSERT INTO train_current_state \
+                (trains_id, status, last_reported_location, delay_minutes, updated_at) \
+             VALUES ($1, 'en_route', 'Reading', 5, NOW())",
+        )
+        .bind(trains_id.0)
+        .execute(&pool)
+        .await
+        .expect("seed fixture train_current_state row");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let (status, body) = get_line_trains(router, "test-trains-3-live", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let entries = body.as_array().expect("body is a JSON array");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["uid"], "TEST-TRAINS-3-LIVE");
+        assert_eq!(entries[0]["liveStatus"]["trainId"], "1B22");
+        assert_eq!(entries[0]["liveStatus"]["status"], "en_route");
+        assert_eq!(entries[0]["liveStatus"]["lastReportedLocation"], "Reading");
+        assert_eq!(entries[0]["liveStatus"]["delayMinutes"], 5);
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id.0)
+            .execute(&pool)
+            .await
+            .ok();
+        delete_schedule_population_fixture(&pool, "test-trains-3-live").await;
     }
 }
