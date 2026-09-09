@@ -19,11 +19,20 @@ vi.mock('@/lib/api', async () => {
 const notFoundMock = vi.fn(() => {
   throw new Error('NEXT_NOT_FOUND');
 });
+// `redirect()` mocked the same way `notFound()` is -- its real behaviour
+// (throwing a Next.js-internal, digest-carrying error caught by framework
+// machinery above the page) doesn't work outside a real App Router tree
+// either, so tests assert on the mock having been called with the right
+// URL instead of on any real navigation happening.
+const redirectMock = vi.fn((url: string) => {
+  throw new Error(`NEXT_REDIRECT:${url}`);
+});
 // usePathname()/useSearchParams() stubbed for the same reason as
 // AuthStatus.test.tsx/TicketPanel.test.tsx -- the login-error branch now
 // renders LoginLink (Task 1).
 vi.mock('next/navigation', () => ({
   notFound: () => notFoundMock(),
+  redirect: (url: string) => redirectMock(url),
   useRouter: () => ({ push: vi.fn() }),
   usePathname: () => '/train/by-id/42',
   useSearchParams: () => new URLSearchParams(''),
@@ -75,6 +84,7 @@ async function renderPage(trackingId = '42') {
 describe('TrackedTrainByIdPage error handling', () => {
   beforeEach(() => {
     notFoundMock.mockClear();
+    redirectMock.mockClear();
   });
 
   it('shows a login prompt linking to /api/auth/login on ApiUnauthorizedError', async () => {
@@ -83,25 +93,68 @@ describe('TrackedTrainByIdPage error handling', () => {
     const link = screen.getByRole('link', { name: 'Log in to view this tracked train' });
     expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrain%2Fby-id%2F42');
     expect(notFoundMock).not.toHaveBeenCalled();
+    // No canonical uid/date URL exists for this outcome -- nothing to
+    // redirect to.
+    expect(redirectMock).not.toHaveBeenCalled();
   });
 
   it('still calls notFound() on ApiNotFoundError, unswallowed by the new branch', async () => {
     vi.mocked(api.getTrackedTrainById).mockRejectedValue(new ApiNotFoundError('not found'));
     await expect(renderPage('42')).rejects.toThrow('NEXT_NOT_FOUND');
     expect(notFoundMock).toHaveBeenCalled();
+    expect(redirectMock).not.toHaveBeenCalled();
   });
 
   it('still propagates a bare Error uncaught', async () => {
     vi.mocked(api.getTrackedTrainById).mockRejectedValue(new Error('boom'));
     await expect(renderPage('42')).rejects.toThrow('boom');
     expect(notFoundMock).not.toHaveBeenCalled();
+    expect(redirectMock).not.toHaveBeenCalled();
   });
 });
 
 describe('TrackedTrainByIdPage success path', () => {
+  beforeEach(() => {
+    redirectMock.mockClear();
+  });
+
   it('renders a Delete button once the tracked train state loads', async () => {
     vi.mocked(api.getTrackedTrainById).mockResolvedValue(trackedTrainState());
     await renderPage('42');
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+  });
+
+  // Unresolved (no trainUid yet): there's no canonical uid/date URL to send
+  // the visitor to, so this must keep rendering locally exactly as before.
+  it('still renders locally, unredirected, for an unresolved train', async () => {
+    vi.mocked(api.getTrackedTrainById).mockResolvedValue(
+      trackedTrainState({ resolutionStatus: 'pending', trainUid: null }),
+    );
+    await renderPage('42');
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    expect(redirectMock).not.toHaveBeenCalled();
+  });
+
+  // Task 2: once resolved with a real trainUid, this page's whole job is to
+  // hand off to the canonical /train/{uid}/{date} URL rather than rendering
+  // owner content locally.
+  it('redirects to the canonical /train/{uid}/{date} URL once resolved', async () => {
+    vi.mocked(api.getTrackedTrainById).mockResolvedValue(
+      trackedTrainState({ resolutionStatus: 'resolved', trainUid: 'W12345', serviceDate: '2026-09-08' }),
+    );
+    await expect(renderPage('42')).rejects.toThrow('NEXT_REDIRECT:/train/W12345/2026-09-08');
+    expect(redirectMock).toHaveBeenCalledWith('/train/W12345/2026-09-08');
+  });
+
+  // Finding 6: `getPublicTrainByUidAndDate` (lib/api.ts) encodes this exact
+  // (uid, date) pair before building its own request URL -- this redirect
+  // must do the same, or a uid/date containing a URL-unsafe character
+  // builds a broken path.
+  it('encodes the uid/date path segments before redirecting', async () => {
+    vi.mocked(api.getTrackedTrainById).mockResolvedValue(
+      trackedTrainState({ resolutionStatus: 'resolved', trainUid: 'W12 45', serviceDate: '2026-09-08' }),
+    );
+    await expect(renderPage('42')).rejects.toThrow('NEXT_REDIRECT:/train/W12%2045/2026-09-08');
+    expect(redirectMock).toHaveBeenCalledWith('/train/W12%2045/2026-09-08');
   });
 });
