@@ -228,6 +228,51 @@ pub(crate) fn calling_point_departure_json(d: &Value, station_crs: &str) -> Valu
     })
 }
 
+/// One `GET /public/lines/{id}/trains?date=` result entry -- an
+/// unprocessed `schedule_line_population` entry (`entry`, the exact same
+/// opaque-JSONB pass-through `get_line_schedule` already returns for the
+/// whole population, unchanged shape) paired with live status from the
+/// shared `trains`/`train_current_state` tables, when a row already
+/// exists for that train_uid/date. See
+/// docs/superpowers/specs/2026-09-09-mcp-schedule-data-follow-up-design.md
+/// §5.3.
+///
+/// `live` is `None` for a train nobody has ever tracked, searched via
+/// `GET /Train/by-uid`, or that TRUST hasn't activated yet -- an honest,
+/// expected, common gap (this function never fabricates a status), not an
+/// error. Deliberately does NOT surface `PublicTrainState::calling_points`
+/// or `::journey_stops` inside `liveStatus` -- `callingPoints` at the top
+/// level always comes from `entry` (the population's own calling points),
+/// and per-stop journey overlays are out of scope for this batched route
+/// (spec §5.3, Decision point 3); a caller wanting a specific train's full
+/// overlay still calls `GET /Train/by-uid/{uid}/{date}` for that one
+/// train.
+pub(crate) fn line_train_json(
+    entry: &Value,
+    live: Option<&crate::data::trains::PublicTrainState>,
+) -> Value {
+    json!({
+        "uid": entry.get("uid").cloned().unwrap_or(Value::Null),
+        "callingPoints": entry.get("calling_points").cloned().unwrap_or(Value::Null),
+        "liveStatus": live.map(|s| json!({
+            "trainsId": s.trains_id,
+            "trainId": s.train_id,
+            "originCrs": s.origin_crs,
+            "originName": s.origin_name,
+            "destinationCrs": s.destination_crs,
+            "destinationName": s.destination_name,
+            "scheduledDeparture": s.scheduled_departure,
+            "status": s.status,
+            "lastReportedLocation": s.last_reported_location,
+            "lastEventType": s.last_event_type,
+            "delayMinutes": s.delay_minutes,
+            "nextCallingPoint": s.next_calling_point,
+            "etaNext": s.eta_next,
+            "etaSource": s.eta_source,
+        })),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,5 +777,71 @@ mod tests {
         });
         let json = schedule_departure_json(&raw);
         assert!(json["destinationCrs"].is_null());
+    }
+
+    #[test]
+    fn line_train_json_with_no_live_row_passes_the_population_entry_through_and_nulls_live_status()
+     {
+        let entry = serde_json::json!({
+            "uid": "C10001",
+            "calling_points": [
+                {"tiploc": "EUSTON", "kind": "Origin", "booked_arrival": null, "booked_departure": "08:00:00", "is_half_minute_arrival": false, "is_half_minute_departure": false}
+            ],
+        });
+        let json = line_train_json(&entry, None);
+        assert_eq!(json["uid"], "C10001");
+        assert_eq!(json["callingPoints"], entry["calling_points"]);
+        assert!(json["liveStatus"].is_null());
+    }
+
+    #[test]
+    fn line_train_json_with_a_live_row_attaches_live_status_in_camel_case() {
+        use crate::data::trains::PublicTrainState;
+
+        let entry = serde_json::json!({"uid": "C10002", "calling_points": []});
+        let live = PublicTrainState {
+            trains_id: 42,
+            train_uid: "C10002".to_string(),
+            service_date: "2026-09-09".parse().unwrap(),
+            origin_crs: Some("EUS".to_string()),
+            origin_name: Some("London Euston".to_string()),
+            destination_crs: Some("BHM".to_string()),
+            destination_name: Some("Birmingham New Street".to_string()),
+            scheduled_departure: Some("2026-09-09T08:00:00Z".parse().unwrap()),
+            calling_points: None,
+            train_id: Some("1A11".to_string()),
+            status: Some("en_route".to_string()),
+            last_reported_location: Some("Watford Junction".to_string()),
+            last_event_type: Some("DEPARTURE".to_string()),
+            delay_minutes: Some(2),
+            next_calling_point: Some("BHM".to_string()),
+            eta_next: None,
+            eta_source: None,
+            journey_stops: None,
+        };
+
+        let json = line_train_json(&entry, Some(&live));
+        assert_eq!(json["uid"], "C10002");
+        assert_eq!(json["liveStatus"]["trainsId"], 42);
+        assert_eq!(json["liveStatus"]["trainId"], "1A11");
+        assert_eq!(json["liveStatus"]["originCrs"], "EUS");
+        assert_eq!(json["liveStatus"]["destinationName"], "Birmingham New Street");
+        assert_eq!(json["liveStatus"]["status"], "en_route");
+        assert_eq!(json["liveStatus"]["lastReportedLocation"], "Watford Junction");
+        assert_eq!(json["liveStatus"]["delayMinutes"], 2);
+        assert_eq!(json["liveStatus"]["nextCallingPoint"], "BHM");
+        // journeyStops/callingPoints must NOT appear inside liveStatus --
+        // the batched route deliberately omits per-stop overlays (spec
+        // §5.3, Decision point 3) and calling points come from the raw
+        // population entry, not from PublicTrainState's own field.
+        assert!(json["liveStatus"].get("journeyStops").is_none());
+        assert!(json["liveStatus"].get("callingPoints").is_none());
+    }
+
+    #[test]
+    fn line_train_json_missing_uid_on_the_population_entry_renders_null_not_a_panic() {
+        let entry = serde_json::json!({"calling_points": []});
+        let json = line_train_json(&entry, None);
+        assert!(json["uid"].is_null());
     }
 }
