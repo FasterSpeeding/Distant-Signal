@@ -14,9 +14,17 @@ const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** Mirrors the backend's exact window --
  * `crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
- * `SEARCH_WINDOW_BACKWARD_DAYS` -- so the picker can never construct a
- * request the server will 400. Computed once per render from `dayjs()`,
- * consistent with this file's existing `today` computation just below. */
+ * `SEARCH_WINDOW_BACKWARD_DAYS` -- computed once per render from `dayjs()`,
+ * consistent with this file's existing `today` computation just below.
+ *
+ * Anchored to the BROWSER's local clock, not `Europe/London` like the
+ * server's own window -- this codebase has no timezone-aware date library
+ * anywhere in `frontend/` to anchor it with (the server-side equivalent,
+ * `chrono-tz`, is Rust-only). For a viewer whose device clock isn't
+ * UK-local, this can disagree with the server by a day at either edge; a
+ * resulting 400 fails gracefully into the existing generic error copy
+ * rather than crashing, so this is a known imprecision, not a data-
+ * integrity risk. */
 function dateWindow() {
   return {
     minDate: dayjs().subtract(7, 'day').format('YYYY-MM-DD'),

@@ -43,7 +43,9 @@
 //! uncapped, because it fires once per CIF delivery -- roughly daily -- so
 //! a publish-time filter would freeze at whatever the clock read when the
 //! delivery landed. Evaluating `now` here means a search at 18:00 is
-//! correct at 18:00.
+//! correct at 18:00. **This boundary only applies when `date` resolves to
+//! today** -- browsing any other day in the window has no "now" to be
+//! forward of, and returns the whole day instead.
 //!
 //! **Pagination is a keyset cursor, not an offset.** `limit` bounds one
 //! page; `after` carries the last row of the previous page.

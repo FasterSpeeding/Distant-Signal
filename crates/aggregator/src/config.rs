@@ -133,7 +133,10 @@ pub struct Config {
     /// §1.2/§3.
     ///
     /// At ~377,000 rows per day, 8 days is ~3,016,000 rows and roughly
-    /// 600-675MB with the index (§1.3 of the design doc above).
+    /// 600MB with the index (§1.3 of the design doc above; that section's
+    /// own ~675MB figure is the 9-day TOTAL resident size once today's own
+    /// unretained row is counted alongside this 8-day backward window, not
+    /// a second estimate of this field's own retained span).
     ///
     /// Unlike `trust_event_backlog_retention_days` there is deliberately NO
     /// warning emitted when this is configured higher: nothing legal is at
