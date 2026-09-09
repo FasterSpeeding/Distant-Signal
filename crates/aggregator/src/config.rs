@@ -110,7 +110,7 @@ pub struct Config {
     /// How long to keep `schedule_destination_departures` rows before
     /// pruning them, in whole service dates.
     ///
-    /// **2, not 1**, and the difference matters. 1 would match
+    /// **8, not 1**, and the difference matters. 1 would match
     /// `trust_event_backlog_retention_days` above, but that default exists
     /// to enforce an RDM licensing safeguard for TRUST Train Movements
     /// data -- a constraint that does not apply to CIF SCHEDULE timetable
