@@ -4,11 +4,16 @@ import { renderWithMantine } from '@/test/render';
 import TrackedTrainByUidPage, { toJourneyState } from './page';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
-import type { PublicTrainState } from '@/lib/types';
+import type { PublicTrainState, TrackedTrainListItem, TrackedTrainState } from '@/lib/types';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
-  return { ...actual, getPublicTrainByUidAndDate: vi.fn() };
+  return {
+    ...actual,
+    getPublicTrainByUidAndDate: vi.fn(),
+    getMyTrackedTrains: vi.fn(),
+    getTrackedTrainById: vi.fn(),
+  };
 });
 // Mocked so a real Next.js `notFound()` throw (its actual behaviour) doesn't
 // require an app-router tree to render -- same pattern as
@@ -22,6 +27,20 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/train/W12345/2026-08-31',
   useSearchParams: () => new URLSearchParams(''),
 }));
+// `TicketPanel` is itself an async Server Component (its own `getSession()`/
+// ownership-probe fetches) -- React's plain DOM test renderer, used via
+// `renderWithMantine` here, can't render an async function component at all
+// (an RSC-only capability) -- same workaround
+// app/train/by-id/[trackingId]/page.test.tsx already uses.
+vi.mock('@/components/TicketPanel', () => ({
+  TicketPanel: () => null,
+}));
+
+// Logged-out by default -- individual tests in the "tracking overlay"
+// describe block below override this per case.
+beforeEach(() => {
+  vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
+});
 
 /** The PUBLIC response shape (`crates/api/src/data/trains.rs`'s
  * `PublicTrainState`) -- note `trainsId`, a `trains.id`, deliberately NOT
@@ -53,6 +72,59 @@ function publicTrainState(overrides: Partial<PublicTrainState> = {}): PublicTrai
 async function renderPage(uid = 'W12345', date = '2026-08-31') {
   const element = await TrackedTrainByUidPage({ params: Promise.resolve({ uid, date }) });
   return renderWithMantine(element);
+}
+
+/** `GET /Train/mine`'s per-item shape -- see `TrackedTrainListItem`'s own
+ * doc comment in `lib/types.ts`. `trainUid`/`serviceDate` default to a
+ * match against `renderPage()`'s own defaults, since the overlay tests
+ * below are all about whether those two fields line up with the URL. */
+function trackedTrainListItem(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListItem {
+  return {
+    id: 7,
+    serviceDate: '2026-08-31',
+    pinOriginCrs: 'WAT',
+    pinDestinationCrs: 'WOK',
+    pinOriginName: null,
+    pinDestinationName: null,
+    pinScheduledDeparture: null,
+    resolutionStatus: 'resolved',
+    trainUid: 'W12345',
+    status: 'en_route',
+    delayMinutes: 0,
+    trackedAt: '2026-08-31T10:00:00Z',
+    customName: null,
+    ...overrides,
+  };
+}
+
+/** `GET /Train/{trackingId}`'s response shape -- the owner-scoped detail
+ * `getTrackedTrainById` resolves once a `TrackedTrainListItem` match is
+ * found. */
+function trackedTrainState(overrides: Partial<TrackedTrainState> = {}): TrackedTrainState {
+  return {
+    id: 7,
+    serviceDate: '2026-08-31',
+    pinOriginCrs: 'WAT',
+    pinDestinationCrs: 'WOK',
+    pinOriginName: null,
+    pinDestinationName: null,
+    resolutionStatus: 'resolved',
+    trainUid: 'W12345',
+    trainId: '1A23',
+    status: 'en_route',
+    lastReportedLocation: 'Woking',
+    lastEventType: 'DEPARTURE',
+    delayMinutes: 0,
+    nextCallingPoint: 'Basingstoke',
+    etaNext: null,
+    etaSource: null,
+    scheduleDestinationCrs: null,
+    scheduleDestinationName: null,
+    scheduleCallingPoints: null,
+    journeyStops: null,
+    customName: null,
+    ...overrides,
+  };
 }
 
 describe('TrackedTrainByUidPage error handling', () => {
@@ -207,6 +279,62 @@ describe('TrackedTrainByUidPage success path', () => {
       await TrackedTrainByUidPage({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) }),
     );
     expect(screen.getByRole('link', { name: 'Find a train' })).toHaveAttribute('href', '/trains');
+  });
+});
+
+describe('TrackedTrainByUidPage tracking overlay', () => {
+  beforeEach(() => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
+  });
+
+  it('renders the plain public view when logged out', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
+    await renderPage();
+    expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Rename/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    expect(api.getTrackedTrainById).not.toHaveBeenCalled();
+  });
+
+  it('renders the plain public view when logged in but not tracking this exact train', async () => {
+    // Neither field matches the URL's own uid/date -- a real tracked train
+    // of this visitor's, just not this one.
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      trackedTrainListItem({ trainUid: 'OTHER', serviceDate: '2026-08-31' }),
+      trackedTrainListItem({ trainUid: 'W12345', serviceDate: '2020-01-01' }),
+    ]);
+    await renderPage();
+    expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Rename/i })).not.toBeInTheDocument();
+    expect(api.getTrackedTrainById).not.toHaveBeenCalled();
+  });
+
+  it('renders owner controls instead of Track this train when the visitor already tracks this exact train', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      trackedTrainListItem({ id: 7, trainUid: 'W12345', serviceDate: '2026-08-31' }),
+    ]);
+    vi.mocked(api.getTrackedTrainById).mockResolvedValue(trackedTrainState({ id: 7 }));
+    await renderPage();
+    expect(screen.queryByRole('button', { name: 'Track this train' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Rename/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    // ShareButton stays regardless of ownership.
+    expect(screen.getByRole('button', { name: /share/i })).toBeInTheDocument();
+    expect(api.getTrackedTrainById).toHaveBeenCalledWith(7);
+  });
+
+  // Race: the subscription existed when GET /Train/mine was read, but was
+  // deleted before the follow-up GET /Train/{id} landed. Must degrade to
+  // the ordinary public view, not error the whole page.
+  it('falls back to the plain public view when the detail fetch 404s after a list match', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      trackedTrainListItem({ id: 7, trainUid: 'W12345', serviceDate: '2026-08-31' }),
+    ]);
+    vi.mocked(api.getTrackedTrainById).mockRejectedValue(new ApiNotFoundError('gone'));
+    await renderPage();
+    expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Rename/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
   });
 });
 

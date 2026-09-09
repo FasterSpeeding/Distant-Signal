@@ -1,10 +1,9 @@
 import { Stack, Title, Group } from '@mantine/core';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { getTrackedTrainById, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { TrainJourney } from '@/components/TrainJourney';
 import { TicketPanel } from '@/components/TicketPanel';
 import { LoginLink } from '@/components/LoginLink';
-import { TextLink } from '@/components/TextLink';
 import { DeleteTrainButton } from '@/components/DeleteTrainButton';
 import { RenameTrainButton } from '@/components/RenameTrainButton';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
@@ -49,6 +48,19 @@ export default async function TrackedTrainByIdPage({
     throw err;
   }
 
+  // Once resolved to a real (trainUid, serviceDate), that pair -- not this
+  // page's own trackingId -- is this train's canonical identity: hand off
+  // to `/train/[uid]/[date]`, which now overlays the same owner controls
+  // rendered locally below for an owner who tracks it, rather than keep
+  // rendering a second, parallel copy of them here. `serviceDate` needs no
+  // separate null-check -- unlike `trainUid`, it's always populated on
+  // `TrackedTrainState`. Unresolved trains (no `trainUid` yet) fall through
+  // to the local render below unchanged: there is no canonical URL to send
+  // them to yet.
+  if (state.resolutionStatus === 'resolved' && state.trainUid) {
+    redirect(`/train/${state.trainUid}/${state.serviceDate}`);
+  }
+
   return (
     <Stack p="lg" gap="md">
       <Group justify="space-between">
@@ -64,15 +76,6 @@ export default async function TrackedTrainByIdPage({
       </Group>
       <TrainJourney state={state} />
       <TicketPanel trackingId={state.id} />
-      {/* A same-page nudge, not an automatic redirect -- Decision 2's
-          explicit reasoning: a redirect would silently break "I
-          bookmarked the URL right after tracking, before it resolved"
-          for a user who didn't want to wait. */}
-      {state.resolutionStatus === 'resolved' && state.trainUid && (
-        <TextLink href={`/train/${state.trainUid}/${state.serviceDate}`} underline="always">
-          View the canonical link for this train
-        </TextLink>
-      )}
     </Stack>
   );
 }

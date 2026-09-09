@@ -1,11 +1,20 @@
 import { Stack, Title, Text, Group } from '@mantine/core';
 import { notFound } from 'next/navigation';
-import { getPublicTrainByUidAndDate, ApiNotFoundError } from '@/lib/api';
+import {
+  getPublicTrainByUidAndDate,
+  getMyTrackedTrains,
+  getTrackedTrainById,
+  ApiNotFoundError,
+} from '@/lib/api';
 import { ShareButton } from '@/components/ShareButton';
 import { TrainJourney } from '@/components/TrainJourney';
 import { TrackThisTrainButton } from '@/components/TrackThisTrainButton';
+import { RenameTrainButton } from '@/components/RenameTrainButton';
+import { DeleteTrainButton } from '@/components/DeleteTrainButton';
+import { TicketPanel } from '@/components/TicketPanel';
 import { TextLink } from '@/components/TextLink';
-import type { PublicTrainState, TrainJourneyState } from '@/lib/types';
+import { trackedTrainDisplayName } from '@/lib/trackingName';
+import type { PublicTrainState, TrainJourneyState, TrackedTrainState } from '@/lib/types';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -62,18 +71,24 @@ export function toJourneyState(train: PublicTrainState): TrainJourneyState {
  * extractor and its ownership check as part of the shared-train-identity
  * change).
  *
- * It renders no owner actions. Rename/Delete/tickets all operate on a
- * `train_subscriptions.id`, which this response does not carry and which
- * an anonymous visitor would not have anyway; the backend exposes no
- * "and here's YOUR subscription for this train, if any" hint on this
- * route, so there is nothing to gate them on yet. A subscriber who wants
- * those actions has them on `/train/by-id/[trackingId]` and
- * `/track/mine`, both of which are keyed on a real tracking id.
+ * `PublicTrainState` itself carries no owner actions: Rename/Delete/tickets
+ * all operate on a `train_subscriptions.id`, which that response doesn't
+ * carry. This page now closes that gap itself rather than leaving it to
+ * `/train/by-id/[trackingId]`: alongside the public fetch, it also asks
+ * `getMyTrackedTrains()` whether the current visitor already tracks this
+ * exact `(trainUid, serviceDate)` pair, and if so fetches the matching
+ * `TrackedTrainState` and overlays the same owner controls the by-id page
+ * renders (`RenameTrainButton`/`DeleteTrainButton`/`TicketPanel`) in place
+ * of the generic `TrackThisTrainButton`. An anonymous visitor, or a
+ * logged-in one tracking some other train, sees exactly today's read-only
+ * view -- see the "tracking overlay" describe block in this file's test
+ * for the full case split.
  *
  * There is likewise no `401` branch: the route is public, so
- * `ApiUnauthorizedError` is not a reachable outcome. The branch that used
- * to be here (a "log in to view this tracked train" prompt) was dead code
- * after that change. */
+ * `ApiUnauthorizedError` is not a reachable outcome from
+ * `getPublicTrainByUidAndDate` itself. The branch that used to be here (a
+ * "log in to view this tracked train" prompt) was dead code after that
+ * change. */
 export default async function TrackedTrainByUidPage({
   params,
 }: {
@@ -90,8 +105,16 @@ export default async function TrackedTrainByUidPage({
   }
 
   let train;
+  let myTrackedTrains;
   try {
-    train = await getPublicTrainByUidAndDate(uid, date);
+    // Concurrent, not sequential: `getMyTrackedTrains()` has no data
+    // dependency on the public fetch, and every visitor pays for both
+    // (not just the rare tracking owner) -- running them one after another
+    // would add serial latency to this page for everyone.
+    [train, myTrackedTrains] = await Promise.all([
+      getPublicTrainByUidAndDate(uid, date),
+      getMyTrackedTrains(),
+    ]);
   } catch (err) {
     if (err instanceof ApiNotFoundError) {
       notFound();
@@ -99,41 +122,74 @@ export default async function TrackedTrainByUidPage({
     throw err;
   }
 
+  // `getMyTrackedTrains()` returns `null` for an anonymous visitor -- see
+  // its own doc comment in lib/api.ts -- so `myTrackedTrains?.find(...)`
+  // below is simultaneously "not logged in" and "logged in, nothing
+  // matches" for the `undefined` case; both fall through to the plain
+  // public render.
+  let ownerState: TrackedTrainState | null = null;
+  const match = myTrackedTrains?.find((item) => item.trainUid === uid && item.serviceDate === date);
+  if (match) {
+    try {
+      ownerState = await getTrackedTrainById(match.id);
+    } catch (err) {
+      // Race: the subscription existed when `GET /Train/mine` was read but
+      // was deleted before this follow-up landed. Degrade to the ordinary
+      // public view rather than erroring the whole page -- `ownerState`
+      // simply stays `null`.
+      if (!(err instanceof ApiNotFoundError)) throw err;
+    }
+  }
+
   return (
     <Stack p="lg" gap="md">
       <Group justify="space-between">
         <Title order={1}>Train {uid}</Title>
         <Group gap="sm">
-          {/* Shown to EVERY visitor, logged in or not -- the shared
-              "show the control to everyone, prompt on the real 401"
-              posture `PinToggle`/`TrackTrainForm` already establish via
-              useNeedsLogin/LoginPromptModal. No `attachTicketId`: this page
-              has no `ticketId` query-param convention and inventing one is
-              explicitly out of scope
-              (docs/superpowers/specs/2026-09-07-train-listing-page-design.md
-              §5/§6). Only /trains' own row action attaches tickets.
-
-              A logged-in visitor who ALREADY tracks this train gets no
-              special treatment, deliberately: `PublicTrainState` carries no
-              "you already have a subscription" hint, by design (it is the
-              shared, public train, with nothing per-subscriber on it).
-              Clicking again is harmless -- `create_subscription_for_train`
-              is idempotent per (user, train) and returns the existing
-              subscription, so both clicks land on the same
-              /train/by-id/{trackingId}. */}
-          <TrackThisTrainButton uid={uid} date={date} />
+          {ownerState ? (
+            <>
+              <RenameTrainButton
+                trackingId={ownerState.id}
+                customName={ownerState.customName}
+                defaultName={trackedTrainDisplayName(ownerState)}
+              />
+              <DeleteTrainButton trackingId={ownerState.id} />
+            </>
+          ) : (
+            // Shown to EVERY visitor, logged in or not -- the shared
+            // "show the control to everyone, prompt on the real 401"
+            // posture `PinToggle`/`TrackTrainForm` already establish via
+            // useNeedsLogin/LoginPromptModal. No `attachTicketId`: this page
+            // has no `ticketId` query-param convention and inventing one is
+            // explicitly out of scope
+            // (docs/superpowers/specs/2026-09-07-train-listing-page-design.md
+            // §5/§6). Only /trains' own row action attaches tickets.
+            <TrackThisTrainButton uid={uid} date={date} />
+          )}
+          {/* Independent of ownership -- shown regardless of which branch
+              above rendered. */}
           <ShareButton />
         </Group>
       </Group>
       <TrainJourney state={toJourneyState(train)} />
+      {ownerState && <TicketPanel trackingId={ownerState.id} />}
       {/* `component="div"`, not the default `<p>`: `TextLink` renders its
           own Mantine `<Text>` (a `<p>` by default), so wrapping it in an
           ordinary `<Text>` here would nest a `<p>` inside a `<p>` --
           invalid HTML and a React hydration warning. Same fix, same
           reasoning, as `TrainSearchForm.tsx`'s manual-fallback line. */}
       <Text size="sm" c="dimmed" component="div">
-        This is the public view of this service. Track it above to get updates, or{' '}
-        <TextLink href="/trains">Find a train</TextLink> going somewhere else.
+        {ownerState ? (
+          <>
+            You&apos;re already tracking this service.{' '}
+            <TextLink href="/trains">Find a train</TextLink> going somewhere else.
+          </>
+        ) : (
+          <>
+            This is the public view of this service. Track it above to get updates, or{' '}
+            <TextLink href="/trains">Find a train</TextLink> going somewhere else.
+          </>
+        )}
       </Text>
     </Stack>
   );
