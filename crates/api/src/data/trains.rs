@@ -329,6 +329,51 @@ pub async fn get_public_train_state(
     Ok(row)
 }
 
+/// Batched sibling of [`get_public_train_state`] -- one query covering
+/// every `train_uid` in `train_uids` for the same `service_date`, instead
+/// of one query per train. Backs `GET /public/lines/{id}/trains?date=`
+/// (docs/superpowers/specs/2026-09-09-mcp-schedule-data-follow-up-design.md
+/// §5.3) -- the whole reason that route exists is to collapse what would
+/// otherwise be one `GET /Train/by-uid` call per scheduled service on a
+/// line into a single round trip.
+///
+/// Returns only rows that actually exist. Does NOT preserve `train_uids`'
+/// own order, and does NOT synthesize a placeholder for a UID with no
+/// `trains` row -- a scheduled service TRUST hasn't activated yet
+/// legitimately has none. Callers key the result by `train_uid` /
+/// `PublicTrainState::train_uid` themselves.
+///
+/// Never writes: unlike `routes::train::get_by_uid_and_date`'s
+/// read-triggered `find_or_create_train` upsert, this function performs
+/// no insert for a UID with no existing row -- see the spec's "no write
+/// side effect" decision (§5.3).
+pub async fn get_public_train_states_for_line(
+    pool: &PgPool,
+    train_uids: &[String],
+    service_date: NaiveDate,
+) -> anyhow::Result<Vec<PublicTrainState>> {
+    if train_uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query_as::<_, PublicTrainState>(
+        "SELECT tr.id AS trains_id, tr.train_uid, tr.service_date, tr.origin_crs, so.name AS origin_name, \
+                tr.destination_crs, sd.name AS destination_name, tr.scheduled_departure, \
+                tr.calling_points, tr.train_id, \
+                cs.status, cs.last_reported_location, cs.last_event_type, cs.delay_minutes, \
+                cs.next_calling_point, cs.eta_next, cs.eta_source \
+         FROM trains tr \
+         LEFT JOIN train_current_state cs ON cs.trains_id = tr.id \
+         LEFT JOIN stations so ON so.crs = UPPER(tr.origin_crs) \
+         LEFT JOIN stations sd ON sd.crs = UPPER(tr.destination_crs) \
+         WHERE tr.train_uid = ANY($1) AND tr.service_date = $2",
+    )
+    .bind(train_uids)
+    .bind(service_date)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod db_tests {
     use super::*;
@@ -620,6 +665,93 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_public_train_states_for_line_returns_only_existing_rows_for_the_requested_uids \
+                -- --ignored"]
+    async fn get_public_train_states_for_line_returns_only_existing_rows_for_the_requested_uids() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-09".parse().unwrap();
+        let scheduled_departure: chrono::DateTime<chrono::Utc> =
+            "2026-09-09T08:00:00Z".parse().unwrap();
+        let calling_points = serde_json::json!(["EUS", "BHM"]);
+
+        // One resolved train (has both schedule match and live state)...
+        let resolved_id = find_or_create_train_with_schedule_match(
+            &pool,
+            "TEST-LINE-TRAINS-RESOLVED",
+            service_date,
+            "EUS",
+            scheduled_departure,
+            Some("BHM"),
+            "line-a",
+            &calling_points,
+        )
+        .await
+        .expect("seed resolved trains row");
+        mark_train_resolved(&pool, resolved_id, "1A11")
+            .await
+            .expect("mark_train_resolved");
+        sqlx::query(
+            "INSERT INTO train_current_state \
+                (trains_id, status, last_reported_location, last_event_type, delay_minutes, \
+                 next_calling_point, updated_at) \
+             VALUES ($1, 'en_route', 'Watford Junction', 'DEPARTURE', 2, 'BHM', NOW())",
+        )
+        .bind(resolved_id)
+        .execute(&pool)
+        .await
+        .expect("seed fixture train_current_state row");
+
+        // ...and one UID that was requested but has NO trains row at all
+        // (a scheduled service TRUST hasn't activated yet) -- must simply
+        // be absent from the result, not an error and not a null-filled
+        // placeholder row.
+        let requested = vec![
+            "TEST-LINE-TRAINS-RESOLVED".to_string(),
+            "TEST-LINE-TRAINS-UNSEEN".to_string(),
+        ];
+
+        let states = get_public_train_states_for_line(&pool, &requested, service_date)
+            .await
+            .expect("get_public_train_states_for_line");
+
+        assert_eq!(
+            states.len(),
+            1,
+            "only the one UID with a real trains row should come back: {states:?}"
+        );
+        let state = &states[0];
+        assert_eq!(state.train_uid, "TEST-LINE-TRAINS-RESOLVED");
+        assert_eq!(state.trains_id, resolved_id);
+        assert_eq!(state.train_id, Some("1A11".to_string()));
+        assert_eq!(state.status, Some("en_route".to_string()));
+        assert_eq!(state.delay_minutes, Some(2));
+
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(resolved_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_public_train_states_for_line_returns_empty_for_an_empty_uid_list -- --ignored"]
+    async fn get_public_train_states_for_line_returns_empty_for_an_empty_uid_list() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-09".parse().unwrap();
+
+        let states = get_public_train_states_for_line(&pool, &[], service_date)
+            .await
+            .expect("get_public_train_states_for_line with no uids");
+
+        assert!(
+            states.is_empty(),
+            "an empty uid list must short-circuit to no rows, not a malformed empty-array SQL query"
+        );
     }
 
     #[tokio::test]
