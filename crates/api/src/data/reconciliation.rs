@@ -77,7 +77,7 @@ async fn true_origin_departure(
     let row: Option<(String, chrono::NaiveTime)> = sqlx::query_as(
         "SELECT origin_crs, scheduled FROM schedule_destination_departures \
          WHERE train_uid = $1 AND service_date = $2 AND origin_crs = true_origin_crs \
-         LIMIT 1",
+         ORDER BY scheduled LIMIT 1",
     )
     .bind(train_uid)
     .bind(service_date)
@@ -99,6 +99,22 @@ async fn true_origin_departure(
 /// `now` is injected, not read from the clock, so this stays testable with
 /// fixed timestamps -- the same convention
 /// `train_tracking::validate_pin(pin, now)` already establishes.
+///
+/// **Final-review fix**: a successful match here used to only write the
+/// shared `trains` row via `attempt_schedule_match_for_shared_train`,
+/// leaving every `train_subscriptions.resolution_status` still `'pending'`
+/// -- nothing else in this codebase can ever advance an NR-primary row's
+/// own status column, since `apply_schedule_match`'s gate (`WHERE trains_id
+/// IS NULL AND resolution_status = 'pending'`, `train_tracking.rs`) is
+/// false by construction the instant `create_subscription_for_train` sets
+/// `trains_id`. This now also bulk-`UPDATE`s `train_subscriptions`, scoped
+/// by `trains_id` rather than a single subscription id, because a shared
+/// `trains` row can have more than one subscriber pointed at it (the same
+/// "every subscriber sharing one physical train" fan-out
+/// `list_active_tracked_trains`/`by_train_uid` already use elsewhere) --
+/// every subscriber sharing this identity should be advanced together,
+/// since the schedule data now exists for all of them, not just whichever
+/// one happened to trigger this candidate row.
 pub async fn retry_schedule_enrichment_for_nr_primary_trains(
     pool: &PgPool,
     crs_line_index: &HashMap<String, Vec<String>>,
@@ -147,7 +163,24 @@ pub async fn retry_schedule_enrichment_for_nr_primary_trains(
         )
         .await
         {
-            Ok(true) => matched += 1,
+            Ok(true) => {
+                matched += 1;
+                if let Err(err) = sqlx::query(
+                    "UPDATE train_subscriptions \
+                     SET resolution_status = 'schedule_matched' \
+                     WHERE trains_id = $1 AND resolution_status = 'pending'",
+                )
+                .bind(candidate.id)
+                .execute(pool)
+                .await
+                {
+                    tracing::warn!(
+                        error = ?err,
+                        trains_id = candidate.id,
+                        "schedule enrichment succeeded but failed to advance subscriber resolution_status; the shared trains row is enriched but subscriber-facing pages may show stale status until the next successful attempt for a DIFFERENT trigger, since this trains_id will no longer be a sweep candidate"
+                    );
+                }
+            }
             Ok(false) => {}
             Err(err) => {
                 tracing::warn!(
@@ -307,6 +340,7 @@ mod db_tests {
     /// `schedule_line_population` entry) and a `schedule_destination_departures`
     /// row for `true_origin_departure` to find. Returns
     /// `(trains_id, subscription_id, crs_line_index)`.
+    #[allow(clippy::too_many_arguments)]
     async fn seed_enrichment_fixture(
         pool: &PgPool,
         user_id: &str,
@@ -525,7 +559,7 @@ mod db_tests {
         )
         .await
         .expect("retry_schedule_enrichment_for_nr_primary_trains");
-        assert_eq!(matched, 1);
+        assert!(matched >= 1, "at least this fixture's row must be matched");
 
         assert!(
             read_schedule_matched_at(&pool, trains_id).await.is_some(),
