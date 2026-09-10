@@ -3402,6 +3402,7 @@ mod schedule_destination_departures_query_tests {
                 "true_origin_crs": "PAD",
                 "scheduled": "08:22:00",
                 "destination_arrival": null,
+                "destination_arrival_day_offset": 0,
             }),
             "element shape is exactly what render::calling_point_departure_json reads"
         );

@@ -299,12 +299,16 @@ pub struct DestinationDeparture {
     /// live-confirmed c2c UID `F49687` example both fields ultimately trace
     /// back to). Computed once per schedule and IDENTICAL across every
     /// entry that schedule contributes, exactly like `destination_arrival`.
-    /// Defaults to `0` when `destination_arrival` itself is `None` (there is
-    /// no terminating time for this offset to describe, so "same day" is as
-    /// honest a placeholder as any). Added after `destination_arrival`
-    /// itself shipped with no day-offset of its own -- the same
-    /// architectural gap `day_offset` above was added to close on the
-    /// DEPARTURE side.
+    /// NOT guaranteed to be `0` when `destination_arrival` itself is `None`:
+    /// this is still the terminating calling point's own `day_offset` from
+    /// `assign_day_offsets`, which reflects whichever day that stop is
+    /// genuinely on regardless of whether it has a `booked_arrival`/
+    /// `booked_departure` recorded at all -- a terminus with no arrival time
+    /// that sits after an earlier midnight crossing in the same schedule
+    /// still carries that crossing's nonzero offset. Added after
+    /// `destination_arrival` itself shipped with no day-offset of its own --
+    /// the same architectural gap `day_offset` above was added to close on
+    /// the DEPARTURE side.
     pub destination_arrival_day_offset: u8,
 }
 
