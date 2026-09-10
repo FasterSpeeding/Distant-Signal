@@ -169,7 +169,7 @@ describe('TrainJourney', () => {
     expect(screen.getByText('No movement data reported yet.')).toBeInTheDocument();
   });
 
-  it('resolved + completed: shows the same arrived treatment as the no-next-stop en_route case', () => {
+  it('resolved + completed: shows a distinct, confirmed "Arrived" banner, never the "may have finished" inference', () => {
     renderWithMantine(
       <TrainJourney
         state={baseState({
@@ -177,10 +177,117 @@ describe('TrainJourney', () => {
           trainUid: 'C21373',
           status: 'completed',
           lastReportedLocation: 'Woking',
+          scheduleDestinationName: 'Woking',
+        })}
+      />,
+    );
+    expect(screen.getByText('Arrived')).toBeInTheDocument();
+    expect(screen.getByText(/This train has arrived at Woking/)).toBeInTheDocument();
+    expect(screen.queryByText('May have finished')).not.toBeInTheDocument();
+    expect(screen.queryByText(/this is an inference/)).not.toBeInTheDocument();
+  });
+
+  it('resolved + completed: falls back to the destination CRS when no name resolved', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'completed',
+          scheduleDestinationCrs: 'WOK',
+        })}
+      />,
+    );
+    expect(screen.getByText(/This train has arrived at WOK/)).toBeInTheDocument();
+  });
+
+  it('resolved + completed: falls back to a generic message when no destination is known at all', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'completed',
+        })}
+      />,
+    );
+    expect(screen.getByText(/This train has arrived at its final destination/)).toBeInTheDocument();
+  });
+
+  it('resolved + completed: includes the confirmed arrival time from the terminus journey stop when available', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'completed',
+          scheduleDestinationName: 'Woking',
+          journeyStops: [
+            {
+              crs: 'WAT',
+              name: 'London Waterloo',
+              tiploc: null,
+              kind: 'Origin',
+              scheduledArrival: null,
+              scheduledDeparture: '2026-08-28T18:32:00Z',
+              actualArrival: null,
+              actualDeparture: '2026-08-28T18:32:00Z',
+              lastEventType: 'DEPARTURE',
+              variationStatus: 'ON TIME',
+              delayMinutes: 0,
+            },
+            {
+              crs: 'WOK',
+              name: 'Woking',
+              tiploc: null,
+              kind: 'Terminate',
+              scheduledArrival: '2026-08-28T19:10:00Z',
+              scheduledDeparture: null,
+              actualArrival: '2026-08-28T19:12:00Z',
+              actualDeparture: null,
+              lastEventType: 'ARRIVAL',
+              variationStatus: 'LATE',
+              delayMinutes: 2,
+            },
+          ],
+        })}
+      />,
+    );
+    // 2026-08-28 is within BST (UTC+1), so 19:12Z renders as 20:12 London
+    // time -- same `formatTime`/Europe-London posture `dateFormat.ts` and
+    // `JourneyTimeline` already use everywhere else.
+    expect(screen.getByText(/This train has arrived at Woking, at 20:12/)).toBeInTheDocument();
+  });
+
+  it('resolved + en_route with no next calling point and journeyStops present but no actualArrival at the last stop: still the "may have finished" inference, not "Arrived"', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'en_route',
+          lastReportedLocation: 'Woking',
+          nextCallingPoint: null,
+          journeyStops: [
+            {
+              crs: 'WOK',
+              name: 'Woking',
+              tiploc: null,
+              kind: 'Terminate',
+              scheduledArrival: '2026-08-28T19:10:00Z',
+              scheduledDeparture: null,
+              actualArrival: null,
+              actualDeparture: null,
+              lastEventType: null,
+              variationStatus: null,
+              delayMinutes: null,
+            },
+          ],
         })}
       />,
     );
     expect(screen.getByText('May have finished')).toBeInTheDocument();
+    expect(screen.queryByText('Arrived')).not.toBeInTheDocument();
   });
 
   it('renders the JourneyTimeline when journeyStops is present, even while status is awaiting_activation', () => {

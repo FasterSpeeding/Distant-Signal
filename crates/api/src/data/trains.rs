@@ -183,6 +183,54 @@ pub async fn mark_trains_resolved_batch(
 // `run_step_b_backfill_of_existing_resolved_rows` test below, rather than
 // left as permanently-broken dead code.
 
+/// The shared `trains` row's own known final/terminus CRS
+/// (`trains.destination_crs`) for one `trains_id`, or `None` if the row
+/// doesn't exist yet or no schedule has ever matched it. Feeds
+/// `trust_event_backlog_match::replay_backlog_history`'s confirmed-terminus-
+/// ARRIVAL detection (`trust_schema::journey::apply_movement`'s
+/// `destination_crs` param) -- a read-only precheck, same posture as
+/// `shared_train_enrichment_state` just below: it never creates a row, so a
+/// train with no `trains` row at all simply reports "unknown" rather than
+/// conjuring one into existence.
+pub async fn destination_crs_for_train(
+    pool: &PgPool,
+    train_uid: &str,
+    service_date: NaiveDate,
+) -> anyhow::Result<Option<String>> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT destination_crs FROM trains WHERE train_uid = $1 AND service_date = $2",
+    )
+    .bind(train_uid)
+    .bind(service_date)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(destination_crs,)| destination_crs))
+}
+
+/// Batch-shaped sibling of [`destination_crs_for_train`] -- one SELECT
+/// covering every DISTINCT `trains_id` in `trains_ids`, rather than one
+/// SELECT per id, mirroring `trust_event_backlog::fetch_previous_derived_states_batch`'s
+/// own shape. A `trains_id` with no known `destination_crs` (no schedule
+/// match yet, or the row doesn't exist) is simply absent from the returned
+/// map -- callers must treat a missing key the same as `None`.
+pub async fn destination_crs_for_trains_batch(
+    pool: &PgPool,
+    trains_ids: &[i64],
+) -> anyhow::Result<HashMap<i64, String>> {
+    if trains_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(i64, Option<String>)> =
+        sqlx::query_as("SELECT id, destination_crs FROM trains WHERE id = ANY($1)")
+            .bind(trains_ids)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, destination_crs)| destination_crs.map(|crs| (id, crs)))
+        .collect())
+}
+
 /// `(has schedule data, has a live/backlog resolution)` for one shared
 /// `trains` row, or `None` if no such row exists.
 ///

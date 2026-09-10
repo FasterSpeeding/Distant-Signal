@@ -479,6 +479,8 @@ struct TrackedTrainRow {
     train_uid: Option<String>,
     train_id: Option<String>,
     trains_id: Option<i64>,
+    /// See `common::TrackedTrainRef::destination_crs`'s own doc comment.
+    destination_crs: Option<String>,
 }
 
 impl From<TrackedTrainRow> for TrackedTrainRef {
@@ -492,6 +494,7 @@ impl From<TrackedTrainRow> for TrackedTrainRef {
             train_uid: row.train_uid,
             train_id: row.train_id,
             trains_id: row.trains_id,
+            destination_crs: row.destination_crs,
         }
     }
 }
@@ -521,7 +524,8 @@ impl From<TrackedTrainRow> for TrackedTrainRef {
 pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<TrackedTrainRef>> {
     let rows = sqlx::query_as::<_, TrackedTrainRow>(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_scheduled_departure, \
-                tt.resolution_status, tr.train_uid, tr.train_id, tt.trains_id \
+                tt.resolution_status, tr.train_uid, tr.train_id, tt.trains_id, \
+                tr.destination_crs \
          FROM train_subscriptions tt \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
@@ -3507,6 +3511,76 @@ mod db_tests {
             seeded.trains_id,
             Some(trains_id),
             "trains_id must round-trip through list_active_tracked_trains, not be dropped"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(tracked_train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// `trust-consumer`'s confirmed-arrival detection
+    /// (`trust_schema::journey::apply_movement`'s `destination_crs` param)
+    /// needs `TrackedTrainRef::destination_crs` to actually round-trip
+    /// through this query, the same way `trains_id` already does above --
+    /// otherwise the live processing loop would never learn a schedule-
+    /// matched train's own terminus and could never recognize a genuine
+    /// terminus ARRIVAL at all.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_active_tracked_trains -- --ignored --test-threads=1`"]
+    async fn list_active_tracked_trains_carries_the_destination_crs_through_for_a_schedule_matched_ref()
+     {
+        let pool = connect().await;
+        let user_id = "TEST-LIST-ACTIVE-TRAINS-DEST-USER";
+        seed_user(&pool, user_id).await;
+        let trains_id = crate::data::trains::find_or_create_train_with_schedule_match(
+            &pool,
+            "TEST-LIST-ACTIVE-TRAINS-DEST-UID",
+            "2026-09-06".parse().unwrap(),
+            "WAT",
+            "2026-09-06T18:32:00Z".parse().unwrap(),
+            Some("WOK"),
+            "line-a",
+            &serde_json::json!([]),
+        )
+        .await
+        .expect("find_or_create_train_with_schedule_match");
+
+        let (tracked_train_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO train_subscriptions \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, \
+                 trains_id, resolution_status) \
+             VALUES ($1, $2, 'WAT', $3, $4, 'schedule_matched') \
+             RETURNING id",
+        )
+        .bind(user_id)
+        .bind("2026-09-06".parse::<chrono::NaiveDate>().unwrap())
+        .bind("2026-09-06T18:32:00Z".parse::<DateTime<Utc>>().unwrap())
+        .bind(trains_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed a schedule_matched tracked_trains row with a real trains_id");
+
+        let refs = list_active_tracked_trains(&pool)
+            .await
+            .expect("list_active_tracked_trains");
+        let seeded = refs
+            .into_iter()
+            .find(|r| r.id == tracked_train_id)
+            .expect("the seeded ref should be active (schedule_matched, no current-state row)");
+        assert_eq!(
+            seeded.destination_crs,
+            Some("WOK".to_string()),
+            "destination_crs must round-trip through list_active_tracked_trains, not be dropped"
         );
 
         sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
