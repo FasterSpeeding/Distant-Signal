@@ -48,9 +48,8 @@ function matchesOperator(rowOperator: string, operator: string): boolean {
  * additive alongside `matchesDestination`/`matchesOperator`. Applies to
  * BOTH sources identically (unlike the Destination/Operator split): both
  * `DepartureRow.scheduled` and `ScheduleDepartureRow.scheduled` are the
- * same `"HH:MM"` shape, and neither row type carries its own date (both
- * pickers are always "today", server-side). Combines the row's `"HH:MM"`
- * with *today's* browser-local date into the exact same
+ * same `"HH:MM"` shape. Combines the row's `"HH:MM"` with `rowDayOffset`
+ * days past *today's* browser-local date into the exact same
  * `'YYYY-MM-DD HH:mm:ss'` string shape `scheduledDeparture` itself holds
  * -- same construction `pickDeparture`/`pickCifDeparture`/the "Now" button
  * already use -- so the two can be compared with a plain string comparison
@@ -60,12 +59,29 @@ function matchesOperator(rowOperator: string, operator: string): boolean {
  * file's `handleSubmit` comment already warns about). A `null`
  * `scheduledDeparture` (not yet resolved) never filters -- matches every
  * row, same "unknown means don't filter" posture as the other two
- * matchers. */
-function matchesScheduledDeparture(rowScheduled: string, scheduledDeparture: string | null): boolean {
+ * matchers.
+ *
+ * `rowDayOffset` defaults to `0`, matching `DepartureRow`'s (LDBWS) live
+ * board rows, which carry no day-offset concept at all -- Darwin has no
+ * CIF-schedule linkage to derive one from, so the LDBWS call site below
+ * never passes it and every one of those rows is still always treated as
+ * "today", the pre-existing behavior. Only the CIF call site passes a real
+ * `row.dayOffset` -- see `ScheduleDepartureRow.dayOffset`'s own doc
+ * comment for why CIF rows, and only CIF rows, can carry one. Without this
+ * parameter, a genuinely-future post-midnight CIF row (e.g. `dayOffset: 1`,
+ * `00:07`) would compare as "today 00:07", read as already-passed relative
+ * to a same-day `scheduledDeparture`, and be silently filtered out of the
+ * picker entirely -- never even reachable to click, regardless of how
+ * `pickCifDeparture` itself computes the date once picked. */
+function matchesScheduledDeparture(
+  rowScheduled: string,
+  scheduledDeparture: string | null,
+  rowDayOffset = 0,
+): boolean {
   if (scheduledDeparture === null) return true;
   const [hh, mm] = rowScheduled.split(':');
-  const today = dayjs().format('YYYY-MM-DD');
-  const rowDateTime = `${today} ${hh}:${mm}:00`;
+  const date = dayjs().add(rowDayOffset, 'day').format('YYYY-MM-DD');
+  const rowDateTime = `${date} ${hh}:${mm}:00`;
   return rowDateTime >= scheduledDeparture;
 }
 
@@ -100,10 +116,24 @@ interface DepartureRow {
  * because the CIF SCHEDULE feed genuinely has none of that -- see
  * docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
  * Decision 2/5. `destinationCrs` is nullable: `null` when the terminating
- * TIPLOC has no `stanox_crs` row (a real, if rare, gap). */
+ * TIPLOC has no `stanox_crs` row (a real, if rare, gap).
+ *
+ * `dayOffset` is how many calendar days past this route's own "today" (the
+ * server always resolves this endpoint's `service_date` to today, see that
+ * route's own doc comment) `scheduled` actually falls on -- mirrors
+ * `schedule_query::CallingPoint::day_offset` verbatim. Needed because a
+ * bare `"HH:MM"` string carries no day information of its own: a real
+ * overnight CIF schedule can have a calling point booked at, say, `00:07`
+ * that is genuinely TOMORROW relative to when the schedule itself started
+ * (see `schedule_query::resolve`'s own `f49687_raw` doc comment for the
+ * live-confirmed c2c Liverpool Street -> Shoeburyness example this exists
+ * for). Almost always `0`. `pickCifDeparture` and `matchesScheduledDeparture`
+ * both use this to compute the row's REAL calendar date instead of always
+ * assuming "today" -- see their own doc comments. */
 interface ScheduleDepartureRow {
   uid: string;
   scheduled: string;
+  dayOffset: number;
   destinationCrs: string | null;
 }
 
@@ -273,12 +303,22 @@ export function TrackTrainForm({
    * has no operator field at all (Decision 2). If `row.destinationCrs` is
    * `null` (the terminating TIPLOC has no `stanox_crs` row), the existing
    * Destination field is left untouched too, for the same "never guess,
-   * never clobber with a blank" reason. */
+   * never clobber with a blank" reason.
+   *
+   * Adds `row.dayOffset` days to *today's* browser-local date, rather than
+   * always assuming "today" the way `pickDeparture` (LDBWS, below) still
+   * does -- a post-midnight CIF calling point (`dayOffset: 1`, e.g. `00:07`)
+   * is genuinely TOMORROW relative to when the search itself ran, and
+   * combining it with bare "today" would create a pin dated the WRONG
+   * calendar day (see `ScheduleDepartureRow.dayOffset`'s own doc comment).
+   * `pickDeparture` has no equivalent fix available: `DepartureRow` (LDBWS)
+   * carries no day-offset field at all, because Darwin's live board has no
+   * CIF-schedule linkage to derive one from. */
   function pickCifDeparture(row: ScheduleDepartureRow) {
     if (row.destinationCrs !== null) setDestinationCrs(row.destinationCrs);
     const [hh, mm] = row.scheduled.split(':');
-    const today = dayjs().format('YYYY-MM-DD');
-    setScheduledDeparture(`${today} ${hh}:${mm}:00`);
+    const date = dayjs().add(row.dayOffset, 'day').format('YYYY-MM-DD');
+    setScheduledDeparture(`${date} ${hh}:${mm}:00`);
   }
 
   async function handleSubmit(event: FormEvent) {
@@ -460,14 +500,8 @@ export function TrackTrainForm({
     const filtered = picker.rows.filter(
       (row) =>
         matchesDestination(row.destinationCrs, destinationCrs) &&
-        matchesScheduledDeparture(row.scheduled, scheduledDeparture),
+        matchesScheduledDeparture(row.scheduled, scheduledDeparture, row.dayOffset),
     );
-    // Computed once, outside the `.map()` below -- every row's link uses
-    // the same calendar date (the public train page is keyed by
-    // `(train_uid, service_date)`, and this picker, like `pickCifDeparture`
-    // itself, only ever shows *today's* schedule), so there is no reason
-    // to re-read `dayjs()` once per row.
-    const today = dayjs().format('YYYY-MM-DD');
     return (
       <>
         <Text size="sm" c="dimmed">
@@ -521,9 +555,16 @@ export function TrackTrainForm({
                       synthesized click on the anchor even fires. The link
                       keeps its own native Enter-to-follow behaviour and
                       remains a normal, independently tab-reachable focus
-                      stop -- only the *bubbling into the row* is stopped. */}
+                      stop -- only the *bubbling into the row* is stopped.
+
+                      The linked date is `row.dayOffset` days past today, not
+                      a single hoisted "today" shared by every row -- the
+                      public train page is keyed by `(train_uid,
+                      service_date)`, and a post-midnight row's real
+                      service_date is tomorrow, not today (same reasoning as
+                      `pickCifDeparture` itself). */}
                   <TextLink
-                    href={`/train/${encodeURIComponent(row.uid)}/${today}`}
+                    href={`/train/${encodeURIComponent(row.uid)}/${dayjs().add(row.dayOffset, 'day').format('YYYY-MM-DD')}`}
                     onClick={(event) => event.stopPropagation()}
                     onKeyDown={(event) => event.stopPropagation()}
                   >
