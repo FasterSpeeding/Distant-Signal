@@ -471,6 +471,7 @@ fn schedule_destination_departures_rows(
                     "service_date": today,
                     "destination_crs": destination_crs,
                     "scheduled": d.scheduled,
+                    "day_offset": d.day_offset,
                     "train_uid": d.uid,
                     "origin_crs": d.origin_crs,
                     "true_origin_crs": d.true_origin_crs,
@@ -786,7 +787,7 @@ mod poll_once_tests {
     /// `stanox_crs` record for ZZA.
     #[test]
     fn lines_to_publish_includes_a_line_whose_toml_has_no_tiploc_but_has_a_real_cif_tiploc_record()
-     {
+    {
         let lines = vec![fixture_line(
             "zzz-toml-tiploc-less-but-real",
             vec![fixture_station("ZZA", None)],
@@ -949,6 +950,7 @@ mod poll_once_tests {
                     uid: "U1".to_string(),
                     origin_crs: "EUS".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(8, 22, 0).unwrap(),
+                    day_offset: 0,
                     true_origin_crs: None,
                     destination_arrival: None,
                 },
@@ -956,6 +958,7 @@ mod poll_once_tests {
                     uid: "U1".to_string(),
                     origin_crs: "CRE".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(10, 5, 0).unwrap(),
+                    day_offset: 0,
                     true_origin_crs: None,
                     destination_arrival: None,
                 },
@@ -967,6 +970,7 @@ mod poll_once_tests {
                 uid: "U2".to_string(),
                 origin_crs: "KGX".to_string(),
                 scheduled: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+                day_offset: 0,
                 true_origin_crs: None,
                 destination_arrival: None,
             }],
@@ -990,12 +994,13 @@ mod poll_once_tests {
                 "service_date": "2026-09-07",
                 "destination_crs": "EDB",
                 "scheduled": "09:00:00",
+                "day_offset": 0,
                 "train_uid": "U2",
                 "origin_crs": "KGX",
                 "true_origin_crs": null,
                 "destination_arrival": null,
             }),
-            "exactly seven keys, named exactly as the table's columns are"
+            "exactly eight keys, named exactly as the table's columns are"
         );
 
         // The same UID appears twice under MAN, once per departure-bearing
@@ -1024,8 +1029,10 @@ mod poll_once_tests {
 
     #[test]
     fn schedule_destination_departures_rows_includes_the_true_origin_crs_field() {
-        let mut by_destination: std::collections::HashMap<String, Vec<schedule_query::DestinationDeparture>> =
-            std::collections::HashMap::new();
+        let mut by_destination: std::collections::HashMap<
+            String,
+            Vec<schedule_query::DestinationDeparture>,
+        > = std::collections::HashMap::new();
         by_destination.insert(
             "MAN".to_string(),
             vec![
@@ -1033,6 +1040,7 @@ mod poll_once_tests {
                     uid: "C11052".to_string(),
                     origin_crs: "EUS".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(8, 22, 0).unwrap(),
+                    day_offset: 0,
                     true_origin_crs: Some("EUS".to_string()),
                     destination_arrival: None,
                 },
@@ -1040,6 +1048,7 @@ mod poll_once_tests {
                     uid: "C11052".to_string(),
                     origin_crs: "CRE".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(10, 5, 0).unwrap(),
+                    day_offset: 0,
                     true_origin_crs: None,
                     destination_arrival: None,
                 },
@@ -1078,6 +1087,7 @@ mod poll_once_tests {
                     uid: "C11052".to_string(),
                     origin_crs: "EUS".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(8, 22, 0).unwrap(),
+                    day_offset: 0,
                     true_origin_crs: Some("EUS".to_string()),
                     destination_arrival: Some(chrono::NaiveTime::from_hms_opt(11, 30, 0).unwrap()),
                 },
@@ -1085,6 +1095,7 @@ mod poll_once_tests {
                     uid: "C99999".to_string(),
                     origin_crs: "CRE".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+                    day_offset: 0,
                     true_origin_crs: None,
                     destination_arrival: None,
                 },
@@ -1123,11 +1134,9 @@ mod poll_once_tests {
                 uid: format!("U{i:05}"),
                 origin_crs: if i % 2 == 0 { "EUS" } else { "CRE" }.to_string(),
                 // Seconds since midnight, wrapped into a real 24h clock.
-                scheduled: chrono::NaiveTime::from_num_seconds_from_midnight_opt(
-                    i % 86_400,
-                    0,
-                )
-                .unwrap(),
+                scheduled: chrono::NaiveTime::from_num_seconds_from_midnight_opt(i % 86_400, 0)
+                    .unwrap(),
+                day_offset: 0,
                 true_origin_crs: None,
                 destination_arrival: None,
             })
@@ -1161,6 +1170,7 @@ mod poll_once_tests {
                     uid: "LATE".to_string(),
                     origin_crs: "EUS".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+                    day_offset: 0,
                     true_origin_crs: None,
                     destination_arrival: None,
                 },
@@ -1168,6 +1178,7 @@ mod poll_once_tests {
                     uid: "EARLY".to_string(),
                     origin_crs: "EUS".to_string(),
                     scheduled: chrono::NaiveTime::from_hms_opt(1, 0, 0).unwrap(),
+                    day_offset: 0,
                     true_origin_crs: None,
                     destination_arrival: None,
                 },
