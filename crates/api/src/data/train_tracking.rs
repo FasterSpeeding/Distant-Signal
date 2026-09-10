@@ -914,6 +914,82 @@ pub async fn list_pending_pins_for_schedule_match(
     Ok(rows)
 }
 
+/// Row shape for `list_pending_pins_for_backlog_match`'s query -- a
+/// separate type from `PendingSchedulePin` even though its fields are
+/// identical, matching this codebase's own convention of one type per
+/// sweep concern (`reconciliation.rs`'s `EnrichmentCandidate` next to this
+/// same `PendingSchedulePin`) rather than one shared type two unrelated
+/// sweeps both happen to decode into.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PendingBacklogPin {
+    pub id: i64,
+    pub service_date: chrono::NaiveDate,
+    pub pin_origin_crs: Option<String>,
+    pub pin_scheduled_departure: Option<DateTime<Utc>>,
+}
+
+/// Every row the periodic backlog-match sweep should retry:
+/// `trust_event_backlog_match::attempt_backlog_match`'s own candidate set.
+///
+/// Fixes a real, confirmed gap: `attempt_backlog_match` is otherwise only
+/// ever invoked once, synchronously, at pin-creation time
+/// (`routes::train::post_track`) -- normally before the tracked train has
+/// even departed, when `trust_event_backlog` has nothing for it yet. A
+/// pin whose real departure lands outside `common::MATCH_TOLERANCE` of
+/// `trust-consumer::matching::resolve_origin_departure`'s own one-shot
+/// check (a common occurrence under disruption -- more than 20 minutes
+/// early or late) then has no retry at all, even though the exact backlog
+/// row a later `attempt_backlog_match` call would match fills in over the
+/// following hours as TRUST movements actually arrive. This sweep is that
+/// retry.
+///
+/// Same three exclusions as `list_pending_pins_for_schedule_match`, for
+/// the same reasons:
+/// * `resolution_status = 'pending'` -- a `schedule_matched`/`resolved`/
+///   `unresolved` row has already advanced past what a backlog match
+///   could do for it.
+/// * `trains_id IS NULL` -- a row that already has a shared `trains` row
+///   (schedule-matched, or an NR-primary subscription) has nothing this
+///   sweep's only tool, `attempt_backlog_match`, can usefully add; that
+///   function is keyed on `(origin CRS, departure time)`, not `trains_id`.
+/// * `pin_origin_crs`/`pin_scheduled_departure IS NOT NULL` -- an
+///   NR-primary row (or one whose `trains_id` was later nulled out by
+///   `aggregator::queries::prune_trains`'s `ON DELETE SET NULL`) has
+///   neither, and `attempt_backlog_match` has no use for it either
+///   (`attempt_backlog_match_by_uid` is the identity-first counterpart for
+///   that shape, and is not swept periodically -- see this table's own
+///   `PendingSchedulePin` doc comment for why widening this sweep to that
+///   shape would select rows it can do nothing with).
+///
+/// **One addition `list_pending_pins_for_schedule_match` doesn't need**: a
+/// `service_date` floor, `CURRENT_DATE - INTERVAL '2 days'`. Without it, a
+/// pin that can never resolve this way (its `service_date` predates
+/// `trust_event_backlog`'s own retention window -- 1 day by default,
+/// `crates/aggregator/src/config.rs`'s `trust_event_backlog_retention_days`,
+/// pending an RDM licence confirmation before it can ever be raised) would
+/// still be re-selected, and re-fail `attempt_backlog_match`'s query, on
+/// every single sweep tick for as long as the row stays `'pending'` --
+/// guaranteed-futile repeated work, unbounded in time. 2 days, not 1,
+/// mirrors `list_trains_needing_schedule_enrichment`'s own identical-shaped
+/// bound in `reconciliation.rs` and the "one extra day of margin" reasoning
+/// `schedule_destination_departures_retention_days`'s own doc comment uses
+/// (`crates/aggregator/src/config.rs`): one full day of safety margin
+/// beyond the shortest realistic retention window, so a boundary row isn't
+/// dropped from this sweep moments before it would otherwise have matched.
+pub async fn list_pending_pins_for_backlog_match(
+    pool: &PgPool,
+) -> anyhow::Result<Vec<PendingBacklogPin>> {
+    let rows = sqlx::query_as::<_, PendingBacklogPin>(
+        "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure \
+         FROM train_subscriptions WHERE trains_id IS NULL AND resolution_status = 'pending' \
+         AND pin_origin_crs IS NOT NULL AND pin_scheduled_departure IS NOT NULL \
+         AND service_date >= CURRENT_DATE - INTERVAL '2 days'",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// The public read-model for a tracked train, returned directly as JSON by
 /// `crates/api/src/routes/train.rs`'s `GET /Train/{trackingId}` and
 /// `GET /Train/by-uid/{train_uid}/{date}`. Unlike `TrackedTrainRow`/
@@ -4475,5 +4551,301 @@ mod db_tests {
             .ok();
         cleanup_user(&pool, first_user).await;
         cleanup_user(&pool, second_user).await;
+    }
+
+    /// Fixture for `list_pending_pins_for_backlog_match`'s own tests below:
+    /// a `train_subscriptions` row with every column that predicate cares
+    /// about under direct caller control, rather than only what
+    /// `seed_tracked_train`'s fixed-value insert offers.
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_backlog_candidate_pin(
+        pool: &PgPool,
+        user_id: &str,
+        service_date: chrono::NaiveDate,
+        pin_origin_crs: Option<&str>,
+        pin_scheduled_departure: Option<DateTime<Utc>>,
+        resolution_status: &str,
+        trains_id: Option<i64>,
+    ) -> i64 {
+        let (id,): (i64,) = sqlx::query_as(
+            "INSERT INTO train_subscriptions \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, \
+                 resolution_status, trains_id) \
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(service_date)
+        .bind(pin_origin_crs)
+        .bind(pin_scheduled_departure)
+        .bind(resolution_status)
+        .bind(trains_id)
+        .fetch_one(pool)
+        .await
+        .expect("insert fixture backlog-candidate row");
+        id
+    }
+
+    /// The sweep's headline case: a still-`pending`, never-schedule-matched
+    /// pin with real origin/departure data and a recent `service_date` must
+    /// be surfaced as a retry candidate. This is exactly the row shape the
+    /// bug left permanently stuck: `resolve_origin_departure`'s one-shot
+    /// live check missed it, `attempt_backlog_match`'s own one-shot
+    /// pin-creation-time call found nothing yet, and until this sweep
+    /// existed nothing ever asked again.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_pending_pins_for_backlog_match_includes_a_plain_pending_pin \
+                -- --ignored --test-threads=1`"]
+    async fn list_pending_pins_for_backlog_match_includes_a_plain_pending_pin() {
+        let pool = connect().await;
+        let user_id = "TEST-BACKLOG-SWEEP-CANDIDATE";
+        seed_user(&pool, user_id).await;
+
+        let service_date = chrono::Utc::now().date_naive();
+        let id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            service_date,
+            Some("EUS"),
+            Some("2026-09-09T18:15:00Z".parse().unwrap()),
+            "pending",
+            None,
+        )
+        .await;
+
+        let pending = list_pending_pins_for_backlog_match(&pool)
+            .await
+            .expect("list_pending_pins_for_backlog_match");
+        assert!(
+            pending.iter().any(|row| row.id == id),
+            "a plain still-pending pin with real origin/departure data must be a retry candidate"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// A row that already advanced past `'pending'` (schedule-matched,
+    /// resolved live, or given up on) has nothing left for a backlog match
+    /// to do -- must never be re-selected.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_pending_pins_for_backlog_match_excludes_a_non_pending_row \
+                -- --ignored --test-threads=1`"]
+    async fn list_pending_pins_for_backlog_match_excludes_a_non_pending_row() {
+        let pool = connect().await;
+        let user_id = "TEST-BACKLOG-SWEEP-NON-PENDING";
+        seed_user(&pool, user_id).await;
+
+        let service_date = chrono::Utc::now().date_naive();
+        let id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            service_date,
+            Some("EUS"),
+            Some("2026-09-09T18:15:00Z".parse().unwrap()),
+            "schedule_matched",
+            None,
+        )
+        .await;
+
+        let pending = list_pending_pins_for_backlog_match(&pool)
+            .await
+            .expect("list_pending_pins_for_backlog_match");
+        assert!(
+            !pending.iter().any(|row| row.id == id),
+            "a row already past 'pending' must not be re-selected for a backlog match retry"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// A `pending` row that already has a `trains_id` (the NR-primary
+    /// shape, `create_subscription_for_train`) has nothing
+    /// `attempt_backlog_match` -- keyed on `(origin CRS, departure time)`,
+    /// not `trains_id` -- can usefully do with it. Same exclusion
+    /// `list_pending_pins_for_schedule_match` already applies, for the
+    /// identical reason.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_pending_pins_for_backlog_match_excludes_a_row_with_a_trains_id \
+                -- --ignored --test-threads=1`"]
+    async fn list_pending_pins_for_backlog_match_excludes_a_row_with_a_trains_id() {
+        let pool = connect().await;
+        let user_id = "TEST-BACKLOG-SWEEP-HAS-TRAINS-ID";
+        seed_user(&pool, user_id).await;
+
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-BACKLOG-SWEEP-TRAINS-ID-UID",
+            "2026-09-09".parse().unwrap(),
+        )
+        .await
+        .expect("seed a trains row");
+
+        let service_date = chrono::Utc::now().date_naive();
+        let id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            service_date,
+            Some("EUS"),
+            Some("2026-09-09T18:15:00Z".parse().unwrap()),
+            "pending",
+            Some(trains_id),
+        )
+        .await;
+
+        let pending = list_pending_pins_for_backlog_match(&pool)
+            .await
+            .expect("list_pending_pins_for_backlog_match");
+        assert!(
+            !pending.iter().any(|row| row.id == id),
+            "a row that already has a trains_id must not be re-selected"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// The pruned-NR-primary shape (`ON DELETE SET NULL` on `trains_id`,
+    /// see `list_pending_pins_for_schedule_match_excludes_a_pruned_nr_primary_row_with_null_pins`
+    /// just above): NULL `pin_origin_crs`/`pin_scheduled_departure` gives
+    /// `attempt_backlog_match` nothing to look up by, and decoding these
+    /// columns as non-`Option` would poison every sweep tick the moment any
+    /// row reached this state -- same failure mode this sibling query was
+    /// already fixed for.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_pending_pins_for_backlog_match_excludes_a_row_with_null_pins \
+                -- --ignored --test-threads=1`"]
+    async fn list_pending_pins_for_backlog_match_excludes_a_row_with_null_pins() {
+        let pool = connect().await;
+        let user_id = "TEST-BACKLOG-SWEEP-NULL-PINS";
+        seed_user(&pool, user_id).await;
+
+        let service_date = chrono::Utc::now().date_naive();
+        let id =
+            seed_backlog_candidate_pin(&pool, user_id, service_date, None, None, "pending", None)
+                .await;
+
+        let pending = list_pending_pins_for_backlog_match(&pool).await.expect(
+            "must not error even though a row with NULL pin columns is present in the table",
+        );
+        assert!(
+            !pending.iter().any(|row| row.id == id),
+            "a row with NULL pin_origin_crs/pin_scheduled_departure must be excluded, not \
+             surfaced for a backlog-match attempt it cannot make"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// The staleness bound this query adds beyond
+    /// `list_pending_pins_for_schedule_match`'s own shape: a pending pin
+    /// whose `service_date` is well outside `trust_event_backlog`'s
+    /// retention window (1 day by default) has no honest chance of ever
+    /// matching, and must not be swept forever. `10` days ago is
+    /// comfortably past the `CURRENT_DATE - INTERVAL '2 days'` floor
+    /// regardless of when this test runs.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_pending_pins_for_backlog_match_excludes_a_stale_service_date \
+                -- --ignored --test-threads=1`"]
+    async fn list_pending_pins_for_backlog_match_excludes_a_stale_service_date() {
+        let pool = connect().await;
+        let user_id = "TEST-BACKLOG-SWEEP-STALE";
+        seed_user(&pool, user_id).await;
+
+        let service_date = chrono::Utc::now().date_naive() - chrono::Duration::days(10);
+        let id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            service_date,
+            Some("EUS"),
+            Some((service_date.and_hms_opt(18, 15, 0).unwrap()).and_utc()),
+            "pending",
+            None,
+        )
+        .await;
+
+        let pending = list_pending_pins_for_backlog_match(&pool)
+            .await
+            .expect("list_pending_pins_for_backlog_match");
+        assert!(
+            !pending.iter().any(|row| row.id == id),
+            "a pin more than 2 days stale must not be swept forever with no honest chance of \
+             ever matching trust_event_backlog's own short retention window"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// The inverse of the stale-exclusion test above, guarding against an
+    /// off-by-one that would make the floor too aggressive: a pin exactly
+    /// at "yesterday" (well inside the `CURRENT_DATE - INTERVAL '2 days'`
+    /// floor) must still be a candidate.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_pending_pins_for_backlog_match_includes_a_recent_but_not_todays_service_date \
+                -- --ignored --test-threads=1`"]
+    async fn list_pending_pins_for_backlog_match_includes_a_recent_but_not_todays_service_date() {
+        let pool = connect().await;
+        let user_id = "TEST-BACKLOG-SWEEP-RECENT";
+        seed_user(&pool, user_id).await;
+
+        let service_date = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+        let id = seed_backlog_candidate_pin(
+            &pool,
+            user_id,
+            service_date,
+            Some("EUS"),
+            Some((service_date.and_hms_opt(18, 15, 0).unwrap()).and_utc()),
+            "pending",
+            None,
+        )
+        .await;
+
+        let pending = list_pending_pins_for_backlog_match(&pool)
+            .await
+            .expect("list_pending_pins_for_backlog_match");
+        assert!(
+            pending.iter().any(|row| row.id == id),
+            "a pin from yesterday is well inside the 2-day floor and must still be a candidate"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
     }
 }
