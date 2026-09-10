@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import StationDisruptionPage from './page';
+import StationDisruptionPage, { generateMetadata } from './page';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
@@ -30,11 +30,19 @@ vi.mock('next/headers', () => ({
 // PinToggle calls useRouter(), and unconditionally renders LoginPromptModal
 // which calls usePathname()/useSearchParams() -- the same stub set
 // app/lines/page.test.tsx documents for the same reason.
+// `notFound()` actually throws in real Next.js -- mocked to do the same
+// (rather than a bare `vi.fn()` no-op) so a test can tell "notFound()
+// halted execution" from "notFound() is a no-op and execution silently
+// fell through to a wrong-but-non-erroring result," same pattern as
+// app/train/[uid]/[date]/page.test.tsx's notFoundMock.
+const notFoundMock = vi.fn(() => {
+  throw new Error('NEXT_NOT_FOUND');
+});
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
   usePathname: () => '/stations/KGX',
   useSearchParams: () => new URLSearchParams(''),
-  notFound: vi.fn(),
+  notFound: () => notFoundMock(),
 }));
 
 function report(id: string, name: string): LineStatusReport {
@@ -239,5 +247,44 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
     // sample ones, via formatSampleSummary's existing precedence chain.
     expect(screen.getByText('Avg delay 2.1 min · 2% cancelled')).toBeInTheDocument();
     expect(screen.queryByText('Avg delay 3.5 min · 0% cancelled')).not.toBeInTheDocument();
+  });
+});
+
+describe('generateMetadata', () => {
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+    vi.mocked(api.getStationName).mockResolvedValue('London Kings Cross');
+  });
+
+  it('titles the page with the station name and describes its worst current status', async () => {
+    vi.mocked(api.getStopPointDisruption).mockResolvedValue([report('ecml', 'East Coast Main Line')]);
+    const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
+    expect(metadata.title).toBe('London Kings Cross (KGX) — Distant Signal');
+    expect(metadata.description).toBe('London Kings Cross (KGX): Severe Delays reported.');
+    expect(metadata.openGraph?.title).toBe('London Kings Cross (KGX) — Distant Signal');
+    expect(metadata.twitter).toMatchObject({ card: 'summary' });
+  });
+
+  it('describes a covered, currently-fine station', async () => {
+    vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
+    const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
+    expect(metadata.description).toBe('London Kings Cross (KGX): no disruptions currently affecting this station.');
+  });
+
+  it('describes a station with zero line coverage', async () => {
+    vi.mocked(api.getStopPointDisruption).mockRejectedValue(new ApiNotFoundError('no line coverage'));
+    const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
+    expect(metadata.description).toBe(
+      'London Kings Cross (KGX): not currently covered by our line-status tracking.',
+    );
+  });
+
+  it('calls notFound() for an unknown station, matching the page component', async () => {
+    vi.mocked(api.getStationName).mockResolvedValue(null);
+    notFoundMock.mockClear();
+    await expect(generateMetadata({ params: Promise.resolve({ crs: 'ZZZ' }) })).rejects.toThrow(
+      'NEXT_NOT_FOUND',
+    );
+    expect(notFoundMock).toHaveBeenCalled();
   });
 });

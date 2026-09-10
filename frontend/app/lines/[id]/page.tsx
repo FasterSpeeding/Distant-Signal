@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
 import { Stack, Title, Text, Group, Button, Skeleton } from '@mantine/core';
 import Link from 'next/link';
+import type { Metadata } from 'next';
 import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition, getAllLines } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -11,7 +12,7 @@ import { DeleteLineButton } from '@/components/DeleteLineButton';
 import { LineDefinitionTooltip } from '@/components/LineDefinitionTooltip';
 import { ShareButton } from '@/components/ShareButton';
 import { TextLink } from '@/components/TextLink';
-import { worstStatus } from '@/lib/severity';
+import { worstStatus, severityLabel } from '@/lib/severity';
 import { resolveHalfHourlyRange } from '@/lib/history';
 import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
@@ -20,6 +21,48 @@ import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTre
 // also computes a range off `Date.now()` (`resolveRange` below), so it must
 // stay dynamic rather than be eligible for build-time prerendering.
 export const revalidate = 0;
+
+/** Per-page Open Graph/Twitter/`<title>` metadata for a shared line link.
+ * Fetches the same `getLineStatus([id], true)` call (via the same
+ * `withStaleFallback` key) the page component itself makes -- Next's fetch
+ * request memoization dedupes the two into one network call per request
+ * (see the equivalent, more detailed comment on
+ * `app/train/[uid]/[date]/page.tsx`'s own `generateMetadata`; the
+ * reasoning is identical here), so no extra caching wrapper is needed.
+ * Same `notFound()`-on-`ApiNotFoundError` handling as the page component,
+ * since `generateMetadata` runs independently of it and needs its own
+ * equivalent try/catch. */
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}): Promise<Metadata> {
+  const { id } = await params;
+
+  let reports;
+  try {
+    reports = await withStaleFallback(`lineStatus:${id}`, () => getLineStatus([id], true));
+  } catch (err) {
+    if (err instanceof ApiNotFoundError) {
+      notFound();
+    }
+    throw err;
+  }
+
+  const report = reports[0];
+  const worst = worstStatus(report);
+  const title = `${report.name} — Distant Signal`;
+  const description = worst.reason
+    ? `${report.name}: ${severityLabel(worst.statusSeverity)} — ${worst.reason}`
+    : `${report.name}: ${severityLabel(worst.statusSeverity)}`;
+
+  return {
+    title,
+    description,
+    openGraph: { title, description, type: 'website' },
+    twitter: { card: 'summary', title, description },
+  };
+}
 
 export default async function LineDetailPage({
   params,
