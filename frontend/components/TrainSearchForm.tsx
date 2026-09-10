@@ -1,13 +1,14 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
-import { Alert, Autocomplete, Button, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
+import { Alert, Autocomplete, Button, Group, ScrollArea, Stack, TagsInput, Text, TextInput } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { TextLink } from './TextLink';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
+import type { Suggestion } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -105,10 +106,11 @@ function resolvedDate(rawDate: string): string {
 /** Calling-point-first, whole-network train search -- the `/trains` page's
  * one interactive component. Generalizes the earlier destination-first
  * search into "any station the train calls at" as the primary, required
- * key, with "departing from" (the schedule's TRUE origin) and "terminating
- * at" (the schedule's TRUE destination) as independent, optional filters
- * layered on top -- see
- * docs/superpowers/specs/2026-09-08-calling-point-train-search-design.md.
+ * key, with "departing from" (the schedule's TRUE origin) and "stops at"
+ * (zero or more OTHER calling points, ALL of which must be on the route) as
+ * independent, optional filters layered on top -- see
+ * docs/superpowers/specs/2026-09-08-calling-point-train-search-design.md and
+ * docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md.
  *
  * Deliberately NOT a replacement for `TrackTrainForm`, and it does not try
  * to be: this searches published CIF timetable data by calling point and
@@ -118,11 +120,11 @@ function resolvedDate(rawDate: string): string {
  * those gaps, and this component links to it explicitly.
  *
  * Filter set, and why it stops here: Station is required (it is the
- * server-side search key). Origin, Destination, Date and an
- * "Earliest departure"/"Latest departure" time range are all optional.
- * There is no Operator filter -- CIF rows carry no operator field at all,
- * an explicit non-goal, not an omission to fill in later. Date defaults to
- * today and is bounded to a roughly week-either-side window
+ * server-side search key). Origin, Stops at, Date and an "Earliest
+ * departure"/"Latest departure" time range are all optional. There is no
+ * Operator filter -- CIF rows carry no operator field at all, an explicit
+ * non-goal, not an omission to fill in later. Date defaults to today and is
+ * bounded to a roughly week-either-side window
  * (`crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
  * `SEARCH_WINDOW_BACKWARD_DAYS`) -- see
  * docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md.
@@ -136,38 +138,50 @@ function resolvedDate(rawDate: string): string {
  * `description` naming the specific station it is scoped to, for the same
  * reason.
  *
+ * "Stops at (optional)" replaced the earlier single-valued "Terminating at"
+ * (the schedule's TRUE destination): it is a multi-entry autocomplete
+ * (Mantine's `TagsInput`, composed with the same `useSuggestions`/
+ * `searchStations` pair the single-station `Autocomplete` fields above use)
+ * where a train matches only if it calls at EVERY listed station, true
+ * destination or not. Each attempted chip is checked against the live
+ * suggestion list for the text just typed; anything that doesn't resolve to
+ * a real station is silently dropped rather than added as a free-text chip
+ * -- see `handleStopsAtChange`.
+ *
  * A second, independent time-range pair -- "Earliest arrival"/"Latest
- * arrival" -- filters on when the train reaches Destination, as opposed to
- * "Earliest departure"/"Latest departure" above, which stay scoped to
- * Station. It only renders once Destination is filled in: an arrival-time
- * filter with nothing named to arrive at is ambiguous, and the backend
- * 400s exactly that combination (see `crates/api/src/routes/trains.rs`'s
- * own validation), so this component never lets the caller construct it.
- * See docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md.
+ * arrival" -- filters on when the train reaches Stops at's named calling
+ * point, as opposed to "Earliest departure"/"Latest departure" above, which
+ * stay scoped to Station. It only renders once Stops at names EXACTLY ONE
+ * station: with 2+ stations there is no single well-defined calling point
+ * left to scope "arrival" to, and the backend 400s exactly that combination
+ * (see `crates/api/src/routes/trains.rs`'s own validation), so this
+ * component never lets the caller construct it. See
+ * docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md.
  *
  * Fetches through the same-origin `/api/*` proxy, like every other Client
  * Component in this app (`API_BASE_URL` is server-only). */
 export function TrainSearchForm({
   initialStation = '',
   initialOrigin = '',
-  initialDestination = '',
+  initialStopsAt = [],
   initialDate = '',
   attachTicketId,
 }: {
   initialStation?: string;
   initialOrigin?: string;
-  initialDestination?: string;
+  initialStopsAt?: string[];
   initialDate?: string;
   attachTicketId?: number;
 }) {
   const [stationCrs, setStationCrs] = useState(initialStation);
   const [originCrs, setOriginCrs] = useState(initialOrigin);
-  const [destinationCrs, setDestinationCrs] = useState(initialDestination);
+  const [stopsAt, setStopsAt] = useState<string[]>(initialStopsAt);
+  const [stopsAtSearch, setStopsAtSearch] = useState('');
   const [dateValue, setDateValue] = useState<string | null>(initialDate || null);
   const [fromTime, setFromTime] = useState('');
   const [toTime, setToTime] = useState('');
-  const [destinationArrivalFrom, setDestinationArrivalFrom] = useState('');
-  const [destinationArrivalTo, setDestinationArrivalTo] = useState('');
+  const [arrivalFrom, setArrivalFrom] = useState('');
+  const [arrivalTo, setArrivalTo] = useState('');
   const [results, setResults] = useState<Results>(null);
   // The RAW `dateValue` submitted with the last search that came back
   // 404/unpublished, captured at submit time -- separate from `results`
@@ -185,38 +199,58 @@ export function TrainSearchForm({
 
   const { suggestions: stationSuggestions } = useSuggestions(stationCrs, searchStations);
   const { suggestions: originSuggestions } = useSuggestions(originCrs, searchStations);
-  const { suggestions: destinationSuggestions } = useSuggestions(destinationCrs, searchStations);
+  const { suggestions: stopsAtSuggestions } = useSuggestions(stopsAtSearch, searchStations);
 
   const stationValid = CRS_PATTERN.test(stationCrs.trim());
   const originValid = originCrs.trim() === '' || CRS_PATTERN.test(originCrs.trim());
-  const destinationValid = destinationCrs.trim() === '' || CRS_PATTERN.test(destinationCrs.trim());
   const fromValid = fromTime.trim() === '' || TIME_PATTERN.test(fromTime.trim());
   const toValid = toTime.trim() === '' || TIME_PATTERN.test(toTime.trim());
-  const destinationArrivalFromValid =
-    destinationArrivalFrom.trim() === '' || TIME_PATTERN.test(destinationArrivalFrom.trim());
-  const destinationArrivalToValid =
-    destinationArrivalTo.trim() === '' || TIME_PATTERN.test(destinationArrivalTo.trim());
+  const arrivalFromValid = arrivalFrom.trim() === '' || TIME_PATTERN.test(arrivalFrom.trim());
+  const arrivalToValid = arrivalTo.trim() === '' || TIME_PATTERN.test(arrivalTo.trim());
   const canSearch =
-    stationValid &&
-    originValid &&
-    destinationValid &&
-    fromValid &&
-    toValid &&
-    destinationArrivalFromValid &&
-    destinationArrivalToValid &&
-    !searching;
+    stationValid && originValid && fromValid && toValid && arrivalFromValid && arrivalToValid && !searching;
 
   const manualHref = attachTicketId !== undefined ? `/track?ticketId=${attachTicketId}` : '/track';
   const { minDate, maxDate } = dateWindow();
 
-  // What the "Earliest/Latest departure" and "Earliest/Latest arrival"
-  // fields' `description`s name as the station they are scoped to --
-  // preferring the actual entered CRS (so the helper text is concrete, e.g.
-  // "RDG") and falling back to naming the field above it when nothing valid
-  // has been entered yet, so the sentence still reads naturally.
+  // What the "Earliest/Latest departure" fields' `description`s name as the
+  // station they are scoped to -- preferring the actual entered CRS (so the
+  // helper text is concrete, e.g. "RDG") and falling back to naming the
+  // field above it when nothing valid has been entered yet, so the sentence
+  // still reads naturally.
   const stationDisplay = stationValid ? stationCrs.trim().toUpperCase() : 'Station above';
-  const destinationDisplay =
-    destinationValid && destinationCrs.trim() ? destinationCrs.trim().toUpperCase() : 'Terminating at above';
+
+  /** Validates and applies one `TagsInput` value-array change. `next` is
+   * the FULL array `TagsInput` wants to move to, for an addition (typing +
+   * Enter, a paste, or picking a dropdown option) OR a removal (Backspace,
+   * clicking a chip's remove control) alike -- there is no separate
+   * "added"/"removed" callback. A shrink is always a removal and is
+   * applied as-is with no further checking (whatever was already a chip is
+   * already known-valid). A growth is checked entry by entry: only an
+   * added value that case-insensitively matches a CODE in the CURRENT
+   * `stopsAtSuggestions` (the same source `searchStations` already backs
+   * for every other autocomplete field in this form) is kept, stored under
+   * its canonical uppercase code -- never the caller's raw typed casing or
+   * arbitrary free text. If NONE of the newly-added entries validate, the
+   * whole attempted change is dropped and the chip list stays exactly as
+   * it was; a dropdown-option pick is always valid this way already
+   * (Mantine only ever adds a picked option's own `data` value), so this
+   * exists to catch the free-text paths (typed text + Enter, or a blur
+   * with `acceptValueOnBlur`, which is why that prop is disabled below). */
+  function handleStopsAtChange(next: string[]) {
+    if (next.length <= stopsAt.length) {
+      setStopsAt(next);
+      return;
+    }
+    const added = next.filter((value) => !stopsAt.includes(value));
+    const validAdded = added
+      .map((raw) => stopsAtSuggestions.find((s) => s.code.toLowerCase() === raw.trim().toLowerCase()))
+      .filter((match): match is Suggestion => match !== undefined)
+      .map((match) => match.code);
+    if (validAdded.length === 0) return;
+    setStopsAt(Array.from(new Set([...stopsAt, ...validAdded])));
+    setStopsAtSearch('');
+  }
 
   /** The current filter set as query parameters. Shared by the initial
    * search and by "Load more" so that page 2 is unambiguously a
@@ -225,16 +259,19 @@ export function TrainSearchForm({
     const params = new URLSearchParams({ station: stationCrs.trim().toUpperCase() });
     if (dateValue) params.set('date', dateValue);
     if (originCrs.trim()) params.set('origin', originCrs.trim().toUpperCase());
-    if (destinationCrs.trim()) {
-      params.set('destination', destinationCrs.trim().toUpperCase());
-      // Gated on destination being set, not just on the fields having
-      // values: this is what makes clearing Destination drop any
-      // previously-entered arrival-time filter, without needing to also
-      // clear destinationArrivalFrom/To state -- the fields themselves
-      // unmount (see the conditional render below) but their state is
-      // deliberately remembered in case Destination is filled back in.
-      if (destinationArrivalFrom.trim()) params.set('destination_from', destinationArrivalFrom.trim());
-      if (destinationArrivalTo.trim()) params.set('destination_to', destinationArrivalTo.trim());
+    for (const stop of stopsAt) {
+      params.append('stops_at', stop);
+    }
+    // Gated on exactly one stops_at entry, not just on the fields having
+    // values: this is what makes adding a second station (or clearing back
+    // to zero) drop any previously-entered arrival-time filter from the
+    // actual request, without needing to also clear arrivalFrom/To state --
+    // the fields themselves unmount (see the conditional render below) but
+    // their state is deliberately remembered in case Stops at goes back to
+    // exactly one entry.
+    if (stopsAt.length === 1) {
+      if (arrivalFrom.trim()) params.set('arrival_from', arrivalFrom.trim());
+      if (arrivalTo.trim()) params.set('arrival_to', arrivalTo.trim());
     }
     if (fromTime.trim()) params.set('from', fromTime.trim());
     if (toTime.trim()) params.set('to', toTime.trim());
@@ -461,19 +498,21 @@ export function TrainSearchForm({
         }}
         error={originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
       />
-      <Autocomplete
-        label="Terminating at (optional)"
-        placeholder="e.g. Manchester or MAN"
-        description="Where the journey ends."
-        value={destinationCrs}
-        onChange={setDestinationCrs}
-        data={destinationSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+      <TagsInput
+        label="Stops at (optional)"
+        placeholder="e.g. Reading or RDG"
+        description="Trains that call at EVERY station listed here, in any order."
+        value={stopsAt}
+        onChange={handleStopsAtChange}
+        searchValue={stopsAtSearch}
+        onSearchChange={setStopsAtSearch}
+        data={stopsAtSuggestions.map((s) => ({ value: s.code, label: s.code }))}
         filter={({ options }) => options}
         renderOption={({ option }) => {
-          const match = destinationSuggestions.find((s) => s.code === option.value);
+          const match = stopsAtSuggestions.find((s) => s.code === option.value);
           return match ? `${match.code} — ${match.name}` : option.value;
         }}
-        error={destinationCrs.length > 0 && !destinationValid ? 'Must be a 3-letter CRS code' : null}
+        acceptValueOnBlur={false}
       />
       <Group grow align="flex-start">
         <TextInput
@@ -493,31 +532,23 @@ export function TrainSearchForm({
           error={toTime.length > 0 && !toValid ? 'Must be a time like 12:00' : null}
         />
       </Group>
-      {destinationCrs.trim() !== '' && (
+      {stopsAt.length === 1 && (
         <Group grow align="flex-start">
           <TextInput
             label="Earliest arrival (optional)"
             placeholder="09:00"
-            description={`Only trains reaching ${destinationDisplay} at or after this time -- separate from Earliest/Latest departure above, which are about ${stationDisplay}.`}
-            value={destinationArrivalFrom}
-            onChange={(event) => setDestinationArrivalFrom(event.currentTarget.value)}
-            error={
-              destinationArrivalFrom.length > 0 && !destinationArrivalFromValid
-                ? 'Must be a time like 09:00'
-                : null
-            }
+            description={`Only trains reaching ${stopsAt[0]} at or after this time -- separate from Earliest/Latest departure above, which are about ${stationDisplay}.`}
+            value={arrivalFrom}
+            onChange={(event) => setArrivalFrom(event.currentTarget.value)}
+            error={arrivalFrom.length > 0 && !arrivalFromValid ? 'Must be a time like 09:00' : null}
           />
           <TextInput
             label="Latest arrival (optional)"
             placeholder="09:30"
-            description={`Only trains reaching ${destinationDisplay} at or before this time.`}
-            value={destinationArrivalTo}
-            onChange={(event) => setDestinationArrivalTo(event.currentTarget.value)}
-            error={
-              destinationArrivalTo.length > 0 && !destinationArrivalToValid
-                ? 'Must be a time like 09:30'
-                : null
-            }
+            description={`Only trains reaching ${stopsAt[0]} at or before this time.`}
+            value={arrivalTo}
+            onChange={(event) => setArrivalTo(event.currentTarget.value)}
+            error={arrivalTo.length > 0 && !arrivalToValid ? 'Must be a time like 09:30' : null}
           />
         </Group>
       )}

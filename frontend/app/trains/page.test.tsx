@@ -38,15 +38,25 @@ describe('TrainsPage', () => {
     expect(screen.getByRole('combobox', { name: 'Station' })).toBeInTheDocument();
   });
 
-  it('pre-fills the station, origin and destination from the query string, uppercased', async () => {
+  it('pre-fills the station, origin and stops_at from the query string, uppercased', async () => {
     renderWithMantine(
       await TrainsPage({
-        searchParams: Promise.resolve({ station: 'man', origin: 'eus', destination: 'wat' }),
+        searchParams: Promise.resolve({ station: 'man', origin: 'eus', stops_at: 'wat' }),
       }),
     );
     expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('MAN');
     expect(screen.getByRole('combobox', { name: 'Departing from (optional)' })).toHaveValue('EUS');
-    expect(screen.getByRole('combobox', { name: 'Terminating at (optional)' })).toHaveValue('WAT');
+    expect(screen.getByText('WAT')).toBeInTheDocument();
+  });
+
+  it('pre-fills every repeated stops_at entry from the query string, uppercased', async () => {
+    renderWithMantine(
+      await TrainsPage({
+        searchParams: Promise.resolve({ station: 'man', stops_at: ['rdg', 'oxf'] }),
+      }),
+    );
+    expect(screen.getByText('RDG')).toBeInTheDocument();
+    expect(screen.getByText('OXF')).toBeInTheDocument();
   });
 
   // Real, unmocked DatePickerInput (this file doesn't mock '@mantine/dates',
