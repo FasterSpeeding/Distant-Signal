@@ -71,6 +71,7 @@ function trackedTrainState(overrides: Partial<TrackedTrainState> = {}): TrackedT
     scheduleDestinationName: null,
     scheduleCallingPoints: null,
     journeyStops: null,
+    mayHaveArrived: false,
     ...overrides,
     customName: overrides.customName ?? null,
   };

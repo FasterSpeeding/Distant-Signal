@@ -53,6 +53,15 @@ pub struct JourneyStop {
     pub scheduled_departure: Option<DateTime<Utc>>,
     pub actual_arrival: Option<DateTime<Utc>>,
     pub actual_departure: Option<DateTime<Utc>>,
+    /// Scheduled time + the train's current overall delay, filled in by
+    /// `apply_delay_estimates` (below) ONLY while `actual_arrival` is still
+    /// `None` -- i.e. only for a stop live movement data hasn't reported an
+    /// actual arrival for yet. Always `None` on a freshly-built stop, same
+    /// as `actual_arrival`/`actual_departure` above, until that pass runs.
+    pub estimated_arrival: Option<DateTime<Utc>>,
+    /// See `estimated_arrival`'s own doc comment -- same contract, gated on
+    /// `actual_departure` instead.
+    pub estimated_departure: Option<DateTime<Utc>>,
     pub last_event_type: Option<String>,
     pub variation_status: Option<String>,
     pub delay_minutes: Option<i32>,
@@ -83,6 +92,8 @@ impl JourneyStop {
                 .and_then(|t| london_to_utc(calling_point_date.and_time(t))),
             actual_arrival: None,
             actual_departure: None,
+            estimated_arrival: None,
+            estimated_departure: None,
             last_event_type: None,
             variation_status: None,
             delay_minutes: None,
@@ -95,12 +106,20 @@ impl JourneyStop {
 /// (`schedule_destination_departures`) source has anything -- see the
 /// design doc §1 for when this is/isn't called, and §0.2/§3.2 for the
 /// fallback's synthetic-terminus construction.
+///
+/// `current_delay_minutes` is the train's current overall delay --
+/// `train_current_state.delay_minutes`, the same corrected, TRUST-own-
+/// timebase figure `routes::train`'s callers already read off
+/// `TrackedTrainState`/`PublicTrainState` for `blend_darwin_eta` and the
+/// top-level delay badge -- propagated onto every stop that has no
+/// confirmed actual time yet via `apply_delay_estimates`, below.
 pub async fn build_journey_stops(
     pool: &PgPool,
     trains_id: i64,
     train_uid: &str,
     service_date: NaiveDate,
     calling_points_json: Option<&serde_json::Value>,
+    current_delay_minutes: Option<i32>,
 ) -> anyhow::Result<Option<Vec<JourneyStop>>> {
     let mut stops: Vec<JourneyStop> = match calling_points_json {
         Some(json) => {
@@ -149,6 +168,8 @@ pub async fn build_journey_stops(
                     ),
                     actual_arrival: None,
                     actual_departure: None,
+                    estimated_arrival: None,
+                    estimated_departure: None,
                     last_event_type: None,
                     variation_status: None,
                     delay_minutes: None,
@@ -170,6 +191,8 @@ pub async fn build_journey_stops(
                     scheduled_departure: None,
                     actual_arrival: None,
                     actual_departure: None,
+                    estimated_arrival: None,
+                    estimated_departure: None,
                     last_event_type: None,
                     variation_status: None,
                     delay_minutes: None,
@@ -264,7 +287,225 @@ pub async fn build_journey_stops(
         };
     }
 
+    apply_delay_estimates(&mut stops, current_delay_minutes);
+
     Ok(Some(stops))
+}
+
+/// How many minutes past a train's estimated final-stop arrival counts as
+/// "may have arrived" (`may_have_arrived`, below) -- generous enough to
+/// absorb the estimate's own imprecision (a delay observed at wherever the
+/// train was last actually reported is propagated forward UNIFORMLY, not
+/// re-measured at each stop), while still catching a train that's
+/// genuinely stopped reporting within the same rail-service-length
+/// timescale the rest of this module already reasons in.
+const MAY_HAVE_ARRIVED_THRESHOLD: Duration = Duration::minutes(15);
+
+/// Fills in `estimated_arrival`/`estimated_departure` for every stop that
+/// has no confirmed actual time yet, by propagating the train's current
+/// overall delay onto that stop's CIF-derived scheduled time -- the same
+/// "extrapolate forward from the currently-known delay" idea
+/// `trust-consumer`'s own (currently unused) `eta::propagate_eta` encodes,
+/// applied here per-stop instead of to a single next-calling-point value.
+///
+/// A stop that already has a confirmed `actual_arrival`/`actual_departure`
+/// (the live overlay loop above already populated it from a real reported
+/// movement event) is left completely alone -- this never overwrites real
+/// data with a guess, matching this whole function's established "don't
+/// guess when data is incomplete" convention (see the per-stop
+/// `delay_minutes` overlay's own doc comment above).
+///
+/// A `None` `current_delay_minutes` (the train's overall delay is itself
+/// unknown) leaves every stop's estimate `None` too, rather than silently
+/// assuming a delay of zero -- guessing "on time" would be worse than
+/// showing nothing.
+pub fn apply_delay_estimates(stops: &mut [JourneyStop], current_delay_minutes: Option<i32>) {
+    let Some(delay_minutes) = current_delay_minutes else {
+        return;
+    };
+    let delay = Duration::minutes(delay_minutes as i64);
+    for stop in stops.iter_mut() {
+        if stop.actual_arrival.is_none() {
+            stop.estimated_arrival = stop.scheduled_arrival.map(|t| t + delay);
+        }
+        if stop.actual_departure.is_none() {
+            stop.estimated_departure = stop.scheduled_departure.map(|t| t + delay);
+        }
+    }
+}
+
+/// The server-side replacement for the frontend's old client-only "may
+/// have finished" heuristic (`state.status === 'en_route' &&
+/// state.nextCallingPoint === null`, which fired almost always since
+/// `nextCallingPoint` is essentially never populated in practice). `true`
+/// once `now` is more than `MAY_HAVE_ARRIVED_THRESHOLD` past the journey's
+/// FINAL calling point's ESTIMATED arrival (`apply_delay_estimates`,
+/// above, must already have been run on `stops`) -- an inference, never
+/// asserted as fact (see `TrainJourney.tsx`'s copy for this field).
+///
+/// `false`, not an inference, whenever the final stop's `estimated_arrival`
+/// is `None` -- which covers BOTH "the train has genuinely, for real,
+/// already arrived" (a confirmed `actual_arrival` means
+/// `apply_delay_estimates` never set an estimate for that stop at all) AND
+/// "there's no schedule/delay data to estimate from" (no scheduled time,
+/// or the overall delay is unknown). Neither case has anything for this
+/// heuristic to safely infer from, so it stays silent rather than
+/// guessing -- same posture as `apply_delay_estimates` itself.
+pub fn may_have_arrived(stops: &[JourneyStop], now: DateTime<Utc>) -> bool {
+    stops
+        .last()
+        .and_then(|stop| stop.estimated_arrival)
+        .is_some_and(|eta| now - eta > MAY_HAVE_ARRIVED_THRESHOLD)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blank_stop() -> JourneyStop {
+        JourneyStop {
+            crs: None,
+            name: None,
+            tiploc: None,
+            kind: None,
+            scheduled_arrival: None,
+            scheduled_departure: None,
+            actual_arrival: None,
+            actual_departure: None,
+            estimated_arrival: None,
+            estimated_departure: None,
+            last_event_type: None,
+            variation_status: None,
+            delay_minutes: None,
+        }
+    }
+
+    #[test]
+    fn apply_delay_estimates_propagates_the_current_delay_onto_an_unreported_stop() {
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+            ..blank_stop()
+        }];
+
+        apply_delay_estimates(&mut stops, Some(5));
+
+        assert_eq!(
+            stops[0].estimated_arrival,
+            Some("2026-09-09T10:05:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            stops[0].estimated_departure,
+            Some("2026-09-09T10:07:00Z".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn apply_delay_estimates_never_overwrites_a_stop_with_a_confirmed_actual_time() {
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+            actual_arrival: Some("2026-09-09T10:03:00Z".parse().unwrap()),
+            actual_departure: Some("2026-09-09T10:04:00Z".parse().unwrap()),
+            ..blank_stop()
+        }];
+
+        apply_delay_estimates(&mut stops, Some(5));
+
+        assert_eq!(
+            stops[0].estimated_arrival, None,
+            "a confirmed actual_arrival must never get an estimate alongside it"
+        );
+        assert_eq!(
+            stops[0].estimated_departure, None,
+            "a confirmed actual_departure must never get an estimate alongside it"
+        );
+    }
+
+    #[test]
+    fn apply_delay_estimates_estimates_arrival_and_departure_independently() {
+        // A stop that's been departed from (actual_departure known) but
+        // whose arrival was never reported (a PASS-only upstream gap, or
+        // simply missing data) still gets an arrival estimate -- the two
+        // fields are gated independently, not as a pair.
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+            actual_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+            ..blank_stop()
+        }];
+
+        apply_delay_estimates(&mut stops, Some(3));
+
+        assert_eq!(
+            stops[0].estimated_arrival,
+            Some("2026-09-09T10:03:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            stops[0].estimated_departure, None,
+            "actual_departure is already confirmed"
+        );
+    }
+
+    #[test]
+    fn apply_delay_estimates_leaves_every_estimate_none_when_the_current_delay_is_unknown() {
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+            ..blank_stop()
+        }];
+
+        apply_delay_estimates(&mut stops, None);
+
+        assert_eq!(stops[0].estimated_arrival, None);
+        assert_eq!(stops[0].estimated_departure, None);
+    }
+
+    #[test]
+    fn apply_delay_estimates_leaves_a_stop_with_no_scheduled_time_alone() {
+        let mut stops = vec![blank_stop()];
+
+        apply_delay_estimates(&mut stops, Some(10));
+
+        assert_eq!(stops[0].estimated_arrival, None);
+        assert_eq!(stops[0].estimated_departure, None);
+    }
+
+    #[test]
+    fn may_have_arrived_is_false_within_the_threshold_of_the_final_stops_estimated_arrival() {
+        let stops = vec![JourneyStop {
+            estimated_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
+            ..blank_stop()
+        }];
+        let now: DateTime<Utc> = "2026-09-09T10:10:00Z".parse().unwrap(); // 10m past
+        assert!(!may_have_arrived(&stops, now));
+    }
+
+    #[test]
+    fn may_have_arrived_is_true_more_than_the_threshold_past_the_final_stops_estimated_arrival() {
+        let stops = vec![JourneyStop {
+            estimated_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
+            ..blank_stop()
+        }];
+        let now: DateTime<Utc> = "2026-09-09T10:20:00Z".parse().unwrap(); // 20m past
+        assert!(may_have_arrived(&stops, now));
+    }
+
+    #[test]
+    fn may_have_arrived_is_false_when_the_final_stop_has_no_estimate_at_all() {
+        // Covers both a genuinely-already-arrived stop (a confirmed
+        // actual_arrival means apply_delay_estimates never set an estimate)
+        // and a stop with no schedule/delay data to estimate from.
+        let stops = vec![blank_stop()];
+        let now: DateTime<Utc> = "2026-09-09T10:20:00Z".parse().unwrap();
+        assert!(!may_have_arrived(&stops, now));
+    }
+
+    #[test]
+    fn may_have_arrived_is_false_for_an_empty_stop_list() {
+        let now: DateTime<Utc> = "2026-09-09T10:20:00Z".parse().unwrap();
+        assert!(!may_have_arrived(&[], now));
+    }
 }
 
 #[cfg(test)]
@@ -340,6 +581,7 @@ mod db_tests {
             "TEST-JRN-CP",
             service_date,
             Some(&calling_points),
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -417,7 +659,7 @@ mod db_tests {
         .await
         .expect("seed schedule_destination_departures");
 
-        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-FB", service_date, None)
+        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-FB", service_date, None, None)
             .await
             .expect("build_journey_stops")
             .expect("Some stops from the fallback source");
@@ -472,9 +714,10 @@ mod db_tests {
         .await
         .ok();
 
-        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-NONE", service_date, None)
-            .await
-            .expect("build_journey_stops");
+        let stops =
+            build_journey_stops(&pool, trains_id, "TEST-JRN-NONE", service_date, None, None)
+                .await
+                .expect("build_journey_stops");
 
         assert!(stops.is_none());
 
@@ -536,7 +779,7 @@ mod db_tests {
         .await
         .expect("seed train_movement_events");
 
-        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-OV", service_date, None)
+        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-OV", service_date, None, None)
             .await
             .expect("build_journey_stops")
             .expect("Some stops");
@@ -671,6 +914,7 @@ mod db_tests {
             "TEST-JRN-ARR",
             service_date,
             Some(&calling_points),
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -763,10 +1007,11 @@ mod db_tests {
         .await
         .expect("seed train_movement_events");
 
-        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-PASS", service_date, None)
-            .await
-            .expect("build_journey_stops")
-            .expect("Some stops");
+        let stops =
+            build_journey_stops(&pool, trains_id, "TEST-JRN-PASS", service_date, None, None)
+                .await
+                .expect("build_journey_stops")
+                .expect("Some stops");
 
         assert_eq!(stops.len(), 2, "RDG + synthetic WAT terminus");
         assert_eq!(stops[0].crs.as_deref(), Some("RDG"));
@@ -860,10 +1105,17 @@ mod db_tests {
         .await
         .expect("seed train_movement_events");
 
-        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-NOMATCH", service_date, None)
-            .await
-            .expect("build_journey_stops")
-            .expect("Some stops");
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-NOMATCH",
+            service_date,
+            None,
+            None,
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops");
 
         assert_eq!(
             stops.len(),
@@ -997,6 +1249,7 @@ mod db_tests {
             "TEST-JRN-SKEW",
             service_date,
             Some(&calling_points),
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -1123,6 +1376,7 @@ mod db_tests {
             "TEST-JRN-NOSKEW",
             service_date,
             Some(&calling_points),
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -1239,6 +1493,7 @@ mod db_tests {
             "TEST-JRN-NOPLAN",
             service_date,
             Some(&calling_points),
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -1264,6 +1519,139 @@ mod db_tests {
             .await
             .ok();
         sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-NOPLAN-%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                build_journey_stops_estimates_only_the_unreported_stop_from_the_current_delay \
+                -- --ignored --test-threads=1`"]
+    async fn build_journey_stops_estimates_only_the_unreported_stop_from_the_current_delay() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-EST", service_date)
+                .await
+                .expect("find_or_create_train");
+
+        crate::data::queries::upsert_stanox_crs(
+            &pool,
+            &[
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JRN-EST-1".to_string(),
+                    crs: "EUS".to_string(),
+                    tiploc: "TEST-JRN-EST-EUSTON".to_string(),
+                    station_name: "EUSTON".to_string(),
+                    source_sequence: 1,
+                },
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JRN-EST-2".to_string(),
+                    crs: "CRE".to_string(),
+                    tiploc: "TEST-JRN-EST-CREWE".to_string(),
+                    station_name: "CREWE".to_string(),
+                    source_sequence: 1,
+                },
+            ],
+        )
+        .await
+        .expect("seed stanox_crs");
+
+        let calling_points = serde_json::json!([
+            {
+                "tiploc": "TEST-JRN-EST-EUSTON",
+                "kind": "Origin",
+                "bookedArrival": null,
+                "bookedDeparture": "09:00:00",
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            },
+            {
+                "tiploc": "TEST-JRN-EST-CREWE",
+                "kind": "Terminate",
+                "bookedArrival": "10:30:00",
+                "bookedDeparture": null,
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            }
+        ]);
+
+        // Only the ORIGIN has a reported movement -- CREWE (the terminus)
+        // has no live data at all, so it's the one this test expects an
+        // estimate on.
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query(
+            "INSERT INTO train_movement_events \
+                (trains_id, dedup_key, msg_type, event_type, loc_crs, planned_timestamp, \
+                 actual_timestamp, variation_status, raw_body) \
+             VALUES ($1, 'k-est', '0003', 'DEPARTURE', 'EUS', '2026-09-08T09:00:00Z', \
+                     '2026-09-08T09:06:00Z', 'LATE', '{}'::jsonb)",
+        )
+        .bind(trains_id)
+        .execute(&pool)
+        .await
+        .expect("seed train_movement_events");
+
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-EST",
+            service_date,
+            Some(&calling_points),
+            Some(6),
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops from calling_points_json");
+
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[0].crs.as_deref(), Some("EUS"));
+        assert!(
+            stops[0].actual_departure.is_some(),
+            "the origin's departure was actually reported"
+        );
+        assert_eq!(
+            stops[0].estimated_departure, None,
+            "a confirmed actual_departure must never also carry an estimate"
+        );
+
+        assert_eq!(stops[1].crs.as_deref(), Some("CRE"));
+        assert_eq!(
+            stops[1].actual_arrival, None,
+            "the terminus was never reported"
+        );
+        assert_eq!(
+            stops[1].estimated_arrival,
+            Some(stops[1].scheduled_arrival.unwrap() + Duration::minutes(6)),
+            "an unreported stop's estimate is its scheduled time + the current delay"
+        );
+        // `scheduled_arrival` is 10:30 LONDON time on this (BST) service
+        // date -- 09:30 UTC -- so the estimate above is 09:36 UTC.
+        assert!(!may_have_arrived(
+            &stops,
+            "2026-09-08T09:45:00Z".parse().unwrap()
+        ));
+        assert!(may_have_arrived(
+            &stops,
+            "2026-09-08T10:00:00Z".parse().unwrap()
+        ));
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-EST-%'")
             .execute(&pool)
             .await
             .ok();

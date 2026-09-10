@@ -937,6 +937,7 @@ mod tests {
             eta_next: None,
             eta_source: None,
             journey_stops: None,
+            may_have_arrived: false,
         };
 
         let json = line_train_json(&entry, Some(&live));

@@ -14,6 +14,8 @@ function stop(overrides: Partial<JourneyStop>): JourneyStop {
     scheduledDeparture: null,
     actualArrival: null,
     actualDeparture: null,
+    estimatedArrival: null,
+    estimatedDeparture: null,
     lastEventType: null,
     variationStatus: null,
     delayMinutes: null,
@@ -93,5 +95,50 @@ describe('JourneyTimeline', () => {
       />,
     );
     expect(screen.getByText('On time')).toBeInTheDocument();
+  });
+
+  it('renders as a table with a column for each fact shown', () => {
+    renderWithMantine(<JourneyTimeline stops={[stop({})]} />);
+    const table = screen.getByRole('table', { name: 'Journey timeline' });
+    expect(table).toBeInTheDocument();
+    expect(screen.getByText('Station')).toBeInTheDocument();
+    expect(screen.getByText('Scheduled')).toBeInTheDocument();
+    expect(screen.getByText('Actual / est.')).toBeInTheDocument();
+    expect(screen.getByText('Delay')).toBeInTheDocument();
+  });
+
+  it('shows an estimated time, prefixed and visually distinguished, for a stop with no actual time yet', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({
+            scheduledArrival: '2026-09-08T08:00:00Z',
+            actualArrival: null,
+            estimatedArrival: '2026-09-08T08:05:00Z',
+          }),
+        ]}
+      />,
+    );
+    const estimate = screen.getByText(/est\. 09:05/);
+    expect(estimate).toBeInTheDocument();
+    // Italicised/muted -- visually distinct from a confirmed actual time,
+    // not just distinguishable by its "est." prefix.
+    expect(estimate).toHaveStyle({ fontStyle: 'italic' });
+  });
+
+  it('never shows an estimated time alongside a confirmed actual time', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({
+            scheduledArrival: '2026-09-08T08:00:00Z',
+            actualArrival: '2026-09-08T08:04:00Z',
+            estimatedArrival: '2026-09-08T08:05:00Z',
+          }),
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/^est\./)).not.toBeInTheDocument();
+    expect(screen.getByText('09:04')).toBeInTheDocument();
   });
 });

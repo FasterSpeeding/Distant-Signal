@@ -126,12 +126,12 @@ function StatusMessage({ state }: { state: TrainJourneyState }) {
     );
   }
 
-  // `'completed'` is now a REAL, backend-confirmed status
+  // `'completed'` is a REAL, backend-confirmed status
   // (`trust_schema::journey::apply_movement`'s destination-CRS check) --
   // an ARRIVAL event Network Rail reported at this train's own known
   // final calling point, not an inference. It gets its own distinct,
   // positive rendering below, entirely separate from the "may have
-  // finished" heuristic: that banner is deliberately worded as an
+  // arrived" heuristic: that banner is deliberately worded as an
   // inference and must never be reachable for a train we actually KNOW
   // has arrived.
   if (state.status === 'completed') {
@@ -151,25 +151,26 @@ function StatusMessage({ state }: { state: TrainJourneyState }) {
     );
   }
 
-  // 'en_route' with no reported next calling point is still only ever an
-  // INFERENCE, never a confirmed status -- see the Alert copy below. A
-  // genuinely confirmed arrival is handled entirely by the `'completed'`
-  // branch above and never reaches this heuristic at all.
-  const mayHaveFinished = state.status === 'en_route' && state.nextCallingPoint === null;
+  // Only reachable for 'en_route' here -- a genuinely confirmed arrival is
+  // handled entirely by the `'completed'` branch above and never reaches
+  // this point. `state.mayHaveArrived` is computed server-side
+  // (`crates/api/src/data/journey.rs`'s `may_have_arrived`), from whether
+  // now is more than 15 minutes past the ESTIMATED arrival at the
+  // journey's final calling point -- replacing the old client-only
+  // heuristic (`status === 'en_route' && nextCallingPoint === null`),
+  // which fired almost always since `nextCallingPoint` is essentially
+  // never populated in practice. Still deliberately worded as an
+  // inference ("may have"), never asserted as fact.
+  const mayHaveArrived = state.mayHaveArrived;
 
   return (
     <Stack gap="sm">
       <Text fw={500}>Train {state.trainUid}</Text>
       {pinSummary}
-      {mayHaveFinished && (
-        <Alert color="yellow" title="May have finished" variant="light">
-          {/* Provisional heuristic, not a confirmed backend status -- see
-              this plan's Global Constraints and
-              docs/superpowers/specs/2026-08-29-train-tracking-frontend-design.md's
-              Open Question 2. Deliberately worded as an inference
-              ("may have"), never asserted as fact. */}
-          No further calling points have been reported. This journey may have finished, but this is an
-          inference, not a confirmed status from Network Rail.
+      {mayHaveArrived && (
+        <Alert color="yellow" title="May have arrived" variant="light">
+          This journey may have arrived at its destination, but this is an inference, not a confirmed
+          status from Network Rail.
         </Alert>
       )}
     </Stack>

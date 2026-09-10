@@ -60,6 +60,7 @@ export function toJourneyState(train: PublicTrainState): TrainJourneyState {
     etaSource: train.etaSource,
     customName: null,
     journeyStops: train.journeyStops,
+    mayHaveArrived: train.mayHaveArrived,
   };
 }
 

@@ -26,6 +26,7 @@ function baseState(overrides: Partial<TrackedTrainState> = {}): TrackedTrainStat
     scheduleDestinationName: null,
     scheduleCallingPoints: null,
     journeyStops: null,
+    mayHaveArrived: false,
     ...overrides,
     customName: overrides.customName ?? null,
   };
@@ -122,10 +123,29 @@ describe('TrainJourney', () => {
     expect(screen.getByText('4m late')).toBeInTheDocument();
     expect(screen.getByText('Next calling point: Woking')).toBeInTheDocument();
     expect(screen.getByText(/ETA/)).toBeInTheDocument();
-    expect(screen.queryByText('May have finished')).not.toBeInTheDocument();
+    expect(screen.queryByText('May have arrived')).not.toBeInTheDocument();
   });
 
-  it('resolved + en_route with no next calling point: shows the provisional "may have finished" note', () => {
+  it('resolved + en_route with mayHaveArrived: shows the provisional "may have arrived" note', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'en_route',
+          lastReportedLocation: 'Woking',
+          mayHaveArrived: true,
+        })}
+      />,
+    );
+    expect(screen.getByText('May have arrived')).toBeInTheDocument();
+    expect(screen.getByText(/this is an inference, not a confirmed status/)).toBeInTheDocument();
+  });
+
+  it('resolved + en_route with mayHaveArrived false: does not show the note, even with no next calling point', () => {
+    // Regression coverage for the old client-only heuristic this field
+    // replaced (`status === 'en_route' && nextCallingPoint === null`) --
+    // a null nextCallingPoint alone must no longer trigger the alert.
     renderWithMantine(
       <TrainJourney
         state={baseState({
@@ -134,11 +154,11 @@ describe('TrainJourney', () => {
           status: 'en_route',
           lastReportedLocation: 'Woking',
           nextCallingPoint: null,
+          mayHaveArrived: false,
         })}
       />,
     );
-    expect(screen.getByText('May have finished')).toBeInTheDocument();
-    expect(screen.getByText(/this is an inference, not a confirmed status/)).toBeInTheDocument();
+    expect(screen.queryByText('May have arrived')).not.toBeInTheDocument();
   });
 
   it('resolved + cancelled: shows a cancelled banner and retains last known location', () => {
@@ -169,7 +189,7 @@ describe('TrainJourney', () => {
     expect(screen.getByText('No movement data reported yet.')).toBeInTheDocument();
   });
 
-  it('resolved + completed: shows a distinct, confirmed "Arrived" banner, never the "may have finished" inference', () => {
+  it('resolved + completed: shows a distinct, confirmed "Arrived" banner, never the "may have arrived" inference', () => {
     renderWithMantine(
       <TrainJourney
         state={baseState({
@@ -183,7 +203,7 @@ describe('TrainJourney', () => {
     );
     expect(screen.getByText('Arrived')).toBeInTheDocument();
     expect(screen.getByText(/This train has arrived at Woking/)).toBeInTheDocument();
-    expect(screen.queryByText('May have finished')).not.toBeInTheDocument();
+    expect(screen.queryByText('May have arrived')).not.toBeInTheDocument();
     expect(screen.queryByText(/this is an inference/)).not.toBeInTheDocument();
   });
 
@@ -230,6 +250,8 @@ describe('TrainJourney', () => {
               kind: 'Origin',
               scheduledArrival: null,
               scheduledDeparture: '2026-08-28T18:32:00Z',
+              estimatedArrival: null,
+              estimatedDeparture: null,
               actualArrival: null,
               actualDeparture: '2026-08-28T18:32:00Z',
               lastEventType: 'DEPARTURE',
@@ -243,6 +265,8 @@ describe('TrainJourney', () => {
               kind: 'Terminate',
               scheduledArrival: '2026-08-28T19:10:00Z',
               scheduledDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
               actualArrival: '2026-08-28T19:12:00Z',
               actualDeparture: null,
               lastEventType: 'ARRIVAL',
@@ -259,7 +283,7 @@ describe('TrainJourney', () => {
     expect(screen.getByText(/This train has arrived at Woking, at 20:12/)).toBeInTheDocument();
   });
 
-  it('resolved + en_route with no next calling point and journeyStops present but no actualArrival at the last stop: still the "may have finished" inference, not "Arrived"', () => {
+  it('resolved + en_route with no next calling point, journeyStops present with no actualArrival at the last stop, and the server says mayHaveArrived: shows the inference, not "Arrived"', () => {
     renderWithMantine(
       <TrainJourney
         state={baseState({
@@ -268,6 +292,7 @@ describe('TrainJourney', () => {
           status: 'en_route',
           lastReportedLocation: 'Woking',
           nextCallingPoint: null,
+          mayHaveArrived: true,
           journeyStops: [
             {
               crs: 'WOK',
@@ -276,6 +301,8 @@ describe('TrainJourney', () => {
               kind: 'Terminate',
               scheduledArrival: '2026-08-28T19:10:00Z',
               scheduledDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
               actualArrival: null,
               actualDeparture: null,
               lastEventType: null,
@@ -286,7 +313,7 @@ describe('TrainJourney', () => {
         })}
       />,
     );
-    expect(screen.getByText('May have finished')).toBeInTheDocument();
+    expect(screen.getByText('May have arrived')).toBeInTheDocument();
     expect(screen.queryByText('Arrived')).not.toBeInTheDocument();
   });
 
@@ -307,6 +334,8 @@ describe('TrainJourney', () => {
               scheduledDeparture: '2026-09-08T08:00:00Z',
               actualArrival: null,
               actualDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
               lastEventType: null,
               variationStatus: null,
               delayMinutes: null,
@@ -315,7 +344,7 @@ describe('TrainJourney', () => {
         })}
       />,
     );
-    expect(screen.getByRole('list', { name: 'Journey timeline' })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Journey timeline' })).toBeInTheDocument();
     expect(screen.getByText('Reading')).toBeInTheDocument();
   });
 
@@ -336,6 +365,8 @@ describe('TrainJourney', () => {
               scheduledDeparture: '2026-09-08T08:00:00Z',
               actualArrival: null,
               actualDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
               lastEventType: null,
               variationStatus: null,
               delayMinutes: null,
@@ -344,7 +375,7 @@ describe('TrainJourney', () => {
         })}
       />,
     );
-    expect(screen.getByRole('list', { name: 'Journey timeline' })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Journey timeline' })).toBeInTheDocument();
   });
 
   it('resolved + en_route with journeyStops present: renders JourneyDetails live summary AND JourneyTimeline together', () => {
@@ -370,6 +401,8 @@ describe('TrainJourney', () => {
               scheduledDeparture: '2026-09-08T08:00:00Z',
               actualArrival: null,
               actualDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
               lastEventType: null,
               variationStatus: null,
               delayMinutes: null,
@@ -384,7 +417,7 @@ describe('TrainJourney', () => {
     expect(screen.getByText('Next calling point: Woking')).toBeInTheDocument();
     expect(screen.getByText(/ETA/)).toBeInTheDocument();
     // ...alongside the timeline, not instead of it.
-    expect(screen.getByRole('list', { name: 'Journey timeline' })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Journey timeline' })).toBeInTheDocument();
     expect(screen.getByText('Reading')).toBeInTheDocument();
   });
 
@@ -399,7 +432,7 @@ describe('TrainJourney', () => {
         })}
       />,
     );
-    expect(screen.queryByRole('list', { name: 'Journey timeline' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('table', { name: 'Journey timeline' })).not.toBeInTheDocument();
     expect(screen.getByText('Waiting to hear from Network Rail')).toBeInTheDocument();
   });
 });
