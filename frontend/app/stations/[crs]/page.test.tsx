@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import StationDisruptionPage from './page';
+import StationDisruptionPage, { generateMetadata } from './page';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
@@ -239,5 +239,43 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
     // sample ones, via formatSampleSummary's existing precedence chain.
     expect(screen.getByText('Avg delay 2.1 min · 2% cancelled')).toBeInTheDocument();
     expect(screen.queryByText('Avg delay 3.5 min · 0% cancelled')).not.toBeInTheDocument();
+  });
+});
+
+describe('generateMetadata', () => {
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+    vi.mocked(api.getStationName).mockResolvedValue('London Kings Cross');
+  });
+
+  it('titles the page with the station name and describes its worst current status', async () => {
+    vi.mocked(api.getStopPointDisruption).mockResolvedValue([report('ecml', 'East Coast Main Line')]);
+    const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
+    expect(metadata.title).toBe('London Kings Cross (KGX) — Distant Signal');
+    expect(metadata.description).toBe('London Kings Cross (KGX): Severe Delays reported.');
+    expect(metadata.openGraph?.title).toBe('London Kings Cross (KGX) — Distant Signal');
+    expect(metadata.twitter).toMatchObject({ card: 'summary' });
+  });
+
+  it('describes a covered, currently-fine station', async () => {
+    vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
+    const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
+    expect(metadata.description).toBe('London Kings Cross (KGX): no disruptions currently affecting this station.');
+  });
+
+  it('describes a station with zero line coverage', async () => {
+    vi.mocked(api.getStopPointDisruption).mockRejectedValue(new ApiNotFoundError('no line coverage'));
+    const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
+    expect(metadata.description).toBe(
+      'London Kings Cross (KGX): not currently covered by our line-status tracking.',
+    );
+  });
+
+  it('calls notFound() for an unknown station, matching the page component', async () => {
+    vi.mocked(api.getStationName).mockResolvedValue(null);
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    await generateMetadata({ params: Promise.resolve({ crs: 'ZZZ' }) });
+    expect(notFound).toHaveBeenCalled();
   });
 });

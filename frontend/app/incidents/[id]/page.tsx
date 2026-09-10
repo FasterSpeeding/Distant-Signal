@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import { Badge, Divider, Group, Stack, Text, Title } from '@mantine/core';
+import type { Metadata } from 'next';
 import { ApiNotFoundError, getIncident } from '@/lib/api';
 import { sanitizeDescription } from '@/lib/sanitizeHtml';
 import { ShareButton } from '@/components/ShareButton';
@@ -37,6 +38,45 @@ function describeChanges(entry: IncidentHistoryEntry, older: IncidentHistoryEntr
   if (entry.isPlanned !== older.isPlanned) changes.push(`isPlanned changed to ${entry.isPlanned}`);
   if (entry.isCleared !== older.isCleared) changes.push(`isCleared changed to ${entry.isCleared}`);
   return changes.length > 0 ? changes.join(', ') : 'Re-confirmed, no change';
+}
+
+/** Per-page Open Graph/Twitter/`<title>` metadata for a shared incident
+ * link. Fetches the same `getIncident(id)` call the page component makes
+ * -- Next's fetch request memoization dedupes the two into one network
+ * call per request, same reasoning as the equivalent, more detailed
+ * comment on `app/train/[uid]/[date]/page.tsx`'s `generateMetadata`. Same
+ * `notFound()`-on-`ApiNotFoundError` handling as the page component. */
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}): Promise<Metadata> {
+  const { id } = await params;
+
+  let incident: IncidentDetail;
+  try {
+    incident = await getIncident(id);
+  } catch (err) {
+    if (err instanceof ApiNotFoundError) {
+      notFound();
+    }
+    throw err;
+  }
+
+  const title = `${incident.summary} — Distant Signal`;
+  const kind = incident.isPlanned ? 'Planned Work' : 'Real-Time';
+  const affectedLines = incident.currentlyAffectsLines.map((line) => line.name);
+  const description =
+    affectedLines.length > 0
+      ? `${kind} incident affecting ${affectedLines.join(', ')}.`
+      : `${kind} incident: ${incident.summary}.`;
+
+  return {
+    title,
+    description,
+    openGraph: { title, description, type: 'website' },
+    twitter: { card: 'summary', title, description },
+  };
 }
 
 export default async function IncidentDetailPage({ params }: { params: Promise<{ id: string }> }) {

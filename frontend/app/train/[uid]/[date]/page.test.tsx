@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import TrackedTrainByUidPage, { toJourneyState } from './page';
+import TrackedTrainByUidPage, { toJourneyState, trainStatusSummary, generateMetadata } from './page';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import type { PublicTrainState, TrackedTrainListItem } from '@/lib/types';
@@ -373,5 +373,103 @@ describe('toJourneyState', () => {
     );
 
     expect(result.mayHaveArrived).toBe(true);
+  });
+});
+
+describe('generateMetadata', () => {
+  beforeEach(() => {
+    notFoundMock.mockClear();
+  });
+
+  it('titles the page with origin and destination when both are known', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
+      publicTrainState({ originName: 'London Waterloo', destinationName: 'Woking' }),
+    );
+    const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
+    expect(metadata.title).toBe('London Waterloo to Woking — Distant Signal');
+    expect(metadata.openGraph?.title).toBe('London Waterloo to Woking — Distant Signal');
+    expect(metadata.twitter).toMatchObject({ card: 'summary', title: 'London Waterloo to Woking — Distant Signal' });
+  });
+
+  it('falls back to a bare train uid title when origin/destination are unknown', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
+      publicTrainState({ originCrs: null, originName: null, destinationCrs: null, destinationName: null }),
+    );
+    const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
+    expect(metadata.title).toBe('Train W12345 — Distant Signal');
+  });
+
+  it('describes an en-route train with its last reported location and delay', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
+      publicTrainState({ lastReportedLocation: 'Woking', delayMinutes: 5 }),
+    );
+    const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
+    expect(metadata.description).toBe('Last reported: Woking — 5m late');
+    expect(metadata.openGraph?.description).toBe('Last reported: Woking — 5m late');
+  });
+
+  it('describes a cancelled train', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState({ status: 'cancelled' }));
+    const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
+    expect(metadata.description).toBe('Train W12345: this service was cancelled.');
+  });
+
+  it('calls notFound() on ApiNotFoundError, matching the page component', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockRejectedValue(new ApiNotFoundError('not found'));
+    await expect(
+      generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) }),
+    ).rejects.toThrow('NEXT_NOT_FOUND');
+    expect(notFoundMock).toHaveBeenCalled();
+  });
+
+  it('calls notFound() for a malformed date, without fetching', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockClear();
+    await expect(
+      generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: 'not-a-date' }) }),
+    ).rejects.toThrow('NEXT_NOT_FOUND');
+    expect(notFoundMock).toHaveBeenCalled();
+    expect(api.getPublicTrainByUidAndDate).not.toHaveBeenCalled();
+  });
+});
+
+describe('trainStatusSummary', () => {
+  it('summarizes a pending train', () => {
+    expect(trainStatusSummary(toJourneyState(publicTrainState({ originCrs: null, trainId: null, status: null })))).toMatch(
+      /Waiting to hear from Network Rail/,
+    );
+  });
+
+  it('summarizes a schedule-matched train', () => {
+    expect(
+      trainStatusSummary(toJourneyState(publicTrainState({ trainId: null, status: null, destinationName: 'Woking' }))),
+    ).toBe('Matched to a scheduled service — waiting for live tracking to begin.');
+  });
+
+  it('summarizes a train awaiting its first movement report', () => {
+    expect(trainStatusSummary(toJourneyState(publicTrainState({ status: 'awaiting_activation' })))).toBe(
+      'Matched to train W12345 — waiting for its first movement report.',
+    );
+  });
+
+  it('summarizes a completed train with a known destination', () => {
+    expect(
+      trainStatusSummary(
+        toJourneyState(publicTrainState({ status: 'completed', destinationName: 'Woking' })),
+      ),
+    ).toBe('This train has arrived at Woking.');
+  });
+
+  it('summarizes an on-time en-route train', () => {
+    expect(
+      trainStatusSummary(
+        toJourneyState(publicTrainState({ lastReportedLocation: 'Woking', delayMinutes: 0 })),
+      ),
+    ).toBe('Last reported: Woking — On time');
+  });
+
+  it('flags a may-have-arrived train as an inference', () => {
+    expect(
+      trainStatusSummary(toJourneyState(publicTrainState({ mayHaveArrived: true }))),
+    ).toMatch(/may have arrived/i);
   });
 });

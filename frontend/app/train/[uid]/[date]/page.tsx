@@ -1,5 +1,6 @@
 import { Stack, Title, Text, Group } from '@mantine/core';
 import { notFound } from 'next/navigation';
+import type { Metadata } from 'next';
 import { getPublicTrainByUidAndDate, getMyTrackedTrains, ApiNotFoundError } from '@/lib/api';
 import { ShareButton } from '@/components/ShareButton';
 import { TrainJourney } from '@/components/TrainJourney';
@@ -61,6 +62,115 @@ export function toJourneyState(train: PublicTrainState): TrainJourneyState {
     customName: null,
     journeyStops: train.journeyStops,
     mayHaveArrived: train.mayHaveArrived,
+  };
+}
+
+/** Plain-text status summary for a train, sharing the exact phrasing
+ * conventions `components/TrainJourney.tsx`'s `StatusMessage`/
+ * `JourneyDetails` already establish ("Last reported: X", "{N}m late" /
+ * "On time", "This train has arrived at X", "Waiting to hear from Network
+ * Rail", ...) rather than inventing new copy for the OG description. Takes
+ * a `TrainJourneyState` (the same shape `toJourneyState` above produces)
+ * so `generateMetadata` below can reuse the exact same derivation the page
+ * component itself already runs.
+ *
+ * `'unresolved'` is included only for type completeness -- per
+ * `toJourneyState`'s own doc comment it's unreachable for a shared public
+ * train -- but is handled honestly rather than silently falling through,
+ * in case that invariant ever changes. */
+export function trainStatusSummary(state: TrainJourneyState): string {
+  if (state.resolutionStatus === 'pending') {
+    return "Waiting to hear from Network Rail — this train hasn't been matched to a live service yet.";
+  }
+  if (state.resolutionStatus === 'schedule_matched') {
+    return 'Matched to a scheduled service — waiting for live tracking to begin.';
+  }
+  if (state.resolutionStatus === 'unresolved') {
+    return "Couldn't be matched to a live service.";
+  }
+
+  // resolutionStatus === 'resolved' from here on -- same invariant
+  // StatusMessage's own equivalent branch relies on.
+  if (state.status === 'awaiting_activation' || state.status === null) {
+    return `Matched to train ${state.trainUid} — waiting for its first movement report.`;
+  }
+
+  if (state.status === 'cancelled') {
+    return `Train ${state.trainUid}: this service was cancelled.`;
+  }
+
+  if (state.status === 'completed') {
+    const destination = state.scheduleDestinationName ?? state.scheduleDestinationCrs;
+    return destination
+      ? `This train has arrived at ${destination}.`
+      : 'This train has arrived at its final destination.';
+  }
+
+  if (state.mayHaveArrived) {
+    return 'This journey may have arrived at its destination (not yet confirmed by Network Rail).';
+  }
+
+  const parts: string[] = [];
+  if (state.lastReportedLocation) {
+    parts.push(`Last reported: ${state.lastReportedLocation}`);
+  }
+  if (state.delayMinutes !== null) {
+    parts.push(state.delayMinutes > 0 ? `${state.delayMinutes}m late` : 'On time');
+  }
+  return parts.length > 0 ? parts.join(' — ') : `Train ${state.trainUid} is currently en route.`;
+}
+
+/** Per-page Open Graph/Twitter/`<title>` metadata for a shared train link
+ * -- the design's whole reason for being, since this is one of the four
+ * pages `ShareButton` renders on (see this file's own `ShareButton` usage
+ * below). Fetches the exact same `getPublicTrainByUidAndDate(uid, date)`
+ * call the page component makes; Next.js's own fetch request memoization
+ * dedupes the two into a single network call per request (both this
+ * function and the page component run within the same render, and every
+ * `lib/api.ts` fetcher goes through the real `fetch()`, so the
+ * memoization applies regardless of the `cache: 'no-store'` these use --
+ * see https://nextjs.org/docs/app/api-reference/functions/fetch and this
+ * plan's own investigation) -- no extra `cache()` wrapper needed.
+ *
+ * Mirrors the page component's own `notFound()`-on-`ApiNotFoundError`
+ * handling: `generateMetadata` runs before (and independently of) the page
+ * component, so it needs its own equivalent try/catch rather than relying
+ * on the page's -- Next.js supports calling `notFound()` from within
+ * `generateMetadata` the same as from a page. The malformed-date check
+ * mirrors the page's own pre-fetch validation for the same reason (no
+ * network call for a URL segment that can never resolve). */
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ uid: string; date: string }>;
+}): Promise<Metadata> {
+  const { uid, date } = await params;
+
+  if (!DATE_PATTERN.test(date)) {
+    notFound();
+  }
+
+  let train: PublicTrainState;
+  try {
+    train = await getPublicTrainByUidAndDate(uid, date);
+  } catch (err) {
+    if (err instanceof ApiNotFoundError) {
+      notFound();
+    }
+    throw err;
+  }
+
+  const origin = train.originName ?? train.originCrs;
+  const destination = train.destinationName ?? train.destinationCrs;
+  const title =
+    origin && destination ? `${origin} to ${destination} — Distant Signal` : `Train ${uid} — Distant Signal`;
+  const description = trainStatusSummary(toJourneyState(train));
+
+  return {
+    title,
+    description,
+    openGraph: { title, description, type: 'website' },
+    twitter: { card: 'summary', title, description },
   };
 }
 

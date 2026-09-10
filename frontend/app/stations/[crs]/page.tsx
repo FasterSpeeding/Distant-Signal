@@ -1,5 +1,6 @@
 import { Stack, Title, Text, Group, Divider } from '@mantine/core';
 import { notFound } from 'next/navigation';
+import type { Metadata } from 'next';
 import {
   getStopPointDisruption,
   getPreferences,
@@ -14,7 +15,7 @@ import { IssueList } from '@/components/IssueList';
 import { PinToggle } from '@/components/PinToggle';
 import { ShareButton } from '@/components/ShareButton';
 import { TextLink } from '@/components/TextLink';
-import { worstStatus, severityRank } from '@/lib/severity';
+import { worstStatus, severityRank, severityLabel } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport, Preferences, StationOperatorSampleStats } from '@/lib/types';
@@ -95,6 +96,53 @@ async function fetchStationSampleStats(crs: string): Promise<StationSampleStatsR
     if (err instanceof ApiNotFoundError) return { coverage: 'not-sampled' };
     throw err;
   }
+}
+
+/** Per-page Open Graph/Twitter/`<title>` metadata for a shared station
+ * link. Reuses `lookupStation`/`fetchStationDisruptions` -- the exact same
+ * helpers the page component calls -- so the resulting `fetch()` calls
+ * (same URL/options) are deduped by Next's own request memoization within
+ * this render, same reasoning as the equivalent, more detailed comment on
+ * `app/train/[uid]/[date]/page.tsx`'s `generateMetadata`. Mirrors the page
+ * component's own `notFound()`-for-an-unknown-CRS handling. */
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ crs: string }>;
+}): Promise<Metadata> {
+  const { crs } = await params;
+
+  const lookup = await lookupStation(crs);
+  if (lookup.outcome === 'unknown') {
+    notFound();
+  }
+
+  const heading = lookup.outcome === 'found' ? `${lookup.name} (${crs})` : crs;
+  const title = `${heading} — Distant Signal`;
+
+  const { reports, coverage } = await fetchStationDisruptions(crs);
+  let description: string;
+  if (coverage === 'none') {
+    description = `${heading}: not currently covered by our line-status tracking.`;
+  } else if (reports.length === 0) {
+    description = `${heading}: no disruptions currently affecting this station.`;
+  } else {
+    const worst = reports.reduce(
+      (acc, report) => {
+        const candidate = worstStatus(report);
+        return severityRank(candidate.statusSeverity) > severityRank(acc.statusSeverity) ? candidate : acc;
+      },
+      worstStatus(reports[0]),
+    );
+    description = `${heading}: ${severityLabel(worst.statusSeverity)} reported.`;
+  }
+
+  return {
+    title,
+    description,
+    openGraph: { title, description, type: 'website' },
+    twitter: { card: 'summary', title, description },
+  };
 }
 
 export default async function StationDisruptionPage({

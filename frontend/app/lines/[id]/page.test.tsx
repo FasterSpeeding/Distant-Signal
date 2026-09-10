@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import LineDetailPage from './page';
+import LineDetailPage, { generateMetadata } from './page';
 import * as api from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
 import { ApiNotFoundError } from '@/lib/api';
@@ -304,5 +304,49 @@ describe('LineDetailPage -- embedded fetches must not blank the page', () => {
     await renderPage();
     expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
     expect(await screen.findByText("Trend data isn't available right now.")).toBeInTheDocument();
+  });
+});
+
+describe('generateMetadata', () => {
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+  });
+
+  it('titles the page with the line name and describes its worst current status', async () => {
+    vi.mocked(api.getLineStatus).mockResolvedValue([
+      {
+        ...report('custom-my-commute', 'My Commute'),
+        lineStatuses: [
+          {
+            statusSeverity: 6,
+            statusSeverityDescription: 'Severe Delays',
+            reason: 'Signal failure at Woking',
+            dataQuality: 'trust-inferred',
+            validityPeriods: [],
+            sampleAvailability: { state: 'no-coverage' },
+            fullCoverageAvailability: { state: 'no-coverage' },
+          } as never,
+        ],
+      },
+    ]);
+    const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
+    expect(metadata.title).toBe('My Commute — Distant Signal');
+    expect(metadata.description).toBe('My Commute: Severe Delays — Signal failure at Woking');
+    expect(metadata.openGraph?.title).toBe('My Commute — Distant Signal');
+    expect(metadata.twitter).toMatchObject({ card: 'summary' });
+  });
+
+  it('describes a line with no reason text (Good Service)', async () => {
+    vi.mocked(api.getLineStatus).mockResolvedValue([report('custom-my-commute', 'My Commute')]);
+    const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
+    expect(metadata.description).toBe('My Commute: Good Service');
+  });
+
+  it('calls notFound() on ApiNotFoundError, matching the page component', async () => {
+    vi.mocked(api.getLineStatus).mockRejectedValue(new ApiNotFoundError('not found'));
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    await expect(generateMetadata({ params: Promise.resolve({ id: 'unknown' }) })).rejects.toThrow();
+    expect(notFound).toHaveBeenCalled();
   });
 });

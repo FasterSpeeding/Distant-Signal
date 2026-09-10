@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import IncidentDetailPage from './page';
+import IncidentDetailPage, { generateMetadata } from './page';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import { notFound } from 'next/navigation';
@@ -126,5 +126,35 @@ describe('IncidentDetailPage', () => {
 
     expect(screen.getByText('priority changed from 3 to 5')).toBeInTheDocument();
     expect(screen.getByText('First seen')).toBeInTheDocument();
+  });
+});
+
+describe('generateMetadata', () => {
+  it('titles the page with the incident summary and describes the affected lines', async () => {
+    vi.mocked(api.getIncident).mockResolvedValue(detail());
+    const metadata = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
+    expect(metadata.title).toBe('Signal failure at Woking — Distant Signal');
+    expect(metadata.description).toBe('Real-Time incident affecting South Western Main Line.');
+    expect(metadata.openGraph?.title).toBe('Signal failure at Woking — Distant Signal');
+    expect(metadata.twitter).toMatchObject({ card: 'summary' });
+  });
+
+  it('labels a planned-work incident distinctly from a real-time one', async () => {
+    vi.mocked(api.getIncident).mockResolvedValue(detail({ isPlanned: true }));
+    const metadata = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
+    expect(metadata.description).toBe('Planned Work incident affecting South Western Main Line.');
+  });
+
+  it('falls back to the summary when no line currently reports the incident', async () => {
+    vi.mocked(api.getIncident).mockResolvedValue(detail({ currentlyAffectsLines: [] }));
+    const metadata = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
+    expect(metadata.description).toBe('Real-Time incident: Signal failure at Woking.');
+  });
+
+  it('calls notFound() when getIncident throws ApiNotFoundError, matching the page component', async () => {
+    vi.mocked(api.getIncident).mockRejectedValue(new ApiNotFoundError('not found'));
+    vi.mocked(notFound).mockClear();
+    await expect(generateMetadata({ params: Promise.resolve({ id: 'does-not-exist' }) })).rejects.toThrow();
+    expect(vi.mocked(notFound)).toHaveBeenCalled();
   });
 });
