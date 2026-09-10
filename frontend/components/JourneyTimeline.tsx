@@ -1,4 +1,14 @@
-import { Badge, Table, Text } from '@mantine/core';
+import {
+  Badge,
+  Table,
+  TableScrollContainer,
+  TableThead,
+  TableTbody,
+  TableTr,
+  TableTh,
+  TableTd,
+  Text,
+} from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import type { JourneyStop } from '@/lib/types';
 
@@ -16,28 +26,36 @@ import type { JourneyStop } from '@/lib/types';
  * each), and a stack of independently-sized `Group`s can't keep a column
  * aligned down the list once row content varies in length, which is
  * exactly what adding a variable-width estimated time made worse rather
- * than better. `Table.ScrollContainer` keeps a long station name from
+ * than better. `TableScrollContainer` keeps a long station name from
  * forcing the whole page to scroll horizontally on a narrow screen --
- * the table scrolls in its own box instead. */
+ * the table scrolls in its own box instead.
+ *
+ * Flat `TableThead`/`TableTr`/... named exports, not the `Table.Thead`
+ * dot-notation compound API -- this component is rendered from a Server
+ * Component chain (`page.tsx` -> `TrainJourney.tsx` -> here, none of them
+ * carrying `"use client"`), and the compound API pulls in a
+ * `"use client"`-tainted import chain that resolves to `undefined` at
+ * runtime in that context -- the same reason `AllLinesTable.tsx` and
+ * `lines/[id]/history/page.tsx` use the flat exports instead. */
 export function JourneyTimeline({ stops }: { stops: JourneyStop[] }) {
   return (
-    <Table.ScrollContainer minWidth={420}>
+    <TableScrollContainer minWidth={420}>
       <Table verticalSpacing={6} horizontalSpacing="sm" aria-label="Journey timeline">
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Station</Table.Th>
-            <Table.Th>Scheduled</Table.Th>
-            <Table.Th>Actual / est.</Table.Th>
-            <Table.Th>Delay</Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
+        <TableThead>
+          <TableTr>
+            <TableTh>Station</TableTh>
+            <TableTh>Scheduled</TableTh>
+            <TableTh>Actual / est.</TableTh>
+            <TableTh>Delay</TableTh>
+          </TableTr>
+        </TableThead>
+        <TableTbody>
           {stops.map((stop, index) => (
             <JourneyStopRow key={`${stop.crs ?? 'unknown'}-${index}`} stop={stop} />
           ))}
-        </Table.Tbody>
+        </TableTbody>
       </Table>
-    </Table.ScrollContainer>
+    </TableScrollContainer>
   );
 }
 
@@ -72,23 +90,23 @@ function JourneyStopRow({ stop }: { stop: JourneyStop }) {
   const reached = actual !== null;
 
   return (
-    <Table.Tr>
-      <Table.Td>
+    <TableTr>
+      <TableTd>
         <Text
           fw={stop.kind === 'Origin' || stop.kind === 'Terminate' ? 700 : 400}
           c={reached ? undefined : 'dimmed'}
         >
           {label}
         </Text>
-      </Table.Td>
-      <Table.Td>
+      </TableTd>
+      <TableTd>
         {scheduled && (
           <Text size="sm" c="dimmed">
             {formatTime(scheduled)}
           </Text>
         )}
-      </Table.Td>
-      <Table.Td>
+      </TableTd>
+      <TableTd>
         {actual ? (
           <Text size="sm">{formatTime(actual)}</Text>
         ) : (
@@ -101,8 +119,8 @@ function JourneyStopRow({ stop }: { stop: JourneyStop }) {
             </Text>
           )
         )}
-      </Table.Td>
-      <Table.Td>{delayBadge(stop.delayMinutes)}</Table.Td>
-    </Table.Tr>
+      </TableTd>
+      <TableTd>{delayBadge(stop.delayMinutes)}</TableTd>
+    </TableTr>
   );
 }
