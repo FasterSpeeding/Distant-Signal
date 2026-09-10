@@ -48,6 +48,15 @@ interface TrainSearchRow {
   originCrs: string | null;
   destinationCrs: string | null;
   destinationArrival: string | null;
+  /** How many calendar days past the search date `destinationArrival`
+   * actually falls on -- the TERMINATING calling point's own day offset,
+   * mirroring `schedule_query::DestinationDeparture::destination_arrival_day_offset`.
+   * Not consumed anywhere in this form yet: `destinationArrival` itself is
+   * only ever used today as a same-day time-of-day filter, never combined
+   * with a date to produce a real timestamp, so this field is kept accurate
+   * but deliberately unused -- see this codebase's other currently-unused
+   * but correct wire fields for the same posture. */
+  destinationArrivalDayOffset: number;
 }
 
 /** The envelope `GET /public/trains/search` returns. Not a bare array: it

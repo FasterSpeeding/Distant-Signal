@@ -476,6 +476,7 @@ fn schedule_destination_departures_rows(
                     "origin_crs": d.origin_crs,
                     "true_origin_crs": d.true_origin_crs,
                     "destination_arrival": d.destination_arrival,
+                    "destination_arrival_day_offset": d.destination_arrival_day_offset,
                 })
             })
         })
@@ -987,6 +988,7 @@ mod poll_once_tests {
                     day_offset: 0,
                     true_origin_crs: None,
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "U1".to_string(),
@@ -995,6 +997,7 @@ mod poll_once_tests {
                     day_offset: 0,
                     true_origin_crs: None,
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
             ],
         );
@@ -1007,6 +1010,7 @@ mod poll_once_tests {
                 day_offset: 0,
                 true_origin_crs: None,
                 destination_arrival: None,
+                destination_arrival_day_offset: 0,
             }],
         );
 
@@ -1033,8 +1037,9 @@ mod poll_once_tests {
                 "origin_crs": "KGX",
                 "true_origin_crs": null,
                 "destination_arrival": null,
+                "destination_arrival_day_offset": 0,
             }),
-            "exactly eight keys, named exactly as the table's columns are"
+            "exactly nine keys, named exactly as the table's columns are"
         );
 
         // The same UID appears twice under MAN, once per departure-bearing
@@ -1077,6 +1082,7 @@ mod poll_once_tests {
                     day_offset: 0,
                     true_origin_crs: Some("EUS".to_string()),
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C11052".to_string(),
@@ -1085,6 +1091,7 @@ mod poll_once_tests {
                     day_offset: 0,
                     true_origin_crs: None,
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
             ],
         );
@@ -1124,6 +1131,7 @@ mod poll_once_tests {
                     day_offset: 0,
                     true_origin_crs: Some("EUS".to_string()),
                     destination_arrival: Some(chrono::NaiveTime::from_hms_opt(11, 30, 0).unwrap()),
+                    destination_arrival_day_offset: 0,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "C99999".to_string(),
@@ -1132,6 +1140,7 @@ mod poll_once_tests {
                     day_offset: 0,
                     true_origin_crs: None,
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
             ],
         );
@@ -1173,6 +1182,7 @@ mod poll_once_tests {
                 day_offset: 0,
                 true_origin_crs: None,
                 destination_arrival: None,
+                destination_arrival_day_offset: 0,
             })
             .collect();
         by_destination.insert("WAT".to_string(), departures);
@@ -1207,6 +1217,7 @@ mod poll_once_tests {
                     day_offset: 0,
                     true_origin_crs: None,
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
                 schedule_query::DestinationDeparture {
                     uid: "EARLY".to_string(),
@@ -1215,6 +1226,7 @@ mod poll_once_tests {
                     day_offset: 0,
                     true_origin_crs: None,
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
             ],
         );

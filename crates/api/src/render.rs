@@ -221,6 +221,16 @@ pub(crate) fn schedule_departure_json(d: &Value) -> Value {
 ///
 /// `scheduled` is trimmed from the stored `"HH:MM:SS"` to `"HH:MM"`,
 /// identical to `schedule_departure_json`.
+///
+/// `destinationArrivalDayOffset` mirrors `schedule_departure_json`'s own
+/// `dayOffset` null-tolerance posture (a plain number, `unwrap_or(0)`, not
+/// `Value::Null`): it is read as `0` both when the key is missing (a
+/// `schedule_destination_departures` row published before
+/// `schedule_query::DestinationDeparture::destination_arrival_day_offset`
+/// existed) and when it is present but not a number. `0` is the correct
+/// fallback in both cases -- "assume same day as the departure", the
+/// previous behavior this field's addition is fixing forward from, not a
+/// new failure mode.
 pub(crate) fn calling_point_departure_json(d: &Value, station_crs: &str) -> Value {
     let scheduled = d
         .get("scheduled")
@@ -234,6 +244,10 @@ pub(crate) fn calling_point_departure_json(d: &Value, station_crs: &str) -> Valu
         .get("destination_arrival")
         .and_then(Value::as_str)
         .map(|s| s.chars().take(5).collect::<String>());
+    let destination_arrival_day_offset = d
+        .get("destination_arrival_day_offset")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     json!({
         "uid": d.get("uid").cloned().unwrap_or(Value::Null),
         "scheduled": scheduled,
@@ -241,6 +255,7 @@ pub(crate) fn calling_point_departure_json(d: &Value, station_crs: &str) -> Valu
         "originCrs": d.get("true_origin_crs").cloned().unwrap_or(Value::Null),
         "destinationCrs": d.get("destination_crs").cloned().unwrap_or(Value::Null),
         "destinationArrival": destination_arrival,
+        "destinationArrivalDayOffset": destination_arrival_day_offset,
     })
 }
 
@@ -797,7 +812,10 @@ mod tests {
         });
         let json = calling_point_departure_json(&row, "RDG");
         assert!(json["originCrs"].is_null());
-        assert!(json.get("originCrs").is_some(), "must be explicit null, not omitted");
+        assert!(
+            json.get("originCrs").is_some(),
+            "must be explicit null, not omitted"
+        );
     }
 
     #[test]
@@ -811,6 +829,44 @@ mod tests {
         });
         let json = calling_point_departure_json(&row, "RDG");
         assert_eq!(json["destinationArrival"], "11:30");
+    }
+
+    #[test]
+    fn calling_point_departure_json_renders_a_nonzero_destination_arrival_day_offset() {
+        // The real live-confirmed overnight working (`schedule_query::resolve`'s
+        // own `f49687_raw` fixture): Liverpool Street departs on day_offset
+        // 0, but the schedule's terminus (Shenfield) is really the day
+        // AFTER -- `destinationArrivalDayOffset` must carry that value onto
+        // the wire distinctly from `dayOffset`/`destinationArrival` itself.
+        let row = serde_json::json!({
+            "uid": "F49687",
+            "destination_crs": "SNF",
+            "true_origin_crs": "LST",
+            "scheduled": "23:48:00",
+            "destination_arrival": "01:01:00",
+            "destination_arrival_day_offset": 1,
+        });
+        let json = calling_point_departure_json(&row, "LST");
+        assert_eq!(json["destinationArrivalDayOffset"], 1);
+    }
+
+    #[test]
+    fn calling_point_departure_json_defaults_a_missing_destination_arrival_day_offset_to_zero() {
+        // A `schedule_destination_departures` row published before
+        // `destination_arrival_day_offset` existed has no such key at all
+        // -- must render as `0` (the honest "unknown, assume same day as
+        // the departure" default), never a missing key or a panic. Same
+        // rolling-deploy posture as `schedule_departure_json`'s own
+        // `dayOffset` default.
+        let row = serde_json::json!({
+            "uid": "C10001",
+            "destination_crs": "WAT",
+            "true_origin_crs": "PAD",
+            "scheduled": "08:22:00",
+            "destination_arrival": "11:30:00",
+        });
+        let json = calling_point_departure_json(&row, "RDG");
+        assert_eq!(json["destinationArrivalDayOffset"], 0);
     }
 
     #[test]
@@ -844,7 +900,7 @@ mod tests {
 
     #[test]
     fn line_train_json_with_no_live_row_passes_the_population_entry_through_and_nulls_live_status()
-     {
+    {
         let entry = serde_json::json!({
             "uid": "C10001",
             "calling_points": [
@@ -888,9 +944,15 @@ mod tests {
         assert_eq!(json["liveStatus"]["trainsId"], 42);
         assert_eq!(json["liveStatus"]["trainId"], "1A11");
         assert_eq!(json["liveStatus"]["originCrs"], "EUS");
-        assert_eq!(json["liveStatus"]["destinationName"], "Birmingham New Street");
+        assert_eq!(
+            json["liveStatus"]["destinationName"],
+            "Birmingham New Street"
+        );
         assert_eq!(json["liveStatus"]["status"], "en_route");
-        assert_eq!(json["liveStatus"]["lastReportedLocation"], "Watford Junction");
+        assert_eq!(
+            json["liveStatus"]["lastReportedLocation"],
+            "Watford Junction"
+        );
         assert_eq!(json["liveStatus"]["delayMinutes"], 2);
         assert_eq!(json["liveStatus"]["nextCallingPoint"], "BHM");
         // journeyStops/callingPoints must NOT appear inside liveStatus --

@@ -389,6 +389,7 @@ mod db_tests {
                     origin_crs: "RDG".to_string(),
                     true_origin_crs: Some("RDG".to_string()),
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
                 crate::data::queries::ScheduleDestinationDeparturesRow {
                     service_date,
@@ -399,6 +400,7 @@ mod db_tests {
                     origin_crs: "SLO".to_string(),
                     true_origin_crs: Some("RDG".to_string()),
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
             ],
         )
@@ -500,6 +502,7 @@ mod db_tests {
                 origin_crs: "RDG".to_string(),
                 true_origin_crs: Some("RDG".to_string()),
                 destination_arrival: None,
+                destination_arrival_day_offset: 0,
             }],
         )
         .await
@@ -726,6 +729,7 @@ mod db_tests {
                 origin_crs: "RDG".to_string(),
                 true_origin_crs: Some("RDG".to_string()),
                 destination_arrival: None,
+                destination_arrival_day_offset: 0,
             }],
         )
         .await
@@ -818,6 +822,7 @@ mod db_tests {
                 origin_crs: "RDG".to_string(),
                 true_origin_crs: Some("RDG".to_string()),
                 destination_arrival: None,
+                destination_arrival_day_offset: 0,
             }],
         )
         .await
