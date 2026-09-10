@@ -20,17 +20,29 @@
 //!
 //! **v1 filter set, and why it stops here.** `station` (any calling
 //! point -- boarding or alighting) is required; `origin` (the schedule's
-//! TRUE first calling point) and `destination` (the schedule's TRUE final
-//! calling point) are both optional, independent filters, along with the
+//! TRUE first calling point) and `stops_at` (any calling point or points,
+//! zero or more) are both optional, independent filters, along with the
 //! `from`/`to` time range. `from`/`to` bound `station`'s own `scheduled`
-//! time; `destination_from`/`destination_to` are a SEPARATE, independent
-//! `"HH:MM"` bound pair on when the train ARRIVES at `destination`, and
-//! require `destination` to be set (a `400` otherwise -- see
-//! `TrainSearchParams::destination_from`'s own doc comment and
-//! docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md).
+//! time; `arrival_from`/`arrival_to` are a SEPARATE, independent `"HH:MM"`
+//! bound pair on when the train ARRIVES at `stops_at`'s single named
+//! calling point, and require `stops_at` to name EXACTLY ONE station (a
+//! `400` otherwise -- see `TrainSearchParams::arrival_from`'s own doc
+//! comment and
+//! docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md).
 //! There is deliberately NO operator filter: the
 //! CIF SCHEDULE feed's operator field is parsed-but-undecoded everywhere in
 //! this codebase, so a CIF-derived row has no operator to filter on at all.
+//!
+//! **`stops_at` replaced the earlier single-valued `destination` filter**
+//! (the schedule's TRUE final calling point) -- see
+//! docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md for
+//! the full reasoning. This is a genuine, deliberate behavior change, not
+//! a rename: `destination` meant "this IS the schedule's true final stop";
+//! `stops_at` means "the schedule calls here at some point in its route",
+//! true destination or not, and requires ALL named stations to match
+//! (relational division), not just one. A caller who genuinely needs
+//! "true destination equals X" (as opposed to "calls at X") has no
+//! equivalent filter any more -- see that design doc's own open question.
 //! `date` (`"YYYY-MM-DD"`, optional) selects which `service_date` this
 //! search runs against, defaulting to today -- but only within a bounded
 //! window (`SEARCH_WINDOW_BACKWARD_DAYS`/`SEARCH_WINDOW_FORWARD_DAYS`
@@ -55,8 +67,9 @@
 //! page; `after` carries the last row of the previous page.
 
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
+use axum_extra::extract::Query;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
@@ -81,11 +94,11 @@ const DEFAULT_SEARCH_LIMIT: i64 = 50;
 /// "here are 200, with a cursor for the rest." A `limit` that is zero,
 /// negative or unparseable IS malformed and does 400.
 ///
-/// That's an asymmetry with `from`, `to`, `destination`, `origin` and
+/// That's an asymmetry with `from`, `to`, `stops_at`, `origin` and
 /// `station`, which all 400 on a bad value instead of silently ignoring it:
 /// clamping `limit` can only ever return FEWER rows than the caller asked
 /// for, and it's still a safe, honest answer because there's a cursor for
-/// the rest. Silently dropping a malformed filter like `destination` would
+/// the rest. Silently dropping a malformed filter like `stops_at` would
 /// do the opposite -- it would return MORE rows than the caller asked for,
 /// under a filter the caller thinks is still applied. That reads as a
 /// broken search, not a rejected input, so those fields 400 instead of
@@ -111,16 +124,16 @@ const SEARCH_WINDOW_BACKWARD_DAYS: i64 = 7;
 /// `#[serde(deny_unknown_fields)]` is load-bearing here, not decorative:
 /// without it, axum's `Query` extractor silently drops any query parameter
 /// whose name doesn't match a field below (e.g. a caller sending
-/// `destinationArrivalFrom`/`destinationArrivalTo` instead of the actual
-/// `destination_from`/`destination_to`), producing a `200` whose filters
-/// simply never applied -- a request that LOOKS accepted but has zero
-/// effect. That is exactly the failure mode this route's own doc comment
-/// already rejects for malformed filter VALUES (see `MAX_SEARCH_LIMIT`'s
-/// doc comment above, and the `destination_from`/`destination_to`-without-
-/// `destination` 400 in `get_trains_search`): a 400 naming the field is
-/// the honest answer, not a silently-narrower-than-requested search. This
-/// extends that same posture to malformed (unrecognized) parameter NAMES.
-/// See `trains_search_rejects_an_unrecognized_query_parameter_instead_of_silently_ignoring_it`
+/// `arrivalFrom`/`arrivalTo` instead of the actual `arrival_from`/
+/// `arrival_to`), producing a `200` whose filters simply never applied --
+/// a request that LOOKS accepted but has zero effect. That is exactly the
+/// failure mode this route's own doc comment already rejects for malformed
+/// filter VALUES (see `MAX_SEARCH_LIMIT`'s doc comment above, and the
+/// `arrival_from`/`arrival_to`-without-exactly-one-`stops_at` 400 in
+/// `get_trains_search`): a 400 naming the field is the honest answer, not
+/// a silently-narrower-than-requested search. This extends that same
+/// posture to malformed (unrecognized) parameter NAMES. See
+/// `trains_search_rejects_an_unrecognized_query_parameter_instead_of_silently_ignoring_it`
 /// below for the regression coverage.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -146,9 +159,34 @@ struct TrainSearchParams {
     /// `schedule_query::DestinationDeparture`'s own doc comment for the
     /// `origin_crs`-vs-`true_origin_crs` distinction this filters on.
     origin: Option<String>,
-    /// Optional. Filters to schedules whose TRUE destination (their final
-    /// calling point) is this CRS.
-    destination: Option<String>,
+    /// Optional, zero or more, repeated query key
+    /// (`?stops_at=RDG&stops_at=OXF`). Filters to schedules that call at
+    /// EVERY named station somewhere along their route (boarding or
+    /// alighting) -- ALL-of-N, not ANY-of-N -- independent of
+    /// `station`/`origin` above. Replaces the earlier single-valued
+    /// `destination` (TRUE final calling point) filter -- see this
+    /// module's own doc comment and
+    /// docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md
+    /// for why that is a genuine behavior change, not a rename.
+    ///
+    /// **Extracted via `axum_extra::extract::Query`, not plain
+    /// `axum::extract::Query`, and that is load-bearing, not a style
+    /// choice.** Confirmed empirically (not assumed, per this feature's own
+    /// design note): axum's own `Query` runs on `serde_urlencoded`, whose
+    /// `Deserializer` is a bare `serde::de::value::MapDeserializer` over
+    /// EVERY raw `(key, value)` pair with no grouping at all -- a bare
+    /// `Vec<String>` field fails outright even for `?stops_at=RDG&stops_at=OXF`
+    /// ("invalid type: string ..., expected a sequence" on the first pair).
+    /// `axum_extra::extract::Query` runs on `serde_html_form` instead, which
+    /// is specifically built to group repeated keys into one sequence
+    /// before struct-field deserialization ever sees them -- covering ZERO
+    /// (`#[serde(default)]`, an empty `Vec`), ONE and 2+ occurrences all
+    /// correctly with a plain `Vec<String>` field, no custom
+    /// `deserialize_with` needed. `axum_extra::extract::Query`'s rejection
+    /// still 400s the same way plain `Query`'s does, so `deny_unknown_fields`
+    /// below and every other field's behavior are unaffected by this swap.
+    #[serde(default)]
+    stops_at: Vec<String>,
     /// Optional, `"HH:MM"`, inclusive lower bound on scheduled departure.
     /// Always honored exactly as given -- including a value already in the
     /// past relative to `now` today -- because an explicit bound is a
@@ -160,17 +198,18 @@ struct TrainSearchParams {
     /// Optional, `"HH:MM"`, inclusive upper bound.
     to: Option<String>,
     /// Optional, `"HH:MM"`, inclusive lower bound on the time the train
-    /// ARRIVES at `destination` -- a SEPARATE filter from `from`/`to`
-    /// above, which stay scoped to `station`. Requires `destination` to
-    /// be set; see this route's own validation below for why an
-    /// arrival-time filter with nothing named to arrive at 400s instead
-    /// of being silently ignored, mirroring `MAX_SEARCH_LIMIT`'s own
-    /// doc comment's reasoning for the other filters. See
-    /// docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md.
-    destination_from: Option<String>,
-    /// Optional, `"HH:MM"`, inclusive upper bound. Same `destination`
-    /// requirement as `destination_from`.
-    destination_to: Option<String>,
+    /// ARRIVES at `stops_at`'s single named calling point -- a SEPARATE
+    /// filter from `from`/`to` above, which stay scoped to `station`.
+    /// Requires `stops_at` to name EXACTLY ONE station; see this route's
+    /// own validation below for why an arrival-time filter with an
+    /// ambiguous (zero, or two-or-more) calling point to arrive at 400s
+    /// instead of being silently ignored, mirroring `MAX_SEARCH_LIMIT`'s
+    /// own doc comment's reasoning for the other filters. See
+    /// docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md.
+    arrival_from: Option<String>,
+    /// Optional, `"HH:MM"`, inclusive upper bound. Same single-`stops_at`
+    /// requirement as `arrival_from`.
+    arrival_to: Option<String>,
     /// Optional page size, 1..=`MAX_SEARCH_LIMIT`, defaulting to
     /// `DEFAULT_SEARCH_LIMIT`. Values above the maximum are clamped, not
     /// rejected; zero, negative and unparseable values are a `400`.
@@ -307,12 +346,12 @@ async fn get_trains_search(
         .filter(|s| !s.trim().is_empty())
         .map(|s| normalize_crs("origin", s))
         .transpose()?;
-    let destination = params
-        .destination
-        .as_deref()
+    let stops_at = params
+        .stops_at
+        .iter()
         .filter(|s| !s.trim().is_empty())
-        .map(|s| normalize_crs("destination", s))
-        .transpose()?;
+        .map(|s| normalize_crs("stops_at", s))
+        .collect::<Result<Vec<String>, _>>()?;
     let from_time = params
         .from
         .as_deref()
@@ -325,28 +364,28 @@ async fn get_trains_search(
         .filter(|s| !s.trim().is_empty())
         .map(|s| normalize_time("to", s))
         .transpose()?;
-    let destination_from_time = params
-        .destination_from
+    let arrival_from_time = params
+        .arrival_from
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .map(|s| normalize_time("destination_from", s))
+        .map(|s| normalize_time("arrival_from", s))
         .transpose()?;
-    let destination_to_time = params
-        .destination_to
+    let arrival_to_time = params
+        .arrival_to
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .map(|s| normalize_time("destination_to", s))
+        .map(|s| normalize_time("arrival_to", s))
         .transpose()?;
     // Same "malformed input 400s, it is never silently ignored" posture
     // this file's own doc comment already argues for `from`/`to`/
-    // `destination`/`origin`/`station` (lines 68-76): a destination-
-    // arrival filter with no destination to arrive AT is ambiguous
-    // input, not a wider search, so this 400s rather than quietly acting
-    // as though neither bound was set.
-    if (destination_from_time.is_some() || destination_to_time.is_some()) && destination.is_none() {
+    // `stops_at`/`origin`/`station` (lines 68-76): an arrival filter with
+    // an ambiguous (zero, or two-or-more) calling point to arrive AT is
+    // ambiguous input, not a wider search, so this 400s rather than
+    // quietly acting as though neither bound was set.
+    if (arrival_from_time.is_some() || arrival_to_time.is_some()) && stops_at.len() != 1 {
         return Err((
             StatusCode::BAD_REQUEST,
-            "destination_from and destination_to require destination to be set".to_string(),
+            "arrival_from and arrival_to require stops_at to name exactly one station".to_string(),
         ));
     }
     let limit = normalize_limit(params.limit.as_deref())?;
@@ -399,10 +438,10 @@ async fn get_trains_search(
         service_date,
         scheduled_from,
         origin.as_deref(),
-        destination.as_deref(),
+        &stops_at,
         to_time,
-        destination_from_time,
-        destination_to_time,
+        arrival_from_time,
+        arrival_to_time,
         after.as_ref(),
         limit,
     )
@@ -629,7 +668,10 @@ mod db_tests {
         let pool = connect().await;
         let (status, body) = get(&pool, "/trains/search?station=NOTACRS").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("station"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("station"),
+            "400 body should name the field: {body}"
+        );
     }
 
     #[tokio::test]
@@ -639,41 +681,67 @@ mod db_tests {
         let pool = connect().await;
         let (status, body) = get(&pool, "/trains/search?station=ZRB&from=half+past+eight").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("from"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("from"),
+            "400 body should name the field: {body}"
+        );
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_destination_from_without_destination_is_a_400() {
+    async fn trains_search_arrival_from_without_any_stops_at_is_a_400() {
         let pool = connect().await;
-        let (status, body) = get(&pool, "/trains/search?station=ZRB&destination_from=09:00").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB&arrival_from=09:00").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("destination"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("stops_at"),
+            "400 body should name the field: {body}"
+        );
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_destination_to_without_destination_is_a_400() {
+    async fn trains_search_arrival_to_without_any_stops_at_is_a_400() {
         let pool = connect().await;
-        let (status, _) = get(&pool, "/trains/search?station=ZRB&destination_to=09:00").await;
+        let (status, _) = get(&pool, "/trains/search?station=ZRB&arrival_to=09:00").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_malformed_destination_from_is_a_400() {
+    async fn trains_search_arrival_from_with_two_stops_at_entries_is_a_400() {
+        // The 2+-entries companion to the zero-entries case above: once
+        // `stops_at` names more than one station there is no single
+        // well-defined calling point left to scope "arrival" to either.
         let pool = connect().await;
         let (status, body) = get(
             &pool,
-            "/trains/search?station=ZRB&destination=WAT&destination_from=teatime",
+            "/trains/search?station=ZRB&stops_at=WAT&stops_at=BRI&arrival_from=09:00",
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(
-            body.contains("destination_from"),
+            body.contains("stops_at"),
+            "400 body should name the field: {body}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_malformed_arrival_from_is_a_400() {
+        let pool = connect().await;
+        let (status, body) = get(
+            &pool,
+            "/trains/search?station=ZRB&stops_at=WAT&arrival_from=teatime",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("arrival_from"),
             "400 body should name the field: {body}"
         );
     }
@@ -687,7 +755,10 @@ mod db_tests {
 
         let (status, body) = get(&pool, "/trains/search?station=ZRB&after=!!!not-base64!!!").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("after"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("after"),
+            "400 body should name the field: {body}"
+        );
 
         let (status, _) = get(&pool, "/trains/search?station=ZRB&after=bm9uc2Vuc2U").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -706,7 +777,10 @@ mod db_tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, body) = get(&pool, "/trains/search?station=ZRB&limit=lots").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("limit"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("limit"),
+            "400 body should name the field: {body}"
+        );
 
         let (status, body) = get(&pool, "/trains/search?station=ZRB&limit=99999").await;
         assert_eq!(
@@ -714,7 +788,11 @@ mod db_tests {
             StatusCode::OK,
             "an over-large limit is clamped to MAX_SEARCH_LIMIT, never rejected"
         );
-        assert_eq!(results(&body).len(), 2, "the fixture only has two future rows");
+        assert_eq!(
+            results(&body).len(),
+            2,
+            "the fixture only has two future rows"
+        );
 
         delete_today(&pool).await;
     }
@@ -787,7 +865,10 @@ mod db_tests {
         );
         assert_eq!(rows[0]["originCrs"], "PAD");
         assert_eq!(rows[0]["destinationCrs"], "WAT");
-        assert!(rows[0].get("origin_crs").is_none(), "no stray snake_case field");
+        assert!(
+            rows[0].get("origin_crs").is_none(),
+            "no stray snake_case field"
+        );
 
         delete_today(&pool).await;
     }
@@ -868,139 +949,221 @@ mod db_tests {
         delete_today(&pool).await;
     }
 
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_applies_origin_destination_and_time_filters_together() {
-        let pool = connect().await;
-        seed_today(&pool, "ZRB").await;
+    /// Three schedules sharing the required station `ZRB` but with varying
+    /// calling points beyond it, built to discriminate `stops_at`'s
+    /// ALL-of-N membership check from a plain single-station filter:
+    ///
+    /// * `T51001` calls `ZRB`, `AAA`, `BBB` AND `CCC`.
+    /// * `T51002` calls `ZRB`, `AAA` and `BBB`, but NOT `CCC`.
+    /// * `T51003` calls `ZRB` and `AAA` only, from a DIFFERENT true origin
+    ///   (`PAD`, not `SWA`) -- lets a `stops_at` test double as an
+    ///   `origin`-independence check without a second fixture.
+    ///
+    /// Every row's `destination_crs` is `EEE` -- none of `AAA`/`BBB`/`CCC`
+    /// is any of these schedules' TRUE destination, which is the load-
+    /// bearing fact `trains_search_stops_at_single_entry_matches_regardless_of_true_destination`
+    /// exists to exploit: the deleted `destination` filter could never have
+    /// matched any of these trains on `AAA`, but `stops_at` does.
+    async fn seed_stops_at(pool: &PgPool, station_crs: &str) {
+        delete_today(pool).await;
+        let today = chrono::Utc::now().date_naive();
         let (_, soon, later) = relative_times();
-        let uri = format!(
-            "/trains/search?station=ZRB&origin=SWA&destination=BRI&from={}&to={}",
-            soon.format("%H:%M"),
-            later.format("%H:%M")
-        );
-        let (status, body) = get(&pool, &uri).await;
-        assert_eq!(status, StatusCode::OK);
-        let rows = results(&body);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["uid"], "C10002");
-        delete_today(&pool).await;
+        let five = chrono::Duration::minutes(5);
+        for (train_uid, true_origin_crs, calling_points) in [
+            (
+                "T51001",
+                "SWA",
+                vec![
+                    (station_crs, soon),
+                    ("AAA", soon + five),
+                    ("BBB", soon + five * 2),
+                    ("CCC", soon + five * 3),
+                ],
+            ),
+            (
+                "T51002",
+                "SWA",
+                vec![
+                    (station_crs, soon + five * 4),
+                    ("AAA", soon + five * 5),
+                    ("BBB", soon + five * 6),
+                ],
+            ),
+            (
+                "T51003",
+                "PAD",
+                vec![(station_crs, later), ("AAA", later + five)],
+            ),
+        ] {
+            for (origin_crs, scheduled) in calling_points {
+                sqlx::query(
+                    "INSERT INTO schedule_destination_departures \
+                        (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+                     VALUES ($1, $2, $3, $4, $5, $6)",
+                )
+                .bind(today)
+                .bind("EEE")
+                .bind(scheduled)
+                .bind(train_uid)
+                .bind(origin_crs)
+                .bind(true_origin_crs)
+                .execute(pool)
+                .await
+                .expect("seed stops_at fixture row");
+            }
+        }
     }
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_filters_by_destination_arrival_independent_of_from_to() {
+    async fn trains_search_stops_at_requires_all_listed_calling_points_all_of_n() {
         let pool = connect().await;
-        delete_today(&pool).await;
-        let today = chrono::Utc::now().date_naive();
-        let (_, soon, later) = relative_times();
-        // Both rows share the SAME scheduled (station) time, `soon` -- so
-        // only destination_from/destination_to, not from/to, can tell them
-        // apart. Their destination_arrival values reuse `soon`/`later`
-        // themselves (rather than adding further offsets) so this stays
-        // inside relative_times()'s own "at least an hour before midnight"
-        // guarantee.
-        for (train_uid, destination_arrival) in [("C90001", soon), ("C90002", later)] {
-            sqlx::query(
-                "INSERT INTO schedule_destination_departures \
-                    (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs, destination_arrival) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            )
-            .bind(today)
-            .bind("WAT")
-            .bind(soon)
-            .bind(train_uid)
-            .bind("ZRB")
-            .bind(Option::<&str>::None)
-            .bind(destination_arrival)
-            .execute(&pool)
-            .await
-            .expect("seed fixture row");
-        }
+        seed_stops_at(&pool, "ZRB").await;
 
-        let uri = format!(
-            "/trains/search?station=ZRB&destination=WAT&destination_from={}&destination_to={}",
-            later.format("%H:%M"),
-            later.format("%H:%M"),
-        );
-        let (status, body) = get(&pool, &uri).await;
-        assert_eq!(status, StatusCode::OK);
-        let rows = results(&body);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["uid"], "C90002");
-        assert_eq!(
-            rows[0]["destinationArrival"],
-            later.format("%H:%M").to_string(),
-            "the camelCase destinationArrival field must reach the actual HTTP response, \
-             trimmed to HH:MM like every other rendered time on this route"
-        );
-
-        delete_today(&pool).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_origin_and_destination_are_independent_of_each_other() {
-        // The load-bearing new-behavior test: origin=PAD alone must match
-        // BOTH rows below, even though they go to different destinations --
-        // proving `origin` doesn't silently also constrain `destination`.
-        // `seed_today` only has one future PAD-origin row, so a fixture
-        // built from it can't discriminate this: a one-row, one-destination
-        // result is equally consistent with `origin` secretly also fixing
-        // the destination. This test therefore seeds its own two-row,
-        // same-origin/different-destination fixture inline, rather than
-        // extending `seed_today` and disturbing the exact future-row counts
-        // several other tests assert against that shared fixture.
-        let pool = connect().await;
-        delete_today(&pool).await;
-        let today = chrono::Utc::now().date_naive();
-        let (_, soon, later) = relative_times();
-        for (scheduled, train_uid, destination_crs) in
-            [(soon, "C20001", "WAT"), (later, "C20002", "BRI")]
-        {
-            sqlx::query(
-                "INSERT INTO schedule_destination_departures \
-                    (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
-                 VALUES ($1, $2, $3, $4, $5, $6)",
-            )
-            .bind(today)
-            .bind(destination_crs)
-            .bind(scheduled)
-            .bind(train_uid)
-            .bind("ZRB")
-            .bind(Some("PAD"))
-            .execute(&pool)
-            .await
-            .expect("seed fixture row");
-        }
-
-        let (status, body) = get(&pool, "/trains/search?station=ZRB&origin=PAD").await;
+        let (status, body) = get(
+            &pool,
+            "/trains/search?station=ZRB&stops_at=AAA&stops_at=CCC",
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         let rows = results(&body);
         assert_eq!(
             rows.len(),
-            2,
-            "both rows true-originate at PAD despite different destinations: {rows:?}"
+            1,
+            "T51002 calls AAA but not CCC, and must be excluded even though it partially matches: {rows:?}"
         );
-        let uids: std::collections::BTreeSet<&str> =
-            rows.iter().map(|row| row["uid"].as_str().unwrap()).collect();
-        assert_eq!(
-            uids,
-            std::collections::BTreeSet::from(["C20001", "C20002"]),
-            "both PAD-origin rows must come back regardless of their differing destinations"
-        );
-        let destinations: std::collections::BTreeSet<&str> = rows
+        assert_eq!(rows[0]["uid"], "T51001");
+
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_stops_at_single_entry_matches_regardless_of_true_destination() {
+        let pool = connect().await;
+        seed_stops_at(&pool, "ZRB").await;
+
+        let (status, body) = get(&pool, "/trains/search?station=ZRB&stops_at=AAA").await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = results(&body);
+        let uids: std::collections::BTreeSet<&str> = rows
             .iter()
-            .map(|row| row["destinationCrs"].as_str().unwrap())
+            .map(|row| row["uid"].as_str().unwrap())
             .collect();
         assert_eq!(
-            destinations,
-            std::collections::BTreeSet::from(["WAT", "BRI"]),
-            "origin=PAD must not silently also constrain destination"
+            uids,
+            std::collections::BTreeSet::from(["T51001", "T51002", "T51003"]),
+            "every schedule calling at AAA must match, even though NONE of them terminates \
+             there (their true destination is EEE): {rows:?}"
         );
+        for row in &rows {
+            assert_eq!(
+                row["destinationCrs"], "EEE",
+                "stops_at=AAA matched a schedule whose true destination is EEE, not AAA -- \
+                 proving this is not a disguised true-destination filter"
+            );
+        }
+
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_combines_origin_stops_at_and_time_filters_together() {
+        let pool = connect().await;
+        seed_stops_at(&pool, "ZRB").await;
+        let (_, soon, later) = relative_times();
+        let five = chrono::Duration::minutes(5);
+        // T51001 (SWA, scheduled `soon`) and T51002 (SWA, scheduled
+        // `soon + 4*5m`) both call AAA and share true_origin SWA; the
+        // `from` bound below excludes T51001 by time, and T51003's
+        // different true_origin (PAD) is what origin=SWA excludes it on.
+        let uri = format!(
+            "/trains/search?station=ZRB&origin=SWA&stops_at=AAA&from={}&to={}",
+            (soon + five * 4).format("%H:%M"),
+            later.format("%H:%M"),
+        );
+        let (status, body) = get(&pool, &uri).await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = results(&body);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["uid"], "T51002");
+        delete_today(&pool).await;
+    }
+
+    /// Two schedules sharing the required station `ZRB`, both also calling
+    /// at the INTERMEDIATE point `OXF` (neither's true destination -- both
+    /// terminate at `BHM`) at the SAME `scheduled` (station) time, but with
+    /// DIFFERENT arrivals at `OXF` itself -- so only `arrival_from`/
+    /// `arrival_to` scoped to `OXF`'s own `calling_point_arrival`, never
+    /// `scheduled`/`to` (station-scoped) nor the schedule-level
+    /// `destination_arrival` (BHM-scoped), can tell them apart.
+    async fn seed_stops_at_arrival(pool: &PgPool, station_crs: &str) {
+        delete_today(pool).await;
+        let today = chrono::Utc::now().date_naive();
+        let (_, soon, later) = relative_times();
+        for (train_uid, oxf_arrival) in [("T52001", soon), ("T52002", later)] {
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                    (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs, calling_point_arrival) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            )
+            .bind(today)
+            .bind("BHM")
+            .bind(soon)
+            .bind(train_uid)
+            .bind(station_crs)
+            .bind(Option::<&str>::None)
+            .bind(Option::<chrono::NaiveTime>::None)
+            .execute(pool)
+            .await
+            .expect("seed the station row");
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                    (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs, calling_point_arrival) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            )
+            .bind(today)
+            .bind("BHM")
+            .bind(soon)
+            .bind(train_uid)
+            .bind("OXF")
+            .bind(Option::<&str>::None)
+            .bind(oxf_arrival)
+            .execute(pool)
+            .await
+            .expect("seed the OXF row");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_stop_arrival_filters_by_the_named_intermediate_calling_points_own_arrival()
+     {
+        let pool = connect().await;
+        seed_stops_at_arrival(&pool, "ZRB").await;
+        let (_, _, later) = relative_times();
+
+        let uri = format!(
+            "/trains/search?station=ZRB&stops_at=OXF&arrival_from={}&arrival_to={}",
+            later.format("%H:%M"),
+            later.format("%H:%M"),
+        );
+        let (status, body) = get(&pool, &uri).await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = results(&body);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["uid"], "T52002");
+        assert_eq!(
+            rows[0]["destinationCrs"], "BHM",
+            "OXF is NOT this schedule's true destination -- the arrival filter matched OXF's \
+             OWN arrival, not BHM's destination_arrival"
+        );
+
         delete_today(&pool).await;
     }
 
@@ -1085,8 +1248,7 @@ mod db_tests {
             chrono::NaiveTime::from_hms_opt(t.hour(), t.minute(), 0)
                 .expect("valid time from valid hour/minute")
         };
-        let (gap_time, wrapped) =
-            london_time.overflowing_sub_signed(chrono::Duration::minutes(20));
+        let (gap_time, wrapped) = london_time.overflowing_sub_signed(chrono::Duration::minutes(20));
         assert!(
             wrapped == 0 && london_time >= chrono::NaiveTime::from_hms_opt(0, 20, 0).unwrap(),
             "this test needs at least 20 minutes since London midnight; re-run outside \
@@ -1143,7 +1305,10 @@ mod db_tests {
         let pool = connect().await;
         let (status, body) = get(&pool, "/trains/search?station=ZRB&date=not-a-date").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("date"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("date"),
+            "400 body should name the field: {body}"
+        );
     }
 
     #[tokio::test]
@@ -1159,19 +1324,31 @@ mod db_tests {
 
         let (status, body) = get(
             &pool,
-            &format!("/trains/search?station=ZRB&date={}", too_far_future.format("%Y-%m-%d")),
+            &format!(
+                "/trains/search?station=ZRB&date={}",
+                too_far_future.format("%Y-%m-%d")
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("date"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("date"),
+            "400 body should name the field: {body}"
+        );
 
         let (status, body) = get(
             &pool,
-            &format!("/trains/search?station=ZRB&date={}", too_far_past.format("%Y-%m-%d")),
+            &format!(
+                "/trains/search?station=ZRB&date={}",
+                too_far_past.format("%Y-%m-%d")
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("date"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("date"),
+            "400 body should name the field: {body}"
+        );
     }
 
     #[tokio::test]
@@ -1185,14 +1362,12 @@ mod db_tests {
         let edge_future = today + chrono::Duration::days(7);
         let edge_past = today - chrono::Duration::days(7);
 
-        sqlx::query(
-            "DELETE FROM schedule_destination_departures WHERE service_date IN ($1, $2)",
-        )
-        .bind(edge_future)
-        .bind(edge_past)
-        .execute(&pool)
-        .await
-        .expect("cleanup edge-date fixtures");
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date IN ($1, $2)")
+            .bind(edge_future)
+            .bind(edge_past)
+            .execute(&pool)
+            .await
+            .expect("cleanup edge-date fixtures");
 
         for (date, uid) in [(edge_future, "C30001"), (edge_past, "C30002")] {
             sqlx::query(
@@ -1212,23 +1387,28 @@ mod db_tests {
 
             let (status, body) = get(
                 &pool,
-                &format!("/trains/search?station=ZRB&date={}", date.format("%Y-%m-%d")),
+                &format!(
+                    "/trains/search?station=ZRB&date={}",
+                    date.format("%Y-%m-%d")
+                ),
             )
             .await;
-            assert_eq!(status, StatusCode::OK, "exactly 7 days out must be inside the window: {body}");
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "exactly 7 days out must be inside the window: {body}"
+            );
             let rows = results(&body);
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0]["uid"], uid);
         }
 
-        sqlx::query(
-            "DELETE FROM schedule_destination_departures WHERE service_date IN ($1, $2)",
-        )
-        .bind(edge_future)
-        .bind(edge_past)
-        .execute(&pool)
-        .await
-        .expect("cleanup edge-date fixtures");
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE service_date IN ($1, $2)")
+            .bind(edge_future)
+            .bind(edge_past)
+            .execute(&pool)
+            .await
+            .expect("cleanup edge-date fixtures");
     }
 
     #[tokio::test]
@@ -1268,7 +1448,10 @@ mod db_tests {
 
         let (status, body) = get(
             &pool,
-            &format!("/trains/search?station=ZRB&date={}", tomorrow.format("%Y-%m-%d")),
+            &format!(
+                "/trains/search?station=ZRB&date={}",
+                tomorrow.format("%Y-%m-%d")
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -1380,12 +1563,12 @@ mod db_tests {
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_rejects_an_unrecognized_query_parameter_instead_of_silently_ignoring_it()
     {
-        // Root-cause regression for a bug reported as "destinationArrivalFrom/
-        // destinationArrivalTo are accepted but never filter": those names
-        // don't exist on `TrainSearchParams` at all -- the real fields are
-        // snake_case `destination_from`/`destination_to`, exactly like every
-        // other query parameter this route accepts (`from`, `to`, `origin`,
-        // `destination`...). Before `#[serde(deny_unknown_fields)]` was added
+        // Root-cause regression for a bug reported as "arrivalFrom/
+        // arrivalTo are accepted but never filter": those names don't exist
+        // on `TrainSearchParams` at all -- the real fields are snake_case
+        // `arrival_from`/`arrival_to`, exactly like every other query
+        // parameter this route accepts (`from`, `to`, `origin`,
+        // `stops_at`...). Before `#[serde(deny_unknown_fields)]` was added
         // to `TrainSearchParams`, axum's `Query` extractor silently dropped
         // any parameter name it didn't recognize -- so a caller who typos or
         // guesses the wrong casing for ANY filter (not just this one) gets a
@@ -1393,36 +1576,15 @@ mod db_tests {
         // filter never applied. That is precisely the "silently accepted,
         // zero effect" failure mode this file's own doc comment already
         // rejects for malformed VALUES (see `MAX_SEARCH_LIMIT`'s doc comment
-        // and the `destination_from`/`destination_to`-without-`destination`
+        // and the `arrival_from`/`arrival_to`-without-exactly-one-`stops_at`
         // 400 above) -- this test extends the same posture to malformed
         // (unrecognized) parameter NAMES.
         let pool = connect().await;
-        delete_today(&pool).await;
-        let today = chrono::Utc::now().date_naive();
-        let (_, soon, later) = relative_times();
-        // Seed one row inside the requested window and one well outside it,
-        // so a silently-ignored filter is distinguishable from a correctly-
-        // rejected request: the old behavior returned 200 with BOTH rows.
-        for (train_uid, destination_arrival) in [("D90001", soon), ("D90002", later)] {
-            sqlx::query(
-                "INSERT INTO schedule_destination_departures \
-                    (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs, destination_arrival) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            )
-            .bind(today)
-            .bind("WAT")
-            .bind(soon)
-            .bind(train_uid)
-            .bind("ZRB")
-            .bind(Option::<&str>::None)
-            .bind(destination_arrival)
-            .execute(&pool)
-            .await
-            .expect("seed fixture row");
-        }
+        seed_today(&pool, "ZRB").await;
+        let (_, _, later) = relative_times();
 
         let uri = format!(
-            "/trains/search?station=ZRB&destination=WAT&destinationArrivalFrom={}&destinationArrivalTo={}",
+            "/trains/search?station=ZRB&arrivalFrom={}&arrivalTo={}",
             later.format("%H:%M"),
             later.format("%H:%M"),
         );
@@ -1433,7 +1595,7 @@ mod db_tests {
             "an unrecognized query parameter name must 400, not silently no-op: {body}"
         );
         assert!(
-            body.contains("destinationArrivalFrom"),
+            body.contains("arrivalFrom"),
             "the 400 body should name the offending parameter: {body}"
         );
 
@@ -1457,7 +1619,10 @@ mod db_tests {
 
         let (status, body) = get(
             &pool,
-            &format!("/trains/search?station=ZRB&date={}", target.format("%Y-%m-%d")),
+            &format!(
+                "/trains/search?station=ZRB&date={}",
+                target.format("%Y-%m-%d")
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
