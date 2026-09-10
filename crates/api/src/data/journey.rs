@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -27,6 +27,16 @@ struct RawCallingPoint {
     kind: schedule_query::CallingPointKind,
     booked_arrival: Option<chrono::NaiveTime>,
     booked_departure: Option<chrono::NaiveTime>,
+    /// Mirrors `schedule_matching::ScheduleCallingPointDto::day_offset` /
+    /// `schedule_query::CallingPoint::day_offset` -- how many calendar days
+    /// past `service_date` this calling point's booked times actually fall
+    /// on (a real overnight service crosses midnight mid-schedule; see that
+    /// field's own doc comment). `#[serde(default)]` so a `trains.calling_points`
+    /// row written before this field existed still deserializes, as `0`
+    /// (the previous, buggy "always same day" behavior) rather than
+    /// failing outright.
+    #[serde(default)]
+    day_offset: u8,
 }
 
 /// One calling point of a train's journey, booked schedule merged with the
@@ -49,14 +59,28 @@ pub struct JourneyStop {
 }
 
 impl JourneyStop {
-    fn from_calling_point(cp: &RawCallingPoint, crs: Option<String>, service_date: NaiveDate) -> Self {
+    fn from_calling_point(
+        cp: &RawCallingPoint,
+        crs: Option<String>,
+        service_date: NaiveDate,
+    ) -> Self {
+        // `day_offset` calendar days past `service_date` -- see
+        // `RawCallingPoint::day_offset`'s own doc comment for why this
+        // can't just be `service_date` unconditionally: a real overnight
+        // service's post-midnight calling points are really the NEXT
+        // calendar day.
+        let calling_point_date = service_date + Duration::days(cp.day_offset as i64);
         Self {
             crs,
             name: None, // filled in by a batch station-name pass in `build_journey_stops`
             tiploc: Some(cp.tiploc.clone()),
             kind: Some(cp.kind),
-            scheduled_arrival: cp.booked_arrival.and_then(|t| london_to_utc(service_date.and_time(t))),
-            scheduled_departure: cp.booked_departure.and_then(|t| london_to_utc(service_date.and_time(t))),
+            scheduled_arrival: cp
+                .booked_arrival
+                .and_then(|t| london_to_utc(calling_point_date.and_time(t))),
+            scheduled_departure: cp
+                .booked_departure
+                .and_then(|t| london_to_utc(calling_point_date.and_time(t))),
             actual_arrival: None,
             actual_departure: None,
             last_event_type: None,
@@ -91,7 +115,9 @@ pub async fn build_journey_stops(
                 .collect()
         }
         None => {
-            let rows = queries::list_calling_point_departures_for_train(pool, train_uid, service_date).await?;
+            let rows =
+                queries::list_calling_point_departures_for_train(pool, train_uid, service_date)
+                    .await?;
             if rows.is_empty() {
                 return Ok(None);
             }
@@ -102,18 +128,25 @@ pub async fn build_journey_stops(
                     name: None,
                     tiploc: None,
                     kind: Some(
-                        if row
-                            .true_origin_crs
-                            .as_deref()
-                            .is_some_and(|true_origin| true_origin.eq_ignore_ascii_case(&row.origin_crs))
-                        {
+                        if row.true_origin_crs.as_deref().is_some_and(|true_origin| {
+                            true_origin.eq_ignore_ascii_case(&row.origin_crs)
+                        }) {
                             schedule_query::CallingPointKind::Origin
                         } else {
                             schedule_query::CallingPointKind::Intermediate
                         },
                     ),
                     scheduled_arrival: None,
-                    scheduled_departure: london_to_utc(service_date.and_time(row.scheduled)),
+                    // `row.day_offset` -- see `queries::CallingPointDepartureRow::day_offset`'s
+                    // own doc comment -- shifts the base date forward for a
+                    // calling point that falls on a calendar day AFTER
+                    // `service_date` (a real overnight service). Same fix as
+                    // the `calling_points_json` branch above, for this
+                    // fallback source.
+                    scheduled_departure: london_to_utc(
+                        (service_date + Duration::days(row.day_offset as i64))
+                            .and_time(row.scheduled),
+                    ),
                     actual_arrival: None,
                     actual_departure: None,
                     last_event_type: None,
@@ -245,9 +278,10 @@ mod db_tests {
     async fn build_journey_stops_from_calling_points_json_resolves_tiploc_to_crs_and_kind() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
-        let trains_id = crate::data::trains::find_or_create_train(&pool, "TEST-JRN-CP", service_date)
-            .await
-            .expect("find_or_create_train");
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-CP", service_date)
+                .await
+                .expect("find_or_create_train");
 
         crate::data::queries::upsert_stanox_crs(
             &pool,
@@ -290,17 +324,29 @@ mod db_tests {
             }
         ]);
 
-        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-CP", service_date, Some(&calling_points))
-            .await
-            .expect("build_journey_stops")
-            .expect("Some stops from calling_points_json");
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-CP",
+            service_date,
+            Some(&calling_points),
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops from calling_points_json");
 
         assert_eq!(stops.len(), 2);
         assert_eq!(stops[0].crs.as_deref(), Some("EUS"));
-        assert_eq!(stops[0].kind, Some(schedule_query::CallingPointKind::Origin));
+        assert_eq!(
+            stops[0].kind,
+            Some(schedule_query::CallingPointKind::Origin)
+        );
         assert!(stops[0].scheduled_departure.is_some());
         assert_eq!(stops[1].crs.as_deref(), Some("CRE"));
-        assert_eq!(stops[1].kind, Some(schedule_query::CallingPointKind::Terminate));
+        assert_eq!(
+            stops[1].kind,
+            Some(schedule_query::CallingPointKind::Terminate)
+        );
         assert!(stops[1].scheduled_arrival.is_some());
 
         sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-%'")
@@ -318,12 +364,14 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 build_journey_stops_falls_back_to_schedule_destination_departures_and_appends_terminus \
                 -- --ignored --test-threads=1`"]
-    async fn build_journey_stops_falls_back_to_schedule_destination_departures_and_appends_terminus() {
+    async fn build_journey_stops_falls_back_to_schedule_destination_departures_and_appends_terminus()
+     {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
-        let trains_id = crate::data::trains::find_or_create_train(&pool, "TEST-JRN-FB", service_date)
-            .await
-            .expect("find_or_create_train");
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-FB", service_date)
+                .await
+                .expect("find_or_create_train");
         sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-FB'")
             .execute(&pool)
             .await
@@ -336,6 +384,7 @@ mod db_tests {
                     service_date,
                     destination_crs: "WAT".to_string(),
                     scheduled: "08:00:00".parse().unwrap(),
+                    day_offset: 0,
                     train_uid: "TEST-JRN-FB".to_string(),
                     origin_crs: "RDG".to_string(),
                     true_origin_crs: Some("RDG".to_string()),
@@ -345,6 +394,7 @@ mod db_tests {
                     service_date,
                     destination_crs: "WAT".to_string(),
                     scheduled: "08:20:00".parse().unwrap(),
+                    day_offset: 0,
                     train_uid: "TEST-JRN-FB".to_string(),
                     origin_crs: "SLO".to_string(),
                     true_origin_crs: Some("RDG".to_string()),
@@ -362,12 +412,24 @@ mod db_tests {
 
         assert_eq!(stops.len(), 3, "RDG + SLO + synthetic WAT terminus");
         assert_eq!(stops[0].crs.as_deref(), Some("RDG"));
-        assert_eq!(stops[0].kind, Some(schedule_query::CallingPointKind::Origin));
+        assert_eq!(
+            stops[0].kind,
+            Some(schedule_query::CallingPointKind::Origin)
+        );
         assert_eq!(stops[1].crs.as_deref(), Some("SLO"));
-        assert_eq!(stops[1].kind, Some(schedule_query::CallingPointKind::Intermediate));
+        assert_eq!(
+            stops[1].kind,
+            Some(schedule_query::CallingPointKind::Intermediate)
+        );
         assert_eq!(stops[2].crs.as_deref(), Some("WAT"));
-        assert_eq!(stops[2].kind, Some(schedule_query::CallingPointKind::Terminate));
-        assert!(stops[2].scheduled_arrival.is_none(), "no arrival time known from this source yet");
+        assert_eq!(
+            stops[2].kind,
+            Some(schedule_query::CallingPointKind::Terminate)
+        );
+        assert!(
+            stops[2].scheduled_arrival.is_none(),
+            "no arrival time known from this source yet"
+        );
 
         sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-FB'")
             .execute(&pool)
@@ -387,13 +449,16 @@ mod db_tests {
     async fn build_journey_stops_returns_none_when_neither_source_has_anything() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
-        let trains_id = crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NONE", service_date)
-            .await
-            .expect("find_or_create_train");
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-NONE'")
-            .execute(&pool)
-            .await
-            .ok();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NONE", service_date)
+                .await
+                .expect("find_or_create_train");
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-NONE'",
+        )
+        .execute(&pool)
+        .await
+        .ok();
 
         let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-NONE", service_date, None)
             .await
@@ -415,9 +480,10 @@ mod db_tests {
     async fn build_journey_stops_overlays_a_departure_event_with_correct_delay_sign() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
-        let trains_id = crate::data::trains::find_or_create_train(&pool, "TEST-JRN-OV", service_date)
-            .await
-            .expect("find_or_create_train");
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-OV", service_date)
+                .await
+                .expect("find_or_create_train");
         sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-OV'")
             .execute(&pool)
             .await
@@ -429,6 +495,7 @@ mod db_tests {
                 service_date,
                 destination_crs: "WAT".to_string(),
                 scheduled: "08:00:00".parse().unwrap(),
+                day_offset: 0,
                 train_uid: "TEST-JRN-OV".to_string(),
                 origin_crs: "RDG".to_string(),
                 true_origin_crs: Some("RDG".to_string()),
@@ -461,13 +528,27 @@ mod db_tests {
             .expect("build_journey_stops")
             .expect("Some stops");
 
-        assert_eq!(stops.len(), 2, "RDG + synthetic WAT terminus (destination_crs differs from last row)");
+        assert_eq!(
+            stops.len(),
+            2,
+            "RDG + synthetic WAT terminus (destination_crs differs from last row)"
+        );
         assert_eq!(stops[0].crs.as_deref(), Some("RDG"));
-        assert_eq!(stops[0].actual_departure, "2026-09-08T07:04:00Z".parse().ok());
+        assert_eq!(
+            stops[0].actual_departure,
+            "2026-09-08T07:04:00Z".parse().ok()
+        );
         assert_eq!(stops[0].last_event_type.as_deref(), Some("DEPARTURE"));
-        assert_eq!(stops[0].delay_minutes, Some(4), "actual 4 minutes after this event's own planned time");
+        assert_eq!(
+            stops[0].delay_minutes,
+            Some(4),
+            "actual 4 minutes after this event's own planned time"
+        );
         assert_eq!(stops[1].crs.as_deref(), Some("WAT"));
-        assert_eq!(stops[1].kind, Some(schedule_query::CallingPointKind::Terminate));
+        assert_eq!(
+            stops[1].kind,
+            Some(schedule_query::CallingPointKind::Terminate)
+        );
 
         sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
             .bind(trains_id)
@@ -501,12 +582,14 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 build_journey_stops_overlays_an_arrival_event_pairing_arrival_with_arrival_not_departure \
                 -- --ignored --test-threads=1`"]
-    async fn build_journey_stops_overlays_an_arrival_event_pairing_arrival_with_arrival_not_departure() {
+    async fn build_journey_stops_overlays_an_arrival_event_pairing_arrival_with_arrival_not_departure()
+     {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
-        let trains_id = crate::data::trains::find_or_create_train(&pool, "TEST-JRN-ARR", service_date)
-            .await
-            .expect("find_or_create_train");
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-ARR", service_date)
+                .await
+                .expect("find_or_create_train");
 
         crate::data::queries::upsert_stanox_crs(
             &pool,
@@ -569,18 +652,21 @@ mod db_tests {
         .await
         .expect("seed train_movement_events");
 
-        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-ARR", service_date, Some(&calling_points))
-            .await
-            .expect("build_journey_stops")
-            .expect("Some stops from calling_points_json");
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-ARR",
+            service_date,
+            Some(&calling_points),
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops from calling_points_json");
 
         assert_eq!(stops.len(), 2);
         assert_eq!(stops[1].crs.as_deref(), Some("TSA"));
         assert_eq!(stops[1].last_event_type.as_deref(), Some("ARRIVAL"));
-        assert_eq!(
-            stops[1].actual_arrival,
-            "2026-09-08T09:01:00Z".parse().ok()
-        );
+        assert_eq!(stops[1].actual_arrival, "2026-09-08T09:01:00Z".parse().ok());
         assert_eq!(
             stops[1].delay_minutes,
             Some(1),
@@ -618,13 +704,16 @@ mod db_tests {
     async fn build_journey_stops_overlays_a_pass_event_setting_both_actual_times() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
-        let trains_id = crate::data::trains::find_or_create_train(&pool, "TEST-JRN-PASS", service_date)
-            .await
-            .expect("find_or_create_train");
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-PASS'")
-            .execute(&pool)
-            .await
-            .ok();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-PASS", service_date)
+                .await
+                .expect("find_or_create_train");
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-PASS'",
+        )
+        .execute(&pool)
+        .await
+        .ok();
 
         crate::data::queries::upsert_schedule_destination_departures(
             &pool,
@@ -632,6 +721,7 @@ mod db_tests {
                 service_date,
                 destination_crs: "WAT".to_string(),
                 scheduled: "08:00:00".parse().unwrap(),
+                day_offset: 0,
                 train_uid: "TEST-JRN-PASS".to_string(),
                 origin_crs: "RDG".to_string(),
                 true_origin_crs: Some("RDG".to_string()),
@@ -682,10 +772,12 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-PASS'")
-            .execute(&pool)
-            .await
-            .ok();
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-PASS'",
+        )
+        .execute(&pool)
+        .await
+        .ok();
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
             .execute(&pool)
@@ -704,13 +796,16 @@ mod db_tests {
     async fn build_journey_stops_silently_drops_an_event_whose_loc_crs_matches_no_stop() {
         let pool = connect().await;
         let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
-        let trains_id = crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NOMATCH", service_date)
-            .await
-            .expect("find_or_create_train");
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-NOMATCH'")
-            .execute(&pool)
-            .await
-            .ok();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NOMATCH", service_date)
+                .await
+                .expect("find_or_create_train");
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-NOMATCH'",
+        )
+        .execute(&pool)
+        .await
+        .ok();
 
         crate::data::queries::upsert_schedule_destination_departures(
             &pool,
@@ -718,6 +813,7 @@ mod db_tests {
                 service_date,
                 destination_crs: "WAT".to_string(),
                 scheduled: "08:00:00".parse().unwrap(),
+                day_offset: 0,
                 train_uid: "TEST-JRN-NOMATCH".to_string(),
                 origin_crs: "RDG".to_string(),
                 true_origin_crs: Some("RDG".to_string()),
@@ -754,7 +850,11 @@ mod db_tests {
             .expect("build_journey_stops")
             .expect("Some stops");
 
-        assert_eq!(stops.len(), 2, "RDG + synthetic WAT terminus, no stray 'ZZZ' stop appended");
+        assert_eq!(
+            stops.len(),
+            2,
+            "RDG + synthetic WAT terminus, no stray 'ZZZ' stop appended"
+        );
         assert_eq!(stops[0].crs.as_deref(), Some("RDG"));
         assert_eq!(stops[0].actual_arrival, None);
         assert_eq!(stops[0].actual_departure, None);
@@ -771,10 +871,12 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
-        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-NOMATCH'")
-            .execute(&pool)
-            .await
-            .ok();
+        sqlx::query(
+            "DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JRN-NOMATCH'",
+        )
+        .execute(&pool)
+        .await
+        .ok();
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
             .execute(&pool)

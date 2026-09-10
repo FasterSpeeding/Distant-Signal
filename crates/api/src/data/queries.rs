@@ -942,6 +942,16 @@ pub struct ScheduleDestinationDeparturesRow {
     pub service_date: chrono::NaiveDate,
     pub destination_crs: String,
     pub scheduled: chrono::NaiveTime,
+    /// How many calendar days past `service_date` `scheduled` actually
+    /// falls on -- mirrors `schedule_query::DestinationDeparture::day_offset`
+    /// verbatim (this row is built directly from one, see
+    /// `schedule-reference::schedule_destination_departures_rows`). See
+    /// `schedule_query::CallingPoint::day_offset`'s own doc comment for the
+    /// live-confirmed real overnight-service example this exists for.
+    /// `#[serde(default)]` for the same rolling-deploy-safety reason
+    /// `true_origin_crs`/`destination_arrival` tolerate a missing key.
+    #[serde(default)]
+    pub day_offset: i16,
     pub train_uid: String,
     pub origin_crs: String,
     pub true_origin_crs: Option<String>,
@@ -1035,6 +1045,7 @@ pub async fn upsert_schedule_destination_departures(
     let service_dates: Vec<chrono::NaiveDate> = rows.iter().map(|r| r.service_date).collect();
     let destination_crs: Vec<&str> = rows.iter().map(|r| r.destination_crs.as_str()).collect();
     let scheduled: Vec<chrono::NaiveTime> = rows.iter().map(|r| r.scheduled).collect();
+    let day_offsets: Vec<i16> = rows.iter().map(|r| r.day_offset).collect();
     let train_uids: Vec<&str> = rows.iter().map(|r| r.train_uid.as_str()).collect();
     let origin_crs: Vec<&str> = rows.iter().map(|r| r.origin_crs.as_str()).collect();
     let true_origin_crs: Vec<Option<&str>> =
@@ -1059,13 +1070,14 @@ pub async fn upsert_schedule_destination_departures(
 
     let result = sqlx::query(
         "INSERT INTO schedule_destination_departures \
-            (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs, destination_arrival) \
-         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::text[], $5::text[], $6::text[], $7::time[]) \
+            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, destination_arrival) \
+         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[]) \
          ON CONFLICT DO NOTHING",
     )
     .bind(&service_dates)
     .bind(&destination_crs)
     .bind(&scheduled)
+    .bind(&day_offsets)
     .bind(&train_uids)
     .bind(&origin_crs)
     .bind(&true_origin_crs)
@@ -1086,25 +1098,41 @@ pub async fn upsert_schedule_destination_departures(
 pub struct CallingPointDepartureRow {
     pub origin_crs: String,
     pub scheduled: chrono::NaiveTime,
+    /// How many calendar days past `service_date` `scheduled` actually
+    /// falls on -- mirrors `schedule_query::CallingPoint::day_offset` /
+    /// `ScheduleDestinationDeparturesRow::day_offset` (see that struct's own
+    /// doc comment for the live-confirmed overnight-service example this
+    /// exists for). `journey::build_journey_stops`'s fallback branch adds
+    /// this many days to `service_date` before pairing it with `scheduled`.
+    pub day_offset: i16,
     pub true_origin_crs: Option<String>,
     pub destination_crs: Option<String>,
 }
 
 /// Every departure-bearing calling point of `train_uid`'s schedule on
-/// `service_date`, chronological. See `CallingPointDepartureRow`'s doc
-/// comment for why this exists; see the design doc §0.2 for why the
+/// `service_date`, in true schedule order. See `CallingPointDepartureRow`'s
+/// doc comment for why this exists; see the design doc §0.2 for why the
 /// schedule's own terminus is NOT among these rows (no `booked_departure`
 /// for a `Terminate` calling point) -- the caller appends it separately.
+///
+/// `ORDER BY day_offset, scheduled`, NOT bare `ORDER BY scheduled` -- a bare
+/// `NaiveTime` sort would put a real overnight service's post-midnight
+/// calling points (small `scheduled` values, e.g. `00:07`) BEFORE its
+/// pre-midnight ones (large values, e.g. `23:48`), inverting the journey
+/// timeline for exactly the schedules this whole fix targets. `day_offset`
+/// as the leading sort key restores true chronological order; this table's
+/// per-train row count is small enough (one schedule's worth of calling
+/// points) that no index change is needed for it.
 pub async fn list_calling_point_departures_for_train(
     pool: &PgPool,
     train_uid: &str,
     service_date: chrono::NaiveDate,
 ) -> Result<Vec<CallingPointDepartureRow>> {
     let rows = sqlx::query_as::<_, CallingPointDepartureRow>(
-        "SELECT origin_crs, scheduled, true_origin_crs, destination_crs \
+        "SELECT origin_crs, scheduled, day_offset, true_origin_crs, destination_crs \
          FROM schedule_destination_departures \
          WHERE train_uid = $1 AND service_date = $2 \
-         ORDER BY scheduled",
+         ORDER BY day_offset, scheduled",
     )
     .bind(train_uid)
     .bind(service_date)
@@ -3021,6 +3049,7 @@ mod schedule_destination_departures_query_tests {
             service_date,
             destination_crs: destination_crs.to_string(),
             scheduled,
+            day_offset: 0,
             train_uid: train_uid.to_string(),
             origin_crs: origin_crs.to_string(),
             destination_arrival,
@@ -3202,7 +3231,15 @@ mod schedule_destination_departures_query_tests {
         upsert_schedule_destination_departures(
             &pool,
             &[
-                row(date, "ZRD", time(8, 0), "C70001", "EUS", Some("EUS"), Some(time(11, 30))),
+                row(
+                    date,
+                    "ZRD",
+                    time(8, 0),
+                    "C70001",
+                    "EUS",
+                    Some("EUS"),
+                    Some(time(11, 30)),
+                ),
                 row(date, "ZRD", time(9, 0), "C70002", "CRE", None, None),
             ],
         )
@@ -3637,8 +3674,24 @@ mod schedule_destination_departures_query_tests {
         upsert_schedule_destination_departures(
             &pool,
             &[
-                row(date, "WAT", time(8, 0), "C80001", "RDG", None, Some(time(8, 40))),
-                row(date, "WAT", time(8, 5), "C80002", "RDG", None, Some(time(9, 20))),
+                row(
+                    date,
+                    "WAT",
+                    time(8, 0),
+                    "C80001",
+                    "RDG",
+                    None,
+                    Some(time(8, 40)),
+                ),
+                row(
+                    date,
+                    "WAT",
+                    time(8, 5),
+                    "C80002",
+                    "RDG",
+                    None,
+                    Some(time(9, 20)),
+                ),
             ],
         )
         .await
@@ -3684,7 +3737,17 @@ mod schedule_destination_departures_query_tests {
         .expect("seed fixture");
 
         let page = search_schedule_calling_point_departures(
-            &pool, "RDG", date, any_time(), None, None, None, None, None, None, 100,
+            &pool,
+            "RDG",
+            date,
+            any_time(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
         )
         .await
         .expect("search")
@@ -3782,6 +3845,7 @@ mod schedule_destination_departures_query_tests {
                     service_date,
                     destination_crs: "WAT".to_string(),
                     scheduled: "10:15:00".parse().unwrap(),
+                    day_offset: 0,
                     train_uid: "TEST-JS-CPD".to_string(),
                     origin_crs: "RDG".to_string(),
                     true_origin_crs: Some("RDG".to_string()),
@@ -3791,6 +3855,7 @@ mod schedule_destination_departures_query_tests {
                     service_date,
                     destination_crs: "WAT".to_string(),
                     scheduled: "10:32:00".parse().unwrap(),
+                    day_offset: 0,
                     train_uid: "TEST-JS-CPD".to_string(),
                     origin_crs: "SLO".to_string(),
                     true_origin_crs: Some("RDG".to_string()),
@@ -3812,6 +3877,74 @@ mod schedule_destination_departures_query_tests {
         assert_eq!(rows[1].origin_crs, "SLO");
 
         sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-JS-CPD'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// The midnight-crossing regression this whole fix targets, at the
+    /// query layer: a real overnight service's post-midnight calling point
+    /// (small `scheduled`, e.g. `00:07`, but `day_offset = 1`) must still
+    /// sort AFTER its pre-midnight calling points (large `scheduled`, e.g.
+    /// `23:48`, `day_offset = 0`) -- a bare `ORDER BY scheduled` would put
+    /// it first, inverting the journey timeline. Named after the real
+    /// live-confirmed c2c UID F49687 case (2026-09-09 investigation).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_calling_point_departures_for_train_orders_a_midnight_crossing_schedule_correctly \
+                -- --ignored --test-threads=1`"]
+    async fn list_calling_point_departures_for_train_orders_a_midnight_crossing_schedule_correctly()
+    {
+        let pool = test_pool().await;
+        let service_date: chrono::NaiveDate = "2026-09-05".parse().unwrap();
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-F49687'")
+            .execute(&pool)
+            .await
+            .ok();
+
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                ScheduleDestinationDeparturesRow {
+                    service_date,
+                    destination_crs: "SHENFLD".to_string(),
+                    scheduled: "23:48:00".parse().unwrap(),
+                    day_offset: 0,
+                    train_uid: "TEST-F49687".to_string(),
+                    origin_crs: "LIVST".to_string(),
+                    true_origin_crs: Some("LIVST".to_string()),
+                    destination_arrival: None,
+                },
+                ScheduleDestinationDeparturesRow {
+                    service_date,
+                    destination_crs: "SHENFLD".to_string(),
+                    scheduled: "00:07:00".parse().unwrap(),
+                    day_offset: 1,
+                    train_uid: "TEST-F49687".to_string(),
+                    origin_crs: "BARKING".to_string(),
+                    true_origin_crs: Some("LIVST".to_string()),
+                    destination_arrival: None,
+                },
+            ],
+        )
+        .await
+        .expect("seed schedule_destination_departures");
+
+        let rows = list_calling_point_departures_for_train(&pool, "TEST-F49687", service_date)
+            .await
+            .expect("list_calling_point_departures_for_train");
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].origin_crs, "LIVST",
+            "23:48 (day_offset 0) must sort FIRST, even though its own naive time is numerically \
+             LARGER than Barking's 00:07 -- a bare ORDER BY scheduled would get this backwards"
+        );
+        assert_eq!(rows[0].day_offset, 0);
+        assert_eq!(rows[1].origin_crs, "BARKING");
+        assert_eq!(rows[1].day_offset, 1);
+
+        sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = 'TEST-F49687'")
             .execute(&pool)
             .await
             .ok();
@@ -3897,7 +4030,10 @@ mod journey_timetable_overlay_query_tests {
             .await
             .expect("station_names_for_crs_batch");
 
-        assert!(names.contains_key("JTO"), "JTO test station should be found");
+        assert!(
+            names.contains_key("JTO"),
+            "JTO test station should be found"
+        );
         assert!(!names.contains_key("ZZZ"));
 
         sqlx::query("DELETE FROM stations WHERE crs = 'JTO'")
