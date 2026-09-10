@@ -1,6 +1,7 @@
 import { Alert, Badge, Group, Loader, Stack, Text, Tooltip } from '@mantine/core';
 import { EtaBadge } from './EtaBadge';
 import { JourneyTimeline } from './JourneyTimeline';
+import { formatTime } from '@/lib/dateFormat';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import type { TrainJourneyState } from '@/lib/types';
 
@@ -125,13 +126,36 @@ function StatusMessage({ state }: { state: TrainJourneyState }) {
     );
   }
 
-  // 'en_route' or 'completed' share the same "current position" rendering
-  // -- 'completed' is kept as a real branch even though no current
-  // trust-consumer code path produces it yet (see this plan's Global
-  // Constraints and Status note), so it's forward-compatible rather than
-  // dead code the day journey.rs gets real completion detection.
-  const mayHaveFinished =
-    state.status === 'completed' || (state.status === 'en_route' && state.nextCallingPoint === null);
+  // `'completed'` is now a REAL, backend-confirmed status
+  // (`trust_schema::journey::apply_movement`'s destination-CRS check) --
+  // an ARRIVAL event Network Rail reported at this train's own known
+  // final calling point, not an inference. It gets its own distinct,
+  // positive rendering below, entirely separate from the "may have
+  // finished" heuristic: that banner is deliberately worded as an
+  // inference and must never be reachable for a train we actually KNOW
+  // has arrived.
+  if (state.status === 'completed') {
+    const destination = state.scheduleDestinationName ?? state.scheduleDestinationCrs;
+    const terminusStop = state.journeyStops?.at(-1) ?? null;
+    const arrivalTime = terminusStop?.actualArrival ?? null;
+    return (
+      <Stack gap="sm">
+        <Alert color="green" title="Arrived" variant="light">
+          {destination
+            ? `This train has arrived at ${destination}${arrivalTime ? `, at ${formatTime(arrivalTime)}` : ''}.`
+            : 'This train has arrived at its final destination.'}
+        </Alert>
+        <Text fw={500}>Train {state.trainUid}</Text>
+        {pinSummary}
+      </Stack>
+    );
+  }
+
+  // 'en_route' with no reported next calling point is still only ever an
+  // INFERENCE, never a confirmed status -- see the Alert copy below. A
+  // genuinely confirmed arrival is handled entirely by the `'completed'`
+  // branch above and never reaches this heuristic at all.
+  const mayHaveFinished = state.status === 'en_route' && state.nextCallingPoint === null;
 
   return (
     <Stack gap="sm">

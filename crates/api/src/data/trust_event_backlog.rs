@@ -289,6 +289,19 @@ pub async fn ingest_shared_movements_batch(
         }
     };
 
+    // Step 3.5: destination_crs, batched the same way as Step 3 -- feeds
+    // confirmed-terminus-ARRIVAL detection below
+    // (`trust_schema::journey::apply_movement`'s `destination_crs` param).
+    // A read failure here is non-fatal and NOT threaded into `results`:
+    // this data only refines status detection, it never gates whether the
+    // event itself is written, so a lookup miss degrades gracefully to
+    // "destination unknown" (the same as if no schedule had ever matched)
+    // rather than failing the whole batch.
+    let destination_map =
+        crate::data::trains::destination_crs_for_trains_batch(pool, &distinct_trains_ids)
+            .await
+            .unwrap_or_default();
+
     // Step 4: derive + write, one event at a time, in original batch
     // order -- preserving both intra-batch causality (see this function's
     // own doc comment) and the existing per-event isolation for the two
@@ -320,8 +333,13 @@ pub async fn ingest_shared_movements_batch(
                     toc_id: None,
                     variation_status: event.variation_status.clone(),
                 };
-                let mut derived =
-                    journey::apply_movement(&previous, &movement, event.crs.as_deref());
+                let destination_crs = destination_map.get(&trains_id).map(String::as_str);
+                let mut derived = journey::apply_movement(
+                    &previous,
+                    &movement,
+                    event.crs.as_deref(),
+                    destination_crs,
+                );
                 if let (Some(p), Some(a), Some("LATE")) = (
                     event.planned_timestamp,
                     event.actual_timestamp,
@@ -1017,8 +1035,8 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 ingest_shared_movements_batch_falls_back_to_per_pair_find_or_create_when_the_batched_insert_fails \
                 -- --ignored --test-threads=1`"]
-    async fn ingest_shared_movements_batch_falls_back_to_per_pair_find_or_create_when_the_batched_insert_fails(
-    ) {
+    async fn ingest_shared_movements_batch_falls_back_to_per_pair_find_or_create_when_the_batched_insert_fails()
+     {
         // Forces `find_or_create_trains_batch`'s batched `INSERT ...
         // UNNEST(...)` to fail for the WHOLE batch by giving one event's
         // train_uid an embedded NUL byte -- Postgres genuinely rejects any
@@ -1108,8 +1126,8 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 ingest_shared_movements_batch_falls_back_to_per_pair_mark_resolved_when_the_batched_update_fails \
                 -- --ignored --test-threads=1`"]
-    async fn ingest_shared_movements_batch_falls_back_to_per_pair_mark_resolved_when_the_batched_update_fails(
-    ) {
+    async fn ingest_shared_movements_batch_falls_back_to_per_pair_mark_resolved_when_the_batched_update_fails()
+     {
         // Same technique as the find_or_create_trains_batch fallback test
         // above, but the NUL byte is on `train_id` instead of `train_uid`,
         // so BOTH events resolve a real trains_id via Step 1 (proving this
@@ -1177,7 +1195,10 @@ mod db_tests {
             .fetch_one(&pool)
             .await
             .expect("the good event's trains/current_state rows must exist");
-        assert_eq!(good_train_id, Some("TEST-FALLBACK-STEP2-GOOD-TID".to_string()));
+        assert_eq!(
+            good_train_id,
+            Some("TEST-FALLBACK-STEP2-GOOD-TID".to_string())
+        );
         assert_eq!(good_status, "en_route");
 
         // Step 1 (identity resolution) succeeded for the bad event too --
@@ -1194,13 +1215,12 @@ mod db_tests {
             bad_train_id, None,
             "a failed mark_train_resolved must leave train_id un-resolved, not partially written"
         );
-        let bad_current_state_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM train_current_state WHERE trains_id = $1",
-        )
-        .bind(bad_trains_id)
-        .fetch_one(&pool)
-        .await
-        .expect("count");
+        let bad_current_state_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM train_current_state WHERE trains_id = $1")
+                .bind(bad_trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count");
         assert_eq!(
             bad_current_state_count, 0,
             "an event whose resolution failed must not reach the derive/write step"
@@ -1218,8 +1238,8 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 ingest_shared_movements_batch_falls_back_to_per_id_fetch_when_the_batched_previous_state_select_fails \
                 -- --ignored --test-threads=1`"]
-    async fn ingest_shared_movements_batch_falls_back_to_per_id_fetch_when_the_batched_previous_state_select_fails(
-    ) {
+    async fn ingest_shared_movements_batch_falls_back_to_per_id_fetch_when_the_batched_previous_state_select_fails()
+     {
         // Unlike Steps 1/2, `fetch_previous_derived_states_batch`'s only
         // bound parameter is a `Vec<i64>` of ALREADY-resolved surrogate
         // trains_ids, not raw/untrusted event data -- there is no "bad
@@ -1270,25 +1290,22 @@ mod db_tests {
             delay_minutes: Some(3),
             dedup_key: "test-fallback-step3-movement-b-dedup".to_string(),
         };
-        let seed_results =
-            ingest_shared_movements_batch(&pool, &[movement_a, movement_b]).await;
+        let seed_results = ingest_shared_movements_batch(&pool, &[movement_a, movement_b]).await;
         assert!(
             seed_results.iter().all(|r| r.is_ok()),
             "seeding movements must succeed: {seed_results:?}"
         );
 
-        let (trains_a_id,): (i64,) = sqlx::query_as(
-            "SELECT id FROM trains WHERE train_uid = 'TEST-FALLBACK-STEP3-UID-A'",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("trains row for A");
-        let (trains_b_id,): (i64,) = sqlx::query_as(
-            "SELECT id FROM trains WHERE train_uid = 'TEST-FALLBACK-STEP3-UID-B'",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("trains row for B");
+        let (trains_a_id,): (i64,) =
+            sqlx::query_as("SELECT id FROM trains WHERE train_uid = 'TEST-FALLBACK-STEP3-UID-A'")
+                .fetch_one(&pool)
+                .await
+                .expect("trains row for A");
+        let (trains_b_id,): (i64,) =
+            sqlx::query_as("SELECT id FROM trains WHERE train_uid = 'TEST-FALLBACK-STEP3-UID-B'")
+                .fetch_one(&pool)
+                .await
+                .expect("trains row for B");
 
         // Arm the one-shot fault injector, then send both trains a
         // Cancellation in the SAME batch call.
@@ -1400,8 +1417,8 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 ingest_shared_movements_batch_preserves_intra_batch_causality_for_a_movement_then_cancellation_pair \
                 -- --ignored --test-threads=1`"]
-    async fn ingest_shared_movements_batch_preserves_intra_batch_causality_for_a_movement_then_cancellation_pair(
-    ) {
+    async fn ingest_shared_movements_batch_preserves_intra_batch_causality_for_a_movement_then_cancellation_pair()
+     {
         // The discriminating test the flagship
         // `ingest_shared_movements_batch_collapses_round_trips_across_a_real_batch`
         // test above claimed to be, but isn't: `journey::apply_movement`
