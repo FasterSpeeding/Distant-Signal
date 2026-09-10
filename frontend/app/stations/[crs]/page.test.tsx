@@ -30,11 +30,19 @@ vi.mock('next/headers', () => ({
 // PinToggle calls useRouter(), and unconditionally renders LoginPromptModal
 // which calls usePathname()/useSearchParams() -- the same stub set
 // app/lines/page.test.tsx documents for the same reason.
+// `notFound()` actually throws in real Next.js -- mocked to do the same
+// (rather than a bare `vi.fn()` no-op) so a test can tell "notFound()
+// halted execution" from "notFound() is a no-op and execution silently
+// fell through to a wrong-but-non-erroring result," same pattern as
+// app/train/[uid]/[date]/page.test.tsx's notFoundMock.
+const notFoundMock = vi.fn(() => {
+  throw new Error('NEXT_NOT_FOUND');
+});
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
   usePathname: () => '/stations/KGX',
   useSearchParams: () => new URLSearchParams(''),
-  notFound: vi.fn(),
+  notFound: () => notFoundMock(),
 }));
 
 function report(id: string, name: string): LineStatusReport {
@@ -273,9 +281,10 @@ describe('generateMetadata', () => {
 
   it('calls notFound() for an unknown station, matching the page component', async () => {
     vi.mocked(api.getStationName).mockResolvedValue(null);
-    const { notFound } = await import('next/navigation');
-    vi.mocked(notFound).mockClear();
-    await generateMetadata({ params: Promise.resolve({ crs: 'ZZZ' }) });
-    expect(notFound).toHaveBeenCalled();
+    notFoundMock.mockClear();
+    await expect(generateMetadata({ params: Promise.resolve({ crs: 'ZZZ' }) })).rejects.toThrow(
+      'NEXT_NOT_FOUND',
+    );
+    expect(notFoundMock).toHaveBeenCalled();
   });
 });
