@@ -253,8 +253,17 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 The nav (:144) and footer (OpenDataAttribution.tsx) were
                 already landmarked; only the middle was not. Polymorphic
                 `component` swaps the tag only -- size/px/class output is
-                unchanged. */}
-            <Container component="main" size="lg" px={0}>
+                unchanged.
+
+                `flex: 1`: pairs with `body`'s `display: flex;
+                flex-direction: column; min-height: 100vh` in
+                globals.css to make this the one growable element in the
+                column, so the footer (OpenDataAttribution, rendered
+                right after this) is pushed to the bottom of the
+                viewport on a short-content page instead of hugging the
+                content -- see globals.css's comment on that `body` rule
+                for the full sticky-footer rationale. */}
+            <Container component="main" size="lg" px={0} style={{ flex: 1 }}>
               {children}
             </Container>
             <OpenDataAttribution />
