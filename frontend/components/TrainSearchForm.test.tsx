@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TrainSearchForm } from './TrainSearchForm';
@@ -154,8 +154,8 @@ describe('TrainSearchForm', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm initialStation="man" initialOrigin="eus" initialDestination="wat" />);
 
-    fireEvent.change(screen.getByLabelText('From (optional)'), { target: { value: '09:00' } });
-    fireEvent.change(screen.getByLabelText('To (optional)'), { target: { value: '12:00' } });
+    fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
+    fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '12:00' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
     await waitFor(() =>
@@ -400,8 +400,8 @@ describe('TrainSearchForm', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm initialStation="man" initialOrigin="eus" />);
 
-    fireEvent.change(screen.getByLabelText('From (optional)'), { target: { value: '09:00' } });
-    fireEvent.change(screen.getByLabelText('To (optional)'), { target: { value: '12:00' } });
+    fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
+    fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '12:00' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
@@ -437,16 +437,16 @@ describe('TrainSearchForm', () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
-    expect(screen.queryByLabelText('Arrival from (optional)')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Arrival to (optional)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Earliest arrival (optional)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Latest arrival (optional)')).not.toBeInTheDocument();
   });
 
   it('renders the arrival-time filter once a destination is entered', () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<TrainSearchForm initialStation="MAN" initialDestination="WAT" />);
 
-    expect(screen.getByLabelText('Arrival from (optional)')).toBeInTheDocument();
-    expect(screen.getByLabelText('Arrival to (optional)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Earliest arrival (optional)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Latest arrival (optional)')).toBeInTheDocument();
   });
 
   it('sends destination_from/destination_to only when a destination is set', async () => {
@@ -454,8 +454,8 @@ describe('TrainSearchForm', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm initialStation="man" initialDestination="wat" />);
 
-    fireEvent.change(screen.getByLabelText('Arrival from (optional)'), { target: { value: '09:00' } });
-    fireEvent.change(screen.getByLabelText('Arrival to (optional)'), { target: { value: '09:30' } });
+    fireEvent.change(screen.getByLabelText('Earliest arrival (optional)'), { target: { value: '09:00' } });
+    fireEvent.change(screen.getByLabelText('Latest arrival (optional)'), { target: { value: '09:30' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
     await waitFor(() =>
@@ -470,10 +470,115 @@ describe('TrainSearchForm', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm initialStation="MAN" initialDestination="WAT" />);
 
-    fireEvent.change(screen.getByLabelText('Arrival from (optional)'), { target: { value: '09:00' } });
+    fireEvent.change(screen.getByLabelText('Earliest arrival (optional)'), { target: { value: '09:00' } });
     fireEvent.change(screen.getByPlaceholderText('e.g. Manchester or MAN'), { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
     await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+  });
+
+  // The backend silently ANDs today's implicit "already departed" floor
+  // together with any explicit `to`/`destination_to` the caller supplied
+  // (see `isNowFloorCollision`'s doc comment in TrainSearchForm.tsx). These
+  // tests pin the wall clock so "today" and "already passed" are
+  // deterministic, matching TrackTrainForm.test.tsx's own
+  // `vi.setSystemTime` convention (this file's environment runs in UTC, so
+  // the ISO instant below reads directly as the local wall-clock time).
+  describe('the now-floor-collision message', () => {
+    const FIXED_NOW = '2026-09-10T15:00:00.000Z';
+
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date(FIXED_NOW));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('explains the collision when Latest departure has already passed today', async () => {
+      vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }));
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '12:00' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+      expect(
+        await screen.findByText(
+          'Your search window has already passed today — try a later time range, remove the date filter, or search a future date.',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('explains the collision when Latest arrival has already passed today', async () => {
+      vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }));
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialDestination="WAT" />);
+
+      fireEvent.change(screen.getByLabelText('Latest arrival (optional)'), { target: { value: '12:00' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+      expect(
+        await screen.findByText(
+          'Your search window has already passed today — try a later time range, remove the date filter, or search a future date.',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('keeps the generic empty-results message for a future date with the same passed-looking time range', async () => {
+      vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }));
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialDate="2026-09-11" />);
+
+      fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '12:00' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+      expect(
+        await screen.findByText('No scheduled trains match those filters right now.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/search window has already passed/),
+      ).not.toBeInTheDocument();
+    });
+
+    it('keeps the generic empty-results message for today when no time filter was given', async () => {
+      vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }));
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+      expect(
+        await screen.findByText('No scheduled trains match those filters right now.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/search window has already passed/),
+      ).not.toBeInTheDocument();
+    });
+
+    it('keeps the generic empty-results message for today when the time range has not passed yet', async () => {
+      vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }));
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '23:00' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+      expect(
+        await screen.findByText('No scheduled trains match those filters right now.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/search window has already passed/),
+      ).not.toBeInTheDocument();
+    });
+
+    it('does not show the collision message when the search actually finds rows', async () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '12:00' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+      expect(await screen.findByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
+      expect(
+        screen.queryByText(/search window has already passed/),
+      ).not.toBeInTheDocument();
+    });
   });
 });
