@@ -8,6 +8,7 @@ import { TrackThisTrainButton } from '@/components/TrackThisTrainButton';
 import { TrackedTrainOwnerControls } from '@/components/TrackedTrainOwnerControls';
 import { TicketPanel } from '@/components/TicketPanel';
 import { TextLink } from '@/components/TextLink';
+import { RealTimeTrainsLink } from '@/components/RealTimeTrainsLink';
 import type { PublicTrainState, TrainJourneyState, TrackedTrainListItem } from '@/lib/types';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -300,6 +301,17 @@ export default async function TrackedTrainByUidPage({
         </Group>
       </Group>
       <TrainJourney state={journeyState} />
+      {/* Cross-reference to the same service on Real Time Trains, a
+          well-known third-party UK train tracker with more granular
+          signalling-level detail than this app shows -- renders nothing
+          until `journeyState.trainUid` is known, same gating
+          `TrainJourney`'s own `StatusMessage` already applies. Kept as its
+          own line, distinct from the action `Group` above (Track this
+          train / Share this page): those are functional CTAs, this is an
+          outbound cross-reference, matching how `DelayRepayEstimate`
+          separates its own "See how to claim ↗" link from the actions
+          around it. */}
+      <RealTimeTrainsLink trainUid={journeyState.trainUid} serviceDate={journeyState.serviceDate} />
       {match && <TicketPanel trackingId={match.id} />}
       {/* `component="div"`, not the default `<p>`: `TextLink` renders its
           own Mantine `<Text>` (a `<p>` by default), so wrapping it in an
