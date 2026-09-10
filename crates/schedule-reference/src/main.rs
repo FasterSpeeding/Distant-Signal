@@ -882,6 +882,7 @@ mod poll_once_tests {
             .map(|hour| schedule_query::ScheduleDeparture {
                 uid: format!("U{hour:05}"),
                 scheduled: chrono::NaiveTime::from_hms_opt(hour, 0, 0).unwrap(),
+                day_offset: 0,
                 destination_crs: None,
             })
             .collect();
@@ -911,6 +912,7 @@ mod poll_once_tests {
             vec![schedule_query::ScheduleDeparture {
                 uid: "U1".to_string(),
                 scheduled: chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
+                day_offset: 0,
                 destination_crs: Some("CRE".to_string()),
             }],
         );
@@ -919,6 +921,7 @@ mod poll_once_tests {
             vec![schedule_query::ScheduleDeparture {
                 uid: "U2".to_string(),
                 scheduled: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+                day_offset: 0,
                 destination_crs: None,
             }],
         );
@@ -933,6 +936,37 @@ mod poll_once_tests {
         for row in &rows {
             assert_eq!(row["service_date"], "2026-09-04");
         }
+    }
+
+    #[test]
+    fn schedule_network_departures_rows_carries_day_offset_onto_each_published_departure() {
+        // `ScheduleDeparture` derives `Serialize` -- this proves that
+        // derive actually surfaces `day_offset` on the wire rather than
+        // dropping it, since `schedule_network_departures_rows` never lists
+        // fields by hand (it serializes the whole struct via `json!`'s
+        // `Vec<ScheduleDeparture>` field). Backs
+        // `GET /public/stations/{crs}/schedule-departures`, the exact route
+        // `TrackTrainForm.tsx::pickCifDeparture` reads its picker rows from.
+        let mut by_crs = std::collections::HashMap::new();
+        by_crs.insert(
+            "BKG".to_string(),
+            vec![schedule_query::ScheduleDeparture {
+                uid: "F49687".to_string(),
+                scheduled: chrono::NaiveTime::from_hms_opt(0, 7, 0).unwrap(),
+                day_offset: 1,
+                destination_crs: Some("SNF".to_string()),
+            }],
+        );
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 5).unwrap();
+        let rows = schedule_network_departures_rows(by_crs, today);
+
+        assert_eq!(rows.len(), 1);
+        let departures = rows[0]["departures"].as_array().unwrap();
+        assert_eq!(
+            departures[0]["day_offset"], 1,
+            "Barking 00:07's day_offset must reach the published row, not be dropped"
+        );
     }
 
     #[test]

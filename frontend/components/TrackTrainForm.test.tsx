@@ -619,9 +619,9 @@ describe('TrackTrainForm', () => {
       expect(picker.value).toMatch(/^\d{4}-\d{2}-\d{2} 10:40:00$/);
     });
 
-    const scheduleDepartures: { uid: string; scheduled: string; destinationCrs: string | null }[] = [
-      { uid: 'C11052', scheduled: '08:22', destinationCrs: 'CRE' },
-      { uid: 'C99999', scheduled: '09:00', destinationCrs: null },
+    const scheduleDepartures: { uid: string; scheduled: string; dayOffset: number; destinationCrs: string | null }[] = [
+      { uid: 'C11052', scheduled: '08:22', dayOffset: 0, destinationCrs: 'CRE' },
+      { uid: 'C99999', scheduled: '09:00', dayOffset: 0, destinationCrs: null },
     ];
 
     it('a 404 from LDBWS followed by a CIF 200 renders the CIF picker with its staleness disclaimer, no badges', async () => {
@@ -705,6 +705,53 @@ describe('TrackTrainForm', () => {
       expect(destinationField).toHaveValue('EXISTING');
       const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
       expect(picker.value).toMatch(/09:00:00$/);
+    });
+
+    it('a post-midnight CIF row (dayOffset > 0) stays visible late at night and derives the correct next-day service_date on pick', async () => {
+      // Regression coverage for the exact bug this task fixes: a real
+      // overnight CIF schedule's post-midnight calling point (e.g. the
+      // live-confirmed c2c Barking 00:07, `schedule_query::resolve`'s own
+      // `f49687_raw` fixture) is genuinely TOMORROW relative to when the
+      // search ran, not "today" -- combining its bare `"00:07"` with the
+      // browser's current date would create a pin dated the wrong calendar
+      // day.
+      const postMidnight = [{ uid: 'F49687', scheduled: '00:07', dayOffset: 1, destinationCrs: 'SNF' }];
+      const fetchMock = mockFetchByUrl({
+        departures: () => new Response('not found', { status: 404 }),
+        scheduleDepartures: () => new Response(JSON.stringify(postMidnight), { status: 200 }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      const row = await screen.findByRole('button', { name: /00:07/ });
+
+      // Simulate a late-night search first: without `dayOffset` factored
+      // into `matchesScheduledDeparture`, comparing the row's bare time
+      // against TODAY's date would read "today 00:07" as already-passed
+      // relative to "today 23:50" and silently hide the row from the
+      // picker -- even though it is really tomorrow and very much still in
+      // the future. This row staying visible here is itself part of the
+      // regression coverage, not just setup for the click below.
+      fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+        target: { value: '2026-09-05 23:50:00' },
+      });
+      expect(screen.getByRole('button', { name: /00:07/ })).toBeInTheDocument();
+
+      // The same `dayjs()` read `pickCifDeparture` itself makes, at the
+      // moment of picking -- not a parse of the typed '2026-09-05' value
+      // above, which only drives the filter check, not the pick.
+      const tomorrow = dayjs().add(1, 'day').format('YYYY-MM-DD');
+      fireEvent.click(row);
+
+      const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+      expect(picker.value).toBe(`${tomorrow} 00:07:00`);
+
+      fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+      });
+      const body = trackCallBody(fetchMock);
+      expect(body.service_date).toBe(tomorrow);
     });
 
     it('shows the picker container with a prompt before Origin is filled in', () => {

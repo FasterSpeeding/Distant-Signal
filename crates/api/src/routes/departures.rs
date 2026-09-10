@@ -537,4 +537,64 @@ mod db_tests {
 
         delete_schedule_departures_fixture(&pool, "ZRA").await;
     }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_departures -- --ignored --test-threads=1`"]
+    async fn schedule_departures_serializes_a_post_midnight_calling_points_day_offset() {
+        // The exact regression this route's own `day_offset` addition
+        // targets: a calling point whose CIF-derived `scheduled` time is
+        // small (early-hours) but genuinely falls on the day AFTER
+        // `service_date` -- the real live-confirmed c2c Liverpool Street ->
+        // Shoeburyness overnight working, UID F49687, Barking 00:07 (see
+        // `schedule_query::resolve`'s own `f49687_raw` fixture doc comment).
+        // `TrackTrainForm.tsx::pickCifDeparture` reads this field to derive
+        // the correct `service_date` for a post-midnight pick instead of
+        // always assuming "today".
+        let pool = connect().await;
+        delete_schedule_departures_fixture(&pool, "ZRB").await;
+
+        let today = chrono::Utc::now().date_naive();
+        let departures = serde_json::json!([
+            {"uid": "C11052", "scheduled": "08:22:00", "day_offset": 0, "destination_crs": "CRE"},
+            {"uid": "F49687", "scheduled": "00:07:00", "day_offset": 1, "destination_crs": "SNF"},
+        ]);
+        sqlx::query(
+            "INSERT INTO schedule_network_departures (crs, service_date, departures) VALUES ('ZRB', $1, $2)",
+        )
+        .bind(today)
+        .bind(departures)
+        .execute(&pool)
+        .await
+        .expect("seed day-offset fixture row");
+
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/stations/ZRB/schedule-departures")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json[0]["uid"], "C11052");
+        assert_eq!(json[0]["dayOffset"], 0, "same-day calling point stays at 0");
+        assert_eq!(json[1]["uid"], "F49687");
+        assert_eq!(
+            json[1]["dayOffset"], 1,
+            "Barking 00:07's day_offset must reach the HTTP response, not just the DB row"
+        );
+
+        delete_schedule_departures_fixture(&pool, "ZRB").await;
+    }
 }

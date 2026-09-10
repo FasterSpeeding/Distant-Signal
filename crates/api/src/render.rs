@@ -168,14 +168,30 @@ pub(crate) fn station_departure_json(d: &common::StationDeparture) -> Value {
 /// `scheduled` is stored as chrono's default `NaiveTime` JSON
 /// serialization (`"HH:MM:SS"`); this trims it to `"HH:MM"`, matching the
 /// design doc's own documented wire shape for this field.
+///
+/// `dayOffset` mirrors `calling_point_departure_json`'s own `originCrs`/
+/// `destinationArrival` null-tolerance posture, but for a plain number
+/// rather than a nullable one: `d`'s `day_offset` key is read with
+/// `unwrap_or(0)`, not `Value::Null`, both when the key is missing (a
+/// `schedule_network_departures` row published before
+/// `schedule_query::ScheduleDeparture::day_offset` existed -- the same
+/// rolling-deploy gap that field's own `#[serde(default)]` documents) and
+/// when it is present but not a number. `0` is the correct fallback in
+/// both cases: it is exactly the pre-existing "assume same day as the
+/// search" behavior this field's addition is fixing forward from, not a
+/// new failure mode. This is the field `TrackTrainForm.tsx::pickCifDeparture`
+/// reads to combine the picked departure's bare `"HH:MM"` with the correct
+/// calendar date -- see that function's own doc comment.
 pub(crate) fn schedule_departure_json(d: &Value) -> Value {
     let scheduled = d
         .get("scheduled")
         .and_then(Value::as_str)
         .map(|s| s.chars().take(5).collect::<String>());
+    let day_offset = d.get("day_offset").and_then(Value::as_u64).unwrap_or(0);
     json!({
         "uid": d.get("uid").cloned().unwrap_or(Value::Null),
         "scheduled": scheduled,
+        "dayOffset": day_offset,
         "destinationCrs": d.get("destination_crs").cloned().unwrap_or(Value::Null),
     })
 }
@@ -702,17 +718,57 @@ mod tests {
         let raw = serde_json::json!({
             "uid": "C11052",
             "scheduled": "08:22:00",
+            "day_offset": 0,
             "destination_crs": "CRE",
         });
         let json = schedule_departure_json(&raw);
         assert_eq!(
             json,
-            serde_json::json!({ "uid": "C11052", "scheduled": "08:22", "destinationCrs": "CRE" })
+            serde_json::json!({
+                "uid": "C11052",
+                "scheduled": "08:22",
+                "dayOffset": 0,
+                "destinationCrs": "CRE",
+            })
         );
         assert!(
             json.get("destination_crs").is_none(),
             "no stray snake_case field"
         );
+    }
+
+    #[test]
+    fn schedule_departure_json_renders_a_nonzero_day_offset() {
+        // Barking 00:07 on the real live-confirmed overnight working
+        // (`schedule_query::resolve`'s own `f49687_raw` fixture) is really
+        // the day AFTER the schedule's own service_date -- this is the
+        // exact value `pickCifDeparture` needs to compute the correct
+        // `service_date` for a post-midnight pick, instead of always
+        // assuming "today".
+        let raw = serde_json::json!({
+            "uid": "F49687",
+            "scheduled": "00:07:00",
+            "day_offset": 1,
+            "destination_crs": "SNF",
+        });
+        let json = schedule_departure_json(&raw);
+        assert_eq!(json["dayOffset"], 1);
+    }
+
+    #[test]
+    fn schedule_departure_json_defaults_a_missing_day_offset_to_zero() {
+        // A `schedule_network_departures` row published before
+        // `schedule_query::ScheduleDeparture::day_offset` existed has no
+        // `day_offset` key at all -- must render as `0` (the honest
+        // "unknown, assume same day" default this field's own
+        // `#[serde(default)]` documents), never a missing key or a panic.
+        let raw = serde_json::json!({
+            "uid": "C11052",
+            "scheduled": "08:22:00",
+            "destination_crs": "CRE",
+        });
+        let json = schedule_departure_json(&raw);
+        assert_eq!(json["dayOffset"], 0);
     }
 
     #[test]
