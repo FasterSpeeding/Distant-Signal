@@ -65,6 +65,7 @@ function publicTrainState(overrides: Partial<PublicTrainState> = {}): PublicTrai
     etaNext: null,
     etaSource: null,
     journeyStops: null,
+    mayHaveArrived: false,
     ...overrides,
   };
 }
@@ -333,6 +334,8 @@ describe('toJourneyState', () => {
       scheduledDeparture: '2026-09-08T08:00:00Z',
       actualArrival: null,
       actualDeparture: null,
+      estimatedArrival: null,
+      estimatedDeparture: null,
       lastEventType: null,
       variationStatus: null,
       delayMinutes: null,
@@ -356,8 +359,19 @@ describe('toJourneyState', () => {
       etaNext: null,
       etaSource: null,
       journeyStops: [stop],
+      mayHaveArrived: false,
     });
 
     expect(result.journeyStops).toEqual([stop]);
+  });
+
+  it('carries mayHaveArrived through from PublicTrainState', () => {
+    const result = toJourneyState(
+      publicTrainState({
+        mayHaveArrived: true,
+      }),
+    );
+
+    expect(result.mayHaveArrived).toBe(true);
   });
 });

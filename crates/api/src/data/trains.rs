@@ -309,6 +309,11 @@ pub struct PublicTrainState {
     /// though this column is never selected.
     #[sqlx(skip)]
     pub journey_stops: Option<Vec<crate::data::journey::JourneyStop>>,
+    /// See `train_tracking::TrackedTrainState::may_have_arrived`'s own doc
+    /// comment -- same contract, populated the same "read row, then
+    /// overlay" way by `routes::train::attach_journey_stops_public`.
+    #[sqlx(skip)]
+    pub may_have_arrived: bool,
 }
 
 /// Whether `(train_uid, service_date)` is a real, CIF-published scheduled

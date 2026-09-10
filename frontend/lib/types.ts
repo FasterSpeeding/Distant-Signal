@@ -390,6 +390,13 @@ export interface JourneyStop {
   scheduledDeparture: string | null; // RFC3339
   actualArrival: string | null; // RFC3339
   actualDeparture: string | null; // RFC3339
+  // Scheduled time + the train's current overall delay, populated ONLY
+  // while the matching `actual*` field above is still `null` -- i.e. only
+  // for a stop live movement data hasn't actually reported yet. Never
+  // overwrites/coexists meaningfully with a confirmed actual time; see
+  // `crates/api/src/data/journey.rs`'s `apply_delay_estimates`.
+  estimatedArrival: string | null; // RFC3339
+  estimatedDeparture: string | null; // RFC3339
   lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"
   variationStatus: string | null;
   delayMinutes: number | null;
@@ -467,6 +474,15 @@ export interface TrainJourneyState {
   // for this train. See `components/JourneyTimeline.tsx` and
   // docs/superpowers/specs/2026-09-08-journey-timetable-overlay-design.md §1.
   journeyStops: JourneyStop[] | null;
+  // Server-computed replacement for the old client-only "may have
+  // finished" heuristic (`status === 'en_route' && nextCallingPoint ===
+  // null`, which fired almost always since `nextCallingPoint` is
+  // essentially never populated in practice) -- `true` once now is more
+  // than 15 minutes past the ESTIMATED arrival at `journeyStops`'s final
+  // calling point. See `crates/api/src/data/journey.rs`'s
+  // `may_have_arrived`. Always `false` when there are no `journeyStops` to
+  // compute it from.
+  mayHaveArrived: boolean;
 }
 
 /** `GET /Train/by-uid/{uid}/{date}`'s response shape
@@ -501,6 +517,9 @@ export interface PublicTrainState {
   etaNext: string | null; // RFC3339
   etaSource: EtaSource | null;
   journeyStops: JourneyStop[] | null;
+  // See `TrainJourneyState.mayHaveArrived`'s own doc comment -- same
+  // contract.
+  mayHaveArrived: boolean;
 }
 
 /** `GET /Train/mine`'s per-item response shape

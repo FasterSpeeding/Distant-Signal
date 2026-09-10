@@ -1078,6 +1078,17 @@ pub struct TrackedTrainState {
     /// is never in the SELECT" actually needs.
     #[sqlx(skip)]
     pub journey_stops: Option<Vec<crate::data::journey::JourneyStop>>,
+    /// Server-side replacement for the frontend's old client-only "may have
+    /// finished" heuristic -- `true` once now is more than 15 minutes past
+    /// the ESTIMATED arrival at `journey_stops`'s final calling point (see
+    /// `journey::may_have_arrived`). Populated the same "read row, then
+    /// overlay a computed field" way as `journey_stops` itself, by
+    /// `routes::train::attach_journey_stops`, hence `#[sqlx(skip)]` here
+    /// too -- defaults to `false` (never a stale true) whenever there are
+    /// no `journey_stops` to compute it from at all (pending/unresolved, or
+    /// neither backing schedule source had anything).
+    #[sqlx(skip)]
+    pub may_have_arrived: bool,
 }
 
 // `LEFT JOIN`, never `JOIN`: a CRS with no reference row (a code the

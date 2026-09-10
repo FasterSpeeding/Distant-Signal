@@ -939,10 +939,21 @@ async fn attach_journey_stops(
         &train_uid,
         state.service_date,
         state.schedule_calling_points.as_ref(),
+        state.delay_minutes,
     )
     .await
     {
-        Ok(stops) => state.journey_stops = stops,
+        Ok(stops) => {
+            // `may_have_arrived` is computed from the SAME `stops` this
+            // just built (it reads the final stop's `estimated_arrival`,
+            // which `build_journey_stops` only just populated), not
+            // recomputed later against whatever `state.journey_stops` ends
+            // up holding -- so it's derived before the move below.
+            state.may_have_arrived = stops
+                .as_deref()
+                .is_some_and(|stops| crate::data::journey::may_have_arrived(stops, Utc::now()));
+            state.journey_stops = stops;
+        }
         Err(err) => {
             tracing::warn!(error = ?err, trains_id, "could not build journey stops");
         }
@@ -985,10 +996,18 @@ async fn attach_journey_stops_public(
         &state.train_uid,
         state.service_date,
         state.calling_points.as_ref(),
+        state.delay_minutes,
     )
     .await
     {
-        Ok(stops) => state.journey_stops = stops,
+        Ok(stops) => {
+            // See `attach_journey_stops`'s own comment just above -- same
+            // "derive from the freshly-built list before it moves" reasoning.
+            state.may_have_arrived = stops
+                .as_deref()
+                .is_some_and(|stops| crate::data::journey::may_have_arrived(stops, Utc::now()));
+            state.journey_stops = stops;
+        }
         Err(err) => {
             tracing::warn!(error = ?err, trains_id = state.trains_id, "could not build journey stops");
         }
@@ -1212,6 +1231,7 @@ mod tests {
             custom_name: None,
             trains_id: Some(1),
             journey_stops: None,
+            may_have_arrived: false,
         }
     }
 
