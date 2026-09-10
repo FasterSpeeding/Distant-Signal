@@ -596,6 +596,127 @@ describe('TrackTrainForm', () => {
       expect(picker.value).toBe(`${today} 10:40:00`);
     });
 
+    // Regression coverage for the LDBWS sibling of the CIF post-midnight
+    // day-offset bug (see the `pickCifDeparture`/`ScheduleDepartureRow`
+    // tests further below): `DepartureRow.scheduled` is a bare "HH:MM" with
+    // no date or day-offset field at all, and `pickDeparture` used to
+    // unconditionally combine it with TODAY's date -- wrong whenever the
+    // picked row is actually tomorrow relative to when the live board was
+    // viewed (e.g. viewing the board at 23:50 and picking a "00:07" row,
+    // a real, near-term, 17-minutes-away departure). `resolveLdbwsDepartureDate`
+    // fixes this by comparing against real wall-clock "now" (`dayjs()`,
+    // pinned via `vi.setSystemTime` below), not the typed `scheduledDeparture`
+    // field -- see that function's own doc comment for the exact threshold
+    // and why.
+    describe('LDBWS midnight-wraparound day resolution', () => {
+      function ldbwsRow(scheduled: string) {
+        return [
+          {
+            serviceId: 'svc-midnight',
+            operator: 'SW',
+            destinationCrs: 'BSK',
+            scheduled,
+            estimated: 'On time',
+            isCancelled: false,
+            delayMinutes: 0,
+            cancelReason: null,
+            delayReason: null,
+            skippedStations: [],
+          },
+        ];
+      }
+
+      it('a normal same-day pick close to "now" stays on today\'s date', async () => {
+        vi.setSystemTime(new Date('2026-09-05T10:00:00.000Z'));
+        const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(ldbwsRow('10:15')), { status: 200 }) });
+        vi.stubGlobal('fetch', fetchMock);
+
+        renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+        const row = await screen.findByRole('button', { name: /10:15/ });
+        const today = dayjs().format('YYYY-MM-DD');
+        fireEvent.click(row);
+
+        const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+        expect(picker.value).toBe(`${today} 10:15:00`);
+      });
+
+      it('the concrete failure case -- now 23:50, scheduled 00:07 -- resolves to tomorrow, not today', async () => {
+        vi.setSystemTime(new Date('2026-09-05T23:50:00.000Z'));
+        const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(ldbwsRow('00:07')), { status: 200 }) });
+        vi.stubGlobal('fetch', fetchMock);
+
+        renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+        // Also proves the `matchesScheduledDeparture` LDBWS exposure fix:
+        // without it, this row (implicitly "today 00:07" against a
+        // default `scheduledDeparture` of "today 23:50") would read as
+        // already-passed and never even appear here to click.
+        const row = await screen.findByRole('button', { name: /00:07/ });
+        const tomorrow = dayjs().add(1, 'day').format('YYYY-MM-DD');
+        fireEvent.click(row);
+
+        const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+        expect(picker.value).toBe(`${tomorrow} 00:07:00`);
+      });
+
+      // Boundary around the chosen threshold (4 hours -- comfortably more
+      // than Darwin's ~2-hour default look-ahead window, see
+      // `LDBWS_PAST_THRESHOLD_HOURS`'s own doc comment in TrackTrainForm.tsx
+      // for the full reasoning): "now" is pinned at 10:00, so a same-day
+      // combination of "06:01" is 3h59m in the past (just inside the
+      // threshold -- not corrected), while "05:59" is 4h01m in the past
+      // (just outside it -- corrected to tomorrow). Deliberately 1 minute
+      // either side of the exact 4h line, not AT it: `vi.useFakeTimers`'s
+      // `shouldAdvanceTime` (needed elsewhere in this file for `waitFor`/
+      // `findBy*` to work) lets real wall-clock time tick the fake clock
+      // forward by a few milliseconds across each `await` below, which
+      // would otherwise flip a test sitting exactly on the boundary; a
+      // one-minute margin on each side comfortably absorbs that without
+      // weakening what the pair proves -- a specific, reasoned cutover, not
+      // an arbitrary/off-by-one one.
+      it('a same-day combination just inside the threshold (3h59m before "now") is NOT corrected', async () => {
+        vi.setSystemTime(new Date('2026-09-05T10:00:00.000Z'));
+        const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(ldbwsRow('06:01')), { status: 200 }) });
+        vi.stubGlobal('fetch', fetchMock);
+
+        renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+        // Widen `scheduledDeparture` (defaults to mount-time "now", 10:00)
+        // back to local midnight -- purely so `matchesScheduledDeparture`'s
+        // OWN "already passed relative to what's typed" filter doesn't hide
+        // this deliberately-in-the-past-today row before the day-RESOLUTION
+        // logic under test even gets a chance to run; a live board would
+        // never actually show an already-departed row like this one, so
+        // this step is test scaffolding, not something real usage needs.
+        fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+          target: { value: `${dayjs().format('YYYY-MM-DD')} 00:00:00` },
+        });
+        const row = await screen.findByRole('button', { name: /06:01/ });
+        const today = dayjs().format('YYYY-MM-DD');
+        fireEvent.click(row);
+
+        const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+        expect(picker.value).toBe(`${today} 06:01:00`);
+      });
+
+      it('a same-day combination just outside the threshold (4h01m before "now") IS corrected to tomorrow', async () => {
+        vi.setSystemTime(new Date('2026-09-05T10:00:00.000Z'));
+        const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(ldbwsRow('05:59')), { status: 200 }) });
+        vi.stubGlobal('fetch', fetchMock);
+
+        renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+        // See the previous test's comment on why this is widened to
+        // midnight first -- same reasoning.
+        fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+          target: { value: `${dayjs().format('YYYY-MM-DD')} 00:00:00` },
+        });
+        const row = await screen.findByRole('button', { name: /05:59/ });
+        const tomorrow = dayjs().add(1, 'day').format('YYYY-MM-DD');
+        fireEvent.click(row);
+
+        const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+        expect(picker.value).toBe(`${tomorrow} 05:59:00`);
+      });
+    });
+
     it('changing the origin away from a previously-picked value does not clear already-filled fields', async () => {
       const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
       vi.stubGlobal('fetch', fetchMock);
