@@ -317,7 +317,11 @@ export function TrackTrainForm({
   function pickCifDeparture(row: ScheduleDepartureRow) {
     if (row.destinationCrs !== null) setDestinationCrs(row.destinationCrs);
     const [hh, mm] = row.scheduled.split(':');
-    const date = dayjs().add(row.dayOffset, 'day').format('YYYY-MM-DD');
+    // `?? 0`: defends against an old `api` pod (a separate Helm Deployment,
+    // rolled independently of `frontend`) omitting `dayOffset` from the JSON
+    // entirely during a rollout, which would otherwise reach dayjs as
+    // `undefined` and produce an Invalid Date.
+    const date = dayjs().add(row.dayOffset ?? 0, 'day').format('YYYY-MM-DD');
     setScheduledDeparture(`${date} ${hh}:${mm}:00`);
   }
 
@@ -564,7 +568,9 @@ export function TrackTrainForm({
                       service_date is tomorrow, not today (same reasoning as
                       `pickCifDeparture` itself). */}
                   <TextLink
-                    href={`/train/${encodeURIComponent(row.uid)}/${dayjs().add(row.dayOffset, 'day').format('YYYY-MM-DD')}`}
+                    href={`/train/${encodeURIComponent(row.uid)}/${dayjs()
+                      .add(row.dayOffset ?? 0, 'day')
+                      .format('YYYY-MM-DD')}`}
                     onClick={(event) => event.stopPropagation()}
                     onKeyDown={(event) => event.stopPropagation()}
                   >
