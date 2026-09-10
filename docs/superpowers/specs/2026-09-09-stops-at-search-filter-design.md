@@ -16,12 +16,19 @@ somewhere along its route.
 
 ## Query parameter: `stops_at` (repeated)
 
-`?stops_at=RDG&stops_at=OXF`, axum/`serde_urlencoded`'s standard
-repeated-key convention for a `Vec<String>` field -- no extra crate or
-custom deserializer needed. Each entry is validated with the same
-`normalize_crs` helper `station`/`origin` already use (3-letter CRS,
-uppercased); any invalid entry 400s, naming the field, matching this
-route's existing "malformed input 400s" posture.
+`?stops_at=RDG&stops_at=OXF`. Plain `axum::extract::Query`
+(`serde_urlencoded`) turned out NOT to support this: it cannot
+deserialize a repeated query key into a `Vec<String>` field at all, even
+for two occurrences of the same key -- a real, verified `serde_urlencoded`
+limitation, not a configuration gap. This route was switched to
+`axum_extra::extract::Query` (`serde_html_form`), added as a new
+dependency (`axum-extra`, `query` feature only), which groups repeated
+keys correctly. Each entry is validated with the same `normalize_crs`
+helper `station`/`origin` already use (3-letter CRS, uppercased) and then
+deduped (a raw, not distinct, element count would otherwise let a
+duplicate entry silently zero out every match in the ALL-of-N query
+below); any invalid entry 400s, naming the field, matching this route's
+existing "malformed input 400s" posture.
 
 **ALL-of-N, not ANY-of-N.** Matched via `train_uid IN (SELECT train_uid ...
 WHERE origin_crs = ANY($stops_at) GROUP BY train_uid HAVING

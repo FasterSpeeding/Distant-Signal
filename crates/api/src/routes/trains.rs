@@ -346,12 +346,26 @@ async fn get_trains_search(
         .filter(|s| !s.trim().is_empty())
         .map(|s| normalize_crs("origin", s))
         .transpose()?;
+    // Deduped after normalization: `queries::search_schedule_calling_point_departures`'s
+    // ALL-of-N match compares `COUNT(DISTINCT origin_crs)` against
+    // `array_length($stops_at, 1)` -- a raw element count, not a distinct
+    // one. A duplicate entry (e.g. `?stops_at=RDG&stops_at=RDG`, or the
+    // same station typed twice with different casing before
+    // `normalize_crs` uppercases it) would otherwise inflate that length
+    // past what any real schedule's `COUNT(DISTINCT ...)` could ever
+    // reach, silently zeroing out every match -- including ones that
+    // genuinely stop at every named station. A duplicate is redundant
+    // input, not ambiguous input like an empty/two-station `stops_at`
+    // paired with an arrival bound (see the 400 below), so it's
+    // normalized away here rather than rejected.
     let stops_at = params
         .stops_at
         .iter()
         .filter(|s| !s.trim().is_empty())
         .map(|s| normalize_crs("stops_at", s))
-        .collect::<Result<Vec<String>, _>>()?;
+        .collect::<Result<std::collections::BTreeSet<String>, _>>()?
+        .into_iter()
+        .collect::<Vec<String>>();
     let from_time = params
         .from
         .as_deref()
@@ -1034,6 +1048,47 @@ mod db_tests {
             "T51002 calls AAA but not CCC, and must be excluded even though it partially matches: {rows:?}"
         );
         assert_eq!(rows[0]["uid"], "T51001");
+
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_stops_at_a_duplicate_entry_does_not_zero_out_matches() {
+        // Regression: `search_schedule_calling_point_departures`'s ALL-of-N
+        // check compares `COUNT(DISTINCT origin_crs)` against
+        // `array_length($stops_at, 1)` -- a raw element count, not a
+        // distinct one. Sending the same station twice used to inflate
+        // that length past what any real schedule's distinct-calling-point
+        // count could ever reach, silently matching nothing at all --
+        // including T51001/T51002/T51003, which genuinely all call at AAA.
+        // `get_trains_search` now dedupes `stops_at` after normalization
+        // specifically to prevent this.
+        let pool = connect().await;
+        seed_stops_at(&pool, "ZRB").await;
+
+        let (status, body) = get(
+            &pool,
+            "/trains/search?station=ZRB&stops_at=AAA&stops_at=AAA",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = results(&body);
+        assert!(
+            !rows.is_empty(),
+            "a duplicate stops_at entry must not silently zero out every match: {rows:?}"
+        );
+        let uids: std::collections::BTreeSet<&str> = rows
+            .iter()
+            .map(|row| row["uid"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            uids,
+            std::collections::BTreeSet::from(["T51001", "T51002", "T51003"]),
+            "?stops_at=AAA&stops_at=AAA must match exactly the same trains as a single \
+             ?stops_at=AAA: {rows:?}"
+        );
 
         delete_today(&pool).await;
     }
