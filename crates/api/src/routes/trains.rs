@@ -38,14 +38,18 @@
 //! is a `400`. See
 //! docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md.
 //!
-//! **This route owns the `now`-forward boundary**, which is the whole point
+//! **This route owns the `now`-forward DEFAULT**, which is the whole point
 //! of the storage shape behind it. The publish stores the entire rail day
 //! uncapped, because it fires once per CIF delivery -- roughly daily -- so
 //! a publish-time filter would freeze at whatever the clock read when the
-//! delivery landed. Evaluating `now` here means a search at 18:00 is
-//! correct at 18:00. **This boundary only applies when `date` resolves to
-//! today** -- browsing any other day in the window has no "now" to be
-//! forward of, and returns the whole day instead.
+//! delivery landed. Evaluating `now` here means a bare search at 18:00
+//! defaults to "what's coming up next" rather than the whole day. **This
+//! default only applies when `date` resolves to today, and only when the
+//! caller supplies no explicit `from` at all** -- browsing any other day in
+//! the window has no "now" to be forward of, and an explicit `from` is
+//! always honored exactly as given, even one that names a time already in
+//! the past relative to `now`: the caller asked for that specific window on
+//! purpose, so it is never silently re-floored to `now`.
 //!
 //! **Pagination is a keyset cursor, not an offset.** `limit` bounds one
 //! page; `after` carries the last row of the previous page.
@@ -146,12 +150,12 @@ struct TrainSearchParams {
     /// calling point) is this CRS.
     destination: Option<String>,
     /// Optional, `"HH:MM"`, inclusive lower bound on scheduled departure.
-    /// When the resolved `date` is today, this narrows the `now`-forward
-    /// window; it can never widen it backwards. For any other date there
-    /// is no `now`-forward floor to narrow -- `from` is a plain inclusive
-    /// lower bound (see `scheduled_from`'s computation in
-    /// `get_trains_search`, which gates the `max(now, from)` behavior on
-    /// `service_date == today`).
+    /// Always honored exactly as given -- including a value already in the
+    /// past relative to `now` today -- because an explicit bound is a
+    /// deliberate request, not something to silently re-floor. The
+    /// `now`-forward default (see this module's own doc comment) only
+    /// fills in when `from` is omitted entirely AND the resolved `date` is
+    /// today; see `scheduled_from`'s computation in `get_trains_search`.
     from: Option<String>,
     /// Optional, `"HH:MM"`, inclusive upper bound.
     to: Option<String>,
@@ -371,18 +375,22 @@ async fn get_trains_search(
         None => today,
     };
 
-    // The `now`-forward default only makes sense when searching TODAY --
-    // for any other date, forward or backward, there is no "now" to be
-    // forward of, and applying today's clock time to a different date's
-    // rows would silently and incorrectly filter them by the wrong day's
-    // clock. See the design doc's §5.
-    let scheduled_from = if service_date == today {
-        match from_time {
-            Some(from) => std::cmp::max(now, from),
-            None => now,
-        }
-    } else {
-        from_time.unwrap_or(chrono::NaiveTime::MIN)
+    // The `now`-forward floor is a DEFAULT, not a filter: it only ever
+    // fills in for a lower bound the caller didn't supply at all. An
+    // explicit `from` is always honored exactly as given -- including one
+    // that names a time already in the past relative to `now` -- because
+    // the caller asked for that specific window on purpose; silently
+    // re-flooring it to `now` via `max(now, from)` produced zero results
+    // for a perfectly legitimate request (e.g. searching 09:00-12:00 at
+    // 15:00). The `now`-forward default itself only makes sense when
+    // searching TODAY -- for any other date, forward or backward, there is
+    // no "now" to be forward of, and applying today's clock time to a
+    // different date's rows would silently and incorrectly filter them by
+    // the wrong day's clock. See the design doc's §5.
+    let scheduled_from = match from_time {
+        Some(from) => from,
+        None if service_date == today => now,
+        None => chrono::NaiveTime::MIN,
     };
 
     let Some(page) = queries::search_schedule_calling_point_departures(
@@ -797,6 +805,65 @@ mod db_tests {
         assert!(
             !uids.contains(&"C10000"),
             "an already-departed row must not be returned: {uids:?}"
+        );
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_honors_an_explicit_from_to_window_fully_in_the_past_on_today() {
+        // Regression for the reported bug: a caller who explicitly asks for
+        // a past `from`/`to` window on TODAY's date (e.g. searching
+        // 09:00-12:00 at 3pm) must get the real matching rows, not an
+        // empty result -- an explicit lower bound must never be silently
+        // re-floored to `now` via `max(now, from)`. `seed_today` plants
+        // `C10000` at `NaiveTime::MIN` (00:00:00), already-departed by any
+        // time this test runs (guarded by `relative_times`'s own
+        // near-midnight assertion), so an explicit `from=00:00&to=00:00`
+        // window can only return it if the floor is gone.
+        let pool = connect().await;
+        seed_today(&pool, "ZRB").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB&from=00:00&to=00:00").await;
+        assert_eq!(status, StatusCode::OK);
+        let uids: Vec<String> = results(&body)
+            .iter()
+            .map(|row| row["uid"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            uids,
+            vec!["C10000".to_string()],
+            "an explicit past from/to window on today must return its real matching rows, \
+             not be silently floored to now: {uids:?}"
+        );
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_with_no_explicit_from_still_defaults_to_the_now_floor_on_today() {
+        // Companion to the test above: proves the DEFAULT (no explicit
+        // `from` at all) still floors to `now` on today's date, so a bare
+        // search keeps showing "what's coming up next" rather than the
+        // whole day including already-departed trains. `seed_today` plants
+        // one already-departed row (`C10000`) and two future ones
+        // (`C10001`, `C10002`); with no `from` supplied, only the future
+        // two must come back.
+        let pool = connect().await;
+        seed_today(&pool, "ZRB").await;
+        let (status, body) = get(&pool, "/trains/search?station=ZRB").await;
+        assert_eq!(status, StatusCode::OK);
+        let mut uids: Vec<String> = results(&body)
+            .iter()
+            .map(|row| row["uid"].as_str().unwrap().to_string())
+            .collect();
+        uids.sort();
+        assert_eq!(
+            uids,
+            vec!["C10001".to_string(), "C10002".to_string()],
+            "with no explicit `from`, today's search must still default to the now-forward \
+             floor: {uids:?}"
         );
         delete_today(&pool).await;
     }
@@ -1225,13 +1292,15 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_uses_from_as_a_plain_bound_with_no_now_floor_on_a_non_today_date() {
-        // Coverage for the `else` branch's `Some(from) => ...` arm
-        // specifically -- `trains_search_applies_now_forward_only_when_date_is_today`
-        // above only exercises that branch's `None` arm (no `from` supplied
-        // at all). This test supplies `from` explicitly alongside a
+        // Coverage for `scheduled_from`'s `Some(from) => from` arm on a
+        // non-today date specifically --
+        // `trains_search_applies_now_forward_only_when_date_is_today` above
+        // only exercises the `None` arm (no `from` supplied at all) for a
+        // non-today date. This test supplies `from` explicitly alongside a
         // non-today `date` and proves it is used as a PLAIN inclusive lower
-        // bound with NO `max(now, from)` floor applied, per this route's
-        // own doc comment on `scheduled_from` (trains.rs:350-362).
+        // bound with NO `now` floor applied at all, per this route's own
+        // doc comment on `scheduled_from` in `get_trains_search` -- today's
+        // clock is irrelevant to every OTHER date, explicit `from` or not.
         let pool = connect().await;
         let today = chrono::Utc::now()
             .with_timezone(&chrono_tz::Europe::London)
