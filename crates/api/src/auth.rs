@@ -686,6 +686,7 @@ mod route_scoping_tests {
             schedule_match_interval_secs: 300,
             reconciliation_sweep_interval_secs: 300,
             schedule_enrichment_grace_minutes: 30,
+            backlog_match_sweep_interval_secs: 300,
         }
     }
 

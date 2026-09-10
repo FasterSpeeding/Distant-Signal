@@ -300,4 +300,26 @@ pub struct ServiceArguments {
     /// document's own suggested 15-30 minute range.
     #[arg(long, env, default_value_t = 30)]
     pub schedule_enrichment_grace_minutes: i64,
+
+    /// How often the backlog-match sweep re-attempts
+    /// `trust_event_backlog_match::attempt_backlog_match` against every
+    /// still-`pending` pin `attempt_backlog_match` hasn't yet resolved.
+    /// Fixes a real gap: that function was, until this field's own sweep
+    /// loop, only ever called once, synchronously, at pin-creation time
+    /// (`routes::train::post_track`) -- typically before the tracked
+    /// train has even departed, when `trust_event_backlog` has nothing
+    /// for it yet. A pin whose real departure lands outside
+    /// `common::MATCH_TOLERANCE` of its `resolve_origin_departure` check
+    /// (`trust-consumer`, a common occurrence under disruption) then had
+    /// no retry at all, despite the backlog filling in with exactly the
+    /// row a later attempt would match, over the following hours -- same
+    /// class of "one-shot attempt, no periodic retry" gap
+    /// `schedule_match_interval_secs`/`reconciliation_sweep_interval_secs`
+    /// already exist to close for their own concerns. 300s default,
+    /// reusing those two fields' own reasoning for the identical class of
+    /// concern -- cheap enough at this cadence (a handful of still-pending
+    /// rows on a typical day) not to matter, frequent enough that a
+    /// backlog row landing mid-day is picked up within the same rail day.
+    #[arg(long, env, default_value_t = 300)]
+    pub backlog_match_sweep_interval_secs: u64,
 }

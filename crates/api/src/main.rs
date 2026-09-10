@@ -13,6 +13,7 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::spawn(schedule_match_sweep_loop(app.clone()));
     tokio::spawn(reconciliation_sweep_loop(app.clone()));
+    tokio::spawn(backlog_match_sweep_loop(app.clone()));
 
     // Permissive ORIGIN, deliberately non-credentialed. The four
     // line-status endpoints and /public/health are intentionally public,
@@ -183,6 +184,34 @@ async fn reconciliation_sweep_loop(app: App) {
             Ok(_) => {}
             Err(err) => {
                 tracing::error!(error = ?err, "reconciliation sweep failed; will retry next interval");
+            }
+        }
+    }
+}
+
+/// Periodic retry of `attempt_backlog_match` for every still-`pending` pin
+/// it hasn't yet resolved -- the fix for a confirmed gap named in full on
+/// `data::trust_event_backlog_match::run_backlog_match_sweep`'s own doc
+/// comment: that function was previously only ever invoked once,
+/// synchronously, at pin-creation time, with no retry for a train whose
+/// real departure fell outside `common::MATCH_TOLERANCE` of its scheduled
+/// time (routine under disruption). Mirrors `schedule_match_sweep_loop`'s
+/// own shape exactly -- same "a request/response server also runs a
+/// background interval loop" pattern this workspace already established
+/// for both sibling sweeps above.
+async fn backlog_match_sweep_loop(app: App) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+        app.config.backlog_match_sweep_interval_secs,
+    ));
+    loop {
+        interval.tick().await;
+        match data::trust_event_backlog_match::run_backlog_match_sweep(&app.database).await {
+            Ok(matched) if matched > 0 => {
+                tracing::info!(matched, "backlog-match sweep resolved pending pins");
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::error!(error = ?err, "backlog-match sweep failed; will retry next interval");
             }
         }
     }
