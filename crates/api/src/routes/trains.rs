@@ -104,7 +104,22 @@ const SEARCH_WINDOW_FORWARD_DAYS: i64 = 7;
 /// its rows have already been pruned.
 const SEARCH_WINDOW_BACKWARD_DAYS: i64 = 7;
 
+/// `#[serde(deny_unknown_fields)]` is load-bearing here, not decorative:
+/// without it, axum's `Query` extractor silently drops any query parameter
+/// whose name doesn't match a field below (e.g. a caller sending
+/// `destinationArrivalFrom`/`destinationArrivalTo` instead of the actual
+/// `destination_from`/`destination_to`), producing a `200` whose filters
+/// simply never applied -- a request that LOOKS accepted but has zero
+/// effect. That is exactly the failure mode this route's own doc comment
+/// already rejects for malformed filter VALUES (see `MAX_SEARCH_LIMIT`'s
+/// doc comment above, and the `destination_from`/`destination_to`-without-
+/// `destination` 400 in `get_trains_search`): a 400 naming the field is
+/// the honest answer, not a silently-narrower-than-requested search. This
+/// extends that same posture to malformed (unrecognized) parameter NAMES.
+/// See `trains_search_rejects_an_unrecognized_query_parameter_instead_of_silently_ignoring_it`
+/// below for the regression coverage.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TrainSearchParams {
     /// Required. A 3-letter CRS code; the search is keyed on ANY station a
     /// train calls at -- boarding or alighting, including where it starts
@@ -1288,6 +1303,71 @@ mod db_tests {
             2,
             "identical to the existing today-only behavior when `date` is absent"
         );
+        delete_today(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_rejects_an_unrecognized_query_parameter_instead_of_silently_ignoring_it()
+    {
+        // Root-cause regression for a bug reported as "destinationArrivalFrom/
+        // destinationArrivalTo are accepted but never filter": those names
+        // don't exist on `TrainSearchParams` at all -- the real fields are
+        // snake_case `destination_from`/`destination_to`, exactly like every
+        // other query parameter this route accepts (`from`, `to`, `origin`,
+        // `destination`...). Before `#[serde(deny_unknown_fields)]` was added
+        // to `TrainSearchParams`, axum's `Query` extractor silently dropped
+        // any parameter name it didn't recognize -- so a caller who typos or
+        // guesses the wrong casing for ANY filter (not just this one) gets a
+        // 200 with an unfiltered result set instead of any indication their
+        // filter never applied. That is precisely the "silently accepted,
+        // zero effect" failure mode this file's own doc comment already
+        // rejects for malformed VALUES (see `MAX_SEARCH_LIMIT`'s doc comment
+        // and the `destination_from`/`destination_to`-without-`destination`
+        // 400 above) -- this test extends the same posture to malformed
+        // (unrecognized) parameter NAMES.
+        let pool = connect().await;
+        delete_today(&pool).await;
+        let today = chrono::Utc::now().date_naive();
+        let (_, soon, later) = relative_times();
+        // Seed one row inside the requested window and one well outside it,
+        // so a silently-ignored filter is distinguishable from a correctly-
+        // rejected request: the old behavior returned 200 with BOTH rows.
+        for (train_uid, destination_arrival) in [("D90001", soon), ("D90002", later)] {
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                    (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs, destination_arrival) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            )
+            .bind(today)
+            .bind("WAT")
+            .bind(soon)
+            .bind(train_uid)
+            .bind("ZRB")
+            .bind(Option::<&str>::None)
+            .bind(destination_arrival)
+            .execute(&pool)
+            .await
+            .expect("seed fixture row");
+        }
+
+        let uri = format!(
+            "/trains/search?station=ZRB&destination=WAT&destinationArrivalFrom={}&destinationArrivalTo={}",
+            later.format("%H:%M"),
+            later.format("%H:%M"),
+        );
+        let (status, body) = get(&pool, &uri).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "an unrecognized query parameter name must 400, not silently no-op: {body}"
+        );
+        assert!(
+            body.contains("destinationArrivalFrom"),
+            "the 400 body should name the offending parameter: {body}"
+        );
+
         delete_today(&pool).await;
     }
 
