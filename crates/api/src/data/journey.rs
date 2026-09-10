@@ -223,33 +223,43 @@ pub async fn build_journey_stops(
             _ => {}
         }
 
-        // Pair scheduled and actual times by WHICH kind of time is actually
-        // known, driven by `last_event_type` -- not a blind "prefer
-        // departure" rule applied independently to each side. Pairing an
-        // ARRIVAL-only actual time against a booked DEPARTURE (or vice
-        // versa) silently inverts the sign for any stop with a dwell time
-        // between its booked arrival and booked departure (a real
-        // Intermediate calling point).
-        let (actual_reference, scheduled_reference) = match stop.last_event_type.as_deref() {
-            Some("DEPARTURE") | Some("PASS") => (
-                stop.actual_departure.or(stop.actual_arrival),
-                stop.scheduled_departure.or(stop.scheduled_arrival),
-            ),
-            Some("ARRIVAL") => (
-                stop.actual_arrival.or(stop.actual_departure),
-                stop.scheduled_arrival.or(stop.scheduled_departure),
-            ),
-            _ => (
-                stop.actual_departure.or(stop.actual_arrival),
-                stop.scheduled_departure.or(stop.scheduled_arrival),
-            ),
-        };
-        // Same delay formula trust-consumer's own forward-propagation uses
-        // (`crates/trust-consumer/src/process.rs:708`:
+        // Delay is diffed from THIS movement event's own two fields --
+        // `actual_timestamp` and `planned_timestamp`, both off the SAME
+        // `train_movement_events` row -- rather than against
+        // `stop.scheduled_arrival`/`scheduled_departure`, which (once a CIF
+        // schedule source has populated them, via `from_calling_point` or
+        // the fallback branch above) come from a completely different
+        // pipeline: the CIF timetable, correctly BST-converted via
+        // `chrono_tz`/`london_to_utc`. The real TRUST `TRAIN_MVT_ALL_TOC`
+        // feed has been observed delivering `planned_timestamp` AND
+        // `actual_timestamp` both skewed by the same amount vs true UTC
+        // (an upstream feed issue, outside this codebase -- this repo's own
+        // epoch-millis parsing in `trust-consumer` is unaffected). Diffing
+        // TRUST's own two fields against EACH OTHER cancels that skew out,
+        // exactly as `trust-consumer`'s own top-level `delay_minutes`
+        // already does (`crates/trust-consumer/src/process.rs:708`:
         // `derived.delay_minutes = Some((a - p).num_minutes() as i32)`) --
-        // positive means late.
-        stop.delay_minutes = match (actual_reference, scheduled_reference) {
-            (Some(a), Some(s)) => Some((a - s).num_minutes() as i32),
+        // positive means late. Diffing TRUST's `actual` against the
+        // CIF-derived scheduled time instead mixes two independent
+        // timestamp bases and, under that skew, manufactures a bogus ~1
+        // hour "late" even when the train is genuinely on time per TRUST's
+        // own self-consistent numbers (see this fix's own regression
+        // tests). Because both fields come off the one event row, there's
+        // no ARRIVAL-vs-DEPARTURE pairing ambiguity to resolve here (unlike
+        // the DISPLAYED `actual_arrival`/`actual_departure` /
+        // `scheduled_arrival`/`scheduled_departure` above, which do need
+        // that pairing).
+        //
+        // If this event has no `planned_timestamp` (some TRUST messages
+        // omit it), `delay_minutes` is `None` -- "delay unknown" -- rather
+        // than falling back to the CIF-derived scheduled time, which would
+        // silently reintroduce the exact cross-basis bug this is fixing.
+        // This matches this function's established "don't guess when data
+        // is incomplete" convention (e.g. the event-type `_ => {}` arm
+        // just above, and the no-match-found early `continue` at the top
+        // of this loop).
+        stop.delay_minutes = match (event.actual_timestamp, event.planned_timestamp) {
+            (Some(a), Some(p)) => Some((a - p).num_minutes() as i32),
             _ => None,
         };
     }
@@ -877,6 +887,381 @@ mod db_tests {
         .execute(&pool)
         .await
         .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// Regression test for the live journey-page bug (2026-09-10, trains
+    /// `L78923`/`C34231`): the real TRUST `TRAIN_MVT_ALL_TOC` feed was
+    /// delivering `planned_timestamp`/`actual_timestamp` epoch millis that
+    /// were BOTH consistently ~1 hour ahead of true UTC (an upstream feed
+    /// issue -- confirmed against `received_at` -- outside this codebase;
+    /// nothing in `trust-consumer::process::parse_epoch_millis` needed to
+    /// change). Because the skew hits both of TRUST's own fields equally,
+    /// diffing them against EACH OTHER (this test) cancels it out and
+    /// yields the true delay, whereas diffing TRUST's `actual` against the
+    /// CIF-schedule-derived `scheduled_arrival` (a completely separate,
+    /// correctly-BST-converted pipeline that the skew never touched) mixes
+    /// two independent bases and manufactures a bogus ~59 minute "late".
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                build_journey_stops_delay_uses_events_own_planned_timestamp_not_cif_schedule \
+                -- --ignored --test-threads=1`"]
+    async fn build_journey_stops_delay_uses_events_own_planned_timestamp_not_cif_schedule() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-SKEW", service_date)
+                .await
+                .expect("find_or_create_train");
+
+        crate::data::queries::upsert_stanox_crs(
+            &pool,
+            &[
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JRN-SKEW-1".to_string(),
+                    crs: "PAD".to_string(),
+                    tiploc: "TEST-JRN-SKEW-ORIGIN".to_string(),
+                    station_name: "PADDINGTON".to_string(),
+                    source_sequence: 1,
+                },
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JRN-SKEW-2".to_string(),
+                    crs: "TSB".to_string(),
+                    tiploc: "TEST-JRN-SKEW-MID".to_string(),
+                    station_name: "TEST STATION B".to_string(),
+                    source_sequence: 1,
+                },
+            ],
+        )
+        .await
+        .expect("seed stanox_crs");
+
+        // CIF schedule (correctly BST-converted): booked arrival 11:23
+        // London on 2026-09-08 (BST, UTC+1) -> 10:23:00Z.
+        let calling_points = serde_json::json!([
+            {
+                "tiploc": "TEST-JRN-SKEW-ORIGIN",
+                "kind": "Origin",
+                "bookedArrival": null,
+                "bookedDeparture": "09:00:00",
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            },
+            {
+                "tiploc": "TEST-JRN-SKEW-MID",
+                "kind": "Terminate",
+                "bookedArrival": "11:23:00",
+                "bookedDeparture": null,
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            }
+        ]);
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+
+        // The live-investigated scenario: TRUST's own two fields on this
+        // event (`planned_timestamp` and `actual_timestamp`) are BOTH ~1
+        // hour ahead of true UTC, but only 1 minute apart from EACH OTHER
+        // -- this train is genuinely running 1 minute early per TRUST's
+        // own self-consistent numbers, even though neither TRUST
+        // timestamp lines up at all with the correctly-converted CIF
+        // schedule time (10:23:00Z).
+        sqlx::query(
+            "INSERT INTO train_movement_events \
+                (trains_id, dedup_key, msg_type, event_type, loc_crs, planned_timestamp, \
+                 actual_timestamp, variation_status, raw_body) \
+             VALUES ($1, 'k-skew-1', '0001', 'ARRIVAL', 'TSB', '2026-09-08T11:23:00Z', \
+                     '2026-09-08T11:22:00Z', 'EARLY', '{}'::jsonb)",
+        )
+        .bind(trains_id)
+        .execute(&pool)
+        .await
+        .expect("seed train_movement_events");
+
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-SKEW",
+            service_date,
+            Some(&calling_points),
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops from calling_points_json");
+
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[1].crs.as_deref(), Some("TSB"));
+        assert_eq!(
+            stops[1].scheduled_arrival,
+            "2026-09-08T10:23:00Z".parse().ok(),
+            "the DISPLAYED scheduled time is still the correctly-BST-converted CIF value \
+             -- this fix only changes the delay-minutes arithmetic, not what's shown as \
+             \"scheduled\""
+        );
+        assert_eq!(stops[1].actual_arrival, "2026-09-08T11:22:00Z".parse().ok());
+        assert_eq!(
+            stops[1].delay_minutes,
+            Some(-1),
+            "must diff TRUST's own actual_timestamp (11:22Z) against TRUST's own \
+             planned_timestamp (11:23Z) on the SAME movement event row -> 1 minute early. \
+             The old buggy code diffed TRUST's actual (11:22Z) against the CIF-derived \
+             scheduled_arrival (10:23Z) instead -> Some(59), a bogus ~1 hour \"late\" caused \
+             entirely by the upstream TRUST feed's timestamp skew against true UTC."
+        );
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-SKEW-%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// The non-skewed, legitimate case: TRUST's own `planned_timestamp` for
+    /// this event genuinely agrees with the correctly-converted CIF
+    /// schedule time. This fix must not change the computed delay for this,
+    /// the normal case -- asserts the same value old and new code both
+    /// produce.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                build_journey_stops_delay_unaffected_when_trust_and_cif_timestamps_agree \
+                -- --ignored --test-threads=1`"]
+    async fn build_journey_stops_delay_unaffected_when_trust_and_cif_timestamps_agree() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NOSKEW", service_date)
+                .await
+                .expect("find_or_create_train");
+
+        crate::data::queries::upsert_stanox_crs(
+            &pool,
+            &[
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JRN-NOSKEW-1".to_string(),
+                    crs: "PAD".to_string(),
+                    tiploc: "TEST-JRN-NOSKEW-ORIGIN".to_string(),
+                    station_name: "PADDINGTON".to_string(),
+                    source_sequence: 1,
+                },
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JRN-NOSKEW-2".to_string(),
+                    crs: "TSC".to_string(),
+                    tiploc: "TEST-JRN-NOSKEW-MID".to_string(),
+                    station_name: "TEST STATION C".to_string(),
+                    source_sequence: 1,
+                },
+            ],
+        )
+        .await
+        .expect("seed stanox_crs");
+
+        // Booked arrival 10:00 London on 2026-09-08 (BST) -> 09:00:00Z,
+        // and TRUST's own planned_timestamp for the same event agrees
+        // exactly -- no upstream skew present.
+        let calling_points = serde_json::json!([
+            {
+                "tiploc": "TEST-JRN-NOSKEW-ORIGIN",
+                "kind": "Origin",
+                "bookedArrival": null,
+                "bookedDeparture": "08:00:00",
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            },
+            {
+                "tiploc": "TEST-JRN-NOSKEW-MID",
+                "kind": "Terminate",
+                "bookedArrival": "10:00:00",
+                "bookedDeparture": null,
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            }
+        ]);
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+
+        sqlx::query(
+            "INSERT INTO train_movement_events \
+                (trains_id, dedup_key, msg_type, event_type, loc_crs, planned_timestamp, \
+                 actual_timestamp, variation_status, raw_body) \
+             VALUES ($1, 'k-noskew-1', '0001', 'ARRIVAL', 'TSC', '2026-09-08T09:00:00Z', \
+                     '2026-09-08T09:06:00Z', 'LATE', '{}'::jsonb)",
+        )
+        .bind(trains_id)
+        .execute(&pool)
+        .await
+        .expect("seed train_movement_events");
+
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-NOSKEW",
+            service_date,
+            Some(&calling_points),
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops from calling_points_json");
+
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[1].crs.as_deref(), Some("TSC"));
+        assert_eq!(
+            stops[1].delay_minutes,
+            Some(6),
+            "TRUST's own planned_timestamp (09:00Z) matches the CIF schedule (09:00Z) here, \
+             so diffing against either basis gives the same, correct 6-minutes-late result"
+        );
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-NOSKEW-%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// A movement event that's missing its own `planned_timestamp` (some
+    /// TRUST messages omit it) must NOT fall back to diffing against the
+    /// CIF-derived `scheduled_arrival`/`scheduled_departure` -- that
+    /// fallback is exactly the cross-basis bug this fix removes. Instead
+    /// `delay_minutes` is `None` ("delay unknown"), matching this
+    /// function's established "don't guess when data is incomplete"
+    /// convention (the same convention behind the `_ => None` arm and the
+    /// "silently drops" test above).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                build_journey_stops_delay_is_none_when_events_own_planned_timestamp_is_missing \
+                -- --ignored --test-threads=1`"]
+    async fn build_journey_stops_delay_is_none_when_events_own_planned_timestamp_is_missing() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-08".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-NOPLAN", service_date)
+                .await
+                .expect("find_or_create_train");
+
+        crate::data::queries::upsert_stanox_crs(
+            &pool,
+            &[
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JRN-NOPLAN-1".to_string(),
+                    crs: "PAD".to_string(),
+                    tiploc: "TEST-JRN-NOPLAN-ORIGIN".to_string(),
+                    station_name: "PADDINGTON".to_string(),
+                    source_sequence: 1,
+                },
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JRN-NOPLAN-2".to_string(),
+                    crs: "TSD".to_string(),
+                    tiploc: "TEST-JRN-NOPLAN-MID".to_string(),
+                    station_name: "TEST STATION D".to_string(),
+                    source_sequence: 1,
+                },
+            ],
+        )
+        .await
+        .expect("seed stanox_crs");
+
+        let calling_points = serde_json::json!([
+            {
+                "tiploc": "TEST-JRN-NOPLAN-ORIGIN",
+                "kind": "Origin",
+                "bookedArrival": null,
+                "bookedDeparture": "08:00:00",
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            },
+            {
+                "tiploc": "TEST-JRN-NOPLAN-MID",
+                "kind": "Terminate",
+                "bookedArrival": "10:00:00",
+                "bookedDeparture": null,
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            }
+        ]);
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+
+        // `planned_timestamp` explicitly NULL, `actual_timestamp` present.
+        sqlx::query(
+            "INSERT INTO train_movement_events \
+                (trains_id, dedup_key, msg_type, event_type, loc_crs, planned_timestamp, \
+                 actual_timestamp, variation_status, raw_body) \
+             VALUES ($1, 'k-noplan-1', '0001', 'ARRIVAL', 'TSD', NULL, \
+                     '2026-09-08T09:06:00Z', 'LATE', '{}'::jsonb)",
+        )
+        .bind(trains_id)
+        .execute(&pool)
+        .await
+        .expect("seed train_movement_events");
+
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-NOPLAN",
+            service_date,
+            Some(&calling_points),
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops from calling_points_json");
+
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[1].crs.as_deref(), Some("TSD"));
+        assert_eq!(
+            stops[1].actual_arrival,
+            "2026-09-08T09:06:00Z".parse().ok(),
+            "the actual time itself is still shown even without a planned_timestamp"
+        );
+        assert_eq!(
+            stops[1].delay_minutes, None,
+            "no planned_timestamp on this event -> delay unknown, NOT a fallback diff \
+             against the CIF-derived scheduled_arrival (which would reintroduce the \
+             cross-basis bug this fix removes)"
+        );
+
+        sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-NOPLAN-%'")
+            .execute(&pool)
+            .await
+            .ok();
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
             .execute(&pool)
