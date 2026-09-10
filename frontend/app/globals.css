@@ -802,6 +802,23 @@ body {
     color-mix(in srgb, var(--mantine-color-grape-6) 6%, transparent) 0%,
     transparent 70vh
   );
+  /* Sticky footer. `<body>`'s direct rendered children (app/layout.tsx --
+     `AutoRefresh`/`ColorSchemeMeta`/`ServiceWorkerRegister` all return
+     `null`, and `ConnectivityMonitor`/`AppMantineProvider` are plain
+     context providers with no DOM wrapper of their own) are the nav
+     `Box`, the `<Container component="main">`, and `OpenDataAttribution`'s
+     `<footer>` -- in that order, with no viewport-relative sizing
+     anywhere in the chain. That left the footer sitting immediately after
+     whatever content a page had, rather than pinned to the bottom of a
+     short/tall viewport. `min-height: 100vh` guarantees this column is at
+     least the full viewport tall; `flex: 1` on the main Container below
+     (app/layout.tsx) then claims all the leftover space, pushing the
+     footer down to the bottom on a short-content page while still letting
+     it fall below the fold naturally -- requiring scroll, not overlapping
+     anything -- once real content exceeds the viewport height. */
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
 }
 
 /* Each `[data-pride='...']` mode picks up the same flag colours its
