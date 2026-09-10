@@ -85,9 +85,15 @@ interface TrainSearchResponse {
  * re-read live from the `dateValue` picker state at render time, which can
  * drift out from under already-displayed rows if the caller moves the date
  * picker without pressing Search again. See `resolvedDate` for turning this
- * into an actual calendar date for a link or an API call. */
+ * into an actual calendar date for a link or an API call.
+ *
+ * `nowFloorCollision` is the `isNowFloorCollision` result for THIS search,
+ * captured at the same submit-time point as `date` and for the same
+ * reason -- `resultsContent` reads it to pick which zero-row copy to show,
+ * and it must describe the search that actually ran, not whatever the form
+ * fields hold by the time the response comes back. */
 type Results =
-  | { rows: TrainSearchRow[]; nextCursor: string | null; date: string }
+  | { rows: TrainSearchRow[]; nextCursor: string | null; date: string; nowFloorCollision: boolean }
   | 'unpublished'
   | 'error'
   | null;
@@ -100,6 +106,41 @@ type Results =
  * read of `dateValue`. */
 function resolvedDate(rawDate: string): string {
   return rawDate || dayjs().format('YYYY-MM-DD');
+}
+
+/** Whether a zero-row search result is explained by the backend's implicit
+ * "now-forward" floor on today's date colliding with an explicit upper-
+ * bound time filter that has already passed, rather than there genuinely
+ * being no matching trains. The backend always excludes already-departed
+ * trains when the searched date is today, and ANDs that silently together
+ * with any explicit `to`/`destination_to` the caller supplied -- so a
+ * plausible-looking window typed for today (e.g. `to=12:00` when it is
+ * already 15:00) can come back empty for a reason the generic "no matches"
+ * copy doesn't explain. See this component's own doc comment.
+ *
+ * True only when the search's effective date is TODAY and at least one
+ * explicit upper bound (`to`, or `destinationArrivalTo` when a destination
+ * was set) is strictly earlier than the current time. Takes every input
+ * explicitly, rather than reading `dayjs()`/live state itself, so the
+ * caller can pass values captured once at submit time -- matching this
+ * file's existing `submittedDateValue` pattern -- instead of a live read
+ * that could drift from what was actually searched. */
+function isNowFloorCollision(params: {
+  effectiveDate: string;
+  today: string;
+  nowTime: string;
+  toTime: string;
+  destinationCrs: string;
+  destinationArrivalTo: string;
+}): boolean {
+  const { effectiveDate, today, nowTime, toTime, destinationCrs, destinationArrivalTo } = params;
+  if (effectiveDate !== today) return false;
+  const upperBounds = [toTime.trim()];
+  // `destination_to` only ever reaches the backend when `destination` is
+  // set (see `searchParams()`), so it only counts as an active upper bound
+  // here under the same condition.
+  if (destinationCrs.trim()) upperBounds.push(destinationArrivalTo.trim());
+  return upperBounds.some((bound) => TIME_PATTERN.test(bound) && bound < nowTime);
 }
 
 /** Calling-point-first, whole-network train search -- the `/trains` page's
@@ -118,22 +159,36 @@ function resolvedDate(rawDate: string): string {
  * those gaps, and this component links to it explicitly.
  *
  * Filter set, and why it stops here: Station is required (it is the
- * server-side search key). Origin, Destination, Date and a From/To time
- * range are all optional. There is no Operator filter -- CIF rows carry
- * no operator field at all, an explicit non-goal, not an omission to fill
- * in later. Date defaults to today and is bounded to a roughly week-either-
- * side window (`crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
+ * server-side search key). Origin, Destination, Date and an
+ * "Earliest departure"/"Latest departure" time range are all optional.
+ * There is no Operator filter -- CIF rows carry no operator field at all,
+ * an explicit non-goal, not an omission to fill in later. Date defaults to
+ * today and is bounded to a roughly week-either-side window
+ * (`crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
  * `SEARCH_WINDOW_BACKWARD_DAYS`) -- see
  * docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md.
  *
- * A second, independent time-range pair -- "Arrival from"/"Arrival to" --
- * filters on when the train reaches Destination, as opposed to From/To
- * above, which stay scoped to Station. It only renders once Destination is
- * filled in: an arrival-time filter with nothing named to arrive at is
- * ambiguous, and the backend 400s exactly that combination (see
- * `crates/api/src/routes/trains.rs`'s own validation), so this component
- * never lets the caller construct it. See
- * docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md.
+ * "Earliest departure"/"Latest departure" are deliberately NOT named
+ * "From"/"To": that wording collided with the separate "Departing from"
+ * station field above it -- a place and a time range sharing the word
+ * "from" -- which live testing found genuinely confusing (a time range
+ * read as if it were about the "Departing from" station rather than about
+ * Station). Every one of these four time fields now also carries a
+ * `description` naming the specific station it is scoped to, for the same
+ * reason.
+ *
+ * A second, independent time-range pair -- "Earliest arrival"/"Latest
+ * arrival" -- filters on when the train reaches Destination, as opposed to
+ * "Earliest departure"/"Latest departure" above, which stay scoped to
+ * Station. It only renders once Destination is filled in: an arrival-time
+ * filter with nothing named to arrive at is ambiguous, and the backend
+ * 400s exactly that combination (see `crates/api/src/routes/trains.rs`'s
+ * own validation), so this component never lets the caller construct it.
+ * See docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md.
+ *
+ * A zero-row result for today's date gets one of two different messages:
+ * see `isNowFloorCollision`'s doc comment for why a plain "no matches"
+ * would sometimes be misleading.
  *
  * Fetches through the same-origin `/api/*` proxy, like every other Client
  * Component in this app (`API_BASE_URL` is server-only). */
@@ -199,6 +254,15 @@ export function TrainSearchForm({
   const manualHref = attachTicketId !== undefined ? `/track?ticketId=${attachTicketId}` : '/track';
   const { minDate, maxDate } = dateWindow();
 
+  // What the "Earliest/Latest departure" and "Earliest/Latest arrival"
+  // fields' `description`s name as the station they are scoped to --
+  // preferring the actual entered CRS (so the helper text is concrete, e.g.
+  // "RDG") and falling back to naming the field above it when nothing valid
+  // has been entered yet, so the sentence still reads naturally.
+  const stationDisplay = stationValid ? stationCrs.trim().toUpperCase() : 'Station above';
+  const destinationDisplay =
+    destinationValid && destinationCrs.trim() ? destinationCrs.trim().toUpperCase() : 'Terminating at above';
+
   /** The current filter set as query parameters. Shared by the initial
    * search and by "Load more" so that page 2 is unambiguously a
    * continuation of page 1's query. */
@@ -232,6 +296,17 @@ export function TrainSearchForm({
     // in flight. Mirrors what `searchParams()` itself just read into the
     // request that's about to go out.
     const submittedDateValue = dateValue;
+    // Same "captured synchronously, before the `await`" reasoning as
+    // `submittedDateValue` above: this describes the search that is about
+    // to run, not whatever the fields hold once the response comes back.
+    const nowFloorCollision = isNowFloorCollision({
+      effectiveDate: resolvedDate(submittedDateValue || ''),
+      today: dayjs().format('YYYY-MM-DD'),
+      nowTime: dayjs().format('HH:mm'),
+      toTime,
+      destinationCrs,
+      destinationArrivalTo,
+    });
     try {
       const response = await fetch(`/api/trains/search?${searchParams().toString()}`);
       if (response.status === 404) {
@@ -244,7 +319,12 @@ export function TrainSearchForm({
         return;
       }
       const body: TrainSearchResponse = await response.json();
-      setResults({ rows: body.results, nextCursor: body.nextCursor, date: submittedDateValue || '' });
+      setResults({
+        rows: body.results,
+        nextCursor: body.nextCursor,
+        date: submittedDateValue || '',
+        nowFloorCollision,
+      });
     } catch {
       setResults('error');
     } finally {
@@ -277,7 +357,7 @@ export function TrainSearchForm({
       if (!response.ok) {
         setResults((current) =>
           current !== null && current !== 'error' && current !== 'unpublished'
-            ? { rows: current.rows, nextCursor: null, date: current.date }
+            ? { rows: current.rows, nextCursor: null, date: current.date, nowFloorCollision: current.nowFloorCollision }
             : current,
         );
         return;
@@ -285,13 +365,18 @@ export function TrainSearchForm({
       const body: TrainSearchResponse = await response.json();
       setResults((current) =>
         current !== null && current !== 'error' && current !== 'unpublished'
-          ? { rows: [...current.rows, ...body.results], nextCursor: body.nextCursor, date: current.date }
+          ? {
+              rows: [...current.rows, ...body.results],
+              nextCursor: body.nextCursor,
+              date: current.date,
+              nowFloorCollision: current.nowFloorCollision,
+            }
           : current,
       );
     } catch {
       setResults((current) =>
         current !== null && current !== 'error' && current !== 'unpublished'
-          ? { rows: current.rows, nextCursor: null, date: current.date }
+          ? { rows: current.rows, nextCursor: null, date: current.date, nowFloorCollision: current.nowFloorCollision }
           : current,
       );
     } finally {
@@ -340,7 +425,9 @@ export function TrainSearchForm({
     if (results.rows.length === 0) {
       return (
         <Text size="sm" c="dimmed">
-          No scheduled trains match those filters right now.
+          {results.nowFloorCollision
+            ? 'Your search window has already passed today — try a later time range, remove the date filter, or search a future date.'
+            : 'No scheduled trains match those filters right now.'}
         </Text>
       );
     }
@@ -450,15 +537,17 @@ export function TrainSearchForm({
       />
       <Group grow align="flex-start">
         <TextInput
-          label="From (optional)"
+          label="Earliest departure (optional)"
           placeholder="09:00"
+          description={`Only trains at ${stationDisplay} at or after this time.`}
           value={fromTime}
           onChange={(event) => setFromTime(event.currentTarget.value)}
           error={fromTime.length > 0 && !fromValid ? 'Must be a time like 09:00' : null}
         />
         <TextInput
-          label="To (optional)"
+          label="Latest departure (optional)"
           placeholder="12:00"
+          description={`Only trains at ${stationDisplay} at or before this time.`}
           value={toTime}
           onChange={(event) => setToTime(event.currentTarget.value)}
           error={toTime.length > 0 && !toValid ? 'Must be a time like 12:00' : null}
@@ -467,9 +556,9 @@ export function TrainSearchForm({
       {destinationCrs.trim() !== '' && (
         <Group grow align="flex-start">
           <TextInput
-            label="Arrival from (optional)"
+            label="Earliest arrival (optional)"
             placeholder="09:00"
-            description="When the train reaches Terminating at above -- separate from From/To, which are about Station above."
+            description={`Only trains reaching ${destinationDisplay} at or after this time -- separate from Earliest/Latest departure above, which are about ${stationDisplay}.`}
             value={destinationArrivalFrom}
             onChange={(event) => setDestinationArrivalFrom(event.currentTarget.value)}
             error={
@@ -479,8 +568,9 @@ export function TrainSearchForm({
             }
           />
           <TextInput
-            label="Arrival to (optional)"
+            label="Latest arrival (optional)"
             placeholder="09:30"
+            description={`Only trains reaching ${destinationDisplay} at or before this time.`}
             value={destinationArrivalTo}
             onChange={(event) => setDestinationArrivalTo(event.currentTarget.value)}
             error={
