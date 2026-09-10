@@ -251,6 +251,23 @@ describe('TrackedTrainByUidPage success path', () => {
     );
     expect(screen.getByRole('link', { name: 'Find a train' })).toHaveAttribute('href', '/trains');
   });
+
+  // `PublicTrainState.trainUid`/`serviceDate` come straight from the route
+  // segments this page was fetched by, so a real Real Time Trains link is
+  // always buildable here -- see `components/RealTimeTrainsLink.tsx` for
+  // where the URL format was confirmed and the `trainUid`-nullability
+  // gating that component itself implements.
+  it('links out to the matching Real Time Trains service page', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
+    await renderPage();
+    const link = screen.getByRole('link', { name: /View on Real Time Trains/ });
+    expect(link).toHaveAttribute(
+      'href',
+      'https://www.realtimetrains.co.uk/service/gb-nr:W12345/2026-08-31/detailed',
+    );
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
 });
 
 describe('TrackedTrainByUidPage tracking overlay', () => {
