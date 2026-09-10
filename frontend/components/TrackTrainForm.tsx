@@ -42,6 +42,62 @@ function matchesOperator(rowOperator: string, operator: string): boolean {
   return rowOperator.toUpperCase() === trimmed.toUpperCase();
 }
 
+/** How many hours a same-day combination of an LDBWS `DepartureRow.scheduled`
+ * "HH:MM" with TODAY's date can land before real wall-clock "now" before
+ * `resolveLdbwsDepartureDate` (below) judges it to actually be tomorrow
+ * instead. `DepartureRow` carries no date/day-offset field at all (see its
+ * own doc comment), so the only signal available to tell "a genuinely
+ * same-day departure that's already left" apart from "a departure that's
+ * rolled past local midnight and is really tomorrow" is how far in the past
+ * the naive same-day combination lands. `crates/poller-ldbws/src/main.rs`'s
+ * `fetch_departures`/`fetch_departures_once` calls Darwin's
+ * `GetDepBoardWithDetails` with only `numRows` set -- no `timeOffset`/
+ * `timeWindow` override -- so every row on the board is governed by
+ * Darwin's own default near-term look-ahead window (on the order of ~2
+ * hours): a live board never shows a departure that has already left, and
+ * never reaches further into the future than that window either. `4`
+ * comfortably clears that ~2-hour window with margin for clock skew between
+ * the browser and Darwin/the poller and for the board being briefly stale
+ * by the time it's rendered/clicked, while staying well short of a full
+ * 24h so a genuinely-stale same-day row is never misread as "tomorrow"
+ * just because it's a few hours old. Mirrors the reasoning
+ * `poller-ldbws::schema::compute_delay_minutes` already applies to these
+ * same `std`/`etd` fields for its own midnight-wraparound handling (see
+ * that function's doc comment) -- same bare-"HH:MM"-no-date shape, same
+ * data source, same underlying fix, just applied client-side here since
+ * `DepartureRow` has no day-offset field to compute server-side. */
+const LDBWS_PAST_THRESHOLD_HOURS = 4;
+
+/** How many days past `now`'s own calendar date an LDBWS `DepartureRow`'s
+ * bare `"HH:MM"` `scheduled` genuinely falls on: `0` (today) unless
+ * combining it with today's date would land more than
+ * `LDBWS_PAST_THRESHOLD_HOURS` hours in the PAST relative to `now`, in
+ * which case it's `1` (tomorrow) -- see that constant's own doc comment for
+ * why that threshold. Only ever corrects forward, never backward: a live
+ * upcoming-departures board never shows an already-passed departure, so
+ * there is no valid scenario where a row is really YESTERDAY relative to
+ * `now` -- unlike CIF's `dayOffset` (a known fact carried on the row
+ * itself), this is inferred, and inference only ever needs to go one
+ * direction here. Deliberately compares against `now` (real wall-clock
+ * time), not whatever `scheduledDeparture` the user may have already typed
+ * -- the two are unrelated: this answers "what calendar day is this row
+ * really on", not "has the user's chosen time already passed it". */
+function ldbwsDayOffset(scheduled: string, now: dayjs.Dayjs): 0 | 1 {
+  const [hh, mm] = scheduled.split(':');
+  const sameDay = dayjs(`${now.format('YYYY-MM-DD')} ${hh}:${mm}:00`);
+  return now.diff(sameDay, 'hour', true) > LDBWS_PAST_THRESHOLD_HOURS ? 1 : 0;
+}
+
+/** Resolves the real calendar date (`'YYYY-MM-DD'`) an LDBWS
+ * `DepartureRow.scheduled` "HH:MM" falls on, relative to `now` -- `now.add(
+ * ldbwsDayOffset(scheduled, now), 'day')`, formatted. See `ldbwsDayOffset`'s
+ * own doc comment for the reasoning; this is the piece `pickDeparture` and
+ * the LDBWS branch of `matchesScheduledDeparture`'s filtering both need,
+ * factored out so they can't drift out of sync with each other. */
+function resolveLdbwsDepartureDate(scheduled: string, now: dayjs.Dayjs): string {
+  return now.add(ldbwsDayOffset(scheduled, now), 'day').format('YYYY-MM-DD');
+}
+
 /** True unless `scheduledDeparture` is resolved AND the row's own
  * departure time is strictly before it -- filters out departures that
  * have already passed relative to whatever the user has typed/picked,
@@ -61,18 +117,22 @@ function matchesOperator(rowOperator: string, operator: string): boolean {
  * row, same "unknown means don't filter" posture as the other two
  * matchers.
  *
- * `rowDayOffset` defaults to `0`, matching `DepartureRow`'s (LDBWS) live
- * board rows, which carry no day-offset concept at all -- Darwin has no
- * CIF-schedule linkage to derive one from, so the LDBWS call site below
- * never passes it and every one of those rows is still always treated as
- * "today", the pre-existing behavior. Only the CIF call site passes a real
- * `row.dayOffset` -- see `ScheduleDepartureRow.dayOffset`'s own doc
- * comment for why CIF rows, and only CIF rows, can carry one. Without this
- * parameter, a genuinely-future post-midnight CIF row (e.g. `dayOffset: 1`,
- * `00:07`) would compare as "today 00:07", read as already-passed relative
- * to a same-day `scheduledDeparture`, and be silently filtered out of the
- * picker entirely -- never even reachable to click, regardless of how
- * `pickCifDeparture` itself computes the date once picked. */
+ * `rowDayOffset` defaults to `0`. Two call sites, two different ways of
+ * arriving at a value: the CIF call site passes a real, known
+ * `row.dayOffset` -- see `ScheduleDepartureRow.dayOffset`'s own doc comment
+ * for why CIF rows, and only CIF rows, can carry one straight from the
+ * server. The LDBWS call site has no such field to read (`DepartureRow`
+ * carries no day-offset concept at all -- Darwin has no CIF-schedule
+ * linkage to derive one from), so it instead passes an INFERRED value, via
+ * `ldbwsDayOffset` -- see that function's own doc comment for the
+ * midnight-wraparound heuristic behind it. Without a nonzero offset from
+ * either source, a genuinely-future post-midnight row (CIF `dayOffset: 1`,
+ * or an LDBWS row `ldbwsDayOffset` infers as tomorrow -- e.g. `00:07`
+ * viewed at 23:50) would compare as "today 00:07", read as already-passed
+ * relative to a same-day `scheduledDeparture`, and be silently filtered out
+ * of the picker entirely -- never even reachable to click, regardless of
+ * how `pickCifDeparture`/`pickDeparture` themselves compute the date once
+ * picked. */
 function matchesScheduledDeparture(
   rowScheduled: string,
   scheduledDeparture: string | null,
@@ -283,18 +343,26 @@ export function TrackTrainForm({
 
   /** Fills Destination/Operator/Scheduled-departure from a picked, real
    * live departure -- without submitting, so the user can still review/
-   * edit before tracking. Combines the departure's `"HH:MM"` with *today's*
-   * browser-local date into the exact `'YYYY-MM-DD HH:mm:ss'` string shape
-   * `scheduledDeparture` already expects -- same construction as the "Now"
-   * button above (`dayjs().format('YYYY-MM-DD HH:mm:ss')`), and the same
+   * edit before tracking. Combines the departure's `"HH:MM"` with its
+   * REAL browser-local calendar date, via `resolveLdbwsDepartureDate`, into
+   * the exact `'YYYY-MM-DD HH:mm:ss'` string shape `scheduledDeparture`
+   * already expects -- same construction as the "Now" button above
+   * (`dayjs().format('YYYY-MM-DD HH:mm:ss')`), and the same
    * browser-local-date assumption it already makes (not Europe/London
-   * specifically) -- not a new limitation this picker introduces. */
+   * specifically) -- not a new limitation this picker introduces.
+   *
+   * Not always literally "today": a row picked from a live board viewed
+   * near local midnight can genuinely be tomorrow (e.g. viewing the board
+   * at 23:50 and picking a `"00:07"` row -- a real, near-term, 17-minutes-
+   * away departure, not something ~23h43m in the past) --
+   * `resolveLdbwsDepartureDate`'s own doc comment explains the heuristic
+   * this relies on to tell that case apart from a normal same-day pick. */
   function pickDeparture(row: DepartureRow) {
     setDestinationCrs(row.destinationCrs);
     setOperator(row.operator);
     const [hh, mm] = row.scheduled.split(':');
-    const today = dayjs().format('YYYY-MM-DD');
-    setScheduledDeparture(`${today} ${hh}:${mm}:00`);
+    const date = resolveLdbwsDepartureDate(row.scheduled, dayjs());
+    setScheduledDeparture(`${date} ${hh}:${mm}:00`);
   }
 
   /** CIF-derived sibling of `pickDeparture` -- fills only
@@ -311,9 +379,13 @@ export function TrackTrainForm({
    * is genuinely TOMORROW relative to when the search itself ran, and
    * combining it with bare "today" would create a pin dated the WRONG
    * calendar day (see `ScheduleDepartureRow.dayOffset`'s own doc comment).
-   * `pickDeparture` has no equivalent fix available: `DepartureRow` (LDBWS)
-   * carries no day-offset field at all, because Darwin's live board has no
-   * CIF-schedule linkage to derive one from. */
+   * `pickDeparture` (LDBWS, above) has the analogous fix,
+   * `resolveLdbwsDepartureDate` -- `DepartureRow` still carries no day-offset
+   * FIELD (Darwin's live board has no CIF-schedule linkage to derive one
+   * from), but unlike here, where the day offset is a known fact read
+   * straight off the row, LDBWS instead INFERS it from a bounded-look-ahead
+   * heuristic -- see that function's own doc comment for why that's
+   * reliable for this specific data source. */
   function pickCifDeparture(row: ScheduleDepartureRow) {
     if (row.destinationCrs !== null) setDestinationCrs(row.destinationCrs);
     const [hh, mm] = row.scheduled.split(':');
@@ -445,11 +517,19 @@ export function TrackTrainForm({
       );
     }
     if (picker.source === 'ldbws') {
+      // `ldbwsDayOffset`, not a bare `0`: without it, a near-midnight row
+      // that's really tomorrow (see `ldbwsDayOffset`'s own doc comment)
+      // would compare as "today HH:MM", read as already-passed relative to
+      // a same-day `scheduledDeparture`, and be silently filtered out here
+      // before it could ever be reached to click -- the same exposure
+      // `matchesScheduledDeparture`'s own doc comment already documents for
+      // the CIF side.
+      const now = dayjs();
       const filtered = picker.rows.filter(
         (row) =>
           matchesDestination(row.destinationCrs, destinationCrs) &&
           matchesOperator(row.operator, operator) &&
-          matchesScheduledDeparture(row.scheduled, scheduledDeparture),
+          matchesScheduledDeparture(row.scheduled, scheduledDeparture, ldbwsDayOffset(row.scheduled, now)),
       );
       if (filtered.length === 0) {
         return (
