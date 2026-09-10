@@ -1202,9 +1202,12 @@ async fn schedule_destination_departures_published_for(
 /// are BOTH optional filters layered on top, independent of each other and
 /// of `station_crs`.
 ///
-/// `scheduled_from` is an INCLUSIVE lower bound, the caller's already-
-/// combined `max(now, from)`. `to_time` is an INCLUSIVE upper bound. Both
-/// carry the exact same reasoning as the predecessor query.
+/// `scheduled_from` is an INCLUSIVE lower bound: the caller's explicit
+/// `from` when one was given, or its own `now`-forward default otherwise
+/// (see `crates/api/src/routes/trains.rs`'s own doc comment for that
+/// default's rules) -- either way, a single already-resolved value with no
+/// further flooring done by this function. `to_time` is an INCLUSIVE upper
+/// bound. Both carry the exact same reasoning as the predecessor query.
 ///
 /// `destination_arrival_from`/`destination_arrival_to` are a SEPARATE
 /// inclusive bound pair on `destination_arrival`, independent of

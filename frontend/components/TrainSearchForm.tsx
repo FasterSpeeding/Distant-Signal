@@ -85,15 +85,9 @@ interface TrainSearchResponse {
  * re-read live from the `dateValue` picker state at render time, which can
  * drift out from under already-displayed rows if the caller moves the date
  * picker without pressing Search again. See `resolvedDate` for turning this
- * into an actual calendar date for a link or an API call.
- *
- * `nowFloorCollision` is the `isNowFloorCollision` result for THIS search,
- * captured at the same submit-time point as `date` and for the same
- * reason -- `resultsContent` reads it to pick which zero-row copy to show,
- * and it must describe the search that actually ran, not whatever the form
- * fields hold by the time the response comes back. */
+ * into an actual calendar date for a link or an API call. */
 type Results =
-  | { rows: TrainSearchRow[]; nextCursor: string | null; date: string; nowFloorCollision: boolean }
+  | { rows: TrainSearchRow[]; nextCursor: string | null; date: string }
   | 'unpublished'
   | 'error'
   | null;
@@ -106,41 +100,6 @@ type Results =
  * read of `dateValue`. */
 function resolvedDate(rawDate: string): string {
   return rawDate || dayjs().format('YYYY-MM-DD');
-}
-
-/** Whether a zero-row search result is explained by the backend's implicit
- * "now-forward" floor on today's date colliding with an explicit upper-
- * bound time filter that has already passed, rather than there genuinely
- * being no matching trains. The backend always excludes already-departed
- * trains when the searched date is today, and ANDs that silently together
- * with any explicit `to`/`destination_to` the caller supplied -- so a
- * plausible-looking window typed for today (e.g. `to=12:00` when it is
- * already 15:00) can come back empty for a reason the generic "no matches"
- * copy doesn't explain. See this component's own doc comment.
- *
- * True only when the search's effective date is TODAY and at least one
- * explicit upper bound (`to`, or `destinationArrivalTo` when a destination
- * was set) is strictly earlier than the current time. Takes every input
- * explicitly, rather than reading `dayjs()`/live state itself, so the
- * caller can pass values captured once at submit time -- matching this
- * file's existing `submittedDateValue` pattern -- instead of a live read
- * that could drift from what was actually searched. */
-function isNowFloorCollision(params: {
-  effectiveDate: string;
-  today: string;
-  nowTime: string;
-  toTime: string;
-  destinationCrs: string;
-  destinationArrivalTo: string;
-}): boolean {
-  const { effectiveDate, today, nowTime, toTime, destinationCrs, destinationArrivalTo } = params;
-  if (effectiveDate !== today) return false;
-  const upperBounds = [toTime.trim()];
-  // `destination_to` only ever reaches the backend when `destination` is
-  // set (see `searchParams()`), so it only counts as an active upper bound
-  // here under the same condition.
-  if (destinationCrs.trim()) upperBounds.push(destinationArrivalTo.trim());
-  return upperBounds.some((bound) => TIME_PATTERN.test(bound) && bound < nowTime);
 }
 
 /** Calling-point-first, whole-network train search -- the `/trains` page's
@@ -185,10 +144,6 @@ function isNowFloorCollision(params: {
  * 400s exactly that combination (see `crates/api/src/routes/trains.rs`'s
  * own validation), so this component never lets the caller construct it.
  * See docs/superpowers/specs/2026-09-08-destination-arrival-time-filter-design.md.
- *
- * A zero-row result for today's date gets one of two different messages:
- * see `isNowFloorCollision`'s doc comment for why a plain "no matches"
- * would sometimes be misleading.
  *
  * Fetches through the same-origin `/api/*` proxy, like every other Client
  * Component in this app (`API_BASE_URL` is server-only). */
@@ -296,17 +251,6 @@ export function TrainSearchForm({
     // in flight. Mirrors what `searchParams()` itself just read into the
     // request that's about to go out.
     const submittedDateValue = dateValue;
-    // Same "captured synchronously, before the `await`" reasoning as
-    // `submittedDateValue` above: this describes the search that is about
-    // to run, not whatever the fields hold once the response comes back.
-    const nowFloorCollision = isNowFloorCollision({
-      effectiveDate: resolvedDate(submittedDateValue || ''),
-      today: dayjs().format('YYYY-MM-DD'),
-      nowTime: dayjs().format('HH:mm'),
-      toTime,
-      destinationCrs,
-      destinationArrivalTo,
-    });
     try {
       const response = await fetch(`/api/trains/search?${searchParams().toString()}`);
       if (response.status === 404) {
@@ -323,7 +267,6 @@ export function TrainSearchForm({
         rows: body.results,
         nextCursor: body.nextCursor,
         date: submittedDateValue || '',
-        nowFloorCollision,
       });
     } catch {
       setResults('error');
@@ -357,7 +300,7 @@ export function TrainSearchForm({
       if (!response.ok) {
         setResults((current) =>
           current !== null && current !== 'error' && current !== 'unpublished'
-            ? { rows: current.rows, nextCursor: null, date: current.date, nowFloorCollision: current.nowFloorCollision }
+            ? { rows: current.rows, nextCursor: null, date: current.date }
             : current,
         );
         return;
@@ -369,14 +312,13 @@ export function TrainSearchForm({
               rows: [...current.rows, ...body.results],
               nextCursor: body.nextCursor,
               date: current.date,
-              nowFloorCollision: current.nowFloorCollision,
             }
           : current,
       );
     } catch {
       setResults((current) =>
         current !== null && current !== 'error' && current !== 'unpublished'
-          ? { rows: current.rows, nextCursor: null, date: current.date, nowFloorCollision: current.nowFloorCollision }
+          ? { rows: current.rows, nextCursor: null, date: current.date }
           : current,
       );
     } finally {
@@ -425,9 +367,7 @@ export function TrainSearchForm({
     if (results.rows.length === 0) {
       return (
         <Text size="sm" c="dimmed">
-          {results.nowFloorCollision
-            ? 'Your search window has already passed today — try a later time range, remove the date filter, or search a future date.'
-            : 'No scheduled trains match those filters right now.'}
+          No scheduled trains match those filters right now.
         </Text>
       );
     }
