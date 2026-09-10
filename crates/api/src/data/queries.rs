@@ -964,6 +964,21 @@ pub struct ScheduleDestinationDeparturesRow {
     /// are optional-by-default for self-describing formats like JSON),
     /// same as `true_origin_crs`.
     pub destination_arrival: Option<chrono::NaiveTime>,
+    /// How many calendar days past `service_date` `destination_arrival`
+    /// actually falls on -- mirrors
+    /// `schedule_query::DestinationDeparture::destination_arrival_day_offset`
+    /// verbatim (this row is built directly from one, see
+    /// `schedule-reference::schedule_destination_departures_rows`). NOT the
+    /// same value as this row's own `day_offset` above in general: on a
+    /// genuine overnight schedule, the DEPARTING calling point this row
+    /// represents and the schedule's TERMINATING calling point can fall on
+    /// two different calendar days (see that struct's own doc comment for
+    /// the live-confirmed c2c UID `F49687` example). `#[serde(default)]`
+    /// for the same rolling-deploy-safety reason `day_offset` above tolerates
+    /// a missing key -- a row published before this field existed still
+    /// deserializes, as `0` ("assume same day as the departure").
+    #[serde(default)]
+    pub destination_arrival_day_offset: i16,
 }
 
 /// An opaque-to-the-caller position in one station's ordered results: the
@@ -1052,6 +1067,10 @@ pub async fn upsert_schedule_destination_departures(
         rows.iter().map(|r| r.true_origin_crs.as_deref()).collect();
     let destination_arrival: Vec<Option<chrono::NaiveTime>> =
         rows.iter().map(|r| r.destination_arrival).collect();
+    let destination_arrival_day_offsets: Vec<i16> = rows
+        .iter()
+        .map(|r| r.destination_arrival_day_offset)
+        .collect();
 
     // Normally exactly one date. Handled as a set anyway so a batch that
     // straddles a rail-day boundary replaces both days rather than half of
@@ -1070,8 +1089,8 @@ pub async fn upsert_schedule_destination_departures(
 
     let result = sqlx::query(
         "INSERT INTO schedule_destination_departures \
-            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, destination_arrival) \
-         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[]) \
+            (service_date, destination_crs, scheduled, day_offset, train_uid, origin_crs, true_origin_crs, destination_arrival, destination_arrival_day_offset) \
+         SELECT * FROM UNNEST($1::date[], $2::text[], $3::time[], $4::smallint[], $5::text[], $6::text[], $7::text[], $8::time[], $9::smallint[]) \
          ON CONFLICT DO NOTHING",
     )
     .bind(&service_dates)
@@ -1082,6 +1101,7 @@ pub async fn upsert_schedule_destination_departures(
     .bind(&origin_crs)
     .bind(&true_origin_crs)
     .bind(&destination_arrival)
+    .bind(&destination_arrival_day_offsets)
     .execute(&mut *tx)
     .await?;
 
@@ -1226,9 +1246,10 @@ pub async fn search_schedule_calling_point_departures(
         Option<String>,
         chrono::NaiveTime,
         Option<chrono::NaiveTime>,
+        i16,
     )> = sqlx::query_as(
         r#"
-            SELECT train_uid, destination_crs, true_origin_crs, scheduled, destination_arrival
+            SELECT train_uid, destination_crs, true_origin_crs, scheduled, destination_arrival, destination_arrival_day_offset
             FROM schedule_destination_departures
             WHERE service_date = $1
               AND origin_crs = $2
@@ -1277,7 +1298,7 @@ pub async fn search_schedule_calling_point_departures(
 
     let next_cursor = if has_more {
         page_rows.last().map(
-            |(train_uid, _, _, scheduled, _)| CallingPointDepartureCursor {
+            |(train_uid, _, _, scheduled, _, _)| CallingPointDepartureCursor {
                 scheduled: *scheduled,
                 train_uid: train_uid.clone(),
             },
@@ -1289,13 +1310,21 @@ pub async fn search_schedule_calling_point_departures(
     let departures = page_rows
         .iter()
         .map(
-            |(train_uid, destination_crs, true_origin_crs, scheduled, destination_arrival)| {
+            |(
+                train_uid,
+                destination_crs,
+                true_origin_crs,
+                scheduled,
+                destination_arrival,
+                destination_arrival_day_offset,
+            )| {
                 serde_json::json!({
                     "uid": train_uid,
                     "destination_crs": destination_crs,
                     "true_origin_crs": true_origin_crs,
                     "scheduled": scheduled.format("%H:%M:%S").to_string(),
                     "destination_arrival": destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
+                    "destination_arrival_day_offset": destination_arrival_day_offset,
                 })
             },
         )
@@ -3053,6 +3082,7 @@ mod schedule_destination_departures_query_tests {
             train_uid: train_uid.to_string(),
             origin_crs: origin_crs.to_string(),
             destination_arrival,
+            destination_arrival_day_offset: 0,
             true_origin_crs: true_origin_crs.map(str::to_string),
         }
     }
@@ -3850,6 +3880,7 @@ mod schedule_destination_departures_query_tests {
                     origin_crs: "RDG".to_string(),
                     true_origin_crs: Some("RDG".to_string()),
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date,
@@ -3860,6 +3891,7 @@ mod schedule_destination_departures_query_tests {
                     origin_crs: "SLO".to_string(),
                     true_origin_crs: Some("RDG".to_string()),
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
             ],
         )
@@ -3914,6 +3946,7 @@ mod schedule_destination_departures_query_tests {
                     origin_crs: "LIVST".to_string(),
                     true_origin_crs: Some("LIVST".to_string()),
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
                 ScheduleDestinationDeparturesRow {
                     service_date,
@@ -3924,6 +3957,7 @@ mod schedule_destination_departures_query_tests {
                     origin_crs: "BARKING".to_string(),
                     true_origin_crs: Some("LIVST".to_string()),
                     destination_arrival: None,
+                    destination_arrival_day_offset: 0,
                 },
             ],
         )
