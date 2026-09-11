@@ -1,9 +1,59 @@
 import { Alert, Stack, Text, Title } from '@mantine/core';
+import { notFound } from 'next/navigation';
+import type { Metadata } from 'next';
 import { getGroupJoinPreview, getSession, ApiNotFoundError } from '@/lib/api';
 import { LoginLink } from '@/components/LoginLink';
 import { JoinGroupButton } from '@/components/JoinGroupButton';
 
 export const revalidate = 0;
+
+/** Per-page Open Graph/Twitter/`<title>` metadata for a shared invite link
+ * -- so pasting one into Discord/Slack/iMessage/etc. shows a group-specific
+ * preview rather than generic site metadata. Fetches the same
+ * unauthenticated `getGroupJoinPreview(token)` call the page component
+ * itself makes below; Next's fetch request memoization dedupes the two
+ * into one network call per request (see the equivalent, more detailed
+ * comment on `app/train/[uid]/[date]/page.tsx`'s own `generateMetadata`;
+ * the reasoning is identical here). The unauthenticated call is
+ * deliberate, same as the page component's own: link-unfurler bots never
+ * carry a session cookie, so this is the only way they ever see a real
+ * preview instead of a fallback.
+ *
+ * Same `notFound()`-on-`ApiNotFoundError` handling as the page component's
+ * own "invite link not found" branch below -- `generateMetadata` runs
+ * independently of the page component, so it needs its own equivalent
+ * try/catch rather than relying on the page's. Unlike the page component
+ * (which renders an in-page "invalid or expired" message so a human
+ * visitor gets a helpful explanation), this just 404s: there's no metadata
+ * worth showing for a token that doesn't resolve, and a plain 404 is
+ * exactly what an unfurler bot should see for one. */
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ token: string }>;
+}): Promise<Metadata> {
+  const { token } = await params;
+
+  let preview;
+  try {
+    preview = await getGroupJoinPreview(token);
+  } catch (err) {
+    if (err instanceof ApiNotFoundError) {
+      notFound();
+    }
+    throw err;
+  }
+
+  const title = `Join ${preview.groupName} — Distant Signal`;
+  const description = `${preview.memberCount} member${preview.memberCount === 1 ? '' : 's'} already in ${preview.groupName}. Follow this link to join and share tracked trains with the group.`;
+
+  return {
+    title,
+    description,
+    openGraph: { title, description, type: 'website' },
+    twitter: { card: 'summary', title, description },
+  };
+}
 
 /** `/groups/join/{token}` -- confirm-before-join (spec §2.3): resolves the
  * token to a group preview (works whether or not the visitor is logged in
