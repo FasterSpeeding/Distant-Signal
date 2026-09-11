@@ -35,6 +35,15 @@ pub fn router() -> Router {
             "/groups/{id}",
             axum::routing::get(get_group).put(rename_group).delete(delete_group),
         )
+        .route("/groups/{id}/members", axum::routing::get(list_members))
+        .route(
+            "/groups/{id}/members/{user_id}",
+            axum::routing::delete(remove_member),
+        )
+        .route(
+            "/groups/{id}/members/{user_id}/promote",
+            axum::routing::post(promote_member),
+        )
 }
 
 /// Shared permission gate: `404` if the caller isn't a member of
@@ -215,6 +224,110 @@ async fn delete_group(
         return Err((StatusCode::NOT_FOUND, "no group with that id".to_string()));
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_members(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(group_id): Path<String>,
+) -> Result<Json<Vec<groups::GroupMember>>, (StatusCode, String)> {
+    groups::get_member_role(&app.database, &group_id, &user.id)
+        .await
+        .map_err(internal_error("check group membership"))?
+        .ok_or((StatusCode::NOT_FOUND, "no group with that id".to_string()))?;
+
+    let members = groups::list_members(&app.database, &group_id)
+        .await
+        .map_err(internal_error("list members"))?;
+    Ok(Json(members))
+}
+
+/// `DELETE /groups/{id}/members/{userId}` -- self-removal ("leave") is
+/// always allowed for any member; removing someone ELSE requires
+/// `admin`/`owner`, and can never target the `owner` row regardless of the
+/// caller's own role (spec §3: "an admin can never remove the owner" --
+/// and there is only ever one owner, so this also protects the owner from
+/// a hypothetical second admin/owner-equivalent). The actual
+/// ownership-transfer/departed-cleanup/group-deletion logic lives entirely
+/// in `groups::remove_member` (Task 3); this handler only decides WHETHER
+/// the removal is authorized.
+async fn remove_member(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path((group_id, target_user_id)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let caller_role = groups::get_member_role(&app.database, &group_id, &user.id)
+        .await
+        .map_err(internal_error("check group membership"))?
+        .ok_or((StatusCode::NOT_FOUND, "no group with that id".to_string()))?;
+
+    let is_self = target_user_id == user.id;
+    if !is_self {
+        if !caller_role.can_manage() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "you don't have permission to remove members from this group".to_string(),
+            ));
+        }
+        let target_role = groups::get_member_role(&app.database, &group_id, &target_user_id)
+            .await
+            .map_err(internal_error("check target membership"))?;
+        if target_role == Some(GroupRole::Owner) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "the group owner can't be removed".to_string(),
+            ));
+        }
+    }
+
+    match groups::remove_member(&app.database, &group_id, &target_user_id)
+        .await
+        .map_err(internal_error("remove member"))?
+    {
+        groups::RemoveMemberOutcome::NotAMember => {
+            Err((StatusCode::NOT_FOUND, "no member with that id".to_string()))
+        }
+        groups::RemoveMemberOutcome::Removed { .. } | groups::RemoveMemberOutcome::GroupDeleted => {
+            Ok(StatusCode::NO_CONTENT)
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PromoteResponse {
+    user_id: String,
+    role: GroupRole,
+}
+
+async fn promote_member(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path((group_id, target_user_id)): Path<(String, String)>,
+) -> Result<Json<PromoteResponse>, (StatusCode, String)> {
+    require_role(&app, &group_id, &user.id, GroupRole::is_owner).await?;
+
+    let target_role = groups::get_member_role(&app.database, &group_id, &target_user_id)
+        .await
+        .map_err(internal_error("check target membership"))?
+        .ok_or((StatusCode::NOT_FOUND, "no member with that id".to_string()))?;
+    if target_role != GroupRole::Member {
+        return Err((
+            StatusCode::CONFLICT,
+            "that member is already an admin or the owner".to_string(),
+        ));
+    }
+
+    let promoted = groups::promote_to_admin(&app.database, &group_id, &target_user_id)
+        .await
+        .map_err(internal_error("promote member"))?;
+    if !promoted {
+        return Err((StatusCode::NOT_FOUND, "no member with that id".to_string()));
+    }
+    Ok(Json(PromoteResponse {
+        user_id: target_user_id,
+        role: GroupRole::Admin,
+    }))
 }
 
 #[cfg(test)]
