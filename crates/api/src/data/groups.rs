@@ -367,13 +367,84 @@ mod db_tests {
             .await
             .expect("create group");
 
+        // Seed a train_subscriptions row for testing group_trains cascade
+        let train_sub_id: (i64,) = sqlx::query_as(
+            "INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             VALUES ($1, CURRENT_DATE, 'WOK', NOW()) \
+             RETURNING id",
+        )
+        .bind("TEST-GROUPS-DELETE-OWNER")
+        .fetch_one(&pool)
+        .await
+        .expect("seed train_subscription");
+
+        // Add a group_trains row
+        sqlx::query(
+            "INSERT INTO group_trains (group_id, train_subscription_id, added_by, added_at) \
+             VALUES ($1, $2, $3, NOW())",
+        )
+        .bind(&group_id)
+        .bind(train_sub_id.0)
+        .bind("TEST-GROUPS-DELETE-OWNER")
+        .execute(&pool)
+        .await
+        .expect("add group_trains");
+
+        // Create a group_invite_links row (token is base64-encoded random bytes, using UUID for test)
+        let token = crate::auth::generate_session_token();
+        sqlx::query(
+            "INSERT INTO group_invite_links (token, group_id, created_by, created_at, expires_at) \
+             VALUES ($1, $2, $3, NOW(), NOW() + INTERVAL '7 days')",
+        )
+        .bind(&token)
+        .bind(&group_id)
+        .bind("TEST-GROUPS-DELETE-OWNER")
+        .execute(&pool)
+        .await
+        .expect("create group_invite_links");
+
+        // Delete the group
         let deleted = delete_group(&pool, &group_id).await.expect("delete group");
         assert!(deleted);
 
+        // Assert group_members cascaded
         let role = get_member_role(&pool, &group_id, "TEST-GROUPS-DELETE-OWNER")
             .await
             .expect("query");
-        assert_eq!(role, None, "membership row should have cascaded away");
+        assert_eq!(role, None, "group_members row should have cascaded away");
+
+        // Assert group_trains cascaded
+        let train_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM group_trains WHERE group_id = $1",
+        )
+        .bind(&group_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count group_trains");
+        assert_eq!(
+            train_count.0, 0,
+            "group_trains row should have cascaded away"
+        );
+
+        // Assert group_invite_links cascaded
+        let link_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM group_invite_links WHERE group_id = $1",
+        )
+        .bind(&group_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count group_invite_links");
+        assert_eq!(
+            link_count.0, 0,
+            "group_invite_links row should have cascaded away"
+        );
+
+        // Clean up train_subscriptions (cascade removed group_trains, but not train_subscriptions)
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(train_sub_id.0)
+            .execute(&pool)
+            .await
+            .ok();
 
         cleanup(&pool, &["TEST-GROUPS-DELETE-OWNER"]).await;
     }
