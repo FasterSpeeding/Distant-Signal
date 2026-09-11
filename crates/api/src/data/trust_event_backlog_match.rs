@@ -109,6 +109,22 @@ struct BacklogRow {
 /// Movement (the only kept type that carries a `crs`) and its `train_uid`
 /// column is realistically always NULL. The real train_uid lookup is the
 /// second, explicit query below, by `train_id`.
+///
+/// **Plausibility guard (defense-in-depth against the still-unconfirmed
+/// TRUST timestamp corruption -- see `common::trust_timestamp`'s own doc
+/// comment for the full background):** the matched row's own
+/// `actual_timestamp` is checked against its `received_at` (this
+/// consumer's own wall-clock receipt time, reliable and unaffected by the
+/// corruption -- see `trust_event_backlog`'s migration) via
+/// `common::trust_timestamp::is_plausible_actual_timestamp`. A row
+/// reporting an event that supposedly hadn't happened yet by more than
+/// ordinary clock skew is rejected -- `Ok(None)` is returned, exactly the
+/// same "nothing in the backlog for this pin (yet)" outcome as a genuine
+/// miss, so the caller leaves the pin untouched for
+/// `run_backlog_match_sweep`'s next pass rather than binding it to what
+/// could easily be the wrong train. `actual_timestamp` may be `NULL` (not
+/// every kept row carries one); there is nothing to guard in that case, so
+/// the match proceeds unchanged.
 async fn find_backlog_match(
     pool: &PgPool,
     pin_origin_crs: &str,
@@ -117,8 +133,8 @@ async fn find_backlog_match(
     let window_start = pin_scheduled_departure - MATCH_TOLERANCE;
     let window_end = pin_scheduled_departure + MATCH_TOLERANCE;
 
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT train_id FROM trust_event_backlog \
+    let row: Option<(String, Option<DateTime<Utc>>, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT train_id, actual_timestamp, received_at FROM trust_event_backlog \
          WHERE UPPER(crs) = UPPER($1) AND planned_timestamp BETWEEN $2 AND $3 \
          ORDER BY planned_timestamp LIMIT 1",
     )
@@ -128,9 +144,26 @@ async fn find_backlog_match(
     .fetch_optional(pool)
     .await?;
 
-    let Some((train_id,)) = row else {
+    let Some((train_id, actual_timestamp, received_at)) = row else {
         return Ok(None);
     };
+
+    if let Some(actual_timestamp) = actual_timestamp
+        && !common::trust_timestamp::is_plausible_actual_timestamp(actual_timestamp, received_at)
+    {
+        tracing::warn!(
+            pin_origin_crs,
+            train_id,
+            actual_timestamp = %actual_timestamp,
+            received_at = %received_at,
+            "rejecting a backlog CRS+time match: actual_timestamp is implausibly ahead of \
+             receipt (beyond common::trust_timestamp::MAX_TIMESTAMP_SKEW_AHEAD_OF_RECEIPT) -- \
+             this looks like the still-unconfirmed TRUST timestamp corruption documented in \
+             common::trust_timestamp; leaving the pin unresolved for run_backlog_match_sweep's \
+             next pass rather than binding it to a likely-wrong train"
+        );
+        return Ok(None);
+    }
 
     // Look for an Activation row for the SAME train_id anywhere in the
     // backlog, unscoped by CRS (an Activation carries no location at
@@ -792,6 +825,107 @@ mod db_tests {
 
         sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
             .bind(tracked_train_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// Layer 1's plausibility guard, exercised against the real
+    /// `find_backlog_match` query: a backlog row that would otherwise match
+    /// cleanly on CRS+time is rejected when its own `actual_timestamp` is
+    /// implausibly ahead of its `received_at` -- exactly the shape of the
+    /// still-unconfirmed TRUST timestamp corruption documented in
+    /// `common::trust_timestamp`. The pin must be left `'pending'`, not
+    /// bound to this row's `train_id`, so `run_backlog_match_sweep` can
+    /// retry it later.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                an_implausible_actual_timestamp_is_rejected_and_leaves_the_pin_pending -- --ignored --test-threads=1`"]
+    async fn an_implausible_actual_timestamp_is_rejected_and_leaves_the_pin_pending() {
+        let pool = connect().await;
+        let user_id = "TEST-BACKLOG-IMPLAUSIBLE-USER";
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind("backlog-implausible@example.com")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("seed fixture user");
+
+        let service_date: chrono::NaiveDate = "2026-09-05".parse().unwrap();
+        let scheduled: DateTime<Utc> = "2026-09-05T18:15:00Z".parse().unwrap();
+        // `planned_timestamp` is inside the pin's MATCH_TOLERANCE window --
+        // `find_backlog_match`'s own SQL WHERE clause finds this row -- but
+        // `actual_timestamp` is 60 minutes AHEAD of `received_at`, exactly
+        // the shape of the still-unconfirmed corruption this guard exists
+        // to catch. `received_at` is set explicitly (rather than left to
+        // its `DEFAULT NOW()`) so the fixture is deterministic regardless
+        // of when this test runs.
+        let received_at: DateTime<Utc> = "2026-09-05T17:16:00Z".parse().unwrap();
+        sqlx::query(
+            "INSERT INTO trust_event_backlog \
+                (crs, train_uid, train_id, service_date, msg_type, event_type, \
+                 planned_timestamp, actual_timestamp, variation_status, dedup_key, received_at) \
+             VALUES ($1, NULL, $2, $3, '0003', 'DEPARTURE', $4, $4, 'ON TIME', $5, $6)",
+        )
+        .bind("EUS")
+        .bind("TEST-BACKLOG-IMPLAUSIBLE-TRAIN-ID")
+        .bind(service_date)
+        .bind(scheduled)
+        .bind("test-backlog-implausible-dedup-movement")
+        .bind(received_at)
+        .execute(&pool)
+        .await
+        .expect("seed an implausible backlog row");
+
+        let (tracked_train_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(service_date)
+        .bind("EUS")
+        .bind(scheduled)
+        .fetch_one(&pool)
+        .await
+        .expect("seed tracked_trains row");
+
+        let matched =
+            attempt_backlog_match(&pool, tracked_train_id, "EUS", scheduled, service_date)
+                .await
+                .expect("attempt_backlog_match");
+        assert!(
+            !matched,
+            "an implausible actual_timestamp must not resolve the pin, even though CRS+time \
+             alone would otherwise match cleanly"
+        );
+
+        let (resolution_status,): (String,) =
+            sqlx::query_as("SELECT resolution_status FROM train_subscriptions WHERE id = $1")
+                .bind(tracked_train_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read back tracked_trains");
+        assert_eq!(
+            resolution_status, "pending",
+            "the pin must be left untouched for the next backlog-match sweep to retry"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(tracked_train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query(
+            "DELETE FROM trust_event_backlog WHERE train_id = 'TEST-BACKLOG-IMPLAUSIBLE-TRAIN-ID'",
+        )
+        .execute(&pool)
+        .await
+        .ok();
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
             .execute(&pool)
             .await
             .ok();
