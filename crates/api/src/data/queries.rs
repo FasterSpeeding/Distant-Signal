@@ -962,7 +962,7 @@ pub struct ScheduleDestinationDeparturesRow {
     /// `Origin` calling point never has a `booked_arrival`), `Some` for a
     /// genuine `Intermediate` calling point. Backs `GET
     /// /public/trains/search?arrival_from=&arrival_to=`, which only
-    /// applies when `stops_at` names exactly one station -- see
+    /// applies when `stops_at` is set -- see
     /// docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md.
     pub calling_point_arrival: Option<chrono::NaiveTime>,
     /// The schedule's terminating calling point's own `booked_arrival`,
@@ -1221,36 +1221,37 @@ async fn schedule_destination_departures_published_for(
 /// further flooring done by this function. `to_time` is an INCLUSIVE upper
 /// bound. Both carry the exact same reasoning as the predecessor query.
 ///
-/// **`stops_at`: "calls at ALL of these stations" (relational division,
-/// not a plain membership test).** Empty means "no filter" (every row
-/// matches). Non-empty means: the schedule must have its OWN row (some
-/// other calling point, any `scheduled` time) for EVERY CRS named, on the
-/// SAME `service_date` -- checked via `train_uid IN (...GROUP BY train_uid
-/// HAVING COUNT(DISTINCT origin_crs) = <n>)`, exactly the generalization of
-/// `station_crs`'s own equality check to N required calling points instead
-/// of one. Matching is against `origin_crs` -- the same column
-/// `station_crs` matches against -- so a `stops_at` entry naming a
-/// schedule's true TERMINATING calling point never matches (that calling
-/// point has no `booked_departure` and so never gets its own row here; see
-/// this table's own migration comment) -- an intentional consistency with
-/// `station_crs`'s pre-existing behavior, not a new gap introduced by this
-/// filter. See docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md.
+/// **`stops_at`: "calls at this station somewhere along its route" (a
+/// plain membership test, not relational division).** `None` means "no
+/// filter" (every row matches). `Some(crs)` means: the schedule must have
+/// its OWN row (some other calling point, any `scheduled` time) for that
+/// CRS, on the SAME `service_date` -- checked via a correlated `EXISTS`
+/// against `origin_crs`, the same column `station_crs` matches against --
+/// so a `stops_at` value naming a schedule's true TERMINATING calling
+/// point never matches (that calling point has no `booked_departure` and
+/// so never gets its own row here; see this table's own migration
+/// comment) -- an intentional consistency with `station_crs`'s
+/// pre-existing behavior, not a new gap introduced by this filter.
+/// Deliberately single-valued: an earlier version of this filter accepted
+/// zero or more stations and matched ALL-of-N (relational division via
+/// `COUNT(DISTINCT origin_crs)`); that was scoped back down to exactly one
+/// station. See
+/// docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md.
 ///
 /// **`stop_arrival_from`/`stop_arrival_to`: a SEPARATE inclusive bound pair
-/// on `calling_point_arrival`, scoped to the SINGLE calling point named by
-/// `stops_at` when it has exactly one entry** -- checked via a correlated
-/// `EXISTS` against that specific `origin_crs` (`(stops_at::text[])[1]`),
-/// NOT against `main`'s own `scheduled`/`origin_crs` (`station_crs` and the
-/// arrival-bound calling point are frequently two different rows of the
-/// same schedule). Deliberately NOT `destination_arrival` -- that column is
-/// the schedule's TRUE destination's arrival, a different, schedule-level
-/// value that need not have anything to do with which calling point
-/// `stops_at` actually named (see `calling_point_arrival`'s own column
-/// comment). The route layer (not this function) rejects either bound
-/// being set without exactly one `stops_at` entry -- this function applies
-/// whatever it is given, filter-shaped, with no cross-field validation of
-/// its own, matching how it already treats every other Option argument
-/// here.
+/// on `calling_point_arrival`, scoped to the calling point named by
+/// `stops_at`** -- checked via a correlated `EXISTS` against that same
+/// `origin_crs`, NOT against `main`'s own `scheduled`/`origin_crs`
+/// (`station_crs` and the arrival-bound calling point are frequently two
+/// different rows of the same schedule). Deliberately NOT
+/// `destination_arrival` -- that column is the schedule's TRUE
+/// destination's arrival, a different, schedule-level value that need not
+/// have anything to do with which calling point `stops_at` actually named
+/// (see `calling_point_arrival`'s own column comment). The route layer
+/// (not this function) rejects either bound being set without `stops_at`
+/// also being set -- this function applies whatever it is given,
+/// filter-shaped, with no cross-field validation of its own, matching how
+/// it already treats every other Option argument here.
 ///
 /// `Ok(None)` means no CIF publish has landed for `service_date` at all
 /// (maps to a 404). `Ok(Some(page))` with an empty `page.departures` means
@@ -1266,7 +1267,7 @@ pub async fn search_schedule_calling_point_departures(
     service_date: chrono::NaiveDate,
     scheduled_from: chrono::NaiveTime,
     true_origin_crs: Option<&str>,
-    stops_at: &[String],
+    stops_at: Option<&str>,
     to_time: Option<chrono::NaiveTime>,
     stop_arrival_from: Option<chrono::NaiveTime>,
     stop_arrival_to: Option<chrono::NaiveTime>,
@@ -1292,14 +1293,13 @@ pub async fn search_schedule_calling_point_departures(
               AND ($4::text IS NULL OR main.true_origin_crs = $4)
               AND ($6::time IS NULL OR main.scheduled <= $6)
               AND (
-                    COALESCE(array_length($5::text[], 1), 0) = 0
-                    OR main.train_uid IN (
-                        SELECT stop.train_uid
+                    $5::text IS NULL
+                    OR EXISTS (
+                        SELECT 1
                         FROM schedule_destination_departures stop
                         WHERE stop.service_date = $1
-                          AND stop.origin_crs = ANY($5::text[])
-                        GROUP BY stop.train_uid
-                        HAVING COUNT(DISTINCT stop.origin_crs) = array_length($5::text[], 1)
+                          AND stop.train_uid = main.train_uid
+                          AND stop.origin_crs = $5
                     )
               )
               AND (
@@ -1309,7 +1309,7 @@ pub async fn search_schedule_calling_point_departures(
                         FROM schedule_destination_departures stop
                         WHERE stop.service_date = $1
                           AND stop.train_uid = main.train_uid
-                          AND stop.origin_crs = ($5::text[])[1]
+                          AND stop.origin_crs = $5
                           AND ($7::time IS NULL OR stop.calling_point_arrival >= $7)
                           AND ($8::time IS NULL OR stop.calling_point_arrival <= $8)
                     )
@@ -3440,7 +3440,7 @@ mod schedule_destination_departures_query_tests {
             date,
             any_time(),
             None,
-            &[],
+            None,
             None,
             None,
             None,
@@ -3466,7 +3466,7 @@ mod schedule_destination_departures_query_tests {
             date,
             any_time(),
             None,
-            &[],
+            None,
             None,
             None,
             None,
@@ -3519,7 +3519,7 @@ mod schedule_destination_departures_query_tests {
             date,
             any_time(),
             None,
-            &[],
+            None,
             None,
             None,
             None,
@@ -3550,7 +3550,7 @@ mod schedule_destination_departures_query_tests {
             date,
             any_time(),
             Some("PAD"),
-            &[],
+            None,
             None,
             None,
             None,
@@ -3576,11 +3576,11 @@ mod schedule_destination_departures_query_tests {
     }
 
     /// Four trains, each contributing MULTIPLE rows (one per
-    /// departure-bearing calling point) sharing one `train_uid` -- the
-    /// shape `stops_at`'s ALL-of-N membership check needs to discriminate
-    /// against, unlike `calling_point_fixture_rows` above (one row per
-    /// schedule, only ever useful for `origin`/time-range coverage).
-    /// C41001 calls RDG, OXF and DID; C41002 calls RDG only; C41003 calls
+    /// departure-bearing calling point) sharing one `train_uid`, unlike
+    /// `calling_point_fixture_rows` above (one row per schedule, only ever
+    /// useful for `origin`/time-range coverage). C41001 calls RDG, OXF and
+    /// DID; C41002 calls RDG only (discriminates a plain "calls at OXF"
+    /// membership test from a bare "shares a train_uid" one); C41003 calls
     /// RDG and OXF but not DID; C41004 calls RDG and OXF too, but from a
     /// DIFFERENT true origin (PAD, not RDG), to prove `stops_at` and
     /// `origin` are independent filters.
@@ -3673,47 +3673,7 @@ mod schedule_destination_departures_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 search_calling_point -- --ignored --test-threads=1`"]
-    async fn search_calling_point_stops_at_requires_every_listed_station_all_of_n() {
-        let pool = test_pool().await;
-        let date = fixture_date(25);
-        seed_stops_at(&pool, date).await;
-
-        let page = search_schedule_calling_point_departures(
-            &pool,
-            "RDG",
-            date,
-            any_time(),
-            None,
-            &["OXF".to_string(), "DID".to_string()],
-            None,
-            None,
-            None,
-            None,
-            100,
-        )
-        .await
-        .expect("search")
-        .expect("the day is published");
-
-        let uids: Vec<&str> = page
-            .departures
-            .iter()
-            .map(|d| d["uid"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            uids,
-            vec!["C41001"],
-            "only C41001 calls at BOTH OXF and DID -- C41003 calls OXF but not DID, and must \
-             be excluded even though it partially matches"
-        );
-
-        delete_day(&pool, date).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                search_calling_point -- --ignored --test-threads=1`"]
-    async fn search_calling_point_stops_at_with_one_entry_matches_any_train_calling_there() {
+    async fn search_calling_point_stops_at_matches_any_train_calling_there() {
         let pool = test_pool().await;
         let date = fixture_date(26);
         seed_stops_at(&pool, date).await;
@@ -3724,7 +3684,7 @@ mod schedule_destination_departures_query_tests {
             date,
             any_time(),
             None,
-            &["OXF".to_string()],
+            Some("OXF"),
             None,
             None,
             None,
@@ -3744,7 +3704,7 @@ mod schedule_destination_departures_query_tests {
         assert_eq!(
             uids,
             vec!["C41001", "C41003", "C41004"],
-            "a single stops_at entry matches every train calling there, regardless of true origin"
+            "stops_at matches every train calling there, regardless of true origin"
         );
 
         delete_day(&pool, date).await;
@@ -3764,7 +3724,7 @@ mod schedule_destination_departures_query_tests {
             date,
             any_time(),
             Some("RDG"),
-            &["OXF".to_string()],
+            Some("OXF"),
             None,
             None,
             None,
@@ -3812,7 +3772,7 @@ mod schedule_destination_departures_query_tests {
             date,
             any_time(),
             None,
-            &["ZZZ".to_string()],
+            Some("ZZZ"),
             None,
             None,
             None,
@@ -3869,7 +3829,7 @@ mod schedule_destination_departures_query_tests {
             date,
             any_time(),
             None,
-            &[],
+            None,
             None,
             None,
             None,
@@ -3902,7 +3862,7 @@ mod schedule_destination_departures_query_tests {
             date,
             time(10, 5),
             None,
-            &[],
+            None,
             Some(time(12, 0)),
             None,
             None,
@@ -3997,7 +3957,7 @@ mod schedule_destination_departures_query_tests {
             date,
             any_time(),
             None,
-            &["OXF".to_string()],
+            Some("OXF"),
             None,
             Some(time(9, 0)),
             Some(time(9, 30)),
@@ -4045,7 +4005,7 @@ mod schedule_destination_departures_query_tests {
             date,
             any_time(),
             None,
-            &["RDG".to_string()],
+            Some("RDG"),
             None,
             None,
             None,
@@ -4096,7 +4056,7 @@ mod schedule_destination_departures_query_tests {
                 date,
                 any_time(),
                 None,
-                &[],
+                None,
                 None,
                 None,
                 None,

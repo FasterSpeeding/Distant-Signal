@@ -46,17 +46,16 @@ describe('TrainsPage', () => {
     );
     expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('MAN');
     expect(screen.getByRole('combobox', { name: 'Departing from (optional)' })).toHaveValue('EUS');
-    expect(screen.getByText('WAT')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Stops at (optional)' })).toHaveValue('WAT');
   });
 
-  it('pre-fills every repeated stops_at entry from the query string, uppercased', async () => {
+  it('uses the first value when stops_at is repeated in the query string', async () => {
     renderWithMantine(
       await TrainsPage({
         searchParams: Promise.resolve({ station: 'man', stops_at: ['rdg', 'oxf'] }),
       }),
     );
-    expect(screen.getByText('RDG')).toBeInTheDocument();
-    expect(screen.getByText('OXF')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Stops at (optional)' })).toHaveValue('RDG');
   });
 
   // Real, unmocked DatePickerInput (this file doesn't mock '@mantine/dates',

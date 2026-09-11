@@ -28,28 +28,6 @@ vi.mock('@/lib/useSuggestions', () => ({
   },
 }));
 
-/** The `TagsInput`/`Autocomplete` field's own text input, found by
- * `role: 'combobox'`, not `getByLabelText` -- Mantine's `Combobox`-based
- * inputs also point their DROPDOWN LISTBOX's `aria-labelledby` at the same
- * label, so a plain `getByLabelText` matches both the input and the
- * (empty, hidden) listbox and throws "multiple elements found". */
-function stopsAtInput() {
-  return screen.getByRole('combobox', { name: 'Stops at (optional)' });
-}
-
-/** Types `text` into the Stops at field and presses Enter to attempt
- * committing it as a chip. `fireEvent.click` first, not `fireEvent.focus`
- * -- Mantine's `Combobox`-based inputs reconcile typed text against the
- * ACTUAL focused element (`isExternalInputChange`), and `fireEvent.focus`
- * alone does not move jsdom's `document.activeElement` the way a real
- * click's default action does. */
-function typeAndCommit(text: string) {
-  const input = stopsAtInput();
-  fireEvent.click(input);
-  fireEvent.change(input, { target: { value: text } });
-  fireEvent.keyDown(input, { key: 'Enter' });
-}
-
 const pushMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock }),
@@ -199,7 +177,7 @@ describe('TrainSearchForm', () => {
   it('sends every optional filter it has, uppercased', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialStation="man" initialOrigin="eus" initialStopsAt={['OXF']} />);
+    renderWithMantine(<TrainSearchForm initialStation="man" initialOrigin="eus" initialStopsAt="OXF" />);
 
     fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
     fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '12:00' } });
@@ -480,51 +458,22 @@ describe('TrainSearchForm', () => {
     expect(screen.getByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
   });
 
-  it('adds a chip when the typed text matches a real station suggestion', () => {
-    vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
-
-    typeAndCommit('RDG');
-
-    expect(screen.getByText('RDG')).toBeInTheDocument();
-  });
-
-  it('does not add a chip for text that matches no real station suggestion', () => {
-    vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
-
-    typeAndCommit('ZZZ');
-
-    expect(screen.queryByText('ZZZ')).not.toBeInTheDocument();
-  });
-
-  it('adds multiple validated chips and sends one stops_at per chip', async () => {
+  it('sends stops_at uppercased when entered directly (not just via a suggestion pick)', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
-    typeAndCommit('RDG');
-    typeAndCommit('OXF');
+    fireEvent.change(screen.getByRole('combobox', { name: 'Stops at (optional)' }), {
+      target: { value: 'rdg' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
     await waitFor(() =>
-      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG&stops_at=OXF'),
+      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG'),
     );
   });
 
-  it('removes a chip via Backspace on the empty stops-at input', async () => {
-    const fetchMock = mockFetchByUrl();
-    vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
-
-    typeAndCommit('RDG');
-    fireEvent.keyDown(stopsAtInput(), { key: 'Backspace' });
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-
-    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
-  });
-
-  it('does not render the arrival-time filter until exactly one station is in Stops at', () => {
+  it('does not render the arrival-time filter until a station is entered in Stops at', () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
@@ -532,29 +481,18 @@ describe('TrainSearchForm', () => {
     expect(screen.queryByLabelText('Latest arrival (optional)')).not.toBeInTheDocument();
   });
 
-  it('renders the arrival-time filter once exactly one station is in Stops at', () => {
+  it('renders the arrival-time filter once a station is entered in Stops at', () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt={['WAT']} />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
 
     expect(screen.getByLabelText('Earliest arrival (optional)')).toBeInTheDocument();
     expect(screen.getByLabelText('Latest arrival (optional)')).toBeInTheDocument();
   });
 
-  it('hides the arrival-time filter again once a second stop is added', () => {
-    vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt={['RDG']} />);
-    expect(screen.getByLabelText('Earliest arrival (optional)')).toBeInTheDocument();
-
-    typeAndCommit('OXF');
-
-    expect(screen.queryByLabelText('Earliest arrival (optional)')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Latest arrival (optional)')).not.toBeInTheDocument();
-  });
-
-  it('sends arrival_from/arrival_to only when stops_at names exactly one station', async () => {
+  it('sends arrival_from/arrival_to only when stops_at is set', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialStation="man" initialStopsAt={['WAT']} />);
+    renderWithMantine(<TrainSearchForm initialStation="man" initialStopsAt="wat" />);
 
     fireEvent.change(screen.getByLabelText('Earliest arrival (optional)'), { target: { value: '09:00' } });
     fireEvent.change(screen.getByLabelText('Latest arrival (optional)'), { target: { value: '09:30' } });
@@ -567,18 +505,17 @@ describe('TrainSearchForm', () => {
     );
   });
 
-  it('drops any previously-entered arrival-time filter once a second stop is added', async () => {
+  it('drops any previously-entered arrival-time filter once Stops at is cleared', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt={['RDG']} />);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="RDG" />);
 
     fireEvent.change(screen.getByLabelText('Earliest arrival (optional)'), { target: { value: '09:00' } });
-    typeAndCommit('OXF');
+    fireEvent.change(screen.getByRole('combobox', { name: 'Stops at (optional)' }), {
+      target: { value: '' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
-    await waitFor(() =>
-      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG&stops_at=OXF'),
-    );
+    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
   });
-
 });

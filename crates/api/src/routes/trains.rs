@@ -20,14 +20,13 @@
 //!
 //! **v1 filter set, and why it stops here.** `station` (any calling
 //! point -- boarding or alighting) is required; `origin` (the schedule's
-//! TRUE first calling point) and `stops_at` (any calling point or points,
-//! zero or more) are both optional, independent filters, along with the
-//! `from`/`to` time range. `from`/`to` bound `station`'s own `scheduled`
-//! time; `arrival_from`/`arrival_to` are a SEPARATE, independent `"HH:MM"`
-//! bound pair on when the train ARRIVES at `stops_at`'s single named
-//! calling point, and require `stops_at` to name EXACTLY ONE station (a
-//! `400` otherwise -- see `TrainSearchParams::arrival_from`'s own doc
-//! comment and
+//! TRUE first calling point) and `stops_at` (one other calling point, at
+//! most) are both optional, independent filters, along with the `from`/`to`
+//! time range. `from`/`to` bound `station`'s own `scheduled` time;
+//! `arrival_from`/`arrival_to` are a SEPARATE, independent `"HH:MM"` bound
+//! pair on when the train ARRIVES at `stops_at`'s named calling point, and
+//! require `stops_at` to be set at all (a `400` otherwise -- see
+//! `TrainSearchParams::arrival_from`'s own doc comment and
 //! docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md).
 //! There is deliberately NO operator filter: the
 //! CIF SCHEDULE feed's operator field is parsed-but-undecoded everywhere in
@@ -39,9 +38,11 @@
 //! the full reasoning. This is a genuine, deliberate behavior change, not
 //! a rename: `destination` meant "this IS the schedule's true final stop";
 //! `stops_at` means "the schedule calls here at some point in its route",
-//! true destination or not, and requires ALL named stations to match
-//! (relational division), not just one. A caller who genuinely needs
-//! "true destination equals X" (as opposed to "calls at X") has no
+//! true destination or not. `stops_at` is deliberately scoped to a SINGLE
+//! station (not a list) -- a deliberate simplification of an earlier
+//! multi-station ("ALL-of-N") shape that shipped and was then scoped back
+//! down; see that design doc for the reasoning. A caller who genuinely
+//! needs "true destination equals X" (as opposed to "calls at X") has no
 //! equivalent filter any more -- see that design doc's own open question.
 //! `date` (`"YYYY-MM-DD"`, optional) selects which `service_date` this
 //! search runs against, defaulting to today -- but only within a bounded
@@ -67,9 +68,8 @@
 //! page; `after` carries the last row of the previous page.
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum_extra::extract::Query;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
@@ -129,7 +129,7 @@ const SEARCH_WINDOW_BACKWARD_DAYS: i64 = 7;
 /// a request that LOOKS accepted but has zero effect. That is exactly the
 /// failure mode this route's own doc comment already rejects for malformed
 /// filter VALUES (see `MAX_SEARCH_LIMIT`'s doc comment above, and the
-/// `arrival_from`/`arrival_to`-without-exactly-one-`stops_at` 400 in
+/// `arrival_from`/`arrival_to`-without-`stops_at` 400 in
 /// `get_trains_search`): a 400 naming the field is the honest answer, not
 /// a silently-narrower-than-requested search. This extends that same
 /// posture to malformed (unrecognized) parameter NAMES. See
@@ -159,34 +159,22 @@ struct TrainSearchParams {
     /// `schedule_query::DestinationDeparture`'s own doc comment for the
     /// `origin_crs`-vs-`true_origin_crs` distinction this filters on.
     origin: Option<String>,
-    /// Optional, zero or more, repeated query key
-    /// (`?stops_at=RDG&stops_at=OXF`). Filters to schedules that call at
-    /// EVERY named station somewhere along their route (boarding or
-    /// alighting) -- ALL-of-N, not ANY-of-N -- independent of
+    /// Optional. Filters to schedules that call at this station somewhere
+    /// along their route (boarding or alighting), independent of
     /// `station`/`origin` above. Replaces the earlier single-valued
     /// `destination` (TRUE final calling point) filter -- see this
     /// module's own doc comment and
     /// docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md
     /// for why that is a genuine behavior change, not a rename.
     ///
-    /// **Extracted via `axum_extra::extract::Query`, not plain
-    /// `axum::extract::Query`, and that is load-bearing, not a style
-    /// choice.** Confirmed empirically (not assumed, per this feature's own
-    /// design note): axum's own `Query` runs on `serde_urlencoded`, whose
-    /// `Deserializer` is a bare `serde::de::value::MapDeserializer` over
-    /// EVERY raw `(key, value)` pair with no grouping at all -- a bare
-    /// `Vec<String>` field fails outright even for `?stops_at=RDG&stops_at=OXF`
-    /// ("invalid type: string ..., expected a sequence" on the first pair).
-    /// `axum_extra::extract::Query` runs on `serde_html_form` instead, which
-    /// is specifically built to group repeated keys into one sequence
-    /// before struct-field deserialization ever sees them -- covering ZERO
-    /// (`#[serde(default)]`, an empty `Vec`), ONE and 2+ occurrences all
-    /// correctly with a plain `Vec<String>` field, no custom
-    /// `deserialize_with` needed. `axum_extra::extract::Query`'s rejection
-    /// still 400s the same way plain `Query`'s does, so `deny_unknown_fields`
-    /// below and every other field's behavior are unaffected by this swap.
-    #[serde(default)]
-    stops_at: Vec<String>,
+    /// Deliberately a single value, not a list: an earlier version of this
+    /// filter accepted zero or more repeated `stops_at` keys and matched
+    /// ALL-of-N (relational division). That shipped and was then
+    /// deliberately scoped back down to exactly one station -- plain
+    /// `axum::extract::Query` (`serde_urlencoded`) is sufficient for a
+    /// single optional `String` field; the `axum_extra`/`serde_html_form`
+    /// dependency the multi-valued shape needed no longer applies here.
+    stops_at: Option<String>,
     /// Optional, `"HH:MM"`, inclusive lower bound on scheduled departure.
     /// Always honored exactly as given -- including a value already in the
     /// past relative to `now` today -- because an explicit bound is a
@@ -198,16 +186,15 @@ struct TrainSearchParams {
     /// Optional, `"HH:MM"`, inclusive upper bound.
     to: Option<String>,
     /// Optional, `"HH:MM"`, inclusive lower bound on the time the train
-    /// ARRIVES at `stops_at`'s single named calling point -- a SEPARATE
-    /// filter from `from`/`to` above, which stay scoped to `station`.
-    /// Requires `stops_at` to name EXACTLY ONE station; see this route's
-    /// own validation below for why an arrival-time filter with an
-    /// ambiguous (zero, or two-or-more) calling point to arrive at 400s
+    /// ARRIVES at `stops_at`'s named calling point -- a SEPARATE filter
+    /// from `from`/`to` above, which stay scoped to `station`. Requires
+    /// `stops_at` to be set; see this route's own validation below for why
+    /// an arrival-time filter with no calling point to arrive at 400s
     /// instead of being silently ignored, mirroring `MAX_SEARCH_LIMIT`'s
     /// own doc comment's reasoning for the other filters. See
     /// docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md.
     arrival_from: Option<String>,
-    /// Optional, `"HH:MM"`, inclusive upper bound. Same single-`stops_at`
+    /// Optional, `"HH:MM"`, inclusive upper bound. Same `stops_at`-set
     /// requirement as `arrival_from`.
     arrival_to: Option<String>,
     /// Optional page size, 1..=`MAX_SEARCH_LIMIT`, defaulting to
@@ -346,26 +333,12 @@ async fn get_trains_search(
         .filter(|s| !s.trim().is_empty())
         .map(|s| normalize_crs("origin", s))
         .transpose()?;
-    // Deduped after normalization: `queries::search_schedule_calling_point_departures`'s
-    // ALL-of-N match compares `COUNT(DISTINCT origin_crs)` against
-    // `array_length($stops_at, 1)` -- a raw element count, not a distinct
-    // one. A duplicate entry (e.g. `?stops_at=RDG&stops_at=RDG`, or the
-    // same station typed twice with different casing before
-    // `normalize_crs` uppercases it) would otherwise inflate that length
-    // past what any real schedule's `COUNT(DISTINCT ...)` could ever
-    // reach, silently zeroing out every match -- including ones that
-    // genuinely stop at every named station. A duplicate is redundant
-    // input, not ambiguous input like an empty/two-station `stops_at`
-    // paired with an arrival bound (see the 400 below), so it's
-    // normalized away here rather than rejected.
     let stops_at = params
         .stops_at
-        .iter()
+        .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(|s| normalize_crs("stops_at", s))
-        .collect::<Result<std::collections::BTreeSet<String>, _>>()?
-        .into_iter()
-        .collect::<Vec<String>>();
+        .transpose()?;
     let from_time = params
         .from
         .as_deref()
@@ -393,13 +366,13 @@ async fn get_trains_search(
     // Same "malformed input 400s, it is never silently ignored" posture
     // this file's own doc comment already argues for `from`/`to`/
     // `stops_at`/`origin`/`station` (lines 68-76): an arrival filter with
-    // an ambiguous (zero, or two-or-more) calling point to arrive AT is
-    // ambiguous input, not a wider search, so this 400s rather than
-    // quietly acting as though neither bound was set.
-    if (arrival_from_time.is_some() || arrival_to_time.is_some()) && stops_at.len() != 1 {
+    // no calling point to arrive AT is ambiguous input, not a wider search,
+    // so this 400s rather than quietly acting as though neither bound was
+    // set.
+    if (arrival_from_time.is_some() || arrival_to_time.is_some()) && stops_at.is_none() {
         return Err((
             StatusCode::BAD_REQUEST,
-            "arrival_from and arrival_to require stops_at to name exactly one station".to_string(),
+            "arrival_from and arrival_to require stops_at to be set".to_string(),
         ));
     }
     let limit = normalize_limit(params.limit.as_deref())?;
@@ -452,7 +425,7 @@ async fn get_trains_search(
         service_date,
         scheduled_from,
         origin.as_deref(),
-        &stops_at,
+        stops_at.as_deref(),
         to_time,
         arrival_from_time,
         arrival_to_time,
@@ -726,26 +699,6 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_arrival_from_with_two_stops_at_entries_is_a_400() {
-        // The 2+-entries companion to the zero-entries case above: once
-        // `stops_at` names more than one station there is no single
-        // well-defined calling point left to scope "arrival" to either.
-        let pool = connect().await;
-        let (status, body) = get(
-            &pool,
-            "/trains/search?station=ZRB&stops_at=WAT&stops_at=BRI&arrival_from=09:00",
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(
-            body.contains("stops_at"),
-            "400 body should name the field: {body}"
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_malformed_arrival_from_is_a_400() {
         let pool = connect().await;
         let (status, body) = get(
@@ -965,7 +918,7 @@ mod db_tests {
 
     /// Three schedules sharing the required station `ZRB` but with varying
     /// calling points beyond it, built to discriminate `stops_at`'s
-    /// ALL-of-N membership check from a plain single-station filter:
+    /// membership check from a plain equality on `station`:
     ///
     /// * `T51001` calls `ZRB`, `AAA`, `BBB` AND `CCC`.
     /// * `T51002` calls `ZRB`, `AAA` and `BBB`, but NOT `CCC`.
@@ -975,7 +928,7 @@ mod db_tests {
     ///
     /// Every row's `destination_crs` is `EEE` -- none of `AAA`/`BBB`/`CCC`
     /// is any of these schedules' TRUE destination, which is the load-
-    /// bearing fact `trains_search_stops_at_single_entry_matches_regardless_of_true_destination`
+    /// bearing fact `trains_search_stops_at_matches_regardless_of_true_destination`
     /// exists to exploit: the deleted `destination` filter could never have
     /// matched any of these trains on `AAA`, but `stops_at` does.
     async fn seed_stops_at(pool: &PgPool, station_crs: &str) {
@@ -1031,72 +984,7 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_stops_at_requires_all_listed_calling_points_all_of_n() {
-        let pool = connect().await;
-        seed_stops_at(&pool, "ZRB").await;
-
-        let (status, body) = get(
-            &pool,
-            "/trains/search?station=ZRB&stops_at=AAA&stops_at=CCC",
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let rows = results(&body);
-        assert_eq!(
-            rows.len(),
-            1,
-            "T51002 calls AAA but not CCC, and must be excluded even though it partially matches: {rows:?}"
-        );
-        assert_eq!(rows[0]["uid"], "T51001");
-
-        delete_today(&pool).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_stops_at_a_duplicate_entry_does_not_zero_out_matches() {
-        // Regression: `search_schedule_calling_point_departures`'s ALL-of-N
-        // check compares `COUNT(DISTINCT origin_crs)` against
-        // `array_length($stops_at, 1)` -- a raw element count, not a
-        // distinct one. Sending the same station twice used to inflate
-        // that length past what any real schedule's distinct-calling-point
-        // count could ever reach, silently matching nothing at all --
-        // including T51001/T51002/T51003, which genuinely all call at AAA.
-        // `get_trains_search` now dedupes `stops_at` after normalization
-        // specifically to prevent this.
-        let pool = connect().await;
-        seed_stops_at(&pool, "ZRB").await;
-
-        let (status, body) = get(
-            &pool,
-            "/trains/search?station=ZRB&stops_at=AAA&stops_at=AAA",
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let rows = results(&body);
-        assert!(
-            !rows.is_empty(),
-            "a duplicate stops_at entry must not silently zero out every match: {rows:?}"
-        );
-        let uids: std::collections::BTreeSet<&str> = rows
-            .iter()
-            .map(|row| row["uid"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            uids,
-            std::collections::BTreeSet::from(["T51001", "T51002", "T51003"]),
-            "?stops_at=AAA&stops_at=AAA must match exactly the same trains as a single \
-             ?stops_at=AAA: {rows:?}"
-        );
-
-        delete_today(&pool).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                trains_search -- --ignored --test-threads=1`"]
-    async fn trains_search_stops_at_single_entry_matches_regardless_of_true_destination() {
+    async fn trains_search_stops_at_matches_regardless_of_true_destination() {
         let pool = connect().await;
         seed_stops_at(&pool, "ZRB").await;
 
@@ -1631,7 +1519,7 @@ mod db_tests {
         // filter never applied. That is precisely the "silently accepted,
         // zero effect" failure mode this file's own doc comment already
         // rejects for malformed VALUES (see `MAX_SEARCH_LIMIT`'s doc comment
-        // and the `arrival_from`/`arrival_to`-without-exactly-one-`stops_at`
+        // and the `arrival_from`/`arrival_to`-without-`stops_at`
         // 400 above) -- this test extends the same posture to malformed
         // (unrecognized) parameter NAMES.
         let pool = connect().await;
