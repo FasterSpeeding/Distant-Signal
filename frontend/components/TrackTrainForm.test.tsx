@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, screen, fireEvent, waitFor } from '@testing-library/react';
 import dayjs from 'dayjs';
 import { renderWithMantine } from '@/test/render';
 import { TrackTrainForm } from './TrackTrainForm';
@@ -17,11 +17,20 @@ function mockFetchByUrl(
   options: {
     departures?: () => Response;
     scheduleDepartures?: () => Response;
+    groups?: () => Response;
   } = {},
 ) {
-  const { departures = () => new Response(JSON.stringify([]), { status: 200 }), scheduleDepartures } = options;
+  const {
+    departures = () => new Response(JSON.stringify([]), { status: 200 }),
+    scheduleDepartures,
+    // The shared-groups prefetch (`useGroupSummaries`) -- an empty-array
+    // 200 by default, the zero-groups case every pre-existing test in this
+    // file exercises; only the group-share tests below override it.
+    groups = () => new Response(JSON.stringify([]), { status: 200 }),
+  } = options;
   return vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
+    if (url === '/api/groups') return Promise.resolve(groups());
     if (/\/api\/stations\/[A-Za-z]{3}\/schedule-departures$/.test(url)) {
       if (!scheduleDepartures) {
         throw new Error(`unexpected schedule-departures fetch for ${url} -- this test did not configure one`);
@@ -1131,6 +1140,132 @@ describe('TrackTrainForm', () => {
       // The staleness disclaimer is a property of the source, not of how
       // many rows survived filtering -- it still renders.
       expect(screen.getByText(/Live departure boards aren't available for this station/)).toBeInTheDocument();
+    });
+  });
+
+  // Shared-groups follow-up: the "Personal or one of your groups?" prompt.
+  describe('group-share destination prompt', () => {
+    const GROUPS_FIXTURE = [
+      { id: 'grp-1', name: 'Family', role: 'owner', memberCount: 3 },
+      { id: 'grp-2', name: 'Commuters', role: 'member', memberCount: 5 },
+    ];
+
+    function groupsResponse(groups: unknown[] = GROUPS_FIXTURE) {
+      return () => new Response(JSON.stringify(groups), { status: 200 });
+    }
+
+    /** See `TrackThisTrainButton.test.tsx`'s own `flushGroupsFetch` for why
+     * this is needed before a test's first click/submit: `useGroupSummaries`'s
+     * mount-time fetch-then-setState chain hasn't settled by the time
+     * `renderWithMantine` returns, and a bare `waitFor` on "fetch was
+     * called" passes too early (that call happens synchronously at mount).
+     * Real `setTimeout` still fires under this file's `shouldAdvanceTime`
+     * fake timers (see `FIXED_NOW`'s own comment) the same way `waitFor`/
+     * `findBy*` already rely on elsewhere in this file. */
+    async function flushGroupsFetch() {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+
+    it('opens the destination prompt instead of submitting immediately when the user has at least one group', async () => {
+      const fetchMock = mockFetchByUrl({ groups: groupsResponse() });
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await flushGroupsFetch();
+
+      fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+      expect((await screen.findAllByLabelText('Track into')).length).toBeGreaterThan(0);
+      expect(fetchMock).not.toHaveBeenCalledWith('/api/Train/track', expect.anything());
+      expect(pushMock).not.toHaveBeenCalled();
+    });
+
+    it('confirming with the default "Personal" selection submits exactly as before, with no group-share call', async () => {
+      const fetchMock = mockFetchByUrl({ groups: groupsResponse() });
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await flushGroupsFetch();
+
+      fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+      await screen.findAllByLabelText('Track into');
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+      });
+      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/train/by-id/42'));
+      expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/groups/'), expect.anything());
+    });
+
+    it('choosing a group submits the pin, then shares it into that group, then navigates', async () => {
+      const fetchMock = mockFetchByUrl({ groups: groupsResponse() });
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await flushGroupsFetch();
+
+      fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+      const [select] = await screen.findAllByLabelText('Track into');
+      fireEvent.click(select);
+      fireEvent.click(await screen.findByText('Family'));
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+      });
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          '/api/groups/grp-1/trains',
+          expect.objectContaining({ method: 'POST', body: JSON.stringify({ trainSubscriptionId: 42 }) }),
+        );
+      });
+      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/train/by-id/42'));
+
+      // The share call must happen strictly after the track call -- the
+      // share body needs the real trackingId the track call returns.
+      const urls = fetchMock.mock.calls.map((args: unknown[]) => String(args[0]));
+      expect(urls.indexOf('/api/Train/track')).toBeLessThan(urls.indexOf('/api/groups/grp-1/trains'));
+    });
+
+    it('a group-share failure still redirects, without showing a track-failed error', async () => {
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === '/api/groups') return Promise.resolve(new Response(JSON.stringify(GROUPS_FIXTURE), { status: 200 }));
+        if (/\/api\/stations\/[A-Za-z]{3}\/departures$/.test(url)) {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+        }
+        if (url === '/api/Train/track') {
+          return Promise.resolve(
+            new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }),
+          );
+        }
+        if (url === '/api/groups/grp-1/trains') return Promise.reject(new Error('network blip'));
+        throw new Error(`unexpected fetch for ${url}`);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await flushGroupsFetch();
+
+      fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+      const [select] = await screen.findAllByLabelText('Track into');
+      fireEvent.click(select);
+      fireEvent.click(await screen.findByText('Family'));
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/train/by-id/42'));
+      expect(screen.queryByText("Couldn't create the tracking pin. Try again.")).not.toBeInTheDocument();
+    });
+
+    it('does not show the prompt at all when the user has zero groups', async () => {
+      const fetchMock = mockFetchByUrl({ groups: groupsResponse([]) });
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      await flushGroupsFetch();
+
+      fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/train/by-id/42'));
+      expect(screen.queryAllByLabelText('Track into')).toHaveLength(0);
     });
   });
 });
