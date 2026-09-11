@@ -1161,8 +1161,8 @@ mod db_tests {
     /// delivering `planned_timestamp`/`actual_timestamp` epoch millis that
     /// were BOTH consistently ~1 hour ahead of true UTC (an upstream feed
     /// issue -- confirmed against `received_at` -- outside this codebase;
-    /// nothing in `trust-consumer::process::parse_epoch_millis` needed to
-    /// change). Because the skew hits both of TRUST's own fields equally,
+    /// nothing in `common::trust_timestamp::parse_trust_epoch_millis_pair`
+    /// needed to change). Because the skew hits both of TRUST's own fields equally,
     /// diffing them against EACH OTHER (this test) cancels it out and
     /// yields the true delay, whereas diffing TRUST's `actual` against the
     /// CIF-schedule-derived `scheduled_arrival` (a completely separate,
