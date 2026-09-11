@@ -136,6 +136,37 @@ describe('TrackedTrainByIdPage success path', () => {
     expect(redirectMock).not.toHaveBeenCalled();
   });
 
+  // Consolidation gap found when comparing this page against
+  // /train/[uid]/[date]'s own equivalent test ("links out to the matching
+  // Real Time Trains service page"): a schedule_matched pin already has a
+  // real trainUid (see TrainJourney.tsx's own schedule_matched branch,
+  // which renders "Train {state.trainUid}") but doesn't redirect yet (only
+  // resolutionStatus === 'resolved' does), so this page's own local render
+  // must offer the same RTT cross-reference link the public page does for
+  // an equally-known trainUid, rather than only gaining it after the
+  // redirect.
+  it('links out to the matching Real Time Trains service page once a trainUid is known', async () => {
+    vi.mocked(api.getTrackedTrainById).mockResolvedValue(
+      trackedTrainState({ resolutionStatus: 'schedule_matched', trainUid: 'W12345', serviceDate: '2026-08-31' }),
+    );
+    await renderPage('42');
+    const link = screen.getByRole('link', { name: /View on Real Time Trains/ });
+    expect(link).toHaveAttribute(
+      'href',
+      'https://www.realtimetrains.co.uk/service/gb-nr:W12345/2026-08-31/detailed',
+    );
+  });
+
+  // Mirrors RealTimeTrainsLink's own null-trainUid gating -- a pending pin
+  // has nothing on RTT to link to yet.
+  it('renders no Real Time Trains link while still pending', async () => {
+    vi.mocked(api.getTrackedTrainById).mockResolvedValue(
+      trackedTrainState({ resolutionStatus: 'pending', trainUid: null }),
+    );
+    await renderPage('42');
+    expect(screen.queryByRole('link', { name: /Real Time Trains/ })).not.toBeInTheDocument();
+  });
+
   // Task 2: once resolved with a real trainUid, this page's whole job is to
   // hand off to the canonical /train/{uid}/{date} URL rather than rendering
   // owner content locally.
