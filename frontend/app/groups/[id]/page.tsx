@@ -5,6 +5,7 @@ import { PromoteMemberButton } from '@/components/PromoteMemberButton';
 import { LeaveGroupButton } from '@/components/LeaveGroupButton';
 import { GroupInviteLinkCard } from '@/components/GroupInviteLinkCard';
 import { RemoveGroupTrainButton } from '@/components/RemoveGroupTrainButton';
+import { AddTrainToGroupButton } from '@/components/AddTrainToGroupButton';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import type { GroupMember, GroupTrain } from '@/lib/types';
 
@@ -58,7 +59,13 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
       <Divider />
 
       <Stack gap="sm">
-        <Title order={2}>Shared trains</Title>
+        <Group justify="space-between" align="baseline">
+          <Title order={2}>Shared trains</Title>
+          <AddTrainToGroupButton
+            groupId={id}
+            excludeTrainSubscriptionIds={trains.map((t) => t.trainSubscriptionId)}
+          />
+        </Group>
         {trains.length === 0 ? (
           <Text c="dimmed">No trains have been shared into this group yet.</Text>
         ) : (
