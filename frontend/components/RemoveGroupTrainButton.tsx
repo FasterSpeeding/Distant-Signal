@@ -8,9 +8,14 @@ import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 
 /** Removes a shared train from a group -- the sharer, or any `admin`/
- * `owner`, may click this (the backend enforces which; the page renders
- * this for every row regardless, since a plain member CAN remove their
- * own shared train). Mirrors `DeleteTrainButton.tsx`'s confirm-modal shape. */
+ * `owner`, may click this (the backend enforces which via
+ * `groups::remove_train_from_group`'s sharer-or-manager check). The page
+ * (`app/groups/[id]/page.tsx`'s `SharedTrainRow`) only renders this when
+ * its own `canRemove` mirrors that same check for the current viewer and
+ * row, so a plain member never sees it on someone else's shared train --
+ * defense in depth, not reliance on the backend alone, same posture as
+ * `RemoveMemberButton`'s owner-row gating. Mirrors `DeleteTrainButton.tsx`'s
+ * confirm-modal shape. */
 export function RemoveGroupTrainButton({ groupId, trainSubscriptionId }: { groupId: string; trainSubscriptionId: number }) {
   const router = useRouter();
   const [opened, { open, close }] = useDisclosure(false);

@@ -30,10 +30,15 @@ use crate::data::groups::{self, GroupRole};
 
 pub fn router() -> Router {
     Router::new()
-        .route("/groups", axum::routing::post(create_group).get(list_groups))
+        .route(
+            "/groups",
+            axum::routing::post(create_group).get(list_groups),
+        )
         .route(
             "/groups/{id}",
-            axum::routing::get(get_group).put(rename_group).delete(delete_group),
+            axum::routing::get(get_group)
+                .put(rename_group)
+                .delete(delete_group),
         )
         .route("/groups/{id}/members", axum::routing::get(list_members))
         .route(
@@ -95,6 +100,25 @@ async fn require_role(
         ));
     }
     Ok(role)
+}
+
+/// Shared "is the caller even a member at all" gate: `404` otherwise, else
+/// the caller's own role -- the same 404-never-403 convention `require_role`
+/// uses, minus the extra `predicate` check, for the handlers where mere
+/// membership is the entire permission model (listing members, listing/
+/// adding/removing group trains, and the shared half of `remove_member`
+/// that every self-leave takes) and any FURTHER enforcement (ownership of
+/// the individual train, sharer-vs-manager, self-vs-someone-else) happens
+/// past this point rather than via a `predicate` here.
+async fn require_member(
+    app: &App,
+    group_id: &str,
+    user_id: &str,
+) -> Result<GroupRole, (StatusCode, String)> {
+    groups::get_member_role(&app.database, group_id, user_id)
+        .await
+        .map_err(internal_error("check group membership"))?
+        .ok_or((StatusCode::NOT_FOUND, "no group with that id".to_string()))
 }
 
 /// Shared 500 mapper for every route in this file, mirroring
@@ -257,10 +281,7 @@ async fn list_members(
     user: AuthenticatedUser,
     Path(group_id): Path<String>,
 ) -> Result<Json<Vec<groups::GroupMember>>, (StatusCode, String)> {
-    groups::get_member_role(&app.database, &group_id, &user.id)
-        .await
-        .map_err(internal_error("check group membership"))?
-        .ok_or((StatusCode::NOT_FOUND, "no group with that id".to_string()))?;
+    require_member(&app, &group_id, &user.id).await?;
 
     let members = groups::list_members(&app.database, &group_id)
         .await
@@ -282,10 +303,7 @@ async fn remove_member(
     user: AuthenticatedUser,
     Path((group_id, target_user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let caller_role = groups::get_member_role(&app.database, &group_id, &user.id)
-        .await
-        .map_err(internal_error("check group membership"))?
-        .ok_or((StatusCode::NOT_FOUND, "no group with that id".to_string()))?;
+    let caller_role = require_member(&app, &group_id, &user.id).await?;
 
     let is_self = target_user_id == user.id;
     if !is_self {
@@ -433,10 +451,7 @@ async fn list_group_trains_route(
     user: AuthenticatedUser,
     Path(group_id): Path<String>,
 ) -> Result<Json<Vec<groups::GroupTrain>>, (StatusCode, String)> {
-    groups::get_member_role(&app.database, &group_id, &user.id)
-        .await
-        .map_err(internal_error("check group membership"))?
-        .ok_or((StatusCode::NOT_FOUND, "no group with that id".to_string()))?;
+    require_member(&app, &group_id, &user.id).await?;
 
     let trains = groups::list_group_trains(&app.database, &group_id)
         .await
@@ -459,10 +474,7 @@ async fn add_group_train(
     Path(group_id): Path<String>,
     Json(req): Json<AddGroupTrainRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    groups::get_member_role(&app.database, &group_id, &user.id)
-        .await
-        .map_err(internal_error("check group membership"))?
-        .ok_or((StatusCode::NOT_FOUND, "no group with that id".to_string()))?;
+    require_member(&app, &group_id, &user.id).await?;
 
     let added = groups::add_train_to_group(
         &app.database,
@@ -490,10 +502,7 @@ async fn remove_group_train(
     user: AuthenticatedUser,
     Path((group_id, train_subscription_id)): Path<(String, i64)>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let role = groups::get_member_role(&app.database, &group_id, &user.id)
-        .await
-        .map_err(internal_error("check group membership"))?
-        .ok_or((StatusCode::NOT_FOUND, "no group with that id".to_string()))?;
+    let role = require_member(&app, &group_id, &user.id).await?;
 
     let removed = groups::remove_train_from_group(
         &app.database,
@@ -529,7 +538,10 @@ mod tests {
         use tower::ServiceExt;
 
         let app = axum::Router::new()
-            .route("/groups/join/{token}", axum::routing::get(|| async { "join" }))
+            .route(
+                "/groups/join/{token}",
+                axum::routing::get(|| async { "join" }),
+            )
             .route("/groups/{id}", axum::routing::get(|| async { "dynamic" }));
 
         let response = app

@@ -1229,6 +1229,7 @@ mod tests {
             eta_next: Some(fixed_instant()),
             eta_source: Some("darwin-estimated".to_string()),
             custom_name: None,
+            shared_group_count: 0,
             trains_id: Some(1),
             journey_stops: None,
             may_have_arrived: false,

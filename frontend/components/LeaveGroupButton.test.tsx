@@ -34,4 +34,18 @@ describe('LeaveGroupButton', () => {
     });
     await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/groups'));
   });
+
+  it('shows the generic warning by default', async () => {
+    renderWithMantine(<LeaveGroupButton groupId="grp-1" currentUserId="user-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
+    await waitFor(() => screen.getByText(/lose access to every train shared/));
+    expect(screen.queryByText(/delete it for good/)).not.toBeInTheDocument();
+  });
+
+  it('warns that leaving deletes the whole group when willDeleteGroup is set', async () => {
+    renderWithMantine(<LeaveGroupButton groupId="grp-1" currentUserId="user-1" willDeleteGroup />);
+    fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
+    await waitFor(() => screen.getByText(/delete it for good/));
+    expect(screen.queryByText(/lose access to every train shared/)).not.toBeInTheDocument();
+  });
 });

@@ -21,9 +21,15 @@ vi.mock('@/lib/api', async () => {
 const notFoundMock = vi.fn(() => {
   throw new Error('NEXT_NOT_FOUND');
 });
+// Named, module-level mocks (not a fresh `vi.fn()` per render) so tests can
+// assert on them -- needed for the `DeleteTrainButton` "stays on the page
+// and refreshes" coverage below, which must confirm `router.refresh()` was
+// called and `router.push()` was NOT.
+const pushMock = vi.fn();
+const refreshMock = vi.fn();
 vi.mock('next/navigation', () => ({
   notFound: () => notFoundMock(),
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: pushMock, refresh: refreshMock }),
   usePathname: () => '/train/W12345/2026-08-31',
   useSearchParams: () => new URLSearchParams(''),
 }));
@@ -40,6 +46,8 @@ vi.mock('@/components/TicketPanel', () => ({
 // describe block below override this per case.
 beforeEach(() => {
   vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
+  pushMock.mockClear();
+  refreshMock.mockClear();
 });
 
 /** The PUBLIC response shape (`crates/api/src/data/trains.rs`'s
@@ -94,6 +102,7 @@ function trackedTrainListItem(overrides: Partial<TrackedTrainListItem> = {}): Tr
     delayMinutes: 0,
     trackedAt: '2026-08-31T10:00:00Z',
     customName: null,
+    sharedGroupCount: 0,
     ...overrides,
   };
 }
@@ -337,6 +346,50 @@ describe('TrackedTrainByUidPage tracking overlay', () => {
     expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Rename/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+  });
+
+  // This page's whole reason for passing `afterDelete="refresh"` to
+  // `TrackedTrainOwnerControls` (unlike `/train/by-id/[trackingId]`, which
+  // takes the default `'redirect'`): this page's own URL -- the train's
+  // real `(uid, date)` identity -- stays meaningful after the tracking
+  // subscription is gone, so deleting it should stay put and let the
+  // Server Component re-fetch, not navigate to `/track/mine`.
+  it('stays on the page and calls router.refresh() (not router.push) after deleting the tracked train', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      trackedTrainListItem({ id: 7, trainUid: 'W12345', serviceDate: '2026-08-31' }),
+    ]);
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await renderPage();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/Train/7', { method: 'DELETE' });
+    });
+    await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+    expect(pushMock).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  // The tracking-overlay match (`TrackedTrainListItem`) carries its own
+  // `sharedGroupCount` -- this page must pass it through to
+  // `DeleteTrainButton`'s confirm modal rather than dropping it, the same
+  // as `TrackedTrainState` does on `/train/by-id/[trackingId]`.
+  it('warns in the delete confirmation when the tracked train is shared into groups', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      trackedTrainListItem({ id: 7, trainUid: 'W12345', serviceDate: '2026-08-31', sharedGroupCount: 2 }),
+    ]);
+    await renderPage();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
+    expect(
+      screen.getByText('This train is shared in 2 groups — deleting it will remove it from those groups too.'),
+    ).toBeInTheDocument();
   });
 });
 

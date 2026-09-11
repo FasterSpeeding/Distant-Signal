@@ -25,6 +25,7 @@ function train(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListI
     status: 'en_route',
     delayMinutes: 4,
     trackedAt: '2026-08-31T12:00:00Z',
+    sharedGroupCount: 0,
     ...overrides,
     customName: overrides.customName ?? null,
   };

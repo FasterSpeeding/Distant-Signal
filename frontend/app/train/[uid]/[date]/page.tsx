@@ -282,7 +282,17 @@ export default async function TrackedTrainByUidPage({
         <Title order={1}>Train {uid}</Title>
         <Group gap="sm">
           {match ? (
-            <TrackedTrainOwnerControls train={match} />
+            // `afterDelete="refresh"` -- unlike `/train/by-id/[trackingId]`
+            // (`TrackedTrainOwnerControls`'s default `'redirect'` caller),
+            // THIS page's URL (the train's real `(uid, date)` identity)
+            // stays perfectly valid once the tracking subscription is
+            // deleted: it should stay put and re-run this Server
+            // Component's own `getMyTrackedTrains()` fetch, which will no
+            // longer include this row, flipping `match` back to `null` and
+            // swapping this branch for `TrackThisTrainButton` below -- see
+            // `DeleteTrainButton`'s own doc comment for why this is a plain
+            // prop rather than an `onDeleted` callback.
+            <TrackedTrainOwnerControls train={match} afterDelete="refresh" />
           ) : (
             // Shown to EVERY visitor, logged in or not -- the shared
             // "show the control to everyone, prompt on the real 401"

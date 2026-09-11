@@ -22,11 +22,21 @@ import { trackedTrainDisplayName } from '@/lib/trackingName';
  *
  * `train` accepts either a full `TrackedTrainState` or the lighter
  * `GET /Train/mine` `TrackedTrainListItem` (`lib/types.ts`) -- both carry
- * every field this needs (`id`, `customName`, and the
+ * every field this needs (`id`, `customName`, `sharedGroupCount`, and the
  * `pin*`/`serviceDate` fields `trackedTrainDisplayName` reads), so no
- * adapter is required for either caller. */
+ * adapter is required for either caller.
+ *
+ * `afterDelete` passes straight through to `DeleteTrainButton` -- see that
+ * component's own doc comment for why it's a plain optional prop (default
+ * `'redirect'`, matching `/train/by-id/[trackingId]`'s existing behaviour)
+ * rather than a callback: this wrapper is itself rendered directly from a
+ * Server Component page on both call sites, which cannot hand a Client
+ * Component a function prop. `/train/[uid]/[date]/page.tsx` is the one
+ * caller that passes `'refresh'`, since that page's own URL stays valid
+ * after the tracked train is deleted. */
 export function TrackedTrainOwnerControls({
   train,
+  afterDelete,
 }: {
   train: {
     id: number;
@@ -37,7 +47,9 @@ export function TrackedTrainOwnerControls({
     pinDestinationName: string | null;
     serviceDate: string;
     pinScheduledDeparture?: string | null;
+    sharedGroupCount: number;
   };
+  afterDelete?: 'redirect' | 'refresh';
 }) {
   return (
     <>
@@ -46,7 +58,7 @@ export function TrackedTrainOwnerControls({
         customName={train.customName}
         defaultName={trackedTrainDisplayName(train)}
       />
-      <DeleteTrainButton trackingId={train.id} />
+      <DeleteTrainButton trackingId={train.id} sharedGroupCount={train.sharedGroupCount} afterDelete={afterDelete} />
     </>
   );
 }
