@@ -85,7 +85,13 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
         <Group gap="xs">
           {canManage && <RenameGroupButton groupId={id} currentName={group.name} />}
           {viewerIsOwner && <DeleteGroupButton groupId={id} name={group.name} />}
-          {currentUserId && <LeaveGroupButton groupId={id} currentUserId={currentUserId} />}
+          {currentUserId && (
+            <LeaveGroupButton
+              groupId={id}
+              currentUserId={currentUserId}
+              willDeleteGroup={viewerIsOwner && group.memberCount === 1}
+            />
+          )}
         </Group>
       </Group>
 

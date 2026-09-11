@@ -175,6 +175,11 @@ struct GroupDetailRow {
 /// `None` unless `user_id` is a member of `group_id` -- this app's
 /// universal "exists but not yours" 404 convention (never `403` for
 /// "doesn't exist or isn't yours" -- see `train_tracking::tracked_train_owner`).
+///
+/// The inner join below on `role = 'owner'` assumes every group always has
+/// exactly one owner row; see the migration's hazard note on
+/// `group_members.user_id ON DELETE CASCADE` for the latent way that
+/// invariant could be violated if user deletion is ever added.
 pub async fn get_group_detail(
     pool: &PgPool,
     group_id: &str,
@@ -401,11 +406,13 @@ pub async fn remove_member(
         .fetch_optional(&mut *tx)
         .await?;
         if let Some((successor_id,)) = successor {
-            sqlx::query("UPDATE group_members SET role = 'owner' WHERE group_id = $1 AND user_id = $2")
-                .bind(group_id)
-                .bind(&successor_id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "UPDATE group_members SET role = 'owner' WHERE group_id = $1 AND user_id = $2",
+            )
+            .bind(group_id)
+            .bind(&successor_id)
+            .execute(&mut *tx)
+            .await?;
             new_owner = Some(successor_id);
         }
     }
@@ -436,7 +443,11 @@ struct InviteLinkRow {
 /// link and inserts a fresh one with a new 7-day expiry, in one
 /// transaction (spec §2.3: "rotation and 'extend the window' are the same
 /// action"). Permission checking (only `admin`/`owner`) is the route's job.
-pub async fn rotate_invite_link(pool: &PgPool, group_id: &str, user_id: &str) -> Result<InviteLink> {
+pub async fn rotate_invite_link(
+    pool: &PgPool,
+    group_id: &str,
+    user_id: &str,
+) -> Result<InviteLink> {
     let mut tx = pool.begin().await?;
     sqlx::query(
         "UPDATE group_invite_links SET revoked_at = NOW() \
@@ -879,7 +890,11 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
-        cleanup(&pool, &["TEST-GROUPS-DETAIL-OWNER", "TEST-GROUPS-DETAIL-OUTSIDER"]).await;
+        cleanup(
+            &pool,
+            &["TEST-GROUPS-DETAIL-OWNER", "TEST-GROUPS-DETAIL-OUTSIDER"],
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -940,26 +955,24 @@ mod db_tests {
         assert_eq!(role, None, "group_members row should have cascaded away");
 
         // Assert group_trains cascaded
-        let train_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM group_trains WHERE group_id = $1",
-        )
-        .bind(&group_id)
-        .fetch_one(&pool)
-        .await
-        .expect("count group_trains");
+        let train_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM group_trains WHERE group_id = $1")
+                .bind(&group_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count group_trains");
         assert_eq!(
             train_count.0, 0,
             "group_trains row should have cascaded away"
         );
 
         // Assert group_invite_links cascaded
-        let link_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM group_invite_links WHERE group_id = $1",
-        )
-        .bind(&group_id)
-        .fetch_one(&pool)
-        .await
-        .expect("count group_invite_links");
+        let link_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM group_invite_links WHERE group_id = $1")
+                .bind(&group_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count group_invite_links");
         assert_eq!(
             link_count.0, 0,
             "group_invite_links row should have cascaded away"
@@ -1010,7 +1023,11 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
-        cleanup(&pool, &["TEST-GROUPS-PROMOTE-OWNER", "TEST-GROUPS-PROMOTE-MEMBER"]).await;
+        cleanup(
+            &pool,
+            &["TEST-GROUPS-PROMOTE-OWNER", "TEST-GROUPS-PROMOTE-MEMBER"],
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1083,12 +1100,14 @@ mod db_tests {
         let group_id = create_group(&pool, "Remove Test 2", "TEST-GROUPS-REMOVE-OWNER-2")
             .await
             .expect("create group");
-        sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')")
-            .bind(&group_id)
-            .bind("TEST-GROUPS-REMOVE-MEMBER-2")
-            .execute(&pool)
-            .await
-            .expect("seed member");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GROUPS-REMOVE-MEMBER-2")
+        .execute(&pool)
+        .await
+        .expect("seed member");
         let train_id: (i64,) = sqlx::query_as(
             "INSERT INTO train_subscriptions \
                 (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
@@ -1119,7 +1138,10 @@ mod db_tests {
                 .fetch_one(&pool)
                 .await
                 .expect("count group_trains");
-        assert_eq!(remaining_shared.0, 0, "the departed member's shared train should be pulled");
+        assert_eq!(
+            remaining_shared.0, 0,
+            "the departed member's shared train should be pulled"
+        );
 
         sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
             .bind(train_id.0)
@@ -1131,7 +1153,11 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
-        cleanup(&pool, &["TEST-GROUPS-REMOVE-OWNER-2", "TEST-GROUPS-REMOVE-MEMBER-2"]).await;
+        cleanup(
+            &pool,
+            &["TEST-GROUPS-REMOVE-OWNER-2", "TEST-GROUPS-REMOVE-MEMBER-2"],
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1139,7 +1165,8 @@ mod db_tests {
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 remove_member_transfers_ownership_to_the_longest_standing_admin_when_the_owner_leaves \
                 -- --ignored`"]
-    async fn remove_member_transfers_ownership_to_the_longest_standing_admin_when_the_owner_leaves() {
+    async fn remove_member_transfers_ownership_to_the_longest_standing_admin_when_the_owner_leaves()
+    {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-TRANSFER-OWNER").await;
         seed_user(&pool, "TEST-GROUPS-TRANSFER-ADMIN-OLD").await;
@@ -1205,19 +1232,22 @@ mod db_tests {
                 DATABASE_URL incantation, then run with `cargo test -p api \
                 remove_member_transfers_ownership_to_the_longest_standing_member_when_no_admin_exists \
                 -- --ignored`"]
-    async fn remove_member_transfers_ownership_to_the_longest_standing_member_when_no_admin_exists() {
+    async fn remove_member_transfers_ownership_to_the_longest_standing_member_when_no_admin_exists()
+    {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-TRANSFER2-OWNER").await;
         seed_user(&pool, "TEST-GROUPS-TRANSFER2-MEMBER").await;
         let group_id = create_group(&pool, "Transfer Test 2", "TEST-GROUPS-TRANSFER2-OWNER")
             .await
             .expect("create group");
-        sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')")
-            .bind(&group_id)
-            .bind("TEST-GROUPS-TRANSFER2-MEMBER")
-            .execute(&pool)
-            .await
-            .expect("seed member");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GROUPS-TRANSFER2-MEMBER")
+        .execute(&pool)
+        .await
+        .expect("seed member");
 
         let outcome = remove_member(&pool, &group_id, "TEST-GROUPS-TRANSFER2-OWNER")
             .await
@@ -1234,7 +1264,14 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
-        cleanup(&pool, &["TEST-GROUPS-TRANSFER2-OWNER", "TEST-GROUPS-TRANSFER2-MEMBER"]).await;
+        cleanup(
+            &pool,
+            &[
+                "TEST-GROUPS-TRANSFER2-OWNER",
+                "TEST-GROUPS-TRANSFER2-MEMBER",
+            ],
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1284,7 +1321,10 @@ mod db_tests {
             .await
             .expect("query")
             .expect("should have an active link");
-        assert_eq!(active.token, second.token, "only the newest link should be active");
+        assert_eq!(
+            active.token, second.token,
+            "only the newest link should be active"
+        );
 
         sqlx::query("DELETE FROM groups WHERE id = $1")
             .bind(&group_id)
@@ -1308,9 +1348,22 @@ mod db_tests {
             .await
             .expect("rotate");
 
-        assert!(revoke_invite_link(&pool, &group_id).await.expect("first revoke"));
-        assert!(!revoke_invite_link(&pool, &group_id).await.expect("second revoke is a no-op"));
-        assert_eq!(get_active_invite_link(&pool, &group_id).await.expect("query"), None);
+        assert!(
+            revoke_invite_link(&pool, &group_id)
+                .await
+                .expect("first revoke")
+        );
+        assert!(
+            !revoke_invite_link(&pool, &group_id)
+                .await
+                .expect("second revoke is a no-op")
+        );
+        assert_eq!(
+            get_active_invite_link(&pool, &group_id)
+                .await
+                .expect("query"),
+            None
+        );
 
         sqlx::query("DELETE FROM groups WHERE id = $1")
             .bind(&group_id)
@@ -1342,7 +1395,10 @@ mod db_tests {
         .await
         .expect("seed an expired link");
 
-        assert_eq!(resolve_invite_link(&pool, token).await.expect("query"), None);
+        assert_eq!(
+            resolve_invite_link(&pool, token).await.expect("query"),
+            None
+        );
 
         sqlx::query("DELETE FROM groups WHERE id = $1")
             .bind(&group_id)
@@ -1367,7 +1423,12 @@ mod db_tests {
             .expect("rotate");
         revoke_invite_link(&pool, &group_id).await.expect("revoke");
 
-        assert_eq!(resolve_invite_link(&pool, &link.token).await.expect("query"), None);
+        assert_eq!(
+            resolve_invite_link(&pool, &link.token)
+                .await
+                .expect("query"),
+            None
+        );
 
         sqlx::query("DELETE FROM groups WHERE id = $1")
             .bind(&group_id)
@@ -1417,7 +1478,11 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
-        cleanup(&pool, &["TEST-GROUPS-JOIN-OWNER-3", "TEST-GROUPS-JOIN-JOINER-3"]).await;
+        cleanup(
+            &pool,
+            &["TEST-GROUPS-JOIN-OWNER-3", "TEST-GROUPS-JOIN-JOINER-3"],
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1469,7 +1534,14 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
-        cleanup(&pool, &["TEST-GROUPS-ADDTRAIN-OWNER-1", "TEST-GROUPS-ADDTRAIN-STRANGER-1"]).await;
+        cleanup(
+            &pool,
+            &[
+                "TEST-GROUPS-ADDTRAIN-OWNER-1",
+                "TEST-GROUPS-ADDTRAIN-STRANGER-1",
+            ],
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1563,21 +1635,35 @@ mod db_tests {
         seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-OWNER-2").await;
         seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-SHARER-2").await;
         seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-BYSTANDER-2").await;
-        let group_id = create_group(&pool, "Remove Train Test 2", "TEST-GROUPS-REMOVETRAIN-OWNER-2")
+        let group_id = create_group(
+            &pool,
+            "Remove Train Test 2",
+            "TEST-GROUPS-REMOVETRAIN-OWNER-2",
+        )
+        .await
+        .expect("create group");
+        for member in [
+            "TEST-GROUPS-REMOVETRAIN-SHARER-2",
+            "TEST-GROUPS-REMOVETRAIN-BYSTANDER-2",
+        ] {
+            sqlx::query(
+                "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+            )
+            .bind(&group_id)
+            .bind(member)
+            .execute(&pool)
             .await
-            .expect("create group");
-        for member in ["TEST-GROUPS-REMOVETRAIN-SHARER-2", "TEST-GROUPS-REMOVETRAIN-BYSTANDER-2"] {
-            sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')")
-                .bind(&group_id)
-                .bind(member)
-                .execute(&pool)
-                .await
-                .expect("seed member");
+            .expect("seed member");
         }
         let train_id = seed_train_subscription(&pool, "TEST-GROUPS-REMOVETRAIN-SHARER-2").await;
-        add_train_to_group(&pool, &group_id, train_id, "TEST-GROUPS-REMOVETRAIN-SHARER-2")
-            .await
-            .expect("add");
+        add_train_to_group(
+            &pool,
+            &group_id,
+            train_id,
+            "TEST-GROUPS-REMOVETRAIN-SHARER-2",
+        )
+        .await
+        .expect("add");
 
         let removed = remove_train_from_group(
             &pool,
@@ -1619,19 +1705,30 @@ mod db_tests {
         let pool = connect().await;
         seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-OWNER-3").await;
         seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-SHARER-3").await;
-        let group_id = create_group(&pool, "Remove Train Test 3", "TEST-GROUPS-REMOVETRAIN-OWNER-3")
-            .await
-            .expect("create group");
-        sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')")
-            .bind(&group_id)
-            .bind("TEST-GROUPS-REMOVETRAIN-SHARER-3")
-            .execute(&pool)
-            .await
-            .expect("seed member");
+        let group_id = create_group(
+            &pool,
+            "Remove Train Test 3",
+            "TEST-GROUPS-REMOVETRAIN-OWNER-3",
+        )
+        .await
+        .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GROUPS-REMOVETRAIN-SHARER-3")
+        .execute(&pool)
+        .await
+        .expect("seed member");
         let train_id = seed_train_subscription(&pool, "TEST-GROUPS-REMOVETRAIN-SHARER-3").await;
-        add_train_to_group(&pool, &group_id, train_id, "TEST-GROUPS-REMOVETRAIN-SHARER-3")
-            .await
-            .expect("add");
+        add_train_to_group(
+            &pool,
+            &group_id,
+            train_id,
+            "TEST-GROUPS-REMOVETRAIN-SHARER-3",
+        )
+        .await
+        .expect("add");
 
         let removed = remove_train_from_group(
             &pool,
@@ -1656,7 +1753,10 @@ mod db_tests {
             .ok();
         cleanup(
             &pool,
-            &["TEST-GROUPS-REMOVETRAIN-OWNER-3", "TEST-GROUPS-REMOVETRAIN-SHARER-3"],
+            &[
+                "TEST-GROUPS-REMOVETRAIN-OWNER-3",
+                "TEST-GROUPS-REMOVETRAIN-SHARER-3",
+            ],
         )
         .await;
     }
@@ -1723,7 +1823,12 @@ mod group_train_wire_shape_tests {
             added_by_name: Some("Alex".to_string()),
         };
         let value = serde_json::to_value(&train).expect("serialize");
-        let mut keys: Vec<&str> = value.as_object().expect("object").keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort_unstable();
         assert_eq!(
             keys,
@@ -1766,7 +1871,12 @@ mod group_member_wire_shape_tests {
             joined_at: "2026-09-11T00:00:00Z".parse().unwrap(),
         };
         let value = serde_json::to_value(&member).expect("serialize");
-        let mut keys: Vec<&str> = value.as_object().expect("object").keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort_unstable();
         assert_eq!(keys, vec!["displayName", "joinedAt", "role", "userId"]);
     }
