@@ -177,9 +177,16 @@ struct GroupDetailRow {
 /// "doesn't exist or isn't yours" -- see `train_tracking::tracked_train_owner`).
 ///
 /// The inner join below on `role = 'owner'` assumes every group always has
-/// exactly one owner row; see the migration's hazard note on
-/// `group_members.user_id ON DELETE CASCADE` for the latent way that
-/// invariant could be violated if user deletion is ever added.
+/// exactly one owner row. HAZARD for whoever adds user deletion: the
+/// migration's `group_members.user_id ON DELETE CASCADE` removes the
+/// owner's own membership row directly if their `users` row is ever
+/// deleted, bypassing `remove_member`'s ownership-transfer/group-deletion
+/// logic entirely -- this join then finds no owner row and 404s for every
+/// remaining member forever (an unreadable-but-not-deleted group). No
+/// user-deletion feature exists today, so this is latent, not an active
+/// bug; a future one should either run `remove_member`-equivalent logic
+/// before deleting the user, or otherwise repair/reassign ownership as
+/// part of that deletion.
 pub async fn get_group_detail(
     pool: &PgPool,
     group_id: &str,

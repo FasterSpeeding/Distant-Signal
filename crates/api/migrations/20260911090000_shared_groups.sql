@@ -39,15 +39,6 @@ CREATE TABLE groups (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- HAZARD for whoever adds user deletion: `user_id ON DELETE CASCADE` removes
--- the owner's own membership row directly, bypassing
--- `groups::remove_member`'s ownership-transfer/group-deletion logic
--- entirely. `groups::get_group_detail`'s inner join on `role = 'owner'`
--- would then find no owner row and 404 for every remaining member forever
--- -- an unreadable-but-not-deleted group. No user-deletion feature exists
--- today, so this is latent, not an active bug; a future one should either
--- run `remove_member`-equivalent logic before deleting the user, or
--- otherwise repair/reassign ownership as part of that deletion.
 CREATE TABLE group_members (
     group_id    TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
