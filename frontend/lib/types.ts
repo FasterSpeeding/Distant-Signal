@@ -770,3 +770,68 @@ export interface RenderedTrainLeg {
   operator: string | null;
   uid: string;
 }
+
+// Shared groups -- see
+// docs/superpowers/specs/2026-09-11-shared-groups-design.md. Mirrors
+// crates/api/src/data/groups.rs's own wire shapes exactly.
+
+export type GroupRole = 'owner' | 'admin' | 'member';
+
+export interface GroupInviteLink {
+  token: string;
+  expiresAt: string; // RFC3339
+}
+
+export interface GroupSummary {
+  id: string;
+  name: string;
+  role: GroupRole;
+  memberCount: number;
+}
+
+export interface GroupDetail {
+  id: string;
+  name: string;
+  ownerId: string;
+  ownerName: string | null;
+  memberCount: number;
+  role: GroupRole;
+  // `null` for a plain `member` -- the invite link is only ever included
+  // for an `admin`/`owner` caller (see `routes::groups::get_group`'s own
+  // doc comment).
+  inviteLink: GroupInviteLink | null;
+}
+
+export interface GroupMember {
+  userId: string;
+  name: string | null;
+  email: string | null;
+  role: GroupRole;
+  joinedAt: string; // RFC3339
+}
+
+/** A train shared into a group -- deliberately carries no ticket field and
+ * no `notificationsEnabled`/exact-`trackedAt` field (spec §4's "Never
+ * shown" list is a hard constraint on the backend response this mirrors). */
+export interface GroupTrain {
+  trainSubscriptionId: number;
+  pinOriginCrs: string | null;
+  pinDestinationCrs: string | null;
+  pinOriginName: string | null;
+  pinDestinationName: string | null;
+  pinScheduledDeparture: string | null; // RFC3339
+  serviceDate: string; // "YYYY-MM-DD"
+  resolutionStatus: string;
+  trainUid: string | null;
+  status: string | null;
+  delayMinutes: number | null;
+  customName: string | null;
+  addedBy: string;
+  addedByName: string | null;
+}
+
+export interface GroupJoinPreview {
+  groupId: string;
+  groupName: string;
+  memberCount: number;
+}
