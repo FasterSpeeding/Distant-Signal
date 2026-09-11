@@ -131,7 +131,8 @@ async fn main() -> anyhow::Result<()> {
         let cycle_start = std::time::Instant::now();
         match feed.next_batch().await {
             Ok(batch) => {
-                let today = current_rail_day(chrono::Utc::now());
+                let now = chrono::Utc::now();
+                let today = current_rail_day(now);
                 let snapshot = stanox.read().expect("stanox lock poisoned").clone();
                 let mut events = Vec::new();
                 for raw in &batch {
@@ -144,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
                                     &snapshot,
                                     &crs_index,
                                     today,
+                                    now,
                                 ) {
                                     events.push(event);
                                 }
@@ -296,10 +298,16 @@ mod tests {
             ["WAT".to_string()].into_iter().collect();
         let mut state = process::ProcessorState::default();
         let today: chrono::NaiveDate = "2026-09-05".parse().unwrap();
+        // Safely after the raw timestamp fixtures below (2026-08-28) -- this
+        // test isn't about the plausibility guard, see
+        // `process.rs`'s own `test_received_at` for that coverage.
+        let received_at: chrono::DateTime<chrono::Utc> = "2099-01-01T00:00:00Z".parse().unwrap();
 
         let events: Vec<_> = messages
             .iter()
-            .filter_map(|m| process::process_message(m, &mut state, &stanox, &crs_index, today))
+            .filter_map(|m| {
+                process::process_message(m, &mut state, &stanox, &crs_index, today, received_at)
+            })
             .collect();
 
         assert_eq!(

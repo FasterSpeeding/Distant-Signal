@@ -67,12 +67,19 @@ pub struct ProcessorState {
     pub pending_train_uids: HashMap<String, String>,
 }
 
+/// `received_at` is the wall-clock time this message is being processed
+/// at (`main.rs` passes `chrono::Utc::now()`), threaded through to
+/// `common::trust_timestamp::parse_trust_epoch_millis` for every
+/// `planned_timestamp`/`actual_timestamp`/`canx_timestamp` this function
+/// parses -- see that function's own doc comment for the corrected-parsing
+/// background and its guard against the correction itself being wrong.
 pub fn process_message(
     message: &TrustMessage,
     state: &mut ProcessorState,
     stanox_crs: &StanoxCrsTable,
     crs_index: &HashSet<String>,
     today: NaiveDate,
+    received_at: chrono::DateTime<chrono::Utc>,
 ) -> Option<common::TrustBacklogEventMessage> {
     match message {
         TrustMessage::Activation(activation) => {
@@ -127,11 +134,11 @@ pub fn process_message(
             let planned = movement
                 .planned_timestamp
                 .as_deref()
-                .and_then(parse_epoch_millis);
+                .and_then(|raw| common::trust_timestamp::parse_trust_epoch_millis(raw, received_at));
             let actual = movement
                 .actual_timestamp
                 .as_deref()
-                .and_then(parse_epoch_millis);
+                .and_then(|raw| common::trust_timestamp::parse_trust_epoch_millis(raw, received_at));
             let delay_minutes = match (planned, actual, movement.variation_status.as_deref()) {
                 (Some(p), Some(a), Some("LATE")) => Some((a - p).num_minutes() as i32),
                 _ => None,
@@ -172,10 +179,9 @@ pub fn process_message(
                 .get(&cancellation.train_id)
                 .copied()
                 .unwrap_or(today);
-            let actual = cancellation
-                .canx_timestamp
-                .as_deref()
-                .and_then(parse_epoch_millis);
+            let actual = cancellation.canx_timestamp.as_deref().and_then(|raw| {
+                common::trust_timestamp::parse_trust_epoch_millis(raw, received_at)
+            });
 
             let dedup =
                 trust_schema::dedup::dedup_key(&cancellation.train_id, "0002", None, None, None);
@@ -204,11 +210,6 @@ pub fn process_message(
     }
 }
 
-fn parse_epoch_millis(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    let millis: i64 = raw.parse().ok()?;
-    chrono::DateTime::from_timestamp_millis(millis)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +230,17 @@ mod tests {
 
     fn today() -> NaiveDate {
         "2026-09-05".parse().unwrap()
+    }
+
+    /// `process_message`'s `received_at` for every test in this module.
+    /// Deliberately set far past any raw timestamp fixture used anywhere in
+    /// this file, so `common::trust_timestamp`'s plausibility guard can
+    /// never reject a correction here by construction -- none of these
+    /// tests are about that guard (see `common::trust_timestamp`'s own test
+    /// module, and `api::data::trust_event_backlog_match`'s, for guard
+    /// coverage).
+    fn test_received_at() -> chrono::DateTime<chrono::Utc> {
+        "2099-01-01T00:00:00Z".parse().unwrap()
     }
 
     fn movement(
@@ -281,6 +293,7 @@ mod tests {
             &stanox_table(),
             &crs_index_with(&["WAT"]),
             today(),
+            test_received_at(),
         );
         assert!(result.is_some());
         assert_eq!(result.unwrap().crs, Some("WAT".to_string()));
@@ -301,6 +314,7 @@ mod tests {
             &stanox_table(),
             &crs_index_with(&["WAT"]),
             today(),
+            test_received_at(),
         );
         assert!(result.is_none());
     }
@@ -320,6 +334,7 @@ mod tests {
             &stanox_table(),
             &crs_index_with(&["EUS"]), // WAT not in scope
             today(),
+            test_received_at(),
         );
         assert!(result.is_none());
     }
@@ -339,6 +354,7 @@ mod tests {
             &stanox_table(),
             &crs_index_with(&["WAT"]),
             today(),
+            test_received_at(),
         );
         assert!(result.is_none());
     }
@@ -355,6 +371,7 @@ mod tests {
             &stanox_table(),
             &crs_index_with(&["WAT"]),
             today(),
+            test_received_at(),
         );
         assert!(result.is_none());
     }
@@ -370,6 +387,7 @@ mod tests {
             &stanox_table(),
             &crs_index_with(&["WAT"]),
             today(),
+            test_received_at(),
         );
 
         let movement_msg = TrustMessage::Movement(movement(
@@ -384,6 +402,7 @@ mod tests {
             &stanox_table(),
             &crs_index_with(&["WAT"]),
             today(),
+            test_received_at(),
         )
         .unwrap();
         // The Activation was parked while processing `today()`
@@ -422,6 +441,7 @@ mod tests {
             &stanox_table(),
             &crs_index_with(&["WAT"]),
             today,
+            test_received_at(),
         )
         .unwrap();
         assert_eq!(result.service_date, today);
@@ -442,6 +462,7 @@ mod tests {
             &stanox_table(),
             &crs_index_with(&["WAT"]),
             today(),
+            test_received_at(),
         )
         .unwrap();
         assert_eq!(result.service_date, today());
@@ -458,6 +479,7 @@ mod tests {
             &stanox_table(),
             &crs_index_with(&["WAT"]),
             today(),
+            test_received_at(),
         );
 
         let movement_msg = TrustMessage::Movement(movement(
@@ -472,6 +494,7 @@ mod tests {
             &stanox_table(),
             &crs_index_with(&["WAT"]),
             today(),
+            test_received_at(),
         )
         .unwrap();
         assert_eq!(result.train_uid, Some("C21373".to_string()));
@@ -494,6 +517,7 @@ mod tests {
             &stanox_table(),
             &crs_index_with(&["WAT"]),
             today(),
+            test_received_at(),
         )
         .unwrap();
         assert_eq!(result.train_uid, None);
