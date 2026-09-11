@@ -1676,3 +1676,318 @@ plan's own scope to fix:
 **If proceeding to Option B is eventually greenlit**, unchanged from every
 prior verdict in this document: gated on Task 8 reaching "go," which it
 still has not.
+
+---
+
+# 2026-09-11: Task 4 goes live — 10 real WCML pins, real delay-minute data, still an in-progress day
+
+**Status: a fifth real execution session**, dispatched because a separate
+human-run pinning pass (a real authenticated user's own `POST
+/Train/track` calls, not this session's) had already, earlier the same
+day, placed **10 real pins** across all five of `wcml`'s curated
+`sample_stations` (2 each at `EUS`/`MKC`/`CRE`/`PRE`/`CAR`), spread across
+the day. This session's job was Task 4 Step 4 onward: pull real state,
+build Task 5's expected-vs-actual table for whatever has actually
+departed, pull Task 6's baseline, and do as much of Task 7's three-way
+comparison as the data honestly supports — explicitly **not** Task 8,
+since today is still in progress at the time of writing (all times below
+checked live; `date -u` confirmed **2026-09-11, ~16:30 UTC**, well before
+5 of the 10 pins' scheduled departures tonight). Everything below is
+quoted directly from the live production database
+(`distant-signal-postgres-0`, read-only `psql`) or the live
+`GET /Train/mine` API, not paraphrased or extrapolated.
+
+## Task 4 Step 4: real state of all 10 pins, as of ~16:30 UTC
+
+Fetched fresh via `GET /api/Train/mine` (real, currently-valid session)
+and cross-joined directly against `train_subscriptions` / `trains` /
+`train_current_state` in the live database:
+
+| id | CRS | UID | matched line | resolution | live status | delay (min) |
+|----|-----|-----|---|---|---|---|
+| 42 | EUS | Y80906 | `lnwr-birmingham-crewe` | resolved | en_route | 0 |
+| 44 | MKC | W34266 | `emr-regional` | resolved | en_route | 0 |
+| 46 | CRE | C18017 | `lnwr-birmingham-crewe` | resolved | en_route | 9 |
+| 48 | PRE | G89823 | `northern-blackpool` | resolved | en_route | **13 → 15** (grew between two polls 12 min apart) |
+| 50 | CAR | W69941 | *(none — unmatched)* | resolved | *(no `train_current_state` row yet)* | *(pending)* |
+| 43 | EUS | C34213 | `lnwr-birmingham-crewe` | schedule_matched | not yet departed (22:27Z) | — |
+| 45 | MKC | C17924 | `lnwr-birmingham-crewe` | schedule_matched | not yet departed (21:02Z) | — |
+| 47 | CRE | G38654 | `lnwr-birmingham-crewe` | schedule_matched | not yet departed (22:33Z) | — |
+| 49 | PRE | P23952 | `northern-blackpool` | schedule_matched | not yet departed (22:19Z) | — |
+| 51 | CAR | W69917 | `northern-cumbrian-coast` | schedule_matched | not yet departed (22:10Z) | — |
+
+**A real, previously-unflagged structural finding, worth stating plainly
+before the delta tables below**: none of the 10 pins — all placed at
+`wcml`'s own five curated `sample_stations` — resolved to `matched_line_id
+= 'wcml'`. Each real train's CIF schedule-match instead resolved to
+whichever narrower, curated feeder/branch line its own full journey best
+fits (`lnwr-birmingham-crewe` for the Euston–Crewe-corridor workings,
+`emr-regional` for the Manchester–Euston cross-country working, `northern
+-blackpool` for the Blackpool–Manchester Airport working, `northern-
+cumbrian-coast` for the Carlisle–Dumfries working), and one (pin 50,
+`W69941`) resolved to **no line at all** (`matched_line_id` is `NULL` in
+`trains`), despite `W69941` genuinely appearing in `wcml`'s own
+`schedule_line_population` for today (confirmed directly:
+`SELECT line_id FROM schedule_line_population WHERE service_date=
+'2026-09-11' AND population::text LIKE '%W69941%'` returns
+`northern-cumbrian-coast`, `wcml`, `tpe-anglo-scottish`,
+`northern-tyne-valley` — four real candidate lines, `wcml` among them, yet
+the pin's own `trains` row matched none). **This matters directly for
+Task 6/7**: the plan's own Task 6 asks for "the sampling-side baseline for
+the chosen line" (`wcml`), but the app's own CIF-matching pipeline
+attributes most of these real WCML-calling trains to a *different*,
+narrower line id — meaning the honest three-way comparison has to be done
+per matched line, not solely against `wcml` itself, since that narrower
+attribution is what the app's own product actually computed for these
+real trains.
+
+## A real, quantified timestamp anomaly found while building Task 5's table
+
+Two genuine data-quality findings surfaced while reconciling
+`train_movement_events` against `schedule_line_population`'s CIF-derived
+booked times — reported here, precisely, because Task 5's methodology
+below depends on understanding them, not because fixing them is in this
+session's scope:
+
+**1. `train_movement_events.planned_timestamp`/`actual_timestamp` are
+stored as local UK civil time (BST, currently UTC+1) but tagged with a
+`+00` (UTC) offset** — i.e., off by a full hour from true UTC, consistent
+in every row checked. Confirmed directly, not inferred: pin 42's most
+recent real event at the time of checking was `70203 DEPARTURE
+planned=2026-09-11T17:18:30+00 actual=2026-09-11T17:19:00+00`, received
+(`received_at`, the one column that genuinely is UTC, generated by the
+consumer's own clock) at `2026-09-11T16:18:57+00` — an event whose
+supposedly-UTC `actual_timestamp` is **over an hour in the future** of
+when it was received, which is impossible for a real Movement message.
+The only consistent explanation: the stored value is the real local
+(BST) wall-clock reading, mistagged as UTC. This is *self-cancelling* for
+`delay_minutes` (both `planned_timestamp` and `actual_timestamp` carry the
+same offset, so the difference is unaffected) but means any comparison of
+these raw columns against a correctly-UTC-converted CIF time (as Task 5
+needs) must either subtract the offset or, more simply, compare using
+local time throughout — the approach used below.
+
+**2. A real, precisely-quantified ~79–80 minute discrepancy in
+`train_subscriptions.pin_scheduled_departure` — present only for
+`resolved` pins, absent for `schedule_matched` ones.** Computed directly
+by converting each CIF booked local time to UTC and diffing against the
+pin's own stored target:
+
+| pin | station | pin's `pin_scheduled_departure` (UTC) | CIF booked local time | CIF converted to UTC | gap |
+|---|---|---|---|---|---|
+| 42 (resolved) | EUS | 16:46:00 | 16:26:00 | 15:26:00 | **+80 min** |
+| 46 (resolved) | CRE | 17:13:00 | 16:54:00 (terminus arr.) | 15:54:00 | **+79 min** |
+| 48 (resolved) | PRE | 17:10:00 | 16:51:00 | 15:51:00 | **+79 min** |
+| 43 (schedule_matched) | EUS | 22:27:00 | 23:27:00 | 22:27:00 | **0 min** |
+| 45 (schedule_matched) | MKC | 21:02:00 | 22:02:00 | 21:02:00 | **0 min** |
+
+Every already-`resolved` pin checked shows a ~79–80 minute gap; every
+still-`schedule_matched` pin checked matches CIF exactly. This is too
+consistent across three independent trains/stations to be incidental, and
+correlates cleanly with `resolution_status`, not with which station or
+train was pinned. **This session does not assert a root cause** — it
+could not, without reading application code changes out of scope for a
+read-only DB validation pass — but it is flagged plainly, with exact
+numbers, as a real, reproducible anomaly worth a developer's follow-up
+look: something in the resolution transition appears to overwrite or
+recompute `pin_scheduled_departure` away from the value it held while
+`schedule_matched`, by a materially large and consistent margin. It does
+**not** affect `delay_minutes`, which is computed and reported
+separately and cross-checked directly against CIF below.
+
+## Task 5: expected (CIF) vs. actual (TRUST) for the trains that have run
+
+Built by streaming each pin's matched line's `schedule_line_population`
+row for `service_date='2026-09-11'` (a real JSONB column, already
+resolved for today's STP overlays — no CIF file re-parsing needed this
+session, since the schedule-feed ingest pipeline Task 0 verified in the
+2026-09-03 section is by now the live source of this table) and diffing
+booked local times against `train_movement_events`, read consistently in
+local-time terms per the timestamp-anomaly note above.
+
+**Pin 42 — `Y80906`, Euston→Birmingham New Street (`lnwr-birmingham-crewe`)**:
+| TIPLOC | CIF booked | TRUST actual | Δ |
+|---|---|---|---|
+| EUSTON (origin) | dep 16:26 | dep 16:26, ON TIME | 0 |
+| WOLVERTON | dep 17:12 | dep 17:12, ON TIME | 0 |
+Last real event: an unresolved-CRS location (STANOX `70203`, between
+Wolverton and Northampton) at 17:19, LATE by 30s. **App's own reported
+delay: 0 minutes.** A clean, real, on-time run.
+
+**Pin 44 — `W34266`, Manchester Piccadilly→Euston (`emr-regional`)**:
+| TIPLOC | CIF booked | TRUST actual | Δ |
+|---|---|---|---|
+| MNCRPIC (origin) | dep 14:55 | dep 14:55, ON TIME | 0 |
+| STOCKPORT | arr/dep 15:02/15:04 | arr/dep 15:03/15:05, LATE | +1 |
+| WILMSLOW | arr/dep 15:12/15:13 | arr/dep 15:13/15:14, LATE | +1 |
+| CREWE | arr/dep 15:29/15:32 | arr/dep 15:29/15:32, ON TIME | 0 |
+| STAFFORD | arr/dep 15:50/15:52 | arr/dep 15:50/15:52, ON TIME | 0 |
+Last real event: Rugby (a pass point for this working, not a CIF-booked
+stop), ARRIVAL, ON TIME. **App's own reported delay: 0 minutes.** A
+1-minute early wobble that fully recovered by Crewe — a real, honest
+"nothing to catch" case.
+
+**Pin 46 — `C18017`, Euston→Crewe (`lnwr-birmingham-crewe`)**:
+| TIPLOC | CIF booked | TRUST actual | Δ |
+|---|---|---|---|
+| EUSTON (origin) | dep 14:46 | dep 14:46, ON TIME | 0 |
+| MILTON KEYNES CENTRAL | arr/dep 15:18/15:19 | arr/dep 15:21/15:22, LATE | +3 |
+| RUGBY | arr/dep 15:41/15:42 | arr/dep 15:43/15:44, LATE | +2 |
+| STAFFORD | arr 16:30 | arr 16:39, LATE | **+9** |
+**App's own reported delay: 9 minutes** — matching this session's
+independent CIF-vs-actual recomputation at Stafford exactly. A real,
+growing delay, visible at one of `wcml`'s own five curated sample stations
+(Milton Keynes Central) as early as +3 minutes, over an hour before the
+final +9 was reached.
+
+**Pin 48 — `G89823`, Blackpool North→Manchester Airport
+(`northern-blackpool`)**:
+| TIPLOC | CIF booked | TRUST actual | Δ |
+|---|---|---|---|
+| BLACKPOOL NORTH (origin) | dep 16:22 | dep 16:22, ON TIME | 0 |
+| LAYTON | arr/dep 16:24/16:25 | arr/dep 16:24/16:25, ON TIME | 0 |
+| POULTON-LE-FYLDE | arr/dep 16:28/16:29 | arr/dep 16:29/16:30, LATE | +1 |
+| KIRKHAM & WESHAM | arr 16:37 | arr 16:37, ON TIME | 0 |
+| *(two further real, STANOX-table-confirmed locations, `BSV`/`CRL` per
+`reference-data/stanox-crs.csv`'s real `30201,BSV`/`30213,CRL` entries,
+were reported by TRUST but do not appear among this working's own
+CIF-booked calling points captured in `schedule_line_population` — flagged
+honestly as unreconciled, not asserted as a mismatch; Preston itself, a
+real CIF-booked stop for this working, is also conspicuously absent from
+the captured event log, suggesting a genuine reporting gap around Preston
+rather than a wrong-train match, given the four preceding stops all
+matched exactly)* | dep ~17:12, arr 17:15, dep 17:16, all LATE | **~+13, growing** |
+**App's own reported delay: 13 minutes as of the first poll, 15 minutes
+12 minutes later** (a second live `GET /Train/mine` fetch, ~16:30 UTC,
+showed `delayMinutes: 15` for this same pin). This is the day's clearest
+real, growing, double-digit-minute delay, and it sits on a WCML-adjacent
+feeder line whose curated `sample_stations` (`BPN`, `PFY`, `PRE`) directly
+include Preston, one of `wcml`'s own five sample stations.
+
+**Pin 50 — `W69941`, unmatched line, CAR**: `resolution_status=resolved`
+(the pin has a real `trains_id` and `train_uid`), but **zero**
+`train_movement_events` rows exist for it and no `train_current_state`
+row exists at all — confirmed directly (`SELECT count(*) FROM
+train_movement_events WHERE trains_id = 671998` → `0`). This is an
+honest "resolved via Activation, no Movement yet" state, consistent with
+this document's own prior sessions' documented distinction between the
+two — not a bug, just genuinely pending.
+
+**Still pending (not yet departed as of ~16:30 UTC)**: pins 43, 45, 47,
+49, 51 — scheduled departures range from 21:02Z to 22:33Z tonight, all
+several hours in the future at the time of writing. **No fabricated or
+extrapolated data is reported for these** — they are honestly listed as
+pending, per this session's explicit brief.
+
+## Task 6: the sampling-side baseline for the same window, per matched line
+
+Pulled directly from `line_status_history` for all five lines the 10 real
+pins actually matched to (not just `wcml`), for the whole of
+`2026-09-11` up to the time of writing:
+
+| line_id | rows today | most recent recompute | content in/near the pin window |
+|---|---|---|---|
+| `wcml` | 16 | **08:54:35 UTC** | Knowledgebase text about a Wrexham-area planned-works and a Caledonian Sleeper amendment — **nothing after 08:54**, i.e. **zero output for the entire 13:46–16:30 UTC window** every departed pin ran in |
+| `lnwr-birmingham-crewe` (carries pins 42/43/45/46/47) | 0 today | **2026-09-10 20:00:25 UTC** (yesterday) | **over 20 hours of complete silence**, spanning this entire session's real monitoring window |
+| `emr-regional` (carries pin 44) | 34 | 16:24:45 UTC (live, ongoing) | 100% Knowledgebase-derived, all about a real but unrelated Ely-area "Major Disruption" and a Matlock–Cleethorpes service amendment — nothing about `W34266`'s own (on-time) run |
+| `northern-blackpool` (carries pins 48/49) | active, but | **13:53:35 UTC** | a real Knowledgebase planned-work entry about Bransty Tunnel/Corkickle/Whitehaven (Cumbrian Coast, not this line's own Blackpool corridor) — and, critically, **this timestamp is ~1.5 hours *before* `G89823` (pin 48) even departed** (16:22 local/15:22 UTC) |
+| `northern-cumbrian-coast` (carries pins 50/51) | 0 today | 06:14:35 UTC | ~10 hours of silence |
+
+**The `dataQuality` angle, per the plan's own Task 6 Step 3**: every real
+entry surfaced above is Knowledgebase-sourced text about a *different*,
+unrelated real-world incident — none is an `ldbws-inferred`
+"N of M sampled services delayed" entry that happens to be *about* any of
+these specific pinned trains. Combined with the flat "no recompute at
+all" result for `wcml`, `lnwr-birmingham-crewe`, and
+`northern-cumbrian-coast`, this window's sampling-side product has
+produced **no signal whatsoever**, of any `dataQuality`, about any of the
+real delays Task 5 found — not a false negative buried in noise, but a
+genuine, verifiable silence.
+
+## Task 7: three-way comparison — partial, honest, and directly on-topic where it exists
+
+**The clearest real instance this window has produced so far**: pin 48
+(`G89823`, `northern-blackpool`, one of `wcml`'s own adjacent
+sample-station feeder lines, sharing Preston) shows a real, TRUST-confirmed,
+**growing double-digit delay (13 → 15 minutes)** between roughly 17:12 UTC
+and the time of writing (~16:30 UTC local checking time). Task 6's real
+data shows `northern-blackpool`'s own line-status product has recorded
+**zero** output covering any part of this train's actual run — its last
+recompute (13:53:35 UTC) predates the train's own departure entirely.
+This is a real, non-hypothetical, delay-*minute*-granular instance of
+exactly what this whole plan exists to test: a real, meaningful, growing
+delay that TRUST-derived per-train tracking caught in real time and this
+line's own currently-shipping sampling product did not reflect at all,
+at any point, during the same window.
+
+**A second, more modest instance**: pin 46 (`C18017`, `lnwr-birmingham-
+crewe`) shows a real, CIF-confirmed 9-minute delay by Stafford, first
+visible as +3 minutes at Milton Keynes Central — one of `wcml`'s own five
+curated sample stations. `lnwr-birmingham-crewe`'s own sampling output has
+been completely silent for over 20 hours, spanning this entire window.
+9 minutes is a more modest delay than the design spec's own worked
+examples (and arguably below whatever severity threshold Darwin/NRE's own
+canned-reason text would trigger on), so this is reported as a real but
+smaller-magnitude version of the same pattern, not overclaimed as
+equally dramatic.
+
+**The confirming, honest reverse case**: pin 44 (`W34266`, `emr-regional`)
+ran essentially on time (a 1-minute early wobble that fully recovered),
+and `emr-regional`'s own real, active sampling output during the same
+window was about a genuinely different, unrelated incident — a clean,
+unremarkable agreement case where there was nothing for TRUST-vs-schedule
+to usefully add, exactly the honest "no material difference" outcome the
+plan's own Task 7 Step 3 asks to report alongside the hits.
+
+**Sample-size and completeness honesty, stated plainly per this
+document's own established norm**: at the time of writing, only **4 of
+10** pins have produced any live TRUST movement data at all (42, 44, 46,
+48 — plus pin 50 resolved but still dataless), and of those, only **2**
+(46, 48) show a delay large enough to be a meaningful "would sampling
+have caught this" test — both currently unreflected by sampling's own
+real output at any severity. **5 of 10 pins have not yet departed** — all
+scheduled for tonight (21:02–22:33 UTC), hours after this session's
+writing time. This is explicitly a **partial, early, in-progress-day
+read** — real data, real numbers, but honestly not the complete day's
+picture the plan's Task 7 asks for, and nowhere near the volume Task 8's
+own N-of-M bar requires.
+
+## Task 8: explicitly not attempted this session — and exactly when to attempt it
+
+**Per this session's own explicit brief, Task 8 is deliberately not run
+here.** Today is still in progress: 5 of the 10 real pins haven't
+departed yet, `line_status_history`'s own comparison window for several
+of the matched lines is still accumulating, and a same-day, partial
+snapshot would produce exactly the kind of false-confidence verdict the
+plan's own Task 8 criteria (and this document's own prior sessions) have
+consistently and correctly refused to render prematurely.
+
+**Concrete recommendation for when to actually run Task 8**: **tomorrow
+morning, 2026-09-12**, once two conditions are both true — check them
+directly, don't assume:
+
+1. **All 10 pins have reached a final state** — re-fetch
+   `GET /Train/mine` (or query `train_subscriptions`/`trains` directly)
+   and confirm every pin is either `resolved` with real movement data (or
+   honestly logged as never producing any, like pin 50 above), or has
+   sat at `schedule_matched`/`pending` long enough past its scheduled
+   departure (all five remaining pins depart by 22:33Z tonight) to be
+   confidently called `unresolved` per the plan's own Task 4 Step 5
+   guidance — this should be checkable well before UK sunrise.
+2. **A full day of `line_status_history` exists for comparison** across
+   all five matched lines (`wcml`, `lnwr-birmingham-crewe`,
+   `emr-regional`, `northern-blackpool`, `northern-cumbrian-coast`) —
+   i.e., re-run this session's exact `line_status_history` query with the
+   date window extended through the end of 2026-09-11 (all pins'
+   scheduled departures, `22:33Z` being the latest, fall well inside
+   today's date), so tonight's remaining departures (and the two
+   already-growing delays found today, on `lnwr-birmingham-crewe` and
+   `northern-blackpool`) get a real chance to either produce or fail to
+   produce a matching sampling-side recompute.
+
+Once both are true, Task 8 should restate Task 7's comparison as an
+actual **N of M** across the full, now-complete day (this session's own
+2 real "TRUST caught it, sampling didn't" instances, against however many
+of the remaining 6 pins' outcomes turn out to need the same test) and
+render the plan's actual go/no-go/not-yet verdict from that number —
+not from this session's honestly partial 4-of-10 snapshot.
