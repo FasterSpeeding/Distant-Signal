@@ -18,11 +18,32 @@ import { LoginLink } from './LoginLink';
  * button once both are simultaneously in the DOM (both read "Delete" as
  * their visible text) -- closely modeled on `DeleteLineButton`.
  *
- * On success, redirects to `/track/mine` -- unlike a deleted custom line
- * (which returns to `/lines`, a list every line still on it belongs on),
- * there is no single "all trains" page a deleted tracked train's detail
- * page could sensibly return to; `/track/mine`, the logged-in caller's own
- * tracked-trains list, is the closest equivalent.
+ * `afterDelete` controls what happens on success, and defaults to
+ * `'redirect'` (push to `/track/mine`): unlike a deleted custom line (which
+ * returns to `/lines`, a list every line still on it belongs on), there is
+ * no single "all trains" page a deleted tracked train's detail page could
+ * sensibly return to, and `/train/by-id/[trackingId]` (the by-`trackingId`
+ * page, this component's original caller) is keyed by a `trackingId` that
+ * is now meaningless once deleted -- `/track/mine`, the logged-in caller's
+ * own tracked-trains list, is the closest equivalent. `/train/[uid]/[date]`
+ * (keyed by the train's real identity, not the tracking id) passes
+ * `'refresh'` instead: that URL stays perfectly meaningful post-delete, so
+ * it just needs its owning Server Component to re-run (`router.refresh()`,
+ * the same mechanism `RenameTrainButton`/`DeleteTicketButton` already use
+ * for "mutate, stay here") so a follow-up `GET /Train/mine` drops the
+ * deleted row and the page swaps back to `TrackThisTrainButton`. A plain
+ * boolean/string prop, not an `onDeleted` callback: both call sites reach
+ * this component through `TrackedTrainOwnerControls`, which itself is
+ * rendered directly from a Server Component page, and a Server Component
+ * cannot hand a Client Component a function prop.
+ *
+ * `sharedGroupCount` (from `TrackedTrainState`/`TrackedTrainListItem`,
+ * already in hand by the time either caller renders this button -- no
+ * extra fetch) drives the confirm modal's copy: deleting a tracked train
+ * that's shared into one or more groups also removes it from those groups
+ * for everyone else who could see it there (the DB's own
+ * `group_trains.train_subscription_id ... ON DELETE CASCADE` already
+ * guarantees that; this only makes sure the user isn't surprised by it).
  *
  * `delete_tracked_train` requires `AuthenticatedUser` and 404s "doesn't
  * exist" and "exists but not yours" identically (never `403` -- see that
@@ -34,7 +55,15 @@ import { LoginLink } from './LoginLink';
  * reasoned about. Matches `PinToggle`'s established `needsLogin` pattern:
  * catch the `401` specifically and show a login prompt, never the raw
  * backend rejection text. */
-export function DeleteTrainButton({ trackingId }: { trackingId: number }) {
+export function DeleteTrainButton({
+  trackingId,
+  sharedGroupCount,
+  afterDelete = 'redirect',
+}: {
+  trackingId: number;
+  sharedGroupCount: number;
+  afterDelete?: 'redirect' | 'refresh';
+}) {
   const router = useRouter();
   const [opened, { open, close }] = useDisclosure(false);
   const [deleting, setDeleting] = useState(false);
@@ -61,7 +90,11 @@ export function DeleteTrainButton({ trackingId }: { trackingId: number }) {
         setDeleting(false);
         return;
       }
-      router.push('/track/mine');
+      if (afterDelete === 'refresh') {
+        router.refresh();
+      } else {
+        router.push('/track/mine');
+      }
     } catch {
       setError('Request failed.');
       setDeleting(false);
@@ -75,6 +108,12 @@ export function DeleteTrainButton({ trackingId }: { trackingId: number }) {
       </Button>
       <Modal opened={opened} onClose={close} title="Stop tracking this train?">
         <Text>This cannot be undone.</Text>
+        {sharedGroupCount > 0 && (
+          <Text>
+            This train is shared in {sharedGroupCount} group{sharedGroupCount === 1 ? '' : 's'} — deleting it will
+            remove it from {sharedGroupCount === 1 ? 'that group' : 'those groups'} too.
+          </Text>
+        )}
         {error && <Text c="red">{error}</Text>}
         {needsLoginState.needsLogin && (
           <LoginLink underline="always">

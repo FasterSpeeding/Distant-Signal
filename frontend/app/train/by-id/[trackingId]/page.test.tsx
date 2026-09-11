@@ -72,6 +72,7 @@ function trackedTrainState(overrides: Partial<TrackedTrainState> = {}): TrackedT
     scheduleCallingPoints: null,
     journeyStops: null,
     mayHaveArrived: false,
+    sharedGroupCount: 0,
     ...overrides,
     customName: overrides.customName ?? null,
   };
