@@ -38,6 +38,19 @@ if (typeof window !== 'undefined' && !window.ResizeObserver) {
   window.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 }
 
+// jsdom doesn't implement `scrollIntoView`, but Mantine's Combobox
+// (`useCombobox`, backing `Select`/`Autocomplete`) calls it internally, on a
+// timer, to keep the active/highlighted option visible -- previously never
+// triggered by an existing test, but `TrackDestinationModal`'s `Select`
+// (the shared-groups "Personal or a group?" picker) exercises it whenever a
+// test picks a group option, leaving an uncaught
+// `items[index]?.scrollIntoView is not a function` once that timer fires.
+// Same "polyfill the missing jsdom API" pattern as ResizeObserver/
+// matchMedia above.
+if (typeof window !== 'undefined' && !window.HTMLElement.prototype.scrollIntoView) {
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
+}
+
 // jsdom's `window.localStorage` isn't a working Storage implementation in
 // this project's setup (e.g. `localStorage.setItem` isn't even a
 // function), but Mantine's color-scheme manager reads/writes it to

@@ -106,6 +106,12 @@ function mockFetchByUrl(
     const url = String(input);
     if (url.startsWith('/api/trains/search')) return Promise.resolve(search(url));
     if (url.startsWith('/api/stations?')) return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+    // Every row's `TrackThisTrainButton` now prefetches the caller's groups
+    // (`useGroupSummaries`) on mount -- see TrackThisTrainButton.test.tsx's
+    // own `mockFetchByUrl` for the same addition. Empty-array 200: this
+    // file's tests are only about search/pagination/track-action wiring,
+    // never about the shared-groups prompt.
+    if (url === '/api/groups') return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
     if (/\/api\/Train\/tickets\/\d+\/attach$/.test(url))
       return Promise.resolve(new Response(JSON.stringify({ ticketId: 7, trackedTrainId: 42 }), { status: 200 }));
     if (/\/api\/Train\/by-uid\/.+\/track$/.test(url)) return Promise.resolve(track());

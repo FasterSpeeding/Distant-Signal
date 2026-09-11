@@ -8,8 +8,11 @@ import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import { TextLink } from './TextLink';
+import { TrackDestinationModal } from './TrackDestinationModal';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
+import { useGroupSummaries } from '@/lib/useGroupSummaries';
+import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
 import type { TrackPinRequest, TrackPinResponse } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
@@ -235,7 +238,21 @@ type Picker =
  * click (there was no typed input to lose); a four-field form has real
  * input worth protecting, so all four fields stay exactly as typed while
  * the login prompt renders alongside them (Decision 4, "no navigation
- * away"). */
+ * away").
+ *
+ * Shared-groups follow-up: `useGroupSummaries()` decides, once on mount,
+ * whether this user belongs to any group. Zero groups (the majority case,
+ * and every anonymous visitor) leaves `handleSubmit`'s form `onSubmit`
+ * calling `submitTrack(null)` directly -- no prompt, no behavior change
+ * from before this feature existed. One or more groups instead makes
+ * `handleSubmit` open `TrackDestinationModal` first and defer the actual
+ * submit to its `onConfirm`, which calls this same `submitTrack` -- see
+ * that component's own doc comment for why reusing it unmodified (rather
+ * than a second, divergent submit path) is safe. Sharing the new pin into
+ * the chosen group (`shareTrackedTrainToGroup`) is a further best-effort
+ * follow-up performed only once the track call itself has already
+ * succeeded, same swallow-every-failure posture as the `attachTicketId`
+ * block right below it. */
 export function TrackTrainForm({
   initialOrigin = '',
   attachTicketId,
@@ -259,6 +276,8 @@ export function TrackTrainForm({
   const [submitting, setSubmitting] = useState(false);
   const needsLoginState = useNeedsLogin();
   const [fieldError, setFieldError] = useState<string | null>(null);
+  const { groups } = useGroupSummaries();
+  const [destinationPromptOpened, setDestinationPromptOpened] = useState(false);
 
   const { suggestions: originSuggestions } = useSuggestions(originCrs, searchStations);
   const { suggestions: destinationSuggestions } = useSuggestions(destinationCrs, searchStations);
@@ -397,8 +416,12 @@ export function TrackTrainForm({
     setScheduledDeparture(`${date} ${hh}:${mm}:00`);
   }
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
+  /** The real submit -- does the `POST /api/Train/track` call and every
+   * follow-up, exactly as this form always has. `groupId` is `null` for the
+   * plain personal-tracking flow (the ONLY value it's ever called with when
+   * `groups` is empty, preserving today's exact behavior), or a chosen
+   * group's id from `TrackDestinationModal`'s `onConfirm`. */
+  async function submitTrack(groupId: string | null) {
     if (!canSubmit || scheduledDeparture === null) return;
     setSubmitting(true);
     needsLoginState.reset();
@@ -449,6 +472,11 @@ export function TrackTrainForm({
             // Deliberately swallowed -- see this block's own comment.
           }
         }
+        if (groupId !== null) {
+          // Best-effort, same posture as the ticket-attach block above --
+          // see shareTrackedTrainToGroup's own doc comment.
+          await shareTrackedTrainToGroup(groupId, result.trackingId);
+        }
         router.push(`/train/by-id/${result.trackingId}`);
         return;
       }
@@ -467,6 +495,20 @@ export function TrackTrainForm({
     } finally {
       setSubmitting(false);
     }
+  }
+
+  /** The form's own `onSubmit` -- zero groups calls `submitTrack` directly
+   * (today's exact behavior, unchanged); one or more groups opens
+   * `TrackDestinationModal` instead and defers the real submit to its
+   * `onConfirm`. See this component's own doc comment. */
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!canSubmit || scheduledDeparture === null) return;
+    if (groups.length > 0) {
+      setDestinationPromptOpened(true);
+      return;
+    }
+    void submitTrack(null);
   }
 
   /** The picker container's content, in the priority order documented in
@@ -754,6 +796,12 @@ export function TrackTrainForm({
           {submitting ? 'Tracking…' : 'Track this train'}
         </Button>
       </Group>
+      <TrackDestinationModal
+        opened={destinationPromptOpened}
+        groups={groups}
+        onClose={() => setDestinationPromptOpened(false)}
+        onConfirm={(groupId) => void submitTrack(groupId)}
+      />
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
         Log in to track this train.
       </LoginPromptModal>

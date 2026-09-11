@@ -5,6 +5,9 @@ import { useRouter } from 'next/navigation';
 import { Alert, Button, Stack } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
+import { TrackDestinationModal } from './TrackDestinationModal';
+import { useGroupSummaries } from '@/lib/useGroupSummaries';
+import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
 
 /** The "Track this train" action for a train whose real CIF identity is
  * already known -- a `(train_uid, service_date)` pair. Calls
@@ -46,7 +49,22 @@ import { LoginPromptModal } from './LoginPromptModal';
  * `train_tracking::create_subscription_for_train` is idempotent per
  * `(user_id, trains_id)` as of this feature, but that in-function fix
  * cannot close a genuinely concurrent double-submit under READ COMMITTED.
- * Disabling the control while its request is in flight is what does. */
+ * Disabling the control while its request is in flight is what does.
+ *
+ * Shared-groups follow-up: `useGroupSummaries()` decides, once on mount,
+ * whether this user is a member of any group at all. Zero groups (the
+ * majority case today, and every anonymous visitor) leaves `track()` wired
+ * directly to the button's `onClick`, exactly as before this feature
+ * existed -- no prompt, no behavior change, no extra render state. One or
+ * more groups instead routes the click through `TrackDestinationModal`
+ * (see its own doc comment for why it's safe to reuse this same `track()`
+ * function unmodified for the confirm step); either way, `track()` itself
+ * is the single place that actually calls `POST .../track`, so the
+ * zero-groups code path an existing test locks down is untouched. Once
+ * tracking succeeds, sharing into the chosen group
+ * (`shareTrackedTrainToGroup`) is a second best-effort follow-up, same
+ * swallow-every-failure posture as the `attachTicketId` block right below
+ * it -- see that helper's own doc comment. */
 export function TrackThisTrainButton({
   uid,
   date,
@@ -62,8 +80,10 @@ export function TrackThisTrainButton({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
+  const { groups } = useGroupSummaries();
+  const [destinationPromptOpened, setDestinationPromptOpened] = useState(false);
 
-  async function track() {
+  async function track(groupId: string | null) {
     setBusy(true);
     needsLoginState.reset();
     setError(null);
@@ -88,6 +108,11 @@ export function TrackThisTrainButton({
             // Deliberately swallowed.
           }
         }
+        if (groupId !== null) {
+          // Best-effort, same posture as the ticket-attach block above --
+          // see shareTrackedTrainToGroup's own doc comment.
+          await shareTrackedTrainToGroup(groupId, result.trackingId);
+        }
         router.push(`/train/by-id/${result.trackingId}`);
         return;
       }
@@ -103,9 +128,17 @@ export function TrackThisTrainButton({
     }
   }
 
+  function handleClick() {
+    if (groups.length > 0) {
+      setDestinationPromptOpened(true);
+      return;
+    }
+    void track(null);
+  }
+
   return (
     <Stack gap="xs">
-      <Button size={size} onClick={track} disabled={busy}>
+      <Button size={size} onClick={handleClick} disabled={busy}>
         {busy ? 'Tracking…' : 'Track this train'}
       </Button>
       {error && (
@@ -113,6 +146,12 @@ export function TrackThisTrainButton({
           {error}
         </Alert>
       )}
+      <TrackDestinationModal
+        opened={destinationPromptOpened}
+        groups={groups}
+        onClose={() => setDestinationPromptOpened(false)}
+        onConfirm={(groupId) => void track(groupId)}
+      />
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
         Log in to track this train.
       </LoginPromptModal>
