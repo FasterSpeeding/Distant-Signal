@@ -142,7 +142,7 @@ function MemberRow({
   canManage: boolean;
   viewerIsOwner: boolean;
 }) {
-  const label = member.name ?? member.email ?? 'A member';
+  const label = member.displayName ?? 'A member';
   const isOwner = member.role === 'owner';
   return (
     <Group justify="space-between" wrap="nowrap">

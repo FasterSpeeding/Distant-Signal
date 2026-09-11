@@ -47,8 +47,8 @@ describe('GroupDetailPage', () => {
       inviteLink: { token: 'tok', expiresAt: '2026-09-18T00:00:00Z' },
     });
     vi.mocked(getGroupMembers).mockResolvedValue([
-      { userId: 'user-1', name: 'Alex', email: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
-      { userId: 'user-2', name: 'Sam', email: null, role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
+      { userId: 'user-1', displayName: 'Alex', role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+      { userId: 'user-2', displayName: 'Sam', role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([
       {
@@ -89,7 +89,7 @@ describe('GroupDetailPage', () => {
       inviteLink: null,
     });
     vi.mocked(getGroupMembers).mockResolvedValue([
-      { userId: 'user-1', name: 'Alex', email: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+      { userId: 'user-1', displayName: 'Alex', role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([]);
     vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
@@ -112,22 +112,19 @@ describe('GroupDetailPage', () => {
   describe('role-gated controls', () => {
     const OWNER: GroupMember = {
       userId: 'user-owner',
-      name: 'Olive',
-      email: null,
+      displayName: 'Olive',
       role: 'owner',
       joinedAt: '2026-09-01T00:00:00Z',
     };
     const ADMIN: GroupMember = {
       userId: 'user-admin',
-      name: 'Adam',
-      email: null,
+      displayName: 'Adam',
       role: 'admin',
       joinedAt: '2026-09-02T00:00:00Z',
     };
     const PLAIN: GroupMember = {
       userId: 'user-plain',
-      name: 'Priya',
-      email: null,
+      displayName: 'Priya',
       role: 'member',
       joinedAt: '2026-09-03T00:00:00Z',
     };
@@ -158,7 +155,7 @@ describe('GroupDetailPage', () => {
         id: 'grp-1',
         name: 'Family',
         ownerId: OWNER.userId,
-        ownerName: OWNER.name,
+        ownerName: OWNER.displayName,
         memberCount: 3,
         role: viewerRole,
         inviteLink: null,
@@ -169,7 +166,7 @@ describe('GroupDetailPage', () => {
         authenticated: true,
         id: viewer.userId,
         email: null,
-        name: viewer.name,
+        name: viewer.displayName,
       });
       renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
     }

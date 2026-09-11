@@ -804,8 +804,7 @@ export interface GroupDetail {
 
 export interface GroupMember {
   userId: string;
-  name: string | null;
-  email: string | null;
+  displayName: string | null;
   role: GroupRole;
   joinedAt: string; // RFC3339
 }

@@ -239,12 +239,17 @@ struct GroupMemberRow {
     joined_at: DateTime<Utc>,
 }
 
+/// Deliberately no `email` field: `GET /groups/{id}/members` returns this
+/// to every current member, and a joined-via-link member has no other
+/// relationship with the rest of the group -- shipping their verified
+/// email to everyone alongside `name` leaks more than the feature needs.
+/// Collapsed to `displayName` the same way `GroupTrain.added_by_name`
+/// already collapses `name.or(email)` for attribution, one struct away.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMember {
     pub user_id: String,
-    pub name: Option<String>,
-    pub email: Option<String>,
+    pub display_name: Option<String>,
     pub role: GroupRole,
     pub joined_at: DateTime<Utc>,
 }
@@ -253,8 +258,7 @@ impl From<GroupMemberRow> for GroupMember {
     fn from(row: GroupMemberRow) -> Self {
         GroupMember {
             user_id: row.user_id,
-            name: row.name,
-            email: row.email,
+            display_name: row.name.or(row.email),
             role: GroupRole::from_db(&row.role),
             joined_at: row.joined_at,
         }
@@ -1740,5 +1744,30 @@ mod group_train_wire_shape_tests {
                 "trainUid",
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod group_member_wire_shape_tests {
+    use super::*;
+
+    /// Pins the exact JSON keys `GroupMember` serializes to. A future edit
+    /// that re-adds a raw `email` field alongside `displayName` would leak
+    /// a member's verified email to every other member of the group --
+    /// this test fails immediately rather than only being caught by
+    /// manual review, mirroring `group_train_json_never_includes_ticket_or_notification_fields`
+    /// one struct away.
+    #[test]
+    fn group_member_json_never_includes_a_raw_email_field() {
+        let member = GroupMember {
+            user_id: "user-1".to_string(),
+            display_name: Some("Alex".to_string()),
+            role: GroupRole::Member,
+            joined_at: "2026-09-11T00:00:00Z".parse().unwrap(),
+        };
+        let value = serde_json::to_value(&member).expect("serialize");
+        let mut keys: Vec<&str> = value.as_object().expect("object").keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["displayName", "joinedAt", "role", "userId"]);
     }
 }
