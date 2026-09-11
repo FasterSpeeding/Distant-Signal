@@ -11,9 +11,9 @@ import { TrainSearchForm } from '@/components/TrainSearchForm';
  *
  * Query params mirror `/track`'s own convention: `?station=` pre-fills the
  * required search key, `?origin=`/`?stops_at=` pre-fill the optional
- * filters (so a filtered search is a shareable link -- `?stops_at=` may
- * repeat, one per station), and `?ticketId=` carries a standalone ticket
- * through so the row-level "Track this train" action can attach it. */
+ * filters (so a filtered search is a shareable link), and `?ticketId=`
+ * carries a standalone ticket through so the row-level "Track this train"
+ * action can attach it. */
 export default async function TrainsPage({
   searchParams,
 }: {
@@ -28,13 +28,12 @@ export default async function TrainsPage({
   const { station, origin, stops_at: stopsAt, date, ticketId } = await searchParams;
   // Next.js supplies a `string[]` for a repeated query param -- fall back
   // to the first value rather than letting `.toUpperCase()` throw on an
-  // array. Same handling as `app/track/page.tsx:10-13`. `stops_at` is the
-  // one param that's genuinely multi-valued, so it keeps the whole array
-  // (wrapping a single value into a one-element array) instead of
-  // collapsing to the first entry.
+  // array. Same handling as `app/track/page.tsx:10-13`. `stops_at` is a
+  // single-station filter now (see TrainSearchForm's own doc comment), so
+  // it collapses to the first entry exactly like every other param here.
   const stationParam = Array.isArray(station) ? station[0] : station;
   const originParam = Array.isArray(origin) ? origin[0] : origin;
-  const stopsAtParam = stopsAt === undefined ? [] : Array.isArray(stopsAt) ? stopsAt : [stopsAt];
+  const stopsAtParam = Array.isArray(stopsAt) ? stopsAt[0] : stopsAt;
   const dateParam = Array.isArray(date) ? date[0] : date;
   const ticketIdParam = Array.isArray(ticketId) ? ticketId[0] : ticketId;
   const attachTicketId = ticketIdParam && /^\d+$/.test(ticketIdParam) ? Number(ticketIdParam) : undefined;
@@ -50,7 +49,7 @@ export default async function TrainsPage({
       <TrainSearchForm
         initialStation={stationParam?.toUpperCase()}
         initialOrigin={originParam?.toUpperCase()}
-        initialStopsAt={stopsAtParam.map((s) => s.toUpperCase())}
+        initialStopsAt={stopsAtParam?.toUpperCase()}
         initialDate={dateParam}
         attachTicketId={attachTicketId}
       />
