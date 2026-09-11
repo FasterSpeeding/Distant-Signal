@@ -1049,6 +1049,20 @@ pub struct TrackedTrainState {
     pub eta_next: Option<DateTime<Utc>>,
     pub eta_source: Option<String>,
     pub custom_name: Option<String>,
+    /// How many groups (`crate::data::groups`) this subscription is
+    /// currently shared into, via `group_trains.train_subscription_id` --
+    /// `0` if it isn't shared anywhere. Read via a correlated `COUNT(*)`
+    /// subquery directly in `TRACKED_TRAIN_STATE_SELECT` below, the same
+    /// "attach a count to the row that owns it" shape
+    /// `groups::GroupSummary`/`groups::GroupDetail` already use for their
+    /// own `member_count` (`SELECT ... (SELECT COUNT(*) FROM group_members
+    /// gm2 WHERE gm2.group_id = g.id) AS member_count ...`) -- deliberately
+    /// NOT a separate `count_groups_containing_train` query invoked per row
+    /// from a route handler, which would turn `GET /Train/mine` (a
+    /// potentially-many-row list) into an N+1. Exists so the frontend's
+    /// delete-confirmation modal (`DeleteTrainButton`) can warn "this train
+    /// is shared in N group(s)" without a second round-trip.
+    pub shared_group_count: i64,
     /// The shared `trains` row's own surrogate key, needed to read
     /// `train_movement_events` for this train's live overlay -- internal
     /// plumbing for `routes::train`'s journey-stops attachment, never sent
@@ -1137,7 +1151,9 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
            tr.id AS trains_id, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
            cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source, \
-           tt.custom_name \
+           tt.custom_name, \
+           (SELECT COUNT(*) FROM group_trains gt WHERE gt.train_subscription_id = tt.id) \
+               AS shared_group_count \
     FROM train_subscriptions tt \
     LEFT JOIN trains tr ON tr.id = tt.trains_id \
     LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
@@ -1182,6 +1198,11 @@ pub struct TrackedTrainListItem {
     pub delay_minutes: Option<i32>,
     pub tracked_at: DateTime<Utc>,
     pub custom_name: Option<String>,
+    /// See `TrackedTrainState::shared_group_count`'s doc comment -- same
+    /// correlated-subquery mechanism, same reason (letting
+    /// `/train/[uid]/[date]`'s tracking overlay, which reads this list
+    /// rather than `GET /Train/{trackingId}`, warn on delete too).
+    pub shared_group_count: i64,
 }
 
 /// A user's own tracked trains, most-recently-tracked first (`tracked_at
@@ -1208,7 +1229,9 @@ pub async fn list_tracked_trains_for_user(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 tt.pin_scheduled_departure, tt.resolution_status, tr.train_uid, \
-                cs.status, cs.delay_minutes, tt.tracked_at, tt.custom_name \
+                cs.status, cs.delay_minutes, tt.tracked_at, tt.custom_name, \
+                (SELECT COUNT(*) FROM group_trains gt WHERE gt.train_subscription_id = tt.id) \
+                    AS shared_group_count \
          FROM train_subscriptions tt \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
@@ -2335,6 +2358,70 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup fixture station");
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see this plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                shared_group_count_reflects_how_many_groups_a_train_is_shared_into \
+                -- --ignored`"]
+    async fn shared_group_count_reflects_how_many_groups_a_train_is_shared_into() {
+        // Exercises the correlated `(SELECT COUNT(*) FROM group_trains ...)`
+        // subquery embedded directly in `TRACKED_TRAIN_STATE_SELECT` and
+        // `list_tracked_trains_for_user`'s own query -- both
+        // `get_by_tracking_id` and `list_tracked_trains_for_user` must agree
+        // on the same count for the same subscription.
+        let pool = connect().await;
+        let user_id = "TEST-SHARED-GROUP-COUNT-USER";
+        seed_user(&pool, user_id).await;
+
+        let shared_id = seed_tracked_train(&pool, user_id).await;
+        let unshared_id = seed_tracked_train(&pool, user_id).await;
+
+        let group_a = crate::data::groups::create_group(&pool, "Group A", user_id)
+            .await
+            .expect("create group A");
+        let group_b = crate::data::groups::create_group(&pool, "Group B", user_id)
+            .await
+            .expect("create group B");
+        for group_id in [&group_a, &group_b] {
+            sqlx::query(
+                "INSERT INTO group_trains (group_id, train_subscription_id, added_by, added_at) \
+                 VALUES ($1, $2, $3, NOW())",
+            )
+            .bind(group_id)
+            .bind(shared_id)
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("share the train into a group");
+        }
+
+        let shared_state = get_by_tracking_id(&pool, shared_id)
+            .await
+            .expect("read shared train")
+            .expect("row present");
+        assert_eq!(shared_state.shared_group_count, 2);
+
+        let unshared_state = get_by_tracking_id(&pool, unshared_id)
+            .await
+            .expect("read unshared train")
+            .expect("row present");
+        assert_eq!(unshared_state.shared_group_count, 0);
+
+        let list = list_tracked_trains_for_user(&pool, user_id)
+            .await
+            .expect("list tracked trains");
+        let by_id = |id: i64| list.iter().find(|r| r.id == id).expect("row present");
+        assert_eq!(by_id(shared_id).shared_group_count, 2);
+        assert_eq!(by_id(unshared_id).shared_group_count, 0);
+
+        sqlx::query("DELETE FROM groups WHERE id = ANY($1)")
+            .bind(vec![group_a, group_b])
+            .execute(&pool)
+            .await
+            .ok();
         cleanup_user(&pool, user_id).await;
     }
 

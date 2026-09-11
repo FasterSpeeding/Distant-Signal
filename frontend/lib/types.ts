@@ -418,6 +418,15 @@ export interface TrackedTrainState extends TrainJourneyState {
   // subscription-less train can be rendered without one -- see
   // `PublicTrainState` below.
   id: number;
+  // How many groups (`GET /groups`) this tracked train is currently shared
+  // into -- `0` if it isn't shared anywhere. Lives here, not on
+  // `TrainJourneyState`, for the same reason `id` does: a public,
+  // subscription-less train has no `group_trains` row to count at all.
+  // Read by `DeleteTrainButton`'s confirm modal to warn that deleting this
+  // subscription also removes it from every one of those groups (the DB's
+  // `group_trains.train_subscription_id ... ON DELETE CASCADE` already does
+  // this automatically; this is purely so the UI can warn about it first).
+  sharedGroupCount: number;
 }
 
 /** Exactly the fields `components/TrainJourney.tsx` reads -- notably NOT
@@ -547,6 +556,11 @@ export interface TrackedTrainListItem {
   trackedAt: string; // RFC3339 -- list ordering key
   // See `TrackedTrainState.customName`'s comment -- same contract.
   customName: string | null;
+  // See `TrackedTrainState.sharedGroupCount`'s comment -- same contract.
+  // Needed here too: `/train/[uid]/[date]`'s tracking overlay renders
+  // `DeleteTrainButton` off a `TrackedTrainListItem` match (`GET
+  // /Train/mine`), not a `TrackedTrainState`.
+  sharedGroupCount: number;
 }
 
 /** `POST /Train/track`'s request body (`common::TrackPinRequest`). Plain
