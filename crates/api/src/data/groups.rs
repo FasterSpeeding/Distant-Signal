@@ -410,6 +410,160 @@ pub async fn remove_member(
     Ok(RemoveMemberOutcome::Removed { new_owner })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteLink {
+    pub token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Every link expires 7 days after creation unless rotated (spec §2.3,
+/// decided) -- a low-effort mitigation against an old, forgotten, still-
+/// valid link being found and reused much later.
+const INVITE_LINK_TTL: chrono::Duration = chrono::Duration::days(7);
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct InviteLinkRow {
+    token: String,
+    expires_at: DateTime<Utc>,
+}
+
+/// Rotates the group's active invite link: revokes any currently-active
+/// link and inserts a fresh one with a new 7-day expiry, in one
+/// transaction (spec §2.3: "rotation and 'extend the window' are the same
+/// action"). Permission checking (only `admin`/`owner`) is the route's job.
+pub async fn rotate_invite_link(pool: &PgPool, group_id: &str, user_id: &str) -> Result<InviteLink> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "UPDATE group_invite_links SET revoked_at = NOW() \
+         WHERE group_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(group_id)
+    .execute(&mut *tx)
+    .await?;
+
+    let token = crate::auth::generate_session_token();
+    let expires_at = Utc::now() + INVITE_LINK_TTL;
+    sqlx::query(
+        "INSERT INTO group_invite_links (token, group_id, created_by, created_at, expires_at) \
+         VALUES ($1, $2, $3, NOW(), $4)",
+    )
+    .bind(&token)
+    .bind(group_id)
+    .bind(user_id)
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(InviteLink { token, expires_at })
+}
+
+/// Revokes the group's active invite link with no replacement.
+/// Idempotent: `false` if there was nothing active to revoke -- the route
+/// still returns `204` either way (revoking an already-revoked/expired
+/// link is not an error).
+pub async fn revoke_invite_link(pool: &PgPool, group_id: &str) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE group_invite_links SET revoked_at = NOW() \
+         WHERE group_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(group_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// The group's current active invite link, if any -- `None` once revoked
+/// or past its `expires_at`. Surfaced on `GET /groups/{id}` for
+/// `admin`/`owner` callers only (Task 6) -- there is no dedicated `GET`
+/// route for this in the spec's API table (§5 lists only the two mutating
+/// invite-link routes), so `GET /groups/{id}`'s own response is extended
+/// to carry it; see this plan's self-review note on that extension.
+pub async fn get_active_invite_link(pool: &PgPool, group_id: &str) -> Result<Option<InviteLink>> {
+    let row: Option<InviteLinkRow> = sqlx::query_as(
+        "SELECT token, expires_at FROM group_invite_links \
+         WHERE group_id = $1 AND revoked_at IS NULL AND expires_at > NOW() \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(group_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| InviteLink {
+        token: r.token,
+        expires_at: r.expires_at,
+    }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinPreview {
+    pub group_id: String,
+    pub group_name: String,
+    pub member_count: i64,
+}
+
+/// Resolves a join token to a group preview for the confirm-before-join
+/// page (spec §2.3) -- valid iff `revoked_at IS NULL AND expires_at >
+/// NOW()`. Never changes membership; see `consume_invite_link` for the
+/// actual join. Unauthenticated: the route calling this takes no
+/// `AuthenticatedUser` at all, so a not-yet-logged-in visitor can see what
+/// they're being asked to join before being sent through login.
+pub async fn resolve_invite_link(pool: &PgPool, token: &str) -> Result<Option<JoinPreview>> {
+    let row: Option<(String, String, i64)> = sqlx::query_as(
+        "SELECT g.id, g.name, (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) \
+         FROM group_invite_links l \
+         JOIN groups g ON g.id = l.group_id \
+         WHERE l.token = $1 AND l.revoked_at IS NULL AND l.expires_at > NOW()",
+    )
+    .bind(token)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(group_id, group_name, member_count)| JoinPreview {
+        group_id,
+        group_name,
+        member_count,
+    }))
+}
+
+/// Consumes a join token: adds the caller to `group_members` as a plain
+/// `member` if the token is still valid, or no-ops if they're already a
+/// member (e.g. the owner re-clicking their own link, or a double-submit)
+/// -- `ON CONFLICT DO NOTHING` on the natural `(group_id, user_id)` PK.
+/// Returns the joined `group_id`, or `None` if the token doesn't resolve
+/// to a valid, unexpired, unrevoked link -- the route maps that to `404`.
+pub async fn consume_invite_link(
+    pool: &PgPool,
+    token: &str,
+    user_id: &str,
+) -> Result<Option<String>> {
+    let mut tx = pool.begin().await?;
+    let group_id: Option<String> = sqlx::query_scalar(
+        "SELECT group_id FROM group_invite_links \
+         WHERE token = $1 AND revoked_at IS NULL AND expires_at > NOW()",
+    )
+    .bind(token)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(group_id) = group_id else {
+        tx.rollback().await?;
+        return Ok(None);
+    };
+
+    sqlx::query(
+        "INSERT INTO group_members (group_id, user_id, role, joined_at) \
+         VALUES ($1, $2, 'member', NOW()) \
+         ON CONFLICT (group_id, user_id) DO NOTHING",
+    )
+    .bind(&group_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(Some(group_id))
+}
+
 #[cfg(test)]
 mod db_tests {
     use super::*;
@@ -914,5 +1068,180 @@ mod db_tests {
         assert!(detail.is_none(), "the group itself should be gone");
 
         cleanup(&pool, &["TEST-GROUPS-SOLO-OWNER"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                rotate_invite_link_revokes_the_previous_active_link -- --ignored`"]
+    async fn rotate_invite_link_revokes_the_previous_active_link() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-INVITE-OWNER-1").await;
+        let group_id = create_group(&pool, "Invite Test 1", "TEST-GROUPS-INVITE-OWNER-1")
+            .await
+            .expect("create group");
+
+        let first = rotate_invite_link(&pool, &group_id, "TEST-GROUPS-INVITE-OWNER-1")
+            .await
+            .expect("first rotate");
+        let second = rotate_invite_link(&pool, &group_id, "TEST-GROUPS-INVITE-OWNER-1")
+            .await
+            .expect("second rotate");
+        assert_ne!(first.token, second.token);
+
+        let active = get_active_invite_link(&pool, &group_id)
+            .await
+            .expect("query")
+            .expect("should have an active link");
+        assert_eq!(active.token, second.token, "only the newest link should be active");
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-INVITE-OWNER-1"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                revoke_invite_link_is_idempotent_and_clears_the_active_link -- --ignored`"]
+    async fn revoke_invite_link_is_idempotent_and_clears_the_active_link() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-INVITE-OWNER-2").await;
+        let group_id = create_group(&pool, "Invite Test 2", "TEST-GROUPS-INVITE-OWNER-2")
+            .await
+            .expect("create group");
+        rotate_invite_link(&pool, &group_id, "TEST-GROUPS-INVITE-OWNER-2")
+            .await
+            .expect("rotate");
+
+        assert!(revoke_invite_link(&pool, &group_id).await.expect("first revoke"));
+        assert!(!revoke_invite_link(&pool, &group_id).await.expect("second revoke is a no-op"));
+        assert_eq!(get_active_invite_link(&pool, &group_id).await.expect("query"), None);
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-INVITE-OWNER-2"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                resolve_invite_link_returns_none_for_an_expired_link -- --ignored`"]
+    async fn resolve_invite_link_returns_none_for_an_expired_link() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-JOIN-OWNER-1").await;
+        let group_id = create_group(&pool, "Join Test 1", "TEST-GROUPS-JOIN-OWNER-1")
+            .await
+            .expect("create group");
+        let token = "test-expired-token";
+        sqlx::query(
+            "INSERT INTO group_invite_links (token, group_id, created_by, expires_at) \
+             VALUES ($1, $2, $3, NOW() - INTERVAL '1 hour')",
+        )
+        .bind(token)
+        .bind(&group_id)
+        .bind("TEST-GROUPS-JOIN-OWNER-1")
+        .execute(&pool)
+        .await
+        .expect("seed an expired link");
+
+        assert_eq!(resolve_invite_link(&pool, token).await.expect("query"), None);
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-JOIN-OWNER-1"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                resolve_invite_link_returns_none_for_a_revoked_link -- --ignored`"]
+    async fn resolve_invite_link_returns_none_for_a_revoked_link() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-JOIN-OWNER-2").await;
+        let group_id = create_group(&pool, "Join Test 2", "TEST-GROUPS-JOIN-OWNER-2")
+            .await
+            .expect("create group");
+        let link = rotate_invite_link(&pool, &group_id, "TEST-GROUPS-JOIN-OWNER-2")
+            .await
+            .expect("rotate");
+        revoke_invite_link(&pool, &group_id).await.expect("revoke");
+
+        assert_eq!(resolve_invite_link(&pool, &link.token).await.expect("query"), None);
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-JOIN-OWNER-2"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                consume_invite_link_adds_the_caller_as_a_plain_member_and_is_idempotent \
+                -- --ignored`"]
+    async fn consume_invite_link_adds_the_caller_as_a_plain_member_and_is_idempotent() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-JOIN-OWNER-3").await;
+        seed_user(&pool, "TEST-GROUPS-JOIN-JOINER-3").await;
+        let group_id = create_group(&pool, "Join Test 3", "TEST-GROUPS-JOIN-OWNER-3")
+            .await
+            .expect("create group");
+        let link = rotate_invite_link(&pool, &group_id, "TEST-GROUPS-JOIN-OWNER-3")
+            .await
+            .expect("rotate");
+
+        let joined = consume_invite_link(&pool, &link.token, "TEST-GROUPS-JOIN-JOINER-3")
+            .await
+            .expect("consume")
+            .expect("should resolve");
+        assert_eq!(joined, group_id);
+        let role = get_member_role(&pool, &group_id, "TEST-GROUPS-JOIN-JOINER-3")
+            .await
+            .expect("query")
+            .expect("should be a member now");
+        assert_eq!(role, GroupRole::Member);
+
+        // Re-clicking the same link (double-submit, or the owner's own
+        // link) must not error or duplicate the row.
+        let joined_again = consume_invite_link(&pool, &link.token, "TEST-GROUPS-JOIN-JOINER-3")
+            .await
+            .expect("consume again")
+            .expect("should still resolve");
+        assert_eq!(joined_again, group_id);
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-JOIN-OWNER-3", "TEST-GROUPS-JOIN-JOINER-3"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                consume_invite_link_returns_none_for_an_unknown_token -- --ignored`"]
+    async fn consume_invite_link_returns_none_for_an_unknown_token() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-JOIN-JOINER-4").await;
+
+        let joined = consume_invite_link(&pool, "not-a-real-token", "TEST-GROUPS-JOIN-JOINER-4")
+            .await
+            .expect("consume");
+        assert_eq!(joined, None);
+
+        cleanup(&pool, &["TEST-GROUPS-JOIN-JOINER-4"]).await;
     }
 }
