@@ -82,7 +82,10 @@ async fn main() -> anyhow::Result<()> {
     // cancellation across many batches, so this state must survive every
     // `run_once` call, not be rebuilt per cycle. See
     // `process::ProcessorState`'s docs.
-    let mut state = process::ProcessorState::default();
+    let mut state = process::ProcessorState {
+        trust_timestamp_correction_enabled: config.trust_timestamp_correction_enabled,
+        ..process::ProcessorState::default()
+    };
 
     loop {
         if last_reference_reload.elapsed() >= reload_interval {

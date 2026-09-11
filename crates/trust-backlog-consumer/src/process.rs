@@ -50,7 +50,7 @@ use crate::stanox_crs::StanoxCrsTable;
 /// equivalent -- this consumer has no notion of "resolving a pin" and no
 /// per-train derived-state fold to maintain; every message is mapped
 /// independently, not folded against a running journey state.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ProcessorState {
     pub pending_service_dates: HashMap<String, NaiveDate>,
     /// `train_id -> train_uid`, populated identically to
@@ -65,14 +65,37 @@ pub struct ProcessorState {
     /// Activation-to-Cancellation lifetime may span many Movements, every
     /// one of which needs the same train_uid, not just the first.
     pub pending_train_uids: HashMap<String, String>,
+
+    /// Finding #2's kill switch, mirroring
+    /// `trust-consumer::process::ProcessorState`'s identical field exactly
+    /// (same reasoning for living here rather than as a `process_message`
+    /// parameter: avoids rippling a signature change through this module's
+    /// own many existing test call sites for a value every one of them
+    /// wants defaulted to `true`). Defaults to `true` via this struct's own
+    /// `Default` impl below, NOT `#[derive(Default)]` (which would default
+    /// a bare `bool` to `false`). `main.rs` sets it once from
+    /// `config.trust_timestamp_correction_enabled`.
+    pub trust_timestamp_correction_enabled: bool,
+}
+
+impl Default for ProcessorState {
+    fn default() -> Self {
+        Self {
+            pending_service_dates: HashMap::new(),
+            pending_train_uids: HashMap::new(),
+            trust_timestamp_correction_enabled: true,
+        }
+    }
 }
 
 /// `received_at` is the wall-clock time this message is being processed
 /// at (`main.rs` passes `chrono::Utc::now()`), threaded through to
-/// `common::trust_timestamp::parse_trust_epoch_millis` for every
+/// `common::trust_timestamp::parse_trust_epoch_millis_pair` for every
 /// `planned_timestamp`/`actual_timestamp`/`canx_timestamp` this function
 /// parses -- see that function's own doc comment for the corrected-parsing
-/// background and its guard against the correction itself being wrong.
+/// background, why it decides correction ONCE per message rather than
+/// independently per field, and its guard against the correction itself
+/// being wrong.
 pub fn process_message(
     message: &TrustMessage,
     state: &mut ProcessorState,
@@ -131,14 +154,28 @@ pub fn process_message(
                 return None;
             }
 
-            let planned = movement
-                .planned_timestamp
-                .as_deref()
-                .and_then(|raw| common::trust_timestamp::parse_trust_epoch_millis(raw, received_at));
-            let actual = movement
-                .actual_timestamp
-                .as_deref()
-                .and_then(|raw| common::trust_timestamp::parse_trust_epoch_millis(raw, received_at));
+            // ONE correction decision for both fields, anchored on
+            // `actual_timestamp` -- see
+            // `common::trust_timestamp::parse_trust_epoch_millis_pair`'s own
+            // doc comment for why independent single-field calls could
+            // desync `planned`/`actual` by a full hour (Finding #1).
+            let timestamp_pair = common::trust_timestamp::parse_trust_epoch_millis_pair(
+                movement.planned_timestamp.as_deref(),
+                movement.actual_timestamp.as_deref(),
+                received_at,
+                state.trust_timestamp_correction_enabled,
+            );
+            let planned = timestamp_pair.planned;
+            let actual = timestamp_pair.actual;
+            if let Some(was_corrected) = timestamp_pair.was_corrected {
+                metrics::counter!(
+                    common::metrics::metric_name(
+                        "trust_backlog_consumer_timestamp_correction_total"
+                    ),
+                    "outcome" => if was_corrected { "corrected" } else { "raw" }
+                )
+                .increment(1);
+            }
             let delay_minutes = match (planned, actual, movement.variation_status.as_deref()) {
                 (Some(p), Some(a), Some("LATE")) => Some((a - p).num_minutes() as i32),
                 _ => None,
@@ -179,9 +216,27 @@ pub fn process_message(
                 .get(&cancellation.train_id)
                 .copied()
                 .unwrap_or(today);
-            let actual = cancellation.canx_timestamp.as_deref().and_then(|raw| {
-                common::trust_timestamp::parse_trust_epoch_millis(raw, received_at)
-            });
+            // Same decision function as a Movement's fields, with
+            // `planned: None` (a Cancellation has no companion field) --
+            // keeps this path under the same guard, kill switch, and
+            // correction metric as everything else (Finding #1's own note
+            // that this path needed checking too).
+            let canx_pair = common::trust_timestamp::parse_trust_epoch_millis_pair(
+                None,
+                cancellation.canx_timestamp.as_deref(),
+                received_at,
+                state.trust_timestamp_correction_enabled,
+            );
+            if let Some(was_corrected) = canx_pair.was_corrected {
+                metrics::counter!(
+                    common::metrics::metric_name(
+                        "trust_backlog_consumer_timestamp_correction_total"
+                    ),
+                    "outcome" => if was_corrected { "corrected" } else { "raw" }
+                )
+                .increment(1);
+            }
+            let actual = canx_pair.actual;
 
             let dedup =
                 trust_schema::dedup::dedup_key(&cancellation.train_id, "0002", None, None, None);

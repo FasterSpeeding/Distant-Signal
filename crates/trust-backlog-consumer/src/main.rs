@@ -72,7 +72,10 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let stanox = RwLock::new(config.stanox_crs.clone());
-    let mut process_state = process::ProcessorState::default();
+    let mut process_state = process::ProcessorState {
+        trust_timestamp_correction_enabled: config.trust_timestamp_correction_enabled,
+        ..process::ProcessorState::default()
+    };
 
     let stanox_crs_reload_interval = Duration::from_secs(config.stanox_crs_reload_secs);
     let mut last_stanox_crs_reload = tokio::time::Instant::now() - stanox_crs_reload_interval;

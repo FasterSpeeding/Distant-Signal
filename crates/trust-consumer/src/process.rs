@@ -175,7 +175,19 @@ pub struct Reference {
 /// Bundled into one struct rather than passed as three `&mut HashMap`
 /// parameters so that adding a fourth kind of carried-over state later is a
 /// field, not a signature change rippling through every call site and test.
-#[derive(Debug, Default)]
+///
+/// `trust_timestamp_correction_enabled` (below) is not "cross-batch
+/// memory" in the same sense as the maps above -- it's a startup-time
+/// config flag (Finding #2's kill switch) that never changes for the life
+/// of the process. It's bundled into this struct anyway, rather than
+/// threaded as its own parameter through `run_once`/`process_message`,
+/// specifically to avoid rippling a signature change through this module's
+/// 40+ existing `run_once` test call sites for a value every one of them
+/// wants defaulted to `true` -- exactly the "field, not a signature
+/// change" tradeoff this doc comment already argues for above. `main.rs`
+/// sets it once, right after constructing `ProcessorState::default()`,
+/// from `config.trust_timestamp_correction_enabled`.
+#[derive(Debug)]
 pub struct ProcessorState {
     /// `train_id -> EVERY subscription attributed to it`. Consulted FIRST
     /// by every message type: a train_id in here is already attributed, so
@@ -225,6 +237,29 @@ pub struct ProcessorState {
     /// defers that one-time "freshly resolved" signal to the FIRST
     /// Movement this process sees for the train_id, exactly once.
     pub activation_matched_awaiting_movement: HashSet<String>,
+
+    /// Finding #2's kill switch: whether
+    /// `common::trust_timestamp::parse_trust_epoch_millis_pair` may apply
+    /// its Europe/London-mislabelling correction at all. See this struct's
+    /// own doc comment above for why this lives here rather than as a
+    /// `run_once`/`process_message` parameter. Defaults to `true`
+    /// (correction on) via this struct's own `Default` impl below, NOT via
+    /// `#[derive(Default)]` (which would default a bare `bool` to `false`,
+    /// the opposite of this codebase's chosen default of "ship the fix,
+    /// give operators an instant off switch").
+    pub trust_timestamp_correction_enabled: bool,
+}
+
+impl Default for ProcessorState {
+    fn default() -> Self {
+        Self {
+            resolved: HashMap::new(),
+            pending_activations: HashMap::new(),
+            last_derived: HashMap::new(),
+            activation_matched_awaiting_movement: HashSet::new(),
+            trust_timestamp_correction_enabled: true,
+        }
+    }
 }
 
 /// What an Activation parks for a later Movement to claim: the `train_uid`
@@ -630,14 +665,34 @@ fn process_message(
         }
 
         TrustMessage::Movement(movement) => {
-            let planned = movement
-                .planned_timestamp
-                .as_deref()
-                .and_then(|raw| common::trust_timestamp::parse_trust_epoch_millis(raw, received_at));
-            let actual = movement
-                .actual_timestamp
-                .as_deref()
-                .and_then(|raw| common::trust_timestamp::parse_trust_epoch_millis(raw, received_at));
+            // ONE correction decision for both fields, anchored on
+            // `actual_timestamp` -- see
+            // `common::trust_timestamp::parse_trust_epoch_millis_pair`'s own
+            // doc comment for why calling the single-field
+            // `parse_trust_epoch_millis` independently on `planned`/`actual`
+            // (the pre-fix behavior) could desync them by a full hour
+            // (Finding #1).
+            let timestamp_pair = common::trust_timestamp::parse_trust_epoch_millis_pair(
+                movement.planned_timestamp.as_deref(),
+                movement.actual_timestamp.as_deref(),
+                received_at,
+                state.trust_timestamp_correction_enabled,
+            );
+            let planned = timestamp_pair.planned;
+            let actual = timestamp_pair.actual;
+            // Finding #2's operator signal: how often the correction
+            // actually fires vs. falls back to raw, so a change in the
+            // upstream feed's own behavior (e.g. a vendor fix landing) shows
+            // up here rather than only via user complaints. Only counted
+            // when a decision was actually made (`Some`) -- `None` means
+            // there was no `actual_timestamp` to anchor on at all.
+            if let Some(was_corrected) = timestamp_pair.was_corrected {
+                metrics::counter!(
+                    common::metrics::metric_name("trust_consumer_timestamp_correction_total"),
+                    "outcome" => if was_corrected { "corrected" } else { "raw" }
+                )
+                .increment(1);
+            }
             // Real translation now -- see `stanox_crs`'s module doc for
             // where the table comes from and why a miss (`None`) is the
             // honest, expected outcome for a non-passenger or otherwise
@@ -842,6 +897,30 @@ fn process_message(
             let dedup =
                 trust_schema::dedup::dedup_key(&cancellation.train_id, "0002", None, None, None);
 
+            // TRUST's confirmed `canx_timestamp` is the time the
+            // cancellation actually happened; it is the only timestamp this
+            // message shape carries, so it lands in the event's generic
+            // `actual_timestamp` rather than being dropped. Routed through
+            // the same `parse_trust_epoch_millis_pair` decision function as
+            // a Movement's fields (with `planned: None`, since a
+            // Cancellation has no companion field to keep in sync) so this
+            // path gets the same guarding, kill switch, and correction
+            // metric as every other TRUST timestamp -- see Finding #1's own
+            // note that this path needed checking too.
+            let canx_pair = common::trust_timestamp::parse_trust_epoch_millis_pair(
+                None,
+                cancellation.canx_timestamp.as_deref(),
+                received_at,
+                state.trust_timestamp_correction_enabled,
+            );
+            if let Some(was_corrected) = canx_pair.was_corrected {
+                metrics::counter!(
+                    common::metrics::metric_name("trust_consumer_timestamp_correction_total"),
+                    "outcome" => if was_corrected { "corrected" } else { "raw" }
+                )
+                .increment(1);
+            }
+
             tracked_train_ids
                 .into_iter()
                 .map(|tracked_train_id| common::TrainMovementEventMessage {
@@ -854,13 +933,7 @@ fn process_message(
                     loc_stanox: None,
                     loc_crs: None,
                     planned_timestamp: None,
-                    // TRUST's confirmed `canx_timestamp` is the time the
-                    // cancellation actually happened; it is the only timestamp
-                    // this message shape carries, so it lands in the event's
-                    // generic `actual_timestamp` rather than being dropped.
-                    actual_timestamp: cancellation.canx_timestamp.as_deref().and_then(|raw| {
-                        common::trust_timestamp::parse_trust_epoch_millis(raw, received_at)
-                    }),
+                    actual_timestamp: canx_pair.actual,
                     variation_status: None,
                     raw_body: serde_json::json!({}),
                     status: derived.status.clone(),
