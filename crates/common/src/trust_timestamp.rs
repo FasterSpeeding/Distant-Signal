@@ -61,6 +61,21 @@
 //! (`trust-consumer`/`trust-backlog-consumer`'s Movement and Cancellation
 //! handling) uses this pairwise function, never the single-field one, for
 //! exactly this reason.
+//!
+//! Sharing just the corrected-vs-raw BRANCH is not enough on its own,
+//! though: on the one UK night a year where local time is ambiguous (the
+//! autumn-fallback overlap hour -- see [`reinterpret_as_london_local`]'s own
+//! doc comment), "corrected" is not a single value, it is a choice between
+//! two candidate instants an hour apart. If each field re-ran that
+//! ambiguity choice independently, `planned` and `actual` could both
+//! legitimately land on the "corrected" branch together yet still end up on
+//! OPPOSITE candidates -- a full hour apart from each other despite neither
+//! being wrong in isolation. [`parse_trust_epoch_millis_pair`] closes this
+//! by computing the correction MAGNITUDE (`corrected - raw`) exactly once,
+//! from `actual_timestamp` alone, and applying that same delta to
+//! `planned_timestamp`'s raw value directly -- `planned` never calls
+//! [`reinterpret_as_london_local`] itself, so it cannot independently
+//! disagree with `actual` about which candidate to use.
 
 use chrono::{DateTime, TimeZone, Utc};
 
@@ -220,27 +235,31 @@ fn decide_correction(raw: &str, received_at: DateTime<Utc>) -> Option<(DateTime<
 /// Applies an ALREADY-DECIDED corrected-or-raw outcome (from
 /// [`decide_correction`], run once on the message's `actual_timestamp`) to
 /// a companion field -- e.g. the same message's `planned_timestamp`.
-/// Deliberately does NOT re-run the plausibility check itself: that
-/// decision was made once, on the anchor field, and applying it
-/// uniformly, rather than re-deciding per field, is the entire point (see
-/// this module's own doc comment).
-///
-/// If this field's own reinterpretation happens to hit the spring-forward
-/// gap even though the anchor field's didn't (only possible if the two
-/// fields fall on opposite sides of that transition, which is not
-/// realistic for messages timestamped minutes apart but is handled
-/// honestly regardless), this falls back to the raw value for this field
-/// alone rather than panicking or guessing.
+/// Deliberately does NOT re-run the plausibility check itself, and -- just
+/// as importantly -- does NOT re-run [`reinterpret_as_london_local`] itself
+/// either: that function makes its own `received_at`-anchored choice
+/// whenever the reinterpreted wall-clock reading is DST-ambiguous (the
+/// autumn-fallback overlap hour), and calling it a second time,
+/// independently, for this field could pick the OPPOSITE candidate from
+/// the one `actual` picked, even though both fields are (correctly) on the
+/// "corrected" branch together -- desyncing `planned` and `actual` by an
+/// hour from each other despite neither being individually wrong. Instead,
+/// `correction_delta` (the anchor field's own `corrected - raw` offset, a
+/// single already-decided number) is applied directly to this field's raw
+/// value, so `planned` can only ever land on the SAME side of any DST
+/// transition as `actual` did -- it never independently touches
+/// `reinterpret_as_london_local`'s ambiguous-or-nonexistent branches at
+/// all.
 fn apply_correction_decision(
     raw: &str,
     was_corrected: bool,
-    received_at: DateTime<Utc>,
+    correction_delta: chrono::Duration,
 ) -> Option<DateTime<Utc>> {
     let raw_utc = parse_raw_millis(raw)?;
     if !was_corrected {
         return Some(raw_utc);
     }
-    Some(reinterpret_as_london_local(raw_utc, received_at).unwrap_or(raw_utc))
+    Some(raw_utc + correction_delta)
 }
 
 /// Parses a single TRUST/RDM millisecond-epoch timestamp string, correcting
@@ -349,8 +368,19 @@ pub fn parse_trust_epoch_millis_pair(
         };
     };
 
+    // `actual_raw` already parsed successfully above (that's how we got
+    // `actual_instant`), so this can't fail. `correction_delta` is the
+    // exact `corrected - raw` offset that `actual` itself landed on
+    // (including, when relevant, ITS OWN DST-ambiguity disambiguation) --
+    // the single number `apply_correction_decision` applies to `planned`
+    // below instead of letting `planned` re-derive that disambiguation
+    // independently.
+    let actual_raw_utc = parse_raw_millis(actual_raw)
+        .expect("actual_raw already parsed successfully in decide_correction above");
+    let correction_delta = actual_instant - actual_raw_utc;
+
     let planned_instant =
-        planned.and_then(|raw| apply_correction_decision(raw, was_corrected, received_at));
+        planned.and_then(|raw| apply_correction_decision(raw, was_corrected, correction_delta));
     TrustTimestampPair {
         planned: planned_instant,
         actual: Some(actual_instant),
@@ -653,6 +683,75 @@ mod tests {
             pair.was_corrected,
             Some(false),
             "a decision was still made (correction available) -- it was just declined"
+        );
+    }
+
+    /// The regression a second, independent adversarial review found in
+    /// `6f58e0b` (the commit that fixed Finding #3, the fixed-BST-candidate
+    /// autumn-fallback bug): sharing just the corrected-vs-raw BRANCH
+    /// between `planned` and `actual` is not enough, because
+    /// `apply_correction_decision` used to re-call
+    /// `reinterpret_as_london_local` independently for `planned`, and that
+    /// function makes its OWN `received_at`-nearest-candidate choice
+    /// whenever the reinterpreted reading is DST-ambiguous. A train running
+    /// 40 minutes late, with both raw readings inside the 2026-10-25
+    /// 01:00-02:00 ambiguous hour, can have `actual` legitimately pick the
+    /// BST candidate (nearest to `received_at`) while `planned` -- decided
+    /// independently -- picks the GMT candidate instead, desyncing the two
+    /// fields by a full hour even though both are correctly on the
+    /// "corrected" branch together. The resulting `delay_minutes` comes out
+    /// as -20 (looks 20 minutes EARLY) instead of the true +40 minutes
+    /// late -- silent, undetectable corruption of exactly the kind Finding
+    /// #1 exists to prevent.
+    ///
+    /// The fix: `parse_trust_epoch_millis_pair` computes the correction
+    /// MAGNITUDE (`corrected - raw`) once, from `actual` alone, and applies
+    /// that same delta to `planned`'s raw value directly, so `planned`
+    /// never independently touches `reinterpret_as_london_local`'s
+    /// ambiguous branch at all.
+    #[test]
+    fn an_autumn_fallback_ambiguous_pair_lands_on_the_same_side_together_and_delay_is_correct() {
+        // Naive wall-clock reading "01:10" and "01:50" on 2026-10-25 each
+        // occur twice: once in BST (00:10Z / 00:50Z) and once in GMT
+        // (01:10Z / 01:50Z). The true event: planned 01:10 BST local
+        // (00:10Z), actual 01:50 BST local (00:50Z) -- a 40-minutes-late
+        // train, wire-corrupted (Europe/London-local-mislabelled-as-UTC) so
+        // the raw fields read as if the naive wall-clock digits were
+        // already UTC.
+        let planned_raw = "1792890600000"; // 2026-10-25T01:10:00Z as millis
+        let actual_raw = "1792893000000"; // 2026-10-25T01:50:00Z as millis
+        // Realistic receipt: 1 minute after the TRUE actual event
+        // (00:50Z/BST candidate) -- so `actual`'s own disambiguation
+        // clearly picks the BST candidate (1 minute away) over the GMT one
+        // (59 minutes away). `planned`'s OWN candidates, if disambiguated
+        // independently, are roughly symmetric around this received_at (41
+        // minutes to its BST candidate vs 19 minutes to its GMT one) --
+        // close enough that, pre-fix, `planned` would independently pick
+        // the WRONG (GMT) candidate even though `actual` correctly picked
+        // BST, which is exactly the split this test guards against.
+        let received_at: DateTime<Utc> = "2026-10-25T00:51:00Z".parse().unwrap();
+
+        let pair =
+            parse_trust_epoch_millis_pair(Some(planned_raw), Some(actual_raw), received_at, true);
+
+        assert_eq!(pair.was_corrected, Some(true));
+        assert_eq!(
+            pair.actual,
+            Some("2026-10-25T00:50:00Z".parse::<DateTime<Utc>>().unwrap()),
+            "actual lands on the BST candidate, nearest received_at"
+        );
+        assert_eq!(
+            pair.planned,
+            Some("2026-10-25T00:10:00Z".parse::<DateTime<Utc>>().unwrap()),
+            "planned must land on the SAME (BST) side as actual, following actual's exact \
+             correction delta -- not independently re-disambiguating and landing on GMT instead"
+        );
+
+        let delay_minutes = (pair.actual.unwrap() - pair.planned.unwrap()).num_minutes();
+        assert_eq!(
+            delay_minutes, 40,
+            "the true delay is +40 minutes late; a split (planned on GMT, actual on BST) would \
+             corrupt this into -20 minutes (looking early) instead"
         );
     }
 
