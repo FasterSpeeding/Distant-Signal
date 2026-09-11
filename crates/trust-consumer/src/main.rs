@@ -230,7 +230,11 @@ where
 {
     let snapshot = stanox_crs.read().expect("stanox_crs lock poisoned").clone();
 
-    let events = match process::run_once(feed, reference, state, &snapshot).await {
+    // The real wall-clock "now" for this whole cycle -- see `run_once`'s own
+    // doc comment for why a single per-cycle value (rather than reading the
+    // clock again per message) is the right granularity here.
+    let received_at = chrono::Utc::now();
+    let events = match process::run_once(feed, reference, state, &snapshot, received_at).await {
         Ok(events) => events,
         Err(err) => {
             tracing::error!(error = ?err, "error processing movement feed batch");
@@ -288,9 +292,14 @@ mod tests {
             )
         });
 
+    // The raw millis below is 1 hour LATER than the UTC instant it
+    // represents (2026-08-28T19:32:00Z as a wire value, not 18:32:00Z) --
+    // see `process.rs`'s own `ORIGIN_DEPARTURE` doc comment for why: August
+    // is BST, and `common::trust_timestamp::parse_trust_epoch_millis`
+    // corrects a BST-period wire value an hour earlier.
     const ORIGIN_DEPARTURE: &str = r#"[{"header":{"msg_type":"0003"},"body":{
         "train_id":"221832406","event_type":"DEPARTURE",
-        "planned_timestamp":"1787941920000","actual_timestamp":"1787941920000",
+        "planned_timestamp":"1787945520000","actual_timestamp":"1787945520000",
         "loc_stanox":"87212","variation_status":"ON TIME"
     }}]"#;
 

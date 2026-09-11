@@ -450,11 +450,28 @@ pub fn build_forward_signals(
 /// returned `Vec` directly without an HTTP layer in the loop at all.
 /// `main.rs`'s real loop posts this return value and only then calls
 /// `feed.commit()`.
+///
+/// `received_at` is the wall-clock time this whole batch is being
+/// processed at, supplied by the caller (`main.rs` passes
+/// `chrono::Utc::now()`) rather than read from the clock in here, so this
+/// function stays a pure function of its arguments -- same posture as
+/// `prune_expired_activations`'s own caller-supplied `today`. One value for
+/// the whole batch, not one per message, is a deliberate simplification:
+/// `next_batch` returns whatever Kafka/Redis Streams has ready right now,
+/// and the messages in one batch are processed within, at most, a handful
+/// of milliseconds of each other -- far inside
+/// `common::trust_timestamp::MAX_TIMESTAMP_SKEW_AHEAD_OF_RECEIPT` -- so a
+/// single per-batch timestamp is indistinguishable from a per-message one
+/// for the plausibility guard's purposes. Threaded into every TRUST
+/// timestamp parsed this cycle (via
+/// `common::trust_timestamp::parse_trust_epoch_millis`) and into
+/// `matching::resolve_origin_departure`'s own guard.
 pub async fn run_once<F: MovementFeed>(
     feed: &mut F,
     reference: &Reference,
     state: &mut ProcessorState,
     stanox_crs: &crate::stanox_crs::StanoxCrsTable,
+    received_at: chrono::DateTime<chrono::Utc>,
 ) -> anyhow::Result<Vec<common::TrainMovementEventMessage>> {
     let raw_batches = feed.next_batch().await?;
     let mut events = Vec::new();
@@ -495,7 +512,7 @@ pub async fn run_once<F: MovementFeed>(
             // The counter still counts events, not messages, so it stays
             // directly comparable with `trust_consumer_events_received_total`
             // in the same way it always was.
-            for event in process_message(&message, reference, state, stanox_crs) {
+            for event in process_message(&message, reference, state, stanox_crs, received_at) {
                 metrics::counter!(common::metrics::metric_name(
                     "trust_consumer_events_matched_total"
                 ))
@@ -560,6 +577,7 @@ fn process_message(
     reference: &Reference,
     state: &mut ProcessorState,
     stanox_crs: &crate::stanox_crs::StanoxCrsTable,
+    received_at: chrono::DateTime<chrono::Utc>,
 ) -> Vec<common::TrainMovementEventMessage> {
     match message {
         // An Activation never produces a posted event of its own -- it only
@@ -615,11 +633,11 @@ fn process_message(
             let planned = movement
                 .planned_timestamp
                 .as_deref()
-                .and_then(parse_epoch_millis);
+                .and_then(|raw| common::trust_timestamp::parse_trust_epoch_millis(raw, received_at));
             let actual = movement
                 .actual_timestamp
                 .as_deref()
-                .and_then(parse_epoch_millis);
+                .and_then(|raw| common::trust_timestamp::parse_trust_epoch_millis(raw, received_at));
             // Real translation now -- see `stanox_crs`'s module doc for
             // where the table comes from and why a miss (`None`) is the
             // honest, expected outcome for a non-passenger or otherwise
@@ -709,6 +727,7 @@ fn process_message(
                             loc_crs_for_match,
                             actual_ts,
                             &unclaimed,
+                            received_at,
                         ) else {
                             return Vec::new();
                         };
@@ -839,10 +858,9 @@ fn process_message(
                     // cancellation actually happened; it is the only timestamp
                     // this message shape carries, so it lands in the event's
                     // generic `actual_timestamp` rather than being dropped.
-                    actual_timestamp: cancellation
-                        .canx_timestamp
-                        .as_deref()
-                        .and_then(parse_epoch_millis),
+                    actual_timestamp: cancellation.canx_timestamp.as_deref().and_then(|raw| {
+                        common::trust_timestamp::parse_trust_epoch_millis(raw, received_at)
+                    }),
                     variation_status: None,
                     raw_body: serde_json::json!({}),
                     status: derived.status.clone(),
@@ -933,11 +951,6 @@ fn previous_state(state: &ProcessorState, train_id: &str) -> DerivedState {
         .unwrap_or_else(DerivedState::awaiting_activation)
 }
 
-fn parse_epoch_millis(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    let millis: i64 = raw.parse().ok()?;
-    chrono::DateTime::from_timestamp_millis(millis)
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -962,6 +975,20 @@ mod tests {
         StanoxCrsTable::from_file(&path).expect("reference-data/stanox-crs.csv should parse")
     });
 
+    /// `run_once`'s `received_at` for every test in this module that isn't
+    /// specifically exercising the plausibility guard itself (that's
+    /// `matching.rs`'s own job, plus the two guard-focused tests at the
+    /// bottom of this module). Deliberately set safely AFTER every raw
+    /// `planned_timestamp`/`actual_timestamp` fixture used anywhere in this
+    /// file (all of them fall on 2026-08-28) -- since these tests are about
+    /// matching/derivation correctness, not the guard, a `received_at` this
+    /// far past every fixture's event time can never trip
+    /// `common::is_plausible_actual_timestamp` by construction, the same way
+    /// a real feed's receipt time trails the event it reports.
+    fn test_received_at() -> chrono::DateTime<chrono::Utc> {
+        "2026-08-29T00:00:00Z".parse().unwrap()
+    }
+
     fn reference_with_one_pending(id: i64, crs: &str, scheduled: &str) -> Reference {
         Reference {
             pending: vec![PendingPin {
@@ -977,9 +1004,24 @@ mod tests {
 
     /// A resolving origin departure at WAT, matching the pin every test
     /// below builds with `reference_with_one_pending(1, "WAT", ...)`.
+    ///
+    /// **Every raw `planned_timestamp`/`actual_timestamp`/`canx_timestamp`
+    /// millis literal in this test module is 3,600,000ms (1 hour) LATER
+    /// than the UTC instant it's meant to represent** -- e.g. this
+    /// constant's `"1787945520000"` is 2026-08-28T19:32:00Z as a raw wire
+    /// value, not 18:32:00Z. That's deliberate, not a typo: every one of
+    /// these fields is now parsed by
+    /// `common::trust_timestamp::parse_trust_epoch_millis`, which
+    /// reinterprets a BST-period wire value as Europe/London LOCAL time and
+    /// corrects it one hour earlier (see that function's own doc comment).
+    /// August is BST, so a literal written as the "plain" UTC instant would
+    /// be silently corrected an hour EARLIER than every pin/assertion in
+    /// this file expects -- every fixture here instead encodes the wire
+    /// value a genuinely-corrected feed would send for the intended
+    /// 18:32:00Z-onwards instants these tests actually reason about.
     const ORIGIN_DEPARTURE: &str = r#"[{"header":{"msg_type":"0003"},"body":{
         "train_id":"221832406","event_type":"DEPARTURE",
-        "planned_timestamp":"1787941920000","actual_timestamp":"1787941920000",
+        "planned_timestamp":"1787945520000","actual_timestamp":"1787945520000",
         "loc_stanox":"87212","variation_status":"ON TIME"
     }}]"#;
 
@@ -989,7 +1031,7 @@ mod tests {
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
 
@@ -1002,14 +1044,14 @@ mod tests {
     async fn a_movement_with_no_matching_pin_produces_no_event() {
         let raw_batch = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"999","event_type":"DEPARTURE",
-            "planned_timestamp":"1787941920000","actual_timestamp":"1787941920000",
+            "planned_timestamp":"1787945520000","actual_timestamp":"1787945520000",
             "loc_stanox":"73000","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![vec![raw_batch.to_string()]]);
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert!(events.is_empty());
@@ -1020,7 +1062,7 @@ mod tests {
         let mut feed = FakeMovementFeed::new(vec![vec![]]);
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert!(events.is_empty());
@@ -1040,7 +1082,7 @@ mod tests {
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        let activation_events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let activation_events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert!(
@@ -1048,7 +1090,7 @@ mod tests {
             "an Activation alone posts nothing"
         );
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(events.len(), 1);
@@ -1063,7 +1105,7 @@ mod tests {
         // the first call populated.
         let later_arrival = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832406","event_type":"ARRIVAL",
-            "planned_timestamp":"1787943000000","actual_timestamp":"1787943000000",
+            "planned_timestamp":"1787946600000","actual_timestamp":"1787946600000",
             "loc_stanox":"86031","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![
@@ -1073,12 +1115,12 @@ mod tests {
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        let first = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let first = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(first[0].resolved_train_id, Some("221832406".to_string()));
 
-        let second = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let second = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(second.len(), 1);
@@ -1107,7 +1149,7 @@ mod tests {
         // `reference-data/stanox-crs.csv` STANOX->CRS translations).
         let arrival_at_destination = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832406","event_type":"ARRIVAL",
-            "planned_timestamp":"1787943000000","actual_timestamp":"1787943000000",
+            "planned_timestamp":"1787946600000","actual_timestamp":"1787946600000",
             "loc_stanox":"86031","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![vec![arrival_at_destination.to_string()]]);
@@ -1124,7 +1166,7 @@ mod tests {
         resolved_ref.destination_crs = Some("WOK".to_string());
         apply_reference_reload(vec![resolved_ref], &mut reference, &mut state);
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
 
@@ -1146,7 +1188,7 @@ mod tests {
         // ARRIVAL at PAD (73000), not this train's destination (WOK).
         let arrival_at_intermediate_stop = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832406","event_type":"ARRIVAL",
-            "planned_timestamp":"1787943000000","actual_timestamp":"1787943000000",
+            "planned_timestamp":"1787946600000","actual_timestamp":"1787946600000",
             "loc_stanox":"73000","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![vec![arrival_at_intermediate_stop.to_string()]]);
@@ -1163,7 +1205,7 @@ mod tests {
         resolved_ref.destination_crs = Some("WOK".to_string());
         apply_reference_reload(vec![resolved_ref], &mut reference, &mut state);
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
 
@@ -1179,7 +1221,7 @@ mod tests {
     #[tokio::test]
     async fn a_cancellation_after_a_movement_preserves_the_last_known_location() {
         let cancellation = r#"[{"header":{"msg_type":"0002"},"body":{
-            "train_id":"221832406","canx_timestamp":"1787943600000","canx_type":"EN ROUTE"
+            "train_id":"221832406","canx_timestamp":"1787947200000","canx_type":"EN ROUTE"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![
             vec![ORIGIN_DEPARTURE.to_string()],
@@ -1188,7 +1230,7 @@ mod tests {
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        let movement_events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let movement_events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(
@@ -1196,7 +1238,7 @@ mod tests {
             Some("WAT".to_string())
         );
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(events.len(), 1);
@@ -1213,13 +1255,13 @@ mod tests {
     #[tokio::test]
     async fn a_cancellation_for_an_unresolved_train_produces_no_event() {
         let cancellation = r#"[{"header":{"msg_type":"0002"},"body":{
-            "train_id":"221832406","canx_timestamp":"1787943600000","canx_type":"AT ORIGIN"
+            "train_id":"221832406","canx_timestamp":"1787947200000","canx_type":"AT ORIGIN"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![vec![cancellation.to_string()]]);
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert!(
@@ -1239,10 +1281,10 @@ mod tests {
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
 
@@ -1261,7 +1303,7 @@ mod tests {
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert!(events.is_empty());
@@ -1274,7 +1316,7 @@ mod tests {
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert!(events.is_empty());
@@ -1305,7 +1347,7 @@ mod tests {
         // route to an event is the rehydrated `resolved` map.
         let later_arrival = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832406","event_type":"ARRIVAL",
-            "planned_timestamp":"1787943000000","actual_timestamp":"1787943000000",
+            "planned_timestamp":"1787946600000","actual_timestamp":"1787946600000",
             "loc_stanox":"86031","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![vec![later_arrival.to_string()]]);
@@ -1327,7 +1369,7 @@ mod tests {
             "a resolved ref is not a matchable pin"
         );
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(
@@ -1371,7 +1413,7 @@ mod tests {
             "a schedule_matched ref must be rehydrated as a matchable pending pin"
         );
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(events.len(), 1);
@@ -1389,7 +1431,7 @@ mod tests {
     async fn a_live_resolution_is_not_clobbered_by_a_stale_reload_row() {
         let later_arrival = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832406","event_type":"ARRIVAL",
-            "planned_timestamp":"1787943000000","actual_timestamp":"1787943000000",
+            "planned_timestamp":"1787946600000","actual_timestamp":"1787946600000",
             "loc_stanox":"86031","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![
@@ -1399,7 +1441,7 @@ mod tests {
         let mut reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        let first = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let first = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(first[0].tracked_train_id, 1);
@@ -1410,7 +1452,7 @@ mod tests {
             &mut state,
         );
 
-        let second = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let second = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(
@@ -1482,7 +1524,7 @@ mod tests {
         // Same station, same window, different train_id.
         let other_train_departure = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832407","event_type":"DEPARTURE",
-            "planned_timestamp":"1787942400000","actual_timestamp":"1787942400000",
+            "planned_timestamp":"1787946000000","actual_timestamp":"1787946000000",
             "loc_stanox":"87212","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![
@@ -1492,13 +1534,13 @@ mod tests {
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        let first = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let first = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(first[0].tracked_train_id, 1);
         assert_eq!(first[0].resolved_train_id, Some("221832406".to_string()));
 
-        let second = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let second = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert!(
@@ -1522,7 +1564,7 @@ mod tests {
     async fn an_arrival_at_the_pinned_origin_does_not_claim_the_pin() {
         let arrival_at_origin = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832499","event_type":"ARRIVAL",
-            "planned_timestamp":"1787941920000","actual_timestamp":"1787941920000",
+            "planned_timestamp":"1787945520000","actual_timestamp":"1787945520000",
             "loc_stanox":"87212","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![
@@ -1532,7 +1574,7 @@ mod tests {
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert!(events.is_empty(), "an arrival is not an origin departure");
@@ -1542,7 +1584,7 @@ mod tests {
         );
 
         // The pin must still be there for the train that really departs.
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(events.len(), 1);
@@ -1556,14 +1598,14 @@ mod tests {
     async fn a_pass_at_the_pinned_origin_does_not_claim_the_pin() {
         let pass_at_origin = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832499","event_type":"PASS",
-            "planned_timestamp":"1787941920000","actual_timestamp":"1787941920000",
+            "planned_timestamp":"1787945520000","actual_timestamp":"1787945520000",
             "loc_stanox":"87212","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![vec![pass_at_origin.to_string()]]);
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert!(events.is_empty());
@@ -1628,7 +1670,7 @@ mod tests {
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(
@@ -1645,7 +1687,7 @@ mod tests {
             "2099-01-01".parse().unwrap(),
         );
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(events[0].resolved_train_uid, Some("C21373".to_string()));
@@ -1662,7 +1704,7 @@ mod tests {
         let reference = reference_with_one_pending(1, "WAT", "2026-08-28T18:32:00Z");
         let mut state = ProcessorState::default();
 
-        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(state.pending_activations.len(), 1);
@@ -1697,7 +1739,7 @@ mod tests {
         reference.by_train_uid.insert("C88888".to_string(), vec![1]);
         let mut state = ProcessorState::default();
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert!(
@@ -1721,7 +1763,7 @@ mod tests {
         }}]"#;
         let later_arrival = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832406","event_type":"ARRIVAL",
-            "planned_timestamp":"1787943000000","actual_timestamp":"1787943000000",
+            "planned_timestamp":"1787946600000","actual_timestamp":"1787946600000",
             "loc_stanox":"86031","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![
@@ -1737,10 +1779,10 @@ mod tests {
         reference.by_train_uid.insert("C88888".to_string(), vec![1]);
         let mut state = ProcessorState::default();
 
-        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(events.len(), 1);
@@ -1751,11 +1793,11 @@ mod tests {
         // A SECOND movement for the same train_id must not re-report resolution.
         let second_arrival = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832406","event_type":"ARRIVAL",
-            "planned_timestamp":"1787943100000","actual_timestamp":"1787943100000",
+            "planned_timestamp":"1787946700000","actual_timestamp":"1787946700000",
             "loc_stanox":"86031","variation_status":"ON TIME"
         }}]"#;
         let mut feed2 = FakeMovementFeed::new(vec![vec![second_arrival.to_string()]]);
-        let second_events = run_once(&mut feed2, &reference, &mut state, &TEST_STANOX_CRS)
+        let second_events = run_once(&mut feed2, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(second_events[0].resolved_train_id, None);
@@ -1878,7 +1920,7 @@ mod tests {
     async fn nr_primary_subscriptions_resolve_from_a_live_activation_and_movement() {
         let later_arrival = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832406","event_type":"ARRIVAL",
-            "planned_timestamp":"1787943000000","actual_timestamp":"1787943000000",
+            "planned_timestamp":"1787946600000","actual_timestamp":"1787946600000",
             "loc_stanox":"86031","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![
@@ -1888,7 +1930,7 @@ mod tests {
         let reference = shared_ref("C88888", vec![1, 2]);
         let mut state = ProcessorState::default();
 
-        let activation_events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let activation_events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert!(activation_events.is_empty());
@@ -1898,7 +1940,7 @@ mod tests {
             "BOTH subscriptions sharing this train_uid must be attributed, not just one"
         );
 
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
         assert_eq!(
@@ -1932,12 +1974,12 @@ mod tests {
     async fn a_later_movement_still_fans_out_to_both_subscribers_without_re_resolving() {
         let first = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832406","event_type":"ARRIVAL",
-            "planned_timestamp":"1787943000000","actual_timestamp":"1787943000000",
+            "planned_timestamp":"1787946600000","actual_timestamp":"1787946600000",
             "loc_stanox":"86031","variation_status":"ON TIME"
         }}]"#;
         let second = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832406","event_type":"ARRIVAL",
-            "planned_timestamp":"1787943100000","actual_timestamp":"1787943100000",
+            "planned_timestamp":"1787946700000","actual_timestamp":"1787946700000",
             "loc_stanox":"86031","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![
@@ -1948,13 +1990,13 @@ mod tests {
         let reference = shared_ref("C88888", vec![1, 2]);
         let mut state = ProcessorState::default();
 
-        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
-        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
-        let later = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let later = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
 
@@ -1971,11 +2013,11 @@ mod tests {
     #[tokio::test]
     async fn a_cancellation_reaches_every_subscriber_sharing_the_train() {
         let cancellation = r#"[{"header":{"msg_type":"0002"},"body":{
-            "train_id":"221832406","canx_timestamp":"1787943000000"
+            "train_id":"221832406","canx_timestamp":"1787946600000"
         }}]"#;
         let departure = r#"[{"header":{"msg_type":"0003"},"body":{
             "train_id":"221832406","event_type":"DEPARTURE",
-            "planned_timestamp":"1787941920000","actual_timestamp":"1787941920000",
+            "planned_timestamp":"1787945520000","actual_timestamp":"1787945520000",
             "loc_stanox":"87212","variation_status":"ON TIME"
         }}]"#;
         let mut feed = FakeMovementFeed::new(vec![
@@ -1986,13 +2028,13 @@ mod tests {
         let reference = shared_ref("C88888", vec![7, 8]);
         let mut state = ProcessorState::default();
 
-        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
-        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
-        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS)
+        let events = run_once(&mut feed, &reference, &mut state, &TEST_STANOX_CRS, test_received_at())
             .await
             .unwrap();
 
