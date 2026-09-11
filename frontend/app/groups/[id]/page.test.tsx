@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import GroupDetailPage from './page';
 import {
@@ -217,6 +217,43 @@ describe('GroupDetailPage', () => {
       expect(screen.queryByRole('button', { name: 'Delete group' })).not.toBeInTheDocument();
       // The self-service control every member always has stays put.
       expect(screen.getByRole('button', { name: 'Leave group' })).toBeInTheDocument();
+    });
+
+    /** `LeaveGroupButton`'s confirm copy must warn about the WHOLE group
+     * being deleted when the viewer is the sole owner (`remove_member`'s
+     * sole-owner-leaves branch deletes the group, not just their own
+     * membership row) -- and must NOT show that warning otherwise, even for
+     * an owner who isn't alone. */
+    it('warns the sole owner that leaving deletes the whole group', async () => {
+      vi.mocked(getGroup).mockResolvedValue({
+        id: 'grp-1',
+        name: 'Family',
+        ownerId: OWNER.userId,
+        ownerName: OWNER.displayName,
+        memberCount: 1,
+        role: 'owner',
+        inviteLink: null,
+      });
+      vi.mocked(getGroupMembers).mockResolvedValue([OWNER]);
+      vi.mocked(getGroupTrains).mockResolvedValue([]);
+      vi.mocked(getSession).mockResolvedValue({
+        authenticated: true,
+        id: OWNER.userId,
+        email: null,
+        name: OWNER.displayName,
+      });
+      renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
+      await waitFor(() => screen.getByText(/delete it for good/));
+    });
+
+    it('does not warn about deleting the group for an owner with other members', async () => {
+      await renderAs(OWNER, 'owner');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
+      await waitFor(() => screen.getByText(/lose access to every train shared/));
+      expect(screen.queryByText(/delete it for good/)).not.toBeInTheDocument();
     });
   });
 });
