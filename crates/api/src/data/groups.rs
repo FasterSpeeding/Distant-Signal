@@ -564,6 +564,180 @@ pub async fn consume_invite_link(
     Ok(Some(group_id))
 }
 
+/// Adds one of the caller's own tracked trains to a group. Ownership is
+/// enforced at the APPLICATION layer, not the DB (spec §2.2) -- the exact
+/// `WHERE id = $1 AND user_id = $2` shape `train_tracking.rs` already uses
+/// for ticket ownership. Idempotent: re-adding an already-shared train is
+/// a silent no-op (`ON CONFLICT DO NOTHING`), matching
+/// `insert_custom_line`'s own idempotent-insert precedent.
+///
+/// Returns `false` if `train_subscription_id` doesn't exist or isn't
+/// owned by `user_id` -- the route maps this to `404`, never `403`.
+pub async fn add_train_to_group(
+    pool: &PgPool,
+    group_id: &str,
+    train_subscription_id: i64,
+    user_id: &str,
+) -> Result<bool> {
+    let owned: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM train_subscriptions WHERE id = $1 AND user_id = $2")
+            .bind(train_subscription_id)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+    if owned.is_none() {
+        return Ok(false);
+    }
+
+    sqlx::query(
+        "INSERT INTO group_trains (group_id, train_subscription_id, added_by, added_at) \
+         VALUES ($1, $2, $3, NOW()) \
+         ON CONFLICT (group_id, train_subscription_id) DO NOTHING",
+    )
+    .bind(group_id)
+    .bind(train_subscription_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(true)
+}
+
+/// Removes a shared train from a group. `caller_can_manage` should be the
+/// route's own already-resolved `GroupRole::can_manage()` for this caller
+/// -- an `admin`/`owner` may remove ANY shared train; anyone else may only
+/// remove a train THEY added (spec §3: "The member who added it, or any
+/// admin/owner"). Returns `false` if no matching row was deleted (unknown
+/// id, or a non-manager targeting someone else's shared train) -- the
+/// route maps that to `404`.
+pub async fn remove_train_from_group(
+    pool: &PgPool,
+    group_id: &str,
+    train_subscription_id: i64,
+    user_id: &str,
+    caller_can_manage: bool,
+) -> Result<bool> {
+    let result = if caller_can_manage {
+        sqlx::query("DELETE FROM group_trains WHERE group_id = $1 AND train_subscription_id = $2")
+            .bind(group_id)
+            .bind(train_subscription_id)
+            .execute(pool)
+            .await?
+    } else {
+        sqlx::query(
+            "DELETE FROM group_trains \
+             WHERE group_id = $1 AND train_subscription_id = $2 AND added_by = $3",
+        )
+        .bind(group_id)
+        .bind(train_subscription_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?
+    };
+    Ok(result.rows_affected() > 0)
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct GroupTrainRow {
+    train_subscription_id: i64,
+    pin_origin_crs: Option<String>,
+    pin_destination_crs: Option<String>,
+    pin_origin_name: Option<String>,
+    pin_destination_name: Option<String>,
+    pin_scheduled_departure: Option<DateTime<Utc>>,
+    service_date: chrono::NaiveDate,
+    resolution_status: String,
+    train_uid: Option<String>,
+    status: Option<String>,
+    delay_minutes: Option<i32>,
+    custom_name: Option<String>,
+    added_by: String,
+    added_by_name: Option<String>,
+    added_by_email: Option<String>,
+}
+
+/// A shared train's display shape for `GET /groups/{id}/trains`. Carries
+/// exactly the fields `frontend/lib/trackingName.ts`'s
+/// `trackedTrainDisplayName` needs to compute the tracker's default name
+/// the same way the tracker themselves would see it (spec §4: "never
+/// stored, always computed"), plus live status and attribution.
+///
+/// Deliberately carries NO ticket field, and NO `notificationsEnabled`/
+/// exact `trackedAt` field -- spec §4's "Never shown" list. This is a
+/// hard constraint: no future edit to this struct or to `list_group_trains`'s
+/// query may join `tracked_train_tickets` or select
+/// `train_subscriptions.notifications_enabled`/`tracked_at`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupTrain {
+    pub train_subscription_id: i64,
+    pub pin_origin_crs: Option<String>,
+    pub pin_destination_crs: Option<String>,
+    pub pin_origin_name: Option<String>,
+    pub pin_destination_name: Option<String>,
+    pub pin_scheduled_departure: Option<DateTime<Utc>>,
+    pub service_date: chrono::NaiveDate,
+    pub resolution_status: String,
+    pub train_uid: Option<String>,
+    pub status: Option<String>,
+    pub delay_minutes: Option<i32>,
+    pub custom_name: Option<String>,
+    pub added_by: String,
+    pub added_by_name: Option<String>,
+}
+
+impl From<GroupTrainRow> for GroupTrain {
+    fn from(row: GroupTrainRow) -> Self {
+        GroupTrain {
+            train_subscription_id: row.train_subscription_id,
+            pin_origin_crs: row.pin_origin_crs,
+            pin_destination_crs: row.pin_destination_crs,
+            pin_origin_name: row.pin_origin_name,
+            pin_destination_name: row.pin_destination_name,
+            pin_scheduled_departure: row.pin_scheduled_departure,
+            service_date: row.service_date,
+            resolution_status: row.resolution_status,
+            train_uid: row.train_uid,
+            status: row.status,
+            delay_minutes: row.delay_minutes,
+            custom_name: row.custom_name,
+            added_by: row.added_by,
+            // Same "name, else email, else nothing" order AuthStatus.tsx
+            // already uses for its own nav-bar label -- never the raw
+            // internal user_id alone.
+            added_by_name: row.added_by_name.or(row.added_by_email),
+        }
+    }
+}
+
+/// Every train shared into `group_id`, oldest-shared first. No permission
+/// check here -- the route's own `get_member_role` call gates "is the
+/// caller even a member." See `GroupTrain`'s own doc comment for the
+/// hard ticket/notification-privacy constraint this query must never
+/// violate.
+pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<GroupTrain>> {
+    let rows: Vec<GroupTrainRow> = sqlx::query_as(
+        "SELECT gt.train_subscription_id, \
+                ts.pin_origin_crs, ts.pin_destination_crs, \
+                so.name AS pin_origin_name, sd.name AS pin_destination_name, \
+                ts.pin_scheduled_departure, ts.service_date, ts.resolution_status, \
+                tr.train_uid, cs.status, cs.delay_minutes, ts.custom_name, \
+                gt.added_by, u.name AS added_by_name, u.email AS added_by_email \
+         FROM group_trains gt \
+         JOIN train_subscriptions ts ON ts.id = gt.train_subscription_id \
+         JOIN users u ON u.id = gt.added_by \
+         LEFT JOIN trains tr ON tr.id = ts.trains_id \
+         LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
+         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs) \
+         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs) \
+         WHERE gt.group_id = $1 \
+         ORDER BY gt.added_at",
+    )
+    .bind(group_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(GroupTrain::from).collect())
+}
+
 #[cfg(test)]
 mod db_tests {
     use super::*;
@@ -598,6 +772,19 @@ mod db_tests {
                 .await
                 .ok();
         }
+    }
+
+    async fn seed_train_subscription(pool: &PgPool, user_id: &str) -> i64 {
+        let row: (i64,) = sqlx::query_as(
+            "INSERT INTO train_subscriptions \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             VALUES ($1, CURRENT_DATE, 'WOK', NOW()) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .expect("seed a tracked train");
+        row.0
     }
 
     #[tokio::test]
@@ -1243,5 +1430,315 @@ mod db_tests {
         assert_eq!(joined, None);
 
         cleanup(&pool, &["TEST-GROUPS-JOIN-JOINER-4"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                add_train_to_group_rejects_a_train_the_caller_does_not_own -- --ignored`"]
+    async fn add_train_to_group_rejects_a_train_the_caller_does_not_own() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-ADDTRAIN-OWNER-1").await;
+        seed_user(&pool, "TEST-GROUPS-ADDTRAIN-STRANGER-1").await;
+        let group_id = create_group(&pool, "Add Train Test 1", "TEST-GROUPS-ADDTRAIN-OWNER-1")
+            .await
+            .expect("create group");
+        let train_id = seed_train_subscription(&pool, "TEST-GROUPS-ADDTRAIN-STRANGER-1").await;
+
+        let added = add_train_to_group(
+            &pool,
+            &group_id,
+            train_id,
+            "TEST-GROUPS-ADDTRAIN-OWNER-1", // owns the GROUP, not the train
+        )
+        .await
+        .expect("add attempt");
+        assert!(!added);
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-ADDTRAIN-OWNER-1", "TEST-GROUPS-ADDTRAIN-STRANGER-1"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                add_train_to_group_is_idempotent -- --ignored`"]
+    async fn add_train_to_group_is_idempotent() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-ADDTRAIN-OWNER-2").await;
+        let group_id = create_group(&pool, "Add Train Test 2", "TEST-GROUPS-ADDTRAIN-OWNER-2")
+            .await
+            .expect("create group");
+        let train_id = seed_train_subscription(&pool, "TEST-GROUPS-ADDTRAIN-OWNER-2").await;
+
+        assert!(
+            add_train_to_group(&pool, &group_id, train_id, "TEST-GROUPS-ADDTRAIN-OWNER-2")
+                .await
+                .expect("first add")
+        );
+        assert!(
+            add_train_to_group(&pool, &group_id, train_id, "TEST-GROUPS-ADDTRAIN-OWNER-2")
+                .await
+                .expect("second add is a no-op, not an error")
+        );
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM group_trains WHERE group_id = $1")
+            .bind(&group_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(count.0, 1);
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-ADDTRAIN-OWNER-2"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_train_from_group_allows_the_sharer_to_remove_their_own_train -- --ignored`"]
+    async fn remove_train_from_group_allows_the_sharer_to_remove_their_own_train() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-1").await;
+        let group_id = create_group(&pool, "Remove Train Test 1", "TEST-GROUPS-REMOVETRAIN-1")
+            .await
+            .expect("create group");
+        let train_id = seed_train_subscription(&pool, "TEST-GROUPS-REMOVETRAIN-1").await;
+        add_train_to_group(&pool, &group_id, train_id, "TEST-GROUPS-REMOVETRAIN-1")
+            .await
+            .expect("add");
+
+        let removed = remove_train_from_group(
+            &pool,
+            &group_id,
+            train_id,
+            "TEST-GROUPS-REMOVETRAIN-1",
+            false, // plain member, but they ARE the sharer
+        )
+        .await
+        .expect("remove");
+        assert!(removed);
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-REMOVETRAIN-1"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_train_from_group_denies_a_plain_member_removing_someone_elses_train \
+                -- --ignored`"]
+    async fn remove_train_from_group_denies_a_plain_member_removing_someone_elses_train() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-OWNER-2").await;
+        seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-SHARER-2").await;
+        seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-BYSTANDER-2").await;
+        let group_id = create_group(&pool, "Remove Train Test 2", "TEST-GROUPS-REMOVETRAIN-OWNER-2")
+            .await
+            .expect("create group");
+        for member in ["TEST-GROUPS-REMOVETRAIN-SHARER-2", "TEST-GROUPS-REMOVETRAIN-BYSTANDER-2"] {
+            sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')")
+                .bind(&group_id)
+                .bind(member)
+                .execute(&pool)
+                .await
+                .expect("seed member");
+        }
+        let train_id = seed_train_subscription(&pool, "TEST-GROUPS-REMOVETRAIN-SHARER-2").await;
+        add_train_to_group(&pool, &group_id, train_id, "TEST-GROUPS-REMOVETRAIN-SHARER-2")
+            .await
+            .expect("add");
+
+        let removed = remove_train_from_group(
+            &pool,
+            &group_id,
+            train_id,
+            "TEST-GROUPS-REMOVETRAIN-BYSTANDER-2",
+            false, // plain member, NOT the sharer
+        )
+        .await
+        .expect("remove attempt");
+        assert!(!removed);
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(
+            &pool,
+            &[
+                "TEST-GROUPS-REMOVETRAIN-OWNER-2",
+                "TEST-GROUPS-REMOVETRAIN-SHARER-2",
+                "TEST-GROUPS-REMOVETRAIN-BYSTANDER-2",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_train_from_group_allows_an_admin_to_remove_anyones_train -- --ignored`"]
+    async fn remove_train_from_group_allows_an_admin_to_remove_anyones_train() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-OWNER-3").await;
+        seed_user(&pool, "TEST-GROUPS-REMOVETRAIN-SHARER-3").await;
+        let group_id = create_group(&pool, "Remove Train Test 3", "TEST-GROUPS-REMOVETRAIN-OWNER-3")
+            .await
+            .expect("create group");
+        sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')")
+            .bind(&group_id)
+            .bind("TEST-GROUPS-REMOVETRAIN-SHARER-3")
+            .execute(&pool)
+            .await
+            .expect("seed member");
+        let train_id = seed_train_subscription(&pool, "TEST-GROUPS-REMOVETRAIN-SHARER-3").await;
+        add_train_to_group(&pool, &group_id, train_id, "TEST-GROUPS-REMOVETRAIN-SHARER-3")
+            .await
+            .expect("add");
+
+        let removed = remove_train_from_group(
+            &pool,
+            &group_id,
+            train_id,
+            "TEST-GROUPS-REMOVETRAIN-OWNER-3",
+            true, // owner, can_manage
+        )
+        .await
+        .expect("remove");
+        assert!(removed);
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(
+            &pool,
+            &["TEST-GROUPS-REMOVETRAIN-OWNER-3", "TEST-GROUPS-REMOVETRAIN-SHARER-3"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_group_trains_returns_shared_trains_with_attribution -- --ignored`"]
+    async fn list_group_trains_returns_shared_trains_with_attribution() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-LISTTRAINS-OWNER").await;
+        let group_id = create_group(&pool, "List Trains Test", "TEST-GROUPS-LISTTRAINS-OWNER")
+            .await
+            .expect("create group");
+        let train_id = seed_train_subscription(&pool, "TEST-GROUPS-LISTTRAINS-OWNER").await;
+        add_train_to_group(&pool, &group_id, train_id, "TEST-GROUPS-LISTTRAINS-OWNER")
+            .await
+            .expect("add");
+
+        let trains = list_group_trains(&pool, &group_id).await.expect("list");
+        assert_eq!(trains.len(), 1);
+        assert_eq!(trains[0].train_subscription_id, train_id);
+        assert_eq!(trains[0].added_by, "TEST-GROUPS-LISTTRAINS-OWNER");
+        assert!(trains[0].added_by_name.is_some());
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-LISTTRAINS-OWNER"]).await;
+    }
+}
+
+#[cfg(test)]
+mod group_train_wire_shape_tests {
+    use super::*;
+
+    /// Pins the exact JSON keys `GroupTrain` serializes to. A future edit
+    /// that tacks on a ticket-related or `notificationsEnabled`/exact-
+    /// `trackedAt` field -- the spec §4 hard constraint -- fails this test
+    /// immediately, rather than only being caught by manual review.
+    #[test]
+    fn group_train_json_never_includes_ticket_or_notification_fields() {
+        let train = GroupTrain {
+            train_subscription_id: 1,
+            pin_origin_crs: Some("WOK".to_string()),
+            pin_destination_crs: None,
+            pin_origin_name: Some("Woking".to_string()),
+            pin_destination_name: None,
+            pin_scheduled_departure: None,
+            service_date: "2026-09-11".parse().unwrap(),
+            resolution_status: "pending".to_string(),
+            train_uid: None,
+            status: None,
+            delay_minutes: None,
+            custom_name: None,
+            added_by: "user-1".to_string(),
+            added_by_name: Some("Alex".to_string()),
+        };
+        let value = serde_json::to_value(&train).expect("serialize");
+        let mut keys: Vec<&str> = value.as_object().expect("object").keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "addedBy",
+                "addedByName",
+                "customName",
+                "delayMinutes",
+                "pinDestinationCrs",
+                "pinDestinationName",
+                "pinOriginCrs",
+                "pinOriginName",
+                "pinScheduledDeparture",
+                "resolutionStatus",
+                "serviceDate",
+                "status",
+                "trainSubscriptionId",
+                "trainUid",
+            ]
+        );
     }
 }
