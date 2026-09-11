@@ -1,7 +1,7 @@
 import { Stack, Title, Group } from '@mantine/core';
 import { notFound, redirect } from 'next/navigation';
 import { getTrackedTrainById, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
-import { TrainJourney } from '@/components/TrainJourney';
+import { TrainJourneyPanel } from '@/components/TrainJourneyPanel';
 import { TicketPanel } from '@/components/TicketPanel';
 import { LoginLink } from '@/components/LoginLink';
 import { TrackedTrainOwnerControls } from '@/components/TrackedTrainOwnerControls';
@@ -71,7 +71,7 @@ export default async function TrackedTrainByIdPage({
           <TrackedTrainOwnerControls train={state} />
         </Group>
       </Group>
-      <TrainJourney state={state} />
+      <TrainJourneyPanel state={state} />
       <TicketPanel trackingId={state.id} />
     </Stack>
   );
