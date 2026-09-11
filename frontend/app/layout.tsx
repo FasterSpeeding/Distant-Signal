@@ -119,6 +119,26 @@ export function TrackedTrainsNavItem() {
   return <TextLink href="/track/mine">My Trains &amp; Tickets</TextLink>;
 }
 
+// New top-level nav item, alongside "All Lines"/"Station Lookup"/"Find a
+// Train"/"My Trains & Tickets" (spec §6, decided). Visible only to
+// authenticated users -- unlike `TrackedTrainsNavItem` (reclassified to
+// always-visible, see that function's own doc comment above), a group has
+// no useful anonymous-visitor landing state at all (an anonymous "Groups"
+// click has nothing to show but a login prompt with zero context), so this
+// stays gated the same way `AuthNavItem` gates on `getSession()` -- a
+// separate async Server Component behind its own `<Suspense>` so a slow/
+// failed session check can't block the rest of the shell.
+async function GroupsNavItem() {
+  const session = await getSession().catch(() => ({
+    authenticated: false,
+    id: null,
+    email: null,
+    name: null,
+  }));
+  if (!session.authenticated) return null;
+  return <TextLink href="/groups">Groups</TextLink>;
+}
+
 /** Because the call below is awaited before RootLayout emits any HTML, an
  * unbounded one would hang *every* route for as long as the network takes
  * to give up. A refused connection fails instantly, so the common outage
@@ -234,6 +254,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                         §4. */}
                     <TextLink href="/trains">Find a Train</TextLink>
                     <TrackedTrainsNavItem />
+                    <Suspense fallback={null}>
+                      <GroupsNavItem />
+                    </Suspense>
                     <DataFreshnessNavItem freshness={freshness} />
                     <ThemeToggle />
                     <PrideToggle />

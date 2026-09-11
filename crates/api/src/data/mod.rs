@@ -2,6 +2,7 @@ pub mod config;
 pub mod custom_lines;
 pub mod delay_repay_rules;
 pub mod eta_blend;
+pub mod groups;
 pub mod island_of_ireland;
 pub mod journey;
 pub mod legacy_backfill;

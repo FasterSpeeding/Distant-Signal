@@ -24,6 +24,11 @@ import type {
   TicketListItem,
   IncidentDetail,
   StationOperatorSampleStats,
+  GroupSummary,
+  GroupDetail,
+  GroupMember,
+  GroupTrain,
+  GroupJoinPreview,
 } from './types';
 
 /** Thrown when the API responds 404 — lets callers distinguish "genuinely
@@ -560,4 +565,44 @@ export async function getIncident(incidentId: string): Promise<IncidentDetail> {
   return fetchJson<IncidentDetail>(`${baseUrl()}/public/incidents/${encodeURIComponent(incidentId)}`, {
     cache: 'no-store',
   });
+}
+
+/** `GET /public/groups` -- the current user's own groups. `null` on a
+ * `401`, matching `getMyTrackedTrains()`'s own "no id in the path, no
+ * second party to disambiguate" null-on-401 convention -- there is
+ * nothing else this route's `401` could mean besides "not logged in." */
+export async function getMyGroups(): Promise<GroupSummary[] | null> {
+  const url = `${baseUrl()}/public/groups`;
+  const response = await fetch(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+  if (response.status === 401) return null;
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<GroupSummary[]>;
+}
+
+/** `GET /public/groups/{id}` -- has an id in its path, so (unlike
+ * `getMyGroups`) a `401` here is a genuine, if narrow, session-lapse case
+ * and is thrown via `fetchJson`, matching `getTrackedTrainById`'s own
+ * convention rather than `getMyTrackedTrains`'s null-on-401 one. */
+export async function getGroup(id: string): Promise<GroupDetail> {
+  const url = `${baseUrl()}/public/groups/${id}`;
+  return fetchJson<GroupDetail>(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+}
+
+export async function getGroupMembers(id: string): Promise<GroupMember[]> {
+  const url = `${baseUrl()}/public/groups/${id}/members`;
+  return fetchJson<GroupMember[]>(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+}
+
+export async function getGroupTrains(id: string): Promise<GroupTrain[]> {
+  const url = `${baseUrl()}/public/groups/${id}/trains`;
+  return fetchJson<GroupTrain[]>(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+}
+
+/** `GET /public/groups/join/{token}` -- unauthenticated on the backend
+ * (see `routes::groups::get_join_preview`'s own doc comment), so this
+ * needs no cookie forwarding either; a not-yet-logged-in visitor can see
+ * the join preview before being sent through login. */
+export async function getGroupJoinPreview(token: string): Promise<GroupJoinPreview> {
+  const url = `${baseUrl()}/public/groups/join/${token}`;
+  return fetchJson<GroupJoinPreview>(url, { cache: 'no-store' });
 }
