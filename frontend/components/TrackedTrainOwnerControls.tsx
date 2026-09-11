@@ -1,5 +1,6 @@
 import { RenameTrainButton } from './RenameTrainButton';
 import { DeleteTrainButton } from './DeleteTrainButton';
+import { AddToGroupButton } from './AddToGroupButton';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 
 /** The Rename/Delete button pair shown wherever a visitor is looking at a
@@ -33,7 +34,15 @@ import { trackedTrainDisplayName } from '@/lib/trackingName';
  * Server Component page on both call sites, which cannot hand a Client
  * Component a function prop. `/train/[uid]/[date]/page.tsx` is the one
  * caller that passes `'refresh'`, since that page's own URL stays valid
- * after the tracked train is deleted. */
+ * after the tracked train is deleted.
+ *
+ * `AddToGroupButton` is the third control, alongside Rename/Delete -- lets
+ * the owner share this ALREADY-tracked train into one of their groups after
+ * the fact (including a second one), distinct from `TrackDestinationModal`'s
+ * track-TIME Personal-vs-group picker, which only ever offers that choice
+ * once, at the moment a train is first tracked. It renders nothing itself
+ * when the viewer is in zero groups (see its own doc comment), so it adds no
+ * visible clutter for the common case. */
 export function TrackedTrainOwnerControls({
   train,
   afterDelete,
@@ -58,6 +67,7 @@ export function TrackedTrainOwnerControls({
         customName={train.customName}
         defaultName={trackedTrainDisplayName(train)}
       />
+      <AddToGroupButton trainSubscriptionId={train.id} />
       <DeleteTrainButton trackingId={train.id} sharedGroupCount={train.sharedGroupCount} afterDelete={afterDelete} />
     </>
   );
