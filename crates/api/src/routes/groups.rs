@@ -62,6 +62,14 @@ pub fn router() -> Router {
             "/groups/join/{token}",
             axum::routing::get(get_join_preview).post(post_join),
         )
+        .route(
+            "/groups/{id}/trains",
+            axum::routing::get(list_group_trains_route).post(add_group_train),
+        )
+        .route(
+            "/groups/{id}/trains/{train_subscription_id}",
+            axum::routing::delete(remove_group_train),
+        )
 }
 
 /// Shared permission gate: `404` if the caller isn't a member of
@@ -413,6 +421,96 @@ async fn post_join(
             "this invite link is invalid or has expired".to_string(),
         ))?;
     Ok(Json(JoinResponse { group_id }))
+}
+
+/// `_route` suffix avoids shadowing `groups::list_group_trains` while
+/// still reading naturally at the call site (`groups::list_group_trains`
+/// vs this file's own `list_group_trains_route`) -- same reasoning
+/// `routes::train.rs`'s handlers apply when a handler and its data-layer
+/// counterpart would otherwise share an identical bare name.
+async fn list_group_trains_route(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(group_id): Path<String>,
+) -> Result<Json<Vec<groups::GroupTrain>>, (StatusCode, String)> {
+    groups::get_member_role(&app.database, &group_id, &user.id)
+        .await
+        .map_err(internal_error("check group membership"))?
+        .ok_or((StatusCode::NOT_FOUND, "no group with that id".to_string()))?;
+
+    let trains = groups::list_group_trains(&app.database, &group_id)
+        .await
+        .map_err(internal_error("list group trains"))?;
+    Ok(Json(trains))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddGroupTrainRequest {
+    train_subscription_id: i64,
+}
+
+/// Any current member may add one of their OWN tracked trains (spec §3);
+/// `groups::add_train_to_group`'s own ownership check is what actually
+/// enforces "their own" -- this handler only checks group membership.
+async fn add_group_train(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(group_id): Path<String>,
+    Json(req): Json<AddGroupTrainRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    groups::get_member_role(&app.database, &group_id, &user.id)
+        .await
+        .map_err(internal_error("check group membership"))?
+        .ok_or((StatusCode::NOT_FOUND, "no group with that id".to_string()))?;
+
+    let added = groups::add_train_to_group(
+        &app.database,
+        &group_id,
+        req.train_subscription_id,
+        &user.id,
+    )
+    .await
+    .map_err(internal_error("add train to group"))?;
+    if !added {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no tracked train with that id".to_string(),
+        ));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /groups/{id}/trains/{trainSubscriptionId}` -- the sharer, or
+/// any `admin`/`owner`, may remove a shared train (spec §3). The actual
+/// sharer-or-manager check lives in `groups::remove_train_from_group`
+/// (Task 5, given `role.can_manage()` computed here).
+async fn remove_group_train(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path((group_id, train_subscription_id)): Path<(String, i64)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let role = groups::get_member_role(&app.database, &group_id, &user.id)
+        .await
+        .map_err(internal_error("check group membership"))?
+        .ok_or((StatusCode::NOT_FOUND, "no group with that id".to_string()))?;
+
+    let removed = groups::remove_train_from_group(
+        &app.database,
+        &group_id,
+        train_subscription_id,
+        &user.id,
+        role.can_manage(),
+    )
+    .await
+    .map_err(internal_error("remove train from group"))?;
+    if !removed {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no shared train with that id".to_string(),
+        ));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
