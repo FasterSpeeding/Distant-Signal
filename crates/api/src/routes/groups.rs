@@ -44,6 +44,24 @@ pub fn router() -> Router {
             "/groups/{id}/members/{user_id}/promote",
             axum::routing::post(promote_member),
         )
+        .route(
+            "/groups/{id}/invite-link",
+            axum::routing::post(create_invite_link).delete(revoke_invite_link),
+        )
+        // "join" here is a literal path segment at the SAME position as
+        // `/groups/{id}`'s dynamic `{id}` -- matchit resolves the literal
+        // route first, the same precedence already proven for
+        // `/Train/mine` vs `/Train/{tracking_id}`
+        // (`routes::train::tests::literal_route_wins_over_same_position_dynamic_route`).
+        // A group whose real id happened to be the literal string "join"
+        // is unreachable via `/groups/{id}` as a result -- acceptable,
+        // since `groups::create_group`'s ids are 32 random bytes,
+        // base64url-encoded (`auth::generate_session_token`), so "join"
+        // can never actually be generated.
+        .route(
+            "/groups/join/{token}",
+            axum::routing::get(get_join_preview).post(post_join),
+        )
 }
 
 /// Shared permission gate: `404` if the caller isn't a member of
@@ -330,6 +348,73 @@ async fn promote_member(
     }))
 }
 
+async fn create_invite_link(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(group_id): Path<String>,
+) -> Result<Json<groups::InviteLink>, (StatusCode, String)> {
+    require_role(&app, &group_id, &user.id, GroupRole::can_manage).await?;
+    let link = groups::rotate_invite_link(&app.database, &group_id, &user.id)
+        .await
+        .map_err(internal_error("create invite link"))?;
+    Ok(Json(link))
+}
+
+async fn revoke_invite_link(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(group_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    require_role(&app, &group_id, &user.id, GroupRole::can_manage).await?;
+    groups::revoke_invite_link(&app.database, &group_id)
+        .await
+        .map_err(internal_error("revoke invite link"))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /groups/join/{token}` -- UNAUTHENTICATED (no `AuthenticatedUser`
+/// extractor): resolving a join token to a group preview must work for a
+/// visitor who isn't logged in yet, so the confirm-before-join page
+/// (spec §2.3) can render "Join {group name}?" before sending them through
+/// login. Never changes membership.
+async fn get_join_preview(
+    State(app): State<App>,
+    Path(token): Path<String>,
+) -> Result<Json<groups::JoinPreview>, (StatusCode, String)> {
+    groups::resolve_invite_link(&app.database, &token)
+        .await
+        .map_err(internal_error("resolve invite link"))?
+        .map(Json)
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "this invite link is invalid or has expired".to_string(),
+        ))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JoinResponse {
+    group_id: String,
+}
+
+/// `POST /groups/join/{token}` -- the actual join, requiring a real
+/// session (spec §2.3: "Confirm-before-join, never silent auto-join" --
+/// this is the explicit action the confirm page's Join button fires).
+async fn post_join(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(token): Path<String>,
+) -> Result<Json<JoinResponse>, (StatusCode, String)> {
+    let group_id = groups::consume_invite_link(&app.database, &token, &user.id)
+        .await
+        .map_err(internal_error("join group"))?
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "this invite link is invalid or has expired".to_string(),
+        ))?;
+    Ok(Json(JoinResponse { group_id }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +422,32 @@ mod tests {
     #[test]
     fn router_builds_without_panicking() {
         let _ = router();
+    }
+
+    #[tokio::test]
+    async fn join_literal_route_wins_over_same_position_dynamic_id_route() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = axum::Router::new()
+            .route("/groups/join/{token}", axum::routing::get(|| async { "join" }))
+            .route("/groups/{id}", axum::routing::get(|| async { "dynamic" }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/groups/join/some-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"join");
     }
 }
