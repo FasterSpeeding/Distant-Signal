@@ -580,8 +580,9 @@ pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<Tra
 /// malformed `canx_timestamp` (both `crates/trust-consumer/src/process.rs`
 /// and `crates/trust-backlog-consumer/src/process.rs` build a
 /// Cancellation's `actual_timestamp` from
-/// `canx_timestamp.as_deref().and_then(parse_epoch_millis)`, `None` on
-/// either a missing or an unparseable value, with `planned_timestamp`
+/// `common::trust_timestamp::parse_trust_epoch_millis_pair(None,
+/// canx_timestamp.as_deref(), ...).actual`, `None` on either a missing or
+/// an unparseable value, with `planned_timestamp`
 /// always `None` for that message shape) -- so `event_time` here can
 /// legitimately be `NULL` even once the stored row's `event_time` is
 /// already known. The first `EXCLUDED.event_time IS NULL` branch exists
