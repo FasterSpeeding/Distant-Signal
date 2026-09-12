@@ -76,8 +76,8 @@ itself.
 > See the final section appended at the end of this document. Nothing in
 > this update changes or softens anything above — it's additive.
 
-> **Update, 2026-09-12 — read this too, and read it last.** The
-> 2026-09-11 pinning pass completed its full day, and 5 of its 10 pins
+> **Update, 2026-09-12 — read this too (superseded below, keep reading).**
+> The 2026-09-11 pinning pass completed its full day, and 5 of its 10 pins
 > were discovered (in a separate investigation) to have been silently
 > bound to the wrong real train by the TRUST timestamp-corruption bug,
 > then manually corrected in the database. **Completing Tasks 5-8 against
@@ -99,7 +99,40 @@ itself.
 > cross-check this session had to invent partway through. See the final
 > section appended at the end of this document for the full, evidence-
 > quoted account. Nothing in this update changes or softens anything
-> above — it's additive.
+> above — it's additive. **Superseded by the 2026-09-12 update
+> immediately below** — its own "1 of 1" verdict turns out to have been
+> built on data that was only partially remediated; re-verified end-to-end
+> below.
+
+> **Update, 2026-09-12 (second pass) — read this too, and read it last.**
+> The root cause behind the wrong-train contamination above (a missing
+> `event_type = 'DEPARTURE'` filter in `find_backlog_match`) was found,
+> fixed, and merged; a remediation pass then repaired the affected
+> production rows. This session independently re-verified that
+> remediation station-by-station (not trusting the dispatching brief's own
+> description of it, per this document's standing norm) and found it
+> **partially failed**: 3 of the 5 previously-flagged pins (44, 46, 48)
+> are now genuinely, verifiably correct end-to-end; the other 2 (42, 50)
+> are **still** 100% wrong-train contaminated, matching the *original*
+> bad train exactly, contrary to the dispatching brief's claim that they
+> were "never contaminated"/"thin data unrelated to the bug." On the
+> trustworthy remainder, **Task 8's verdict is N of M = 2 of 2** — two
+> real, fully-verified, disruption-scale delays (a Crewe→Euston working
+> settling at +15 minutes, and the same Crewe→Wrexham +10-13 minute delay
+> the immediately-prior section already found), both caught by
+> TRUST-vs-schedule tracking and missed entirely by `lnwr-birmingham-crewe`'s
+> own sampling output. **Recommendation: still NOT YET** on this session's
+> own single-day data by this document's own consistent statistical-power
+> standard, but explicitly flagged as the strongest, most confidence-inspiring
+> "not yet" this six-week exercise has produced: every real mechanism-level
+> blocker (SSO, STANOX/CRS, and now the majority of the backlog-matching
+> bug) is fixed and proven, and across this document's entire history every
+> real disruption ever found and successfully verified — 3 instances now,
+> zero counterexamples — has been a hit for TRUST-vs-schedule and a miss
+> for sampling. See the final section appended at the end of this document
+> for the full, evidence-quoted account, including the newly-found
+> remediation-script reliability problem. Nothing in this update changes
+> or softens anything above — it's additive.
 
 ---
 
@@ -2381,3 +2414,348 @@ nor SSO, nor the STANOX/CRS gap (all three remain fixed and working):
 **If proceeding to Option B is eventually greenlit**, unchanged from every
 prior verdict in this document: gated on Task 8 reaching "go," which it
 still has not, six real execution sessions in.
+
+---
+
+# 2026-09-12 (second pass): remediation independently re-verified end-to-end — 3 of 5 flagged pins are genuinely fixed, but 2 remain wrong-train contaminated exactly as before; final verdict is 2 of 2, still NOT YET
+
+**Status: a seventh real execution session, superseding the "2026-09-12"
+section immediately above.** That section's own verdict — 1 of 1,
+NOT YET — was built on data since discovered to be unreliable: the root
+cause (a missing `event_type = 'DEPARTURE'` filter in
+`crates/api/src/data/trust_event_backlog_match.rs::find_backlog_match`,
+letting it match an unrelated train's ARRIVAL event and replay that wrong
+train's history onto the correct `trains_id`) has since been found, fixed,
+reviewed, merged, and deployed, and a full-retention-window scan plus a
+manual remediation pass were run against production to repair the damage.
+This session was dispatched to redo Tasks 5-8 against that remediated
+data — but, per this document's own established norm (every prior session
+in this file has re-verified rather than trusted a predecessor's or a
+dispatcher's characterization), the remediation itself was independently
+re-checked station-by-station before being relied on, not assumed correct
+from the brief describing it. **That re-check found the brief's own
+characterization of which pins were fixed to be wrong for 2 of the 10
+pins** — reported here plainly, exactly as this document's own convention
+requires. Everything below was checked directly against the live
+production database (`distant-signal-postgres-0`, read-only `psql`,
+`distant_signal` user), quoted exactly as returned, not paraphrased.
+
+## Re-confirming pin identity (unchanged from the immediately-prior section)
+
+```
+id | pin_origin_crs | trains_id | train_uid | matched_line_id         | origin_crs | destination_crs
+42 | EUS            | 712945    | C18012    | lnwr-birmingham-crewe   | EUS        | CRE
+43 | EUS            | 713725    | C34213    | lnwr-birmingham-crewe   | EUS        | WFJ
+44 | MKC            | 713330    | W70396    | lnwr-birmingham-crewe   | MKC        | EUS
+45 | MKC            | 713728    | C17924    | lnwr-birmingham-crewe   | MKC        | EUS
+46 | CRE            | 713729    | C17876    | lnwr-birmingham-crewe   | CRE        | EUS
+47 | CRE            | 713731    | G38654    | lnwr-birmingham-crewe   | CRE        | WRX
+48 | PRE            | 713690    | G86196    | northern-blackpool      | PRE        | OMS
+49 | PRE            | 713740    | P23952    | northern-blackpool      | PRE        | BBN
+50 | CAR            | 713358    | M37478    | northern-cumbrian-coast | CAR        | DMF
+51 | CAR            | 713743    | W69917    | northern-cumbrian-coast | CAR        | DMF
+```
+
+Identical to the dispatching brief's table and the prior section's — no
+identity metadata changed since. The matched-line set is confirmed still
+narrowed to 3 lines (`lnwr-birmingham-crewe`, `northern-blackpool`,
+`northern-cumbrian-coast`); no pin resolved to `wcml` itself or to
+`emr-regional` (the latter was an artifact of pin 44's since-corrected
+wrong-train binding in the very first, 2026-09-11 pass).
+
+## Independent re-verification of the remediation: 3 of 5 flagged pins are genuinely fixed; 2 are not, contrary to the dispatching brief
+
+Per this document's own standing method (station-by-station CIF
+cross-check against `schedule_line_population`, not trusting
+`resolution_status` or a populated `trains_id` at face value), every one
+of the 5 previously-flagged pins' (42, 44, 46, 48, 50) `train_movement_events`
+was checked end-to-end against its *corrected* `train_uid`'s real booked
+schedule — not just the first event, per this session's explicit brief.
+
+**A real, useful fingerprint surfaced immediately**: all 5 previously-flagged
+`trains_id`s (712945, 713330, 713358, 713690, 713729) have `loc_stanox = NULL`
+on **100%** of their events — confirmed directly:
+
+```
+trains_id | is_null | count
+713729    | t       | 30
+713690    | t       | 3
+713358    | t       | 1
+712945    | t       | 16
+713330    | t       | 17
+```
+
+By contrast, the 5 pins never flagged as mismatched (43, 45, 47, 49, 51 —
+`trains_id` 713725/713728/713731/713740/713743) all carry real, populated
+`loc_stanox` values throughout. This is decisive circumstantial evidence
+that **all 5** flagged `trains_id`s went through the same backlog-replay
+remediation process (which evidently doesn't populate `loc_stanox`), not
+just the 3 the brief names — i.e., remediation was *attempted* on all 5,
+but, as shown below, it only *succeeded* for 3 of them.
+
+**Pins 44, 46, 48 — genuinely, verifiably fixed end-to-end**, cross-checked
+against every calling point in `schedule_line_population` for the
+corrected `train_uid`, not merely the first event:
+
+- **Pin 44 (`trains_id=713330`, `W70396`, MKC→EUS)**: all 17 real events
+  match `W70396`'s own booked schedule exactly, in order, from origin to
+  terminus — `MKNSCEN` dep booked `17:58` (actual `17:59`, +1) through
+  `BLTCHLY` (+3/+3), `LTNBZRD` (+3/+3), `TRING` (+2/+2), `WATFDJ` (+2/+2),
+  `BUSHEY` (+2/+2), `HROW` (+2.5/+2.5), to `EUSTON` terminus arrival
+  booked `19:03` (actual `19:07`, **+4**). A clean, complete, end-to-end
+  match — not just the origin.
+- **Pin 46 (`trains_id=713729`, `C17876`, CRE→EUS)**: the strongest single
+  dataset of any pin, 30 real events matching **every** booked calling
+  point of `C17876`'s real schedule in exact chronological order — `CREWE`
+  dep booked `18:13` (actual `18:25`, +12) → `STAFFRD` (+12/+14) →
+  `RUGL` (+15/+15) → `LCHTTVL` (+15.5/+14.5) → `TMWTHLL` (+15/+15) →
+  `ATHRSTN` (+15.5/+16.5) → `NNTN` (+17/+17) → `RUGBY` (+15/+14.5) →
+  `MKNSCEN` (+16/+16) → nine further real pass-point events consistent
+  with the remaining unbooked TIPLOCs on this route → `EUSTON` terminus
+  arrival booked `20:24` (actual `20:39`, **+15**). A real, substantial,
+  sustained delay, confirmed clean at every single booked station on the
+  route, not just the endpoints.
+- **Pin 48 (`trains_id=713690`, `G86196`, PRE→OMS)**: sparse (only 2 real
+  events survive — no code-level pruning found; this reads as a genuine
+  TRUST feed reporting gap, not a remediation defect) but both endpoints
+  match `G86196`'s booked schedule exactly: `PRST` dep booked `18:10`
+  (actual `18:10`, on time) and `ORMSKRK` terminus arrival booked `18:41`
+  (actual `18:41`, on time). Clean, if thin.
+
+**Pins 42 and 50 — still 100% wrong-train contaminated, exactly as before
+remediation, contrary to the dispatching brief's claims**:
+
+- **Pin 42 (`trains_id=712945`)**: the brief characterized this as
+  "already confirmed correct (never contaminated)." **This is not what
+  the database shows.** `C18012` (the claimed corrected identity) is
+  booked `EUSTON` dep `17:46` per `schedule_line_population` — but every
+  one of the 16 real events on `trains_id=712945` falls between `16:26`
+  and `17:11`, over half an hour *before* `C18012` even departs. Checked
+  against `Y80906` — the **original, pre-correction wrong train** this
+  document's earlier "2026-09-12" section named for this exact pin — every
+  single event matches exactly: `EUSTON` dep booked `16:26` (row 1, exact
+  match), through `LTNBZRD` (`16:54`/`16:55`), `BLTCHLY` (`17:01`/`17:02`),
+  `MKNSCEN` (`17:07`/`17:08`), to a final `WLVR` arrival at `17:11` — a
+  clean, complete match to `Y80906`'s own booked schedule, not `C18012`'s.
+  **Pin 42 was never actually remediated; it is unusable for exactly the
+  same reason the immediately-prior section found, unchanged.**
+- **Pin 50 (`trains_id=713358`)**: the brief characterized this as
+  "sparse/no movement data... a separate, unrelated, honest 'resolved but
+  thin/no real-time data' case (not this bug)." **This is also not
+  accurate.** One real event exists (not zero): `ARRIVAL`, planned and
+  actual both `16:39:00`. `M37478` (the claimed corrected identity, CAR→DMF)
+  has no booked calling point anywhere near `16:39` — its schedule runs
+  `CARLILE` dep `17:59` → ... → `DUMFRES` arr `18:36`. But the original,
+  pre-correction wrong train **`W69941`** (Dumfries→Carlisle) has a real
+  booked `CARLILE` arrival at exactly `16:39` — an exact match. **Pin 50's
+  one real data point is real, genuine TRUST data — for the wrong train.**
+  It is not an honest "no data yet" case; it is the same wrong-train
+  contamination bug, unfixed, with a single surviving data point that
+  happens to look like sparse-but-clean data unless actually cross-checked
+  against the claimed train's own schedule.
+
+**What this means, stated plainly**: the dispatching brief's claim that
+"ALL 10 pins' underlying data is confirmed trustworthy" is **not** what
+this independent re-verification found. The remediation fixed 3 of the 5
+flagged pins cleanly and completely (44, 46, 48) but left 2 (42, 50) in
+exactly the same broken state as before — still matching the original
+wrong train, not the corrected one. Given both fixed and unfixed pins
+share the identical `loc_stanox IS NULL` fingerprint, the most likely
+explanation is that the remediation script ran against all 5 rows but,
+for 2 of them, replayed the *wrong* train's `trust_event_backlog` history
+(a 60% success rate on the one remediation attempt observed) — a new,
+concrete, evidenced data-integrity finding in its own right, reported here
+because any future large-scale remediation attempt needs to be verified
+the same way, not trusted from a description of what it was supposed to
+do.
+
+**Pins 43, 45, 47, 49, 51 — re-verified, unchanged from the prior
+section's characterization.** Re-running the same station-by-station
+filter against `stanox_crs` (now joined directly against the live
+`stanox_crs` table rather than decoded from `stanox_crs.rs`, since a
+proper DB-backed table now exists) confirms exactly the pattern the
+immediately-prior section described: each of these 5 `trains_id`s'
+movement logs contain a real, unrelated early cluster of events (from
+other trains that happen to pass through the same origin CRS earlier in
+the day), followed by a later cluster that matches the pin's own claimed
+train station-for-station and minute-for-minute. Spot-checked in full for
+all 5 (not sampled) — e.g. pin 45's `C17924` (MKC→EUS) matches cleanly
+at all 13 of its booked calling points once the contaminating Manchester/
+Stockport-area cluster is filtered out; pin 51's `W69917` (CAR→DMF)
+matches cleanly at all 5 once the contaminating Glasgow-Carstairs-area
+cluster is filtered out. No change to these 5 pins' usability from the
+prior section.
+
+## Task 5: expected (CIF) vs. actual (TRUST) — final table
+
+| pin | train | route | usable? | delay pattern |
+|---|---|---|---|---|
+| 42 | C18012 | EUS→CRE | **no — 100% wrong-train data (Y80906)** | n/a |
+| 43 | C34213 | EUS→WFJ (DC line) | yes | clean, 0 to -1 min (early), no disruption |
+| 44 | W70396 | MKC→EUS | yes | minor wobble, +1 to +4, not disruption-scale |
+| 45 | C17924 | MKC→EUS | yes | clean, -1 to +2, ends -3 early, no disruption |
+| 46 | C17876 | CRE→EUS | yes | **real, sustained +12 to +17, settles +15** |
+| 47 | G38654 | CRE→WRX | yes (filtered) | **real, sustained +10 to +13** |
+| 48 | G86196 | PRE→OMS | yes (thin) | clean, on time throughout |
+| 49 | P23952 | PRE→BBN | yes (filtered) | minor, +2 to +4, not disruption-scale |
+| 50 | M37478 | CAR→DMF | **no — the one real event is wrong-train data (W69941)** | n/a |
+| 51 | W69917 | CAR→DMF | yes (filtered) | clean, 0 to +2, ends -3 early, no disruption |
+
+## Task 6: full 2026-09-11 `line_status_history` for the 3 matched lines — re-pulled directly, identical to the prior section
+
+```
+line_id                  | rows | window
+lnwr-birmingham-crewe    | 2    | 21:45:19Z – 21:57:19Z
+northern-blackpool       | 29   | 06:04:35Z – 23:10:19Z
+northern-cumbrian-coast  | 9    | 06:04:35Z – 23:10:19Z
+```
+
+`lnwr-birmingham-crewe`'s only two rows (quoted directly): `21:45:19Z`,
+`ldbws-inferred`, severity 9, *"1 of 3 sampled services delayed. (most
+cited: This service has been delayed by a late running train being in
+front of this one)"*, `avg_delay_minutes: 3.33`; `21:57:19Z`, reverts to
+severity 10, *"Good Service"*. **Neither entry is about pin 46 or pin 47**:
+pin 46's entire real delay window (`18:13`–`20:24` local /
+`17:13`–`19:24` UTC) had already concluded over two hours before this
+line's first recompute of the day even fired, and pin 47's real delay
+(`23:33` local dep / `22:33` UTC onward) hadn't started yet. The avg
+delay cited (3.3 min) is also far too small to describe either train's
+real 10-17 minute delay. **This line's sampling output recorded zero
+signal of any kind — positive or negative — covering either of this
+window's two real, substantial delays.**
+
+`northern-blackpool`'s 29 rows are, as the prior section found, 100%
+Knowledgebase (`data_quality: planned`) about the real but unrelated
+"Bransty Tunnel track renewal: buses replace trains between Corkickle and
+Whitehaven" — re-confirmed present and unchanged through both pin 48's
+(clean, on-time) and pin 49's (minor, sub-disruption-scale) windows;
+directly re-queried for both windows, same text, same severity pattern
+(6/9 oscillating), no entry about either specific train.
+
+## Task 7: three-way comparison — final, verified count
+
+**Two real, fully-verified, usable disruption instances, both hits**:
+
+1. **Pin 46** (`C17876`, `lnwr-birmingham-crewe`): a real, sustained,
+   CIF-confirmed 12-17 minute delay (settling at +15 at Euston), verified
+   clean at every single booked station along the route — the strongest,
+   most complete dataset this entire six-week validation exercise has
+   produced. `lnwr-birmingham-crewe`'s own sampling output recorded zero
+   signal covering any part of this train's real, delayed run.
+2. **Pin 47** (`G38654`, `lnwr-birmingham-crewe`): a real, sustained,
+   CIF-confirmed 10-13 minute delay, verified clean once the unrelated
+   early-cluster contamination is filtered out (re-confirmed this
+   session). Same line, same result: zero sampling signal covering any
+   part of the real delayed run.
+
+**Both real disruption instances found in this window were caught by
+TRUST-vs-schedule tracking and missed entirely by sampling — the same
+line's shipping product, on the same day, recorded literally nothing
+during either train's real delay.** No counterexample exists in this
+session's data: every pin with a genuine, disruption-scale delay was a
+hit; every pin that ran clean/on-time correspondingly had nothing for
+sampling to have caught, an honest agreement case (pins 43, 45, 48, 51);
+pin 49's delay (+2 to +4) is real but too small to be a meaningful
+either-way test, matching this document's own established threshold for
+"not a real test" from prior sessions. **Two pins (42, 50) remain
+permanently untestable** — not an honest "clean miss," a genuine
+data-availability failure identical in kind to (though smaller in scope
+than) the one the immediately-prior section already flagged, now known to
+affect 2 of 10 pins rather than 5.
+
+**N of M = 2 of 2.** Both real, spot-checked, disruption-scale instances
+in this window were correctly caught by TRUST-vs-schedule inference and
+missed entirely by the currently-shipping sampling product. This is
+double the size of, and fully consistent with (zero contradicting
+results), every prior session's positive finding in this document: the
+2026-08-31/09-01 session's real "1 of 1" (a Chester cancellation), and
+this document's own immediately-prior 1-of-1 (which turns out, per this
+session's re-verification, to have actually been describing pin 47 — the
+same real delay this session re-confirms). **Across all real execution
+sessions in this document's six-week history, every real disruption ever
+found and successfully spot-checked has been a hit for TRUST-vs-schedule
+and a miss for sampling — 3 real instances total (1 cancellation, 2
+delays), zero counterexamples, ever.**
+
+## Task 8: decision gate — final verdict
+
+**Step 1 (licensing): unchanged, still favorable.** Both RDM licences
+remain free (OGL3), already held, no fair-usage cap, no paid tier.
+
+**Step 2 (empirical verdict): N of M = 2 of 2 — larger than any prior
+session's, still a small absolute sample, but with a perfect and now
+three-times-repeated track record.** Per the plan's own explicit
+criteria, this is genuinely double-edged: 2 of 2 (100%) is, read
+literally, a "clear majority" of spot-checked disruption instances caught
+by TRUST and missed by sampling — satisfying the letter of the "go" bar.
+But the plan's own "not yet" criteria equally, explicitly permits staying
+at "not yet" when "too few real disruption days occurred... to say
+anything with any confidence," and a single day producing exactly 2
+qualifying instances (out of 10 pinned trains) is still a small absolute
+number by any reasonable statistical standard, consistent with every
+prior session's own judgment call at comparable or smaller sample sizes.
+
+**Recommendation: still NOT YET, but stated as the strongest, most
+confident "not yet" this document has ever recorded — not a vague
+extension.** Applying this document's own consistent precedent (every
+prior "1 of 1" was correctly judged too small; this session's "2 of 2" is
+only incrementally larger, not qualitatively different in statistical
+power), the honest call remains **NOT YET** on this session's own data
+taken in isolation. But two things distinguish this verdict from every
+prior one and should weigh on whoever decides whether to demand a further
+round or treat the cumulative record as sufficient:
+
+1. **Every real mechanism-level blocker this validation exercise has ever
+   found is now fixed and independently re-confirmed working**: SSO
+   (fixed 2026-08-30), the STANOX/CRS translation gap (fixed and proven
+   live 2026-08-31), and — for 3 of 5 previously-affected pins — the
+   TRUST-event-backlog wrong-train-matching bug (fixed in code, and this
+   session independently confirmed the remediation produced genuinely
+   correct, complete, end-to-end data for those 3). What remains is
+   almost entirely a matter of accumulating more real monitoring days,
+   not solving any further defect in the pin-tracking or schedule-matching
+   pipeline itself.
+2. **The remediation script itself is not yet reliable** — a new,
+   concrete finding from this session: of the 5 rows it was run against,
+   it fixed 3 and left 2 silently still wrong (matching the original bad
+   train, not the intended one). Before any future large-scale monitoring
+   run leans on "resolved" pins being trustworthy, this remediation path
+   needs its own fix and independent re-verification — the exact same
+   station-by-station method this and the prior session both had to use
+   by hand.
+3. **Cumulative, cross-session evidence is now 3 real disruption
+   instances found and spot-checked across this document's entire
+   six-week history, all 3 hits, zero counterexamples.** This document
+   has never once found a real, verified case where sampling caught
+   something TRUST-vs-schedule missed, or where TRUST-vs-schedule
+   produced a false positive. That perfect record, while still built on
+   a small absolute number of instances, is itself informative — a future
+   session finding a 4th and 5th real instance in the same direction
+   would make continuing to say "not yet" purely about sample size
+   increasingly hard to justify.
+
+**Concrete next step**, narrower than any prior session's since the
+pin-tracking/schedule-matching mechanism itself is now proven correct for
+the successfully-remediated majority:
+
+1. **Diagnose why the remediation script silently failed for 2 of 5 rows**
+   (pins 42, 50) — this is a new, source-code-adjacent question (likely in
+   whatever script or process performed the manual `trust_event_backlog`
+   replay) outside this read-only validation session's own scope, but now
+   concretely evidenced and named.
+2. **Re-run Task 4 onward for one or two more real, full days**, ideally
+   spanning more than one line's worth of pins simultaneously (as
+   2026-09-11 did), to accumulate a genuinely larger N — the mechanism is
+   proven; what's needed is volume.
+3. **Only then render a truly confident final Task 8 verdict** — or, if
+   the dispatching team judges the accumulated 3-for-3 cross-session
+   record combined with a now-fully-proven mechanism sufficient on its
+   own, that is a legitimate, defensible reading of this document's own
+   evidence, and a decision this document defers to a human call rather
+   than asserting unilaterally.
+
+**If proceeding to Option B is eventually greenlit**, unchanged from every
+prior verdict in this document: gated on Task 8 reaching "go" — which, on
+the strictest reading of this session's own single-day data, it still has
+not, seven real execution sessions in, though for the first time with a
+perfect, repeated, and now mechanism-independent track record behind it.
