@@ -14,7 +14,8 @@ import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
 import { OpenDataAttribution } from '@/components/OpenDataAttribution';
 import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { ConnectivityMonitor } from '@/components/ConnectivityMonitor';
-import { getDataFreshness, getSession } from '@/lib/api';
+import { getDataFreshness, getMyGroups, getSession } from '@/lib/api';
+import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
 import type { DataFreshness } from '@/lib/types';
 
 export const metadata: Metadata = {
@@ -156,7 +157,13 @@ async function GroupsNavItem() {
  * holding first paint for -- timing out here is not a lost cause, it is
  * the "backend unreachable" signal, which is exactly what
  * ConnectivityMonitor needs and what the nav's "never fetched" fallback
- * already renders honestly. */
+ * already renders honestly.
+ *
+ * Also reused below for the `getMyGroups()` prefetch that hydrates
+ * `GroupSummariesProvider`: same in-cluster `api` service, same "an
+ * unbounded await here would hang every route" exposure, so the identical
+ * reasoning applies verbatim -- a second, differently-named constant with
+ * the same value would just be two numbers to keep in sync by hand. */
 const FRESHNESS_TIMEOUT_MS = 2_000;
 
 const UNAVAILABLE_FRESHNESS: DataFreshness = {
@@ -175,6 +182,23 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // previous `.catch()` on this same call; the only addition is that we
   // now also record *whether* it fell back, which is the
   // backend-reachability signal ConnectivityMonitor debounces.
+  // Fired here, *before* the freshness `await` below, so the two run
+  // concurrently rather than one serialized after the other -- this is a
+  // second round-trip to the same in-cluster `api` service added to every
+  // page load, and there is no reason to pay for it twice over. `.catch(()
+  // => null)` right at the call site (rather than further down, at the
+  // final `await groupsPromise`) is load-bearing, not stylistic: a rejected
+  // promise nobody has attached a handler to yet triggers Node's
+  // unhandledRejection warning the instant it rejects, regardless of when
+  // it's later awaited -- attaching the handler here, synchronously, avoids
+  // that regardless of how long `getDataFreshness` takes to settle first.
+  // `null` on any failure (a timeout via the shared `FRESHNESS_TIMEOUT_MS`,
+  // a network blip, a non-2xx from `errorForResponse`) is exactly
+  // `getMyGroups()`'s own null-on-401 shape, and `GroupSummariesProvider`/
+  // `useGroupSummaries()` already treat `null` as "nothing to offer" --
+  // same fail-safe posture `useGroupSummaries` always had, just moved here.
+  const groupsPromise = getMyGroups({ signal: AbortSignal.timeout(FRESHNESS_TIMEOUT_MS) }).catch(() => null);
+
   let freshness: DataFreshness;
   let backendReachable: boolean;
   try {
@@ -184,6 +208,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     freshness = UNAVAILABLE_FRESHNESS;
     backendReachable = false;
   }
+  // By now `getDataFreshness` has already taken at least one in-cluster
+  // round trip, so this is typically already settled -- not a second
+  // sequential wait in practice, just picking up a result that was already
+  // being computed alongside it.
+  const groups = await groupsPromise;
   return (
     <html lang="en" {...mantineHtmlProps}>
       <head>
@@ -191,106 +220,112 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       </head>
       <body>
         <AppMantineProvider>
-          {/* Wraps the whole shell rather than only <Container
-              component="main">: the banner's fixed positioning is then not
-              constrained by the content container, and app/error.tsx --
-              which renders inside <Container component="main"> below --
-              ends up a descendant, which is what lets it read the context
-              and auto-recover. */}
-          <ConnectivityMonitor
-            backendReachable={backendReachable}
-            observedAt={new Date().toISOString()}
-          >
-            <AutoRefresh />
-            <ColorSchemeMeta />
-            {/* RootLayout is a Server Component and re-executes on every
-                navigation and every AutoRefresh-triggered router.refresh() --
-                a fresh ISO timestamp here is what lets
-                ServiceWorkerRegister record "last successful load" purely
-                from receiving a new prop value; see that component's own
-                doc comment. */}
-            <ServiceWorkerRegister loadedAt={new Date().toISOString()} />
-            {/* No max-width anywhere meant a 1920px viewport put a line's
-                name at x≈30, its status badge at x≈870 and its pin at
-                x≈1780 — the row stopped being scannable as a row. `lg` is
-                1140px. The border stays on a full-bleed Box so the rule still
-                spans the window while the nav's contents line up with the
-                page content below it. `px={0}`: every page already applies
-                its own `p="lg"`, and Container's default `md` inline padding
-                on top of that is 40px of gutter on a 390px screen. */}
-            <Box
-              component="nav"
-              style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}
+          {/* Outside ConnectivityMonitor, not inside: the two contexts are
+              independent of one another, and this ordering just keeps the
+              server-fetched-data providers grouped together at the top of
+              the tree rather than implying any dependency between them. */}
+          <GroupSummariesProvider groups={groups}>
+            {/* Wraps the whole shell rather than only <Container
+                component="main">: the banner's fixed positioning is then not
+                constrained by the content container, and app/error.tsx --
+                which renders inside <Container component="main"> below --
+                ends up a descendant, which is what lets it read the context
+                and auto-recover. */}
+            <ConnectivityMonitor
+              backendReachable={backendReachable}
+              observedAt={new Date().toISOString()}
             >
-              <Container size="lg" px={0}>
-                <Group justify="space-between" px="lg" py="md">
-                  {/* Plain `<Link>` wrapping Mantine's `Text`, rather than
-                      `component={Link}` on a Mantine polymorphic prop: this file
-                      is a Server Component, and passing the `Link` component
-                      reference into a Mantine `component` prop from a Server
-                      Component previously broke `next build`'s Server/Client
-                      boundary serialization check (see LineStatusCard fix).
-                      `ThemeToggle` below doesn't hit this: it's imported and
-                      rendered as a plain JSX element (a Client Component child
-                      of this Server Component), not passed as a value into a
-                      Mantine `component` prop — a different, safe pattern. */}
-                  <Link href="/" style={{ textDecoration: 'none', color: 'inherit' }}>
-                    {/* `data-site-title` is a pure CSS hook for `globals.css`'s
-                        `body[data-pride='true']` rules -- Mantine's `Text`
-                        renders no stable class of its own to key off. */}
-                    <Text fw={700} data-site-title>
-                      Distant Signal
-                    </Text>
-                  </Link>
-                  <Group gap="lg">
-                    <TextLink href="/lines">All Lines</TextLink>
-                    <TextLink href="/stations">Station Lookup</TextLink>
-                    {/* The primary train-discovery surface. `/track` is
-                        still reachable (from here via /trains' own manual
-                        fallback link, from /stations/[crs], and from
-                        TicketEntryForm) but is no longer the first thing a
-                        visitor is pointed at -- see
-                        docs/superpowers/specs/2026-09-07-train-listing-page-design.md
-                        §4. */}
-                    <TextLink href="/trains">Find a Train</TextLink>
-                    <TrackedTrainsNavItem />
-                    <Suspense fallback={null}>
-                      <GroupsNavItem />
-                    </Suspense>
-                    <DataFreshnessNavItem freshness={freshness} />
-                    <ThemeToggle />
-                    <PrideToggle />
-                    <Suspense fallback={<Text size="sm" c="dimmed">Log in</Text>}>
-                      <AuthNavItem />
-                    </Suspense>
+              <AutoRefresh />
+              <ColorSchemeMeta />
+              {/* RootLayout is a Server Component and re-executes on every
+                  navigation and every AutoRefresh-triggered router.refresh() --
+                  a fresh ISO timestamp here is what lets
+                  ServiceWorkerRegister record "last successful load" purely
+                  from receiving a new prop value; see that component's own
+                  doc comment. */}
+              <ServiceWorkerRegister loadedAt={new Date().toISOString()} />
+              {/* No max-width anywhere meant a 1920px viewport put a line's
+                  name at x≈30, its status badge at x≈870 and its pin at
+                  x≈1780 — the row stopped being scannable as a row. `lg` is
+                  1140px. The border stays on a full-bleed Box so the rule still
+                  spans the window while the nav's contents line up with the
+                  page content below it. `px={0}`: every page already applies
+                  its own `p="lg"`, and Container's default `md` inline padding
+                  on top of that is 40px of gutter on a 390px screen. */}
+              <Box
+                component="nav"
+                style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}
+              >
+                <Container size="lg" px={0}>
+                  <Group justify="space-between" px="lg" py="md">
+                    {/* Plain `<Link>` wrapping Mantine's `Text`, rather than
+                        `component={Link}` on a Mantine polymorphic prop: this file
+                        is a Server Component, and passing the `Link` component
+                        reference into a Mantine `component` prop from a Server
+                        Component previously broke `next build`'s Server/Client
+                        boundary serialization check (see LineStatusCard fix).
+                        `ThemeToggle` below doesn't hit this: it's imported and
+                        rendered as a plain JSX element (a Client Component child
+                        of this Server Component), not passed as a value into a
+                        Mantine `component` prop — a different, safe pattern. */}
+                    <Link href="/" style={{ textDecoration: 'none', color: 'inherit' }}>
+                      {/* `data-site-title` is a pure CSS hook for `globals.css`'s
+                          `body[data-pride='true']` rules -- Mantine's `Text`
+                          renders no stable class of its own to key off. */}
+                      <Text fw={700} data-site-title>
+                        Distant Signal
+                      </Text>
+                    </Link>
+                    <Group gap="lg">
+                      <TextLink href="/lines">All Lines</TextLink>
+                      <TextLink href="/stations">Station Lookup</TextLink>
+                      {/* The primary train-discovery surface. `/track` is
+                          still reachable (from here via /trains' own manual
+                          fallback link, from /stations/[crs], and from
+                          TicketEntryForm) but is no longer the first thing a
+                          visitor is pointed at -- see
+                          docs/superpowers/specs/2026-09-07-train-listing-page-design.md
+                          §4. */}
+                      <TextLink href="/trains">Find a Train</TextLink>
+                      <TrackedTrainsNavItem />
+                      <Suspense fallback={null}>
+                        <GroupsNavItem />
+                      </Suspense>
+                      <DataFreshnessNavItem freshness={freshness} />
+                      <ThemeToggle />
+                      <PrideToggle />
+                      <Suspense fallback={<Text size="sm" c="dimmed">Log in</Text>}>
+                        <AuthNavItem />
+                      </Suspense>
+                    </Group>
                   </Group>
-                </Group>
-              </Container>
-            </Box>
-            {/* `component="main"`: Mantine's Container renders a plain
-                <div> by default, which left every page's actual content
-                outside any landmark -- axe's `landmark-one-main` fired on
-                every route tested, and `region` fired once per unlandmarked
-                node (487 on /lines alone). See
-                docs/superpowers/specs/2026-09-02-frontend-accessibility-audit-research.md.
-                The nav (:144) and footer (OpenDataAttribution.tsx) were
-                already landmarked; only the middle was not. Polymorphic
-                `component` swaps the tag only -- size/px/class output is
-                unchanged.
+                </Container>
+              </Box>
+              {/* `component="main"`: Mantine's Container renders a plain
+                  <div> by default, which left every page's actual content
+                  outside any landmark -- axe's `landmark-one-main` fired on
+                  every route tested, and `region` fired once per unlandmarked
+                  node (487 on /lines alone). See
+                  docs/superpowers/specs/2026-09-02-frontend-accessibility-audit-research.md.
+                  The nav (:144) and footer (OpenDataAttribution.tsx) were
+                  already landmarked; only the middle was not. Polymorphic
+                  `component` swaps the tag only -- size/px/class output is
+                  unchanged.
 
-                `flex: 1`: pairs with `body`'s `display: flex;
-                flex-direction: column; min-height: 100vh` in
-                globals.css to make this the one growable element in the
-                column, so the footer (OpenDataAttribution, rendered
-                right after this) is pushed to the bottom of the
-                viewport on a short-content page instead of hugging the
-                content -- see globals.css's comment on that `body` rule
-                for the full sticky-footer rationale. */}
-            <Container component="main" size="lg" px={0} style={{ flex: 1 }}>
-              {children}
-            </Container>
-            <OpenDataAttribution />
-          </ConnectivityMonitor>
+                  `flex: 1`: pairs with `body`'s `display: flex;
+                  flex-direction: column; min-height: 100vh` in
+                  globals.css to make this the one growable element in the
+                  column, so the footer (OpenDataAttribution, rendered
+                  right after this) is pushed to the bottom of the
+                  viewport on a short-content page instead of hugging the
+                  content -- see globals.css's comment on that `body` rule
+                  for the full sticky-footer rationale. */}
+              <Container component="main" size="lg" px={0} style={{ flex: 1 }}>
+                {children}
+              </Container>
+              <OpenDataAttribution />
+            </ConnectivityMonitor>
+          </GroupSummariesProvider>
         </AppMantineProvider>
       </body>
     </html>

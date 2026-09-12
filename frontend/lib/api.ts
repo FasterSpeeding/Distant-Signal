@@ -570,10 +570,18 @@ export async function getIncident(incidentId: string): Promise<IncidentDetail> {
 /** `GET /public/groups` -- the current user's own groups. `null` on a
  * `401`, matching `getMyTrackedTrains()`'s own "no id in the path, no
  * second party to disambiguate" null-on-401 convention -- there is
- * nothing else this route's `401` could mean besides "not logged in." */
-export async function getMyGroups(): Promise<GroupSummary[] | null> {
+ * nothing else this route's `401` could mean besides "not logged in."
+ *
+ * `init?.signal`, matching `getDataFreshness`'s own optional-`signal`
+ * shape: `RootLayout` (`app/layout.tsx`) calls this once per render,
+ * unawaited alongside the freshness fetch, to hydrate
+ * `GroupSummariesProvider` (`lib/useGroupSummaries.tsx`) -- and, being
+ * awaited before any HTML is emitted, needs the same bounded timeout
+ * `getDataFreshness` already has so a black-holed backend can't hang first
+ * paint on this fetch instead. */
+export async function getMyGroups(init?: Pick<RequestInit, 'signal'>): Promise<GroupSummary[] | null> {
   const url = `${baseUrl()}/public/groups`;
-  const response = await fetch(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+  const response = await fetch(url, { cache: 'no-store', ...init, ...(await cookieForwardInit()) });
   if (response.status === 401) return null;
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<GroupSummary[]>;

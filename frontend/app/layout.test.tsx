@@ -12,6 +12,7 @@ import { DataFreshnessNavItem, TrackedTrainsNavItem, viewport, metadata } from '
 vi.mock('@/lib/api', () => ({
   getDataFreshness: vi.fn(),
   getSession: vi.fn(),
+  getMyGroups: vi.fn(),
 }));
 
 describe('TrackedTrainsNavItem', () => {
@@ -111,6 +112,35 @@ describe('backend reachability threading', () => {
     const source = readFileSync('app/layout.tsx', 'utf8');
     expect(source).toMatch(/<DataFreshnessNavItem freshness=\{freshness\} \/>/);
     expect(source).toMatch(/<Suspense fallback=\{<Text size="sm" c="dimmed">Log in<\/Text>\}>/);
+  });
+});
+
+describe('group summaries provider threading', () => {
+  // Same source-assertion tactic as the two `describe` blocks above, and
+  // for the same reason: RootLayout renders <html>/<body> and awaits
+  // getDataFreshness()/getMyGroups() before returning, so it can't be
+  // mounted by @testing-library/react. Behavioural coverage for the
+  // provider/hook themselves lives in lib/useGroupSummaries.test.tsx; the
+  // fetch-race regression coverage for the three consumers
+  // (TrackThisTrainButton/TrackTrainForm/AddToGroupButton) lives in their
+  // own test files.
+  it('fetches getMyGroups() and wraps the shell in GroupSummariesProvider', () => {
+    const source = readFileSync('app/layout.tsx', 'utf8');
+    expect(source).toMatch(/getMyGroups\(/);
+    expect(source).toMatch(/<GroupSummariesProvider groups=\{groups\}>/);
+  });
+
+  // The whole point of this fix: the fetch must not be serialized after
+  // getDataFreshness (which RootLayout already awaits before returning any
+  // HTML) -- it has to be already in flight so the two round trips to the
+  // same in-cluster `api` service overlap instead of stacking.
+  it('starts the getMyGroups() fetch before awaiting getDataFreshness, not after', () => {
+    const source = readFileSync('app/layout.tsx', 'utf8');
+    const groupsCallIndex = source.indexOf('getMyGroups(');
+    const freshnessAwaitIndex = source.indexOf('await getDataFreshness(');
+    expect(groupsCallIndex).toBeGreaterThan(-1);
+    expect(freshnessAwaitIndex).toBeGreaterThan(-1);
+    expect(groupsCallIndex).toBeLessThan(freshnessAwaitIndex);
   });
 });
 
