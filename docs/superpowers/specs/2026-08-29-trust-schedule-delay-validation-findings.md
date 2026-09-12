@@ -3056,3 +3056,40 @@ every prior verdict in this document: gated on Task 8 reaching "go" —
 which, on the strictest reading of this session's own single-day data, it
 still has not, eight real execution sessions in, now for the first time
 with a fully-verified, zero-caveat dataset behind it.
+
+---
+
+# 2026-09-12: Repo-owner decision — flip the switch now, keep collecting data live
+
+**This overrides the "NOT YET" verdict above.** The repo owner, reviewing
+the complete evidence trail this document has built across eight real
+execution sessions, made an explicit call: `fullCoverageEnabledDefault`
+is flipped to `true` on both `aggregator` and `api`
+(`charts/distant-signal/values.yaml`, commit `59b0bfe`) — full-coverage
+TRUST+schedule line status is now the default for every catalogued line,
+not gated behind further pre-launch validation.
+
+**The reasoning, stated plainly**: this document's own statistical bar
+(a large-enough N of real, spot-checked disruption instances) was never
+reached on the single day this exercise's live pin-based validation
+covered — the final honest count was 2 of 2. But every *mechanism-level*
+blocker found across this whole exercise (SSO/M2M auth, STANOX/CRS
+translation, TRUST timestamp corruption, backlog-match wrong-train
+contamination) is now fixed, deployed, and independently re-verified
+with zero remaining data-integrity caveats across all 10 test pins — the
+"NOT YET" was about sample size, not about any remaining doubt in the
+mechanism itself. Rather than continue holding the switch off pending a
+larger sample from more validation sessions, the decision was to flip it
+live now and treat real production traffic from here on as the
+continuation of the same test — every line, every real user, ongoing,
+rather than a bounded pin batch.
+
+**What this means going forward**: `DataQuality::TrustInferred` output
+is now what every user sees by default, not an opt-in per-line flag.
+Anyone continuing to monitor this should watch for the same class of
+issue this document's own history repeatedly surfaced — wrong-train
+matches, timestamp anomalies, sampling/TRUST disagreement — but now at
+full production scale rather than a 10-pin sample, which is itself a
+far larger and faster source of exactly the validation signal this
+document spent eight sessions trying to gather a handful of instances
+of by hand.
