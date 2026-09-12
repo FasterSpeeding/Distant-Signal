@@ -28,6 +28,19 @@ pub struct Config {
     #[arg(long, env, default_value = "http://api:8080/private/stanox-crs")]
     pub api_ingest_url: String,
 
+    /// `api`'s GET counterpart of `schedule-ingest`'s own per-delivery
+    /// ingest record (`crates/api/src/routes/ingest.rs`'s
+    /// `/schedule-feed-ingests` route) -- read once at startup to seed
+    /// `last_processed_delivery` from the real, persisted identity of the
+    /// most recently successfully-ingested delivery, rather than always
+    /// starting at `None` on a restart. See `main::seed_last_processed_delivery`.
+    #[arg(
+        long,
+        env,
+        default_value = "http://api:8080/private/schedule-feed-ingests"
+    )]
+    pub schedule_feed_ingests_url: String,
+
     /// The `api` crate's ingestion endpoint for this service's second
     /// responsibility (Task 7): per-line CIF SCHEDULE population publish.
     /// See docs/superpowers/specs/2026-09-04-option-b-live-consumer-design.md

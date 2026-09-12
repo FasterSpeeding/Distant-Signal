@@ -34,7 +34,17 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
     let internal_oauth = config.internal_oauth.token_cache();
     let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
-    let mut last_processed_delivery: Option<String> = None;
+    let mut last_processed_delivery: Option<String> =
+        seed_last_processed_delivery(&client, &config, &internal_oauth).await;
+    match &last_processed_delivery {
+        Some(delivery) => tracing::info!(
+            delivery = %delivery,
+            "seeded last_processed_delivery from api's persisted schedule-feed-ingests record; will not redundantly republish this delivery after a restart"
+        ),
+        None => tracing::info!(
+            "no prior schedule-feed delivery recorded by api yet; will process the next delivery poll_once finds (first-run behavior)"
+        ),
+    }
 
     loop {
         interval.tick().await;
@@ -161,6 +171,74 @@ async fn poll_once(
         .await;
 
     Ok(())
+}
+
+/// Renders `delivered_at` in the exact directory-name shape
+/// `schedule-ingest::delivery::delivery_dir_name` uses for its
+/// timestamp-named delivery directories under `storage_dir`:
+/// `YYYYMMDDTHHMMSSZ`. Kept as a small local copy rather than a cross-crate
+/// import -- that function is private to `schedule-ingest`, and the two
+/// crates already communicate a delivery's identity purely by string shape
+/// (see `discovery::CompleteDelivery::dir_name`'s own doc comment), not a
+/// shared Rust type, the same posture `schedule-ingest::main`'s own
+/// `ScheduleFeedIngestRequest` documents for its mirrored struct. Both this
+/// function and the real `delivery_dir_name` derive their output from the
+/// SAME underlying timestamp (the delivery zip's own mtime, recorded as
+/// `schedule_feed_ingests.delivered_at`), via the same `chrono` format
+/// string, so the two are guaranteed to agree.
+fn dir_name_from_delivered_at(delivered_at: chrono::DateTime<chrono::Utc>) -> String {
+    delivered_at.format("%Y%m%dT%H%M%SZ").to_string()
+}
+
+/// Seeds `last_processed_delivery` from `api`'s own persisted record of the
+/// most recently successfully-ingested CIF delivery (`GET
+/// /private/schedule-feed-ingests` -- the same route `schedule-ingest`
+/// POSTs to, and the same GET-a-freshness-marker-at-startup pattern
+/// `common::ingest::time_until_next_poll` already establishes for every
+/// other poller in this workspace), rather than always starting at `None`
+/// on a process restart.
+///
+/// Without this, restarting this container (the `reference` sibling in the
+/// `schedulefeed` Pod) always re-triggers a full, redundant republish of
+/// `schedule_destination_departures` for the whole 7-day forward window --
+/// ~1.7-2 million rows torn down and rebuilt in Postgres -- even when the
+/// underlying delivery was already fully processed hours earlier, because
+/// `last_processed_delivery` lived only in this process's memory. Confirmed
+/// directly against production: a delivery reprocessed at a real restart
+/// had already been ingested 8.5 hours earlier per `schedule_feed_ingests`.
+///
+/// Returns `None` -- this service's pre-existing, still-correct
+/// first-run/fallback behavior (`poll_once` processes the next delivery it
+/// finds) -- in two distinct cases:
+/// * `api` has never recorded a delivery at all (`fetched_at: None`) -- a
+///   genuine, valid, once-ever case (a fresh deployment's
+///   `schedule_feed_ingests` table starts empty), not an error.
+/// * The GET itself fails (network error, `api` not yet reachable, a bad
+///   response) -- logged at `warn`, but never propagated as a hard startup
+///   failure: this service must still be able to start and make forward
+///   progress even if this one optimization can't be applied yet.
+async fn seed_last_processed_delivery(
+    client: &Client,
+    config: &Config,
+    internal_oauth: &common::oauth_client::OAuthTokenCache,
+) -> Option<String> {
+    let response: common::ingest::LastFetchedResponse = match common::ingest::get_json(
+        client,
+        &config.schedule_feed_ingests_url,
+        internal_oauth,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            tracing::warn!(
+                error = ?err,
+                "could not fetch last schedule-feed delivery from api on startup; falling back to first-run behavior for this process lifetime"
+            );
+            return None;
+        }
+    };
+    response.fetched_at.map(dir_name_from_delivered_at)
 }
 
 /// Forward publish window, in days, for `schedule_destination_departures`:
@@ -1252,5 +1330,151 @@ mod poll_once_tests {
             "input order within a bucket is preserved verbatim; no sort happens here"
         );
         assert_eq!(rows[1]["train_uid"], "EARLY");
+    }
+
+    /// Every field but `schedule_feed_ingests_url` is an inert placeholder
+    /// -- these tests exercise only `seed_last_processed_delivery`, which
+    /// touches that one field plus the `client`/`internal_oauth` arguments
+    /// passed in alongside it. Same "config fixture with one caller-supplied
+    /// knob" convention as this crate's sibling crates' own `test_config`
+    /// helpers (e.g. `schedule-ingest::main::tests::test_config`).
+    fn test_config(schedule_feed_ingests_url: &str) -> Config {
+        Config {
+            storage_dir: std::path::PathBuf::from("/tmp/schedule-reference-test-does-not-exist"),
+            poll_interval_secs: 1800,
+            api_ingest_url: "http://127.0.0.1:1/stanox-crs".to_string(),
+            schedule_line_population_url: "http://127.0.0.1:1/schedule-line-population"
+                .to_string(),
+            schedule_network_departures_url: "http://127.0.0.1:1/schedule-network-departures"
+                .to_string(),
+            schedule_destination_departures_url:
+                "http://127.0.0.1:1/schedule-destination-departures".to_string(),
+            schedule_feed_ingests_url: schedule_feed_ingests_url.to_string(),
+            lines: common::config::LineCatalogue(vec![]),
+            internal_oauth: common::oauth_client::InternalOAuthArgs {
+                internal_oauth_token_url: "placeholder-set-per-test-below".to_string(),
+                internal_oauth_client_id: "test-client".to_string(),
+                internal_oauth_scope: "groups".to_string(),
+                internal_oauth_username: "test-user".to_string(),
+                internal_oauth_password: "test-password".to_string(),
+            },
+            metrics_port: 0,
+            metrics: common::service_args::MetricsArgs {
+                metrics_enabled: false,
+            },
+        }
+    }
+
+    /// Mounts a token-issuing mock onto `server` and returns a token cache
+    /// pointed at it -- mirrors `common::poller_loop::tests::token_cache`
+    /// and `common::ingest::tests`' own mock-Authentik setup exactly (same
+    /// `/token/` path, same fake-JWT response shape), so
+    /// `seed_last_processed_delivery`'s real `common::ingest::get_json`
+    /// call succeeds its bearer-token fetch before hitting whichever
+    /// `/schedule-feed-ingests` mock each test below mounts separately.
+    async fn mock_token_cache(server: &wiremock::MockServer) -> common::oauth_client::OAuthTokenCache {
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/token/"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "fake-jwt",
+                "expires_in": 300,
+            })))
+            .mount(server)
+            .await;
+        common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
+            token_url: format!("{}/token/", server.uri()),
+            client_id: "test-client".to_string(),
+            scope: "groups".to_string(),
+            username: "test-user".to_string(),
+            password: "test-password".to_string(),
+        })
+    }
+
+    #[test]
+    fn dir_name_from_delivered_at_matches_schedule_ingests_own_directory_name_format() {
+        // Mirrors schedule-ingest::delivery::delivery_dir_name's own fixture
+        // (`delivery_dir_name_matches_the_expected_compact_sortable_format`)
+        // byte-for-byte -- the whole point of this function is that the two
+        // crates agree on this exact string for the exact same instant, so
+        // a seeded `last_processed_delivery` actually matches the real
+        // `discovery::CompleteDelivery::dir_name` a fresh disk scan finds.
+        let delivered_at: chrono::DateTime<chrono::Utc> = "2026-09-03T17:28:30Z".parse().unwrap();
+        assert_eq!(dir_name_from_delivered_at(delivered_at), "20260903T172830Z");
+    }
+
+    /// The actual regression test for this fix (2026-09-12): after a
+    /// restart, this service must seed its dedup state from `api`'s real,
+    /// persisted delivery record instead of unconditionally starting at
+    /// `None`, so it doesn't redundantly republish `schedule_destination_departures`'
+    /// whole 7-day forward window for a delivery already processed hours
+    /// earlier.
+    #[tokio::test]
+    async fn seed_last_processed_delivery_seeds_from_a_real_prior_record_when_one_exists() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/schedule-feed-ingests"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "fetchedAt": "2026-09-03T17:28:30Z"
+                })),
+            )
+            .mount(&server)
+            .await;
+        let tokens = mock_token_cache(&server).await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let config = test_config(&format!("{}/schedule-feed-ingests", server.uri()));
+
+        let seeded = seed_last_processed_delivery(&client, &config, &tokens).await;
+
+        assert_eq!(
+            seeded,
+            Some("20260903T172830Z".to_string()),
+            "must seed the exact dir_name a real discovery::latest_complete_delivery scan would find for this delivered_at"
+        );
+    }
+
+    /// The other half of this fix's binding contract: a genuinely fresh
+    /// deployment (an empty `schedule_feed_ingests` table, `fetchedAt:
+    /// null`) is a real, valid, once-ever case -- not an error -- and must
+    /// still fall back to this service's pre-existing first-run behavior.
+    #[tokio::test]
+    async fn seed_last_processed_delivery_falls_back_to_none_when_no_prior_record_exists() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/schedule-feed-ingests"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "fetchedAt": null
+                })),
+            )
+            .mount(&server)
+            .await;
+        let tokens = mock_token_cache(&server).await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let config = test_config(&format!("{}/schedule-feed-ingests", server.uri()));
+
+        let seeded = seed_last_processed_delivery(&client, &config, &tokens).await;
+
+        assert_eq!(
+            seeded, None,
+            "an empty schedule_feed_ingests table must fall back to None/first-run behavior, not error or panic"
+        );
+    }
+
+    /// A failed GET (here: nothing mounted at all, so it 404s) must be as
+    /// harmless as a genuinely fresh deployment -- this optimization must
+    /// never become a hard startup failure. Same fallback posture as
+    /// `common::ingest::time_until_next_poll`'s own "poll now" fallback on
+    /// a failed freshness check.
+    #[tokio::test]
+    async fn seed_last_processed_delivery_falls_back_to_none_when_the_get_itself_fails() {
+        let server = wiremock::MockServer::start().await;
+        let tokens = mock_token_cache(&server).await;
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let config = test_config(&format!("{}/schedule-feed-ingests", server.uri()));
+
+        let seeded = seed_last_processed_delivery(&client, &config, &tokens).await;
+
+        assert_eq!(seeded, None);
     }
 }

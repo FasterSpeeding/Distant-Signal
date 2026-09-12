@@ -1,8 +1,10 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::{ConnectOptions, PgPool};
 
 use crate::auth::oidc::{OidcClient, OidcConfig};
 use crate::data::config::ServiceArguments;
@@ -153,10 +155,21 @@ pub(crate) fn build_internal_oauth_routes(
             Method::POST,
             vec![config.internal_oauth_group_trust_backlog.clone()],
         ),
+        // GET has two legitimate readers now: schedule-ingest reading back
+        // its own last write (unchanged), and schedule-reference, added so
+        // it can seed its restart-durable `last_processed_delivery` dedup
+        // state from `api`'s own persisted record on startup instead of
+        // always starting at `None` -- see `schedule-reference::main`'s
+        // `seed_last_processed_delivery`. Read-only for schedule-reference:
+        // POST stays schedule-ingest-only, matching `/stanox-crs` GET's own
+        // multi-reader-groups-vs-single-writer-group shape just below.
         (
             "/schedule-feed-ingests",
             Method::GET,
-            vec![config.internal_oauth_group_schedule_ingest.clone()],
+            vec![
+                config.internal_oauth_group_schedule_ingest.clone(),
+                config.internal_oauth_group_schedule_reference.clone(),
+            ],
         ),
         (
             "/schedule-feed-ingests",
@@ -346,9 +359,39 @@ impl AppState {
     pub async fn init() -> Result<App> {
         let config = ServiceArguments::parse();
 
+        // sqlx's own `ConnectOptions` default for `log_slow_statements` is
+        // WARN at a 1-second threshold -- fine for typical interactive
+        // queries, but this crate's own bulk write path
+        // (`queries::upsert_schedule_destination_departures`'s `INSERT ...
+        // SELECT * FROM UNNEST(...) ON CONFLICT DO NOTHING`, batching up to
+        // ~250k rows and observed taking 3-8 seconds per batch in
+        // production) trips that default on every single batch, drowning
+        // real slow-query signal in expected noise. No crate in this
+        // workspace calls `.log_slow_statements(...)` anywhere (confirmed
+        // by grep), so every pool -- this one included -- has been
+        // inheriting that 1-second default uniformly.
+        //
+        // Raised here, pool-wide, to 10 seconds -- not a second,
+        // query-specific pool -- because `api` has exactly one `PgPool` for
+        // the whole service (this one call site) and introducing a second
+        // pool solely to scope a threshold to one query would be
+        // disproportionate. The tradeoff is acceptable because every other,
+        // genuinely-interactive query in this crate runs comfortably under
+        // a second in practice, so a 10-second floor changes nothing for
+        // them; for the bulk path it still leaves ~2-3x headroom over the
+        // slowest real batches observed (3-8s) to absorb ordinary load
+        // variance, while a genuinely pathological multi-minute query would
+        // still trip it immediately, same as before.
+        let connect_options: PgConnectOptions = config
+            .database_url
+            .parse()
+            .context("could not parse DATABASE_URL")?;
+        let connect_options =
+            connect_options.log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(10));
+
         let db = PgPoolOptions::new()
             .max_connections(50)
-            .connect(&config.database_url)
+            .connect_with(connect_options)
             .await
             .context("Could not connect to database")?;
 
