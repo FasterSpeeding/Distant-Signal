@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { ReactElement } from 'react';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
 import { AddToGroupButton } from './AddToGroupButton';
+import type { GroupSummary } from '@/lib/types';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
@@ -9,13 +12,18 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
-function groupsResponse(
-  groups: { id: string; name: string; role: string; memberCount: number }[] = [
-    { id: 'grp-1', name: 'Commuters', role: 'member', memberCount: 3 },
-    { id: 'grp-2', name: 'Family', role: 'owner', memberCount: 2 },
-  ],
-) {
-  return new Response(JSON.stringify(groups), { status: 200 });
+const GROUPS_FIXTURE: GroupSummary[] = [
+  { id: 'grp-1', name: 'Commuters', role: 'member', memberCount: 3 },
+  { id: 'grp-2', name: 'Family', role: 'owner', memberCount: 2 },
+];
+
+// `useGroupSummaries` now reads from `GroupSummariesProvider`'s context
+// instead of fetching `/api/groups` itself -- every render below supplies
+// its own groups value directly, synchronously, rather than mocking that
+// fetch (see `lib/useGroupSummaries.tsx`'s own doc comment for why: the
+// value is present at first render, no fetch-then-setState chain to await).
+function renderWithGroups(ui: ReactElement, groups: GroupSummary[] | null = []) {
+  return renderWithMantine(<GroupSummariesProvider groups={groups}>{ui}</GroupSummariesProvider>);
 }
 
 describe('AddToGroupButton', () => {
@@ -27,34 +35,30 @@ describe('AddToGroupButton', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders nothing when the viewer is in zero groups', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(groupsResponse([]));
-
-    renderWithMantine(<AddToGroupButton trainSubscriptionId={7} />);
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/groups'));
-    // Let the resulting state update flush, then confirm no button/modal
-    // content ever appears -- no button, no empty state, per this
-    // component's own "don't clutter the common case" contract.
-    await waitFor(() => expect(screen.queryByRole('button')).not.toBeInTheDocument());
+  it('renders nothing when the viewer is in zero groups', () => {
+    renderWithGroups(<AddToGroupButton trainSubscriptionId={7} />, []);
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('renders nothing while the groups fetch fails', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockRejectedValue(new Error('network blip'));
+  // The context's own fail-safe posture (`GroupSummariesProvider`'s doc
+  // comment): an anonymous visitor and any upstream `getMyGroups()` failure
+  // both reach this component as `null`, collapsed to "nothing to offer" --
+  // same as the zero-groups case above.
+  it('renders nothing for an anonymous visitor (null groups)', () => {
+    renderWithGroups(<AddToGroupButton trainSubscriptionId={7} />, null);
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
 
+  // No `GroupSummariesProvider` ancestor at all -- the context's own
+  // non-throwing default must still resolve to "nothing to offer" rather
+  // than crashing this component's unconditional `groups.length` check.
+  it('renders nothing with no GroupSummariesProvider in the tree at all', () => {
     renderWithMantine(<AddToGroupButton trainSubscriptionId={7} />);
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/groups'));
-    await waitFor(() => expect(screen.queryByRole('button')).not.toBeInTheDocument());
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
   it('shows the button and a group picker once the viewer has at least one group', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(groupsResponse());
-
-    renderWithMantine(<AddToGroupButton trainSubscriptionId={7} />);
+    renderWithGroups(<AddToGroupButton trainSubscriptionId={7} />, GROUPS_FIXTURE);
 
     const button = await screen.findByRole('button', { name: 'Add to group' });
     fireEvent.click(button);
@@ -67,13 +71,9 @@ describe('AddToGroupButton', () => {
 
   it('POSTs the chosen groupId and shows a success confirmation without closing the modal', async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockImplementation((input) => {
-      const url = typeof input === 'string' ? input : (input as Request).url;
-      if (url === '/api/groups') return Promise.resolve(groupsResponse());
-      return Promise.resolve(new Response(null, { status: 204 }));
-    });
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
-    renderWithMantine(<AddToGroupButton trainSubscriptionId={7} />);
+    renderWithGroups(<AddToGroupButton trainSubscriptionId={7} />, GROUPS_FIXTURE);
     fireEvent.click(await screen.findByRole('button', { name: 'Add to group' }));
     const [select] = await screen.findAllByLabelText('Group');
     fireEvent.click(select);
@@ -94,13 +94,9 @@ describe('AddToGroupButton', () => {
 
   it('shows a real error, not silence, when the share request fails', async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockImplementation((input) => {
-      const url = typeof input === 'string' ? input : (input as Request).url;
-      if (url === '/api/groups') return Promise.resolve(groupsResponse());
-      return Promise.resolve(new Response('Something went wrong', { status: 500 }));
-    });
+    fetchMock.mockResolvedValue(new Response('Something went wrong', { status: 500 }));
 
-    renderWithMantine(<AddToGroupButton trainSubscriptionId={7} />);
+    renderWithGroups(<AddToGroupButton trainSubscriptionId={7} />, GROUPS_FIXTURE);
     fireEvent.click(await screen.findByRole('button', { name: 'Add to group' }));
     const [select] = await screen.findAllByLabelText('Group');
     fireEvent.click(select);
@@ -113,13 +109,9 @@ describe('AddToGroupButton', () => {
 
   it('shows a login prompt on a 401 rather than the raw rejection text', async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockImplementation((input) => {
-      const url = typeof input === 'string' ? input : (input as Request).url;
-      if (url === '/api/groups') return Promise.resolve(groupsResponse());
-      return Promise.resolve(new Response('unauthorized', { status: 401 }));
-    });
+    fetchMock.mockResolvedValue(new Response('unauthorized', { status: 401 }));
 
-    renderWithMantine(<AddToGroupButton trainSubscriptionId={7} />);
+    renderWithGroups(<AddToGroupButton trainSubscriptionId={7} />, GROUPS_FIXTURE);
     fireEvent.click(await screen.findByRole('button', { name: 'Add to group' }));
     const [select] = await screen.findAllByLabelText('Group');
     fireEvent.click(select);

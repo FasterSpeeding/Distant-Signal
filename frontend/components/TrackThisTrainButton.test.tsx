@@ -1,23 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, screen, fireEvent, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
-
-/** Flushes the microtask (and, via the macrotask boundary, guaranteed to be
- * AFTER every pending microtask) queue -- needed anywhere a test needs
- * `useGroupSummaries`'s mount-time `GET /api/groups` fetch (and its
- * `.then(response => response.json()).then(setGroups)` chain) to have fully
- * settled BEFORE the test's next `fireEvent.click`, since that click's own
- * behavior branches on whether `groups` has loaded yet. A plain
- * `await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/groups'))`
- * is not sufficient here: that call happens synchronously at mount, so the
- * check passes before the async `.then` chain (and the resulting state
- * update) has actually run. */
-async function flushGroupsFetch() {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
-}
+import type { GroupSummary } from '@/lib/types';
 
 const pushMock = vi.fn();
 vi.mock('next/navigation', () => ({
@@ -26,29 +13,34 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
+/** `useGroupSummaries` now reads from `GroupSummariesProvider`'s context
+ * instead of fetching `/api/groups` itself (see `lib/useGroupSummaries.tsx`'s
+ * own doc comment) -- so unlike before, no `flushGroupsFetch`-style wait is
+ * needed: the value supplied here is present from this component's very
+ * first render. `groups` defaults to `[]`, the zero-groups case every
+ * pre-existing test in this file exercises; only the "group-share
+ * destination prompt" tests below override it. */
+function renderWithGroups(ui: ReactElement, groups: GroupSummary[] | null = []) {
+  return renderWithMantine(<GroupSummariesProvider groups={groups}>{ui}</GroupSummariesProvider>);
+}
+
 /** Routes a mocked `fetch` by URL, the same shape
  * `TrackTrainForm.test.tsx`'s own `mockFetchByUrl` helper uses: the
- * by-uid track call, the ticket-attach follow-up, and the shared-groups
- * `GET /api/groups` prefetch are all configured independently so a test can
- * make any one of them fail/succeed without the others. `groups` defaults
- * to an empty-array 200 -- the zero-groups case every pre-existing test in
- * this file exercises -- so only tests that specifically cover the
- * has-groups prompt need to override it. */
+ * by-uid track call and the ticket-attach follow-up are configured
+ * independently so a test can make either one fail/succeed without the
+ * other. */
 function mockFetchByUrl(
   options: {
     track?: () => Response;
     attach?: () => Response | Promise<Response>;
-    groups?: () => Response;
   } = {},
 ) {
   const {
     track = () => new Response(JSON.stringify({ trackingId: 42 }), { status: 200 }),
     attach = () => new Response(JSON.stringify({ ticketId: 7, trackedTrainId: 42 }), { status: 200 }),
-    groups = () => new Response(JSON.stringify([]), { status: 200 }),
   } = options;
   return vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
-    if (url === '/api/groups') return Promise.resolve(groups());
     if (/\/api\/Train\/tickets\/\d+\/attach$/.test(url)) return Promise.resolve(attach());
     if (/\/api\/Train\/by-uid\/.+\/track$/.test(url)) return Promise.resolve(track());
     throw new Error(`unexpected fetch for ${url}`);
@@ -63,7 +55,7 @@ describe('TrackThisTrainButton', () => {
   it('POSTs to the by-uid track route with the uid and date from its props', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
+    renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
@@ -78,7 +70,7 @@ describe('TrackThisTrainButton', () => {
   it('percent-encodes a path-like uid', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrackThisTrainButton uid="C11052/../mine" date="2026-09-07" />);
+    renderWithGroups(<TrackThisTrainButton uid="C11052/../mine" date="2026-09-07" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
@@ -92,7 +84,7 @@ describe('TrackThisTrainButton', () => {
 
   it('navigates to the new tracking id on success', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
+    renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
@@ -102,7 +94,7 @@ describe('TrackThisTrainButton', () => {
   it('makes no ticket-attach call when attachTicketId is absent', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
+    renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
@@ -116,7 +108,7 @@ describe('TrackThisTrainButton', () => {
   it('attaches the ticket after a successful track when attachTicketId is given', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" attachTicketId={7} />);
+    renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" attachTicketId={7} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
@@ -136,7 +128,7 @@ describe('TrackThisTrainButton', () => {
   it('still navigates when the ticket-attach follow-up rejects', async () => {
     const fetchMock = mockFetchByUrl({ attach: () => Promise.reject(new Error('network blip')) });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" attachTicketId={7} />);
+    renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" attachTicketId={7} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
@@ -148,7 +140,7 @@ describe('TrackThisTrainButton', () => {
       attach: () => new Response('ticket is already attached to a tracked train', { status: 409 }),
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" attachTicketId={7} />);
+    renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" attachTicketId={7} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
@@ -157,7 +149,7 @@ describe('TrackThisTrainButton', () => {
 
   it('opens the login prompt and does not navigate on a 401', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl({ track: () => new Response('unauthorized', { status: 401 }) }));
-    renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
+    renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
@@ -167,7 +159,7 @@ describe('TrackThisTrainButton', () => {
 
   it('shows an error and does not navigate on a 500', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl({ track: () => new Response('boom', { status: 500 }) }));
-    renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
+    renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
@@ -186,12 +178,11 @@ describe('TrackThisTrainButton', () => {
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === '/api/groups') return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
         if (/\/track$/.test(url)) return pending;
         throw new Error(`unexpected fetch for ${url}`);
       }),
     );
-    renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
+    renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
 
     const button = screen.getByRole('button', { name: 'Track this train' });
     fireEvent.click(button);
@@ -204,20 +195,15 @@ describe('TrackThisTrainButton', () => {
 
   // Shared-groups follow-up: the "Personal or one of your groups?" prompt.
   describe('group-share destination prompt', () => {
-    const GROUPS_FIXTURE = [
+    const GROUPS_FIXTURE: GroupSummary[] = [
       { id: 'grp-1', name: 'Family', role: 'owner', memberCount: 3 },
       { id: 'grp-2', name: 'Commuters', role: 'member', memberCount: 5 },
     ];
 
-    function groupsResponse(groups: unknown[] = GROUPS_FIXTURE) {
-      return () => new Response(JSON.stringify(groups), { status: 200 });
-    }
-
     it('opens the destination prompt instead of tracking immediately when the user has at least one group', async () => {
-      const fetchMock = mockFetchByUrl({ groups: groupsResponse() });
+      const fetchMock = mockFetchByUrl();
       vi.stubGlobal('fetch', fetchMock);
-      renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
-      await flushGroupsFetch();
+      renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" />, GROUPS_FIXTURE);
 
       fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
@@ -228,10 +214,9 @@ describe('TrackThisTrainButton', () => {
     });
 
     it('confirming with the default "Personal" selection tracks privately, with no group-share call', async () => {
-      const fetchMock = mockFetchByUrl({ groups: groupsResponse() });
+      const fetchMock = mockFetchByUrl();
       vi.stubGlobal('fetch', fetchMock);
-      renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
-      await flushGroupsFetch();
+      renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" />, GROUPS_FIXTURE);
 
       fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
       await screen.findAllByLabelText('Track into');
@@ -248,10 +233,16 @@ describe('TrackThisTrainButton', () => {
     });
 
     it('choosing a group tracks the train, then shares it into that group, then navigates', async () => {
-      const fetchMock = mockFetchByUrl({ groups: groupsResponse() });
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (/\/api\/Train\/by-uid\/.+\/track$/.test(url)) {
+          return Promise.resolve(new Response(JSON.stringify({ trackingId: 42 }), { status: 200 }));
+        }
+        if (/\/api\/groups\/grp-1\/trains$/.test(url)) return Promise.resolve(new Response(null, { status: 204 }));
+        throw new Error(`unexpected fetch for ${url}`);
+      });
       vi.stubGlobal('fetch', fetchMock);
-      renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
-      await flushGroupsFetch();
+      renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" />, GROUPS_FIXTURE);
 
       fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
       const [select] = await screen.findAllByLabelText('Track into');
@@ -285,7 +276,6 @@ describe('TrackThisTrainButton', () => {
     it('a group-share failure still navigates, without showing a track-failed error', async () => {
       const fetchMock = vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (url === '/api/groups') return Promise.resolve(new Response(JSON.stringify(GROUPS_FIXTURE), { status: 200 }));
         if (/\/track$/.test(url)) {
           return Promise.resolve(new Response(JSON.stringify({ trackingId: 42 }), { status: 200 }));
         }
@@ -293,8 +283,7 @@ describe('TrackThisTrainButton', () => {
         throw new Error(`unexpected fetch for ${url}`);
       });
       vi.stubGlobal('fetch', fetchMock);
-      renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
-      await flushGroupsFetch();
+      renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" />, GROUPS_FIXTURE);
 
       fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
       const [select] = await screen.findAllByLabelText('Track into');
@@ -307,9 +296,9 @@ describe('TrackThisTrainButton', () => {
     });
 
     it('does not show the prompt at all when the user has zero groups', async () => {
-      const fetchMock = mockFetchByUrl({ groups: groupsResponse([]) });
+      const fetchMock = mockFetchByUrl();
       vi.stubGlobal('fetch', fetchMock);
-      renderWithMantine(<TrackThisTrainButton uid="C11052" date="2026-09-07" />);
+      renderWithGroups(<TrackThisTrainButton uid="C11052" date="2026-09-07" />, []);
 
       fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
