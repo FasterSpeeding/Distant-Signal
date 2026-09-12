@@ -979,11 +979,13 @@ mod route_scoping_tests {
     /// token carrying ANY ONE of that entry's own required groups must
     /// still be accepted on that exact method -- tested individually per
     /// group (not just the union), since the whole point of a caller
-    /// being listed is that ITS OWN token, alone, is sufficient. GET
-    /// /stanox-crs is now the one entry with more than one group
-    /// (trust-consumer and full-coverage-consumer both read it); every
-    /// other entry still carries exactly one. This is the check that
-    /// "nothing else broke" -- if a future edit to
+    /// being listed is that ITS OWN token, alone, is sufficient. A couple
+    /// of entries now carry more than one group -- GET /stanox-crs
+    /// (trust-consumer, full-coverage-consumer, and trust-backlog-consumer
+    /// all read it) and GET /schedule-feed-ingests (schedule-ingest and
+    /// schedule-reference both read it) -- every other entry still carries
+    /// exactly one. This is the check that "nothing else broke" -- if a
+    /// future edit to
     /// `build_internal_oauth_routes` drops or mis-scopes any entry, this
     /// test fails alongside the explicit `/stanox-crs` tests above.
     #[tokio::test]
