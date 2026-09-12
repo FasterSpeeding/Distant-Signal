@@ -76,6 +76,31 @@ itself.
 > See the final section appended at the end of this document. Nothing in
 > this update changes or softens anything above — it's additive.
 
+> **Update, 2026-09-12 — read this too, and read it last.** The
+> 2026-09-11 pinning pass completed its full day, and 5 of its 10 pins
+> were discovered (in a separate investigation) to have been silently
+> bound to the wrong real train by the TRUST timestamp-corruption bug,
+> then manually corrected in the database. **Completing Tasks 5-8 against
+> the corrected data surfaced a new, previously-undocumented problem**:
+> fixing a pin's `trains.train_uid` metadata does not fix its
+> `train_movement_events`, which remain keyed to whatever real train the
+> matcher originally (wrongly) locked onto. Exhaustive per-station
+> verification found **5 of the 10 "resolved" pins carry 100% wrong-train
+> movement data** despite looking complete and correct at a glance, and
+> the other 5 carry genuine data mixed with real, unrelated contamination
+> requiring manual filtering. Of the 10 pins, only **5 produced any
+> usable data**, and only **1** was a real, spot-checkable disruption
+> (a genuine 10-13 minute Crewe→Wrexham delay that `lnwr-birmingham-crewe`'s
+> own sampling output missed entirely, for the whole window). **Task 8's
+> final verdict: still NOT YET** — N of M is **1 of 1**, no larger than
+> the weakest prior session's, now for a new and more fundamental reason
+> than sample size alone: the validation methodology's own data cannot be
+> trusted from `resolution_status` alone without the per-station CIF
+> cross-check this session had to invent partway through. See the final
+> section appended at the end of this document for the full, evidence-
+> quoted account. Nothing in this update changes or softens anything
+> above — it's additive.
+
 ---
 
 ## Task 1: RDM licensing/access confirmation
@@ -1991,3 +2016,368 @@ actual **N of M** across the full, now-complete day (this session's own
 of the remaining 6 pins' outcomes turn out to need the same test) and
 render the plan's actual go/no-go/not-yet verdict from that number —
 not from this session's honestly partial 4-of-10 snapshot.
+
+---
+
+# 2026-09-12: Tasks 5-8 complete on the corrected pins — but half of them turn out to carry the WRONG train's real data, and the honest verdict is still not yet
+
+**Status: a sixth real execution session**, dispatched specifically to
+finish Tasks 5-8 against the 10 real WCML/feeder-line pins the
+2026-09-11 session left in progress, now that the full day has completed
+and — per the dispatching session's own briefing — a separate
+investigation had discovered that 5 of the 10 pins (`trackingId`s 42, 44,
+46, 48, 50) had been silently bound to the wrong real train by a
+since-fixed TRUST feed timestamp-corruption bug in
+`resolve_origin_departure`, and had since been manually corrected in the
+database to their originally-intended `train_uid`. **This section
+corrects and completes the 2026-09-11 section above, and explains why the
+picture has changed**: the matched-line set has narrowed from 5 lines to
+3 (`lnwr-birmingham-crewe`, `northern-blackpool`,
+`northern-cumbrian-coast`) now that the wrong bindings — which were
+themselves partly responsible for the earlier, wider, partly-artifactual
+line spread — are gone from the `trains` table's own identity fields.
+
+**Everything below was checked directly against the live production
+database** (`distant-signal-postgres-0`, read-only `psql`, `distant_signal`
+user), quoted exactly as returned, not paraphrased, exactly as every prior
+section of this document does. First, the corrected identity of all 10
+pins was re-confirmed directly (not assumed from the dispatching brief),
+by joining `train_subscriptions` to `trains`:
+
+```
+id | pin_origin_crs | trains_id | train_uid | matched_line_id         | origin_crs | destination_crs
+42 | EUS            | 712945    | C18012    | lnwr-birmingham-crewe   | EUS        | CRE
+43 | EUS            | 713725    | C34213    | lnwr-birmingham-crewe   | EUS        | WFJ
+44 | MKC            | 713330    | W70396    | lnwr-birmingham-crewe   | MKC        | EUS
+45 | MKC            | 713728    | C17924    | lnwr-birmingham-crewe   | MKC        | EUS
+46 | CRE            | 713729    | C17876    | lnwr-birmingham-crewe   | CRE        | EUS
+47 | CRE            | 713731    | G38654    | lnwr-birmingham-crewe   | CRE        | WRX
+48 | PRE            | 713690    | G86196    | northern-blackpool      | PRE        | OMS
+49 | PRE            | 713740    | P23952    | northern-blackpool      | PRE        | BBN
+50 | CAR            | 713358    | M37478    | northern-cumbrian-coast | CAR        | DMF
+51 | CAR            | 713743    | W69917    | northern-cumbrian-coast | CAR        | DMF
+```
+
+This matches the dispatching brief's table exactly, and all 10 pins show
+`resolution_status = 'resolved'` with a non-null `trains_id` — on its face,
+a complete, corrected, ready-to-analyze dataset.
+
+## A real, previously-unflagged finding, discovered while building Task 5's table: half the "corrected" pins' movement events belong to the ORIGINAL WRONG train, not the corrected one
+
+Before building Task 5's expected-vs-actual table, each pin's real
+`train_movement_events` rows (joined via `trains_id`) were cross-checked
+station-by-station against `schedule_line_population`'s CIF-derived booked
+calling points for the *corrected* `train_uid` — the same reconciliation
+method the 2026-08-31/09-01 and 2026-09-11 sessions both used. **For 5 of
+the 10 pins (42, 44, 46, 48, 50 — precisely the ones the dispatching
+brief says were manually corrected), this reconciliation fails
+completely: not one event in any of these 5 pins' movement logs falls
+anywhere near the corrected train's own booked schedule.** This was
+checked exhaustively (every event, not a sample), and independently
+confirmed two different ways:
+
+**1. Direct station/direction mismatch.** Pin 46's `trains_id` (713729)
+carries 29 real events running `EUSTON(dep 14:46) → ... → MKC(15:18/15:19)
+→ RUGBY(15:41/15:42) → ... → STAFFORD(16:30) → CREWE(arr 16:54)` — i.e., a
+real Euston-to-Crewe run. But the *corrected* `train_uid` for pin 46,
+`C17876`, runs the **opposite direction**: `CREWE(dep 18:13 local) → ... →
+EUSTON(arr 20:24 local)`. A train cannot run both directions on the same
+day under the same pin; this is not a timing quirk, it is a direction
+mismatch, decisive on its own.
+
+**2. Exhaustive time-window check, for the other four.** For pins 42, 44,
+48, and 50, direction alone doesn't settle it (both candidate trains run
+the same way), so every event's `planned_timestamp` was compared against
+the corrected `train_uid`'s own booked local time at its own origin CRS
+(the same value `schedule_line_population` gives, cross-checked against
+`trains.scheduled_departure`, which is itself confirmed correct — e.g.
+pin 42's `pin_scheduled_departure` of `16:46:00+00` exactly equals CIF's
+`EUSTON` booked departure of local `17:46:00` for `C18012`, once converted
+from BST). None of these pins' captured events fall anywhere near that
+corrected time:
+
+| pin | trains_id | corrected UID | corrected UID's own booked origin time (local) | this pin's actual captured event window (raw stored values) |
+|---|---|---|---|---|
+| 42 | 712945 | C18012 | EUSTON 17:46 | 16:26 – 17:11 (16 events, all before 17:46) |
+| 44 | 713330 | W70396 | MKNSCEN 17:58 | 14:55 – 17:09 (35 events, all before 17:58) |
+| 48 | 713690 | G86196 | PRST 18:10 | 16:22 – 16:59 (12 events, all before 18:10) |
+| 50 | 713358 | M37478 | CARLILE 17:59 | 16:39 only (1 event, before 17:59, and an *arrival* at Carlisle, whereas M37478 *originates* there) |
+
+**What these events actually are, confirmed by the same method**: every
+single one of these events matches — station-for-station, minute-for-minute
+— the *original, wrong* train identified by the dispatching brief's own
+pre-correction table, not the corrected one. `schedule_line_population`
+was queried directly for each original wrong UID's own booked origin time,
+and it matches exactly:
+
+| pin | original (wrong) UID | wrong UID's own booked origin (local) | matches this pin's captured events? |
+|---|---|---|---|
+| 42 | Y80906 | EUSTON 16:26 | yes — exact match to first event (`16:26:00`) |
+| 44 | W34266 | MNCRPIC 14:55 | yes — exact match to first event (`14:55:00`) |
+| 46 | C18017 | EUSTON 14:46 | yes — exact match to first event (`14:46:00`), and its booked Crewe arrival (`16:54`) exactly matches this pin's last event |
+| 48 | G89823 | BLCKPLN 16:22 | yes — exact match to first event (`16:22:00`) |
+| 50 | W69941 | (Dumfries→Carlisle) CARLILE arr 16:39 | yes — exact match to the one captured event (`16:39:00`) |
+
+**This is a decisive, exhaustively-checked finding, not a guess**: fixing
+`trains.train_uid`/`matched_line_id`/`origin_crs`/`destination_crs`/
+`scheduled_departure` — the metadata fields a human editor can reach with
+a manual `UPDATE` — does **not**, and structurally cannot, retroactively
+fix or replace `train_movement_events`, which is keyed by `trains_id` and
+was populated *before* the correction, against whatever real TRUST
+`train_id` the (buggy) matcher had already locked onto. **The dispatching
+brief's characterization — "these are the CORRECT trains' own
+always-genuine movement history... they were never affected by the
+timestamp bug themselves" — is not accurate for these 5 pins.** The
+movement events are genuinely real TRUST data (nothing fabricated), but
+they are real data for the **original wrong train**, not the corrected
+one. The `resolved` status and populated `trains_id` give a false
+impression of usable per-train data where none exists for the actually-
+intended train.
+
+## A second, related finding: the other 5 pins' event logs are genuine but contain real, unrelated contamination requiring manual filtering
+
+Pins 43, 45, 47, 49, and 51 were **not** on the dispatching brief's
+corrected-pins list (they were still `schedule_matched`, not yet resolved,
+when the 2026-09-11 session ended). Checking their movement events the
+same way turns up real matching data for their claimed `train_uid` — but
+mixed together, within the same `trains_id`, with real movement events
+from other, unrelated trains that also happen to pass through the same
+origin CRS at other times of day. For example, pin 47's `trains_id`
+(713731, 25 events) contains an *early* Crewe departure at `21:55` that
+has nothing to do with `G38654` (whose own booked Crewe departure is
+`23:33`), interleaved with a **later**, genuinely matching run: a real
+`CRE` departure at planned `23:33`, actual `23:45` (**+12 late**), a real
+`CTR` (Chester) arrival at planned `23:52`, actual `00:05` (**+13**), and a
+real `WRX` (Wrexham General) arrival at planned `00:09`, actual `00:19`
+(**+10**) — station-for-station and minute-for-minute matching `G38654`'s
+own CIF body (`CREWE 23:33 → CHST 23:52/23:54 → WREXHMG 00:09`). The same
+pattern — an early, unrelated cluster of events, then a later cluster that
+matches the pin's own claimed train at 5-8 *consecutive* stations within
+0-2 minutes of its CIF booked time — was independently confirmed for pins
+43, 45, and 49 as well (matched stations quoted in Task 5 below); pure
+coincidence across that many consecutive station-level matches is not a
+plausible explanation.
+
+**This means `train_movement_events` rows are being attributed to a
+`trains_id` beyond the single physical train that `trains_id` is supposed
+to represent — not just in the 5 already-known-wrong pins, but, less
+severely, in pins that were never flagged as mismatched at all.** This
+looks like the same underlying class of bug the dispatching brief
+described (TRUST timestamp/matching imprecision), still live in some form
+independent of whatever fix corrected the 5 flagged pins' *identity*
+fields — but this session, being a read-only DB validation pass, does not
+assert a specific code-level root cause; that would need a source read
+out of this task's scope. It is flagged here, plainly, as a new,
+previously-undocumented, real data-quality problem worth a developer's
+follow-up look, **separate from and in addition to** the already-fixed
+STANOX↔CRS gap and the already-known Farnham/Fareham CRS bug documented
+earlier in this file.
+
+## Task 5: expected (CIF) vs. actual (TRUST) — 5 of 10 pins have zero usable data; the other 5, filtered, show mostly clean running plus one real moderate delay
+
+**Pins 42, 44, 46, 48, 50: no usable "actual" data exists for the
+corrected train.** Per the finding above, every event attached to these
+`trains_id`s belongs to the original wrong train. No expected-vs-actual
+table can honestly be built for `C18012`, `W70396`, `C17876`, `G86196`, or
+`M37478` from this database as it currently stands — the CIF "expected"
+side is real and available (fetched below, for completeness), but there
+is no real "actual" side to set beside it.
+
+- `C18012` (pin 42, EUS→CRE): CIF booked `EUSTON 17:46 → MKNSCEN 18:18/18:19
+  → RUGBY 18:41/18:42 → ... → CREWE (arr 19:54)`. No matching TRUST data.
+- `W70396` (pin 44, MKC→EUS): CIF booked `MKNSCEN 17:58 → BLTCHLY 18:01/18:03
+  → ... → EUSTON (arr 19:03)`. No matching TRUST data.
+- `C17876` (pin 46, CRE→EUS): CIF booked `CREWE 18:13 → ... → RUGBY 19:26/19:27
+  → ... → MKNSCEN 19:48/19:49 → ... → EUSTON (arr 20:24)`. No matching TRUST data.
+- `G86196` (pin 48, PRE→OMS): CIF booked `PRST 18:10 → CROT 18:23 → RUFDORD
+  18:28/18:29 → BRSCGHJ 18:34/18:35 → ORMSKRK (arr 18:41)`. No matching TRUST data.
+- `M37478` (pin 50, CAR→DMF): CIF booked `CARLILE 17:59 → GRETGRN 18:10/18:11
+  → ANNAN 18:19/18:20 → DUMFRES (arr 18:36)`. No matching TRUST data.
+
+**Pins 43, 45, 47, 49, 51: real, filtered, CIF-cross-checked data exists**
+(filtering methodology: keep only events whose station and time correlate
+with the pin's own claimed `train_uid`'s CIF booked calling points; the
+tables below quote only that filtered subset, not the raw contaminated
+log):
+
+**Pin 43 — `C34213`, Euston→Watford Junction DC line (`lnwr-birmingham-crewe`)**:
+| TIPLOC/CRS | CIF booked (local) | TRUST actual | Δ |
+|---|---|---|---|
+| EUSTON (origin) | dep 23:27 | dep 23:27, ON TIME | 0 |
+| SOH (South Hampstead) | arr/dep 23:32/23:32 | arr/dep 23:32/23:32, ON TIME | 0 |
+| KBN (Kilburn High Rd) | arr/dep 23:34/23:35 | arr/dep 23:33/23:34, EARLY | -1 |
+| QPW (Queens Park) | arr/dep 23:37/23:39 | arr/dep 23:36/23:38, EARLY | -1 |
+| KNL (Kensal Green) | arr/dep 23:41/23:41 | arr/dep 23:40/23:40, EARLY | -1 |
+| WJL (Willesden Jn Low) | arr 23:43 | arr 23:43, ON TIME | 0 |
+Clean, on-time-to-slightly-early running throughout. No disruption.
+
+**Pin 45 — `C17924`, Milton Keynes Central→Euston (`lnwr-birmingham-crewe`)**:
+| TIPLOC/CRS | CIF booked (local) | TRUST actual | Δ |
+|---|---|---|---|
+| MKNSCEN (origin) | dep 22:02 | dep 22:01, EARLY | -1 |
+| BLY (Bletchley) | arr/dep 22:06/22:07 | arr/dep 22:07/22:08, LATE | +1 |
+| LBZ (Leighton Buzzard) | arr/dep 22:13/22:14 | arr/dep 22:14/22:15, LATE | +1 |
+| TRI (Tring) | arr/dep 22:25/22:26 | arr/dep 22:25/22:26, ON TIME | 0 |
+| WFJ (Watford Jn) | arr/dep 22:47/22:48 | arr/dep 22:46/22:47, EARLY | -1 |
+| EUSTON (terminus) | arr 23:13 | arr 23:10, EARLY | -3 |
+`train_current_state`'s own reported delay for this pin: **0 minutes**
+(`status: completed`). A minor wobble (+1 at two intermediate points) that
+fully recovered, ending 3 minutes early. No disruption.
+
+**Pin 47 — `G38654`, Crewe→Wrexham General (`lnwr-birmingham-crewe`)**:
+| TIPLOC/CRS | CIF booked (local) | TRUST actual | Δ |
+|---|---|---|---|
+| CREWE (origin) | dep 23:33 | dep 23:45, LATE | **+12** |
+| CTR (Chester) | arr/dep 23:52/23:54 | arr/dep 00:05/00:06, LATE | **+13 / +12** |
+| WREXHMG (terminus) | arr 00:09 (d+1) | arr 00:19, LATE | **+10** |
+A real, moderate, sustained delay (10-13 minutes throughout, not a
+transient wobble), starting from the very first station.
+
+**Pin 49 — `P23952`, Preston→Blackburn (`northern-blackpool`)**:
+| TIPLOC/CRS | CIF booked (local) | TRUST actual | Δ |
+|---|---|---|---|
+| PRST (origin) | dep 23:19 | dep 23:22, LATE | +3 |
+| LOH (Lostock Hall) | arr/dep 23:24/23:25 | arr/dep 23:28/23:29, LATE | +4 |
+| BMB (Bamber Bridge) | arr/dep 23:28/23:29 | arr/dep 23:31/23:31, LATE | +3 |
+| PLS (Pleasington) | arr/dep 23:36/23:36 | arr/dep 23:39/23:40, LATE | +3 |
+| CYT (Cherry Tree) | arr/dep 23:39/23:40 | arr/dep 23:42/23:43, LATE | +3 |
+| MLH (Mill Hill Lancs) | arr/dep 23:42/23:43 | arr/dep 23:44/23:46, LATE | +2 |
+| BBN (Blackburn, terminus) | arr 23:47 | arr 23:49, LATE | **+2** |
+`train_current_state`'s own reported delay: **2 minutes** — matches this
+session's independent CIF recomputation exactly. A small, real, but
+minor delay, consistent throughout.
+
+**Pin 51 — `W69917`, Carlisle→Dumfries (`northern-cumbrian-coast`)**:
+| TIPLOC/CRS | CIF booked (local) | TRUST actual | Δ |
+|---|---|---|---|
+| CARLILE (origin) | dep 23:10 | dep 23:10, ON TIME | 0 |
+| GEA (Gretna area) | arr/dep 23:21/23:21 | arr/dep 23:21/23:23, LATE | +1.5 |
+| ANN (Annan) | arr/dep 23:29/23:30 | arr/dep 23:31/23:32, LATE | +1.5 |
+| DUMFRES (terminus) | arr 23:50 | arr 23:47, EARLY | **-3** |
+Essentially on-time, ending 3 minutes early. No disruption.
+
+## Task 6: full 2026-09-11 `line_status_history` for the 3 real matched lines
+
+Pulled directly for the entire calendar day, all rows, not a partial
+window:
+
+| line_id | rows on 2026-09-11 | content |
+|---|---|---|
+| `lnwr-birmingham-crewe` | **2** | `21:45:19Z`: `ldbws-inferred`, severity 9 (Minor Delay), "1 of 3 sampled services delayed... avg 3.3 min" — unrelated to any of this session's pinned trains (none of pins 42/43/44/45/46/47 were running a delay at that moment per Task 5 above). `21:57:19Z`: reverts to `ldbws-inferred`, severity 10, "Good Service". **Nothing at all after 21:57:19Z** — i.e. **zero output for the entire 21:57Z–24:00Z window**, which is exactly when pin 47's real, moderate (+10 to +13 min) Crewe→Wrexham delay occurred (23:33–00:19Z). |
+| `northern-blackpool` | 29 | 100% Knowledgebase (`data_quality: planned`), all the same real, ongoing "Bransty Tunnel track renewal: buses replace trains between Corkickle and Whitehaven" planned-work entry (severity oscillating 6/9 across the day) — a real but *unrelated* disruption (Cumbrian Coast, not this line's own Blackpool corridor), present continuously through pin 48/49's own (respectively unusable and minor) results. |
+| `northern-cumbrian-coast` | 9 | Same Bransty Tunnel entry, same severity pattern, present continuously through pin 50/51's own (respectively unusable and clean) results. |
+
+**No `ldbws-inferred` entry on any of the 3 lines, at any point in the
+day, is about any of the specific trains this session pinned.** The
+`lnwr-birmingham-crewe` finding is the load-bearing one: its *only* two
+recomputes for the entire day both occur and conclude *before* pin 47's
+real delay even begins, leaving that line's sampling-derived product
+output frozen at "Good Service" through the entire window the real delay
+was happening.
+
+## Task 7: three-way comparison — one real, usable disruption instance; four clean agreements; five pins that can't be tested at all
+
+Laying Task 5's filtered "expected vs. actual" tables beside Task 6's
+per-line baseline:
+
+**The one real, usable "did sampling catch it" test this data supports**:
+pin 47 (`G38654`, Crewe→Wrexham General, `lnwr-birmingham-crewe`) shows a
+real, CIF-confirmed, sustained 10-13 minute delay, starting at the origin
+and persisting to the terminus. `lnwr-birmingham-crewe`'s own real
+sampling output recorded **nothing** — no recompute of any kind, any
+severity, any `dataQuality` — anywhere in the ~2.75-hour window
+(21:57Z–00:40Z) surrounding this train's entire real, delayed run. This
+is a genuine, non-hypothetical instance of exactly what this whole plan
+exists to test: a real, moderate delay that TRUST-derived per-train
+tracking caught and this line's currently-shipping sampling product did
+not reflect at all.
+
+**Four clean, honest non-events, reported per the plan's own Step 3**:
+pins 43, 45, and 51 ran on-time to a few minutes early with no disruption
+of any kind — and there was correspondingly nothing for sampling to have
+caught or missed, an unremarkable agreement case. Pin 49's real delay (+2
+to +4 minutes) is small enough that it is not a meaningful test either
+way — `northern-blackpool`'s real output during this window was, correctly,
+about a genuinely different, unrelated incident (Bransty Tunnel), not a
+false negative about pin 49 specifically, since a 2-4 minute delay is
+below any severity threshold a real system should be flagging regardless
+of data source.
+
+**Five pins (42, 44, 46, 48, 50) cannot be tested at all**, because — per
+this session's central finding above — no real movement data exists in
+this database for their corrected train identity. This is not a "no
+disruption occurred" honest non-result (the plan's permitted "clean miss"
+category); it is a **data-availability failure**, a materially different
+and more concerning outcome that the plan's own Task 4/7 guidance did not
+anticipate needing to distinguish.
+
+**Sample-size and reliability honesty, stated plainly**: of the 10 real
+pins this validation exercise pinned, only **5 produced any usable real
+per-train data at all**, and of those 5, only **1** constituted a real
+disruption large enough to be a meaningful test of whether TRUST-vs-schedule
+inference would have caught something sampling missed. That test came
+back positive (TRUST caught it, sampling didn't) — but **N of M is 1 of
+1**, identical in size to the 2026-08-31/09-01 session's own "1 of 1,"
+not an improvement, despite this session drawing on a nominal 10-pin,
+full-day dataset. The apparent 10x increase in raw pin count did not
+translate into a larger *usable* sample, because half of it turned out to
+be unusable in a way that wasn't visible from `resolution_status` alone.
+
+## Task 8: decision gate — final verdict
+
+**Step 1 (licensing): unchanged, still favorable.** Nothing in this
+session touches Task 1's verdict from 2026-08-29 — both RDM licences
+remain free (OGL3), already held, with no fair-usage cap or paid tier.
+
+**Step 2 (empirical verdict): N of M = 1 of 1 — the same, still-too-small
+number the 2026-08-31/09-01 session reported, not a larger one.** This
+session had access to a real, full, completed day and 10 real pins — more
+raw material than any prior session in this document — and still only
+produced a single spot-checkable disruption instance, because a newly-
+discovered, previously-undocumented data-quality problem (movement events
+attributable to the wrong `trains_id`, affecting at least half of the
+supposedly-corrected pins outright and contaminating the other half)
+silently destroyed most of the intended sample. This is a materially
+different, and more concerning, way to arrive at "not enough data" than
+any prior session's: it is not that too few disruptions occurred, or that
+the monitoring window was cut short — it is that **the validation
+methodology's own data cannot currently be trusted at face value**,
+`resolution_status = 'resolved'` and a populated `trains_id` notwithstanding.
+
+**Recommendation: NOT YET.** Not "no" — nothing found here argues against
+the underlying feature; the one real, usable test this session ran came
+back as a clean, unambiguous "TRUST caught a real delay that sampling's
+own shipping product missed entirely." But the plan's own Step 2 bar
+requires a stated **N of M** large enough to support a "clear majority"
+claim with any confidence, and this session's honest number — **1 of
+1** — is exactly as thin as the weakest prior result in this document,
+now compounded by a new, real reason to distrust how much of *any* future
+larger sample would actually be usable without a fix.
+
+**Concrete next step, narrower and more specific than any prior
+session's**, because for the first time the blocker is neither licensing,
+nor SSO, nor the STANOX/CRS gap (all three remain fixed and working):
+
+1. **Diagnose and fix the `train_movement_events`-attributed-to-the-wrong-`trains_id`
+   problem** documented above — both its severe form (5 of 10 pins here
+   carry *100%* wrong-train data despite `resolved` status and a real
+   `trains_id`) and its milder form (the other 5 pins' genuine data mixed
+   with real, unrelated contamination requiring manual, CIF-time-based
+   filtering to extract). This is a source-code-level fix outside this
+   read-only validation session's scope, but it is now a concrete,
+   evidenced, and named prerequisite, not a vague "improve reliability"
+   note. Until it's fixed, `resolution_status = 'resolved'` cannot be
+   trusted as a signal that a pin's movement data actually belongs to its
+   own claimed train — any future validation session must re-verify each
+   pin's data against its own CIF schedule (the exact method used in this
+   section) rather than accepting `resolved` at face value.
+2. **Once fixed, re-run Task 4 onward with a real, full-day, multi-line
+   monitoring window** — the mechanism (SSO, STANOX/CRS translation) is
+   proven and working; what's needed now is simply a dataset that isn't
+   silently half-corrupted, large enough to move past a 1-of-1 sample.
+3. Only then re-run Task 8 with an **N of M** large enough, and honestly
+   verified station-by-station, to carry a confident verdict either way.
+
+**If proceeding to Option B is eventually greenlit**, unchanged from every
+prior verdict in this document: gated on Task 8 reaching "go," which it
+still has not, six real execution sessions in.
