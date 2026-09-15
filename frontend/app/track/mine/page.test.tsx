@@ -279,6 +279,20 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     expect(originOrder).toEqual([expect.stringMatching(/^WAT/), expect.stringMatching(/^PAD/)]);
   });
 
+  it('renders the reliability digest card when there is something to show', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.getByText('Your reliability')).toBeInTheDocument();
+  });
+
+  it('does not render the digest card when nothingToShow (empty state)', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.queryByText('Your reliability')).not.toBeInTheDocument();
+  });
+
   it('renders "Track a new train" and "Add a ticket" entry-point links beside the title', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);

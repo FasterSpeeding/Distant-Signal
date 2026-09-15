@@ -4,6 +4,7 @@ import { getMyTrackedTrains, getMyTickets } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
 import { TextLink } from '@/components/TextLink';
 import { TicketSummary } from '@/components/TicketSummary';
+import { ReliabilityDigest } from '@/components/ReliabilityDigest';
 import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
 import { AttachTicketAction } from '@/components/AttachTicketAction';
 import { DeleteTicketButton } from '@/components/DeleteTicketButton';
@@ -84,6 +85,7 @@ export default async function MyTrackedTrainsPage() {
           <TextLink href="/track/mine/add-ticket">Add a ticket</TextLink>
         </Group>
       </Group>
+      {!nothingToShow && <ReliabilityDigest trains={trains} tickets={tickets ?? []} />}
       {nothingToShow ? (
         <Text c="dimmed">
           You haven&apos;t tracked any trains or added any tickets yet.{' '}
