@@ -617,6 +617,48 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     expect(rendered).toEqual(['WAT → WOK', 'PAD → RDG', 'KGX → RDG']);
   });
 
+  /** The home page labels a shared row by ROUTE, deliberately, where
+   * /track/mine labels it with the sharer's `customName`: this page's own
+   * rows label by route too, and the two halves of one list disagreeing
+   * about what a heading even is would be worse than differing from a
+   * sibling page. Pinned so a later "unify these two rows" refactor has to
+   * make that choice consciously rather than silently. */
+  it('labels a shared row by route, not by the sharer’s custom name', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain({ customName: 'Morning commute' })]);
+
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText('PAD → RDG')).toBeInTheDocument();
+    expect(screen.queryByText('Morning commute')).not.toBeInTheDocument();
+  });
+
+  it('a shared train with no pin data degrades to a date-only label, never "Invalid Date"', async () => {
+    // The pre-match case: an NR-primary subscription whose train has no
+    // schedule data yet has no departure time, and a pin created from a
+    // bare origin has no destination.
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+      sharedTrain({
+        pinOriginCrs: null,
+        pinDestinationCrs: null,
+        pinScheduledDeparture: null,
+        resolutionStatus: 'pending',
+        trainUid: null,
+        status: null,
+      }),
+    ]);
+
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText('Unknown station')).toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
+    // Still attributed -- the tags are what stop an unlabelled row reading
+    // as one the caller tracked themselves.
+    expect(screen.getByText('from Family')).toBeInTheDocument();
+  });
+
   it('caps the whole section at 5 rows across both halves, not 5 of each', async () => {
     // The cap is Decision 1's, and it is about this supplementary section
     // not out-competing the line-status overview above it -- two five-row
@@ -634,6 +676,24 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     expect(screen.getByText('T4 → WOK')).toBeInTheDocument();
     expect(screen.getByText('S1 → RDG')).toBeInTheDocument();
     expect(screen.queryByText('S2 → RDG')).not.toBeInTheDocument();
+  });
+
+  it('a caller with five of their own trains sees no shared rows here — "View all" is the way to them', async () => {
+    // The documented, deliberate consequence of capping the SECTION rather
+    // than each half. It's the case most likely to surprise someone later,
+    // so it is pinned rather than left implied by the partial-truncation
+    // test above.
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue(
+      Array.from({ length: 5 }, (_, i) => item({ id: i + 1, pinOriginCrs: `T${i + 1}` })),
+    );
+    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
+
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText('T5 → WOK')).toBeInTheDocument();
+    expect(screen.queryByText('PAD → RDG')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
   });
 
   it('never renders the same train twice when a shared row collides with one of the caller’s own', async () => {

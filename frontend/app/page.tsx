@@ -264,12 +264,8 @@ export default async function DashboardPage() {
   // or more of their own trains therefore sees the shared ones via "View
   // all" (/track/mine, which caps neither half) rather than here.
   const trackedTrainRows: TrackedTrainRow[] = [
-    ...ownTrains.map((train): TrackedTrainRow => ({ kind: 'own', key: `own-${train.id}`, train })),
-    ...sharedTrains.map((row): TrackedTrainRow => ({
-      kind: 'shared',
-      key: `shared-${row.train.trainSubscriptionId}`,
-      row,
-    })),
+    ...ownTrains.map((train): TrackedTrainRow => ({ kind: 'own', train })),
+    ...sharedTrains.map((row): TrackedTrainRow => ({ kind: 'shared', row })),
   ].slice(0, 5);
 
   return (
@@ -364,11 +360,16 @@ export default async function DashboardPage() {
             <TextLink href="/track/mine">View all</TextLink>
           </Group>
           <Stack gap="xs">
+            {/* Keys are prefixed per half because the two id spaces are
+                the same one -- `SharedGroupTrain.trainSubscriptionId` and
+                `TrackedTrainListItem.id` are both `train_subscriptions.id`
+                -- so an unprefixed key could collide if
+                `mergeSharedTrains`' own own-train filter ever regressed. */}
             {trackedTrainRows.map((row) =>
               row.kind === 'own' ? (
-                <TrackedTrainSummaryRow key={row.key} train={row.train} />
+                <TrackedTrainSummaryRow key={`own-${row.train.id}`} train={row.train} />
               ) : (
-                <SharedTrainSummaryRow key={row.key} row={row.row} />
+                <SharedTrainSummaryRow key={`shared-${row.row.train.trainSubscriptionId}`} row={row.row} />
               ),
             )}
           </Stack>
@@ -419,14 +420,10 @@ function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodService
  * belong to. A discriminated union rather than one widened row type, so
  * the shared half can never accidentally be handed to the own-row
  * component (which links to the owner-scoped `/train/by-id/{id}` route) or
- * vice versa. The `key` is prefixed per half because the two id spaces are
- * the same one -- `SharedGroupTrain.trainSubscriptionId` and
- * `TrackedTrainListItem.id` are both `train_subscriptions.id` -- so an
- * unprefixed key could collide if `mergeSharedTrains`' own own-train filter
- * ever regressed. */
+ * vice versa. */
 type TrackedTrainRow =
-  | { kind: 'own'; key: string; train: TrackedTrainListItem }
-  | { kind: 'shared'; key: string; row: MergedSharedTrain };
+  | { kind: 'own'; train: TrackedTrainListItem }
+  | { kind: 'shared'; row: MergedSharedTrain };
 
 /** A train another member shared into a group the caller belongs to,
  * rendered in the same list as the caller's own summary rows above.
