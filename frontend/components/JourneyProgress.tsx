@@ -6,8 +6,6 @@ import { formatTime } from '@/lib/dateFormat';
 import { journeyStopLabel } from './JourneyTimeline';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
 
-const NODE_SLOT_WIDTH = 56;
-
 /** The one place an Origin/Terminate node's diameter is defined --
  * `nodeDiameter` and `NODE_CIRCLE_SLOT` both derive from this so the two
  * can never silently drift apart. */
@@ -77,8 +75,17 @@ function lastReachedIndex(stops: JourneyStop[]): number {
   return -1;
 }
 
+/** Origin and Terminate are the two node kinds that print their station
+ * name as always-visible text (spec Decision 3), which is why they get a
+ * bigger circle AND a wider layout slot (`.journeyProgressNode--endpoint`
+ * in globals.css). One predicate for both so a future third "endpoint-ish"
+ * kind can't end up sized one way and slotted the other. */
+function isEndpoint(kind: JourneyStop['kind']): boolean {
+  return kind === 'Origin' || kind === 'Terminate';
+}
+
 function nodeDiameter(kind: JourneyStop['kind']): number {
-  return kind === 'Origin' || kind === 'Terminate' ? ENDPOINT_DIAMETER : INTERMEDIATE_DIAMETER;
+  return isEndpoint(kind) ? ENDPOINT_DIAMETER : INTERMEDIATE_DIAMETER;
 }
 
 type NodeState = 'reached' | 'marker' | 'not-reached' | 'cancelled-remaining';
@@ -228,6 +235,7 @@ function progressCopy(
  * the identical `{state.journeyStops && ...}` guard. */
 export function JourneyProgress({ stops, resolutionStatus, status, trainUid, mayHaveArrived }: JourneyProgressProps) {
   const lastIndex = lastReachedIndex(stops);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const nodeRefs = useRef<Array<HTMLDivElement | null>>([]);
   // One stable callback-ref per index, cached across renders, so a re-render
   // that doesn't change `stops.length` (e.g. a poll refresh with the same
@@ -247,22 +255,68 @@ export function JourneyProgress({ stops, resolutionStatus, status, trainUid, may
   }
   const { caption, ariaLabel } = progressCopy(stops, lastIndex, resolutionStatus, status, trainUid, mayHaveArrived);
 
+  // Scrolls THIS diagram's own horizontal scroll box, and only it --
+  // deliberately not `node.scrollIntoView(...)`, which was the original
+  // implementation and is what broke the train page on a phone.
+  // `scrollIntoView` scrolls *every* scrollable ancestor of the node,
+  // the document included, and its `block` option defaults to `'start'`
+  // when omitted. On a narrow screen the diagram sits below the fold, so on
+  // mount -- and again on every poll refresh that advanced the marker --
+  // the whole page jumped down to put a 12px circle at the top of the
+  // viewport; `inline: 'center'` could drag the document sideways too.
+  // `Element.scrollTo` on the one element we name can't move anything else.
   useEffect(() => {
     if (lastIndex === -1) return;
+    const container = scrollRef.current;
     const node = nodeRefs.current[lastIndex];
-    if (!node) return;
+    if (!container || !node) return;
+    // Measured rather than derived from `offsetLeft`: the node's
+    // `offsetParent` is `.journeyProgressLine` (it's `position: relative`),
+    // not the scroll box, so `offsetLeft` would silently exclude the scroll
+    // box's own padding. The delta between the two centers needs no such
+    // assumption.
+    const nodeRect = node.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const delta = nodeRect.left + nodeRect.width / 2 - (containerRect.left + containerRect.width / 2);
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    node.scrollIntoView({ inline: 'center', behavior: reduceMotion ? 'auto' : 'smooth' });
-  }, [lastIndex]);
+    container.scrollTo({
+      left: container.scrollLeft + delta,
+      behavior: reduceMotion ? 'auto' : 'smooth',
+    });
+    // `stops.length` as well as `lastIndex`: a poll refresh that picks up a
+    // schedule alteration can add or remove calling points without moving
+    // the marker's index, which slides the marker to a different x offset
+    // under a `lastIndex`-only dependency and leaves it off-screen.
+  }, [lastIndex, stops.length]);
+
+  const endpointCount = stops.filter((stop) => isEndpoint(stop.kind)).length;
 
   return (
     <Stack gap="xs">
-      <Box role="img" aria-label={ariaLabel} style={{ overflowX: 'auto' }}>
+      <Box
+        ref={scrollRef}
+        className="journeyProgressScroll"
+        data-journey-progress-scroll
+        role="img"
+        aria-label={ariaLabel}
+        style={
+          {
+            // Counts only -- every px measurement the diagram uses lives in
+            // `.journeyProgressScroll`'s own custom properties in
+            // globals.css, so the `max-width: $mantine-breakpoint-sm` block
+            // there can rescale the whole diagram for a phone. A media query
+            // can't reach into a React style object, which is exactly why
+            // the old inline `minWidth: stops.length * NODE_SLOT_WIDTH`
+            // could never have a mobile value.
+            '--journey-progress-count': String(stops.length),
+            '--journey-progress-endpoint-count': String(endpointCount),
+          } as React.CSSProperties
+        }
+      >
         <Box
           className="journeyProgressLine"
           style={
             {
-              minWidth: stops.length * NODE_SLOT_WIDTH,
               // Read back by `.journeyProgressLine::before`'s `top` in
               // globals.css, instead of that rule hardcoding half of
               // `NODE_CIRCLE_SLOT` as its own separate literal -- so the
@@ -321,7 +375,7 @@ function JourneyProgressNode({
   const diameter = nodeDiameter(stop.kind);
   const state = nodeState(index, lastIndex, status);
   const delay = delayState(stop.delayMinutes);
-  const isEndpoint = stop.kind === 'Origin' || stop.kind === 'Terminate';
+  const endpoint = isEndpoint(stop.kind);
   const label = journeyStopLabel(stop);
   // Same departure-first precedence as `JourneyTimeline.tsx`'s own
   // `scheduled` (see `journeyStopLabel`'s doc comment) -- this tooltip
@@ -340,6 +394,18 @@ function JourneyProgressNode({
         width: diameter,
         height: diameter,
         borderRadius: '50%',
+        // The `zIndex` below is what keeps the connecting line
+        // (absolutely-positioned `.journeyProgressNode::before`/`::after`
+        // in globals.css, painted with the z-index:0 group) from drawing
+        // straight across the middle of every circle. It already applied
+        // without `position`, but only by way of a Flexbox special case --
+        // this circle is a flex item of `circleSlot`, and a flex item's
+        // `z-index` creates a stacking context even when it is statically
+        // positioned (CSS Flexbox 1 section 4.3, Flex Item Z-Ordering).
+        // `position: relative` makes the z-index apply under the ordinary
+        // rule instead, so the circle keeps painting above the line even if
+        // `circleSlot` ever stops being a flex container.
+        position: 'relative',
         zIndex: 1,
         ...circleStyle(state, delay),
       }}
@@ -364,27 +430,27 @@ function JourneyProgressNode({
       </Text>
     ) : null;
 
-  if (isEndpoint) {
+  // Both node kinds are the SAME plain `Box` carrying the SAME
+  // `.journeyProgressNode` class (an endpoint adds a modifier for its wider
+  // slot) -- deliberately not a Mantine `Stack` for one and a `Box` for the
+  // other. The column/centering/gap layout and, crucially, the flex sizing
+  // that has to respond to globals.css's mobile breakpoint now live in one
+  // stylesheet rule for both, so the two kinds can't drift and no inline
+  // `flex` shorthand races the media query.
+  if (endpoint) {
     return (
-      <Stack gap={4} align="center" style={{ flex: `0 0 ${NODE_SLOT_WIDTH}px` }}>
+      <Box className="journeyProgressNode journeyProgressNode--endpoint" data-journey-node-slot="endpoint">
         {circleSlot}
         {glyph}
-        <Text size="xs" fw={700} ta="center">
+        <Text size="xs" fw={700} ta="center" className="journeyProgressLabel">
           {label}
         </Text>
-      </Stack>
+      </Box>
     );
   }
 
   return (
-    <Box
-      style={{
-        flex: `0 0 ${NODE_SLOT_WIDTH}px`,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-      }}
-    >
+    <Box className="journeyProgressNode" data-journey-node-slot="intermediate">
       <Tooltip
         label={
           <Stack gap={2}>
@@ -397,10 +463,12 @@ function JourneyProgressNode({
         {/* Wraps the same `circleSlot` used for an endpoint node -- rather
             than a hand-duplicated copy of its style -- so the two node
             kinds can never drift out of alignment with each other. The
-            focusable/labelled Tooltip trigger itself is this outer `Box`;
-            it has no fixed size of its own and just inherits `circleSlot`'s
-            height. */}
-        <Box tabIndex={0} aria-label={label}>
+            focusable/labelled Tooltip trigger itself is this outer `Box`.
+            `.journeyProgressTrigger` stretches it to the full slot width
+            and floors its height at 24px: the circle it wraps is 12px
+            across, and a 12px tap target is the only route to an
+            intermediate stop's name on a touch screen. */}
+        <Box tabIndex={0} aria-label={label} className="journeyProgressTrigger">
           {circleSlot}
         </Box>
       </Tooltip>

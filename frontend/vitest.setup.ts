@@ -51,6 +51,16 @@ if (typeof window !== 'undefined' && !window.HTMLElement.prototype.scrollIntoVie
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
 }
 
+// jsdom doesn't implement `Element.prototype.scrollTo` either (only
+// `window.scrollTo`, as a no-op). `JourneyProgress` calls it on its own
+// horizontal scroll box to center the "you are here" marker -- deliberately
+// instead of `scrollIntoView`, which would also scroll the page. Same
+// "polyfill the missing jsdom API" pattern as the block above; tests that
+// assert on the call replace this stub with their own `vi.fn()`.
+if (typeof window !== 'undefined' && !window.Element.prototype.scrollTo) {
+  window.Element.prototype.scrollTo = vi.fn();
+}
+
 // jsdom's `window.localStorage` isn't a working Storage implementation in
 // this project's setup (e.g. `localStorage.setItem` isn't even a
 // function), but Mantine's color-scheme manager reads/writes it to

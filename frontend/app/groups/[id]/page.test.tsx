@@ -96,6 +96,60 @@ describe('GroupDetailPage', () => {
     expect(screen.getByText(/Shared by Sam/)).toBeInTheDocument();
   });
 
+  /** A member whose identity provider has no name on file for them used to
+   * arrive here as a BLANK `displayName`/`addedByName`, not a null one
+   * (Authentik and friends send `"name": ""` rather than omitting the
+   * claim, and the backend stored/served exactly what it was sent).
+   * `?? 'A member'` never fires for `''`, so both of these rendered as an
+   * empty gap where the name should be -- the member row showed only a
+   * role badge, and the attribution line read "Shared by " with nothing
+   * after it.
+   *
+   * The backend now normalizes blanks to `null` on both write and read, so
+   * these two guards are for rows written before it did (and for any other
+   * future producer of a blank) -- worth keeping precisely because the
+   * failure mode is silent: a blank label looks like a layout bug, not a
+   * missing value. */
+  it('falls back to a placeholder when a display name is blank rather than null', async () => {
+    vi.mocked(getGroup).mockResolvedValue({
+      id: 'grp-1',
+      name: 'Family',
+      ownerId: 'user-1',
+      ownerName: 'Alex',
+      memberCount: 2,
+      role: 'member',
+      inviteLink: null,
+    });
+    vi.mocked(getGroupMembers).mockResolvedValue([
+      { userId: 'user-1', displayName: 'Alex', role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+      { userId: 'user-2', displayName: '   ', role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
+    ]);
+    vi.mocked(getGroupTrains).mockResolvedValue([
+      {
+        trainSubscriptionId: 42,
+        pinOriginCrs: 'WOK',
+        pinDestinationCrs: 'WAT',
+        pinOriginName: 'Woking',
+        pinDestinationName: 'London Waterloo',
+        pinScheduledDeparture: '2026-09-11T08:00:00Z',
+        serviceDate: '2026-09-11',
+        resolutionStatus: 'resolved',
+        trainUid: 'A12345',
+        status: null,
+        delayMinutes: null,
+        customName: null,
+        addedBy: 'user-2',
+        addedByName: '',
+      },
+    ]);
+    vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+
+    renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
+
+    expect(screen.getByText('A member')).toBeInTheDocument();
+    expect(screen.getByText(/Shared by a member/)).toBeInTheDocument();
+  });
+
   it('never renders a Remove button for the owner row', async () => {
     vi.mocked(getGroup).mockResolvedValue({
       id: 'grp-1',
