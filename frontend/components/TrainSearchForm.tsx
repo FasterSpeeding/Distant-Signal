@@ -4,6 +4,7 @@ import { useState, type FormEvent } from 'react';
 import { Alert, Autocomplete, Button, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
+import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
 import { searchStations } from '@/lib/suggestions';
@@ -85,12 +86,29 @@ interface TrainSearchResponse {
  * re-read live from the `dateValue` picker state at render time, which can
  * drift out from under already-displayed rows if the caller moves the date
  * picker without pressing Search again. See `resolvedDate` for turning this
- * into an actual calendar date for a link or an API call. */
+ * into an actual calendar date for a link or an API call.
+ *
+ * `loadMoreFailed` rides along for the same reason: it records that the LAST
+ * "Load more" press errored, so the footer can say so rather than let the
+ * list read as finished, and a fresh search clears it automatically by
+ * replacing this whole object. The cursor is deliberately kept on failure --
+ * it is still valid, so the retry the footer offers is a real one. */
 type Results =
-  | { rows: TrainSearchRow[]; nextCursor: string | null; date: string }
+  | { rows: TrainSearchRow[]; nextCursor: string | null; date: string; loadMoreFailed: boolean }
   | 'unpublished'
   | 'error'
   | null;
+
+/** Narrows `Results` to the "has rows" branch -- factored out for the same
+ * reason `StationTimetable.tsx`'s identical helper is: `handleLoadMore`'s
+ * early-return guard plus each of its functional `setResults` updaters need
+ * this exact three-way check, and spelling it out at every call site invited
+ * the copies to drift apart. */
+function hasRows(
+  results: Results,
+): results is { rows: TrainSearchRow[]; nextCursor: string | null; date: string; loadMoreFailed: boolean } {
+  return results !== null && results !== 'error' && results !== 'unpublished';
+}
 
 /** Turns a `Results` success variant's raw `date` (`''` meaning "no date was
  * picked, defaulted to today") into an actual `"YYYY-MM-DD"` to put in a
@@ -274,6 +292,7 @@ export function TrainSearchForm({
         rows: body.results,
         nextCursor: body.nextCursor,
         date: submittedDateValue || '',
+        loadMoreFailed: false,
       });
     } catch {
       setResults('error');
@@ -283,7 +302,7 @@ export function TrainSearchForm({
   }
 
   async function handleLoadMore() {
-    if (results === null || results === 'error' || results === 'unpublished') return;
+    if (!hasRows(results)) return;
     if (results.nextCursor === null || loadingMore) return;
 
     // Page 1's actual raw date (`''` meaning "none picked"), not whatever
@@ -294,6 +313,14 @@ export function TrainSearchForm({
     // value, or absent, never a stale-vs-live mismatch either way. This
     // keeps this request unambiguously "page 2 of the same search".
     const pageOneDate = results.date;
+    // The exact result-set object this page is a continuation of. Search is
+    // not disabled while a page is in flight, so a fresh search can resolve
+    // first and leave this response describing a result set that is no
+    // longer on screen; `handleSubmit` always installs a BRAND NEW object,
+    // so identity is all that is needed to spot that. Without this check the
+    // stale page would append its rows to (and stamp its cursor, or its
+    // failure, onto) somebody else's search.
+    const pagedFrom = results;
     setLoadingMore(true);
     try {
       const params = searchParams();
@@ -305,29 +332,25 @@ export function TrainSearchForm({
       params.set('after', results.nextCursor);
       const response = await fetch(`/api/trains/search?${params.toString()}`);
       if (!response.ok) {
-        setResults((current) =>
-          current !== null && current !== 'error' && current !== 'unpublished'
-            ? { rows: current.rows, nextCursor: null, date: current.date }
-            : current,
-        );
+        // The cursor is kept, not nulled: this page just failed to load, and
+        // the reader gets a named error plus a working retry rather than a
+        // list that quietly stops one page short of the end.
+        setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
         return;
       }
       const body: TrainSearchResponse = await response.json();
       setResults((current) =>
-        current !== null && current !== 'error' && current !== 'unpublished'
+        current === pagedFrom
           ? {
               rows: [...current.rows, ...body.results],
               nextCursor: body.nextCursor,
               date: current.date,
+              loadMoreFailed: false,
             }
           : current,
       );
     } catch {
-      setResults((current) =>
-        current !== null && current !== 'error' && current !== 'unpublished'
-          ? { rows: current.rows, nextCursor: null, date: current.date }
-          : current,
-      );
+      setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
     } finally {
       setLoadingMore(false);
     }
@@ -410,19 +433,13 @@ export function TrainSearchForm({
             ))}
           </Stack>
         </ScrollArea>
-        {results.nextCursor !== null && (
-          <Group>
-            <Button
-              variant="default"
-              size="xs"
-              onClick={handleLoadMore}
-              disabled={loadingMore}
-              loading={loadingMore}
-            >
-              Load more
-            </Button>
-          </Group>
-        )}
+        <LoadMoreControl
+          hasMore={results.nextCursor !== null}
+          loading={loadingMore}
+          failed={results.loadMoreFailed}
+          onLoadMore={handleLoadMore}
+          endMessage="You've reached the end — no more scheduled trains match those filters."
+        />
       </>
     );
   }
