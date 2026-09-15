@@ -43,25 +43,44 @@ pub fn non_blank(value: Option<&str>) -> Option<&str> {
 }
 
 /// The one label this app is willing to show OTHER people for a user:
-/// their `users.name`, or nothing at all.
+/// their `users.name`, else their `users.username`, else nothing at all.
 ///
-/// Deliberately NOT `name.or(email)`, which is what the group member list
-/// and shared-train attribution used to do. `users` holds exactly one
-/// non-email identifier -- `name` (`id` is the opaque OIDC subject, and
-/// `groups` is the access-group list, neither of which is a person's
-/// name) -- so when `name` is missing there is nothing to fall back TO
-/// except the email, and a group is a set of people who may have joined
-/// via nothing but a link: shipping one member's email address to the
-/// rest of them is a privacy leak, not a display-name fallback. `None`
-/// here is the signal for the frontend to render its own generic
-/// placeholder ("A member" / "a member") instead.
+/// Deliberately never the email, which is what the group member list and
+/// shared-train attribution used to fall back to. A group is a set of
+/// people who may have joined via nothing but a link, and shipping one
+/// member's email address to the rest of them is a privacy leak, not a
+/// display-name fallback -- so the fallback is the OTHER non-email
+/// identifier this app stores: `username`, from the standard
+/// `preferred_username` claim (`auth::oidc`). `id` is not a candidate at
+/// any point: it is the opaque OIDC subject, not a name.
 ///
-/// (Whoever wants a real fallback should plumb a genuine non-email
-/// identifier -- the `preferred_username` claim, say -- through
-/// `auth::oidc` into its own `users` column first. Nothing reads that
-/// claim today.)
-pub fn display_label(name: Option<String>) -> Option<String> {
-    non_blank(name.as_deref()).map(str::to_string)
+/// `None` -- nothing usable on file -- is the signal for the frontend to
+/// render its own generic placeholder ("A member" / "a member") instead.
+pub fn display_label(name: Option<String>, username: Option<String>) -> Option<String> {
+    shareable(name.as_deref())
+        .or_else(|| shareable(username.as_deref()))
+        .map(str::to_string)
+}
+
+/// `non_blank`, plus: not an email address.
+///
+/// Not selecting `users.email` is only half of "never show one member's
+/// email to the others" -- the other half is that an IdP is perfectly
+/// entitled to put an email address in the claims we DO show. Authentik
+/// can be configured with a user's email as their username, and plenty of
+/// directories set the `name` attribute to the email for accounts created
+/// in bulk. A value containing `@` is treated as an email and declined,
+/// falling through to the next candidate and ultimately to the generic
+/// placeholder: "we can't say who this is" is the correct outcome there,
+/// not "here is their email address".
+///
+/// `@` is a deliberately blunt test. It has no false positives worth
+/// worrying about (a person's display name or username does not contain
+/// `@` unless it is an address) and the cost of a false negative -- a
+/// leaked email -- is much higher than the cost of a false positive: a
+/// member shown as "A member".
+fn shareable(value: Option<&str>) -> Option<&str> {
+    non_blank(value).filter(|candidate| !candidate.contains('@'))
 }
 
 #[cfg(test)]
@@ -74,6 +93,7 @@ mod tests {
             email: Some("rider@example.com".to_string()),
             email_verified,
             name: Some("Ada Rider".to_string()),
+            preferred_username: Some("ada".to_string()),
             groups: Vec::new(),
         }
     }
@@ -109,25 +129,63 @@ mod tests {
         assert_eq!(non_blank(Some("\t\n")), None);
     }
 
-    fn label(name: Option<&str>) -> Option<String> {
-        display_label(name.map(str::to_string))
+    fn label(name: Option<&str>, username: Option<&str>) -> Option<String> {
+        display_label(name.map(str::to_string), username.map(str::to_string))
     }
 
     #[test]
-    fn display_label_keeps_a_real_name_trimmed() {
-        assert_eq!(label(Some("Ada Rider")), Some("Ada Rider".to_string()));
-        assert_eq!(label(Some("  Ada Rider  ")), Some("Ada Rider".to_string()));
+    fn display_label_prefers_the_name_and_trims_it() {
+        assert_eq!(
+            label(Some("Ada Rider"), Some("ada")),
+            Some("Ada Rider".to_string())
+        );
+        assert_eq!(
+            label(Some("  Ada Rider  "), Some("ada")),
+            Some("Ada Rider".to_string())
+        );
     }
 
     /// Half the reported bug: a present-but-blank `name` is not a label.
     /// It used to be treated as one (`Some("")` is `Some`), which is what
     /// rendered an empty member row and a "Shared by " with nothing after
-    /// it.
+    /// it. It now falls through to the username, exactly as an absent name
+    /// does.
     #[test]
-    fn display_label_treats_a_blank_name_as_no_name_at_all() {
-        assert_eq!(label(Some("")), None);
-        assert_eq!(label(Some("   ")), None);
-        assert_eq!(label(None), None);
+    fn display_label_falls_through_a_blank_name_to_the_username() {
+        assert_eq!(label(Some(""), Some("ada")), Some("ada".to_string()));
+        assert_eq!(label(Some("   "), Some("ada")), Some("ada".to_string()));
+        assert_eq!(label(None, Some("  ada  ")), Some("ada".to_string()));
+    }
+
+    /// Never an email, and never the opaque `users.id`: with neither a
+    /// name nor a username on file there is simply nothing this app is
+    /// willing to show other members, and `None` is how it says so.
+    #[test]
+    fn display_label_is_none_when_neither_is_usable() {
+        assert_eq!(label(Some(""), Some("")), None);
+        assert_eq!(label(Some("   "), None), None);
+        assert_eq!(label(None, None), None);
+    }
+
+    /// The other half of "never show one member's email to the rest of the
+    /// group": not selecting `users.email` doesn't help if the IdP put an
+    /// email address in the `name` or `preferred_username` claim instead,
+    /// which plenty of directories do.
+    #[test]
+    fn display_label_declines_an_email_address_in_either_field() {
+        assert_eq!(
+            label(Some("rider@example.com"), Some("ada")),
+            Some("ada".to_string())
+        );
+        assert_eq!(
+            label(Some("Ada Rider"), Some("rider@example.com")),
+            Some("Ada Rider".to_string())
+        );
+        assert_eq!(
+            label(Some("rider@example.com"), Some("rider@example.com")),
+            None
+        );
+        assert_eq!(label(None, Some("rider@example.com")), None);
     }
 }
 
@@ -136,6 +194,7 @@ pub struct User {
     pub id: String,
     pub email: Option<String>,
     pub name: Option<String>,
+    pub username: Option<String>,
 }
 
 /// Creates the user on first login, or updates `email`/`name`/`groups`/
@@ -146,26 +205,33 @@ pub struct User {
 /// Global Constraints: a group removed in Authentik is reflected on the
 /// user's very next login.
 ///
-/// `name`/`email` are normalized through `non_blank` on the way in, so a
-/// blank claim is stored as SQL `NULL` rather than as an empty string --
-/// the read side (`display_label`, and the session shape's own
+/// `name`/`username`/`email` are normalized through `non_blank` on the way
+/// in, so a blank claim is stored as SQL `NULL` rather than as an empty
+/// string -- the read side (`display_label`, and the session shape's own
 /// name-else-email fallback) then needs no special case for a value this
-/// app never writes. The read side normalizes too, for rows written
-/// before this normalization existed.
+/// app never writes. The read side normalizes too, for rows written before
+/// this normalization existed.
+///
+/// `username` (the `preferred_username` claim) is overwritten on every
+/// login for the same reason `name` and `email` are: this table mirrors
+/// what the IdP currently asserts, it is not an independent record.
 pub async fn upsert_user(pool: &PgPool, identity: &OidcIdentity) -> Result<User> {
     let email = non_blank(verified_email(identity));
     let name = non_blank(identity.name.as_deref());
+    let username = non_blank(identity.preferred_username.as_deref());
     let row = sqlx::query_as::<_, User>(
-        "INSERT INTO users (id, email, name, groups, created_at, last_login_at) \
-         VALUES ($1, $2, $3, $4, NOW(), NOW()) \
+        "INSERT INTO users (id, email, name, username, groups, created_at, last_login_at) \
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) \
          ON CONFLICT (id) DO UPDATE SET \
-            email = EXCLUDED.email, name = EXCLUDED.name, groups = EXCLUDED.groups, \
+            email = EXCLUDED.email, name = EXCLUDED.name, \
+            username = EXCLUDED.username, groups = EXCLUDED.groups, \
             last_login_at = NOW() \
-         RETURNING id, email, name",
+         RETURNING id, email, name, username",
     )
     .bind(&identity.sub)
     .bind(email)
     .bind(name)
+    .bind(username)
     .bind(&identity.groups)
     .fetch_one(pool)
     .await?;
@@ -316,15 +382,36 @@ mod db_tests {
             .await
             .expect("connect to postgres");
 
-        let identity = OidcIdentity {
+        let mut identity = OidcIdentity {
             sub: "TEST-USER-ROUND-TRIP".to_string(),
             email: Some("test@example.com".to_string()),
             email_verified: true,
             name: Some("Test Rider".to_string()),
+            preferred_username: Some("test-rider".to_string()),
             groups: Vec::new(),
         };
         let user = upsert_user(&pool, &identity).await.expect("upsert user");
         assert_eq!(user.id, "TEST-USER-ROUND-TRIP");
+        assert_eq!(user.name.as_deref(), Some("Test Rider"));
+        assert_eq!(user.username.as_deref(), Some("test-rider"));
+
+        // A blank `name` claim -- what an IdP with no name on file for the
+        // user actually sends -- must be stored as NULL, not as `''`.
+        // Storing `''` is what made `display_label`'s fallback (and the
+        // frontend's own placeholder) fail to fire, rendering a member row
+        // with an empty label. Same for a blank `preferred_username`, and
+        // for the padding around an otherwise-real value.
+        identity.name = Some("   ".to_string());
+        identity.preferred_username = Some("  test-rider  ".to_string());
+        let user = upsert_user(&pool, &identity).await.expect("re-upsert user");
+        assert_eq!(user.name, None);
+        assert_eq!(user.username.as_deref(), Some("test-rider"));
+
+        identity.preferred_username = Some(String::new());
+        let user = upsert_user(&pool, &identity).await.expect("re-upsert user");
+        assert_eq!(user.username, None);
+
+        identity.name = Some("Test Rider".to_string());
 
         insert_session(&pool, "test-hashed-token", &user.id, 14)
             .await
@@ -371,6 +458,7 @@ mod db_tests {
             email: Some("test@example.com".to_string()),
             email_verified: true,
             name: Some("Test Rider".to_string()),
+            preferred_username: Some("test-rider".to_string()),
             groups: vec!["mcp-users".to_string(), "mcp-live-boards".to_string()],
         };
         let user = upsert_user(&pool, &identity)
