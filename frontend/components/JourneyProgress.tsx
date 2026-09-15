@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { Box, Stack, Text, Tooltip } from '@mantine/core';
+import { Box, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import { journeyStopLabel } from './JourneyTimeline';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
@@ -269,11 +269,25 @@ export function JourneyProgress({ stops, resolutionStatus, status, trainUid, may
           triggers focusable but silent (a keyboard user tabs onto a node
           and a screen reader announces nothing), which is a WCAG 4.1.2
           Name/Role/Value failure and contradicts Decision 6's own second
-          bullet. `group` keeps (a) -- the label is announced on entering
-          the container, exactly as the `img` label was -- while letting
-          (b) actually work. Do NOT change this back to `img` without also
-          making the triggers non-focusable; the two halves must agree. */}
-      <Box role="group" aria-label={ariaLabel} style={{ overflowX: 'auto' }}>
+          bullet. `group` keeps (a) -- the same per-state label, announced
+          on entering the container -- while letting (b) actually work. A
+          group name is announced at group entry rather than inline like an
+          `img`'s, and a low-verbosity screen reader may skip it, so the
+          `caption` `Text` rendered as this box's sibling below is the
+          always-present, always-read restatement of the same fact; the two
+          are deliberately redundant. Do NOT change this back to `img`
+          without also making the triggers non-focusable; the two halves
+          must agree.
+
+          `paddingTop` leaves room for a focused trigger's outline: the
+          nodes sit at y=0 of this scroll box's content
+          (`.journeyProgressLine` is `align-items: flex-start`) and
+          `overflowX: 'auto'` computes `overflow-y` to `auto` too, so
+          without it the ring's top edge is clipped. It shifts the
+          connecting line and the nodes together -- `::before`'s `top` is
+          resolved inside `.journeyProgressLine`, not here -- so the two
+          stay aligned. */}
+      <Box role="group" aria-label={ariaLabel} style={{ overflowX: 'auto', paddingTop: 4 }}>
         <Box
           className="journeyProgressLine"
           style={
@@ -420,37 +434,36 @@ function JourneyProgressNode({
             element; it has no fixed size of its own and just inherits
             `circleSlot`'s height.
 
-            A real `<button>` (style-reset to nothing, since the circle
-            inside is the entire visual), not a bare `tabIndex={0}` div:
-            the same "focusable element with a real role and its own
-            `aria-label`" shape `LineDefinitionTooltip.tsx`'s `ActionIcon`
-            trigger already uses, which is the existing codebase pattern
-            spec Decision 6 points at. A focusable div has role `generic`,
-            and an `aria-label` on a `generic` element names nothing, so
-            that shape would leave the trigger focusable-but-silent even
-            now that the container is a `group`. `aria-describedby` for the
-            tooltip body itself is added by Mantine/floating-ui's
-            `useRole(..., { role: 'tooltip' })` while it's open. There is
-            deliberately no `onClick`: hover/focus/touch all reveal the
-            same tooltip, and a keyboard press falls through to the
-            Tooltip's own focus handling. */}
-        <Box
-          component="button"
-          type="button"
-          aria-label={label}
-          style={{
-            display: 'block',
-            padding: 0,
-            margin: 0,
-            border: 'none',
-            background: 'none',
-            font: 'inherit',
-            color: 'inherit',
-            cursor: 'pointer',
-          }}
-        >
+            A real button, not a bare `tabIndex={0}` div: the same
+            "focusable element with a real role and its own `aria-label`"
+            shape `LineDefinitionTooltip.tsx`'s `ActionIcon` trigger
+            already uses, which is the existing codebase pattern spec
+            Decision 6 points at. A focusable div has role `generic`, and
+            an `aria-label` on a `generic` element names nothing, so that
+            shape would leave the trigger focusable-but-silent even now
+            that the container is a `group`.
+
+            `UnstyledButton` (already used by `AllLinesTable.tsx`) rather
+            than a hand-rolled `component="button"` style reset, because it
+            carries Mantine's `.mantine-focus-auto` class -- so a focused
+            node shows the SAME focus ring as every other control in the
+            app, not the UA default -- plus the `appearance`/
+            `-webkit-tap-highlight-color` resets a hand-rolled one keeps
+            forgetting (without the latter, iOS Safari paints a grey tap
+            box around the 12px circle).
+
+            `aria-describedby` for the tooltip body itself is added by
+            Mantine/floating-ui's `useRole(..., { role: 'tooltip' })` while
+            it's open. There is deliberately no `onClick` and pressing
+            Enter/Space does nothing -- the tooltip is already open from
+            focus, and hover/focus/touch are the only things that reveal
+            it. That inert-on-activation trigger is the accepted tradeoff
+            of the APG tooltip pattern (a focusable element must have a
+            real role, and `button` is the one screen readers announce
+            reliably), not an unfinished handler. */}
+        <UnstyledButton type="button" aria-label={label} style={{ display: 'block' }}>
           {circleSlot}
-        </Box>
+        </UnstyledButton>
       </Tooltip>
       {glyph}
     </Box>

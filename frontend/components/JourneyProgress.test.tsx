@@ -289,6 +289,19 @@ describe('JourneyProgress', () => {
   // BOTH halves together -- a `group` container, and triggers that carry a
   // real role plus an accessible name -- so these tests assert both.
   describe('keyboard reachability of the per-node Tooltip triggers', () => {
+    /** A deliberately crude stand-in for the real accname algorithm (jsdom
+     * implements none of it): the element's own `aria-label`, else its
+     * text content with every `aria-hidden` subtree removed. Enough to
+     * tell "has some name" from "has none", which is all these assertions
+     * need. */
+    function accessibleName(el: HTMLElement): string {
+      const label = el.getAttribute('aria-label');
+      if (label !== null) return label.trim();
+      const clone = el.cloneNode(true) as HTMLElement;
+      clone.querySelectorAll('[aria-hidden="true"]').forEach((hidden) => hidden.remove());
+      return (clone.textContent ?? '').trim();
+    }
+
     function renderThreeStopJourney() {
       return renderWithMantine(
         <JourneyProgress
@@ -312,13 +325,22 @@ describe('JourneyProgress', () => {
     });
 
     it('exposes each intermediate node trigger as a named button, not an anonymous focusable div', () => {
-      renderThreeStopJourney();
+      const { container } = renderThreeStopJourney();
       const trigger = screen.getByRole('button', { name: 'Bravo' });
       expect(trigger.tagName).toBe('BUTTON');
-      // A `<button>` is focusable by default; it must not have been opted
-      // back out of the tab order, since spec Decision 6 wants these
-      // reachable.
-      expect(trigger).not.toHaveAttribute('tabindex', '-1');
+      // Not a submit button: harmless today (no ancestor <form>), but this
+      // is exactly the attribute a later refactor drops silently.
+      expect(trigger).toHaveAttribute('type', 'button');
+      // Spec Decision 6 wants these reachable, so the trigger must appear
+      // in the document's own tab order -- asserted by collecting it, not
+      // just by checking `tabindex !== "-1"` on the element in hand
+      // (`getByRole`/`.focus()` would both still pass for a
+      // `tabindex="-1"` element, which is reachable by script but not by
+      // the Tab key).
+      const tabbable = Array.from(
+        container.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]'),
+      ).filter((el) => el.getAttribute('tabindex') !== '-1' && !el.hasAttribute('disabled'));
+      expect(tabbable).toContain(trigger);
       // `act` because focusing opens the Tooltip, which is a state update.
       act(() => trigger.focus());
       expect(trigger).toHaveFocus();
@@ -331,10 +353,12 @@ describe('JourneyProgress', () => {
       ).filter((el) => el.getAttribute('tabindex') !== '-1');
       expect(focusable.length).toBeGreaterThan(0);
       for (const el of focusable) {
-        // Either its own label or its text content -- an empty name here is
-        // exactly the "focusable but silent" defect being guarded against.
-        const name = el.getAttribute('aria-label') ?? el.textContent ?? '';
-        expect(name.trim(), `${el.outerHTML} has no accessible name`).not.toBe('');
+        // Either its own label or its text content, minus any `aria-hidden`
+        // subtree (text a reader never speaks can't be the element's name)
+        // -- an empty name here is exactly the "focusable but silent"
+        // defect being guarded against.
+        const name = accessibleName(el);
+        expect(name, `${el.outerHTML} has no accessible name`).not.toBe('');
         // And nothing in the tab order may sit inside a subtree ARIA drops
         // (`aria-hidden`, or a presentational `role="img"`/`role="presentation"`).
         expect(el.closest('[aria-hidden="true"], [role="img"], [role="presentation"], [role="none"]')).toBeNull();

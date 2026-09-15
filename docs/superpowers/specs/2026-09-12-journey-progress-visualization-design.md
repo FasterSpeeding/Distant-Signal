@@ -380,8 +380,9 @@ without help, and this app already has accessibility precedent to follow
 `2026-09-02-frontend-accessibility-audit-research.md`'s existing pass over
 this codebase). Concretely:
 
-- The outer container carries a container-level role and an `aria-label`
-  that states
+- The outer container carries a container-level role (`role="group"` — see
+  the correction below; originally written as `role="img"`) and an
+  `aria-label` that states
   the same fact the visual marker states: `aria-label="Journey progress:
   currently at {name}, {n} of {total} stops"` (or, for the `-1`/no-marker
   states, `"Journey progress: not yet started"` / `"...cancelled, last
