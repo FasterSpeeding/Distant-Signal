@@ -57,6 +57,27 @@ export interface IncidentDetail {
   history: IncidentHistoryEntry[];
 }
 
+/** One row from `GET /public/incidents`. Deliberately lighter than
+ * `IncidentDetail` (no description, no validityPeriods, no history, no
+ * currentlyAffectsLines) — see
+ * docs/superpowers/specs/2026-09-12-incident-archive-design.md Decision 7. */
+export interface IncidentSummary {
+  incidentId: string;
+  summary: string;
+  operators: string[];
+  affectedStations: string[];
+  priority: number;
+  isPlanned: boolean;
+  isCleared: boolean;
+  firstSeenAt: string; // RFC3339
+  fetchedAt: string; // RFC3339
+}
+
+export interface IncidentSearchResponse {
+  results: IncidentSummary[];
+  nextCursor: string | null;
+}
+
 export interface SampleStats {
   total: number;
   delayed: number;
