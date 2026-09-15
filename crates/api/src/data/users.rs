@@ -38,6 +38,23 @@ fn verified_email(identity: &OidcIdentity) -> Option<&str> {
 ///
 /// Also trims: a name of `"  Ada  "` is `"Ada"`, never rendered with its
 /// padding intact.
+///
+/// Applied when writing a row (`upsert_user`) and again on the read path
+/// that renders a label to OTHER people (`display_label`), so rows stored
+/// before any of this normalization existed read the same as rows written
+/// today. The remaining read path -- `get_session_with_user`, showing a
+/// user their own name in the nav bar -- returns `u.name` raw and leans on
+/// the frontend's own `?.trim() ||`; that one is self-view only, so a blank
+/// there costs a fallback, not a wrong label shown to someone else.
+///
+/// `auth::oidc` has its own twin of this, applied one layer earlier while
+/// choosing WHICH claim becomes the name/username. Two one-line copies of
+/// `trim` + "is it empty" is the deliberate trade against a mutual
+/// dependency between these modules, whose production code points one way
+/// only (`data::users` -> `auth::oidc`; test code here and there crosses
+/// back, to assert the two layers compose). Contrast
+/// `auth::oidc::looks_like_email_address`, which is privacy-load-bearing,
+/// has to stay identical at both sites, and so is shared outright.
 fn non_blank(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|trimmed| !trimmed.is_empty())
 }
@@ -76,7 +93,16 @@ pub fn display_label(name: Option<String>, username: Option<String>) -> Option<S
 ///
 /// `@` is a deliberately blunt test: the cost of a false negative -- a
 /// leaked email address -- is much higher than the cost of a false
-/// positive, which is a member shown as the generic placeholder.
+/// positive, which is a member shown as the generic placeholder. The test
+/// itself lives in `auth::oidc::looks_like_email_address`, shared with the
+/// claim boundary rather than written out twice: `identity_from_claims`
+/// uses the SAME predicate to rank an email-shaped claim below a non-email
+/// alternative, and the two must agree or the boundary could promote a
+/// value this function then silently declines.
+///
+/// This stays the enforcement point regardless. The boundary only reorders
+/// candidates; when every claim the IdP sent is email-shaped it still
+/// stores one, and this is what refuses to render it.
 ///
 /// Note what that means on some deployments. On Entra ID / Azure AD,
 /// `preferred_username` IS the UPN and is therefore email-shaped for
@@ -85,7 +111,7 @@ pub fn display_label(name: Option<String>, username: Option<String>) -> Option<S
 /// as "A member". That is the intended trade, not a bug to go debugging:
 /// the alternative is showing the whole group an address.
 fn shareable(value: Option<&str>) -> Option<&str> {
-    non_blank(value).filter(|candidate| !candidate.contains('@'))
+    non_blank(value).filter(|candidate| !crate::auth::oidc::looks_like_email_address(candidate))
 }
 
 #[cfg(test)]
