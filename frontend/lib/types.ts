@@ -828,6 +828,8 @@ export interface GroupDetail {
   id: string;
   name: string;
   ownerId: string;
+  /** Same contract as `GroupMember.displayName`: the owner's own name, or
+   * `null` -- never their email address. */
   ownerName: string | null;
   memberCount: number;
   role: GroupRole;
