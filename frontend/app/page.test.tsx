@@ -220,6 +220,102 @@ describe('DashboardPage', () => {
     expect(screen.getByRole('link', { name: /Central/ })).toHaveAttribute('href', '/lines/central');
   });
 
+  // The "Right now" list is capped at 5 cards while its heading states the
+  // true total, so anything past the fifth affected line used to be counted
+  // and then silently dropped. These cover the overflow line that now names
+  // what is missing and links out to the full list.
+  describe('"Right now" overflow beyond the 5 rendered cards', () => {
+    // Zero-padded names so the module's alphabetical tiebreak (every line
+    // here shares one severity) is the numeric order the assertions read in.
+    function disruptedReports(n: number): LineStatusReport[] {
+      return Array.from({ length: n }, (_, i) => {
+        const label = String(i + 1).padStart(2, '0');
+        return report({
+          id: `line-${label}`,
+          name: `Line ${label}`,
+          lineStatuses: [
+            { statusSeverity: 6, statusSeverityDescription: 'Severe Delays', reason: '', sampleAvailability: { state: 'no-coverage' } } as never,
+          ],
+        });
+      });
+    }
+
+    it('names the lines it is not showing and links to the full list', async () => {
+      vi.mocked(api.getLineStatusForMode).mockResolvedValue(disruptedReports(12));
+      renderWithMantine(await DashboardPage());
+      expect(screen.getByText(/12 lines not at Good Service right now/)).toBeInTheDocument();
+      // Five cards, then the overflow line accounting for the other seven.
+      expect(screen.getByRole('link', { name: /Line 05/ })).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /Line 06/ })).not.toBeInTheDocument();
+      expect(
+        screen.getByText(/Showing the 5 most disrupted — 7 more lines are not at Good Service\./),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'View all lines' })).toHaveAttribute('href', '/lines');
+    });
+
+    it('says "line is", not "lines are", when exactly one is hidden', async () => {
+      vi.mocked(api.getLineStatusForMode).mockResolvedValue(disruptedReports(6));
+      renderWithMantine(await DashboardPage());
+      expect(
+        screen.getByText(/Showing the 5 most disrupted — 1 more line is not at Good Service\./),
+      ).toBeInTheDocument();
+    });
+
+    it('shows no overflow line when the list is exactly full', async () => {
+      // The boundary the count is most likely to get wrong: 5 affected, 5
+      // rendered, nothing hidden.
+      vi.mocked(api.getLineStatusForMode).mockResolvedValue(disruptedReports(5));
+      renderWithMantine(await DashboardPage());
+      expect(screen.getByText(/5 lines not at Good Service right now/)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /Line 05/ })).toBeInTheDocument();
+      expect(screen.queryByText(/most disrupted/)).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'View all lines' })).not.toBeInTheDocument();
+    });
+
+    it('shows no overflow line for a short list', async () => {
+      vi.mocked(api.getLineStatusForMode).mockResolvedValue(disruptedReports(2));
+      renderWithMantine(await DashboardPage());
+      expect(screen.queryByText(/most disrupted/)).not.toBeInTheDocument();
+    });
+
+    it('counts only lines the module itself lists -- good-service and merged TfL rows inflate neither half', async () => {
+      // The hidden figure is `count - rendered`, and both halves must come
+      // from the same filtered set: a Good Service line and a merged TfL id
+      // are excluded from the total as well as from the cards, so 6 affected
+      // among 8 reports still hides exactly 1.
+      vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+        ...disruptedReports(6),
+        report({ id: 'bakerloo', name: 'Bakerloo' }),
+        report({
+          id: 'tfl-elizabeth',
+          name: 'Elizabeth line',
+          lineStatuses: [
+            { statusSeverity: 6, statusSeverityDescription: 'Severe Delays', reason: '', sampleAvailability: { state: 'no-coverage' } } as never,
+          ],
+        }),
+      ]);
+      renderWithMantine(await DashboardPage());
+      expect(screen.getByText(/6 lines not at Good Service right now/)).toBeInTheDocument();
+      expect(
+        screen.getByText(/Showing the 5 most disrupted — 1 more line is not at Good Service\./),
+      ).toBeInTheDocument();
+    });
+
+    it('renders the overflow line in the authenticated zero-pinned-lines branch too', async () => {
+      vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+      vi.mocked(api.getLineStatusForMode).mockResolvedValue(disruptedReports(7));
+      renderWithMantine(await DashboardPage());
+      expect(screen.getByRole('heading', { name: 'Right now', level: 2 })).toBeInTheDocument();
+      expect(
+        screen.getByText(/Showing the 5 most disrupted — 2 more lines are not at Good Service\./),
+      ).toBeInTheDocument();
+      // "Browse all lines" beside "Your Lines" also points at /lines; the
+      // overflow affordance is its own distinctly-named link, not that one.
+      expect(screen.getByRole('link', { name: 'View all lines' })).toHaveAttribute('href', '/lines');
+    });
+  });
+
   it('logged in, an auth glitch (getSession rejects): degrades to the anonymous branch, not a crash', async () => {
     vi.mocked(api.getSession).mockRejectedValue(new Error('boom'));
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });

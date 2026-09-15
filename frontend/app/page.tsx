@@ -66,6 +66,17 @@ function representativeStatusAcrossReports(reports: LineStatusReport[]): LineSta
   return withStats ?? reports[0]?.lineStatuses[0];
 }
 
+/** How many affected lines the "Right now" module renders as cards. Named
+ * rather than inlined into the `.slice()` because the module now also tells
+ * the reader how many affected lines it is NOT showing, and a literal `5`
+ * sitting in one place and a hand-written "5" in the copy somewhere else is
+ * exactly how that number goes stale. Nothing outside this module reads it:
+ * the overflow count is derived as `count - worst.length` (see
+ * `RightNowModule`), not recomputed from this constant, so the rendered
+ * card count and the "N more" figure cannot disagree even if the slice
+ * changes. */
+const RIGHT_NOW_LIMIT = 5;
+
 /** Anonymous-visitor "right now" widget data (§Home page redesign). Built
  * entirely from `allReports`, already fetched unconditionally by this page
  * for the pinned-lines section -- no new endpoint. Excludes
@@ -85,7 +96,7 @@ function notGoodServiceSummary(reports: LineStatusReport[]) {
       const rankDiff = severityRank(worstStatus(b).statusSeverity) - severityRank(worstStatus(a).statusSeverity);
       return rankDiff !== 0 ? rankDiff : a.name.localeCompare(b.name);
     });
-  return { count: affected.length, worst: affected.slice(0, 5) };
+  return { count: affected.length, worst: affected.slice(0, RIGHT_NOW_LIMIT) };
 }
 
 export default async function DashboardPage() {
@@ -387,6 +398,16 @@ export default async function DashboardPage() {
 // is not meant to restyle anything.
 function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodServiceSummary> }) {
   const { count, worst } = summary;
+  // Derived from what was actually rendered, not from RIGHT_NOW_LIMIT: the
+  // heading above states the true total while the list below is capped, so
+  // for a bad morning it read "12 lines not at Good Service right now:"
+  // over five cards and simply stopped -- the remaining seven were
+  // unreachable and unmentioned. Same family of problem as a "Load more"
+  // button that vanishes without saying why (see
+  // `components/LoadMoreControl.tsx`), but a fixed truncation rather than
+  // pagination, so the fix is an overflow line plus a way out, not a
+  // button.
+  const hidden = count - worst.length;
   return (
     <Stack gap="md">
       <Title order={2}>Right now</Title>
@@ -409,6 +430,26 @@ function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodService
               </Link>
             ))}
           </Stack>
+          {hidden > 0 && (
+            // `/lines` has no status filter and no filter query params at
+            // all today -- `AllLinesTable` holds its operator/country/sort
+            // state in `useState`, and `app/lines/page.tsx` takes no
+            // `searchParams` -- so this cannot hand the destination the
+            // "not at Good Service" context the way `/incidents` links can
+            // hand over their filters. It links to the full list anyway and
+            // says plainly what it is: every affected line is reachable
+            // there (sorted to the top in one click on Status), which is
+            // strictly better than the previous state of the remaining
+            // lines being counted but unreachable. Wording avoids promising
+            // a filtered view.
+            <Group gap="xs" wrap="wrap">
+              <Text size="sm" c="dimmed">
+                Showing the {worst.length} most disrupted — {hidden} more{' '}
+                {hidden === 1 ? 'line is' : 'lines are'} not at Good Service.
+              </Text>
+              <TextLink href="/lines">View all lines</TextLink>
+            </Group>
+          )}
         </>
       )}
     </Stack>
