@@ -6,6 +6,7 @@ import {
   getMyTrackedTrains,
   getPreferences,
   getSession,
+  getSharedGroupCustomLines,
   getStationName,
   getStopPointDisruption,
 } from '@/lib/api';
@@ -20,6 +21,7 @@ import { severityRank, worstStatus } from '@/lib/severity';
 import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
+import { mergeSharedCustomLines, type MergedSharedCustomLine } from '@/lib/sharedCustomLines';
 import type { LineStatus, LineStatusReport, Preferences, TrackedTrainListItem } from '@/lib/types';
 
 // See app/lines/[id]/page.tsx-adjacent history page and this repo's other
@@ -108,7 +110,7 @@ export default async function DashboardPage() {
   // branch, which simply doesn't use it). Per
   // docs/superpowers/specs/2026-09-01-tracked-trains-home-page-design.md
   // Decision 3.
-  const [preferences, allReports, myTrackedTrains] = await Promise.all([
+  const [preferences, allReports, myTrackedTrains, sharedCustomLines] = await Promise.all([
     // Fails closed to "nothing pinned" -- the exact shape getPreferences
     // already returns for a 401 -- rather than being stale-served: this is
     // per-user data, and the design spec's Decision 5 excludes per-user
@@ -125,6 +127,11 @@ export default async function DashboardPage() {
     // and the call site below already collapses it to []. Same fail-closed
     // rationale as preferences above.
     getMyTrackedTrains().catch(() => null),
+    // Custom lines other members have shared into a group the caller
+    // belongs to. Same null-on-401 / fail-closed treatment as the two
+    // above: losing this section during an outage is materially better
+    // than losing the dashboard.
+    getSharedGroupCustomLines().catch(() => null),
   ]);
 
   // Hoisted above the anonymous/authenticated branch so both can read it:
@@ -229,6 +236,23 @@ export default async function DashboardPage() {
   // needed (Decision 1/3) -- the backend query is already ordered that way.
   const trackedTrains = (myTrackedTrains ?? []).slice(0, 5);
 
+  // Custom lines a fellow group member shared with the caller. One row per
+  // line carrying every group it reached them through (the wire shape is
+  // one row per (group, line) pair -- see `mergeSharedCustomLines`).
+  //
+  // Status comes from `allReports`, already fetched above: a granted line
+  // is now included in `/Line/Mode/.../Status` for this caller by the same
+  // read-path widening that makes the grant mean anything, so this section
+  // costs no extra request. A line with no computed status yet simply
+  // renders without a badge.
+  //
+  // Deliberately its own section rather than folded into "Your Lines":
+  // those are the caller's own pins, with their own pin controls, and a
+  // shared line is view-only -- no pin toggle, no edit, no un-share (only
+  // the owner, from the group's page, can stop sharing it).
+  const sharedLines: MergedSharedCustomLine[] = mergeSharedCustomLines(sharedCustomLines ?? []);
+  const reportByLineId = new Map(allReports.map((report) => [report.id, report]));
+
   return (
     <Stack p="lg" gap="xl">
       <Group justify="flex-end">
@@ -251,6 +275,21 @@ export default async function DashboardPage() {
           </SimpleGrid>
         )}
       </Stack>
+
+      {sharedLines.length > 0 && (
+        <Stack gap="md">
+          <Title order={2}>Lines shared with you</Title>
+          <Stack gap="xs">
+            {sharedLines.map((row) => (
+              <SharedCustomLineSummaryRow
+                key={row.line.lineId}
+                row={row}
+                report={reportByLineId.get(row.line.lineId)}
+              />
+            ))}
+          </Stack>
+        </Stack>
+      )}
 
       <Stack gap="md">
         <Group justify="space-between">
@@ -364,6 +403,55 @@ function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodService
         </>
       )}
     </Stack>
+  );
+}
+
+/** One custom line a fellow group member has shared with the caller.
+ *
+ * View-only by construction: the whole card is a link to `/lines/{lineId}`
+ * and there is no pin toggle, no edit and no un-share control anywhere on
+ * it. A grant conveys read access and nothing else -- only the line's
+ * owner can change or delete it, and only the owner (or a group
+ * `admin`/`owner`, from the group's own page) can stop the sharing.
+ *
+ * The "from {group}" grape `Badge` is the same tag `/track/mine` already
+ * uses for a group-shared train, deliberately worded and coloured
+ * identically so the two surfaces read as one convention. One badge per
+ * group this line reached the caller through -- a line shared into two of
+ * their groups is two tags, not an arbitrarily-picked one. */
+function SharedCustomLineSummaryRow({
+  row,
+  report,
+}: {
+  row: MergedSharedCustomLine;
+  report: LineStatusReport | undefined;
+}) {
+  const { line, groupNames } = row;
+  return (
+    <Link href={`/lines/${line.lineId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+      <Card withBorder>
+        <Stack gap={4}>
+          <Group justify="space-between" wrap="nowrap">
+            <Text fw={500}>{line.lineName}</Text>
+            {report && <StatusBadge severity={worstStatus(report).statusSeverity} />}
+          </Group>
+          <Group gap="xs" wrap="wrap">
+            {groupNames.map((groupName) => (
+              <Badge key={groupName} variant="light" color="grape">
+                from {groupName}
+              </Badge>
+            ))}
+            {/* `grantedByName` is null when the sharer has neither a name
+                nor a verified email on their account; "a member" then,
+                never a raw user id -- the same fallback `/groups/{id}`'s
+                and `/track/mine`'s shared rows already use. */}
+            <Text size="sm" c="dimmed">
+              Shared by {line.grantedByName ?? 'a member'}
+            </Text>
+          </Group>
+        </Stack>
+      </Card>
+    </Link>
   );
 }
 

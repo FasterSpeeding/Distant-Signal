@@ -29,6 +29,8 @@ import {
   getStationSampleStats,
   getStationAccessibility,
   getSharedGroupTrains,
+  getGroupCustomLines,
+  getSharedGroupCustomLines,
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from './api';
@@ -786,6 +788,52 @@ describe('api client', () => {
   it('getSharedGroupTrains still throws on a non-401 failure', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
     await expect(getSharedGroupTrains()).rejects.toThrow(/500/);
+  });
+
+  it('getGroupCustomLines fetches the group-scoped grant list, forwarding cookies', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    await getGroupCustomLines('group-1');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/groups/group-1/lines/custom',
+      expect.objectContaining({
+        cache: 'no-store',
+        headers: { Cookie: 'distant_signal_session=abc123' },
+      }),
+    );
+  });
+
+  it('getGroupCustomLines throws on a 404 (not a member / no such group)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('no group with that id', { status: 404 })));
+    await expect(getGroupCustomLines('group-1')).rejects.toThrow(/404/);
+  });
+
+  it('getSharedGroupCustomLines fetches the correct URL, forwarding cookies, with no caching', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    await getSharedGroupCustomLines();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/groups/shared-custom-lines',
+      expect.objectContaining({
+        cache: 'no-store',
+        headers: { Cookie: 'distant_signal_session=abc123' },
+      }),
+    );
+  });
+
+  it('getSharedGroupCustomLines returns null on a 401, matching getSharedGroupTrains', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('no session', { status: 401 })));
+    await expect(getSharedGroupCustomLines()).resolves.toBeNull();
+  });
+
+  it('getSharedGroupCustomLines resolves an empty array as "nothing shared", not null', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    await expect(getSharedGroupCustomLines()).resolves.toEqual([]);
+  });
+
+  it('getSharedGroupCustomLines still throws on a non-401 failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    await expect(getSharedGroupCustomLines()).rejects.toThrow(/500/);
   });
 
   it('getDelayRepayEstimate fetches the correct URL with no caching', async () => {

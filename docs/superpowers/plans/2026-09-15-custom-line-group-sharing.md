@@ -565,9 +565,19 @@ test), `frontend/components/RemoveCustomLineGrantButton.tsx` (new),
   ("Shared with you by a group") so the page explains why they can see a
   line they don't own.
 - [ ] **Step 2:** `/lines/[id]/edit/page.tsx` — `notFound()` when
-  `!line.isOwner`, before rendering the form. Render the read-only
-  "Shared with" list from `line.sharedWithGroups` (names linking to
-  `/groups/{id}`), and nothing editable there (design §3.5).
+  `!line.isOwner`, before rendering the form. Nothing else changes there.
+- [ ] **Step 2b:** Render the read-only "Shared with" list from
+  `line.sharedWithGroups` (names linking to `/groups/{id}`) on
+  **`/lines/[id]` itself**, not on the edit page. Design §3.5 put it on the
+  edit page; this is a deliberate, narrow divergence: `/lines/[id]` is the
+  surface an owner actually lands on (it is where Edit and Delete already
+  live and what every bookmark and share link points at), it already has
+  `CustomLineDetail` in hand so the indicator costs no extra fetch, and the
+  edit page is a focused form whose job is the line's own fields. The
+  substance of §3.5 is unchanged and is what matters: a plain, read-only
+  indicator, owner-only, with **no** add/remove control anywhere on the
+  line's own pages — granting and revoking both still happen from the
+  group's page, where the group-permission context lives.
 - [ ] **Step 3:** Extend `page.test.tsx` with a granted-non-owner case
   asserting no Edit/Delete control renders.
 

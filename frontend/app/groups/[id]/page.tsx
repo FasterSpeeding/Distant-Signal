@@ -1,8 +1,11 @@
 import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
+import Link from 'next/link';
 import {
   getGroup,
+  getGroupCustomLines,
   getGroupMembers,
   getGroupTrains,
+  getLineStatus,
   getSession,
   ApiNotFoundError,
   ApiUnauthorizedError,
@@ -15,9 +18,13 @@ import { DeleteGroupButton } from '@/components/DeleteGroupButton';
 import { GroupInviteLinkCard } from '@/components/GroupInviteLinkCard';
 import { RemoveGroupTrainButton } from '@/components/RemoveGroupTrainButton';
 import { AddTrainToGroupButton } from '@/components/AddTrainToGroupButton';
+import { AddCustomLineToGroupButton } from '@/components/AddCustomLineToGroupButton';
+import { RemoveCustomLineGrantButton } from '@/components/RemoveCustomLineGrantButton';
+import { StatusBadge } from '@/components/StatusBadge';
 import { LoginLink } from '@/components/LoginLink';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
-import type { GroupMember, GroupTrain } from '@/lib/types';
+import { worstStatus } from '@/lib/severity';
+import type { GroupCustomLine, GroupMember, GroupTrain, LineStatusReport } from '@/lib/types';
 
 export const revalidate = 0;
 
@@ -65,11 +72,29 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
     throw err;
   }
 
-  const [members, trains, session] = await Promise.all([
+  const [members, trains, customLines, session] = await Promise.all([
     getGroupMembers(id),
     getGroupTrains(id),
+    getGroupCustomLines(id),
     getSession().catch(() => ({ authenticated: false, id: null, email: null, name: null })),
   ]);
+
+  // Live status for the shared custom lines, read through the ordinary
+  // `/Line/{ids}/Status` route rather than a second, parallel status path
+  // baked into `GET /groups/{id}/lines/custom`. That route is exactly the
+  // one a grant widens, so this is also the end-to-end proof the widening
+  // works for this viewer. It 404s when it matches nothing at all (a line
+  // the aggregator hasn't computed a status for yet), which is an ordinary
+  // state here, not an error -- degrade to "no badge", never to a broken
+  // page.
+  let customLineReports: LineStatusReport[] = [];
+  if (customLines.length > 0) {
+    customLineReports = await getLineStatus(
+      customLines.map((l) => l.lineId),
+      false,
+    ).catch(() => []);
+  }
+  const reportByLineId = new Map(customLineReports.map((r) => [r.id, r]));
   const currentUserId = session.authenticated ? session.id : null;
   const canManage = group.role === 'owner' || group.role === 'admin';
   // Distinct from `canManage`: the backend gates promotion and group
@@ -127,6 +152,39 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
               key={train.trainSubscriptionId}
               groupId={id}
               train={train}
+              canManage={canManage}
+              currentUserId={currentUserId}
+            />
+          ))
+        )}
+      </Stack>
+
+      <Divider />
+
+      {/* A fourth, separate section rather than folding custom lines into
+          "Shared trains" (or into a future catalogue-line section): the
+          add-affordance is genuinely different -- only a line's own OWNER
+          can share it, unlike a public catalogue line anyone could add --
+          and a merged list would have to explain per row why some entries
+          can be added by anyone and others only by one specific person.
+          See the design doc §3.4. */}
+      <Stack gap="sm">
+        <Group justify="space-between" align="baseline">
+          <Title order={2}>Shared custom lines</Title>
+          <AddCustomLineToGroupButton
+            groupId={id}
+            excludeLineIds={customLines.map((l) => l.lineId)}
+          />
+        </Group>
+        {customLines.length === 0 ? (
+          <Text c="dimmed">No custom lines have been shared into this group yet.</Text>
+        ) : (
+          customLines.map((line) => (
+            <SharedCustomLineRow
+              key={line.lineId}
+              groupId={id}
+              line={line}
+              report={reportByLineId.get(line.lineId)}
               canManage={canManage}
               currentUserId={currentUserId}
             />
@@ -206,6 +264,58 @@ function SharedTrainRow({
         {canRemove && (
           <RemoveGroupTrainButton groupId={groupId} trainSubscriptionId={train.trainSubscriptionId} />
         )}
+      </Group>
+    </Card>
+  );
+}
+
+/** One custom line shared into this group.
+ *
+ * Deliberately view-only for everyone except the line's owner, who reaches
+ * their edit controls through `/lines/{id}` (this row links there) and not
+ * from here. A grant conveys read access and nothing else: no member --
+ * not even a group `admin`/`owner` -- can edit or delete a line they don't
+ * own, and the backend refuses it regardless of what this page renders.
+ *
+ * `canRemove` mirrors `groups::remove_custom_line_grant`'s own
+ * sharer-or-manager check exactly, the same way `SharedTrainRow`'s does:
+ * "Stop sharing" only revokes the group's visibility and never touches the
+ * line. */
+function SharedCustomLineRow({
+  groupId,
+  line,
+  report,
+  canManage,
+  currentUserId,
+}: {
+  groupId: string;
+  line: GroupCustomLine;
+  report: LineStatusReport | undefined;
+  canManage: boolean;
+  currentUserId: string | null;
+}) {
+  const canRemove = canManage || (currentUserId !== null && line.grantedBy === currentUserId);
+  return (
+    <Card withBorder>
+      <Group justify="space-between" wrap="nowrap" align="flex-start">
+        <Stack gap={4}>
+          <Link href={`/lines/${line.lineId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+            <Text fw={500}>{line.lineName}</Text>
+          </Link>
+          <Text size="sm" c="dimmed">
+            Shared by {line.grantedByName ?? 'a member'}
+          </Text>
+        </Stack>
+        <Group gap="xs" wrap="nowrap">
+          {report && <StatusBadge severity={worstStatus(report).statusSeverity} />}
+          {canRemove && (
+            <RemoveCustomLineGrantButton
+              groupId={groupId}
+              lineId={line.lineId}
+              lineName={line.lineName}
+            />
+          )}
+        </Group>
       </Group>
     </Card>
   );
