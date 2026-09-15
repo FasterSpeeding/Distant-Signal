@@ -57,12 +57,67 @@ function nodeDiameter(kind: JourneyStop['kind']): number {
   return kind === 'Origin' || kind === 'Terminate' ? 18 : 12;
 }
 
+type NodeState = 'reached' | 'marker' | 'not-reached';
+
+/** `index <= lastIndex` (and `lastIndex !== -1`) is "reached"; the stop
+ * exactly at `lastIndex` is additionally the "you are here" marker; every
+ * later index is "not yet reached". `lastIndex === -1` means nothing has
+ * been confirmed, so every node is "not yet reached" and no marker exists
+ * -- this falls out of the comparison rather than needing a special case. */
+function nodeState(index: number, lastIndex: number): NodeState {
+  if (lastIndex === -1 || index > lastIndex) return 'not-reached';
+  if (index === lastIndex) return 'marker';
+  return 'reached';
+}
+
+type DelayState = 'on-time' | 'late' | 'early' | 'unknown';
+
+/** Reuses `JourneyTimeline.tsx`'s exact three-way delay convention
+ * (green/orange/teal) -- see its own `delayBadge` -- plus one honest
+ * addition this component needs that the badge never has to express: a
+ * reached stop whose `delayMinutes` is `null` (no `scheduledArrival`/
+ * `scheduledDeparture` to diff against). Defaulting that to "on time"
+ * would fabricate a fact nothing confirmed; `'unknown'` renders a neutral
+ * gray instead. */
+function delayState(delayMinutes: number | null): DelayState {
+  if (delayMinutes === null) return 'unknown';
+  if (delayMinutes === 0) return 'on-time';
+  return delayMinutes > 0 ? 'late' : 'early';
+}
+
+const DELAY_COLOR: Record<DelayState, string> = {
+  'on-time': 'green',
+  late: 'orange',
+  early: 'teal',
+  unknown: 'gray',
+};
+
+/** The "you are here" marker gets the same fill as any other reached node
+ * PLUS a `boxShadow` halo -- a wider, higher-contrast ring, not a
+ * different color, so it stays legible against any of the three delay
+ * colors (spec Decision 3). */
+function circleStyle(state: NodeState, delay: DelayState): React.CSSProperties {
+  if (state === 'not-reached') {
+    return { border: '2px solid var(--mantine-color-gray-5)', backgroundColor: 'transparent' };
+  }
+  const color = DELAY_COLOR[delay];
+  const base: React.CSSProperties = {
+    border: `2px solid var(--mantine-color-${color}-6)`,
+    backgroundColor: `var(--mantine-color-${color}-6)`,
+  };
+  if (state === 'marker') {
+    base.boxShadow = `0 0 0 3px var(--mantine-color-${color}-3)`;
+  }
+  return base;
+}
+
 /** Schematic, index-spaced (NOT time/distance-proportional) "you are here"
  * line diagram, additive to `JourneyTimeline` -- see
  * docs/superpowers/specs/2026-09-12-journey-progress-visualization-design.md.
  * Rendered directly above `JourneyTimeline` in `TrainJourney.tsx`, behind
  * the identical `{state.journeyStops && ...}` guard. */
 export function JourneyProgress({ stops }: JourneyProgressProps) {
+  const lastIndex = lastReachedIndex(stops);
   const ariaLabel = `Journey progress: ${stops.length} stop${stops.length === 1 ? '' : 's'}`;
 
   return (
@@ -70,6 +125,8 @@ export function JourneyProgress({ stops }: JourneyProgressProps) {
       <Box className="journeyProgressLine" style={{ minWidth: stops.length * NODE_SLOT_WIDTH }}>
         {stops.map((stop, index) => {
           const diameter = nodeDiameter(stop.kind);
+          const state = nodeState(index, lastIndex);
+          const delay = delayState(stop.delayMinutes);
           return (
             <Box
               key={`${stop.crs ?? 'unknown'}-${index}`}
@@ -77,14 +134,15 @@ export function JourneyProgress({ stops }: JourneyProgressProps) {
             >
               <Box
                 data-journey-node
+                data-node-state={state}
+                data-delay-state={delay}
                 aria-hidden="true"
                 style={{
                   width: diameter,
                   height: diameter,
                   borderRadius: '50%',
-                  border: '2px solid var(--mantine-color-gray-5)',
-                  backgroundColor: 'transparent',
                   zIndex: 1,
+                  ...circleStyle(state, delay),
                 }}
               />
             </Box>

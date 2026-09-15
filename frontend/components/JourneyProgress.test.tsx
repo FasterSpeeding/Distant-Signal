@@ -87,4 +87,89 @@ describe('JourneyProgress', () => {
     );
     expect(screen.getByRole('img', { name: 'Journey progress: 2 stops' })).toBeInTheDocument();
   });
+
+  it('marks the highest-index stop with a confirmed actualArrival/actualDeparture as the marker', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'WAT', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({
+            crs: 'CLJ',
+            kind: 'Intermediate',
+            actualArrival: '2026-09-12T08:20:00Z',
+            actualDeparture: '2026-09-12T08:21:00Z',
+          }),
+          stop({ crs: 'WOK', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+      />,
+    );
+    const nodes = container.querySelectorAll('[data-journey-node]');
+    expect(nodes[0]).toHaveAttribute('data-node-state', 'reached');
+    expect(nodes[1]).toHaveAttribute('data-node-state', 'marker');
+    expect(nodes[2]).toHaveAttribute('data-node-state', 'not-reached');
+  });
+
+  it('renders no marker at all when nothing has been confirmed yet (lastReachedIndex === -1)', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[stop({ crs: 'WAT', kind: 'Origin' }), stop({ crs: 'WOK', kind: 'Terminate' })]}
+        resolutionStatus="resolved"
+        status="awaiting_activation"
+        trainUid="C21373"
+        mayHaveArrived={false}
+      />,
+    );
+    const nodes = container.querySelectorAll('[data-journey-node]');
+    expect(Array.from(nodes).every((n) => n.getAttribute('data-node-state') === 'not-reached')).toBe(true);
+  });
+
+  it('colors a reached node green/orange/teal by delayMinutes, and gray when delayMinutes is unknown', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z', delayMinutes: 0 }),
+          stop({ crs: 'B', kind: 'Intermediate', actualArrival: '2026-09-12T08:10:00Z', delayMinutes: 4 }),
+          stop({ crs: 'C', kind: 'Intermediate', actualArrival: '2026-09-12T08:20:00Z', delayMinutes: -2 }),
+          stop({ crs: 'D', kind: 'Terminate', actualArrival: '2026-09-12T08:30:00Z', delayMinutes: null }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+      />,
+    );
+    const nodes = container.querySelectorAll('[data-journey-node]');
+    expect(nodes[0]).toHaveAttribute('data-delay-state', 'on-time');
+    expect(nodes[1]).toHaveAttribute('data-delay-state', 'late');
+    expect(nodes[2]).toHaveAttribute('data-delay-state', 'early');
+    // nodes[3] is also the marker (last confirmed index) -- delay unknown.
+    expect(nodes[3]).toHaveAttribute('data-delay-state', 'unknown');
+  });
+
+  it('a PASS event (both actualArrival and actualDeparture set to the same instant) still counts that stop as reached', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin' }),
+          stop({
+            crs: 'B',
+            kind: 'Intermediate',
+            actualArrival: '2026-09-12T08:10:00Z',
+            actualDeparture: '2026-09-12T08:10:00Z',
+          }),
+          stop({ crs: 'C', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+      />,
+    );
+    const nodes = container.querySelectorAll('[data-journey-node]');
+    expect(nodes[1]).toHaveAttribute('data-node-state', 'marker');
+  });
 });
