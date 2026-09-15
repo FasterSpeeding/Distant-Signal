@@ -56,8 +56,20 @@ export interface PunctualitySummary {
  * make "N of your last {eligibleCount} were on time" describe a
  * denominator the arithmetic never actually used. `worstJourneys` still
  * draws from the full `isEligibleForPunctuality` population (including
- * cancelled rows) -- there is no separate population for it (spec
- * Decision 2). */
+ * cancelled rows, deliberately -- see below) -- there is no separate
+ * eligibility population for it (spec Decision 2) -- but IS further
+ * narrowed to `delayMinutes > 0`: a "most delayed" list has no honest
+ * entry for a journey that was on time or early (`delayMinutes <= 0`),
+ * and without this filter a user with only a handful of on-time/early
+ * eligible journeys would see nonsensical rows like "0 minutes late" or
+ * "-3 minutes late" under that heading. A cancelled row with a genuinely
+ * positive leftover `delayMinutes` can still appear here even though it
+ * never contributes to `avgDelayMinutes`/`onTimePct` -- it is still a
+ * real recorded delay figure on a real tracked train, and excluding it
+ * from both would silently drop a legitimate "this journey was a mess"
+ * data point the user tracked; this is a deliberate, reasoned choice, not
+ * an oversight (a follow-up could mark such rows as cancelled in the UI,
+ * but that is not this fix's concern). */
 export function computePunctualitySummary(trains: TrackedTrainListItem[], today: string): PunctualitySummary {
   const eligible = trains.filter((t) => isEligibleForPunctuality(t, today));
   const cancelledCount = eligible.filter((t) => t.status === 'cancelled').length;
@@ -73,7 +85,8 @@ export function computePunctualitySummary(trains: TrackedTrainListItem[], today:
       ? null
       : forArithmetic.reduce((sum, t) => sum + (t.delayMinutes as number), 0) / forArithmetic.length;
 
-  const worstJourneys: WorstJourney[] = [...eligible]
+  const worstJourneys: WorstJourney[] = eligible
+    .filter((t) => (t.delayMinutes as number) > 0)
     .sort((a, b) => {
       const delayDiff = (b.delayMinutes as number) - (a.delayMinutes as number);
       if (delayDiff !== 0) return delayDiff;
@@ -102,10 +115,10 @@ export interface DelayRepayRollup {
   bandCounts: Record<string, number>;
 }
 
-/** The Delay Repay half's whole aggregation. Population is "tracked trains
- * with an attached ticket that has a non-null operator" -- NOT "all
- * tracked trains" (operator data only reliably exists via an attached
- * ticket; the NR-primary "track this train" flow never captures one, and
+/** The Delay Repay half's whole aggregation. Population is "attached
+ * tickets that have a non-null operator" -- NOT "all tracked trains"
+ * (operator data only reliably exists via an attached ticket; the
+ * NR-primary "track this train" flow never captures one, and
  * tracked-train read models carry no operator field at all -- spec
  * Correction 2). A standalone ticket (`trackedTrainId: null`) is excluded
  * from both numerator and denominator: there is no journey yet to have
@@ -114,6 +127,13 @@ export interface DelayRepayRollup {
  * no idea whether that operator would have paid out at all, and folding
  * "we don't know" into the same bucket as "we know and it's zero" would
  * misstate the denominator's own meaning (spec Decision 3).
+ *
+ * Both fields count TICKETS, not distinct journeys/tracked trains: one
+ * tracked train can legitimately have more than one ticket attached (see
+ * `app/track/mine/page.test.tsx`'s "multiple tickets on one train" case),
+ * and each is counted separately here. Calling code must describe these
+ * numbers as ticket counts, not journey counts, to avoid overstating how
+ * many distinct journeys were involved.
  *
  * Consumes `TicketListItem.estimate` -- the already-serialized output of
  * `estimate_delay_repay`, computed once server-side by

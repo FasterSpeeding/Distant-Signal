@@ -5,6 +5,7 @@ import {
   computePunctualitySummary,
   type DelayRepayRollup,
   type PunctualitySummary,
+  type WorstJourney,
 } from '@/lib/reliabilityDigest';
 import { londonDayKey, formatDate } from '@/lib/dateFormat';
 import type { TrackedTrainListItem, TicketListItem } from '@/lib/types';
@@ -33,11 +34,45 @@ export function ReliabilityDigest({ trains, tickets }: { trains: TrackedTrainLis
   );
 }
 
+// Same "canonical link once resolved, by-id fallback otherwise" href
+// TrackedTrainListRow already computes on this exact page (spec Decision
+// 2/Architecture) -- ordinary in-app navigation to a journey's own
+// existing detail page, not an outbound Delay Repay claim link (that
+// guardrail is specific to DelayRepaySection below). Local to this file
+// (this component's only call site) rather than a cross-file shared
+// helper -- the same ternary already exists standalone in a few other
+// pages/components, but consolidating those pre-existing copies is a
+// separate, unrelated refactor this fix doesn't take on.
+function journeyHref(journey: Pick<WorstJourney, 'trainUid' | 'trainId' | 'serviceDate'>): string {
+  return journey.trainUid ? `/train/${journey.trainUid}/${journey.serviceDate}` : `/train/by-id/${journey.trainId}`;
+}
+
 function PunctualitySection({ summary }: { summary: PunctualitySummary }) {
-  if (summary.eligibleCount === 0) {
+  // Gated on `eligibleCount === 0 && cancelledCount === 0`, not
+  // `eligibleCount === 0` alone: `eligibleCount` deliberately excludes
+  // cancelled journeys (it's the on-time/delay arithmetic's own
+  // denominator), so a user whose only finished journeys were all
+  // cancelled would otherwise fall into this branch and see the generic
+  // "nothing tracked yet" prose -- silently hiding a real, known fact
+  // (their cancellations) instead of "reporting it as a separate count"
+  // the way the rest of this feature does (spec Global Constraints).
+  if (summary.eligibleCount === 0 && summary.cancelledCount === 0) {
     return (
       <Text size="sm" c="dimmed">
         Track a train and check back once it&apos;s finished running to see your punctuality here.
+      </Text>
+    );
+  }
+
+  if (summary.eligibleCount === 0) {
+    // eligibleCount === 0 but cancelledCount > 0: every finished journey
+    // in this population was cancelled, so there is no on-time/delay
+    // figure to show, but the cancellations themselves are real data.
+    return (
+      <Text size="sm" c="dimmed">
+        {summary.cancelledCount} tracked journey{summary.cancelledCount === 1 ? ' was' : 's were'} cancelled, with
+        no on-time/delay outcome recorded yet. Track more trains and check back once they&apos;ve finished
+        running to build up a punctuality picture.
       </Text>
     );
   }
@@ -56,25 +91,14 @@ function PunctualitySection({ summary }: { summary: PunctualitySummary }) {
           <Text size="sm" fw={500}>
             Your most delayed tracked journeys:
           </Text>
-          {summary.worstJourneys.map((journey) => {
-            // Same "canonical link once resolved, by-id fallback
-            // otherwise" href TrackedTrainListRow already computes on
-            // this exact page (spec Decision 2/Architecture) -- ordinary
-            // in-app navigation to a journey's own existing detail page,
-            // not an outbound Delay Repay claim link (that guardrail is
-            // specific to DelayRepaySection below).
-            const href = journey.trainUid
-              ? `/train/${journey.trainUid}/${journey.serviceDate}`
-              : `/train/by-id/${journey.trainId}`;
-            return (
-              <Group key={journey.trainId} gap="xs">
-                <Link href={href}>{formatDate(journey.serviceDate)}</Link>
-                <Text size="sm" c="dimmed">
-                  {journey.delayMinutes} minutes late
-                </Text>
-              </Group>
-            );
-          })}
+          {summary.worstJourneys.map((journey) => (
+            <Group key={journey.trainId} gap="xs">
+              <Link href={journeyHref(journey)}>{formatDate(journey.serviceDate)}</Link>
+              <Text size="sm" c="dimmed">
+                {journey.delayMinutes} minutes late
+              </Text>
+            </Group>
+          ))}
         </Stack>
       )}
     </Stack>
@@ -123,23 +147,28 @@ function DelayRepaySection({ rollup }: { rollup: DelayRepayRollup }) {
 
   return (
     <Stack gap={4} data-testid="delay-repay-rollup">
-      <Alert color="blue" title="Possible Delay Repay eligibility, across your tracked journeys" variant="light">
-        Of the {rollup.attachedTicketsWithOperator} tracked journey
-        {rollup.attachedTicketsWithOperator === 1 ? '' : 's'} with a ticket attached, {rollup.eligibleCount} may
-        have qualified for a partial or full refund of that journey&apos;s fare under the operator&apos;s Delay
-        Repay scheme.
+      {/* Counts TICKETS, not distinct journeys -- one tracked train can
+          have more than one ticket attached (see
+          `computeDelayRepayRollup`'s own doc comment and
+          `app/track/mine/page.test.tsx`'s "multiple tickets on one
+          train" case), so this copy must not say "journeys" here, or it
+          would overstate how many distinct trips were involved. */}
+      <Alert color="blue" title="Possible Delay Repay eligibility, across your attached tickets" variant="light">
+        Of the {rollup.attachedTicketsWithOperator} ticket{rollup.attachedTicketsWithOperator === 1 ? '' : 's'}{' '}
+        attached to a tracked train with a known operator, {rollup.eligibleCount} may have qualified for a partial
+        or full refund of that ticket&apos;s fare under the operator&apos;s Delay Repay scheme.
       </Alert>
       {bandEntries.length > 0 && (
         <Stack gap={2}>
           {bandEntries.map(([key, count]) => (
             <Text key={key} size="sm">
-              {count} journey{count === 1 ? '' : 's'} — {BAND_LABELS[key] ?? key}
+              {count} ticket{count === 1 ? '' : 's'} — {BAND_LABELS[key] ?? key}
             </Text>
           ))}
         </Stack>
       )}
       <Text size="sm">
-        {CARRIED_FORWARD_DISCLAIMER} This is a count of journeys, not a total amount: this app never stores ticket
+        {CARRIED_FORWARD_DISCLAIMER} This is a count of tickets, not a total amount: this app never stores ticket
         prices, so it has no fare figure to add up into a refund total, and never will. This app does not claim on
         your behalf for any of them — always verify eligibility and claim directly with each operator, using the
         link already shown against each ticket below.

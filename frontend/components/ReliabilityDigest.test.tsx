@@ -77,20 +77,55 @@ describe('ReliabilityDigest', () => {
     expect(screen.getByText(/100%/)).toBeInTheDocument();
   });
 
+  it('every finished journey cancelled: reports the cancellation count, not the generic no-data prose', () => {
+    // Fix for review finding A: eligibleCount excludes cancelled
+    // journeys, so an all-cancelled population must not fall into the
+    // "nothing tracked yet" branch, which would silently hide the
+    // cancellations from the user.
+    renderWithMantine(
+      <ReliabilityDigest trains={[train({ serviceDate: '2026-09-01', status: 'cancelled' })]} tickets={[]} />,
+    );
+    expect(screen.getByText(/1 tracked journey was cancelled/)).toBeInTheDocument();
+    expect(screen.queryByText(/check back once it's finished running/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/0%/)).not.toBeInTheDocument();
+  });
+
+  it('worst-journeys list excludes on-time/early entries: an all-on-time population shows no "most delayed" list', () => {
+    // Fix for review finding B: without a delayMinutes > 0 filter this
+    // would otherwise render a nonsensical "0 minutes late" row under
+    // "Your most delayed tracked journeys".
+    renderWithMantine(
+      <ReliabilityDigest
+        trains={[
+          train({ id: 1, serviceDate: '2026-09-01', delayMinutes: 0 }),
+          train({ id: 2, serviceDate: '2026-08-31', delayMinutes: -3 }),
+        ]}
+        tickets={[]}
+      />,
+    );
+    expect(screen.getByText(/100%/)).toBeInTheDocument();
+    expect(screen.queryByText(/Your most delayed tracked journeys/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/minutes late/)).not.toBeInTheDocument();
+  });
+
   it('hedged-copy: carries the disclaimer forward verbatim, the aggregate-specific no-total sentence, no claim-performing language, and no outbound/claim link in the rollup', () => {
     renderWithMantine(<ReliabilityDigest trains={[train({ serviceDate: '2026-09-01' })]} tickets={[ticket()]} />);
     expect(screen.getByText(new RegExp(CARRIED_FORWARD_DISCLAIMER))).toBeInTheDocument();
     expect(screen.getByText(/never stores ticket prices/)).toBeInTheDocument();
     expect(screen.queryByText(/claim now/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/get your refund/i)).not.toBeInTheDocument();
-    // Word-boundary, not a bare /submit/i: the carried-forward
-    // ROUTE_DISCLAIMER text itself legitimately contains "submits" as
-    // part of an anti-CTA hedge ("This app never submits a claim on your
-    // behalf") -- a bare substring match would flag that required,
-    // verbatim clause as if it were "claim-performing" language. What
-    // this guards against is a literal "Submit" CTA verb/button
-    // (matching DelayRepayEstimate.test.tsx's own "never claim-performing
-    // language" case), which a whole-word match still catches.
+    // Word-boundary, not a bare /submit/i: the component's own rendered
+    // copy doesn't currently contain "submit" at all (it was worded to
+    // avoid the word entirely -- see DelayRepaySection's closing
+    // paragraph), but the *backend's* ROUTE_DISCLAIMER this copy is
+    // carried forward from legitimately contains "submits" as part of an
+    // anti-CTA hedge ("This app never submits a claim on your behalf") --
+    // a bare /submit/i substring match would flag that verbatim clause as
+    // "claim-performing" language if a future wording pass ever
+    // reintroduces it here. What this guards against is a literal
+    // "Submit" CTA verb/button (matching DelayRepayEstimate.test.tsx's
+    // own "never claim-performing language" case), which a whole-word
+    // match still catches without penalizing "submits" in hedge prose.
     expect(screen.queryByText(/\bsubmit\b/i)).not.toBeInTheDocument();
     // Scoped to the rollup section itself (spec Decision 4: "no outbound
     // claim link is rendered at the rollup level at all") -- not the

@@ -128,6 +128,49 @@ describe('computePunctualitySummary', () => {
     expect(summary.avgDelayMinutes).toBe(5);
     expect(summary.cancelledCount).toBe(1);
   });
+
+  it('every eligible journey cancelled: eligibleCount is 0 but cancelledCount reports the real count (review finding A)', () => {
+    // computePunctualitySummary's own contract (eligibleCount is the
+    // non-cancelled arithmetic population) means a caller must check
+    // cancelledCount separately to tell "no data at all" apart from
+    // "everything eligible was cancelled" -- this test locks in the shape
+    // ReliabilityDigest's PunctualitySection now branches on.
+    const summary = computePunctualitySummary(
+      [
+        train({ id: 1, serviceDate: '2026-09-10', delayMinutes: 45, status: 'cancelled' }),
+        train({ id: 2, serviceDate: '2026-09-09', delayMinutes: 10, status: 'cancelled' }),
+      ],
+      TODAY,
+    );
+    expect(summary.eligibleCount).toBe(0);
+    expect(summary.onTimePct).toBeNull();
+    expect(summary.avgDelayMinutes).toBeNull();
+    expect(summary.cancelledCount).toBe(2);
+  });
+
+  it('worstJourneys excludes on-time and early journeys (delayMinutes <= 0) -- review finding B', () => {
+    const summary = computePunctualitySummary(
+      [
+        train({ id: 1, serviceDate: '2026-09-10', delayMinutes: 0 }),
+        train({ id: 2, serviceDate: '2026-09-09', delayMinutes: -5 }),
+        train({ id: 3, serviceDate: '2026-09-08', delayMinutes: 12 }),
+      ],
+      TODAY,
+    );
+    expect(summary.worstJourneys.map((j) => j.trainId)).toEqual([3]);
+  });
+
+  it('worstJourneys is empty (not padded with on-time rows) when nothing eligible is actually late', () => {
+    const summary = computePunctualitySummary(
+      [
+        train({ id: 1, serviceDate: '2026-09-10', delayMinutes: 0 }),
+        train({ id: 2, serviceDate: '2026-09-09', delayMinutes: -2 }),
+      ],
+      TODAY,
+    );
+    expect(summary.eligibleCount).toBe(2);
+    expect(summary.worstJourneys).toEqual([]);
+  });
 });
 
 function ticket(overrides: Partial<TicketListItem> = {}): TicketListItem {
