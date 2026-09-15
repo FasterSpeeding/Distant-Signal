@@ -488,6 +488,17 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
     });
 
+    it('a failing shared-trains fetch still renders the caller’s own list rather than erroring the page', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockRejectedValue(new Error('API request failed: 500'));
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+      expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
+    });
+
     it('shared trains do not feed the personal reliability digest', async () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);

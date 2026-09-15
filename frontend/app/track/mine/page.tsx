@@ -57,12 +57,22 @@ export const revalidate = 0;
  * it came from. Before this, sharing a train had no effect whatsoever on
  * the recipient's own tracked-trains page -- the only place a shared train
  * appeared at all was `/groups/{id}`, which a member had to already think
- * to open. */
+ * to open.
+ *
+ * `.catch(() => null)` on that third call alone: unlike the other two, it
+ * is AUXILIARY to this page -- the caller's own trains and tickets are
+ * what the page is for, and losing the group-shared half for the duration
+ * of a backend hiccup is materially better than losing the whole page to
+ * the error boundary, the same trade-off `app/page.tsx` already states for
+ * its own non-essential fetches. `null` is a value this page already
+ * handles (it's `getSharedGroupTrains()`'s own 401 return), so the failure
+ * collapses into the existing "nothing shared with you" branch rather than
+ * needing one of its own. */
 export default async function MyTrackedTrainsPage() {
   const [trains, tickets, sharedTrains] = await Promise.all([
     getMyTrackedTrains(),
     getMyTickets(),
-    getSharedGroupTrains(),
+    getSharedGroupTrains().catch(() => null),
   ]);
 
   if (trains === null) {
