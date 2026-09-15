@@ -874,10 +874,13 @@ impl From<SharedTrainRow> for SharedTrain {
 /// [`MINE_LIST_LIMIT`](crate::data::train_tracking::MINE_LIST_LIMIT) the
 /// caller's own half of the list uses -- but note the cap counts (group,
 /// train) PAIRS here, where the own half counts trains, so a train shared
-/// into three of the caller's groups spends three of the hundred. At the
-/// far edge of that cap a merged row could therefore lose one of its
-/// `from <group>` tags (never the row itself, since the pairs are ordered
-/// together by `added_at` only incidentally). Accepted rather than solved
+/// into three of the caller's groups spends three of the hundred. Those
+/// three pairs are NOT ordered together either -- shares into different
+/// groups happen at different times -- so at the far edge of the cap a
+/// merged row can lose one of its `from <group>` tags, and if every one
+/// of a train's pairs falls past the cut, the row itself (ordinary
+/// truncation, exactly as the own half drops its 101st train). Accepted
+/// rather than solved
 /// with a windowed subquery: the same "100 is a round number, not a
 /// researched one, revisit when real usage exists" posture
 /// `MINE_LIST_LIMIT` itself is documented with, and nothing today is
