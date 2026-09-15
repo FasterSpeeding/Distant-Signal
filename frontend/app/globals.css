@@ -1067,3 +1067,28 @@ a[data-text-link='always'] {
     white-space: normal;
   }
 }
+
+/* Schematic "you are here" journey progress diagram --
+   `components/JourneyProgress.tsx`. The horizontal connecting line is a
+   `::before` pseudo-element rather than an SVG path (spec:
+   docs/superpowers/specs/2026-09-12-journey-progress-visualization-design.md
+   -- "Existing visual/diagram conventions checked": no SVG/charting
+   precedent exists anywhere else in this frontend, so none is introduced
+   here either). `top: 9px` is half of the larger (18px) Origin/Terminate
+   node diameter, so the line meets every node's vertical center. */
+.journeyProgressLine {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+}
+
+.journeyProgressLine::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 9px;
+  height: 2px;
+  background: var(--mantine-color-gray-4);
+  z-index: 0;
+}

@@ -436,4 +436,40 @@ describe('TrainJourney', () => {
     expect(screen.queryByRole('table', { name: 'Journey timeline' })).not.toBeInTheDocument();
     expect(screen.getByText('Waiting to hear from Network Rail')).toBeInTheDocument();
   });
+
+  it('renders JourneyProgress whenever journeyStops is present (schedule_matched)', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'schedule_matched',
+          trainUid: 'X12345',
+          journeyStops: [
+            {
+              crs: 'RDG',
+              name: 'Reading',
+              tiploc: null,
+              kind: 'Origin',
+              scheduledArrival: null,
+              scheduledDeparture: '2026-09-08T08:00:00Z',
+              actualArrival: null,
+              actualDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
+              lastEventType: null,
+              variationStatus: null,
+              delayMinutes: null,
+            },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByRole('img', { name: /Journey progress/ })).toBeInTheDocument();
+  });
+
+  it('renders no JourneyProgress for pending, even if journeyStops were somehow non-null', () => {
+    renderWithMantine(
+      <TrainJourney state={baseState({ resolutionStatus: 'pending', journeyStops: null })} />,
+    );
+    expect(screen.queryByRole('img', { name: /Journey progress/ })).not.toBeInTheDocument();
+  });
 });
