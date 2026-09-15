@@ -7,6 +7,7 @@ import {
   AccordionItem,
   AccordionPanel,
   Alert,
+  Button,
   Group,
   Stack,
   Text,
@@ -63,6 +64,7 @@ export function StationTimetable({ crs }: { crs: string }) {
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<Results>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   async function loadFirstPage() {
     setLoading(true);
@@ -86,11 +88,46 @@ export function StationTimetable({ crs }: { crs: string }) {
     }
   }
 
+  async function handleLoadMore() {
+    if (results === null || results === 'error' || results === 'unpublished') return;
+    if (results.nextCursor === null || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const response = await fetch(
+        `/api/trains/search?station=${crs.toUpperCase()}&after=${results.nextCursor}`,
+      );
+      if (!response.ok) {
+        setResults((current) =>
+          current !== null && current !== 'error' && current !== 'unpublished'
+            ? { rows: current.rows, nextCursor: null }
+            : current,
+        );
+        return;
+      }
+      const body: TrainSearchResponse = await response.json();
+      setResults((current) =>
+        current !== null && current !== 'error' && current !== 'unpublished'
+          ? { rows: [...current.rows, ...body.results], nextCursor: body.nextCursor }
+          : current,
+      );
+    } catch {
+      setResults((current) =>
+        current !== null && current !== 'error' && current !== 'unpublished'
+          ? { rows: current.rows, nextCursor: null }
+          : current,
+      );
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
   function handleChange(value: string | null) {
     const nowExpanded = value !== null;
     setExpanded(nowExpanded);
     if (nowExpanded) {
       void loadFirstPage();
+    } else {
+      setResults(null);
     }
   }
 
@@ -129,16 +166,25 @@ export function StationTimetable({ crs }: { crs: string }) {
     const displayDate = today();
     return (
       <Stack gap="xs">
-        {results.rows.map((row) => (
-          <Group key={`${row.uid}-${row.scheduled}`} justify="space-between" wrap="nowrap">
-            <Text size="sm">
-              {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationCrs ?? '?'}
-            </Text>
-            <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>
-              View live status
-            </TextLink>
+        <Stack gap="xs">
+          {results.rows.map((row) => (
+            <Group key={`${row.uid}-${row.scheduled}`} justify="space-between" wrap="nowrap">
+              <Text size="sm">
+                {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationCrs ?? '?'}
+              </Text>
+              <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>
+                View live status
+              </TextLink>
+            </Group>
+          ))}
+        </Stack>
+        {results.nextCursor !== null && (
+          <Group>
+            <Button variant="default" size="xs" onClick={handleLoadMore} disabled={loadingMore} loading={loadingMore}>
+              Load more
+            </Button>
           </Group>
-        ))}
+        )}
       </Stack>
     );
   }

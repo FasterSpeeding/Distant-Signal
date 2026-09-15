@@ -27,6 +27,10 @@ const PAGE_ONE = [
   { uid: 'C10002', scheduled: '10:05', stationCrs: 'RDG', originCrs: 'WAT', destinationCrs: 'EXD' },
 ];
 
+const PAGE_TWO = [
+  { uid: 'C10003', scheduled: '11:40', stationCrs: 'RDG', originCrs: 'PAD', destinationCrs: 'BRI' },
+];
+
 function expand() {
   return screen.getByRole('button', { name: 'Scheduled departures' });
 }
@@ -137,5 +141,53 @@ describe('StationTimetable', () => {
     expect(
       await screen.findByText("Couldn't load the scheduled departures right now."),
     ).toBeInTheDocument();
+  });
+
+  it('shows Load more when nextCursor is non-null, and none when it is null', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE, null), { status: 200 }))));
+    renderWithMantine(<StationTimetable crs="RDG" />);
+    fireEvent.click(expand());
+    await screen.findByText('08:22 · PAD → RDG → BRI');
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
+
+  it('Load more fetches with after=<cursor> and station unchanged, and appends rather than replaces', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('after=CURSOR1')) {
+        return Promise.resolve(new Response(searchBody(PAGE_TWO, null), { status: 200 }));
+      }
+      return Promise.resolve(new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<StationTimetable crs="RDG" />);
+
+    fireEvent.click(expand());
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText('11:40 · PAD → RDG → BRI')).toBeInTheDocument();
+    expect(screen.getByText('08:22 · PAD → RDG → BRI')).toBeInTheDocument();
+    expect(screen.getByText('10:05 · WAT → RDG → EXD')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/trains/search?station=RDG&after=CURSOR1');
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument());
+  });
+
+  it('collapse then re-expand issues a fresh fetch rather than reusing the previous result set', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(searchBody(PAGE_ONE), { status: 200 }))
+      .mockResolvedValueOnce(new Response(searchBody(PAGE_TWO), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<StationTimetable crs="RDG" />);
+
+    fireEvent.click(expand());
+    await screen.findByText('08:22 · PAD → RDG → BRI');
+
+    fireEvent.click(expand()); // collapse
+    fireEvent.click(expand()); // re-expand
+
+    await screen.findByText('11:40 · PAD → RDG → BRI');
+    expect(screen.queryByText('08:22 · PAD → RDG → BRI')).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
