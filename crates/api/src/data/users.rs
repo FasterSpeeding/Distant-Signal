@@ -38,7 +38,7 @@ fn verified_email(identity: &OidcIdentity) -> Option<&str> {
 ///
 /// Also trims: a name of `"  Ada  "` is `"Ada"`, never rendered with its
 /// padding intact.
-pub fn non_blank(value: Option<&str>) -> Option<&str> {
+fn non_blank(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|trimmed| !trimmed.is_empty())
 }
 
@@ -74,11 +74,16 @@ pub fn display_label(name: Option<String>, username: Option<String>) -> Option<S
 /// placeholder: "we can't say who this is" is the correct outcome there,
 /// not "here is their email address".
 ///
-/// `@` is a deliberately blunt test. It has no false positives worth
-/// worrying about (a person's display name or username does not contain
-/// `@` unless it is an address) and the cost of a false negative -- a
-/// leaked email -- is much higher than the cost of a false positive: a
-/// member shown as "A member".
+/// `@` is a deliberately blunt test: the cost of a false negative -- a
+/// leaked email address -- is much higher than the cost of a false
+/// positive, which is a member shown as the generic placeholder.
+///
+/// Note what that means on some deployments. On Entra ID / Azure AD,
+/// `preferred_username` IS the UPN and is therefore email-shaped for
+/// essentially every user, so this fallback is inert there by
+/// construction, not just occasionally -- everyone without a `name` shows
+/// as "A member". That is the intended trade, not a bug to go debugging:
+/// the alternative is showing the whole group an address.
 fn shareable(value: Option<&str>) -> Option<&str> {
     non_blank(value).filter(|candidate| !candidate.contains('@'))
 }
