@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { Box, Stack, Text, Tooltip } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
@@ -131,6 +132,15 @@ function circleStyle(state: NodeState, delay: DelayState): React.CSSProperties {
 export function JourneyProgress({ stops }: JourneyProgressProps) {
   const lastIndex = lastReachedIndex(stops);
   const ariaLabel = `Journey progress: ${stops.length} stop${stops.length === 1 ? '' : 's'}`;
+  const nodeRefs = useRef<Array<HTMLDivElement | null>>([]);
+
+  useEffect(() => {
+    if (lastIndex === -1) return;
+    const node = nodeRefs.current[lastIndex];
+    if (!node) return;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    node.scrollIntoView({ inline: 'center', behavior: reduceMotion ? 'auto' : 'smooth' });
+  }, [lastIndex]);
 
   return (
     <Box role="img" aria-label={ariaLabel} style={{ overflowX: 'auto' }}>
@@ -141,6 +151,9 @@ export function JourneyProgress({ stops }: JourneyProgressProps) {
             stop={stop}
             index={index}
             lastIndex={lastIndex}
+            nodeRef={(el) => {
+              nodeRefs.current[index] = el;
+            }}
           />
         ))}
       </Box>
@@ -162,10 +175,12 @@ function JourneyProgressNode({
   stop,
   index,
   lastIndex,
+  nodeRef,
 }: {
   stop: JourneyStop;
   index: number;
   lastIndex: number;
+  nodeRef: (el: HTMLDivElement | null) => void;
 }) {
   const diameter = nodeDiameter(stop.kind);
   const state = nodeState(index, lastIndex);
@@ -176,6 +191,7 @@ function JourneyProgressNode({
 
   const circle = (
     <Box
+      ref={nodeRef}
       data-journey-node
       data-node-state={state}
       data-delay-state={delay}

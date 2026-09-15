@@ -1,6 +1,8 @@
 import { fireEvent, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MantineProvider } from '@mantine/core';
 import { renderWithMantine } from '@/test/render';
+import { theme } from '@/lib/theme';
 import { JourneyProgress } from './JourneyProgress';
 import type { JourneyStop } from '@/lib/types';
 
@@ -235,5 +237,108 @@ describe('JourneyProgress', () => {
     const trigger = screen.getByLabelText('Clapham Junction');
     fireEvent.mouseEnter(trigger);
     expect(await screen.findByText('Clapham Junction')).toBeInTheDocument();
+  });
+});
+
+describe('JourneyProgress auto-scroll', () => {
+  beforeEach(() => {
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  it('scrolls the marker node into view, centered, on mount when a marker exists', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith(
+      expect.objectContaining({ inline: 'center', behavior: 'smooth' }),
+    );
+  });
+
+  it('does not call scrollIntoView when there is no marker (lastReachedIndex === -1)', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[stop({ crs: 'A', kind: 'Origin' }), stop({ crs: 'B', kind: 'Terminate' })]}
+        resolutionStatus="resolved"
+        status="awaiting_activation"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    expect(window.HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('uses an instant jump, not smooth scrolling, when the viewer prefers reduced motion', () => {
+    vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) =>
+        ({
+          matches: query === '(prefers-reduced-motion: reduce)',
+          media: query,
+          onchange: null,
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: 'auto' }),
+    );
+  });
+
+  it('re-scrolls when lastReachedIndex advances on rerender (a new confirmed event moved the marker)', () => {
+    const { rerender } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', kind: 'Intermediate' }),
+          stop({ crs: 'C', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    (window.HTMLElement.prototype.scrollIntoView as ReturnType<typeof vi.fn>).mockClear();
+
+    rerender(
+      <MantineProvider theme={theme}>
+        <JourneyProgress
+          stops={[
+            stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+            stop({ crs: 'B', kind: 'Intermediate', actualArrival: '2026-09-12T08:15:00Z' }),
+            stop({ crs: 'C', kind: 'Terminate' }),
+          ]}
+          resolutionStatus="resolved"
+          status="en_route"
+          trainUid="C1"
+          mayHaveArrived={false}
+        />
+      </MantineProvider>,
+    );
+    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
   });
 });
