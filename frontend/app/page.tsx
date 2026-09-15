@@ -484,16 +484,20 @@ function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
           {/* One badge per group this train reached the caller through --
               a train shared into two of their groups is two tags, not an
               arbitrarily-picked one. `addedByName` is `null` when the
-              sharer has neither a name nor a verified email on their
-              account; "a member" then, never a raw user id -- same wording
-              and same fallback /track/mine and /groups/{id} already use. */}
+              sharer has neither a name nor a username on their account --
+              never their email, which is not something to show the rest of
+              a group (`crates/api/src/data/users.rs`'s `display_label`).
+              "a member" then, never a raw user id -- same wording and same
+              fallback /track/mine and /groups/{id} already use, and
+              `?.trim() ||` rather than `??` for the same reason they use
+              it: a blank name is not a label either. */}
           {groupNames.map((groupName) => (
             <Badge key={groupName} variant="light" color="grape">
               from {groupName}
             </Badge>
           ))}
           <Text size="sm" c="dimmed">
-            Shared by {train.addedByName ?? 'a member'}
+            Shared by {train.addedByName?.trim() || 'a member'}
           </Text>
         </Group>
       </Stack>

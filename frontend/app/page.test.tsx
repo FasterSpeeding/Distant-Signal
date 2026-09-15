@@ -565,7 +565,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     expect(screen.getByText('9m late')).toBeInTheDocument();
   });
 
-  it('falls back to "a member" when the sharer has no display name, never a raw user id', async () => {
+  it('falls back to "a member" when the sharer has no name or username, never a raw user id', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
       sharedTrain({ addedBy: 'sso-subject-1234', addedByName: null }),
@@ -575,6 +575,22 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     expect(screen.getByText('Shared by a member')).toBeInTheDocument();
     expect(screen.queryByText(/sso-subject-1234/)).not.toBeInTheDocument();
+  });
+
+  /** A BLANK name, not a null one -- what an identity provider with no name
+   * on file for the sharer actually sends. `??` treats `''` as a usable
+   * label, which would render "Shared by " with nothing after it. The
+   * backend normalizes blanks away now; this guards the rows written before
+   * it did, exactly as /track/mine's and /groups/{id}'s own rows do. */
+  it('a sharer whose name is blank rather than null is still credited as "a member"', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+      sharedTrain({ addedBy: 'sso-subject-1234', addedByName: '   ' }),
+    ]);
+
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText('Shared by a member')).toBeInTheDocument();
   });
 
   it('offers no edit/delete/ticket control on someone else’s shared train', async () => {
