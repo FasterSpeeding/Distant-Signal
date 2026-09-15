@@ -27,6 +27,8 @@ import {
   getIncident,
   getChatbotAccess,
   getStationSampleStats,
+  getStationAccessibility,
+  getSharedGroupTrains,
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from './api';
@@ -141,6 +143,33 @@ describe('api client', () => {
       'http://test-api:8080/public/stations/EDB/sample-stats',
       expect.objectContaining({ cache: 'no-store' }),
     );
+  });
+
+  it('getStationAccessibility fetches the correct URL with hour caching', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ lifts: { count: 2 } }), { status: 200 })),
+    );
+    await expect(getStationAccessibility('EUS')).resolves.toEqual({ lifts: { count: 2 } });
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/stations/EUS/accessibility',
+      expect.objectContaining({ next: { revalidate: 3600 } }),
+    );
+  });
+
+  // The 404 is a meaningful application state for this route ("no stations
+  // row for this CRS at all"), distinct from the 200 {} the same route
+  // returns for a row that published no allowlisted keys -- the page-level
+  // wrapper words the two differently, so this must not collapse into a
+  // generic Error.
+  it('getStationAccessibility throws ApiNotFoundError on a 404', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    await expect(getStationAccessibility('ZZZ')).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('getStationAccessibility resolves an empty object as an ordinary 200, not an error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    await expect(getStationAccessibility('ZZZ')).resolves.toEqual({});
   });
 
   it('getLineStatusHistory builds the correct range URL', async () => {
@@ -729,6 +758,34 @@ describe('api client', () => {
   it('getMyTrackedTrains still throws on a non-401 failure', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
     await expect(getMyTrackedTrains()).rejects.toThrow(/500/);
+  });
+
+  it('getSharedGroupTrains fetches the correct URL, forwarding cookies, with no caching', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    await getSharedGroupTrains();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/groups/shared-trains',
+      expect.objectContaining({
+        cache: 'no-store',
+        headers: { Cookie: 'distant_signal_session=abc123' },
+      }),
+    );
+  });
+
+  it('getSharedGroupTrains returns null on a 401 (not logged in), matching getMyTrackedTrains', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('no session', { status: 401 })));
+    await expect(getSharedGroupTrains()).resolves.toBeNull();
+  });
+
+  it('getSharedGroupTrains resolves an empty array as "no groups / nothing shared", not null', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    await expect(getSharedGroupTrains()).resolves.toEqual([]);
+  });
+
+  it('getSharedGroupTrains still throws on a non-401 failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    await expect(getSharedGroupTrains()).rejects.toThrow(/500/);
   });
 
   it('getDelayRepayEstimate fetches the correct URL with no caching', async () => {

@@ -1067,3 +1067,39 @@ a[data-text-link='always'] {
     white-space: normal;
   }
 }
+
+/* Schematic "you are here" journey progress diagram --
+   `components/JourneyProgress.tsx`. The horizontal connecting line is a
+   `::before` pseudo-element rather than an SVG path (spec:
+   docs/superpowers/specs/2026-09-12-journey-progress-visualization-design.md
+   -- "Existing visual/diagram conventions checked": no SVG/charting
+   precedent exists anywhere else in this frontend, so none is introduced
+   here either). Its `top` is half of `--journey-progress-node-slot` (set
+   inline by `JourneyProgress.tsx` from its own `NODE_CIRCLE_SLOT` constant,
+   the larger 18px Origin/Terminate node diameter) -- read back rather than
+   hardcoded again here, so this rule can't silently drift out of sync with
+   that constant if it ever changes. */
+/* `align-items: flex-start` anchors every node's flex item to the row's
+   top edge, regardless of its own total height (an endpoint's item is
+   taller than a bare intermediate node's once Task 3 adds an
+   always-visible label below the endpoint's circle). Each node then
+   centers its own circle inside a fixed-height `NODE_CIRCLE_SLOT` box
+   (`components/JourneyProgress.tsx`) anchored at that same top edge, so
+   every circle's vertical center lands at the same offset -- matching this
+   rule's own `top` below -- independent of what renders beneath it. */
+.journeyProgressLine {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+}
+
+.journeyProgressLine::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--journey-progress-node-slot, 18px) / 2);
+  height: 2px;
+  background: var(--mantine-color-gray-4);
+  z-index: 0;
+}

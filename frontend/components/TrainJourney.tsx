@@ -1,5 +1,6 @@
 import { Alert, Badge, Group, Loader, Stack, Text, Tooltip } from '@mantine/core';
 import { EtaBadge } from './EtaBadge';
+import { JourneyProgress } from './JourneyProgress';
 import { JourneyTimeline } from './JourneyTimeline';
 import { formatTime } from '@/lib/dateFormat';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
@@ -30,6 +31,15 @@ export function TrainJourney({ state }: { state: TrainJourneyState }) {
     <Stack gap="sm">
       <StatusMessage state={state} />
       {state.resolutionStatus === 'resolved' && <JourneyDetails state={state} />}
+      {state.journeyStops && (
+        <JourneyProgress
+          stops={state.journeyStops}
+          resolutionStatus={state.resolutionStatus}
+          status={state.status}
+          trainUid={state.trainUid}
+          mayHaveArrived={state.mayHaveArrived}
+        />
+      )}
       {state.journeyStops && <JourneyTimeline stops={state.journeyStops} />}
     </Stack>
   );
