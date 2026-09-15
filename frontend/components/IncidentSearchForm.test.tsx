@@ -164,6 +164,76 @@ describe('IncidentSearchForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     await waitFor(() => expect(screen.getAllByText('Signal failure at Woking')).toHaveLength(2));
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+
+    // Both pages' rows land in the ONE in-flow list, so the page's own
+    // scrollbar reaches every one of them -- see the structural guard
+    // below for why that matters.
+    const list = document.querySelector('[data-incident-results]') as HTMLElement;
+    for (const row of screen.getAllByText('Signal failure at Woking')) {
+      expect(list.contains(row)).toBe(true);
+    }
+  });
+
+  // Regression guard for the archive being hard-clipped at a fixed height.
+  // The list used to sit inside a `<ScrollArea mah={520}>`, whose root is
+  // `overflow: hidden` while its viewport is `height: 100%`; against a root
+  // whose own `height` stays `auto` that percentage resolves to `auto`, so
+  // the viewport never overflowed itself (nothing scrolled) and the root
+  // clipped everything past 520px. jsdom does no layout, so this asserts
+  // the *structure* that caused it instead: the results list must not be
+  // inside a Mantine scroll viewport, and no ancestor up to the form may
+  // pin a height.
+  //
+  // Note this also rejects `ScrollArea.Autosize` -- the component that
+  // *would* cap the height correctly. That is deliberate rather than
+  // incidental: the choice here is "no nested scroller at all, the page
+  // scrolls", and `IncidentSearchForm.tsx`'s own comment records why.
+  it('renders the results list in the page flow, with no fixed-height or scroll-container ancestor', async () => {
+    fetchMock.mockReturnValue(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: null }));
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+
+    const list = document.querySelector('[data-incident-results]');
+    expect(list).not.toBeNull();
+    const form = (list as HTMLElement).closest('form');
+    expect(form).not.toBeNull();
+
+    // Walk the list itself plus every ancestor up to (and including) the
+    // form -- a clip anywhere on that chain hides rows just as effectively
+    // as one on the list. (Above the form is this component's caller, which
+    // a unit test can't see; `app/incidents/page.tsx` and `app/layout.tsx`
+    // are out of scope here.)
+    for (
+      let node: HTMLElement | null = list as HTMLElement;
+      node !== null;
+      node = node === form ? null : (node.parentElement as HTMLElement | null)
+    ) {
+      // Mantine's own scroll viewport, whatever set it up.
+      expect(node.hasAttribute('data-scrollarea-viewport')).toBe(false);
+      // Mantine resolves a non-responsive `h`/`mah` style prop straight
+      // into an inline `height`/`max-height` (`parse-style-props.mjs`), so
+      // reading those back off `style` is enough -- no computed style, no
+      // layout, which is just as well under jsdom. Verified against the
+      // rendered DOM: a `<ScrollArea mah={520}>` root carries
+      // `max-height: calc(32.5rem * var(--mantine-scale))`.
+      expect(node.style.maxHeight).toBe('');
+      expect(node.style.height).toBe('');
+      // Only catches a hand-written inline clip -- Mantine's own
+      // `overflow: hidden` arrives via the `.m_d57069b5` class, which the
+      // `data-scrollarea-viewport` check above is what actually covers.
+      expect(node.style.overflow).not.toBe('hidden');
+      expect(node.style.overflowY).not.toBe('hidden');
+    }
+
+    // The two properties that keep a row from pushing the page sideways
+    // once the clipping ancestor is gone. jsdom can't lay anything out, so
+    // this is only a tripwire against silent removal -- the reasoning is in
+    // `IncidentSearchForm.tsx`'s own comment on this `Group`.
+    const header = screen.getByText('Signal failure at Woking').closest('a')
+      ?.parentElement as HTMLElement;
+    expect(header.style.overflowWrap).toBe('anywhere');
+    expect(screen.getByText(/2026/).style.whiteSpace).toBe('nowrap');
   });
 
   it('says the end has been reached once the last page is in, rather than just dropping the button', async () => {
