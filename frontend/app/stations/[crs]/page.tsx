@@ -14,6 +14,7 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { IssueList } from '@/components/IssueList';
 import { PinToggle } from '@/components/PinToggle';
 import { ShareButton } from '@/components/ShareButton';
+import { StationTimetable } from '@/components/StationTimetable';
 import { TextLink } from '@/components/TextLink';
 import { worstStatus, severityRank, severityLabel } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
@@ -271,6 +272,9 @@ export default async function StationDisruptionPage({
             </Group>
           ))}
       </Stack>
+
+      <Divider />
+      <StationTimetable crs={crs} />
     </Stack>
   );
 }

@@ -190,4 +190,43 @@ describe('StationTimetable', () => {
     expect(screen.queryByText('08:22 · PAD → RDG → BRI')).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it('shows a disclaimer above the rows once expanded with results', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))));
+    renderWithMantine(<StationTimetable crs="RDG" />);
+
+    fireEvent.click(expand());
+
+    expect(
+      await screen.findByText(/These are from the scheduled timetable, not live running information/),
+    ).toBeInTheDocument();
+  });
+
+  it('offers a link to the full /trains search, prefilled with this station, regardless of expand state', () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))));
+    renderWithMantine(<StationTimetable crs="RDG" />);
+
+    expect(screen.getByRole('link', { name: /Search a different day or filter/ })).toHaveAttribute(
+      'href',
+      '/trains?station=RDG',
+    );
+  });
+
+  it('notes that trains terminating at this station will not appear, and that no headcode/operator is shown', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))));
+    renderWithMantine(<StationTimetable crs="RDG" />);
+
+    // This copy lives inside the AccordionPanel alongside the disclaimer
+    // (Step 3), so -- like the "shows a disclaimer" test above -- it only
+    // renders once expanded: with keepMounted={false}, Mantine's Collapse
+    // never mounts panel children at all while the section has never been
+    // opened (not merely "later" -- there is no un-clicked path to this
+    // text), so the section must be expanded first, then awaited per the
+    // documented Activity-API mount quirk.
+    fireEvent.click(expand());
+
+    expect(
+      await screen.findByText(/only departures from this station -- trains that terminate here won't be listed/i),
+    ).toBeInTheDocument();
+  });
 });

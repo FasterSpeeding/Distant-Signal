@@ -190,13 +190,28 @@ export function StationTimetable({ crs }: { crs: string }) {
   }
 
   return (
-    <Accordion keepMounted={false} onChange={handleChange}>
-      <AccordionItem value="scheduled-departures">
-        <AccordionControl>Scheduled departures</AccordionControl>
-        <AccordionPanel>
-          <Stack gap="xs">{resultsContent()}</Stack>
-        </AccordionPanel>
-      </AccordionItem>
-    </Accordion>
+    <Stack gap="xs">
+      <Accordion keepMounted={false} onChange={handleChange}>
+        <AccordionItem value="scheduled-departures">
+          <AccordionControl>Scheduled departures</AccordionControl>
+          <AccordionPanel>
+            <Stack gap="xs">
+              <Text size="sm" c="dimmed">
+                These are from the scheduled timetable, not live running information, and may be up to 30
+                minutes out of date. Open a train to see its live status.
+              </Text>
+              <Text size="sm" c="dimmed">
+                This list shows only departures from this station -- trains that terminate here won&apos;t
+                be listed, and neither headcode nor operator is available for scheduled-timetable rows.
+              </Text>
+              {resultsContent()}
+            </Stack>
+          </AccordionPanel>
+        </AccordionItem>
+      </Accordion>
+      <TextLink href={`/trains?station=${crs.toUpperCase()}`}>
+        Search a different day or filter →
+      </TextLink>
+    </Stack>
   );
 }
