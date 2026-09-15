@@ -480,4 +480,94 @@ describe('TrainJourney', () => {
     );
     expect(screen.queryByRole('img', { name: /Journey progress/ })).not.toBeInTheDocument();
   });
+
+  it('schedule_matched with journeyStops: JourneyProgress shows the matching "scheduled route" caption', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'schedule_matched',
+          trainUid: 'X12345',
+          journeyStops: [
+            {
+              crs: 'RDG',
+              name: 'Reading',
+              tiploc: null,
+              kind: 'Origin',
+              scheduledArrival: null,
+              scheduledDeparture: '2026-09-08T08:00:00Z',
+              actualArrival: null,
+              actualDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
+              lastEventType: null,
+              variationStatus: null,
+              delayMinutes: null,
+            },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText("Scheduled route shown — live tracking hasn't started yet.")).toBeInTheDocument();
+  });
+
+  it('resolved + cancelled with journeyStops: JourneyProgress caption names the last confirmed stop', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'cancelled',
+          lastReportedLocation: 'Surbiton',
+          journeyStops: [
+            {
+              crs: 'WAT',
+              name: 'London Waterloo',
+              tiploc: null,
+              kind: 'Origin',
+              scheduledArrival: null,
+              scheduledDeparture: '2026-08-28T18:32:00Z',
+              estimatedArrival: null,
+              estimatedDeparture: null,
+              actualArrival: null,
+              actualDeparture: '2026-08-28T18:32:00Z',
+              lastEventType: 'DEPARTURE',
+              variationStatus: 'ON TIME',
+              delayMinutes: 0,
+            },
+            {
+              crs: 'SUR',
+              name: 'Surbiton',
+              tiploc: null,
+              kind: 'Intermediate',
+              scheduledArrival: '2026-08-28T18:50:00Z',
+              scheduledDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
+              actualArrival: '2026-08-28T18:52:00Z',
+              actualDeparture: null,
+              lastEventType: 'ARRIVAL',
+              variationStatus: 'LATE',
+              delayMinutes: 2,
+            },
+            {
+              crs: 'WOK',
+              name: 'Woking',
+              tiploc: null,
+              kind: 'Terminate',
+              scheduledArrival: '2026-08-28T19:10:00Z',
+              scheduledDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
+              actualArrival: null,
+              actualDeparture: null,
+              lastEventType: null,
+              variationStatus: null,
+              delayMinutes: null,
+            },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText('Cancelled — last confirmed at Surbiton.')).toBeInTheDocument();
+  });
 });

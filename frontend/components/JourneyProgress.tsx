@@ -124,15 +124,92 @@ function circleStyle(state: NodeState, delay: DelayState): React.CSSProperties {
   return base;
 }
 
+interface ProgressCopy {
+  caption: string;
+  ariaLabel: string;
+}
+
+/** One pair of strings for every row of the status/resolution decision
+ * table -- see this plan's Global Constraints for the table copied
+ * verbatim from the spec. `caption` is the always-visible `Text` shown
+ * under the diagram; `ariaLabel` is the `role="img"` container's textual
+ * restatement (spec Decision 6). They are independent strings, not one
+ * string reused twice, because the aria-label states the exact stop
+ * position ("stop N of Total") a sighted caption doesn't need spelled
+ * out. */
+function progressCopy(
+  stops: JourneyStop[],
+  lastIndex: number,
+  resolutionStatus: ResolutionStatus,
+  status: JourneyStatus | null,
+  trainUid: string | null,
+  mayHaveArrived: boolean,
+): ProgressCopy {
+  if (stops.length === 0) {
+    return { caption: 'Not yet started.', ariaLabel: 'Journey progress: not yet started' };
+  }
+
+  const total = stops.length;
+  const markerName =
+    lastIndex >= 0 ? (stops[lastIndex].name ?? stops[lastIndex].crs ?? 'Unknown location') : null;
+  const stopNumber = lastIndex + 1;
+
+  if (status === 'cancelled') {
+    if (lastIndex === -1) {
+      return {
+        caption: 'Cancelled — no movement was ever confirmed.',
+        ariaLabel: 'Journey progress: cancelled before any confirmed movement',
+      };
+    }
+    return {
+      caption: `Cancelled — last confirmed at ${markerName}.`,
+      ariaLabel: `Journey progress: cancelled, last confirmed at ${markerName}, stop ${stopNumber} of ${total}`,
+    };
+  }
+
+  if (status === 'completed') {
+    const terminusName = stops[total - 1].name ?? stops[total - 1].crs ?? 'Unknown location';
+    return {
+      caption: `Arrived at ${terminusName}.`,
+      ariaLabel: `Journey progress: arrived at ${terminusName}`,
+    };
+  }
+
+  if (lastIndex === -1) {
+    if (resolutionStatus === 'schedule_matched') {
+      return {
+        caption: "Scheduled route shown — live tracking hasn't started yet.",
+        ariaLabel: 'Journey progress: scheduled route shown, live tracking not yet started',
+      };
+    }
+    // resolved + awaiting_activation, or resolved + en_route with no
+    // confirmed movement yet -- both mean "a real train_uid is matched,
+    // nothing has been confirmed", the same copy StatusMessage uses for
+    // awaiting_activation.
+    return {
+      caption: `Matched to train ${trainUid} — waiting for its first movement report.`,
+      ariaLabel: `Journey progress: matched to train ${trainUid}, waiting for first movement report`,
+    };
+  }
+
+  // en_route with a confirmed marker.
+  return {
+    caption: `Currently at ${markerName}.`,
+    ariaLabel: mayHaveArrived
+      ? `Journey progress: currently at ${markerName} (may have arrived), stop ${stopNumber} of ${total}`
+      : `Journey progress: currently at ${markerName}, stop ${stopNumber} of ${total}`,
+  };
+}
+
 /** Schematic, index-spaced (NOT time/distance-proportional) "you are here"
  * line diagram, additive to `JourneyTimeline` -- see
  * docs/superpowers/specs/2026-09-12-journey-progress-visualization-design.md.
  * Rendered directly above `JourneyTimeline` in `TrainJourney.tsx`, behind
  * the identical `{state.journeyStops && ...}` guard. */
-export function JourneyProgress({ stops }: JourneyProgressProps) {
+export function JourneyProgress({ stops, resolutionStatus, status, trainUid, mayHaveArrived }: JourneyProgressProps) {
   const lastIndex = lastReachedIndex(stops);
-  const ariaLabel = `Journey progress: ${stops.length} stop${stops.length === 1 ? '' : 's'}`;
   const nodeRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const { caption, ariaLabel } = progressCopy(stops, lastIndex, resolutionStatus, status, trainUid, mayHaveArrived);
 
   useEffect(() => {
     if (lastIndex === -1) return;
@@ -143,21 +220,26 @@ export function JourneyProgress({ stops }: JourneyProgressProps) {
   }, [lastIndex]);
 
   return (
-    <Box role="img" aria-label={ariaLabel} style={{ overflowX: 'auto' }}>
-      <Box className="journeyProgressLine" style={{ minWidth: stops.length * NODE_SLOT_WIDTH }}>
-        {stops.map((stop, index) => (
-          <JourneyProgressNode
-            key={`${stop.crs ?? 'unknown'}-${index}`}
-            stop={stop}
-            index={index}
-            lastIndex={lastIndex}
-            nodeRef={(el) => {
-              nodeRefs.current[index] = el;
-            }}
-          />
-        ))}
+    <Stack gap="xs">
+      <Box role="img" aria-label={ariaLabel} style={{ overflowX: 'auto' }}>
+        <Box className="journeyProgressLine" style={{ minWidth: stops.length * NODE_SLOT_WIDTH }}>
+          {stops.map((stop, index) => (
+            <JourneyProgressNode
+              key={`${stop.crs ?? 'unknown'}-${index}`}
+              stop={stop}
+              index={index}
+              lastIndex={lastIndex}
+              nodeRef={(el) => {
+                nodeRefs.current[index] = el;
+              }}
+            />
+          ))}
+        </Box>
       </Box>
-    </Box>
+      <Text size="sm" c="dimmed">
+        {caption}
+      </Text>
+    </Stack>
   );
 }
 

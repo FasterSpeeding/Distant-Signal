@@ -77,17 +77,19 @@ describe('JourneyProgress', () => {
     expect(screen.getByRole('img')).toBeInTheDocument();
   });
 
-  it('carries a role="img" and a stop-count aria-label before any marker logic exists', () => {
+  it('carries a role="img" and a "currently at" aria-label once a marker exists', () => {
     renderWithMantine(
       <JourneyProgress
         stops={[stop({ crs: 'WAT', kind: 'Origin' }), stop({ crs: 'WOK', kind: 'Terminate' })]}
         resolutionStatus="resolved"
-        status="en_route"
+        status="awaiting_activation"
         trainUid="C21373"
         mayHaveArrived={false}
       />,
     );
-    expect(screen.getByRole('img', { name: 'Journey progress: 2 stops' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', { name: /Journey progress: matched to train/ }),
+    ).toBeInTheDocument();
   });
 
   it('marks the highest-index stop with a confirmed actualArrival/actualDeparture as the marker', () => {
@@ -340,5 +342,141 @@ describe('JourneyProgress auto-scroll', () => {
       </MantineProvider>,
     );
     expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('JourneyProgress decision-table captions and aria-labels', () => {
+  it('schedule_matched: no marker, "scheduled route" caption and aria-label', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[stop({ crs: 'A', kind: 'Origin' }), stop({ crs: 'B', kind: 'Terminate' })]}
+        resolutionStatus="schedule_matched"
+        status={null}
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    expect(screen.getByText("Scheduled route shown — live tracking hasn't started yet.")).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', { name: 'Journey progress: scheduled route shown, live tracking not yet started' }),
+    ).toBeInTheDocument();
+  });
+
+  it('resolved + awaiting_activation: no marker, "matched to train" caption naming trainUid', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[stop({ crs: 'A', kind: 'Origin' }), stop({ crs: 'B', kind: 'Terminate' })]}
+        resolutionStatus="resolved"
+        status="awaiting_activation"
+        trainUid="C21373"
+        mayHaveArrived={false}
+      />,
+    );
+    expect(
+      screen.getByText('Matched to train C21373 — waiting for its first movement report.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', {
+        name: 'Journey progress: matched to train C21373, waiting for first movement report',
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('resolved + en_route, mayHaveArrived false: "Currently at X" caption and matching aria-label', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', name: 'Alpha', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', name: 'Bravo', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    expect(screen.getByText('Currently at Alpha.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', { name: 'Journey progress: currently at Alpha, stop 1 of 2' }),
+    ).toBeInTheDocument();
+  });
+
+  it('resolved + en_route, mayHaveArrived true: same caption, aria-label notes the inference', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', name: 'Alpha', kind: 'Origin' }),
+          stop({ crs: 'B', name: 'Bravo', kind: 'Terminate', actualArrival: '2026-09-12T09:00:00Z' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={true}
+      />,
+    );
+    expect(screen.getByText('Currently at Bravo.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', { name: 'Journey progress: currently at Bravo (may have arrived), stop 2 of 2' }),
+    ).toBeInTheDocument();
+  });
+
+  it('resolved + cancelled, with a confirmed marker: "Cancelled — last confirmed at X" caption/aria-label', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', name: 'Alpha', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', name: 'Bravo', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="cancelled"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    expect(screen.getByText('Cancelled — last confirmed at Alpha.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', { name: 'Journey progress: cancelled, last confirmed at Alpha, stop 1 of 2' }),
+    ).toBeInTheDocument();
+  });
+
+  it('resolved + cancelled, before any confirmed movement: a distinct caption/aria-label', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[stop({ crs: 'A', kind: 'Origin' }), stop({ crs: 'B', kind: 'Terminate' })]}
+        resolutionStatus="resolved"
+        status="cancelled"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    expect(screen.getByText('Cancelled — no movement was ever confirmed.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', { name: 'Journey progress: cancelled before any confirmed movement' }),
+    ).toBeInTheDocument();
+  });
+
+  it('resolved + completed: "Arrived at X" caption/aria-label naming the terminus', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', name: 'Alpha', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', name: 'Bravo', kind: 'Terminate', actualArrival: '2026-09-12T09:00:00Z' }),
+        ]}
+        resolutionStatus="resolved"
+        status="completed"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    expect(screen.getByText('Arrived at Bravo.')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Journey progress: arrived at Bravo' })).toBeInTheDocument();
+  });
+
+  it('empty stops array: "Not yet started" caption/aria-label, defensively (not reachable via the real TrainJourney guard, but must not crash)', () => {
+    renderWithMantine(
+      <JourneyProgress stops={[]} resolutionStatus="resolved" status="en_route" trainUid="C1" mayHaveArrived={false} />,
+    );
+    expect(screen.getByText('Not yet started.')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Journey progress: not yet started' })).toBeInTheDocument();
   });
 });
