@@ -369,9 +369,81 @@ describe('JourneyProgress auto-scroll', () => {
     const scroller = container.querySelector('[data-journey-progress-scroll]');
     expect(scroller).toBeInTheDocument();
     expect(window.Element.prototype.scrollTo).toHaveBeenCalledWith(
-      expect.objectContaining({ left: expect.any(Number), behavior: 'smooth' }),
+      expect.objectContaining({ behavior: 'smooth' }),
     );
     expect((window.Element.prototype.scrollTo as ReturnType<typeof vi.fn>).mock.instances[0]).toBe(scroller);
+  });
+
+  // jsdom has no layout engine, so every rect is zero and the effect's
+  // arithmetic is invisible to an assertion on the un-stubbed render: `left`
+  // would come out `0` whether the implementation centered the marker,
+  // dropped the `+ scrollLeft` term, or inverted the delta's sign. Stubbing
+  // the two rects and a non-zero starting scroll position is the one way to
+  // pin the actual formula without a browser.
+  it('centers the marker by the measured delta, from wherever the container is already scrolled to', () => {
+    const { container, rerender } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', kind: 'Intermediate' }),
+          stop({ crs: 'C', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+
+    const scroller = container.querySelector<HTMLElement>('[data-journey-progress-scroll]')!;
+    scroller.getBoundingClientRect = () => ({ left: 20, width: 300 }) as DOMRect;
+    Object.defineProperty(scroller, 'scrollLeft', { value: 40, configurable: true, writable: true });
+    (window.Element.prototype.scrollTo as ReturnType<typeof vi.fn>).mockClear();
+
+    // Advance the marker onto the middle stop, whose node we give a known
+    // position: center 500 + 12/2 = 506, against a container center of
+    // 20 + 300/2 = 170. Delta 336, on top of a scrollLeft of 40 -> 376.
+    const marker = container.querySelectorAll<HTMLElement>('[data-journey-node]')[1];
+    marker.getBoundingClientRect = () => ({ left: 500, width: 12 }) as DOMRect;
+
+    rerender(
+      <MantineProvider theme={theme}>
+        <JourneyProgress
+          stops={[
+            stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+            stop({ crs: 'B', kind: 'Intermediate', actualArrival: '2026-09-12T08:15:00Z' }),
+            stop({ crs: 'C', kind: 'Terminate' }),
+          ]}
+          resolutionStatus="resolved"
+          status="en_route"
+          trainUid="C1"
+          mayHaveArrived={false}
+        />
+      </MantineProvider>,
+    );
+
+    expect(window.Element.prototype.scrollTo).toHaveBeenCalledWith({ left: 376, behavior: 'smooth' });
+  });
+
+  // The ref the effect measures must be on the circle itself. A refactor
+  // moving it to the surrounding slot or node would still "work" but would
+  // center a differently-sized box, drifting the marker off center by half
+  // the difference.
+  it('measures the marker circle itself, not its surrounding slot', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    const marker = container.querySelector('[data-node-state="marker"]');
+    expect(marker).toHaveAttribute('data-journey-node');
   });
 
   // The mobile-layout regression this component shipped with: `scrollIntoView`
@@ -533,7 +605,14 @@ describe('JourneyProgress responsive layout contract', () => {
     const line = container.querySelector<HTMLElement>('.journeyProgressLine')!;
     expect(line.style.minWidth).toBe('');
 
-    container.querySelectorAll<HTMLElement>('.journeyProgressNode').forEach((node) => {
+    // Selected by the `data-` attribute, NOT by `.journeyProgressNode`: the
+    // regression this guards against is someone reverting to an inline
+    // `style={{ flex: '0 0 56px' }}`, which would take the class with it and
+    // leave a class-based `querySelectorAll` matching nothing and passing
+    // vacuously. The length assertion is the other half of that guard.
+    const nodes = container.querySelectorAll<HTMLElement>('[data-journey-node-slot]');
+    expect(nodes).toHaveLength(3);
+    nodes.forEach((node) => {
       expect(node.style.flex).toBe('');
       expect(node.style.width).toBe('');
       expect(node.style.minWidth).toBe('');

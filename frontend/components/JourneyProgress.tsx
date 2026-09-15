@@ -283,7 +283,11 @@ export function JourneyProgress({ stops, resolutionStatus, status, trainUid, may
       left: container.scrollLeft + delta,
       behavior: reduceMotion ? 'auto' : 'smooth',
     });
-  }, [lastIndex]);
+    // `stops.length` as well as `lastIndex`: a poll refresh that picks up a
+    // schedule alteration can add or remove calling points without moving
+    // the marker's index, which slides the marker to a different x offset
+    // under a `lastIndex`-only dependency and leaves it off-screen.
+  }, [lastIndex, stops.length]);
 
   const endpointCount = stops.filter((stop) => isEndpoint(stop.kind)).length;
 
@@ -390,6 +394,14 @@ function JourneyProgressNode({
         width: diameter,
         height: diameter,
         borderRadius: '50%',
+        // `position` is what makes the `zIndex` below do anything at all --
+        // `z-index` is ignored on a statically-positioned box. The
+        // connecting line is drawn as absolutely-positioned
+        // `.journeyProgressNode::before`/`::after` pseudo-elements, and
+        // positioned boxes paint above in-flow ones regardless of source
+        // order, so without this the grey line drew straight across the
+        // middle of every circle.
+        position: 'relative',
         zIndex: 1,
         ...circleStyle(state, delay),
       }}

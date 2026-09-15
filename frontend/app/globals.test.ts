@@ -404,42 +404,135 @@ describe('journey progress diagram layout', () => {
     expect(rule![0]).toContain('overscroll-behavior-x: contain');
   });
 
-  it('sizes the node row from the counts the component supplies, so the line always spans the real run of nodes', () => {
+  it('sizes the node row from the counts the component supplies', () => {
     const rule = css.match(/\.journeyProgressLine\s*\{[^}]*\}/);
     expect(rule).not.toBeNull();
-    expect(rule![0]).toContain('width: 100%');
+    // Anchored: a bare `toContain('width: 100%')` is also satisfied by the
+    // `min-width:` declaration in the same rule, so it could never fail.
+    expect(rule![0]).toMatch(/[;{]\s*width:\s*100%/);
     expect(rule![0]).toContain('var(--journey-progress-count');
     expect(rule![0]).toContain('var(--journey-progress-endpoint-count');
+    // Spare width left over once every node has hit its `max-width` cap is
+    // split evenly rather than pooling at the right-hand edge.
+    expect(rule![0]).toContain('justify-content: center');
   });
 
-  it('lets nodes grow to fill a short journey but never shrink below their slot', () => {
+  // The one part of this layout that is checkable as arithmetic rather than
+  // as source text. The row's `min-width` has to equal the sum of the flex
+  // bases below it exactly -- if it is bigger the nodes can't fill the row,
+  // if it is smaller they overflow it -- and the two are written in
+  // different forms (`count * slot + endpoints * (endpointSlot - slot)`
+  // against `intermediates * slot + endpoints * endpointSlot`), so the
+  // equality is worth evaluating rather than eyeballing.
+  it("computes a row min-width that is exactly the sum of its nodes' slots", () => {
+    const rule = css.match(/\.journeyProgressLine\s*\{[^}]*\}/)![0];
+    const formula = rule.match(/min-width:\s*calc\(([\s\S]*?)\);/)![1];
+
+    function rowMinWidth(count: number, endpoints: number, slot: number, endpointSlot: number) {
+      const substituted = formula
+        .replace(/var\(--journey-progress-count[^)]*\)/g, String(count))
+        .replace(/var\(--journey-progress-endpoint-count[^)]*\)/g, String(endpoints))
+        .replace(/var\(--journey-progress-endpoint-slot[^)]*\)/g, String(endpointSlot))
+        .replace(/var\(--journey-progress-slot[^)]*\)/g, String(slot))
+        .replace(/px/g, '');
+      // The formula is pure arithmetic over the four substituted numbers.
+      return Function(`"use strict"; return (${substituted});`)() as number;
+    }
+
+    for (const [slot, endpointSlot] of [
+      [56, 84],
+      [44, 76],
+    ]) {
+      for (const [count, endpoints] of [
+        [0, 0],
+        [1, 1],
+        [2, 2],
+        [3, 2],
+        [21, 2],
+        [4, 0],
+        [5, 1],
+        [6, 3],
+      ]) {
+        const sumOfSlots = (count - endpoints) * slot + endpoints * endpointSlot;
+        expect(rowMinWidth(count, endpoints, slot, endpointSlot)).toBe(sumOfSlots);
+      }
+    }
+  });
+
+  it('lets nodes grow to fill a short journey, but never shrink and never stretch without limit', () => {
     const rule = css.match(/\.journeyProgressNode\s*\{[^}]*\}/);
     expect(rule).not.toBeNull();
     // `1 0 <basis>`: grow into spare width, never shrink.
-    expect(rule![0]).toContain('flex: 1 0 var(--journey-progress-slot)');
+    expect(rule![0]).toContain('flex: 1 0 var(--journey-progress-slot,');
     // Explicit, not flex's `auto` default -- otherwise a long station name's
     // min-content width silently widens its own slot past the basis.
-    expect(rule![0]).toContain('min-width: var(--journey-progress-slot)');
+    expect(rule![0]).toContain('min-width: var(--journey-progress-slot,');
+    // Caps how far growth can stretch a slot: a node centres its circle in
+    // its own slot, so an uncapped 550px slot on a two-stop desktop journey
+    // put the origin and terminus circles 550px apart.
+    expect(rule![0]).toContain('max-width: calc(2 * var(--journey-progress-slot,');
+    // Establishes the containing block for the connecting-line segments.
+    expect(rule![0]).toContain('position: relative');
+  });
+
+  it('gives every var() a fallback, so a node rendered outside the scroll box still lays out', () => {
+    // A `var()` with no fallback that resolves to nothing makes the WHOLE
+    // declaration invalid at computed-value time -- for `flex` that means
+    // `0 1 auto`, i.e. shrinkable content-sized nodes and a broken diagram.
+    const section = css.slice(css.indexOf('.journeyProgressScroll {'));
+    const bare = section.match(/var\(--journey-progress-(?:slot|endpoint-slot|node-slot)\)/g);
+    expect(bare).toBeNull();
+  });
+
+  it('draws the connecting line as two half-segments per node, ending under the end circles', () => {
+    // NOT a single row-spanning line: every node centres its circle in its
+    // own slot, so a `left: 0; right: 0` line on the row always overhangs
+    // the first and last circle by half a slot.
+    expect(css).not.toMatch(/\.journeyProgressLine::before/);
+
+    const segments = css.match(/\.journeyProgressNode::before,\s*\n\s*\.journeyProgressNode::after\s*\{[^}]*\}/);
+    expect(segments).not.toBeNull();
+    expect(segments![0]).toContain('position: absolute');
+    expect(segments![0]).toContain('top: calc(var(--journey-progress-node-slot, 18px) / 2)');
+
+    // Whole-rule matches, so neither can accidentally resolve to the shared
+    // `::before, ::after` rule above (whose body starts with `content`).
+    // Left half runs from the node's left edge to its centre, right half
+    // from its centre to its right edge -- the circle is at the centre, so
+    // the two meet under it and the run is continuous across the row.
+    expect(css).toMatch(/\.journeyProgressNode::before\s*\{\s*left:\s*0;\s*right:\s*50%;\s*\}/);
+    expect(css).toMatch(/\.journeyProgressNode::after\s*\{\s*left:\s*50%;\s*right:\s*0;\s*\}/);
+
+    // The outer half at each end is what would dangle; suppressing it also
+    // means a single-stop journey draws no line at all.
+    const ends = css.match(
+      /\.journeyProgressNode:first-child::before,\s*\n\s*\.journeyProgressNode:last-child::after\s*\{[^}]*\}/,
+    );
+    expect(ends).not.toBeNull();
+    expect(ends![0]).toContain('content: none');
   });
 
   it('gives an endpoint a wider slot so its always-visible label wraps instead of breaking mid-word', () => {
     const rule = css.match(/\.journeyProgressNode--endpoint\s*\{[^}]*\}/);
     expect(rule).not.toBeNull();
-    expect(rule![0]).toContain('flex-basis: var(--journey-progress-endpoint-slot)');
-    expect(rule![0]).toContain('min-width: var(--journey-progress-endpoint-slot)');
+    expect(rule![0]).toContain('flex-basis: var(--journey-progress-endpoint-slot,');
+    expect(rule![0]).toContain('min-width: var(--journey-progress-endpoint-slot,');
   });
 
   it('contains an endpoint label inside its slot', () => {
     const rule = css.match(/\.journeyProgressLabel\s*\{[^}]*\}/);
     expect(rule).not.toBeNull();
-    expect(rule![0]).toContain('max-width: 100%');
+    expect(rule![0]).toMatch(/[;{]\s*max-width:\s*100%/);
+    // `anywhere`, not `break-word`: only `anywhere` also reduces the
+    // min-content contribution, which is the thing that would otherwise
+    // widen the slot.
     expect(rule![0]).toContain('overflow-wrap: anywhere');
   });
 
-  it('clears the 24px minimum tap target for the intermediate-node tooltip trigger', () => {
+  it('clears the 24px minimum pointer target for the intermediate-node tooltip trigger', () => {
     const rule = css.match(/\.journeyProgressTrigger\s*\{[^}]*\}/);
     expect(rule).not.toBeNull();
-    expect(rule![0]).toContain('width: 100%');
+    expect(rule![0]).toMatch(/[;{]\s*width:\s*100%/);
     expect(rule![0]).toContain('min-height: 24px');
     // Keeps the circle pinned to the top of the enlarged trigger so the
     // extra height grows downwards and the circle's centre stays on the

@@ -1069,24 +1069,24 @@ a[data-text-link='always'] {
 }
 
 /* Schematic "you are here" journey progress diagram --
-   `components/JourneyProgress.tsx`. The horizontal connecting line is a
-   `::before` pseudo-element rather than an SVG path (spec:
+   `components/JourneyProgress.tsx`. The horizontal connecting line is
+   pseudo-elements rather than an SVG path (spec:
    docs/superpowers/specs/2026-09-12-journey-progress-visualization-design.md
    -- "Existing visual/diagram conventions checked": no SVG/charting
    precedent exists anywhere else in this frontend, so none is introduced
-   here either). Its `top` is half of `--journey-progress-node-slot` (set
-   inline by `JourneyProgress.tsx` from its own `NODE_CIRCLE_SLOT` constant,
-   the larger 18px Origin/Terminate node diameter) -- read back rather than
-   hardcoded again here, so this rule can't silently drift out of sync with
-   that constant if it ever changes. */
-/* `align-items: flex-start` anchors every node's flex item to the row's
+   here either).
+
+   `align-items: flex-start` anchors every node's flex item to the row's
    top edge, regardless of its own total height (an endpoint's item is
-   taller than a bare intermediate node's once Task 3 adds an
-   always-visible label below the endpoint's circle). Each node then
-   centers its own circle inside a fixed-height `NODE_CIRCLE_SLOT` box
-   (`components/JourneyProgress.tsx`) anchored at that same top edge, so
-   every circle's vertical center lands at the same offset -- matching this
-   rule's own `top` below -- independent of what renders beneath it. */
+   taller than a bare intermediate node's, because of the always-visible
+   station label below its circle). Each node then centers its own circle
+   inside a fixed-height `NODE_CIRCLE_SLOT` box
+   (`components/JourneyProgress.tsx`) anchored at that same top edge -- for
+   an intermediate node, inside `.journeyProgressTrigger`, which is itself
+   `align-items: flex-start` so its 24px tap-target floor grows downwards
+   only. Either way every circle's vertical center lands at the same
+   offset, matching the connecting segments' own `top` below, independent
+   of what renders beneath it. */
 /* Every horizontal measurement the diagram has lives here, as custom
    properties on the scroll container, rather than as pixel literals in
    `JourneyProgress.tsx`'s inline styles. That is what lets the
@@ -1117,65 +1117,124 @@ a[data-text-link='always'] {
    `width: max-content`: the flex items below are allowed to grow, and
    under `max-content` sizing a single long endpoint label would be
    distributed across every item's flex fraction and inflate the entire
-   row. With an explicit `min-width` the row is exactly as wide as its
-   slots, so:
-     - a long journey overflows into `.journeyProgressScroll`'s scroll
-       range, and every slot keeps its declared width;
-     - a short journey (4 stops is common, and 4 x 56px is under a third of
-       a 360px phone) has spare width, which `flex-grow: 1` shares out
-       evenly instead of leaving the nodes bunched at the left with the
-       connecting line dangling past the terminus.
-   Either way the flex items exactly fill this box, which is what keeps
-   `::before` -- pinned to this box's own left/right edges -- spanning the
-   real run of nodes at every viewport width. */
+   row. `min-width` here is exactly the sum of the slots below --
+   `count * slot + endpointCount * (endpointSlot - slot)` is the same
+   number as `(count - endpointCount) * slot + endpointCount * endpointSlot`
+   -- so:
+     - a long journey (a 21-stop service is 1232px against a ~320px phone)
+       overflows into `.journeyProgressScroll`'s scroll range, every slot
+       keeps its declared width, and there is no free space for
+       `justify-content` or `flex-grow` to act on;
+     - a short journey (4 stops is common, and 2 x 84px + 2 x 56px = 280px
+       leaves 40px spare even on a 360px phone, far more on a desktop)
+       hands the spare width to `flex-grow`, up to each node's `max-width`
+       cap, and `justify-content: center` splits whatever is still left
+       over evenly rather than bunching every node against the left edge.
+   The connecting line is deliberately NOT drawn on this element. See
+   `.journeyProgressNode::before`/`::after` below. */
 .journeyProgressLine {
-  position: relative;
   display: flex;
   align-items: flex-start;
+  justify-content: center;
   width: 100%;
   min-width: calc(
-    var(--journey-progress-count, 0) * var(--journey-progress-slot) +
+    var(--journey-progress-count, 0) * var(--journey-progress-slot, 56px) +
       var(--journey-progress-endpoint-count, 0) *
-      (var(--journey-progress-endpoint-slot) - var(--journey-progress-slot))
+      (var(--journey-progress-endpoint-slot, 84px) - var(--journey-progress-slot, 56px))
   );
 }
 
 /* `min-width` is stated explicitly, not left at flex's `auto` default: a
    flex item's automatic minimum size is its min-content width, so a long
-   station name would silently widen its own slot past the declared basis,
-   push the row wider than the `min-width` calculated above, and leave
-   `::before` stopping short of the last node. */
+   station name would silently widen its own slot past the declared basis
+   and push the row wider than the `min-width` calculated above.
+   `max-width` caps how far `flex-grow` can stretch a slot -- without it a
+   two-stop journey on a 1140px desktop gave each node a ~550px slot, and
+   since a node centers its own circle, the two circles ended up 550px
+   apart with a quarter of the row's width of bare line hanging off each
+   end. `var()` fallbacks throughout: a bare `var()` with no fallback makes
+   the whole `flex` shorthand invalid-at-computed-value-time (i.e.
+   `flex: 0 1 auto`, content-sized and shrinkable) if a node is ever
+   rendered outside `.journeyProgressScroll`. */
 .journeyProgressNode {
+  position: relative;
   display: flex;
-  flex: 1 0 var(--journey-progress-slot);
-  min-width: var(--journey-progress-slot);
+  flex: 1 0 var(--journey-progress-slot, 56px);
+  min-width: var(--journey-progress-slot, 56px);
+  max-width: calc(2 * var(--journey-progress-slot, 56px));
   flex-direction: column;
   align-items: center;
   gap: 4px;
 }
 
 .journeyProgressNode--endpoint {
-  flex-basis: var(--journey-progress-endpoint-slot);
-  min-width: var(--journey-progress-endpoint-slot);
+  flex-basis: var(--journey-progress-endpoint-slot, 84px);
+  min-width: var(--journey-progress-endpoint-slot, 84px);
 }
 
-/* Wraps inside the endpoint slot instead of overflowing it. `max-width`
-   is needed because the label is centered by `align-items: center` above,
-   which sizes it to its own content rather than to the slot;
-   `overflow-wrap: anywhere` is the last-resort guard for a single word
-   longer than the whole slot ("Wolverhampton"). */
+/* The connecting line, drawn as two half-width segments per node rather
+   than as one `::before` spanning the whole row. The row's edges are NOT
+   the ends of the line: every node centers its circle inside its own slot,
+   so a row-spanning line always overhangs the first and last circle by
+   half a slot -- and `flex-grow` inflates exactly the widths being halved,
+   so on a wide viewport with a short journey that overhang was hundreds of
+   pixels of grey line attached to nothing. Half-segments start and stop at
+   the circle centers by construction, at any slot width, so the line ends
+   precisely under the origin and terminus circles. Suppressing the outer
+   half at each end also means a one-stop journey draws no line at all
+   (`:first-child` is `:last-child`), and a zero-stop one has no node to
+   draw from -- both of which the row-spanning version rendered as a
+   full-width orphan rule.
+
+   `top` is half of `--journey-progress-node-slot`, which
+   `JourneyProgress.tsx` sets inline on `.journeyProgressLine` from its own
+   `NODE_CIRCLE_SLOT` constant and which inherits down to here -- read back
+   rather than hardcoded again, so this can't drift from the constant. */
+.journeyProgressNode::before,
+.journeyProgressNode::after {
+  content: '';
+  position: absolute;
+  top: calc(var(--journey-progress-node-slot, 18px) / 2);
+  height: 2px;
+  background: var(--mantine-color-gray-4);
+}
+
+.journeyProgressNode::before {
+  left: 0;
+  right: 50%;
+}
+
+.journeyProgressNode::after {
+  left: 50%;
+  right: 0;
+}
+
+.journeyProgressNode:first-child::before,
+.journeyProgressNode:last-child::after {
+  content: none;
+}
+
+/* Belt-and-braces. `align-items: center` above already sizes the label to
+   fit-content, which is capped by the slot; the one thing that can still
+   exceed it is the min-content floor of a single unbreakable word
+   ("Wolverhampton" at the 76px mobile endpoint slot), and
+   `overflow-wrap: anywhere` -- unlike `break-word` -- is the value that
+   actually reduces that min-content contribution rather than only
+   permitting a visual break. */
 .journeyProgressLabel {
   max-width: 100%;
   overflow-wrap: anywhere;
 }
 
-/* The bare intermediate node's Tooltip trigger -- the ONLY way to read
-   that stop's name. The circle it wraps is 12px across, well under the
-   24x24 CSS px minimum target size, so the trigger is stretched to the
-   full slot width and given a floor on its height instead of being left
-   to hug the circle. `align-items: flex-start` keeps the circle pinned to
-   the top of the trigger so that extra height grows downwards only and
-   the circle's center stays on `::before`'s line. */
+/* The bare intermediate node's Tooltip trigger. The circle it wraps is
+   12px across, well under the 24x24 CSS px minimum pointer target size, so
+   the trigger is stretched to the full slot width and given a floor on its
+   height instead of being left to hug the circle. (Pointer targets only --
+   the diagram is a `role="img"`, and the accessible route to an
+   intermediate stop's name is the `JourneyTimeline` table rendered
+   directly below it.) `align-items: flex-start` keeps the circle pinned to
+   the top of the trigger so the extra height grows downwards only and the
+   circle's center stays on the connecting line. */
 .journeyProgressTrigger {
   display: flex;
   align-items: flex-start;
@@ -1184,23 +1243,12 @@ a[data-text-link='always'] {
   min-height: 24px;
 }
 
-.journeyProgressLine::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(var(--journey-progress-node-slot, 18px) / 2);
-  height: 2px;
-  background: var(--mantine-color-gray-4);
-  z-index: 0;
-}
-
 /* On a phone the diagram is a ~320px window onto the whole journey, so
-   narrower slots buy real context (a 21-stop service goes from ~1180px of
-   scroll to ~940px, roughly seven visible stops instead of five) without
-   taking any tap target below 24px -- `.journeyProgressTrigger` is still
-   44x24 here. Same `max-width: $mantine-breakpoint-sm` breakpoint the
-   `.issueRow` rules above use. */
+   narrower slots buy real context (a 21-stop service goes from 1232px of
+   scroll to 988px, roughly seven visible stops instead of five) without
+   taking any pointer target below 24px -- `.journeyProgressTrigger` is
+   still 44x24 here. Same `max-width: $mantine-breakpoint-sm` breakpoint
+   the `.issueRow` rules above use. */
 @media (max-width: $mantine-breakpoint-sm) {
   .journeyProgressScroll {
     --journey-progress-slot: 44px;
