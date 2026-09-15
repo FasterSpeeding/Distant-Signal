@@ -103,8 +103,19 @@ exactly as the design specifies.
 
 ### R6. Removing a grant revokes access immediately and completely
 Design §2.5, adopted. Every read path re-queries `custom_line_group_grants`
-on every request; there is no token, no cache, and nothing else to revoke.
-Task 10 proves this with a test that reads, revokes, and reads again.
+on every request; there is no token and nothing else to revoke. Task 2 and
+Task 4 each prove this with a test that reads, revokes, and reads again.
+
+One qualification on §2.5's absolute "no cached copy anywhere" phrasing,
+found during review and recorded rather than changed:
+`frontend/lib/liveDataCache.ts`'s `withStaleFallback` can serve a
+**previously-fetched** `/Line/Mode/.../Status` payload — which may still
+contain the line — for up to `STALE_DATA_TTL_MS` (10 minutes) **after**
+revocation, but only to the *same* session (the cache key is
+`sha256(session cookie) + logical key`) and only while the backend is
+unreachable; any successful fetch replaces it, and 401/403/404 are never
+stale-served. That is a pre-existing, general outage mechanism, not
+something this feature introduces, and it cannot cross users. Left as is.
 
 ### R7. The group sees the LIVE line, never a snapshot
 Design §2.6, adopted. The grant row carries nothing about the line's

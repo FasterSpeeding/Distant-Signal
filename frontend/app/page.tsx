@@ -250,7 +250,16 @@ export default async function DashboardPage() {
   // those are the caller's own pins, with their own pin controls, and a
   // shared line is view-only -- no pin toggle, no edit, no un-share (only
   // the owner, from the group's page, can stop sharing it).
-  const sharedLines: MergedSharedCustomLine[] = mergeSharedCustomLines(sharedCustomLines ?? []);
+  //
+  // A granted member CAN pin a shared line (`pinned_lines` takes any id),
+  // and "Your Lines" above renders it straight out of `allReports` when
+  // they have -- so the pinned set is excluded here, or the same line
+  // would render twice on one screen. "Your Lines" wins that tie: the
+  // caller put it there on purpose.
+  const sharedLines: MergedSharedCustomLine[] = mergeSharedCustomLines(
+    sharedCustomLines ?? [],
+    new Set(preferences.pinnedLines),
+  );
   const reportByLineId = new Map(allReports.map((report) => [report.id, report]));
 
   return (

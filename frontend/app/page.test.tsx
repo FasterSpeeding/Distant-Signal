@@ -497,6 +497,25 @@ describe('DashboardPage -- Lines shared with you section', () => {
     expect(screen.queryByRole('button', { name: /pin/i })).not.toBeInTheDocument();
   });
 
+  it('does not render a shared line twice when the caller has also pinned it', async () => {
+    // A granted member can pin a shared line like any other, and "Your
+    // Lines" renders it from allReports -- so it must not also appear
+    // under "Lines shared with you".
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: ['custom-my-commute'],
+      pinnedStations: [],
+    });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({ id: 'custom-my-commute', name: 'My Commute' }),
+    ]);
+    vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([sharedLine()]);
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getAllByText('My Commute')).toHaveLength(1);
+    expect(screen.queryByRole('heading', { name: 'Lines shared with you' })).not.toBeInTheDocument();
+  });
+
   it('survives the shared-lines fetch failing, rather than blanking the dashboard', async () => {
     vi.mocked(api.getSession).mockResolvedValue(loggedIn);
     vi.mocked(api.getSharedGroupCustomLines).mockRejectedValue(new Error('boom'));

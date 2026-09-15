@@ -83,16 +83,22 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
   // `/Line/{ids}/Status` route rather than a second, parallel status path
   // baked into `GET /groups/{id}/lines/custom`. That route is exactly the
   // one a grant widens, so this is also the end-to-end proof the widening
-  // works for this viewer. It 404s when it matches nothing at all (a line
-  // the aggregator hasn't computed a status for yet), which is an ordinary
-  // state here, not an error -- degrade to "no badge", never to a broken
-  // page.
+  // works for this viewer.
+  //
+  // Only `ApiNotFoundError` is swallowed, not every failure: that route
+  // 404s when it matches nothing at all (a line the aggregator hasn't
+  // computed a status for yet), which is an ordinary state here and should
+  // degrade to "no badge". A 401, a 5xx or a dead socket is not, and
+  // silently rendering every shared line as statusless would hide it.
   let customLineReports: LineStatusReport[] = [];
   if (customLines.length > 0) {
     customLineReports = await getLineStatus(
       customLines.map((l) => l.lineId),
       false,
-    ).catch(() => []);
+    ).catch((err) => {
+      if (err instanceof ApiNotFoundError) return [];
+      throw err;
+    });
   }
   const reportByLineId = new Map(customLineReports.map((r) => [r.id, r]));
   const currentUserId = session.authenticated ? session.id : null;

@@ -968,19 +968,29 @@ pub async fn list_shared_trains_for_user(pool: &PgPool, user_id: &str) -> Result
 ///
 /// The caller must ALSO be a current member of the group -- that half is
 /// the route's `require_member` gate, not this function's job.
+///
+/// The ownership check and the insert share one transaction, unlike
+/// [`add_train_to_group`]'s two separate statements. Not for safety --
+/// `custom_lines` has no ownership-transfer path at all, so the check can
+/// never become MORE permissive between the two -- but because
+/// `custom_line_group_grants.line_id` carries a real FK: an owner deleting
+/// the line from a second tab in that window would otherwise turn a clean
+/// `404` into an FK-violation `500`.
 pub async fn grant_custom_line(
     pool: &PgPool,
     group_id: &str,
     line_id: &str,
     user_id: &str,
 ) -> Result<bool> {
+    let mut tx = pool.begin().await?;
     let owned: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM custom_lines WHERE id = $1 AND user_id = $2")
+        sqlx::query_as("SELECT id FROM custom_lines WHERE id = $1 AND user_id = $2 FOR UPDATE")
             .bind(line_id)
             .bind(user_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *tx)
             .await?;
     if owned.is_none() {
+        tx.rollback().await?;
         return Ok(false);
     }
 
@@ -992,8 +1002,9 @@ pub async fn grant_custom_line(
     .bind(group_id)
     .bind(line_id)
     .bind(user_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(true)
 }
 
@@ -1207,30 +1218,43 @@ pub struct LineGroupRef {
     pub name: String,
 }
 
-/// Every group `line_id` is currently granted into, alphabetically.
+/// Every group `line_id` is currently granted into, alphabetically --
+/// **empty unless `caller_id` owns the line.**
 ///
-/// Takes NO caller id, and is therefore owner-only by CONTRACT rather than
-/// by query: `routes::lines::get_line` calls this if and only if the
-/// caller is the line's owner, and hands every other caller an empty list.
-/// That is what satisfies design §3.5's privacy goal ("a fellow group
-/// member should never learn which OTHER groups the owner has also shared
-/// this line into") -- a non-owner never receives this field's contents at
-/// all, so there is nothing left for a query-level scope to protect.
+/// This is the one query in this module whose output is a description of
+/// somebody's group memberships, so the owner-only rule is enforced HERE,
+/// in the `EXISTS` clause, and not only by `routes::lines::get_line`
+/// calling it behind an `if is_owner`. Both guards say the same thing; a
+/// future refactor that loses the caller-side one still cannot make this
+/// return anything to a non-owner. That is what satisfies design §3.5's
+/// privacy goal: a fellow group member must never learn which OTHER
+/// groups the owner has also shared this line into.
 ///
-/// For the owner it deliberately lists EVERY group, including one they
-/// have since left (which design §2.7 explicitly allows to keep its
-/// grant). Scoping this to the owner's current memberships would hide a
-/// live grant from the one person whose data it is and who is entitled to
-/// revoke it -- that would be the actual privacy failure, not a
+/// For the owner it deliberately lists EVERY group the line is granted
+/// into, including one they have since LEFT (which design §2.7 explicitly
+/// allows to keep its grant). Scoping this to the owner's current
+/// memberships -- as the design sketched -- would hide a live grant from
+/// the one person whose data it is and who is entitled to revoke it
+/// (`remove_custom_line_grant`'s granter branch works after they leave,
+/// precisely so they can). That would be the real privacy failure, not a
 /// protection.
-pub async fn groups_shared_with_line(pool: &PgPool, line_id: &str) -> Result<Vec<LineGroupRef>> {
+pub async fn groups_shared_with_line(
+    pool: &PgPool,
+    line_id: &str,
+    caller_id: &str,
+) -> Result<Vec<LineGroupRef>> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT g.id, g.name FROM custom_line_group_grants gr \
          JOIN groups g ON g.id = gr.group_id \
          WHERE gr.line_id = $1 \
+           AND EXISTS ( \
+             SELECT 1 FROM custom_lines cl \
+             WHERE cl.id = gr.line_id AND cl.user_id = $2 \
+           ) \
          ORDER BY g.name, g.id",
     )
     .bind(line_id)
+    .bind(caller_id)
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -2911,14 +2935,38 @@ mod db_tests {
         assert_eq!(in_a[0].granted_by, "TEST-GRANT-LIST-OWNER");
         assert!(in_a[0].granted_by_name.is_some());
 
-        let groups = groups_shared_with_line(&pool, &line_id)
+        let groups = groups_shared_with_line(&pool, &line_id, "TEST-GRANT-LIST-OWNER")
             .await
             .expect("groups for line");
         let names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
         assert_eq!(names, vec!["Grant List A", "Grant List B"]);
 
-        cleanup_lines_groups_and_users(&pool, &[&group_a, &group_b], &["TEST-GRANT-LIST-OWNER"])
-            .await;
+        // Owner-only at the QUERY level, not just at the route's own
+        // `if is_owner` branch: a fellow member of one of these groups
+        // must never learn which OTHER groups the line reaches.
+        seed_user(&pool, "TEST-GRANT-LIST-MEMBER").await;
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_a)
+        .bind("TEST-GRANT-LIST-MEMBER")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        assert!(
+            groups_shared_with_line(&pool, &line_id, "TEST-GRANT-LIST-MEMBER")
+                .await
+                .expect("groups for a non-owner")
+                .is_empty(),
+            "a granted member must get nothing back from this query"
+        );
+
+        cleanup_lines_groups_and_users(
+            &pool,
+            &[&group_a, &group_b],
+            &["TEST-GRANT-LIST-OWNER", "TEST-GRANT-LIST-MEMBER"],
+        )
+        .await;
     }
 }
 

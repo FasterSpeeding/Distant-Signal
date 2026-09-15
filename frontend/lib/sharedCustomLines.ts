@@ -24,20 +24,29 @@ export interface MergedSharedCustomLine {
  * can't differ between them either -- which is why keeping the first row's
  * copy of them is lossless rather than an arbitrary pick.
  *
- * `ownLineIds` is belt-and-braces, not the primary defence: the backend's
- * `cl.user_id <> $1` already excludes the caller's own custom lines, so
- * this only matters if that ever regresses. Rendering a line BOTH as the
- * caller's own pinned row and again as a shared one would be a visible
- * duplicate, so the page can filter here rather than trusting one end
- * alone. This mirrors `lib/sharedTrains.ts`'s `mergeSharedTrains`
- * exactly. */
+ * `excludeLineIds` drops any line the calling page is ALREADY rendering
+ * elsewhere, so it never appears twice on one screen. Two cases matter,
+ * and they are different in kind:
+ *
+ * 1. **A line the caller pinned.** A granted member can pin a shared line
+ *    like any other, and `pinned_lines` takes any id, so the home page's
+ *    "Your Lines" section would render it from `allReports` and this
+ *    section would render it again. The page passes its pinned set for
+ *    exactly this reason -- and "Your Lines" is the right place for it,
+ *    since the caller put it there deliberately.
+ * 2. **A line the caller owns.** Belt-and-braces only: the backend's
+ *    `cl.user_id <> $1` already excludes those
+ *    (`list_shared_custom_lines_for_user`), so this only matters if that
+ *    ever regresses.
+ *
+ * Mirrors `lib/sharedTrains.ts`'s `mergeSharedTrains` exactly. */
 export function mergeSharedCustomLines(
   rows: SharedGroupCustomLine[],
-  ownLineIds: ReadonlySet<string> = new Set(),
+  excludeLineIds: ReadonlySet<string> = new Set(),
 ): MergedSharedCustomLine[] {
   const merged = new Map<string, MergedSharedCustomLine>();
   for (const row of rows) {
-    if (ownLineIds.has(row.lineId)) continue;
+    if (excludeLineIds.has(row.lineId)) continue;
     const existing = merged.get(row.lineId);
     if (!existing) {
       merged.set(row.lineId, { line: row, groupNames: [row.groupName] });

@@ -44,10 +44,10 @@ describe('mergeSharedCustomLines', () => {
     expect(merged.map((m) => m.line.lineId)).toEqual(['custom-a', 'custom-b']);
   });
 
-  it('drops a line the caller owns, so it can never render twice on one page', () => {
+  it('drops an excluded line (pinned, or the caller\'s own) so it never renders twice', () => {
     const merged = mergeSharedCustomLines(
-      [row({ lineId: 'custom-mine' }), row({ lineId: 'custom-theirs' })],
-      new Set(['custom-mine']),
+      [row({ lineId: 'custom-pinned' }), row({ lineId: 'custom-theirs' })],
+      new Set(['custom-pinned']),
     );
 
     expect(merged.map((m) => m.line.lineId)).toEqual(['custom-theirs']);
