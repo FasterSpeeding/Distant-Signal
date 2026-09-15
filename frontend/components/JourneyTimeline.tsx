@@ -59,6 +59,15 @@ export function JourneyTimeline({ stops }: { stops: JourneyStop[] }) {
   );
 }
 
+/** The calling-point display name for a `JourneyStop`: its resolved name,
+ * falling back to the bare CRS code, falling back to a generic placeholder
+ * when neither is known. Shared with `JourneyProgress.tsx`, which reuses
+ * this exact fallback chain for its own node labels/tooltips/captions --
+ * see that file's own doc comments for why it must match this one. */
+export function journeyStopLabel(stop: JourneyStop): string {
+  return stop.name ?? stop.crs ?? 'Unknown location';
+}
+
 function delayBadge(delayMinutes: number | null) {
   if (delayMinutes === null) return null;
   if (delayMinutes === 0) {
@@ -83,7 +92,7 @@ function delayBadge(delayMinutes: number | null) {
 }
 
 function JourneyStopRow({ stop }: { stop: JourneyStop }) {
-  const label = stop.name ?? stop.crs ?? 'Unknown location';
+  const label = journeyStopLabel(stop);
   const scheduled = stop.scheduledDeparture ?? stop.scheduledArrival;
   const actual = stop.actualDeparture ?? stop.actualArrival;
   const estimated = stop.estimatedDeparture ?? stop.estimatedArrival;

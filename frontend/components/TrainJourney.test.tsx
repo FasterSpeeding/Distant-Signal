@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TrainJourney } from './TrainJourney';
 import type { TrackedTrainState } from '@/lib/types';
@@ -345,8 +345,12 @@ describe('TrainJourney', () => {
         })}
       />,
     );
-    expect(screen.getByRole('table', { name: 'Journey timeline' })).toBeInTheDocument();
-    expect(screen.getByText('Reading')).toBeInTheDocument();
+    const table = screen.getByRole('table', { name: 'Journey timeline' });
+    expect(table).toBeInTheDocument();
+    // JourneyProgress (Task 3 onward) also prints "Reading" as an
+    // always-visible origin label, so scope this assertion to the table
+    // itself rather than the whole document.
+    expect(within(table).getByText('Reading')).toBeInTheDocument();
   });
 
   it('renders the JourneyTimeline for schedule_matched, not just resolved', () => {
@@ -418,8 +422,12 @@ describe('TrainJourney', () => {
     expect(screen.getByText('Next calling point: Woking')).toBeInTheDocument();
     expect(screen.getByText(/ETA/)).toBeInTheDocument();
     // ...alongside the timeline, not instead of it.
-    expect(screen.getByRole('table', { name: 'Journey timeline' })).toBeInTheDocument();
-    expect(screen.getByText('Reading')).toBeInTheDocument();
+    const table = screen.getByRole('table', { name: 'Journey timeline' });
+    expect(table).toBeInTheDocument();
+    // JourneyProgress (Task 3 onward) also prints "Reading" as an
+    // always-visible origin label, so scope this assertion to the table
+    // itself rather than the whole document.
+    expect(within(table).getByText('Reading')).toBeInTheDocument();
   });
 
   it('renders no JourneyTimeline for pending, even if journeyStops were somehow non-null', () => {
@@ -435,5 +443,131 @@ describe('TrainJourney', () => {
     );
     expect(screen.queryByRole('table', { name: 'Journey timeline' })).not.toBeInTheDocument();
     expect(screen.getByText('Waiting to hear from Network Rail')).toBeInTheDocument();
+  });
+
+  it('renders JourneyProgress whenever journeyStops is present (schedule_matched)', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'schedule_matched',
+          trainUid: 'X12345',
+          journeyStops: [
+            {
+              crs: 'RDG',
+              name: 'Reading',
+              tiploc: null,
+              kind: 'Origin',
+              scheduledArrival: null,
+              scheduledDeparture: '2026-09-08T08:00:00Z',
+              actualArrival: null,
+              actualDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
+              lastEventType: null,
+              variationStatus: null,
+              delayMinutes: null,
+            },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByRole('img', { name: /Journey progress/ })).toBeInTheDocument();
+  });
+
+  it('renders no JourneyProgress for pending, even if journeyStops were somehow non-null', () => {
+    renderWithMantine(
+      <TrainJourney state={baseState({ resolutionStatus: 'pending', journeyStops: null })} />,
+    );
+    expect(screen.queryByRole('img', { name: /Journey progress/ })).not.toBeInTheDocument();
+  });
+
+  it('schedule_matched with journeyStops: JourneyProgress shows the matching "scheduled route" caption', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'schedule_matched',
+          trainUid: 'X12345',
+          journeyStops: [
+            {
+              crs: 'RDG',
+              name: 'Reading',
+              tiploc: null,
+              kind: 'Origin',
+              scheduledArrival: null,
+              scheduledDeparture: '2026-09-08T08:00:00Z',
+              actualArrival: null,
+              actualDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
+              lastEventType: null,
+              variationStatus: null,
+              delayMinutes: null,
+            },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText("Scheduled route shown — live tracking hasn't started yet.")).toBeInTheDocument();
+  });
+
+  it('resolved + cancelled with journeyStops: JourneyProgress caption names the last confirmed stop', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'cancelled',
+          lastReportedLocation: 'Surbiton',
+          journeyStops: [
+            {
+              crs: 'WAT',
+              name: 'London Waterloo',
+              tiploc: null,
+              kind: 'Origin',
+              scheduledArrival: null,
+              scheduledDeparture: '2026-08-28T18:32:00Z',
+              estimatedArrival: null,
+              estimatedDeparture: null,
+              actualArrival: null,
+              actualDeparture: '2026-08-28T18:32:00Z',
+              lastEventType: 'DEPARTURE',
+              variationStatus: 'ON TIME',
+              delayMinutes: 0,
+            },
+            {
+              crs: 'SUR',
+              name: 'Surbiton',
+              tiploc: null,
+              kind: 'Intermediate',
+              scheduledArrival: '2026-08-28T18:50:00Z',
+              scheduledDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
+              actualArrival: '2026-08-28T18:52:00Z',
+              actualDeparture: null,
+              lastEventType: 'ARRIVAL',
+              variationStatus: 'LATE',
+              delayMinutes: 2,
+            },
+            {
+              crs: 'WOK',
+              name: 'Woking',
+              tiploc: null,
+              kind: 'Terminate',
+              scheduledArrival: '2026-08-28T19:10:00Z',
+              scheduledDeparture: null,
+              estimatedArrival: null,
+              estimatedDeparture: null,
+              actualArrival: null,
+              actualDeparture: null,
+              lastEventType: null,
+              variationStatus: null,
+              delayMinutes: null,
+            },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText('Cancelled — last confirmed at Surbiton.')).toBeInTheDocument();
   });
 });
