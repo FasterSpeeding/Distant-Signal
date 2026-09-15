@@ -21,7 +21,13 @@ export function AuthStatus({ session }: { session: SessionInfo }) {
     return <LoginLink>Log in</LoginLink>;
   }
 
-  const label = session.name ?? session.email ?? 'Signed in';
+  // `?.trim() ||`, not `??`: an identity provider with no name on file for
+  // a user sends `"name": ""` rather than omitting the claim, and `??`
+  // treats that empty string as a perfectly good label -- leaving an empty
+  // gap next to "Log out". Same defect the group member list and
+  // shared-train attribution had; see `data::users::non_blank`, which is
+  // where the backend now stops blanks at the boundary.
+  const label = session.name?.trim() || session.email?.trim() || 'Signed in';
   return (
     <Group gap="xs" wrap="nowrap">
       <Text size="sm" c="dimmed">
