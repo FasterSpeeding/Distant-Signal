@@ -55,7 +55,10 @@ describe('StationTimetable', () => {
     fireEvent.click(expand());
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(fetchMock).toHaveBeenCalledWith('/api/trains/search?station=RDG');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/trains/search?station=RDG',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('shows a loading state between expand and the fetch resolving', async () => {
@@ -168,7 +171,11 @@ describe('StationTimetable', () => {
     expect(await screen.findByText('11:40 · PAD → RDG → BRI')).toBeInTheDocument();
     expect(screen.getByText('08:22 · PAD → RDG → BRI')).toBeInTheDocument();
     expect(screen.getByText('10:05 · WAT → RDG → EXD')).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/trains/search?station=RDG&after=CURSOR1');
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/trains/search?station=RDG&after=CURSOR1',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument());
   });
 
@@ -189,6 +196,47 @@ describe('StationTimetable', () => {
     await screen.findByText('11:40 · PAD → RDG → BRI');
     expect(screen.queryByText('08:22 · PAD → RDG → BRI')).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a stale response from a superseded expand does not corrupt state once a newer request resolves', async () => {
+    // Two overlapping, manually-resolved fetches: the first (superseded)
+    // request resolves *after* the second (current) one, simulating the
+    // out-of-order response a slow first request could produce once the
+    // user has collapsed and re-expanded. Neither `Response` reacts to the
+    // request's `AbortSignal` -- resolving them manually proves the
+    // component itself discards the stale response (via its own
+    // `signal.aborted` check after `await`), not merely that the network
+    // layer happened to reject an aborted fetch.
+    let resolveFirst!: (response: Response) => void;
+    let resolveSecond!: (response: Response) => void;
+    const firstResponse = new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const secondResponse = new Promise<Response>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const fetchMock = vi.fn().mockReturnValueOnce(firstResponse).mockReturnValueOnce(secondResponse);
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<StationTimetable crs="RDG" />);
+
+    fireEvent.click(expand()); // starts the first (soon-to-be-stale) request
+    fireEvent.click(expand()); // collapse
+    fireEvent.click(expand()); // re-expand: starts the second, current request
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Resolve the newer request first, then the stale one out of order.
+    resolveSecond(new Response(searchBody(PAGE_TWO), { status: 200 }));
+    await screen.findByText('11:40 · PAD → RDG → BRI');
+
+    resolveFirst(new Response(searchBody(PAGE_ONE), { status: 200 }));
+    // Give the stale response's promise chain a turn to (not) run its
+    // state updates before asserting nothing changed.
+    await waitFor(() => expect(screen.getByText('11:40 · PAD → RDG → BRI')).toBeInTheDocument());
+
+    expect(screen.queryByText('08:22 · PAD → RDG → BRI')).not.toBeInTheDocument();
+    expect(screen.queryByText('10:05 · WAT → RDG → EXD')).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading scheduled departures…')).not.toBeInTheDocument();
   });
 
   it('shows a disclaimer above the rows once expanded with results', async () => {

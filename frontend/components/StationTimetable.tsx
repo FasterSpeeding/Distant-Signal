@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Accordion,
   AccordionControl,
@@ -60,17 +60,59 @@ function today(): string {
   return dayjs().format('YYYY-MM-DD');
 }
 
+/** Narrows `Results` to the "has rows" branch -- factored out because
+ * `loadFirstPage`/`handleLoadMore` need this exact check repeatedly (the
+ * early-return guard in `handleLoadMore`, plus each of its three
+ * functional `setResults` updaters) and inlining
+ * `current !== null && current !== 'error' && current !== 'unpublished'`
+ * at every call site invited the checks to drift out of sync. */
+function hasRows(results: Results): results is { rows: TrainSearchRow[]; nextCursor: string | null } {
+  return results !== null && results !== 'error' && results !== 'unpublished';
+}
+
 export function StationTimetable({ crs }: { crs: string }) {
-  const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<Results>(null);
   const [loadingMore, setLoadingMore] = useState(false);
 
+  // Guards against the race where a user expands, then collapses and
+  // re-expands (or fires "Load more") before the earlier fetch resolves:
+  // without this, the stale response's `setResults`/`setLoading` calls
+  // could land after the newer request's and overwrite current state.
+  // Only one fetch is ever meaningful at a time in this component (first
+  // page or next page), so a single ref -- rather than one per call site
+  // -- tracking the latest in-flight request is enough: starting any new
+  // request aborts whatever was previously in flight and takes over the
+  // slot, and `controller.signal.aborted` is re-checked after every
+  // `await` so a state-setting call from a superseded request is a no-op
+  // instead of corrupting state. Mirrors the `AbortController` +
+  // `signal.aborted` convention `lib/useSuggestions.ts` and
+  // `TrackTrainForm.tsx`'s departures-picker effect already use for the
+  // same kind of stale-response race, adapted here for fetches kicked off
+  // from event handlers rather than an effect.
+  const activeRequest = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    // Abort any in-flight request if the component unmounts mid-fetch.
+    return () => activeRequest.current?.abort();
+  }, []);
+
+  function startRequest(): AbortController {
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    return controller;
+  }
+
   async function loadFirstPage() {
+    const controller = startRequest();
     setLoading(true);
     setResults(null);
     try {
-      const response = await fetch(`/api/trains/search?station=${crs.toUpperCase()}`);
+      const response = await fetch(`/api/trains/search?station=${crs.toUpperCase()}`, {
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
       if (response.status === 404) {
         setResults('unpublished');
         return;
@@ -80,53 +122,48 @@ export function StationTimetable({ crs }: { crs: string }) {
         return;
       }
       const body: TrainSearchResponse = await response.json();
+      if (controller.signal.aborted) return;
       setResults({ rows: body.results, nextCursor: body.nextCursor });
     } catch {
-      setResults('error');
+      if (!controller.signal.aborted) setResults('error');
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }
 
   async function handleLoadMore() {
-    if (results === null || results === 'error' || results === 'unpublished') return;
-    if (results.nextCursor === null || loadingMore) return;
+    if (!hasRows(results) || results.nextCursor === null || loadingMore) return;
+    const controller = startRequest();
+    const after = results.nextCursor;
     setLoadingMore(true);
     try {
-      const response = await fetch(
-        `/api/trains/search?station=${crs.toUpperCase()}&after=${results.nextCursor}`,
-      );
+      const response = await fetch(`/api/trains/search?station=${crs.toUpperCase()}&after=${after}`, {
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
       if (!response.ok) {
-        setResults((current) =>
-          current !== null && current !== 'error' && current !== 'unpublished'
-            ? { rows: current.rows, nextCursor: null }
-            : current,
-        );
+        setResults((current) => (hasRows(current) ? { rows: current.rows, nextCursor: null } : current));
         return;
       }
       const body: TrainSearchResponse = await response.json();
+      if (controller.signal.aborted) return;
       setResults((current) =>
-        current !== null && current !== 'error' && current !== 'unpublished'
-          ? { rows: [...current.rows, ...body.results], nextCursor: body.nextCursor }
-          : current,
+        hasRows(current) ? { rows: [...current.rows, ...body.results], nextCursor: body.nextCursor } : current,
       );
     } catch {
-      setResults((current) =>
-        current !== null && current !== 'error' && current !== 'unpublished'
-          ? { rows: current.rows, nextCursor: null }
-          : current,
-      );
+      if (!controller.signal.aborted) {
+        setResults((current) => (hasRows(current) ? { rows: current.rows, nextCursor: null } : current));
+      }
     } finally {
-      setLoadingMore(false);
+      if (!controller.signal.aborted) setLoadingMore(false);
     }
   }
 
   function handleChange(value: string | null) {
-    const nowExpanded = value !== null;
-    setExpanded(nowExpanded);
-    if (nowExpanded) {
+    if (value !== null) {
       void loadFirstPage();
     } else {
+      activeRequest.current?.abort();
       setResults(null);
     }
   }
@@ -166,18 +203,14 @@ export function StationTimetable({ crs }: { crs: string }) {
     const displayDate = today();
     return (
       <Stack gap="xs">
-        <Stack gap="xs">
-          {results.rows.map((row) => (
-            <Group key={`${row.uid}-${row.scheduled}`} justify="space-between" wrap="nowrap">
-              <Text size="sm">
-                {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationCrs ?? '?'}
-              </Text>
-              <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>
-                View live status
-              </TextLink>
-            </Group>
-          ))}
-        </Stack>
+        {results.rows.map((row) => (
+          <Group key={`${row.uid}-${row.scheduled}`} justify="space-between" wrap="nowrap">
+            <Text size="sm">
+              {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationCrs ?? '?'}
+            </Text>
+            <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>View live status</TextLink>
+          </Group>
+        ))}
         {results.nextCursor !== null && (
           <Group>
             <Button variant="default" size="xs" onClick={handleLoadMore} disabled={loadingMore} loading={loadingMore}>
