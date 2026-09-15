@@ -382,3 +382,79 @@ describe('collapsed issue row layout', () => {
     expect(rule![0]).toContain('flex-shrink: 0');
   });
 });
+
+// `components/JourneyProgress.tsx`. The diagram broke the train page's
+// mobile layout when it landed: fixed 56px slots declared inline in the
+// component (so no media query could reach them), a flex row whose
+// `min-width` a long endpoint label could silently exceed (leaving the
+// connecting line stopping short of the last node), nodes bunched to the
+// left with the line dangling past the terminus on a short journey, and a
+// 12px tap target as the only route to an intermediate stop's name.
+describe('journey progress diagram layout', () => {
+  it('keeps every horizontal measurement in CSS custom properties the breakpoint can rescale', () => {
+    const rule = css.match(/\.journeyProgressScroll\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('--journey-progress-slot: 56px');
+    expect(rule![0]).toContain('--journey-progress-endpoint-slot: 84px');
+  });
+
+  it('scopes the diagram to its own scroll box and stops a swipe chaining to the page', () => {
+    const rule = css.match(/\.journeyProgressScroll\s*\{[^}]*\}/);
+    expect(rule![0]).toContain('overflow-x: auto');
+    expect(rule![0]).toContain('overscroll-behavior-x: contain');
+  });
+
+  it('sizes the node row from the counts the component supplies, so the line always spans the real run of nodes', () => {
+    const rule = css.match(/\.journeyProgressLine\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('width: 100%');
+    expect(rule![0]).toContain('var(--journey-progress-count');
+    expect(rule![0]).toContain('var(--journey-progress-endpoint-count');
+  });
+
+  it('lets nodes grow to fill a short journey but never shrink below their slot', () => {
+    const rule = css.match(/\.journeyProgressNode\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    // `1 0 <basis>`: grow into spare width, never shrink.
+    expect(rule![0]).toContain('flex: 1 0 var(--journey-progress-slot)');
+    // Explicit, not flex's `auto` default -- otherwise a long station name's
+    // min-content width silently widens its own slot past the basis.
+    expect(rule![0]).toContain('min-width: var(--journey-progress-slot)');
+  });
+
+  it('gives an endpoint a wider slot so its always-visible label wraps instead of breaking mid-word', () => {
+    const rule = css.match(/\.journeyProgressNode--endpoint\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('flex-basis: var(--journey-progress-endpoint-slot)');
+    expect(rule![0]).toContain('min-width: var(--journey-progress-endpoint-slot)');
+  });
+
+  it('contains an endpoint label inside its slot', () => {
+    const rule = css.match(/\.journeyProgressLabel\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('max-width: 100%');
+    expect(rule![0]).toContain('overflow-wrap: anywhere');
+  });
+
+  it('clears the 24px minimum tap target for the intermediate-node tooltip trigger', () => {
+    const rule = css.match(/\.journeyProgressTrigger\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('width: 100%');
+    expect(rule![0]).toContain('min-height: 24px');
+    // Keeps the circle pinned to the top of the enlarged trigger so the
+    // extra height grows downwards and the circle's centre stays on the
+    // connecting line.
+    expect(rule![0]).toContain('align-items: flex-start');
+  });
+
+  it('rescales the slots below the sm breakpoint, using the same media query the issue rows do', () => {
+    const queries = css.match(/@media \(max-width: \$mantine-breakpoint-sm\)\s*\{[\s\S]*?\n\}/g);
+    expect(queries).not.toBeNull();
+    const diagram = queries!.find((query) => query.includes('.journeyProgressScroll'));
+    expect(diagram).toBeDefined();
+    // Still comfortably over the 24px minimum tap target
+    // (`.journeyProgressTrigger` fills the slot's width).
+    expect(diagram!).toContain('--journey-progress-slot: 44px');
+    expect(diagram!).toContain('--journey-progress-endpoint-slot: 76px');
+  });
+});

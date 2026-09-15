@@ -1087,10 +1087,101 @@ a[data-text-link='always'] {
    (`components/JourneyProgress.tsx`) anchored at that same top edge, so
    every circle's vertical center lands at the same offset -- matching this
    rule's own `top` below -- independent of what renders beneath it. */
+/* Every horizontal measurement the diagram has lives here, as custom
+   properties on the scroll container, rather than as pixel literals in
+   `JourneyProgress.tsx`'s inline styles. That is what lets the
+   `max-width: $mantine-breakpoint-sm` block at the bottom of this section
+   rescale the whole diagram for a phone: a media query cannot reach into a
+   React `style` object, so any number a breakpoint needs to change has to
+   be a CSS one. `JourneyProgress.tsx` supplies only the two *counts*
+   (`--journey-progress-count`, `--journey-progress-endpoint-count`) --
+   facts about the data, not about the layout. */
+.journeyProgressScroll {
+  --journey-progress-slot: 56px;
+  /* Wider than a bare intermediate slot because an endpoint is the only
+     node that prints its station name as always-visible text below the
+     circle (spec Decision 3). At 56px, "London Paddington" could only fit
+     by breaking mid-word; 84px takes it to a clean two lines. */
+  --journey-progress-endpoint-slot: 84px;
+  overflow-x: auto;
+  /* A horizontal swipe on the diagram must scroll the diagram and stop
+     there -- without this it chains to the page/browser, which on a phone
+     is the back-navigation gesture. */
+  overscroll-behavior-x: contain;
+  /* Room for the marker node's `boxShadow` halo (`circleStyle`), which
+     would otherwise be clipped by this scroll container's own edges. */
+  padding-block: 4px;
+}
+
+/* `width: 100%` + a `min-width` computed from the node counts, rather than
+   `width: max-content`: the flex items below are allowed to grow, and
+   under `max-content` sizing a single long endpoint label would be
+   distributed across every item's flex fraction and inflate the entire
+   row. With an explicit `min-width` the row is exactly as wide as its
+   slots, so:
+     - a long journey overflows into `.journeyProgressScroll`'s scroll
+       range, and every slot keeps its declared width;
+     - a short journey (4 stops is common, and 4 x 56px is under a third of
+       a 360px phone) has spare width, which `flex-grow: 1` shares out
+       evenly instead of leaving the nodes bunched at the left with the
+       connecting line dangling past the terminus.
+   Either way the flex items exactly fill this box, which is what keeps
+   `::before` -- pinned to this box's own left/right edges -- spanning the
+   real run of nodes at every viewport width. */
 .journeyProgressLine {
   position: relative;
   display: flex;
   align-items: flex-start;
+  width: 100%;
+  min-width: calc(
+    var(--journey-progress-count, 0) * var(--journey-progress-slot) +
+      var(--journey-progress-endpoint-count, 0) *
+      (var(--journey-progress-endpoint-slot) - var(--journey-progress-slot))
+  );
+}
+
+/* `min-width` is stated explicitly, not left at flex's `auto` default: a
+   flex item's automatic minimum size is its min-content width, so a long
+   station name would silently widen its own slot past the declared basis,
+   push the row wider than the `min-width` calculated above, and leave
+   `::before` stopping short of the last node. */
+.journeyProgressNode {
+  display: flex;
+  flex: 1 0 var(--journey-progress-slot);
+  min-width: var(--journey-progress-slot);
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.journeyProgressNode--endpoint {
+  flex-basis: var(--journey-progress-endpoint-slot);
+  min-width: var(--journey-progress-endpoint-slot);
+}
+
+/* Wraps inside the endpoint slot instead of overflowing it. `max-width`
+   is needed because the label is centered by `align-items: center` above,
+   which sizes it to its own content rather than to the slot;
+   `overflow-wrap: anywhere` is the last-resort guard for a single word
+   longer than the whole slot ("Wolverhampton"). */
+.journeyProgressLabel {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* The bare intermediate node's Tooltip trigger -- the ONLY way to read
+   that stop's name. The circle it wraps is 12px across, well under the
+   24x24 CSS px minimum target size, so the trigger is stretched to the
+   full slot width and given a floor on its height instead of being left
+   to hug the circle. `align-items: flex-start` keeps the circle pinned to
+   the top of the trigger so that extra height grows downwards only and
+   the circle's center stays on `::before`'s line. */
+.journeyProgressTrigger {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: 100%;
+  min-height: 24px;
 }
 
 .journeyProgressLine::before {
@@ -1102,4 +1193,17 @@ a[data-text-link='always'] {
   height: 2px;
   background: var(--mantine-color-gray-4);
   z-index: 0;
+}
+
+/* On a phone the diagram is a ~320px window onto the whole journey, so
+   narrower slots buy real context (a 21-stop service goes from ~1180px of
+   scroll to ~940px, roughly seven visible stops instead of five) without
+   taking any tap target below 24px -- `.journeyProgressTrigger` is still
+   44x24 here. Same `max-width: $mantine-breakpoint-sm` breakpoint the
+   `.issueRow` rules above use. */
+@media (max-width: $mantine-breakpoint-sm) {
+  .journeyProgressScroll {
+    --journey-progress-slot: 44px;
+    --journey-progress-endpoint-slot: 76px;
+  }
 }
