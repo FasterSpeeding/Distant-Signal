@@ -345,6 +345,97 @@ describe('TrainSearchForm', () => {
 
     expect(await screen.findByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    // The button doesn't just vanish -- the list says it is complete.
+    expect(
+      screen.getByText("You've reached the end — no more scheduled trains match those filters."),
+    ).toBeInTheDocument();
+  });
+
+  it('says the end has been reached once the last page is in, rather than just dropping the button', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        search: (url) =>
+          url.includes('after=CURSOR1')
+            ? new Response(searchBody(PAGE_TWO, null), { status: 200 })
+            : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
+      }),
+    );
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    // While a next page exists, the end must not be claimed.
+    expect(await screen.findByRole('button', { name: 'Load more' })).toBeInTheDocument();
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(
+      await screen.findByText("You've reached the end — no more scheduled trains match those filters."),
+    ).toBeInTheDocument();
+  });
+
+  it('does not claim the end of results when a Load more page fails -- it reports the failure and keeps the retry', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        search: (url) =>
+          url.includes('after=CURSOR1')
+            ? new Response('boom', { status: 500 })
+            : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
+      }),
+    );
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText("Couldn't load more results. Try again.")).toBeInTheDocument();
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
+    // A failed next page must not wipe out the page already on screen, nor
+    // escalate to the whole-search error state.
+    expect(screen.getByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't search for trains right now. Try again.")).not.toBeInTheDocument();
+  });
+
+  it('clears a previous Load more failure when a fresh search is run', async () => {
+    let failNextPage = true;
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        search: (url) =>
+          url.includes('after=CURSOR1') && failNextPage
+            ? new Response('boom', { status: 500 })
+            : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
+      }),
+    );
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+    await screen.findByText("Couldn't load more results. Try again.");
+
+    failNextPage = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() =>
+      expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument(),
+    );
+  });
+
+  it('shows neither Load more nor the end-of-results line when the search matched nothing', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }),
+    );
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await screen.findByText('No scheduled trains match those filters right now.');
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
   it('offers Load more when the response carries a nextCursor', async () => {

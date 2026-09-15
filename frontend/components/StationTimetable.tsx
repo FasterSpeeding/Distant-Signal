@@ -7,12 +7,12 @@ import {
   AccordionItem,
   AccordionPanel,
   Alert,
-  Button,
   Group,
   Stack,
   Text,
 } from '@mantine/core';
 import dayjs from 'dayjs';
+import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
 
 /** Wire shape of `GET /public/trains/search`
@@ -48,7 +48,7 @@ interface TrainSearchResponse {
  * feed's coverage must not read the same as "nothing's running right
  * now") and must not be collapsed into one copy. */
 type Results =
-  | { rows: TrainSearchRow[]; nextCursor: string | null }
+  | { rows: TrainSearchRow[]; nextCursor: string | null; loadMoreFailed: boolean }
   | 'unpublished'
   | 'error'
   | null;
@@ -66,7 +66,9 @@ function today(): string {
  * functional `setResults` updaters) and inlining
  * `current !== null && current !== 'error' && current !== 'unpublished'`
  * at every call site invited the checks to drift out of sync. */
-function hasRows(results: Results): results is { rows: TrainSearchRow[]; nextCursor: string | null } {
+function hasRows(
+  results: Results,
+): results is { rows: TrainSearchRow[]; nextCursor: string | null; loadMoreFailed: boolean } {
   return results !== null && results !== 'error' && results !== 'unpublished';
 }
 
@@ -123,7 +125,7 @@ export function StationTimetable({ crs }: { crs: string }) {
       }
       const body: TrainSearchResponse = await response.json();
       if (controller.signal.aborted) return;
-      setResults({ rows: body.results, nextCursor: body.nextCursor });
+      setResults({ rows: body.results, nextCursor: body.nextCursor, loadMoreFailed: false });
     } catch {
       if (!controller.signal.aborted) setResults('error');
     } finally {
@@ -136,23 +138,35 @@ export function StationTimetable({ crs }: { crs: string }) {
     const controller = startRequest();
     const after = results.nextCursor;
     setLoadingMore(true);
+    // Clear any previous failure up front so a retry doesn't sit under a
+    // stale error line while it is in flight.
+    setResults((current) => (hasRows(current) ? { ...current, loadMoreFailed: false } : current));
     try {
       const response = await fetch(`/api/trains/search?station=${crs.toUpperCase()}&after=${after}`, {
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
       if (!response.ok) {
-        setResults((current) => (hasRows(current) ? { rows: current.rows, nextCursor: null } : current));
+        // The cursor is kept, not nulled: this page just failed to load, and
+        // the reader gets a named error plus a working retry rather than a
+        // list that quietly stops one page short of the end.
+        setResults((current) => (hasRows(current) ? { ...current, loadMoreFailed: true } : current));
         return;
       }
       const body: TrainSearchResponse = await response.json();
       if (controller.signal.aborted) return;
       setResults((current) =>
-        hasRows(current) ? { rows: [...current.rows, ...body.results], nextCursor: body.nextCursor } : current,
+        hasRows(current)
+          ? {
+              rows: [...current.rows, ...body.results],
+              nextCursor: body.nextCursor,
+              loadMoreFailed: false,
+            }
+          : current,
       );
     } catch {
       if (!controller.signal.aborted) {
-        setResults((current) => (hasRows(current) ? { rows: current.rows, nextCursor: null } : current));
+        setResults((current) => (hasRows(current) ? { ...current, loadMoreFailed: true } : current));
       }
     } finally {
       if (!controller.signal.aborted) setLoadingMore(false);
@@ -211,13 +225,13 @@ export function StationTimetable({ crs }: { crs: string }) {
             <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>View live status</TextLink>
           </Group>
         ))}
-        {results.nextCursor !== null && (
-          <Group>
-            <Button variant="default" size="xs" onClick={handleLoadMore} disabled={loadingMore} loading={loadingMore}>
-              Load more
-            </Button>
-          </Group>
-        )}
+        <LoadMoreControl
+          hasMore={results.nextCursor !== null}
+          loading={loadingMore}
+          failed={results.loadMoreFailed}
+          onLoadMore={handleLoadMore}
+          endMessage="You've reached the end — no more scheduled departures today."
+        />
       </Stack>
     );
   }

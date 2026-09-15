@@ -16,6 +16,7 @@ import {
 } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
+import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
 import { formatDateTime } from '@/lib/dateFormat';
 import type { IncidentSearchResponse, IncidentSummary, LineSummary, Suggestion } from '@/lib/types';
@@ -34,8 +35,19 @@ function calendarDaysAgo(days: number): string {
  * these `rows` -- captured once at submit time, mirroring
  * `TrainSearchForm.tsx`'s own capture of `date` for the identical reason:
  * `handleLoadMore` must page through THIS search's filters, never whatever
- * live filter state the form happens to hold when "Load more" is pressed. */
-type Results = { rows: IncidentSummary[]; nextCursor: string | null; query: string } | 'error' | null;
+ * live filter state the form happens to hold when "Load more" is pressed.
+ *
+ * `loadMoreFailed` records that the LAST "Load more" press errored, so the
+ * footer can say so instead of pretending the list ended there. It lives in
+ * this variant (rather than its own `useState`) for the same reason
+ * `nextCursor` does: a fresh search replaces the whole object, so the flag
+ * cannot outlive the result set it describes. The cursor is deliberately
+ * kept on failure -- it is still a valid cursor, so the retry the footer
+ * offers is a real one. */
+type Results =
+  | { rows: IncidentSummary[]; nextCursor: string | null; query: string; loadMoreFailed: boolean }
+  | 'error'
+  | null;
 
 /** `/incidents`'s one interactive component: filter form plus a
  * cursor-paginated, "Load more"-driven results list over
@@ -161,7 +173,7 @@ export function IncidentSearchForm({
         return;
       }
       const body: IncidentSearchResponse = await response.json();
-      setResults({ rows: body.results, nextCursor: body.nextCursor, query });
+      setResults({ rows: body.results, nextCursor: body.nextCursor, query, loadMoreFailed: false });
     } catch {
       setResults('error');
     } finally {
@@ -173,6 +185,11 @@ export function IncidentSearchForm({
     if (results === null || results === 'error') return;
     if (results.nextCursor === null || loadingMore) return;
     setLoadingMore(true);
+    // Clear any previous failure up front so a retry doesn't sit under a
+    // stale error line while it is in flight.
+    setResults((current) =>
+      current !== null && current !== 'error' ? { ...current, loadMoreFailed: false } : current,
+    );
     try {
       // Rebuilt from the ORIGINAL search's query string (`results.query`),
       // never from live `searchParamsFor()` -- see `handleSubmit`'s comment.
@@ -180,20 +197,28 @@ export function IncidentSearchForm({
       params.set('after', results.nextCursor);
       const response = await fetch(`/api/incidents?${params.toString()}`);
       if (!response.ok) {
+        // The cursor is kept, not nulled: this page just failed to load, and
+        // the reader gets a named error plus a working retry rather than a
+        // list that quietly stops one page short of the end.
         setResults((current) =>
-          current !== null && current !== 'error' ? { ...current, nextCursor: null } : current,
+          current !== null && current !== 'error' ? { ...current, loadMoreFailed: true } : current,
         );
         return;
       }
       const body: IncidentSearchResponse = await response.json();
       setResults((current) =>
         current !== null && current !== 'error'
-          ? { ...current, rows: [...current.rows, ...body.results], nextCursor: body.nextCursor }
+          ? {
+              ...current,
+              rows: [...current.rows, ...body.results],
+              nextCursor: body.nextCursor,
+              loadMoreFailed: false,
+            }
           : current,
       );
     } catch {
       setResults((current) =>
-        current !== null && current !== 'error' ? { ...current, nextCursor: null } : current,
+        current !== null && current !== 'error' ? { ...current, loadMoreFailed: true } : current,
       );
     } finally {
       setLoadingMore(false);
@@ -263,13 +288,13 @@ export function IncidentSearchForm({
             ))}
           </Stack>
         </ScrollArea>
-        {results.nextCursor !== null && (
-          <Group>
-            <Button variant="default" size="xs" onClick={handleLoadMore} disabled={loadingMore} loading={loadingMore}>
-              Load more
-            </Button>
-          </Group>
-        )}
+        <LoadMoreControl
+          hasMore={results.nextCursor !== null}
+          loading={loadingMore}
+          failed={results.loadMoreFailed}
+          onLoadMore={handleLoadMore}
+          endMessage="You've reached the end — no more incidents match these filters."
+        />
       </>
     );
   }

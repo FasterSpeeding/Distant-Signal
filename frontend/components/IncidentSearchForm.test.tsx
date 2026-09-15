@@ -166,11 +166,72 @@ describe('IncidentSearchForm', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
+  it('says the end has been reached once the last page is in, rather than just dropping the button', async () => {
+    fetchMock
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '2' })], nextCursor: null }));
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+    // While more pages remain the end-of-results copy must NOT be claimed.
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(
+      await screen.findByText("You've reached the end — no more incidents match these filters."),
+    ).toBeInTheDocument();
+  });
+
+  it('says the end has been reached when the very first page is also the last one', async () => {
+    fetchMock.mockReturnValue(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: null }));
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(
+      await screen.findByText("You've reached the end — no more incidents match these filters."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
+
+  it('does not claim the end of results when a "Load more" page fails -- it reports the failure and keeps the retry', async () => {
+    fetchMock
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
+      .mockReturnValueOnce(errorResponse());
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText("Couldn't load more results. Try again.")).toBeInTheDocument();
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
+    // The cursor is still valid, so the retry has to still be offered.
+    expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
+
+    // ...and retrying really does page on from the same cursor, clearing the error.
+    fetchMock.mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '2' })], nextCursor: null }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    await waitFor(() => expect(screen.getAllByText('Signal failure at Woking')).toHaveLength(2));
+    expect(new URL(fetchMock.mock.calls[2][0], 'http://localhost').searchParams.get('after')).toBe('cursor-a');
+    expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("You've reached the end — no more incidents match these filters."),
+    ).toBeInTheDocument();
+  });
+
   it('renders the empty-results message, not a blank screen', async () => {
     fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     await screen.findByText('No incidents match these filters.');
+    // "Nothing matched" already says everything; it must not be doubled up
+    // with the end-of-pagination line.
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
   });
 
   it('renders an error message on a failed search, not a thrown error', async () => {
