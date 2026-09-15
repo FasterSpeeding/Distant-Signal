@@ -281,12 +281,16 @@ export function IncidentSearchForm({
          * height (it wraps the root in a `display: flex` / `flex: 1` /
          * `overflow: hidden` chain, which is what makes the root's height
          * definite). It is still not used here: letting the page scroll is
-         * the convention the other "Load more" lists in this app already
-         * follow -- `StationTimetable.tsx` renders its paginated rows as a
-         * plain `Stack` with no inner scroll region -- and a nested scroller
-         * buys nothing here (the filter form above is short, so there are no
-         * sticky controls to preserve) while costing real usability on
-         * touch, where it steals the page's own scroll gesture. */}
+         * what `StationTimetable.tsx` -- the other paginated "Load more"
+         * list in this app -- already does, rendering its rows as a plain
+         * `Stack` with no inner scroll region. (`TrainSearchForm.tsx`, which
+         * this component's header says it mirrors, still has the
+         * `mah`-capped `ScrollArea` described above; it has the same latent
+         * defect and is simply out of scope for this fix, so it is not the
+         * precedent to copy.) A nested scroller buys nothing here anyway --
+         * the filter form above is short, so there are no sticky controls to
+         * preserve -- while costing real usability on touch, where it steals
+         * the page's own scroll gesture. */}
         <Stack gap="sm" data-incident-results>
           {results.rows.map((row) => (
             <Stack key={row.incidentId} gap={4}>
@@ -294,15 +298,36 @@ export function IncidentSearchForm({
                * `nowrap`: at ~360px the summary and the timestamp cannot
                * share a line, and forcing them to shrank the timestamp
                * until it broke mid-value ("19 Aug 2026," etc. across four
-               * lines). The timestamp instead stays unbreakable and claims
-               * the end of whichever line it lands on -- `margin-inline-
-               * start: auto` rather than the `Group`'s `justify` because
-               * `space-between` leaves a *wrapped* single-item line at
-               * `flex-start`, which would left-align the date under a long
-               * summary on desktop. With the auto margin it reads flush
-               * right whether it shares the summary's line or wraps below
-               * it. */}
-              <Group>
+               * lines) -- under `nowrap` its floor is `min-width: auto`,
+               * i.e. its widest *word*, not the whole value. The timestamp
+               * instead stays unbreakable and claims the end of whichever
+               * line it lands on. `margin-inline-start: auto` rather than
+               * the `Group`'s `justify` because `space-between` leaves a
+               * *wrapped* single-item line at `flex-start`, which would
+               * left-align the date under a long summary on desktop; with
+               * the auto margin it reads flush right whether it shares the
+               * summary's line or wraps below it.
+               *
+               * `rowGap` overrides `Group`'s own `md` gap on the wrap axis
+               * only (an inline longhand beats the class's `gap` shorthand).
+               * Without it a wrapped timestamp sat 16px under its summary
+               * while the badge row below sat 4px under the timestamp, so
+               * the date read as a label on the badges rather than on the
+               * incident it belongs to. The horizontal `md` gap is
+               * deliberately left alone.
+               *
+               * `overflowWrap: 'anywhere'` (inherited, so it reaches the
+               * `TextLink` anchor, which takes no style of its own) is what
+               * the removed `ScrollArea`'s `overflow: hidden` used to
+               * provide by accident: a Knowledgebase summary can contain an
+               * unbroken token longer than a 360px screen (a URL, a Welsh
+               * station name), and a flex item's `min-width: auto` floor is
+               * its longest word -- so without this the row would push the
+               * whole page sideways. `anywhere` rather than `break-word`
+               * precisely because it DOES lower that intrinsic minimum,
+               * which is the whole point here; same choice, same reason, as
+               * `.journeyProgressLabel` in `app/globals.css`. */}
+              <Group style={{ rowGap: 2, overflowWrap: 'anywhere' }}>
                 <TextLink href={`/incidents/${encodeURIComponent(row.incidentId)}`} underline="always">
                   {row.summary}
                 </TextLink>

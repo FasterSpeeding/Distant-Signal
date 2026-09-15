@@ -225,6 +225,15 @@ describe('IncidentSearchForm', () => {
       expect(node.style.overflow).not.toBe('hidden');
       expect(node.style.overflowY).not.toBe('hidden');
     }
+
+    // The two properties that keep a row from pushing the page sideways
+    // once the clipping ancestor is gone. jsdom can't lay anything out, so
+    // this is only a tripwire against silent removal -- the reasoning is in
+    // `IncidentSearchForm.tsx`'s own comment on this `Group`.
+    const header = screen.getByText('Signal failure at Woking').closest('a')
+      ?.parentElement as HTMLElement;
+    expect(header.style.overflowWrap).toBe('anywhere');
+    expect(screen.getByText(/2026/).style.whiteSpace).toBe('nowrap');
   });
 
   it('says the end has been reached once the last page is in, rather than just dropping the button', async () => {
