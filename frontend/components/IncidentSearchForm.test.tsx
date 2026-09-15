@@ -166,6 +166,83 @@ describe('IncidentSearchForm', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
+  // Regression guard for the archive being hard-clipped at a fixed height.
+  // The list used to sit inside a `<ScrollArea mah={520}>`, whose root is
+  // `overflow: hidden` while its viewport is `height: 100%` -- against a
+  // root whose own `height` is `auto` that percentage resolves to `auto`,
+  // so the viewport never overflowed itself (no scroll) and the root
+  // clipped everything past 520px (nothing reachable). jsdom does no
+  // layout, so this asserts the *structure* that caused it instead: the
+  // results list must not be inside a Mantine scroll viewport, and no
+  // ancestor between it and the form may pin a height.
+  it('renders the results list in the page flow, with no fixed-height or scroll-container ancestor', async () => {
+    fetchMock.mockReturnValue(
+      okResponse({ results: [summary({ incidentId: '1' })], nextCursor: null }),
+    );
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+
+    const list = document.querySelector('[data-incident-results]');
+    expect(list).not.toBeNull();
+
+    const form = (list as HTMLElement).closest('form');
+    expect(form).not.toBeNull();
+
+    // Walk the list itself plus every ancestor up to (and including) the
+    // form -- a clip anywhere on that chain hides the rows just as
+    // effectively as one on the list.
+    for (
+      let node: HTMLElement | null = list as HTMLElement;
+      node !== null;
+      node = node === form ? null : (node.parentElement as HTMLElement | null)
+    ) {
+      expect(node.hasAttribute('data-scrollarea-viewport')).toBe(false);
+      // Mantine resolves the `h`/`mah` style props straight into inline
+      // `height`/`max-height` (verified against the rendered DOM: a
+      // `<ScrollArea mah={520}>` root carries
+      // `max-height: calc(32.5rem * var(--mantine-scale))`), so reading
+      // them back off `style` is enough -- no computed-style/CSSOM layout
+      // is needed, which is just as well under jsdom. The `--mah`/`--h`
+      // custom properties are checked too, in case a future Mantine
+      // switches to the variable-plus-class form its other props use.
+      expect(node.style.maxHeight).toBe('');
+      expect(node.style.height).toBe('');
+      expect(node.style.getPropertyValue('--mah')).toBe('');
+      expect(node.style.getPropertyValue('--h')).toBe('');
+      expect(node.style.overflow).not.toBe('hidden');
+      expect(node.style.overflowY).not.toBe('hidden');
+    }
+  });
+
+  it('keeps every loaded row in the document after "Load more", none clipped away', async () => {
+    fetchMock
+      .mockReturnValueOnce(
+        okResponse({
+          results: [summary({ incidentId: '1', summary: 'Row one' })],
+          nextCursor: 'cursor-a',
+        }),
+      )
+      .mockReturnValueOnce(
+        okResponse({
+          results: [summary({ incidentId: '2', summary: 'Row two' })],
+          nextCursor: null,
+        }),
+      );
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Row one');
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    await screen.findByText('Row two');
+
+    // Both rows are siblings in the one in-flow list, so the page's own
+    // scrollbar reaches them; neither is stranded in a nested scroller.
+    const list = document.querySelector('[data-incident-results]') as HTMLElement;
+    expect(list.contains(screen.getByText('Row one'))).toBe(true);
+    expect(list.contains(screen.getByText('Row two'))).toBe(true);
+  });
+
   it('renders the empty-results message, not a blank screen', async () => {
     fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);

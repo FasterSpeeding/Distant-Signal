@@ -8,7 +8,6 @@ import {
   Group,
   MultiSelect,
   NumberInput,
-  ScrollArea,
   SegmentedControl,
   Select,
   Stack,
@@ -231,38 +230,67 @@ export function IncidentSearchForm({
     }
     return (
       <>
-        <ScrollArea mah={520} offsetScrollbars>
-          <Stack gap="sm">
-            {results.rows.map((row) => (
-              <Stack key={row.incidentId} gap={4}>
-                <Group justify="space-between" wrap="nowrap">
-                  <TextLink href={`/incidents/${encodeURIComponent(row.incidentId)}`} underline="always">
-                    {row.summary}
-                  </TextLink>
-                  <Text size="xs" c="dimmed">
-                    {formatDateTime(row.firstSeenAt)}
-                  </Text>
-                </Group>
-                <Group gap="xs">
-                  <Badge color={row.isPlanned ? 'blue' : 'orange'}>
-                    {row.isPlanned ? 'Planned Work' : 'Real-Time'}
+        {/* Deliberately NOT wrapped in a `ScrollArea` (`mah`-capped or
+         * otherwise). It used to be, and that hard-clipped the archive: a
+         * Mantine `ScrollArea` root is `position: relative; overflow: hidden`
+         * (`@mantine/core/styles/ScrollArea.css`, `.m_d57069b5`) while its
+         * viewport is `height: 100%`. With only `mah` on the root, the root's
+         * own `height` stays `auto`, so that `100%` resolves to `auto` too
+         * (CSS 2.1 §10.5: a percentage height against a content-sized
+         * containing block computes to `auto`) -- the viewport grows to its
+         * full content height and therefore never overflows *itself*, so it
+         * never scrolls, while the root clamps to the cap and clips
+         * everything past it with `overflow: hidden`. Net effect: results
+         * past the cap were unreachable by any means, and each "Load more"
+         * appended rows straight into the clipped region. Worse on a ~360px
+         * phone, where rows are two or three lines tall and the cap landed
+         * after only a handful of them, and where Mantine hides native
+         * scrollbars (`scrollbar-width: none`) so there was no visual hint
+         * that anything had been cut off at all.
+         *
+         * Letting the page scroll is also the convention the other
+         * "Load more" lists in this app already follow --
+         * `StationTimetable.tsx` renders its paginated rows as a plain
+         * `Stack` with no inner scroll region. A nested scroll region buys
+         * nothing here (the filter form above it is short, so there is no
+         * sticky-controls problem to solve) and costs real usability on
+         * touch, where an inner scroller steals the page's own scroll
+         * gesture. */}
+        <Stack gap="sm" data-incident-results>
+          {results.rows.map((row) => (
+            <Stack key={row.incidentId} gap={4}>
+              {/* `wrap` is left at Mantine's wrapping default rather than
+               * `nowrap`: at ~360px the summary and the timestamp cannot
+               * share a line, and forcing them to would shrink the
+               * timestamp until it broke mid-value. Wrapping drops the
+               * timestamp onto its own line instead. */}
+              <Group justify="space-between">
+                <TextLink href={`/incidents/${encodeURIComponent(row.incidentId)}`} underline="always">
+                  {row.summary}
+                </TextLink>
+                <Text size="xs" c="dimmed">
+                  {formatDateTime(row.firstSeenAt)}
+                </Text>
+              </Group>
+              <Group gap="xs">
+                <Badge color={row.isPlanned ? 'blue' : 'orange'}>
+                  {row.isPlanned ? 'Planned Work' : 'Real-Time'}
+                </Badge>
+                <Badge color={row.isCleared ? 'gray' : 'green'}>{row.isCleared ? 'Cleared' : 'Active'}</Badge>
+                {row.operators.map((code) => (
+                  <Badge key={code} variant="outline" color="grape">
+                    {code}
                   </Badge>
-                  <Badge color={row.isCleared ? 'gray' : 'green'}>{row.isCleared ? 'Cleared' : 'Active'}</Badge>
-                  {row.operators.map((code) => (
-                    <Badge key={code} variant="outline" color="grape">
-                      {code}
-                    </Badge>
-                  ))}
-                  {row.affectedStations.map((crs) => (
-                    <Badge key={crs} variant="outline" color="gray">
-                      {crs}
-                    </Badge>
-                  ))}
-                </Group>
-              </Stack>
-            ))}
-          </Stack>
-        </ScrollArea>
+                ))}
+                {row.affectedStations.map((crs) => (
+                  <Badge key={crs} variant="outline" color="gray">
+                    {crs}
+                  </Badge>
+                ))}
+              </Group>
+            </Stack>
+          ))}
+        </Stack>
         {results.nextCursor !== null && (
           <Group>
             <Button variant="default" size="xs" onClick={handleLoadMore} disabled={loadingMore} loading={loadingMore}>
