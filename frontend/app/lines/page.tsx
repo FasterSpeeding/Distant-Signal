@@ -36,7 +36,10 @@ export default async function AllLinesPage() {
       <Stack gap="md">
         <Group justify="space-between" align="baseline">
           <Title order={1}>All Lines</Title>
-          <TextLink href="/lines/new">New custom line</TextLink>
+          <Group gap="md">
+            <TextLink href="/incidents">Incident Archive</TextLink>
+            <TextLink href="/lines/new">New custom line</TextLink>
+          </Group>
         </Group>
         <AllLinesTable lines={lines} reports={reports} pinnedLineIds={preferences.pinnedLines} tocs={tocs} />
       </Stack>

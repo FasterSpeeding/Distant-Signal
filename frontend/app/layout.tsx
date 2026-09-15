@@ -287,6 +287,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                           docs/superpowers/specs/2026-09-07-train-listing-page-design.md
                           §4. */}
                       <TextLink href="/trains">Find a Train</TextLink>
+                      <TextLink href="/incidents">Incident Archive</TextLink>
                       <TrackedTrainsNavItem />
                       <Suspense fallback={null}>
                         <GroupsNavItem />

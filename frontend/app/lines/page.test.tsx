@@ -62,15 +62,21 @@ describe('AllLinesPage', () => {
     vi.mocked(api.getAllTocs).mockResolvedValue(tocs);
   });
 
-  it('renders a "New custom line" link pointing at /lines/new, sharing a row with the page title', async () => {
+  it('renders "Incident Archive" and "New custom line" links, sharing a row with the page title', async () => {
     await renderPage();
 
-    const link = screen.getByRole('link', { name: 'New custom line' });
-    expect(link).toHaveAttribute('href', '/lines/new');
+    const newLineLink = screen.getByRole('link', { name: 'New custom line' });
+    expect(newLineLink).toHaveAttribute('href', '/lines/new');
+    const incidentsLink = screen.getByRole('link', { name: 'Incident Archive' });
+    expect(incidentsLink).toHaveAttribute('href', '/incidents');
     const heading = screen.getByRole('heading', { name: 'All Lines', level: 1 });
-    // Same "shared parent row" assertion style CustomLineForm.test.tsx
-    // already uses for its Cancel/submit pairing.
-    expect(link.parentElement).toBe(heading.parentElement);
+    // The two links share an inner Group with each other, and that inner
+    // Group is itself a sibling of the heading in the same outer row --
+    // same "shared parent row" assertion style CustomLineForm.test.tsx uses
+    // for its Cancel/submit pairing, extended one level for the nested
+    // Group these two links now share (plan Task 5, Step 6).
+    expect(newLineLink.parentElement).toBe(incidentsLink.parentElement);
+    expect(newLineLink.parentElement?.parentElement).toBe(heading.parentElement);
   });
 
   it('no longer renders CustomLineForm inline on this page', async () => {
