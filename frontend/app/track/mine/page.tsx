@@ -143,11 +143,18 @@ export default async function MyTrackedTrainsPage() {
             // tracked themselves.
             //
             // Own rows first, shared rows after, each half in the order
-            // its own endpoint returned. The two halves have no comparable
-            // ordering key to interleave on: the caller's own are ordered
-            // by `trackedAt`, which a shared train deliberately never
-            // exposes (spec §4's "Never shown" list), so any merged
-            // ordering would have to invent one.
+            // its own endpoint returned. Interleaving would mean re-sorting
+            // the caller's own half on something other than `trackedAt`,
+            // and that ordering is a deliberate, reasoned choice of its own
+            // (`list_tracked_trains_for_user`'s doc comment: a train pinned
+            // a month out must not outrank one pinned five minutes ago for
+            // a service running right now). The obvious shared key --
+            // `serviceDate`/`pinScheduledDeparture` -- would override
+            // exactly that, and `trackedAt` itself can't be the merge key
+            // because a shared train deliberately never exposes one (spec
+            // §4's "Never shown" list). So: two halves, each honestly
+            // ordered, rather than one list ordered by something neither
+            // half chose.
             <Stack gap="xs">
               {trains.map((train) => (
                 <TrackedTrainListRow key={train.id} train={train} tickets={ticketsByTrain.get(train.id) ?? []} />
@@ -280,13 +287,19 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
  * status/delay badges -- is shared directly (`trackedTrainDisplayName`,
  * `RowStatusBadge`) rather than duplicated.
  *
- * The header only links when the train has resolved to a real
- * `(trainUid, serviceDate)`: that's `/train/[uid]/[date]`, which is public
- * and unscoped. The by-id fallback the caller's own rows use
- * (`/train/by-id/{id}` -> `GET /Train/{id}`) is owner-scoped and 404s for
- * everyone else, so offering it here would be a link whose only possible
- * outcome is a dead end -- the same reasoning `/groups/{id}`'s own shared
- * rows apply by linking nowhere at all. */
+ * The header links exactly when a `trainUid` is known, and not otherwise.
+ * `/train/[uid]/[date]` is public and unscoped, so a uid is the whole
+ * precondition -- deliberately a WEAKER test than the own-row's
+ * `resolutionStatus === 'resolved' && trainUid`, because `trains_id` (and
+ * so `trainUid`) is populated well before the status reaches `resolved`
+ * (`schedule_matched`, and an NR-primary subscription created by
+ * `create_subscription_for_train`, both have one while still short of
+ * `resolved`). The own row can afford the stricter test because it falls
+ * back to `/train/by-id/{id}`; this row can't, since that route
+ * (`GET /Train/{id}`) is owner-scoped and 404s for everyone else -- which
+ * is also why a uid-less shared train is rendered as plain text here
+ * rather than linked, the same dead-end reasoning that leaves
+ * `/groups/{id}`'s own shared rows unlinked entirely. */
 function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
   const { train, groupNames } = row;
   const displayName = trackedTrainDisplayName({
@@ -304,10 +317,7 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
   const when = train.pinScheduledDeparture
     ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
     : formatDate(train.serviceDate);
-  const href =
-    train.resolutionStatus === 'resolved' && train.trainUid
-      ? `/train/${train.trainUid}/${train.serviceDate}`
-      : null;
+  const href = train.trainUid ? `/train/${train.trainUid}/${train.serviceDate}` : null;
   const heading = <Text fw={500}>{displayName}</Text>;
 
   return (

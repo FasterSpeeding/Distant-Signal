@@ -851,9 +851,13 @@ impl From<SharedTrainRow> for SharedTrain {
 /// `train_tracking::list_tracked_trains_for_user`'s half of the same list
 /// (with their own rename/ticket controls, which a shared row
 /// deliberately has none of), and a train they shared into two groups
-/// would otherwise render three times on one page. Their own shares stay
-/// visible as `TrackedTrainListItem::shared_group_count` on the row they
-/// already had.
+/// would otherwise render three times on one page. Note the asymmetry
+/// this leaves: a train shared WITH the caller is tagged, while one the
+/// caller shared OUT carries no group tag on `/track/mine` at all --
+/// `TrackedTrainListItem::shared_group_count` is already on that row's
+/// wire shape, but nothing on this page renders it today. Tagging the
+/// outgoing direction too is a deliberate follow-up, not something this
+/// query is hiding.
 ///
 /// One row per (group, train) pair, NOT per train: a train shared into two
 /// groups the caller is in is genuinely two attributions, and collapsing
@@ -868,7 +872,16 @@ impl From<SharedTrainRow> for SharedTrain {
 ///
 /// Ordered newest-shared-first and capped at the same
 /// [`MINE_LIST_LIMIT`](crate::data::train_tracking::MINE_LIST_LIMIT) the
-/// caller's own half of the list uses; `gt.added_at` is an ordering key
+/// caller's own half of the list uses -- but note the cap counts (group,
+/// train) PAIRS here, where the own half counts trains, so a train shared
+/// into three of the caller's groups spends three of the hundred. At the
+/// far edge of that cap a merged row could therefore lose one of its
+/// `from <group>` tags (never the row itself, since the pairs are ordered
+/// together by `added_at` only incidentally). Accepted rather than solved
+/// with a windowed subquery: the same "100 is a round number, not a
+/// researched one, revisit when real usage exists" posture
+/// `MINE_LIST_LIMIT` itself is documented with, and nothing today is
+/// remotely near it. `gt.added_at` is an ordering key
 /// only and is never selected into the response (spec §4 forbids exposing
 /// a share's exact timestamp), with `gt.train_subscription_id` breaking
 /// ties so the order is total and stable across calls.
