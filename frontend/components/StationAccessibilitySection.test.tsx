@@ -193,6 +193,16 @@ describe('StationAccessibilitySection', () => {
     expect(screen.queryByText('Notes:')).not.toBeInTheDocument();
   });
 
+  it('counts only the items it will actually show, so the control never over-promises', () => {
+    renderWithMantine(
+      <StationAccessibilitySection
+        result={{ coverage: 'present', data: { carParks: [{ spaces: 120 }, {}] } }}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '1 item' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '2 items' })).not.toBeInTheDocument();
+  });
+
   it('skips an array whose every item renders to nothing', () => {
     renderWithMantine(
       <StationAccessibilitySection result={{ coverage: 'present', data: { carParks: [{}, {}] } }} />,

@@ -153,6 +153,12 @@ mod tests {
     #[test]
     fn router_builds_without_a_route_conflict() {
         let _router: Router = router();
+        // `public_router()` merges this module's routes with
+        // `station_stats.rs`'s and `departures.rs`'s, which own the other
+        // `/stations/{crs}/…` paths -- a cross-module conflict surfaces
+        // there, not in `router()` alone, and is otherwise only covered by
+        // database-gated tests.
+        let _merged: Router = crate::routes::public_router();
     }
 }
 

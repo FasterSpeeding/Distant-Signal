@@ -104,15 +104,19 @@ function AccessibilityValue({ value }: { value: RenderableValue }) {
     );
   }
   if (value.kind === 'items') {
+    // Counted from what will actually be shown, not from `value.count` (the
+    // source array's length): an entry that renders to nothing is dropped,
+    // and a control reading "2 items" over one visible row would be a lie.
+    const visible = value.items.filter((item) => !isEmptyRenderable(item));
     // No "Show" verb: the control keeps one static accessible name in both
     // states, and the chevron plus `aria-expanded` carry open/closed. A
     // button still reading "Show 2 items" while the items are on screen
     // would contradict its own `aria-expanded="true"`.
-    const label = value.count === 1 ? '1 item' : `${value.count} items`;
+    const label = visible.length === 1 ? '1 item' : `${visible.length} items`;
     return (
       <Disclosure label={label}>
         <Stack gap="sm">
-          {value.items.map((item, index) => (
+          {visible.map((item, index) => (
             // eslint-disable-next-line react/no-array-index-key -- items have no stable id in this genuinely-unknown-shape data
             <AccessibilityValue key={index} value={item} />
           ))}

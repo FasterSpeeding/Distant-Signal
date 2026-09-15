@@ -51,6 +51,24 @@ describe('isEmptyRenderable', () => {
     expect(isEmptyRenderable(renderAccessibilityValue({ stepFree: true }))).toBe(false);
     expect(isEmptyRenderable(renderAccessibilityValue([{ a: 1 }]))).toBe(false);
     expect(isEmptyRenderable(renderAccessibilityValue({ a: { b: { c: 1 } } }))).toBe(false);
+    // `0` and `false` render as "0"/"No" -- real content, not emptiness.
+    expect(isEmptyRenderable(renderAccessibilityValue([0]))).toBe(false);
+    expect(isEmptyRenderable(renderAccessibilityValue([false]))).toBe(false);
+    // Each element renders as raw `[]`, which is text on the page.
+    expect(isEmptyRenderable(renderAccessibilityValue([[], []]))).toBe(false);
+  });
+
+  it('recurses into an items list: empty only when every item is itself empty', () => {
+    expect(isEmptyRenderable(renderAccessibilityValue([{}, {}]))).toBe(true);
+    expect(isEmptyRenderable(renderAccessibilityValue([{ a: 1 }, {}]))).toBe(false);
+  });
+
+  // The deep/malformed fallback must never be hidden: it is the only thing
+  // standing between an unanticipated shape and silently dropped data.
+  it('never flags a raw-JSON fallback as empty', () => {
+    expect(isEmptyRenderable(renderAccessibilityValue({ a: { b: { c: 1 } } }))).toBe(false);
+    expect(isEmptyRenderable(renderAccessibilityValue([[{ a: 1 }]]))).toBe(false);
+    expect(isEmptyRenderable(renderAccessibilityValue(null))).toBe(false);
   });
 });
 
@@ -123,6 +141,21 @@ describe('renderAccessibilityValue', () => {
       kind: 'rows',
       rows: [{ label: 'Step free', value: 'Yes' }],
     });
+  });
+
+  // Same reasoning as the null case: a label over blank space is worse
+  // than no row. `0` and `false` are content and must survive.
+  it('drops an own key that renders to no text at all, but keeps 0 and false', () => {
+    expect(renderAccessibilityValue({ count: 2, features: [], notes: '', spaces: 0, lift: false })).toEqual(
+      {
+        kind: 'rows',
+        rows: [
+          { label: 'Count', value: '2' },
+          { label: 'Spaces', value: '0' },
+          { label: 'Lift', value: 'No' },
+        ],
+      },
+    );
   });
 
   it('falls back to raw JSON for an object nested more than one level deep, rather than throwing', () => {
