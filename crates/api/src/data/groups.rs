@@ -802,7 +802,7 @@ struct SharedTrainRow {
     custom_name: Option<String>,
     added_by: String,
     added_by_name: Option<String>,
-    added_by_email: Option<String>,
+    added_by_username: Option<String>,
 }
 
 /// One train shared into one group the CALLER is a member of -- `GroupTrain`
@@ -856,9 +856,13 @@ impl From<SharedTrainRow> for SharedTrain {
             delay_minutes: row.delay_minutes,
             custom_name: row.custom_name,
             added_by: row.added_by,
-            // Same "name, else email, else nothing" collapse
-            // `GroupTrain::from` already applies -- see its own comment.
-            added_by_name: row.added_by_name.or(row.added_by_email),
+            // Same "name, else username, else nothing -- and never an
+            // email" collapse `GroupTrain::from` already applies, via the
+            // same `users::display_label`; see its own comment. This shape
+            // is strictly more exposed than `GroupTrain` (it reaches a
+            // member without them opening the group at all), so it is the
+            // last place that should be laxer about it.
+            added_by_name: users::display_label(row.added_by_name, row.added_by_username),
         }
     }
 }
@@ -920,7 +924,7 @@ pub async fn list_shared_trains_for_user(pool: &PgPool, user_id: &str) -> Result
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 ts.pin_scheduled_departure, ts.service_date, ts.resolution_status, \
                 tr.train_uid, cs.status, cs.delay_minutes, ts.custom_name, \
-                gt.added_by, u.name AS added_by_name, u.email AS added_by_email \
+                gt.added_by, u.name AS added_by_name, u.username AS added_by_username \
          FROM group_members me \
          JOIN groups g ON g.id = me.group_id \
          JOIN group_trains gt ON gt.group_id = g.id \
@@ -2289,12 +2293,15 @@ mod shared_train_wire_shape_tests {
         );
     }
 
-    /// `added_by_name` collapses `name`, else `email`, else nothing --
+    /// `added_by_name` collapses `name`, else `username`, else nothing --
     /// the "shared by <who>" half of the row's attribution, and the same
-    /// collapse `GroupTrain::from` applies one struct away.
+    /// collapse (`users::display_label`) `GroupTrain::from` applies one
+    /// struct away. Never the sharer's email: this row reaches a member
+    /// who never even opened the group, so if anything it is the LAST
+    /// place that should be laxer than the group detail page.
     #[test]
-    fn added_by_name_falls_back_to_email_then_to_nothing() {
-        let row = |name: Option<&str>, email: Option<&str>| SharedTrainRow {
+    fn added_by_name_falls_back_to_username_then_to_nothing_but_never_an_email() {
+        let row = |name: Option<&str>, username: Option<&str>| SharedTrainRow {
             group_id: "group-1".to_string(),
             group_name: "Family".to_string(),
             train_subscription_id: 1,
@@ -2311,18 +2318,30 @@ mod shared_train_wire_shape_tests {
             custom_name: None,
             added_by: "user-1".to_string(),
             added_by_name: name.map(str::to_string),
-            added_by_email: email.map(str::to_string),
+            added_by_username: username.map(str::to_string),
         };
 
         assert_eq!(
-            SharedTrain::from(row(Some("Alex"), Some("alex@example.com"))).added_by_name,
+            SharedTrain::from(row(Some("Alex"), Some("alex"))).added_by_name,
             Some("Alex".to_string())
         );
         assert_eq!(
-            SharedTrain::from(row(None, Some("alex@example.com"))).added_by_name,
-            Some("alex@example.com".to_string())
+            SharedTrain::from(row(None, Some("alex"))).added_by_name,
+            Some("alex".to_string())
+        );
+        // Blank, not just absent -- what an IdP with no name on file for
+        // the sharer actually sends, and what used to render this row's
+        // attribution as "Shared by " with nothing after it.
+        assert_eq!(
+            SharedTrain::from(row(Some("  "), Some("alex"))).added_by_name,
+            Some("alex".to_string())
         );
         assert_eq!(SharedTrain::from(row(None, None)).added_by_name, None);
+        assert_eq!(
+            SharedTrain::from(row(Some("alex@example.com"), Some("alex@example.com")))
+                .added_by_name,
+            None
+        );
     }
 }
 
