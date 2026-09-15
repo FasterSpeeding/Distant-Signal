@@ -1079,7 +1079,7 @@ a[data-text-link='always'] {
 .journeyProgressLine {
   position: relative;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
 }
 
 .journeyProgressLine::before {
