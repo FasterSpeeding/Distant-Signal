@@ -6,6 +6,7 @@ import {
   getMyTrackedTrains,
   getPreferences,
   getSession,
+  getSharedGroupTrains,
   getStationName,
   getStopPointDisruption,
 } from '@/lib/api';
@@ -20,6 +21,7 @@ import { severityRank, worstStatus } from '@/lib/severity';
 import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
+import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import type { LineStatus, LineStatusReport, Preferences, TrackedTrainListItem } from '@/lib/types';
 
 // See app/lines/[id]/page.tsx-adjacent history page and this repo's other
@@ -108,7 +110,7 @@ export default async function DashboardPage() {
   // branch, which simply doesn't use it). Per
   // docs/superpowers/specs/2026-09-01-tracked-trains-home-page-design.md
   // Decision 3.
-  const [preferences, allReports, myTrackedTrains] = await Promise.all([
+  const [preferences, allReports, myTrackedTrains, sharedGroupTrains] = await Promise.all([
     // Fails closed to "nothing pinned" -- the exact shape getPreferences
     // already returns for a 401 -- rather than being stale-served: this is
     // per-user data, and the design spec's Decision 5 excludes per-user
@@ -125,6 +127,15 @@ export default async function DashboardPage() {
     // and the call site below already collapses it to []. Same fail-closed
     // rationale as preferences above.
     getMyTrackedTrains().catch(() => null),
+    // Trains OTHER members shared into a group the caller belongs to.
+    // Gated and null-on-401 in exactly the same way as the call above, and
+    // `.catch(() => null)` for the same reason /track/mine gives for its
+    // own copy of this call: the group-shared half of this section is
+    // auxiliary, so a backend hiccup there must cost the caller the shared
+    // rows, never their own rows or the whole dashboard. `null` is already
+    // a value this page handles (it is the 401 return), so the failure
+    // collapses into the existing "nothing shared with you" branch.
+    getSharedGroupTrains().catch(() => null),
   ]);
 
   // Hoisted above the anonymous/authenticated branch so both can read it:
@@ -224,10 +235,42 @@ export default async function DashboardPage() {
 
   // null (not logged in) collapses to [] -- the same "hide entirely"
   // treatment a logged-in user with zero tracked trains gets (Decision 4 of
-  // the design spec). slice(0, 5) of an already trackedAt-DESC-ordered
-  // response is "5 most recently tracked" with no client-side re-sort
-  // needed (Decision 1/3) -- the backend query is already ordered that way.
-  const trackedTrains = (myTrackedTrains ?? []).slice(0, 5);
+  // the design spec).
+  const ownTrains = myTrackedTrains ?? [];
+  // De-duplicated per train and filtered against the caller's own rows --
+  // see `mergeSharedTrains`' own doc comment for why both halves of that
+  // are the frontend's job rather than the query's. Note the full own-train
+  // list (not the sliced five) is what that filter is built from: a train
+  // that is the caller's own is never a "shared" row here, whether or not
+  // it made this section's cap.
+  const sharedTrains = mergeSharedTrains(sharedGroupTrains ?? [], new Set(ownTrains.map((t) => t.id)));
+
+  // ONE list, own rows first then shared -- the same single-list, own-first
+  // shape /track/mine settled on (see its own comment): in a merged list a
+  // row with no attribution reads as one the caller tracked themselves,
+  // which is exactly why each shared row carries its "from <group>"/
+  // "Shared by <who>" tags. Interleaving is deliberately not attempted:
+  // `trackedAt` orders the caller's own half (and a shared train never
+  // exposes one -- spec §4's "Never shown" list), and re-sorting on
+  // `serviceDate`/`pinScheduledDeparture` would override exactly the
+  // ordering Decision 1 chose.
+  //
+  // slice(0, 5) of an already trackedAt-DESC-ordered response is "5 most
+  // recently tracked" with no client-side re-sort needed (Decision 1/3) --
+  // the backend query is already ordered that way. The cap is on the
+  // section as a whole, not per half: Decision 1's whole point is that this
+  // supplementary section must not out-compete the line-status overview
+  // above it, and two five-row halves would be ten rows. A caller with five
+  // or more of their own trains therefore sees the shared ones via "View
+  // all" (/track/mine, which caps neither half) rather than here.
+  const trackedTrainRows: TrackedTrainRow[] = [
+    ...ownTrains.map((train): TrackedTrainRow => ({ kind: 'own', key: `own-${train.id}`, train })),
+    ...sharedTrains.map((row): TrackedTrainRow => ({
+      kind: 'shared',
+      key: `shared-${row.train.trainSubscriptionId}`,
+      row,
+    })),
+  ].slice(0, 5);
 
   return (
     <Stack p="lg" gap="xl">
@@ -314,16 +357,20 @@ export default async function DashboardPage() {
           unconditionally above and `notGoodServiceSummary` is pure. */}
       {pinnedLineReports.length === 0 && <RightNowModule summary={rightNow} />}
 
-      {trackedTrains.length > 0 && (
+      {trackedTrainRows.length > 0 && (
         <Stack gap="md">
           <Group justify="space-between">
             <Title order={2}>Your Tracked Trains</Title>
             <TextLink href="/track/mine">View all</TextLink>
           </Group>
           <Stack gap="xs">
-            {trackedTrains.map((train) => (
-              <TrackedTrainSummaryRow key={train.id} train={train} />
-            ))}
+            {trackedTrainRows.map((row) =>
+              row.kind === 'own' ? (
+                <TrackedTrainSummaryRow key={row.key} train={row.train} />
+              ) : (
+                <SharedTrainSummaryRow key={row.key} row={row.row} />
+              ),
+            )}
           </Stack>
         </Stack>
       )}
@@ -364,6 +411,105 @@ function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodService
         </>
       )}
     </Stack>
+  );
+}
+
+/** One row of the "Your Tracked Trains" section: either a train the caller
+ * tracked themselves, or one another member shared into a group they
+ * belong to. A discriminated union rather than one widened row type, so
+ * the shared half can never accidentally be handed to the own-row
+ * component (which links to the owner-scoped `/train/by-id/{id}` route) or
+ * vice versa. The `key` is prefixed per half because the two id spaces are
+ * the same one -- `SharedGroupTrain.trainSubscriptionId` and
+ * `TrackedTrainListItem.id` are both `train_subscriptions.id` -- so an
+ * unprefixed key could collide if `mergeSharedTrains`' own own-train filter
+ * ever regressed. */
+type TrackedTrainRow =
+  | { kind: 'own'; key: string; train: TrackedTrainListItem }
+  | { kind: 'shared'; key: string; row: MergedSharedTrain };
+
+/** A train another member shared into a group the caller belongs to,
+ * rendered in the same list as the caller's own summary rows above.
+ * Home-page-local sibling of `TrackedTrainSummaryRow` below, and a trimmed
+ * mirror of /track/mine's own `SharedTrainListRow` -- same tags, same
+ * wording, same linking rule.
+ *
+ * Deliberately NOT `TrackedTrainSummaryRow` with extra props: the caller
+ * doesn't own this train, so none of an own row's affordances apply. There
+ * is no rename (`POST /Train/{id}/name` is owner-scoped), no ticket data
+ * (spec §4 forbids a shared train ever carrying any) and no delete -- and
+ * the home page's own rows carry none of those controls either, so the
+ * distinction that actually matters here is the LINK: an own row falls back
+ * to `/train/by-id/{id}`, which is owner-scoped and 404s for anyone else.
+ *
+ * So this row links exactly when a `trainUid` is known, and renders plain
+ * text otherwise -- a deliberately weaker test than the own row's
+ * `resolutionStatus === 'resolved' && trainUid`, because `trainUid` is
+ * populated well before the status reaches `resolved` and
+ * `/train/{uid}/{date}` is public and unscoped. Same reasoning
+ * /track/mine's shared row states at length. */
+function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
+  const { train, groupNames } = row;
+  // `routeLabel`, not `trackedTrainDisplayName`: this page's own rows
+  // (`TrackedTrainSummaryRow` below) label by route too, so using the
+  // sharer's `customName` here would make the two halves of one list
+  // disagree about what a row's heading even is. /track/mine, whose own
+  // rows DO show a custom name, shows it for shared rows for the same
+  // consistency reason.
+  const route = routeLabel(
+    train.pinOriginCrs,
+    train.pinOriginName,
+    train.pinDestinationCrs,
+    train.pinDestinationName,
+  );
+  // Same date-only degradation as the own row below, for the same reason:
+  // a pin with no schedule data yet has no departure time, and `Invalid
+  // Date` is never an acceptable label.
+  const when = train.pinScheduledDeparture
+    ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
+    : formatDate(train.serviceDate);
+  const href = train.trainUid ? `/train/${train.trainUid}/${train.serviceDate}` : null;
+
+  const card = (
+    <Card withBorder>
+      <Stack gap={4}>
+        <Group justify="space-between" wrap="nowrap">
+          <Text fw={500}>{route}</Text>
+          <TrackedTrainStatusBadge train={train} />
+        </Group>
+        <Text size="sm" c="dimmed">
+          {when}
+        </Text>
+        <Group gap="xs" wrap="wrap">
+          {/* One badge per group this train reached the caller through --
+              a train shared into two of their groups is two tags, not an
+              arbitrarily-picked one. `addedByName` is `null` when the
+              sharer has neither a name nor a verified email on their
+              account; "a member" then, never a raw user id -- same wording
+              and same fallback /track/mine and /groups/{id} already use. */}
+          {groupNames.map((groupName) => (
+            <Badge key={groupName} variant="light" color="grape">
+              from {groupName}
+            </Badge>
+          ))}
+          <Text size="sm" c="dimmed">
+            Shared by {train.addedByName ?? 'a member'}
+          </Text>
+        </Group>
+      </Stack>
+    </Card>
+  );
+
+  // Whole-card link when there's somewhere to go, matching the own row
+  // directly below; nothing inside the card is itself interactive, so
+  // there's no nested-<a> problem of the kind /track/mine's richer row has
+  // to work around.
+  return href ? (
+    <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
+      {card}
+    </Link>
+  ) : (
+    card
   );
 }
 
@@ -430,7 +576,18 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: 'Cancelled',
 };
 
-function TrackedTrainStatusBadge({ train }: { train: TrackedTrainListItem }) {
+/** Structural, not `TrackedTrainListItem`: `SharedTrainSummaryRow` renders
+ * the identical badges off a `SharedGroupTrain`, whose `resolutionStatus`/
+ * `status` are plain `string`s on the wire rather than the own-list's
+ * narrowed unions. Both shapes satisfy this, and neither needs an adapter
+ * -- the branching below already treats every value as an opaque token
+ * (`STATUS_LABELS` falls back to the raw string for anything unlisted).
+ * Same widening /track/mine's own `RowStatusBadge` already made. */
+function TrackedTrainStatusBadge({
+  train,
+}: {
+  train: { resolutionStatus: string; status: string | null; delayMinutes: number | null };
+}) {
   // pending/unresolved show the resolution status itself -- no journey
   // status exists yet for either. Once resolved, the journey status plus a
   // delay badge takes over. No "active only" filter and no attempt to
