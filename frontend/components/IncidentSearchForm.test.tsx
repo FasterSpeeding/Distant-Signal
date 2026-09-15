@@ -116,6 +116,41 @@ describe('IncidentSearchForm', () => {
     expect(requestedUrl.searchParams.get('operator')).toBe('SW,VT');
   });
 
+  it('sends an end-of-day UTC "to" bound so the selected day is genuinely included', async () => {
+    fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+
+    fireEvent.change(screen.getByLabelText('To (optional)'), { target: { value: '2026-09-15' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const requestedUrl = new URL(fetchMock.mock.calls[0][0], 'http://localhost');
+    expect(requestedUrl.searchParams.get('to')).toBe('2026-09-15T23:59:59.999Z');
+  });
+
+  it('keeps the original filters on a "Load more" request, ignoring a filter change made afterward', async () => {
+    fetchMock
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '2' })], nextCursor: null }));
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    const [priorityMinInput] = screen.getAllByLabelText('Priority (raw feed value — meaning undocumented)');
+    fireEvent.change(priorityMinInput, { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+
+    // Change a filter AFTER searching but BEFORE "Load more" -- page 2 must
+    // still be paginating the original (priority_min=2) search, not this
+    // live change.
+    fireEvent.change(priorityMinInput, { target: { value: '4' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const secondRequestUrl = new URL(fetchMock.mock.calls[1][0], 'http://localhost');
+    expect(secondRequestUrl.searchParams.get('priority_min')).toBe('2');
+    expect(secondRequestUrl.searchParams.get('after')).toBe('cursor-a');
+  });
+
   it('"Load more" appends rows rather than replacing them, and disappears once nextCursor is null', async () => {
     fetchMock
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))

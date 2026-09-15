@@ -30,8 +30,12 @@ function calendarDaysAgo(days: number): string {
  * `TrainSearchForm.tsx`'s own `Results` type -- `nextCursor` lives INSIDE
  * the success variant for the same reason it does there: it must not
  * survive a state transition (a fresh search, or an error) it does not
- * belong to. */
-type Results = { rows: IncidentSummary[]; nextCursor: string | null } | 'error' | null;
+ * belong to. `query` is the exact query string that was submitted to produce
+ * these `rows` -- captured once at submit time, mirroring
+ * `TrainSearchForm.tsx`'s own capture of `date` for the identical reason:
+ * `handleLoadMore` must page through THIS search's filters, never whatever
+ * live filter state the form happens to hold when "Load more" is pressed. */
+type Results = { rows: IncidentSummary[]; nextCursor: string | null; query: string } | 'error' | null;
 
 /** `/incidents`'s one interactive component: filter form plus a
  * cursor-paginated, "Load more"-driven results list over
@@ -105,6 +109,21 @@ export function IncidentSearchForm({
     setToDate(null);
   }
 
+  /** `toDate` is a date-only (`YYYY-MM-DD`) value from `DatePickerInput`, and
+   * the backend's `to` bound is an inclusive `first_seen_at <= to` comparison
+   * (see `crates/api/src/routes/incidents.rs`/
+   * `queries::search_incidents`). `new Date(toDate).toISOString()` resolves
+   * to UTC midnight at the START of that day, which would make the bound
+   * exclude nearly every incident actually first seen on the selected day --
+   * contradicting the inclusive "To" framing shown in this form. This names
+   * the END of that same UTC calendar day instead, matching the same
+   * "date-only string is a UTC calendar day" convention `fromDate` already
+   * relies on (`new Date(fromDate).toISOString()` below lands on that day's
+   * UTC midnight, i.e. its start). */
+  function endOfUtcDay(dateOnly: string): string {
+    return `${dateOnly}T23:59:59.999Z`;
+  }
+
   /** The current filter set as query parameters. Shared by the initial
    * search and by "Load more" so that page 2 is unambiguously a
    * continuation of page 1's query. */
@@ -113,7 +132,7 @@ export function IncidentSearchForm({
     if (operators.length > 0) params.set('operator', operators.join(','));
     if (lineId) params.set('line', lineId);
     if (fromDate) params.set('from', new Date(fromDate).toISOString());
-    if (toDate) params.set('to', new Date(toDate).toISOString());
+    if (toDate) params.set('to', endOfUtcDay(toDate));
     if (plannedFilter === 'planned') params.set('planned', 'true');
     if (plannedFilter === 'realtime') params.set('planned', 'false');
     if (clearedFilter === 'active') params.set('cleared', 'false');
@@ -127,14 +146,22 @@ export function IncidentSearchForm({
     event.preventDefault();
     if (!priorityValid || searching) return;
     setSearching(true);
+    // Captured synchronously as the exact query string that was submitted --
+    // mirroring `TrainSearchForm.tsx`'s own capture of `date` inside its
+    // `Results` success variant. `handleLoadMore` below reuses this SAME
+    // string for every subsequent page of this result set rather than
+    // rebuilding it from live filter state, so a filter changed after
+    // searching (but before "Load more" is pressed) cannot silently mix into
+    // a page fetched with the original cursor.
+    const query = searchParamsFor().toString();
     try {
-      const response = await fetch(`/api/incidents?${searchParamsFor().toString()}`);
+      const response = await fetch(`/api/incidents?${query}`);
       if (!response.ok) {
         setResults('error');
         return;
       }
       const body: IncidentSearchResponse = await response.json();
-      setResults({ rows: body.results, nextCursor: body.nextCursor });
+      setResults({ rows: body.results, nextCursor: body.nextCursor, query });
     } catch {
       setResults('error');
     } finally {
@@ -147,24 +174,26 @@ export function IncidentSearchForm({
     if (results.nextCursor === null || loadingMore) return;
     setLoadingMore(true);
     try {
-      const params = searchParamsFor();
+      // Rebuilt from the ORIGINAL search's query string (`results.query`),
+      // never from live `searchParamsFor()` -- see `handleSubmit`'s comment.
+      const params = new URLSearchParams(results.query);
       params.set('after', results.nextCursor);
       const response = await fetch(`/api/incidents?${params.toString()}`);
       if (!response.ok) {
         setResults((current) =>
-          current !== null && current !== 'error' ? { rows: current.rows, nextCursor: null } : current,
+          current !== null && current !== 'error' ? { ...current, nextCursor: null } : current,
         );
         return;
       }
       const body: IncidentSearchResponse = await response.json();
       setResults((current) =>
         current !== null && current !== 'error'
-          ? { rows: [...current.rows, ...body.results], nextCursor: body.nextCursor }
+          ? { ...current, rows: [...current.rows, ...body.results], nextCursor: body.nextCursor }
           : current,
       );
     } catch {
       setResults((current) =>
-        current !== null && current !== 'error' ? { rows: current.rows, nextCursor: null } : current,
+        current !== null && current !== 'error' ? { ...current, nextCursor: null } : current,
       );
     } finally {
       setLoadingMore(false);
