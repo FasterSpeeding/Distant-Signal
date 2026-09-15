@@ -72,7 +72,8 @@ fn non_blank(value: Option<&str>) -> Option<&str> {
 /// any point: it is the opaque OIDC subject, not a name.
 ///
 /// `None` -- nothing usable on file -- is the signal for the frontend to
-/// render its own generic placeholder ("A member" / "a member") instead.
+/// render its own generic placeholder ("A member" / "a member") instead,
+/// distinguished between users by `MemberDisplay`'s tag.
 pub fn display_label(name: Option<String>, username: Option<String>) -> Option<String> {
     shareable(name.as_deref())
         .or_else(|| shareable(username.as_deref()))
@@ -112,6 +113,88 @@ pub fn display_label(name: Option<String>, username: Option<String>) -> Option<S
 /// the alternative is showing the whole group an address.
 fn shareable(value: Option<&str>) -> Option<&str> {
     non_blank(value).filter(|candidate| !crate::auth::oidc::looks_like_email_address(candidate))
+}
+
+/// Domain separation for `anonymous_tag`, so the digest this app renders
+/// can never coincide with some other digest of the same user id computed
+/// for an unrelated purpose (a cache key, an ETag) and turn one into an
+/// oracle for the other.
+const ANONYMOUS_TAG_DOMAIN: &str = "network-rail-status/member-display-tag/v1:";
+
+/// Six lowercase hex characters that are the same for one user every time
+/// and different between users -- the thing that makes two members who BOTH
+/// render as the generic placeholder tell apart as "A member (#a1b2c3)" and
+/// "A member (#d4e5f6)" rather than as two identical rows.
+///
+/// Derived from `users.id` -- the opaque OIDC subject -- and from nothing
+/// else. That is the whole privacy argument, and it is deliberately not an
+/// argument about the hash being strong:
+///
+/// * The user id is ALREADY in every one of these payloads in the clear
+///   (`GroupMember.user_id`, `GroupTrain.added_by`, `GroupDetail.owner_id`
+///   -- the frontend needs it to key rows and to gate the remove/promote
+///   buttons). A value computed from nothing but a field the same response
+///   already carries cannot tell a recipient anything the response did not
+///   already tell them, whatever the function is. The tag is strictly less
+///   informative than `userId` sitting next to it.
+/// * Email, name and username are not inputs. There is therefore no
+///   candidate-email dictionary to run against the tag at all: hashing a
+///   guessed address produces nothing comparable to it. This is the
+///   [[feedback-no-email-exposure]] rule applied to the derivation and not
+///   only to the rendered string -- the tag must not be a roundabout way of
+///   shipping an address, so an address never enters it.
+/// * SHA-256 truncated to 24 bits is one-way in the only direction that
+///   matters here anyway: ~16.7M subjects share any given tag, so the tag
+///   pins down no individual even for someone who can enumerate subjects.
+///
+/// Six characters, hex, always rendered inside "(#...)": short enough to
+/// scan down a member list, and visibly a machine token rather than a name
+/// a reader might mistake for the person's actual one.
+///
+/// Collisions are possible (24 bits) and harmless: two colliding members
+/// render identically, which is exactly the pre-fix behaviour for that
+/// pair and no worse. Widening this is a display change, not a correctness
+/// fix -- but note it is not free either, since the tag is also what a user
+/// recognises another member by across visits.
+fn anonymous_tag(user_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(format!("{ANONYMOUS_TAG_DOMAIN}{user_id}").as_bytes());
+    digest[..3]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// What one user looks like to OTHER users: the label if this app has one
+/// it is willing to show (`display_label`), and otherwise a tag to
+/// distinguish them by (`anonymous_tag`) -- never both, never neither.
+///
+/// The two are a pair and are built together here rather than at each
+/// render site, because "the tag appears only when there is no label" is
+/// the property that keeps a real name unsuffixed (a member called Ada
+/// renders as "Ada", exactly as before this existed) and it should be
+/// impossible for one of the four call sites in `data::groups` to get it
+/// subtly wrong on its own.
+///
+/// The frontend composes the visible string, not this: it owns the
+/// placeholder's wording and its capitalisation, which differs by position
+/// ("A member (#a1b2c3)" standing alone in a member row, "Shared by a
+/// member (#a1b2c3)" mid-sentence). Sending the tag rather than a finished
+/// "A member (#a1b2c3)" also keeps `displayName`'s wire contract honest:
+/// that field is a person's name or `null`, and a consumer that ignores
+/// `displayTag` entirely still behaves exactly as it did before.
+pub struct MemberDisplay {
+    pub label: Option<String>,
+    pub tag: Option<String>,
+}
+
+impl MemberDisplay {
+    pub fn of(name: Option<String>, username: Option<String>, user_id: &str) -> Self {
+        let label = display_label(name, username);
+        let tag = label.is_none().then(|| anonymous_tag(user_id));
+        MemberDisplay { label, tag }
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +300,125 @@ mod tests {
             None
         );
         assert_eq!(label(None, Some("rider@example.com")), None);
+    }
+
+    fn display(name: Option<&str>, username: Option<&str>, user_id: &str) -> MemberDisplay {
+        MemberDisplay::of(
+            name.map(str::to_string),
+            username.map(str::to_string),
+            user_id,
+        )
+    }
+
+    /// A member with a usable name is completely untouched by the tag: the
+    /// label is what it always was, and there is no suffix for anything to
+    /// append. Same for the username fallback.
+    #[test]
+    fn a_member_with_a_real_name_or_username_is_unchanged_and_untagged() {
+        let named = display(Some("Ada Rider"), Some("ada"), "user-1");
+        assert_eq!(named.label.as_deref(), Some("Ada Rider"));
+        assert_eq!(named.tag, None);
+
+        let by_username = display(Some("  "), Some("ada"), "user-1");
+        assert_eq!(by_username.label.as_deref(), Some("ada"));
+        assert_eq!(by_username.tag, None);
+    }
+
+    /// The bug this exists for. On an IdP where the username claim IS the
+    /// user's email by design (Entra ID's `preferred_username` is the UPN),
+    /// every member's name AND username are email-shaped, every label is
+    /// declined, and every row used to render as the same "A member" --
+    /// leaving an admin no way to tell who added a shared train or who to
+    /// remove. Two such members must now differ.
+    #[test]
+    fn two_members_with_nothing_showable_still_render_differently() {
+        let one = display(
+            Some("ada@example.com"),
+            Some("ada@example.com"),
+            "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+        );
+        let two = display(
+            Some("grace@example.com"),
+            Some("grace@example.com"),
+            "3f2504e0-4f89-11d3-9a0c-0305e82c3302",
+        );
+
+        assert_eq!(one.label, None, "an email is still never a label");
+        assert_eq!(two.label, None, "an email is still never a label");
+        assert_ne!(one.tag, two.tag);
+        assert!(one.tag.is_some() && two.tag.is_some());
+    }
+
+    /// Stable across renders, requests and process restarts: it is a pure
+    /// function of the user id, with nothing random and nothing
+    /// time-varying in it. A member recognised as "(#a1b2c3)" yesterday is
+    /// the same "(#a1b2c3)" today.
+    #[test]
+    fn the_tag_is_stable_for_the_same_user() {
+        let first = display(None, None, "user-1").tag;
+        let second = display(Some(""), Some("   "), "user-1").tag;
+        let third = display(Some("a@b.com"), None, "user-1").tag;
+        assert_eq!(first, second);
+        assert_eq!(second, third);
+        assert_eq!(first, Some(anonymous_tag("user-1")));
+    }
+
+    /// Short, lowercase hex, and unmistakably not a person's name -- the
+    /// row has to read as "anonymous but distinguishable", not as a fake
+    /// name for someone.
+    #[test]
+    fn the_tag_is_six_lowercase_hex_characters() {
+        for user_id in ["user-1", "", "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "ß🙂"] {
+            let tag = anonymous_tag(user_id);
+            assert_eq!(tag.len(), 6, "tag for {user_id:?} was {tag:?}");
+            assert!(
+                tag.chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+                "tag for {user_id:?} was {tag:?}"
+            );
+        }
+    }
+
+    /// The derivation takes the opaque user id and NOTHING else. An email
+    /// (or a name, or a username) attached to the same user cannot change
+    /// the tag, so the tag carries no trace of one: there is nothing for a
+    /// "hash the addresses I can guess and compare" attack to compare
+    /// against, and the email guard above is not quietly undone by a
+    /// suffix that encodes the address it just refused to show.
+    #[test]
+    fn the_tag_is_derived_from_the_user_id_alone_never_from_email_or_name() {
+        let same_user_different_claims = [
+            display(None, None, "user-1"),
+            display(
+                Some("rider@example.com"),
+                Some("rider@example.com"),
+                "user-1",
+            ),
+            display(Some("someone.else@example.org"), None, "user-1"),
+        ];
+        for d in &same_user_different_claims {
+            assert_eq!(d.tag, same_user_different_claims[0].tag);
+        }
+
+        // And the id itself is not recoverable by looking at the tag: the
+        // rendered value is 24 bits of digest, not an encoding of the
+        // input, so it is neither the id nor any prefix/suffix of it.
+        let user_id = "rider@example.com-as-a-subject";
+        let tag = anonymous_tag(user_id);
+        assert!(!tag.contains('@'));
+        assert!(!user_id.contains(&tag));
+        assert!(!tag.contains("rider"));
+    }
+
+    /// Different ids give different tags in the small-group case this is
+    /// actually for -- a sanity check that the truncation didn't leave
+    /// something degenerate like "always the same three bytes".
+    #[test]
+    fn nearby_user_ids_do_not_collide() {
+        let tags: std::collections::HashSet<String> = (0..50)
+            .map(|i| anonymous_tag(&format!("user-{i}")))
+            .collect();
+        assert_eq!(tags.len(), 50);
     }
 }
 

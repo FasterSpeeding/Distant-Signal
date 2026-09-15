@@ -42,13 +42,14 @@ describe('GroupDetailPage', () => {
       name: 'Family',
       ownerId: 'user-1',
       ownerName: 'Alex',
+      ownerTag: null,
       memberCount: 2,
       role: 'owner',
       inviteLink: { token: 'tok', expiresAt: '2026-09-18T00:00:00Z' },
     });
     vi.mocked(getGroupMembers).mockResolvedValue([
-      { userId: 'user-1', displayName: 'Alex', role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
-      { userId: 'user-2', displayName: 'Sam', role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
+      { userId: 'user-1', displayName: 'Alex', displayTag: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+      { userId: 'user-2', displayName: 'Sam', displayTag: null, role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([
       {
@@ -66,6 +67,7 @@ describe('GroupDetailPage', () => {
         customName: null,
         addedBy: 'user-2',
         addedByName: 'Sam',
+        addedByTag: null,
       },
     ]);
     vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
@@ -98,13 +100,14 @@ describe('GroupDetailPage', () => {
       name: 'Family',
       ownerId: 'user-1',
       ownerName: 'Alex',
+      ownerTag: null,
       memberCount: 2,
       role: 'member',
       inviteLink: null,
     });
     vi.mocked(getGroupMembers).mockResolvedValue([
-      { userId: 'user-1', displayName: 'Alex', role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
-      { userId: 'user-2', displayName: '   ', role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
+      { userId: 'user-1', displayName: 'Alex', displayTag: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+      { userId: 'user-2', displayName: '   ', displayTag: null, role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([
       {
@@ -122,6 +125,7 @@ describe('GroupDetailPage', () => {
         customName: null,
         addedBy: 'user-2',
         addedByName: '',
+        addedByTag: null,
       },
     ]);
     vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
@@ -132,18 +136,75 @@ describe('GroupDetailPage', () => {
     expect(screen.getByText(/Shared by a member/)).toBeInTheDocument();
   });
 
+  /** The Entra-ID case. `preferred_username` there IS the user's
+   * email-shaped UPN, so the backend declines to name ANY member of the
+   * group (it never shows an address) and every row used to read as the
+   * identical "A member" -- an admin looking at this list had no way to
+   * tell which row was whom, or which of them shared the train below.
+   * `displayTag` is what separates them, and the sharer's tag matches
+   * their own row in the member list so the two can be read together. */
+  it('tells placeholder-rendered members apart by their display tag', async () => {
+    vi.mocked(getGroup).mockResolvedValue({
+      id: 'grp-1',
+      name: 'Family',
+      ownerId: 'user-1',
+      ownerName: null,
+      ownerTag: 'a1b2c3',
+      memberCount: 3,
+      role: 'owner',
+      inviteLink: null,
+    });
+    vi.mocked(getGroupMembers).mockResolvedValue([
+      { userId: 'user-1', displayName: null, displayTag: 'a1b2c3', role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+      { userId: 'user-2', displayName: null, displayTag: 'd4e5f6', role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
+      { userId: 'user-3', displayName: 'Ada Rider', displayTag: null, role: 'member', joinedAt: '2026-09-03T00:00:00Z' },
+    ]);
+    vi.mocked(getGroupTrains).mockResolvedValue([
+      {
+        trainSubscriptionId: 42,
+        pinOriginCrs: 'WOK',
+        pinDestinationCrs: 'WAT',
+        pinOriginName: 'Woking',
+        pinDestinationName: 'London Waterloo',
+        pinScheduledDeparture: '2026-09-11T08:00:00Z',
+        serviceDate: '2026-09-11',
+        resolutionStatus: 'resolved',
+        trainUid: 'A12345',
+        status: null,
+        delayMinutes: null,
+        customName: null,
+        addedBy: 'user-2',
+        addedByName: null,
+        addedByTag: 'd4e5f6',
+      },
+    ]);
+    vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: null });
+
+    renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
+
+    expect(screen.getByText('A member (#a1b2c3)')).toBeInTheDocument();
+    expect(screen.getByText('A member (#d4e5f6)')).toBeInTheDocument();
+    // The member this app CAN name is untouched -- no suffix on a real name.
+    expect(screen.getByText('Ada Rider')).toBeInTheDocument();
+    // ...and the credit on the shared train points at the second member's
+    // row rather than at an anonymous everyone.
+    expect(screen.getByText(/Shared by a member \(#d4e5f6\)/)).toBeInTheDocument();
+    expect(screen.queryByText('A member')).not.toBeInTheDocument();
+  });
+
   it('never renders a Remove button for the owner row', async () => {
     vi.mocked(getGroup).mockResolvedValue({
       id: 'grp-1',
       name: 'Family',
       ownerId: 'user-1',
       ownerName: 'Alex',
+      ownerTag: null,
       memberCount: 1,
       role: 'owner',
       inviteLink: null,
     });
     vi.mocked(getGroupMembers).mockResolvedValue([
-      { userId: 'user-1', displayName: 'Alex', role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+      { userId: 'user-1', displayName: 'Alex', displayTag: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([]);
     vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
@@ -167,18 +228,21 @@ describe('GroupDetailPage', () => {
     const OWNER: GroupMember = {
       userId: 'user-owner',
       displayName: 'Olive',
+      displayTag: null,
       role: 'owner',
       joinedAt: '2026-09-01T00:00:00Z',
     };
     const ADMIN: GroupMember = {
       userId: 'user-admin',
       displayName: 'Adam',
+      displayTag: null,
       role: 'admin',
       joinedAt: '2026-09-02T00:00:00Z',
     };
     const PLAIN: GroupMember = {
       userId: 'user-plain',
       displayName: 'Priya',
+      displayTag: null,
       role: 'member',
       joinedAt: '2026-09-03T00:00:00Z',
     };
@@ -199,6 +263,7 @@ describe('GroupDetailPage', () => {
         customName: `Train ${trainSubscriptionId}`,
         addedBy,
         addedByName: addedBy,
+        addedByTag: null,
       };
     }
 
@@ -210,6 +275,7 @@ describe('GroupDetailPage', () => {
         name: 'Family',
         ownerId: OWNER.userId,
         ownerName: OWNER.displayName,
+        ownerTag: null,
         memberCount: 3,
         role: viewerRole,
         inviteLink: null,
@@ -284,6 +350,7 @@ describe('GroupDetailPage', () => {
         name: 'Family',
         ownerId: OWNER.userId,
         ownerName: OWNER.displayName,
+        ownerTag: null,
         memberCount: 1,
         role: 'owner',
         inviteLink: null,
