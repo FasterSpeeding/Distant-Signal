@@ -168,6 +168,34 @@ export interface StationOperatorSampleStats {
   fullCoverageAvailability: FullCoverageAvailability;
 }
 
+/** `GET /public/stations/{crs}/accessibility`'s response -- a filtered
+ * passthrough of `stations.accessibility` (see
+ * docs/superpowers/specs/2026-09-12-station-accessibility-design.md
+ * Decision 1 for the exact key allowlist). Every value is `unknown`, not a
+ * nested interface, because this codebase has never recorded the RDM
+ * feed's field-level shape for any of these keys (design spec
+ * Correction 2) -- typing them more precisely here would be inventing a
+ * contract this app cannot actually verify. Keys are present only when
+ * non-null in the source data; a key with no data is simply absent, not
+ * `null`. Deliberately keeps the `accessibility`-named wire vocabulary
+ * despite the WCAG "accessibility" naming collision this codebase also
+ * uses elsewhere (Correction 4) -- see that section for why this isn't
+ * renamed. */
+export interface StationAccessibilityData {
+  stationAccessibility?: unknown;
+  staffAssistance?: unknown;
+  toiletsAndChanging?: unknown;
+  lifts?: unknown;
+  transportLinks?: unknown;
+  cycling?: unknown;
+  carParks?: unknown;
+  dropOffPickUp?: unknown;
+  platformFacilities?: unknown;
+  stationFacilities?: unknown;
+  helpAndSupport?: unknown;
+  loungesAndWaiting?: unknown;
+}
+
 /** `GET /Line/{id}/Stats/{from}/to/{to}`'s per-day response shape.
  * `delayRate`/`cancellationRate`/`skipRate` are fractions (0-1) computed
  * server-side from stored sums over DISTINCT trains, deduped by Darwin
@@ -862,6 +890,23 @@ export interface GroupTrain {
   customName: string | null;
   addedBy: string;
   addedByName: string | null;
+}
+
+/** `GET /public/groups/shared-trains`'s per-item shape
+ * (`crates/api/src/data/groups.rs`'s `SharedTrain`): a `GroupTrain` plus
+ * the group it was shared into, since this route's rows come from every
+ * group the caller belongs to at once rather than one named group.
+ *
+ * One item per (group, train) pair -- a train shared into two of the
+ * caller's groups arrives twice, once per group, so no attribution is
+ * lost on the wire; `/track/mine` merges those back into a single row
+ * carrying both group tags. Never includes the caller's OWN tracked
+ * trains (those are `TrackedTrainListItem`s already), and carries the same
+ * "never shown" privacy constraint `GroupTrain` does -- no tickets, no
+ * notification state, no exact tracked-at timestamp. */
+export interface SharedGroupTrain extends GroupTrain {
+  groupId: string;
+  groupName: string;
 }
 
 export interface GroupJoinPreview {

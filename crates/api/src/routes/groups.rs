@@ -67,6 +67,16 @@ pub fn router() -> Router {
             "/groups/join/{token}",
             axum::routing::get(get_join_preview).post(post_join),
         )
+        // Another literal segment at `/groups/{id}`'s dynamic position,
+        // resolved ahead of it by exactly the same matchit precedence
+        // `/groups/join/{token}` above already relies on (and which
+        // `tests::shared_trains_literal_route_wins_over_same_position_dynamic_id_route`
+        // pins). Group ids are 32 random base64url bytes, so no real group
+        // can ever be shadowed by this path.
+        .route(
+            "/groups/shared-trains",
+            axum::routing::get(list_shared_trains_route),
+        )
         .route(
             "/groups/{id}/trains",
             axum::routing::get(list_group_trains_route).post(add_group_train),
@@ -459,6 +469,28 @@ async fn list_group_trains_route(
     Ok(Json(trains))
 }
 
+/// `GET /groups/shared-trains` -- every train shared into ANY group the
+/// caller belongs to, minus the ones they tracked themselves, so
+/// `/track/mine` can list a group-shared train alongside the caller's own
+/// with a "from <group>"/"shared by <who>" tag on it.
+///
+/// No group id in the path and so no `require_member` gate: the caller's
+/// own membership rows ARE the scope of
+/// `groups::list_shared_trains_for_user`'s query (see its doc comment), so
+/// a non-member simply gets nothing rather than a `404`. Membership in
+/// zero groups, and membership in groups with nothing shared into them,
+/// are both an empty array -- the same "no signal about groups you can't
+/// see" posture the rest of this file keeps.
+async fn list_shared_trains_route(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+) -> Result<Json<Vec<groups::SharedTrain>>, (StatusCode, String)> {
+    let trains = groups::list_shared_trains_for_user(&app.database, &user.id)
+        .await
+        .map_err(internal_error("list shared trains"))?;
+    Ok(Json(trains))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AddGroupTrainRequest {
@@ -559,6 +591,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(&body[..], b"join");
+    }
+
+    /// The same precedence check for `/groups/shared-trains`, the second
+    /// literal segment this file registers at `/groups/{id}`'s dynamic
+    /// position -- same hand-rolled two-route shape as the `join` test
+    /// directly above (driving this file's real `router()` would need a
+    /// whole `App`, which `db_tests` below builds and which this
+    /// database-free routing question has no need of).
+    #[tokio::test]
+    async fn shared_trains_literal_route_wins_over_same_position_dynamic_id_route() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = axum::Router::new()
+            .route(
+                "/groups/shared-trains",
+                axum::routing::get(|| async { "shared" }),
+            )
+            .route("/groups/{id}", axum::routing::get(|| async { "dynamic" }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/groups/shared-trains")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"shared");
     }
 }
 
@@ -719,6 +787,23 @@ mod db_tests {
         .execute(pool)
         .await
         .expect("seed fixture group membership");
+    }
+
+    /// Seeds one bare tracked train owned by `user_id` and returns its id
+    /// -- same minimal column set `crate::data::groups::db_tests`' own
+    /// helper of this name inserts, for the same reason (nothing under
+    /// test here reads anything but the pin's origin).
+    async fn seed_train_subscription(pool: &PgPool, user_id: &str) -> i64 {
+        let row: (i64,) = sqlx::query_as(
+            "INSERT INTO train_subscriptions \
+                (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             VALUES ($1, CURRENT_DATE, 'WOK', NOW()) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .expect("seed a tracked train");
+        row.0
     }
 
     /// Deletes the fixture group (cascading `group_members`,
@@ -997,6 +1082,100 @@ mod db_tests {
             &[
                 "TEST-ROUTE-GROUPS-LINK-OWNER",
                 "TEST-ROUTE-GROUPS-LINK-MEMBER",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                shared_trains_returns_a_fellow_members_shared_train_and_401s_without_a_session \
+                -- --ignored --test-threads=1`"]
+    async fn shared_trains_returns_a_fellow_members_shared_train_and_401s_without_a_session() {
+        let pool = connect().await;
+        seed_session(&pool, "TEST-ROUTE-GROUPS-SHARED-SHARER").await;
+        let viewer_token = seed_session(&pool, "TEST-ROUTE-GROUPS-SHARED-VIEWER").await;
+
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Route Test Shared Trains",
+            "TEST-ROUTE-GROUPS-SHARED-SHARER",
+        )
+        .await
+        .expect("create fixture group");
+        seed_membership(
+            &pool,
+            &group_id,
+            "TEST-ROUTE-GROUPS-SHARED-VIEWER",
+            "member",
+        )
+        .await;
+        let train_id = seed_train_subscription(&pool, "TEST-ROUTE-GROUPS-SHARED-SHARER").await;
+        crate::data::groups::add_train_to_group(
+            &pool,
+            &group_id,
+            train_id,
+            "TEST-ROUTE-GROUPS-SHARED-SHARER",
+        )
+        .await
+        .expect("share fixture train");
+
+        let router = test_router(test_app(pool.clone()));
+
+        // The literal route really is reachable through the REAL router
+        // (not just matchit in the abstract), and the viewer really does
+        // receive a train they never tracked themselves, tagged with the
+        // group it came from and who shared it.
+        let (status, body) = request(
+            router.clone(),
+            "/groups/shared-trains".to_string(),
+            Some(&viewer_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = body.as_array().expect("an array of shared trains");
+        assert_eq!(rows.len(), 1, "got {body:?}");
+        assert_eq!(
+            rows[0].get("trainSubscriptionId").and_then(Value::as_i64),
+            Some(train_id)
+        );
+        assert_eq!(
+            rows[0].get("groupId").and_then(Value::as_str),
+            Some(group_id.as_str())
+        );
+        assert_eq!(
+            rows[0].get("groupName").and_then(Value::as_str),
+            Some("Route Test Shared Trains")
+        );
+        assert_eq!(
+            rows[0].get("addedByName").and_then(Value::as_str),
+            Some("TEST-ROUTE-GROUPS-SHARED-SHARER")
+        );
+        assert!(
+            rows[0].get("tickets").is_none() && rows[0].get("notificationsEnabled").is_none(),
+            "spec §4's never-shown fields must not appear on this route either"
+        );
+
+        // No session at all: `AuthenticatedUser` refuses before any of the
+        // above can be reached -- the frontend's own `null`-on-401
+        // "anonymous visitor" signal depends on this being a 401, not an
+        // empty 200.
+        let (anon_status, _anon_body) =
+            request(router, "/groups/shared-trains".to_string(), None).await;
+        assert_eq!(anon_status, StatusCode::UNAUTHORIZED);
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(train_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture train");
+        cleanup(
+            &pool,
+            &group_id,
+            &[
+                "TEST-ROUTE-GROUPS-SHARED-SHARER",
+                "TEST-ROUTE-GROUPS-SHARED-VIEWER",
             ],
         )
         .await;

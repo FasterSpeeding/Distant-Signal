@@ -117,6 +117,195 @@ pub async fn get_all_tocs(pool: &PgPool) -> Result<Vec<Suggestion>> {
     Ok(rows)
 }
 
+/// Top-level `stations.accessibility` keys considered "accessibility or
+/// amenities" data for the station page's facilities section -- see
+/// docs/superpowers/specs/2026-09-12-station-accessibility-design.md
+/// Decision 1 for why this list and not the full RDM `Station` object.
+/// Each value is forwarded completely unexamined by
+/// [`filter_accessibility_fields`]: this only filters by key name, it does
+/// not decompose or validate what's inside (Global Constraint 7,
+/// docs/superpowers/plans/01-poller-microservices.md:40-42).
+pub const ACCESSIBILITY_KEYS: &[&str] = &[
+    "stationAccessibility",
+    "staffAssistance",
+    "toiletsAndChanging",
+    "lifts",
+    "transportLinks",
+    "cycling",
+    "carParks",
+    "dropOffPickUp",
+    "platformFacilities",
+    "stationFacilities",
+    "helpAndSupport",
+    "loungesAndWaiting",
+];
+
+/// The in-memory filter step, pulled out as its own pure function so it can
+/// be unit-tested without a database (see `accessibility_filter_tests`
+/// below). Drops every key not in [`ACCESSIBILITY_KEYS`] and every
+/// allowlisted key whose value is JSON `null`. `full` is not required to be
+/// a JSON object -- a non-object input (which should never happen for this
+/// column, but is not asserted against) produces an empty object, the same
+/// as an object with no allowlisted keys present.
+pub(crate) fn filter_accessibility_fields(full: &serde_json::Value) -> serde_json::Value {
+    let mut filtered = serde_json::Map::new();
+    if let Some(obj) = full.as_object() {
+        for key in ACCESSIBILITY_KEYS {
+            if let Some(value) = obj.get(*key).filter(|value| !value.is_null()) {
+                filtered.insert((*key).to_string(), value.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(filtered)
+}
+
+/// Returns `None` when `stations` has no row for `crs` at all (this app has
+/// never captured reference data for it) -- distinct from `Some` of an
+/// empty object, which means the row exists but none of
+/// [`ACCESSIBILITY_KEYS`] were present (or all were null) in its
+/// `accessibility` JSONB. Those are two genuinely different, separately
+/// representable database states (the column is `NOT NULL DEFAULT '{}'`),
+/// and the route above them keeps them apart as `404` vs `200 {}`.
+///
+/// Exact `crs = $1` match, no case normalization -- same convention
+/// `latest_station_sample` (`crates/api/src/data/queries.rs`) already uses
+/// for a single-CRS lookup; this function does not introduce or fix
+/// case-sensitivity handling either way (see the design spec's Open
+/// questions/risks).
+pub async fn station_accessibility(pool: &PgPool, crs: &str) -> Result<Option<serde_json::Value>> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT accessibility FROM stations WHERE crs = $1")
+        .bind(crs)
+        .fetch_optional(pool)
+        .await?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let full: serde_json::Value = row.try_get("accessibility")?;
+    Ok(Some(filter_accessibility_fields(&full)))
+}
+
+/// Pure, no-database coverage of the [`ACCESSIBILITY_KEYS`] filter --
+/// deliberately not in `db_tests` below, so the allowlist's behaviour is
+/// asserted on every ordinary `cargo test -p api` run rather than only
+/// under `--ignored` with a live Postgres.
+#[cfg(test)]
+mod accessibility_filter_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn forwards_an_allowlisted_key_that_is_present() {
+        let full = json!({ "lifts": { "count": 2 }, "somethingElse": "ignored" });
+        let filtered = filter_accessibility_fields(&full);
+        assert_eq!(filtered, json!({ "lifts": { "count": 2 } }));
+    }
+
+    #[test]
+    fn drops_a_non_allowlisted_key_even_though_it_is_present() {
+        let full = json!({ "ticketBuying": { "open": true } });
+        let filtered = filter_accessibility_fields(&full);
+        assert_eq!(filtered, json!({}));
+    }
+
+    #[test]
+    fn drops_a_null_valued_allowlisted_key() {
+        let full = json!({ "carParks": null, "lifts": { "count": 1 } });
+        let filtered = filter_accessibility_fields(&full);
+        assert_eq!(filtered, json!({ "lifts": { "count": 1 } }));
+    }
+
+    #[test]
+    fn an_empty_accessibility_object_produces_an_empty_object() {
+        let full = json!({});
+        let filtered = filter_accessibility_fields(&full);
+        assert_eq!(filtered, json!({}));
+    }
+
+    /// The column is `NOT NULL DEFAULT '{}'` so this should be unreachable,
+    /// but the filter is documented as total over any `Value` -- a
+    /// non-object must degrade to `{}`, never panic.
+    #[test]
+    fn a_non_object_accessibility_value_produces_an_empty_object() {
+        assert_eq!(filter_accessibility_fields(&json!(null)), json!({}));
+        assert_eq!(filter_accessibility_fields(&json!("nonsense")), json!({}));
+        assert_eq!(filter_accessibility_fields(&json!([1, 2, 3])), json!({}));
+    }
+
+    #[test]
+    fn forwards_every_allowlisted_key_present_and_drops_everything_else_in_one_pass() {
+        let full = json!({
+            "stationAccessibility": { "stepFree": true },
+            "staffAssistance": "Available 06:00-23:00",
+            "toiletsAndChanging": null,
+            "lifts": [{ "location": "Platform 1" }],
+            "transportLinks": ["Bus", "Underground"],
+            "cycling": {},
+            "carParks": [{ "spaces": 120 }],
+            "dropOffPickUp": null,
+            "platformFacilities": { "seating": true },
+            "stationFacilities": { "wifi": true },
+            "helpAndSupport": "0800 123 4567",
+            "loungesAndWaiting": { "firstClass": false },
+            "ticketBuying": { "open": true },
+            "staffingLevel": "Full",
+            "informationServices": {},
+            "address": { "line1": "1 Station Rd" },
+            "stationMap": "https://example.invalid/map.png",
+            "stationAlerts": [],
+            "slug": "example-station",
+            "sixteenCharacterName": "EXAMPLE STN",
+            "nationalLocationCode": "1234",
+            "minimumConnectionTime": 5,
+            "changeHistory": { "changedBy": "AAP2" }
+        });
+        let filtered = filter_accessibility_fields(&full);
+        assert_eq!(
+            filtered,
+            json!({
+                "stationAccessibility": { "stepFree": true },
+                "staffAssistance": "Available 06:00-23:00",
+                "lifts": [{ "location": "Platform 1" }],
+                "transportLinks": ["Bus", "Underground"],
+                "cycling": {},
+                "carParks": [{ "spaces": 120 }],
+                "platformFacilities": { "seating": true },
+                "stationFacilities": { "wifi": true },
+                "helpAndSupport": "0800 123 4567",
+                "loungesAndWaiting": { "firstClass": false }
+            }),
+            "every non-allowlisted key dropped, every null-valued allowlisted key dropped, \
+             every present-and-non-null allowlisted key forwarded verbatim"
+        );
+    }
+
+    /// Guards the one thing the spec fixes by name (Decision 1): the
+    /// allowlist is exactly these twelve keys. A thirteenth key silently
+    /// added here would start shipping unvetted RDM data to every visitor.
+    #[test]
+    fn the_allowlist_is_exactly_the_twelve_spec_named_keys() {
+        assert_eq!(
+            ACCESSIBILITY_KEYS,
+            &[
+                "stationAccessibility",
+                "staffAssistance",
+                "toiletsAndChanging",
+                "lifts",
+                "transportLinks",
+                "cycling",
+                "carParks",
+                "dropOffPickUp",
+                "platformFacilities",
+                "stationFacilities",
+                "helpAndSupport",
+                "loungesAndWaiting",
+            ]
+        );
+    }
+}
+
 // These tests seed and delete their own rows in a reserved `Z…` CRS/ATOC
 // namespace with invented names, rather than reusing real reference data:
 // the CI database (`.github/workflows/ci.yml:216`) is freshly migrated and
@@ -310,5 +499,93 @@ mod db_tests {
                 .await
                 .expect("cleanup fixture toc");
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                station_accessibility_returns_the_filtered_set_for_an_existing_row \
+                -- --ignored`"]
+    async fn station_accessibility_returns_the_filtered_set_for_an_existing_row() {
+        let pool = connect().await;
+
+        sqlx::query(
+            "INSERT INTO stations (crs, name, accessibility) VALUES ($1, $2, $3) \
+             ON CONFLICT (crs) DO UPDATE SET accessibility = EXCLUDED.accessibility",
+        )
+        .bind("ZFA")
+        .bind("Fixture Facilities Station")
+        .bind(serde_json::json!({
+            "lifts": { "count": 2 },
+            "carParks": null,
+            "ticketBuying": { "open": true }
+        }))
+        .execute(&pool)
+        .await
+        .expect("seed fixture station");
+
+        let result = station_accessibility(&pool, "ZFA").await.expect("query");
+        assert_eq!(
+            result,
+            Some(serde_json::json!({ "lifts": { "count": 2 } })),
+            "carParks (null) and ticketBuying (non-allowlisted) must both be absent"
+        );
+
+        sqlx::query("DELETE FROM stations WHERE crs = 'ZFA'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture station");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                station_accessibility_returns_some_empty_object_for_a_row_with_no_allowlisted_keys \
+                -- --ignored`"]
+    async fn station_accessibility_returns_some_empty_object_for_a_row_with_no_allowlisted_keys() {
+        let pool = connect().await;
+
+        sqlx::query(
+            "INSERT INTO stations (crs, name, accessibility) VALUES ($1, $2, $3) \
+             ON CONFLICT (crs) DO UPDATE SET accessibility = EXCLUDED.accessibility",
+        )
+        .bind("ZFF")
+        .bind("Fixture Quiet Reference Station")
+        .bind(serde_json::json!({ "ticketBuying": { "open": true } }))
+        .execute(&pool)
+        .await
+        .expect("seed fixture station");
+
+        let result = station_accessibility(&pool, "ZFF").await.expect("query");
+        assert_eq!(
+            result,
+            Some(serde_json::json!({})),
+            "a row that exists but has no allowlisted keys is Some({{}}), never None -- the \
+             404-vs-200-{{}} split above this depends on the two staying distinct"
+        );
+
+        sqlx::query("DELETE FROM stations WHERE crs = 'ZFF'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture station");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                station_accessibility_returns_none_when_no_row_exists_for_the_crs \
+                -- --ignored`"]
+    async fn station_accessibility_returns_none_when_no_row_exists_for_the_crs() {
+        let pool = connect().await;
+        sqlx::query("DELETE FROM stations WHERE crs = 'ZFB'")
+            .execute(&pool)
+            .await
+            .expect("ensure no fixture row present");
+
+        let result = station_accessibility(&pool, "ZFB").await.expect("query");
+        assert_eq!(
+            result, None,
+            "no stations row at all must be None, not Some({{}})"
+        );
     }
 }

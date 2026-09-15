@@ -38,7 +38,12 @@ const MAX_PIN_AGE: chrono::Duration = chrono::Duration::hours(6);
 /// See docs/superpowers/specs/2026-08-31-tracked-trains-list-design.md's
 /// Open Questions 1-2 (also: no pagination/"load more" is designed for
 /// what falls past this cap).
-const MINE_LIST_LIMIT: i64 = 100;
+/// `pub(crate)` only so `data::groups::list_shared_trains_for_user` can
+/// cap ITS half of the same `/track/mine` list with the same figure --
+/// that list now renders this list plus the group-shared one, and two
+/// independently-chosen caps on one page's rows would be a silent
+/// divergence waiting to happen.
+pub(crate) const MINE_LIST_LIMIT: i64 = 100;
 
 /// These messages are USER-FACING COPY, not developer diagnostics. There is
 /// no error envelope anywhere in this API (`crates/api/src/routes/train.rs`
