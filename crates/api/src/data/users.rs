@@ -39,11 +39,16 @@ fn verified_email(identity: &OidcIdentity) -> Option<&str> {
 /// Also trims: a name of `"  Ada  "` is `"Ada"`, never rendered with its
 /// padding intact.
 ///
+/// Applied both when writing a row (`upsert_user`) and when reading one
+/// back, so rows stored before any of this normalization existed read the
+/// same as rows written today.
+///
 /// `auth::oidc` has its own twin of this, applied one layer earlier while
 /// choosing WHICH claim becomes the name/username. Two one-line copies of
 /// `trim` + "is it empty" is the deliberate trade against a mutual
-/// dependency between these modules (`data::users` already depends on
-/// `auth::oidc`, not the other way round) -- unlike
+/// dependency between these modules, whose production code points one way
+/// only (`data::users` -> `auth::oidc`; test code here and there crosses
+/// back, to assert the two layers compose). Contrast
 /// `auth::oidc::looks_like_email_address`, which is privacy-load-bearing,
 /// has to stay identical at both sites, and so is shared outright.
 fn non_blank(value: Option<&str>) -> Option<&str> {

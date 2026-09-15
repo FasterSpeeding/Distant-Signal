@@ -94,13 +94,17 @@ pub struct RawClaims {
 }
 
 /// Blank-or-absent are the same thing for every claim this app reads: an
-/// IdP with nothing on file for a field generally sends `""` rather than
-/// omitting the claim (Authentik's `profile` mapping returns
-/// `User.name`/`User.attributes[...]` verbatim, and both default to empty).
-/// Trimmed, because `"  Ada  "` is a name with padding, not a name.
+/// IdP with nothing on file for a field often sends `""` rather than
+/// omitting the claim (Authentik's `profile` mapping returns `User.name`
+/// verbatim, and that column defaults to the empty string -- an unset
+/// `User.attributes` key is the other way round, dropped from the token
+/// entirely by `delete_none_values`, which is why both shapes have to be
+/// handled). Trimmed, because `"  Ada  "` is a name with padding, not a
+/// name.
 ///
-/// `data::users::non_blank` is the read-side twin of this, normalizing rows
-/// written before this boundary did.
+/// `data::users` keeps its own copy of this, applied when writing a row and
+/// again when reading one back; see its doc comment for why the duplication
+/// is deliberate here but not for `looks_like_email_address`.
 fn non_blank(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|trimmed| !trimmed.is_empty())
 }
@@ -124,12 +128,14 @@ pub fn looks_like_email_address(value: &str) -> bool {
 /// like an email address -- the first merely-non-blank one.
 ///
 /// The second arm matters. Dropping an email-shaped value outright here
-/// would change what `users.name`/`users.username` hold, and
-/// `data::users::display_label` is already the single enforcement point for
-/// "never show one member's email to the rest of the group". So this
-/// function only ever REORDERS: an email-shaped `name` stops shadowing a
-/// perfectly good `given_name`/`family_name`, and nothing that used to be
-/// stored stops being stored.
+/// would leave `users.name`/`users.username` NULL where they used to hold
+/// something, and `data::users::display_label` is already the single
+/// enforcement point for "never show one member's email to the rest of the
+/// group". So this function only ever REORDERS, never empties: an
+/// email-shaped `name` stops shadowing a perfectly good
+/// `given_name`/`family_name` (so what gets stored may now be a different,
+/// better value), but a field that had something to store before still has
+/// something to store -- this never turns a `Some` into a `None`.
 fn best_candidate(candidates: impl IntoIterator<Item = Option<String>>) -> Option<String> {
     let usable: Vec<String> = candidates
         .into_iter()
@@ -143,9 +149,14 @@ fn best_candidate(candidates: impl IntoIterator<Item = Option<String>>) -> Optio
 }
 
 /// `given_name` + `family_name` as one name, tolerating either half being
-/// blank or absent -- Authentik omits `family_name` entirely unless
-/// `User.attributes["family_name"]` is set, and `given_name` falls back to
-/// `User.name` (so it is blank exactly when `name` is).
+/// blank or absent. Both halves really do go missing independently under
+/// Authentik's mapping: `family_name` is omitted entirely unless
+/// `User.attributes["family_name"]` is set, while `given_name` is always
+/// present, holding `User.attributes["given_name"]` if that is set and
+/// otherwise falling back to `User.name` (so it is blank when BOTH are --
+/// an attribute-provisioned account with an empty `User.name` is exactly
+/// the case where `given_name` is populated and `name` is not, which is
+/// the whole reason this function exists).
 fn joined_name(given_name: Option<&str>, family_name: Option<&str>) -> Option<String> {
     match (non_blank(given_name), non_blank(family_name)) {
         (Some(given), Some(family)) => Some(format!("{given} {family}")),
@@ -411,9 +422,11 @@ impl OidcClient {
     /// 1. **Claims must be in the ID token.** This app reads the ID token
     ///    and never calls the userinfo endpoint. Authentik puts scope
     ///    claims in the ID token by default (`OAuth2Provider.
-    ///    include_claims_in_id_token`, `default=True`), but an operator who
-    ///    has turned that off gets a token with nothing but `sub` --
-    ///    every user then shows as the generic placeholder.
+    ///    include_claims_in_id_token`, `default=True`), and that flag gates
+    ///    the SCOPE claims specifically -- turned off, the token still has
+    ///    its `iss`/`aud`/`exp`/`nonce`/`sub` machinery but none of the
+    ///    name-shaped claims below, so every user shows as the generic
+    ///    placeholder.
     /// 2. **The provider must actually have the stock `profile` mapping
     ///    attached** (`authentik-blueprints/oauth2-client.yaml` does). A
     ///    deployment that swapped in a hand-written scope mapping decides
@@ -541,8 +554,12 @@ mod tests {
         }
     }
 
+    /// `sub` really is unconditional (it is the primary key, not a label).
+    /// `name` is not, any more -- it is trimmed, blank-filtered and can be
+    /// displaced by the `given_name`/`family_name` join; this only pins
+    /// that an ordinary `name` claim still wins when there is one.
     #[test]
-    fn sub_and_name_pass_through_unconditionally() {
+    fn sub_is_unconditional_and_an_ordinary_name_claim_still_wins() {
         let identity = identity_from_claims(claims(Some(true)));
         assert_eq!(identity.sub, "user-123");
         assert_eq!(identity.name, Some("Ada Rider".to_string()));
@@ -559,6 +576,16 @@ mod tests {
         let mut raw = claims(Some(true));
         raw.preferred_username = None;
         assert_eq!(identity_from_claims(raw).preferred_username, None);
+
+        // ...and with a DIFFERENT non-blank nickname competing for the
+        // same slot, so the precedence is actually exercised rather than
+        // being true by the other candidate's absence.
+        let mut both = claims(Some(true));
+        both.nickname = Some("ada-nick".to_string());
+        assert_eq!(
+            identity_from_claims(both).preferred_username,
+            Some("ada".to_string())
+        );
     }
 
     #[test]
@@ -734,27 +761,78 @@ mod tests {
         );
     }
 
-    /// A joined pair is guarded as ONE value: `given_name` holding an email
-    /// address makes the whole join email-shaped, so it must not outrank a
-    /// non-email `name`.
+    /// A joined pair is guarded as ONE value: an email address in EITHER
+    /// half makes the whole join email-shaped, so it must not outrank a
+    /// non-email `name`. Both halves are checked because `joined_name`
+    /// concatenates them, and a guard that only looked at the first would
+    /// pass "Ada rider@example.com" straight through.
     #[test]
-    fn an_email_inside_half_the_pair_disqualifies_the_whole_join() {
-        let mut raw = nameless_claims();
-        raw.name = Some("Ada Rider".to_string());
-        raw.given_name = Some("rider@example.com".to_string());
-        raw.family_name = Some("Rider".to_string());
+    fn an_email_inside_either_half_disqualifies_the_whole_join() {
+        let mut given_half = nameless_claims();
+        given_half.name = Some("Ada Rider".to_string());
+        given_half.given_name = Some("rider@example.com".to_string());
+        given_half.family_name = Some("Rider".to_string());
         assert_eq!(
-            identity_from_claims(raw).name,
+            identity_from_claims(given_half).name,
             Some("Ada Rider".to_string())
         );
 
-        // ...and with no non-email alternative it is still only STORED,
-        // never blessed: display_label declines it downstream.
+        let mut family_half = nameless_claims();
+        family_half.name = Some("Ada Rider".to_string());
+        family_half.given_name = Some("Ada".to_string());
+        family_half.family_name = Some("rider@example.com".to_string());
+        assert_eq!(
+            identity_from_claims(family_half).name,
+            Some("Ada Rider".to_string())
+        );
+    }
+
+    /// The privacy-critical new value shape, end to end: a genuinely
+    /// JOINED string (both halves present, one of them an email address)
+    /// with no non-email alternative to fall back to. It is still stored --
+    /// the boundary only reorders -- and `display_label` is what declines
+    /// to render it, exactly as it does for a plain email-shaped claim.
+    #[test]
+    fn a_joined_pair_containing_an_email_is_stored_but_never_rendered() {
+        let mut raw = nameless_claims();
+        raw.given_name = Some("rider@example.com".to_string());
+        raw.family_name = Some("Rider".to_string());
+        let stored = identity_from_claims(raw).name;
+        assert_eq!(stored, Some("rider@example.com Rider".to_string()));
+        assert_eq!(crate::data::users::display_label(stored, None), None);
+
+        let mut trailing = nameless_claims();
+        trailing.given_name = Some("Ada".to_string());
+        trailing.family_name = Some("rider@example.com".to_string());
+        let stored = identity_from_claims(trailing).name;
+        assert_eq!(stored, Some("Ada rider@example.com".to_string()));
+        assert_eq!(crate::data::users::display_label(stored, None), None);
+    }
+
+    /// A lone email-shaped half never becomes a join at all, but must be
+    /// declined just the same.
+    #[test]
+    fn a_lone_email_shaped_half_is_stored_but_never_rendered() {
         let mut only_email = nameless_claims();
         only_email.given_name = Some("rider@example.com".to_string());
         let stored = identity_from_claims(only_email).name;
         assert_eq!(stored, Some("rider@example.com".to_string()));
         assert_eq!(crate::data::users::display_label(stored, None), None);
+    }
+
+    /// The shared predicate itself, asserted directly rather than only
+    /// through its two callers -- it is the single thing standing between a
+    /// claim and a leaked address, so a change to it should break a test
+    /// that names it.
+    #[test]
+    fn looks_like_email_address_is_the_blunt_at_sign_test_it_claims_to_be() {
+        assert!(looks_like_email_address("rider@example.com"));
+        assert!(looks_like_email_address("ADA@EXAMPLE.COM"));
+        assert!(looks_like_email_address("Ada Rider <ada@example.com>"));
+        assert!(looks_like_email_address("@"));
+        assert!(!looks_like_email_address("Ada Rider"));
+        assert!(!looks_like_email_address("ada"));
+        assert!(!looks_like_email_address(""));
     }
 
     /// The boundary REORDERS, it does not drop: when every candidate is
@@ -930,6 +1008,35 @@ mod tests {
         assert_eq!(
             crate::data::users::display_label(identity.name, identity.preferred_username),
             None
+        );
+    }
+
+    /// `localized`'s documented contract, which is otherwise only an
+    /// assertion in a comment: the untagged form is what this app reads,
+    /// it wins over any language-tagged sibling, and a token carrying ONLY
+    /// a tagged form reads as no name at all rather than as some
+    /// arbitrarily-chosen locale's.
+    #[test]
+    fn only_the_untagged_form_of_a_localizable_claim_is_read() {
+        let tagged_only = id_token_claims(serde_json::json!({
+            "name#de": "Ada Fahrerin",
+            "preferred_username": "ada",
+        }));
+        let raw = raw_claims_from_id_token(&tagged_only);
+        assert_eq!(raw.name, None);
+        assert_eq!(
+            identity_from_claims(raw).name,
+            None,
+            "a language-tagged-only name must not be promoted into the name slot"
+        );
+
+        let both = id_token_claims(serde_json::json!({
+            "name": "Ada Rider",
+            "name#de": "Ada Fahrerin",
+        }));
+        assert_eq!(
+            raw_claims_from_id_token(&both).name.as_deref(),
+            Some("Ada Rider")
         );
     }
 
