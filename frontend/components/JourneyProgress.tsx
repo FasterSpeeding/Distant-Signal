@@ -70,15 +70,22 @@ function nodeDiameter(kind: JourneyStop['kind']): number {
   return kind === 'Origin' || kind === 'Terminate' ? 18 : 12;
 }
 
-type NodeState = 'reached' | 'marker' | 'not-reached';
+type NodeState = 'reached' | 'marker' | 'not-reached' | 'cancelled-remaining';
 
 /** `index <= lastIndex` (and `lastIndex !== -1`) is "reached"; the stop
  * exactly at `lastIndex` is additionally the "you are here" marker; every
- * later index is "not yet reached". `lastIndex === -1` means nothing has
- * been confirmed, so every node is "not yet reached" and no marker exists
- * -- this falls out of the comparison rather than needing a special case. */
-function nodeState(index: number, lastIndex: number): NodeState {
-  if (lastIndex === -1 || index > lastIndex) return 'not-reached';
+ * later index is "not yet reached" -- or, on a cancelled journey,
+ * `'cancelled-remaining'` instead, so it reads visibly differently from
+ * "just hasn't got there yet" (spec Decision 5). `lastIndex === -1` means
+ * nothing has been confirmed, so every node takes the `index > lastIndex`
+ * branch and no marker exists -- this falls out of the comparison rather
+ * than needing a special case, including for a cancelled journey with no
+ * confirmed movement at all: every stop is already `'cancelled-remaining'`
+ * there too. */
+function nodeState(index: number, lastIndex: number, status: JourneyStatus | null): NodeState {
+  if (lastIndex === -1 || index > lastIndex) {
+    return status === 'cancelled' ? 'cancelled-remaining' : 'not-reached';
+  }
   if (index === lastIndex) return 'marker';
   return 'reached';
 }
@@ -112,6 +119,9 @@ const DELAY_COLOR: Record<DelayState, string> = {
 function circleStyle(state: NodeState, delay: DelayState): React.CSSProperties {
   if (state === 'not-reached') {
     return { border: '2px solid var(--mantine-color-gray-5)', backgroundColor: 'transparent' };
+  }
+  if (state === 'cancelled-remaining') {
+    return { border: '2px dashed var(--mantine-color-gray-5)', backgroundColor: 'transparent' };
   }
   const color = DELAY_COLOR[delay];
   const base: React.CSSProperties = {
@@ -229,6 +239,8 @@ export function JourneyProgress({ stops, resolutionStatus, status, trainUid, may
               stop={stop}
               index={index}
               lastIndex={lastIndex}
+              status={status}
+              mayHaveArrived={mayHaveArrived}
               nodeRef={(el) => {
                 nodeRefs.current[index] = el;
               }}
@@ -257,19 +269,24 @@ function JourneyProgressNode({
   stop,
   index,
   lastIndex,
+  status,
+  mayHaveArrived,
   nodeRef,
 }: {
   stop: JourneyStop;
   index: number;
   lastIndex: number;
+  status: JourneyStatus | null;
+  mayHaveArrived: boolean;
   nodeRef: (el: HTMLDivElement | null) => void;
 }) {
   const diameter = nodeDiameter(stop.kind);
-  const state = nodeState(index, lastIndex);
+  const state = nodeState(index, lastIndex, status);
   const delay = delayState(stop.delayMinutes);
   const isEndpoint = stop.kind === 'Origin' || stop.kind === 'Terminate';
   const label = stop.name ?? stop.crs ?? 'Unknown location';
   const scheduled = stop.scheduledArrival ?? stop.scheduledDeparture;
+  const isMarker = state === 'marker';
 
   const circle = (
     <Box
@@ -294,10 +311,23 @@ function JourneyProgressNode({
     </Box>
   );
 
+  // Not a color change (spec Decision 5's own stated reason: color alone
+  // must never be the only signal, and the marker's fill already encodes
+  // delay) -- a small glyph next to the marker, consistent with the
+  // "May have arrived" `Alert` already shown above this diagram by
+  // `TrainJourney.tsx`'s `StatusMessage`.
+  const glyph =
+    isMarker && mayHaveArrived ? (
+      <Text aria-hidden="true" size="xs" data-may-have-arrived="true" style={{ lineHeight: 1 }}>
+        ⚠
+      </Text>
+    ) : null;
+
   if (isEndpoint) {
     return (
       <Stack gap={4} align="center" style={{ flex: `0 0 ${NODE_SLOT_WIDTH}px` }}>
         {circleSlot}
+        {glyph}
         <Text size="xs" fw={700} ta="center">
           {label}
         </Text>
@@ -327,6 +357,7 @@ function JourneyProgressNode({
           {circle}
         </Box>
       </Tooltip>
+      {glyph}
     </Box>
   );
 }

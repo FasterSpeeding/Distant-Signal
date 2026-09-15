@@ -177,6 +177,111 @@ describe('JourneyProgress', () => {
     expect(nodes[1]).toHaveAttribute('data-node-state', 'marker');
   });
 
+  it('cancelled: nodes after the frozen marker render in a distinct cancelled style, not the plain not-yet-reached style', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', kind: 'Intermediate' }),
+          stop({ crs: 'C', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="cancelled"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    const nodes = container.querySelectorAll('[data-journey-node]');
+    expect(nodes[0]).toHaveAttribute('data-node-state', 'marker');
+    expect(nodes[1]).toHaveAttribute('data-node-state', 'cancelled-remaining');
+    expect(nodes[2]).toHaveAttribute('data-node-state', 'cancelled-remaining');
+  });
+
+  it('cancelled before any confirmed movement: every node is cancelled-remaining, none is a marker', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[stop({ crs: 'A', kind: 'Origin' }), stop({ crs: 'B', kind: 'Terminate' })]}
+        resolutionStatus="resolved"
+        status="cancelled"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    const nodes = container.querySelectorAll('[data-journey-node]');
+    expect(Array.from(nodes).every((n) => n.getAttribute('data-node-state') === 'cancelled-remaining')).toBe(true);
+  });
+
+  it('completed: no node anywhere carries the cancelled-remaining style', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', kind: 'Terminate', actualArrival: '2026-09-12T09:00:00Z' }),
+        ]}
+        resolutionStatus="resolved"
+        status="completed"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    const nodes = container.querySelectorAll('[data-journey-node]');
+    expect(Array.from(nodes).some((n) => n.getAttribute('data-node-state') === 'cancelled-remaining')).toBe(false);
+  });
+
+  it('mayHaveArrived: the marker carries a distinguishing badge attribute, with its fill color unaffected', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z', delayMinutes: 0 }),
+          stop({ crs: 'B', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={true}
+      />,
+    );
+    expect(container.querySelector('[data-may-have-arrived="true"]')).toBeInTheDocument();
+    const marker = container.querySelector('[data-node-state="marker"]');
+    expect(marker).toHaveAttribute('data-delay-state', 'on-time');
+  });
+
+  it('mayHaveArrived false: no badge renders anywhere', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    expect(container.querySelector('[data-may-have-arrived]')).not.toBeInTheDocument();
+  });
+
+  it('every decorative node circle is aria-hidden, but an intermediate node\'s focusable Tooltip trigger is not', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', name: 'Alpha', kind: 'Origin' }),
+          stop({ crs: 'B', name: 'Bravo', kind: 'Intermediate' }),
+          stop({ crs: 'C', name: 'Charlie', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    const circles = container.querySelectorAll('[data-journey-node]');
+    circles.forEach((circle) => expect(circle).toHaveAttribute('aria-hidden', 'true'));
+    const trigger = screen.getByLabelText('Bravo');
+    expect(trigger).not.toHaveAttribute('aria-hidden');
+  });
+
   it('always shows the origin and terminus station names as visible text, but not an intermediate node\'s', () => {
     renderWithMantine(
       <JourneyProgress
