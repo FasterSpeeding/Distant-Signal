@@ -7,6 +7,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 
+use crate::data::users;
+
 /// The three-tier role stored in `group_members.role` -- see the design
 /// doc's §2.1 for why there are three tiers, not two: the creator is a
 /// PERMANENT `owner`, distinct from a promotable `admin`, so an `admin`
@@ -168,6 +170,7 @@ struct GroupDetailRow {
     name: String,
     owner_id: String,
     owner_name: Option<String>,
+    owner_username: Option<String>,
     member_count: i64,
     role: String,
 }
@@ -195,6 +198,7 @@ pub async fn get_group_detail(
     let row: Option<GroupDetailRow> = sqlx::query_as(
         "SELECT g.id, g.name, \
                 owner_m.user_id AS owner_id, owner_u.name AS owner_name, \
+                owner_u.username AS owner_username, \
                 (SELECT COUNT(*) FROM group_members gm2 WHERE gm2.group_id = g.id) AS member_count, \
                 caller.role AS role \
          FROM groups g \
@@ -212,7 +216,11 @@ pub async fn get_group_detail(
         id: r.id,
         name: r.name,
         owner_id: r.owner_id,
-        owner_name: r.owner_name,
+        // Same helper as the member list and shared-train attribution:
+        // this field also goes to every member of the group including
+        // plain ones, so it gets the identical name-else-username,
+        // never-an-email, blank-is-not-a-label treatment.
+        owner_name: users::display_label(r.owner_name, r.owner_username),
         member_count: r.member_count,
         role: GroupRole::from_db(&r.role),
     }))
@@ -242,21 +250,28 @@ pub async fn delete_group(pool: &PgPool, group_id: &str) -> Result<bool> {
     Ok(result.rows_affected() > 0)
 }
 
+/// Deliberately no `email` field, and the query below deliberately does
+/// not select one: nothing about a member list needs an email address, and
+/// a column that is never read can never be leaked by a later edit.
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct GroupMemberRow {
     user_id: String,
     name: Option<String>,
-    email: Option<String>,
+    username: Option<String>,
     role: String,
     joined_at: DateTime<Utc>,
 }
 
-/// Deliberately no `email` field: `GET /groups/{id}/members` returns this
-/// to every current member, and a joined-via-link member has no other
-/// relationship with the rest of the group -- shipping their verified
-/// email to everyone alongside `name` leaks more than the feature needs.
-/// Collapsed to `displayName` the same way `GroupTrain.added_by_name`
-/// already collapses `name.or(email)` for attribution, one struct away.
+/// Deliberately no `email` field, and `display_name` is deliberately never
+/// an email either: `GET /groups/{id}/members` returns this to every
+/// current member, and a joined-via-link member has no other relationship
+/// with the rest of the group -- shipping their verified email to everyone
+/// (as a field of its own, OR quietly as the `displayName` fallback for a
+/// member whose IdP sent no name) leaks more than the feature needs. The
+/// fallback is their `username` instead. `None` means "neither on file",
+/// which the frontend renders as its own generic "A member" placeholder.
+/// Same rule, same helper (`users::display_label`), as
+/// `GroupTrain.added_by_name` one struct away.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMember {
@@ -270,7 +285,12 @@ impl From<GroupMemberRow> for GroupMember {
     fn from(row: GroupMemberRow) -> Self {
         GroupMember {
             user_id: row.user_id,
-            display_name: row.name.or(row.email),
+            // `users::display_label`, not a bare `row.name`: a
+            // blank-but-present name ("" -- what an IdP with no name on
+            // file for the user actually sends) is not a label, and used
+            // to render as an empty member row. See that function's own
+            // doc comment, and `display_name_collapse_tests` below.
+            display_name: users::display_label(row.name, row.username),
             role: GroupRole::from_db(&row.role),
             joined_at: row.joined_at,
         }
@@ -284,7 +304,7 @@ impl From<GroupMemberRow> for GroupMember {
 /// gates "is the caller even a member at all."
 pub async fn list_members(pool: &PgPool, group_id: &str) -> Result<Vec<GroupMember>> {
     let rows: Vec<GroupMemberRow> = sqlx::query_as(
-        "SELECT gm.user_id, u.name, u.email, gm.role, gm.joined_at \
+        "SELECT gm.user_id, u.name, u.username, gm.role, gm.joined_at \
          FROM group_members gm \
          JOIN users u ON u.id = gm.user_id \
          WHERE gm.group_id = $1 \
@@ -674,7 +694,7 @@ struct GroupTrainRow {
     custom_name: Option<String>,
     added_by: String,
     added_by_name: Option<String>,
-    added_by_email: Option<String>,
+    added_by_username: Option<String>,
 }
 
 /// A shared train's display shape for `GET /groups/{id}/trains`. Carries
@@ -723,10 +743,14 @@ impl From<GroupTrainRow> for GroupTrain {
             delay_minutes: row.delay_minutes,
             custom_name: row.custom_name,
             added_by: row.added_by,
-            // Same "name, else email, else nothing" order AuthStatus.tsx
-            // already uses for its own nav-bar label -- never the raw
-            // internal user_id alone.
-            added_by_name: row.added_by_name.or(row.added_by_email),
+            // The sharer's `users.name`, else their `users.username` --
+            // never the raw internal user_id, and never their email (see
+            // `users::display_label`: attribution shown to a whole group
+            // is not the place to reveal one member's email address).
+            // Shared with the member list via that same helper so the two
+            // can't drift on what counts as a usable name -- a blank one
+            // doesn't; see `display_name_collapse_tests` below.
+            added_by_name: users::display_label(row.added_by_name, row.added_by_username),
         }
     }
 }
@@ -743,7 +767,7 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 ts.pin_scheduled_departure, ts.service_date, ts.resolution_status, \
                 tr.train_uid, cs.status, cs.delay_minutes, ts.custom_name, \
-                gt.added_by, u.name AS added_by_name, u.email AS added_by_email \
+                gt.added_by, u.name AS added_by_name, u.username AS added_by_username \
          FROM group_trains gt \
          JOIN train_subscriptions ts ON ts.id = gt.train_subscription_id \
          JOIN users u ON u.id = gt.added_by \
@@ -758,6 +782,167 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(GroupTrain::from).collect())
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct SharedTrainRow {
+    group_id: String,
+    group_name: String,
+    train_subscription_id: i64,
+    pin_origin_crs: Option<String>,
+    pin_destination_crs: Option<String>,
+    pin_origin_name: Option<String>,
+    pin_destination_name: Option<String>,
+    pin_scheduled_departure: Option<DateTime<Utc>>,
+    service_date: chrono::NaiveDate,
+    resolution_status: String,
+    train_uid: Option<String>,
+    status: Option<String>,
+    delay_minutes: Option<i32>,
+    custom_name: Option<String>,
+    added_by: String,
+    added_by_name: Option<String>,
+    added_by_username: Option<String>,
+}
+
+/// One train shared into one group the CALLER is a member of -- `GroupTrain`
+/// (the per-group `GET /groups/{id}/trains` shape) plus the two fields that
+/// only make sense once rows from several groups land in one list:
+/// `group_id`/`group_name`, the "from <group>" attribution
+/// `/track/mine` tags each row with.
+///
+/// Inherits `GroupTrain`'s hard privacy constraint verbatim (spec §4's
+/// "Never shown" list): no ticket field, no `notificationsEnabled`, no
+/// exact `trackedAt`. This shape is strictly MORE exposed than
+/// `GroupTrain` -- it reaches a member without them opening the group at
+/// all -- so no future edit may widen it past what the group detail page
+/// already shows the same member.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedTrain {
+    pub group_id: String,
+    pub group_name: String,
+    pub train_subscription_id: i64,
+    pub pin_origin_crs: Option<String>,
+    pub pin_destination_crs: Option<String>,
+    pub pin_origin_name: Option<String>,
+    pub pin_destination_name: Option<String>,
+    pub pin_scheduled_departure: Option<DateTime<Utc>>,
+    pub service_date: chrono::NaiveDate,
+    pub resolution_status: String,
+    pub train_uid: Option<String>,
+    pub status: Option<String>,
+    pub delay_minutes: Option<i32>,
+    pub custom_name: Option<String>,
+    pub added_by: String,
+    pub added_by_name: Option<String>,
+}
+
+impl From<SharedTrainRow> for SharedTrain {
+    fn from(row: SharedTrainRow) -> Self {
+        SharedTrain {
+            group_id: row.group_id,
+            group_name: row.group_name,
+            train_subscription_id: row.train_subscription_id,
+            pin_origin_crs: row.pin_origin_crs,
+            pin_destination_crs: row.pin_destination_crs,
+            pin_origin_name: row.pin_origin_name,
+            pin_destination_name: row.pin_destination_name,
+            pin_scheduled_departure: row.pin_scheduled_departure,
+            service_date: row.service_date,
+            resolution_status: row.resolution_status,
+            train_uid: row.train_uid,
+            status: row.status,
+            delay_minutes: row.delay_minutes,
+            custom_name: row.custom_name,
+            added_by: row.added_by,
+            // Same "name, else username, else nothing -- and never an
+            // email" collapse `GroupTrain::from` already applies, via the
+            // same `users::display_label`; see its own comment. This shape
+            // is strictly more exposed than `GroupTrain` (it reaches a
+            // member without them opening the group at all), so it is the
+            // last place that should be laxer about it.
+            added_by_name: users::display_label(row.added_by_name, row.added_by_username),
+        }
+    }
+}
+
+/// Every train shared into ANY group `user_id` belongs to, EXCLUDING the
+/// ones they tracked themselves. This is what lets `/track/mine` show a
+/// group-shared train alongside the caller's own tracked trains, tagged
+/// with where it came from, instead of hiding it behind
+/// `/groups/{id}` -- the whole point of sharing a train being that the
+/// people you shared it with actually see it.
+///
+/// `ts.user_id <> $1` is the deliberate half of that: the caller's OWN
+/// subscriptions already occupy a row each in
+/// `train_tracking::list_tracked_trains_for_user`'s half of the same list
+/// (with their own rename/ticket controls, which a shared row
+/// deliberately has none of), and a train they shared into two groups
+/// would otherwise render three times on one page. Note the asymmetry
+/// this leaves: a train shared WITH the caller is tagged, while one the
+/// caller shared OUT carries no group tag on `/track/mine` at all --
+/// `TrackedTrainListItem::shared_group_count` is already on that row's
+/// wire shape, but nothing on this page renders it today. Tagging the
+/// outgoing direction too is a deliberate follow-up, not something this
+/// query is hiding.
+///
+/// One row per (group, train) pair, NOT per train: a train shared into two
+/// groups the caller is in is genuinely two attributions, and collapsing
+/// that server-side would throw away one of the two group names the page
+/// tags the row with. The frontend merges them back into one row carrying
+/// both tags.
+///
+/// No permission check beyond the `group_members me` join, which IS the
+/// check: a row can only appear here via a group the caller is currently a
+/// member of, so this needs no `get_member_role` gate of its own (and,
+/// unlike `list_group_trains`, has no single group id to gate on).
+///
+/// Ordered newest-shared-first and capped at the same
+/// [`MINE_LIST_LIMIT`](crate::data::train_tracking::MINE_LIST_LIMIT) the
+/// caller's own half of the list uses -- but note the cap counts (group,
+/// train) PAIRS here, where the own half counts trains, so a train shared
+/// into three of the caller's groups spends three of the hundred. Those
+/// three pairs are NOT ordered together either -- shares into different
+/// groups happen at different times -- so at the far edge of the cap a
+/// merged row can lose one of its `from <group>` tags, and if every one
+/// of a train's pairs falls past the cut, the row itself (ordinary
+/// truncation, exactly as the own half drops its 101st train). Accepted
+/// rather than solved
+/// with a windowed subquery: the same "100 is a round number, not a
+/// researched one, revisit when real usage exists" posture
+/// `MINE_LIST_LIMIT` itself is documented with, and nothing today is
+/// remotely near it. `gt.added_at` is an ordering key
+/// only and is never selected into the response (spec §4 forbids exposing
+/// a share's exact timestamp), with `gt.train_subscription_id` breaking
+/// ties so the order is total and stable across calls.
+pub async fn list_shared_trains_for_user(pool: &PgPool, user_id: &str) -> Result<Vec<SharedTrain>> {
+    let rows: Vec<SharedTrainRow> = sqlx::query_as(
+        "SELECT g.id AS group_id, g.name AS group_name, \
+                gt.train_subscription_id, \
+                ts.pin_origin_crs, ts.pin_destination_crs, \
+                so.name AS pin_origin_name, sd.name AS pin_destination_name, \
+                ts.pin_scheduled_departure, ts.service_date, ts.resolution_status, \
+                tr.train_uid, cs.status, cs.delay_minutes, ts.custom_name, \
+                gt.added_by, u.name AS added_by_name, u.username AS added_by_username \
+         FROM group_members me \
+         JOIN groups g ON g.id = me.group_id \
+         JOIN group_trains gt ON gt.group_id = g.id \
+         JOIN train_subscriptions ts ON ts.id = gt.train_subscription_id \
+         JOIN users u ON u.id = gt.added_by \
+         LEFT JOIN trains tr ON tr.id = ts.trains_id \
+         LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
+         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs) \
+         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs) \
+         WHERE me.user_id = $1 AND ts.user_id <> $1 \
+         ORDER BY gt.added_at DESC, gt.train_subscription_id DESC \
+         LIMIT $2",
+    )
+    .bind(user_id)
+    .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(SharedTrain::from).collect())
 }
 
 #[cfg(test)]
@@ -1801,6 +1986,190 @@ mod db_tests {
             .ok();
         cleanup(&pool, &["TEST-GROUPS-LISTTRAINS-OWNER"]).await;
     }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_shared_trains_for_user_returns_other_members_trains_tagged_with_their_group \
+                -- --ignored`"]
+    async fn list_shared_trains_for_user_returns_other_members_trains_tagged_with_their_group() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-SHAREDMINE-SHARER").await;
+        seed_user(&pool, "TEST-GROUPS-SHAREDMINE-VIEWER").await;
+        let group_id = create_group(&pool, "Shared Mine Test", "TEST-GROUPS-SHAREDMINE-SHARER")
+            .await
+            .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GROUPS-SHAREDMINE-VIEWER")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        let train_id = seed_train_subscription(&pool, "TEST-GROUPS-SHAREDMINE-SHARER").await;
+        add_train_to_group(&pool, &group_id, train_id, "TEST-GROUPS-SHAREDMINE-SHARER")
+            .await
+            .expect("add");
+
+        let shared = list_shared_trains_for_user(&pool, "TEST-GROUPS-SHAREDMINE-VIEWER")
+            .await
+            .expect("list shared trains");
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared[0].train_subscription_id, train_id);
+        assert_eq!(shared[0].group_id, group_id);
+        assert_eq!(shared[0].group_name, "Shared Mine Test");
+        assert_eq!(shared[0].added_by, "TEST-GROUPS-SHAREDMINE-SHARER");
+        assert_eq!(
+            shared[0].added_by_name.as_deref(),
+            Some("TEST-GROUPS-SHAREDMINE-SHARER"),
+            "the sharer's display name is what the tag on the row renders"
+        );
+        assert_eq!(shared[0].pin_origin_crs.as_deref(), Some("WOK"));
+
+        // The sharer's OWN list never repeats their own train back at them
+        // -- it's already in their `list_tracked_trains_for_user` half of
+        // the same page.
+        let sharers_own = list_shared_trains_for_user(&pool, "TEST-GROUPS-SHAREDMINE-SHARER")
+            .await
+            .expect("list the sharer's shared trains");
+        assert!(
+            sharers_own.is_empty(),
+            "a caller's own tracked train must never come back as a shared one, got {sharers_own:?}"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(
+            &pool,
+            &[
+                "TEST-GROUPS-SHAREDMINE-SHARER",
+                "TEST-GROUPS-SHAREDMINE-VIEWER",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_shared_trains_for_user_never_leaks_a_group_the_caller_is_not_in \
+                -- --ignored`"]
+    async fn list_shared_trains_for_user_never_leaks_a_group_the_caller_is_not_in() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-SHAREDLEAK-SHARER").await;
+        seed_user(&pool, "TEST-GROUPS-SHAREDLEAK-STRANGER").await;
+        let group_id = create_group(&pool, "Shared Leak Test", "TEST-GROUPS-SHAREDLEAK-SHARER")
+            .await
+            .expect("create group");
+        let train_id = seed_train_subscription(&pool, "TEST-GROUPS-SHAREDLEAK-SHARER").await;
+        add_train_to_group(&pool, &group_id, train_id, "TEST-GROUPS-SHAREDLEAK-SHARER")
+            .await
+            .expect("add");
+
+        let stranger = list_shared_trains_for_user(&pool, "TEST-GROUPS-SHAREDLEAK-STRANGER")
+            .await
+            .expect("list shared trains");
+        assert!(
+            stranger.is_empty(),
+            "a non-member must see nothing from this group, got {stranger:?}"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(
+            &pool,
+            &[
+                "TEST-GROUPS-SHAREDLEAK-SHARER",
+                "TEST-GROUPS-SHAREDLEAK-STRANGER",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_shared_trains_for_user_returns_one_row_per_group_a_train_is_shared_into \
+                -- --ignored`"]
+    async fn list_shared_trains_for_user_returns_one_row_per_group_a_train_is_shared_into() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-SHAREDTWO-SHARER").await;
+        seed_user(&pool, "TEST-GROUPS-SHAREDTWO-VIEWER").await;
+        let train_id = seed_train_subscription(&pool, "TEST-GROUPS-SHAREDTWO-SHARER").await;
+        let mut group_ids = Vec::new();
+        for name in ["Shared Two A", "Shared Two B"] {
+            let group_id = create_group(&pool, name, "TEST-GROUPS-SHAREDTWO-SHARER")
+                .await
+                .expect("create group");
+            sqlx::query(
+                "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+            )
+            .bind(&group_id)
+            .bind("TEST-GROUPS-SHAREDTWO-VIEWER")
+            .execute(&pool)
+            .await
+            .expect("seed member");
+            add_train_to_group(&pool, &group_id, train_id, "TEST-GROUPS-SHAREDTWO-SHARER")
+                .await
+                .expect("add");
+            group_ids.push(group_id);
+        }
+
+        let shared = list_shared_trains_for_user(&pool, "TEST-GROUPS-SHAREDTWO-VIEWER")
+            .await
+            .expect("list shared trains");
+        assert_eq!(
+            shared.len(),
+            2,
+            "one row per (group, train) pair, so the frontend can tag the \
+             merged row with BOTH group names"
+        );
+        let mut names: Vec<&str> = shared.iter().map(|t| t.group_name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["Shared Two A", "Shared Two B"]);
+        assert!(
+            shared.iter().all(|t| t.train_subscription_id == train_id),
+            "both rows describe the same underlying subscription"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        for group_id in &group_ids {
+            sqlx::query("DELETE FROM groups WHERE id = $1")
+                .bind(group_id)
+                .execute(&pool)
+                .await
+                .ok();
+        }
+        cleanup(
+            &pool,
+            &[
+                "TEST-GROUPS-SHAREDTWO-SHARER",
+                "TEST-GROUPS-SHAREDTWO-VIEWER",
+            ],
+        )
+        .await;
+    }
 }
 
 #[cfg(test)]
@@ -1860,6 +2229,123 @@ mod group_train_wire_shape_tests {
 }
 
 #[cfg(test)]
+mod shared_train_wire_shape_tests {
+    use super::*;
+
+    fn shared_train() -> SharedTrain {
+        SharedTrain {
+            group_id: "group-1".to_string(),
+            group_name: "Family".to_string(),
+            train_subscription_id: 1,
+            pin_origin_crs: Some("WOK".to_string()),
+            pin_destination_crs: None,
+            pin_origin_name: Some("Woking".to_string()),
+            pin_destination_name: None,
+            pin_scheduled_departure: None,
+            service_date: "2026-09-11".parse().unwrap(),
+            resolution_status: "pending".to_string(),
+            train_uid: None,
+            status: None,
+            delay_minutes: None,
+            custom_name: None,
+            added_by: "user-1".to_string(),
+            added_by_name: Some("Alex".to_string()),
+        }
+    }
+
+    /// Pins the exact JSON keys `SharedTrain` serializes to, for the same
+    /// reason `group_train_json_never_includes_ticket_or_notification_fields`
+    /// pins `GroupTrain`'s: spec §4's "Never shown" list (tickets,
+    /// `notificationsEnabled`, exact `trackedAt`) is a hard constraint, and
+    /// this shape reaches a member on `/track/mine` without them opening
+    /// the group at all. Identical to `GroupTrain`'s key set plus exactly
+    /// `groupId`/`groupName`.
+    #[test]
+    fn shared_train_json_is_group_train_plus_group_attribution_and_nothing_else() {
+        let value = serde_json::to_value(shared_train()).expect("serialize");
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "addedBy",
+                "addedByName",
+                "customName",
+                "delayMinutes",
+                "groupId",
+                "groupName",
+                "pinDestinationCrs",
+                "pinDestinationName",
+                "pinOriginCrs",
+                "pinOriginName",
+                "pinScheduledDeparture",
+                "resolutionStatus",
+                "serviceDate",
+                "status",
+                "trainSubscriptionId",
+                "trainUid",
+            ]
+        );
+    }
+
+    /// `added_by_name` collapses `name`, else `username`, else nothing --
+    /// the "shared by <who>" half of the row's attribution, and the same
+    /// collapse (`users::display_label`) `GroupTrain::from` applies one
+    /// struct away. Never the sharer's email: this row reaches a member
+    /// who never even opened the group, so if anything it is the LAST
+    /// place that should be laxer than the group detail page.
+    #[test]
+    fn added_by_name_falls_back_to_username_then_to_nothing_but_never_an_email() {
+        let row = |name: Option<&str>, username: Option<&str>| SharedTrainRow {
+            group_id: "group-1".to_string(),
+            group_name: "Family".to_string(),
+            train_subscription_id: 1,
+            pin_origin_crs: None,
+            pin_destination_crs: None,
+            pin_origin_name: None,
+            pin_destination_name: None,
+            pin_scheduled_departure: None,
+            service_date: "2026-09-11".parse().unwrap(),
+            resolution_status: "pending".to_string(),
+            train_uid: None,
+            status: None,
+            delay_minutes: None,
+            custom_name: None,
+            added_by: "user-1".to_string(),
+            added_by_name: name.map(str::to_string),
+            added_by_username: username.map(str::to_string),
+        };
+
+        assert_eq!(
+            SharedTrain::from(row(Some("Alex"), Some("alex"))).added_by_name,
+            Some("Alex".to_string())
+        );
+        assert_eq!(
+            SharedTrain::from(row(None, Some("alex"))).added_by_name,
+            Some("alex".to_string())
+        );
+        // Blank, not just absent -- what an IdP with no name on file for
+        // the sharer actually sends, and what used to render this row's
+        // attribution as "Shared by " with nothing after it.
+        assert_eq!(
+            SharedTrain::from(row(Some("  "), Some("alex"))).added_by_name,
+            Some("alex".to_string())
+        );
+        assert_eq!(SharedTrain::from(row(None, None)).added_by_name, None);
+        assert_eq!(
+            SharedTrain::from(row(Some("alex@example.com"), Some("alex@example.com")))
+                .added_by_name,
+            None
+        );
+    }
+}
+
+#[cfg(test)]
 mod group_member_wire_shape_tests {
     use super::*;
 
@@ -1886,5 +2372,143 @@ mod group_member_wire_shape_tests {
             .collect();
         keys.sort_unstable();
         assert_eq!(keys, vec!["displayName", "joinedAt", "role", "userId"]);
+    }
+}
+
+/// The `users.name` -> display-label collapse both member rows and
+/// shared-train attribution go through.
+///
+/// An identity provider that has no name on file for a user does not
+/// necessarily OMIT the `name` claim -- Authentik (whose stock `profile`
+/// scope mapping this deployment attaches) returns its `User.name`
+/// attribute verbatim, and that attribute defaults to the EMPTY STRING --
+/// and `users.name` is written straight from that claim
+/// (`data::users::upsert_user`). So a blank name is a real, stored value
+/// these two `From` impls have to cope with, not a hypothetical, and
+/// `Some("")` is `Some`: it used to be handed to the frontend as the whole
+/// label, where `?? 'A member'` doesn't fire either because `""` isn't
+/// null. Result: a member row that is just a role badge, and a
+/// "Shared by " with nothing after it.
+#[cfg(test)]
+mod display_name_collapse_tests {
+    use super::*;
+
+    fn member_row(name: Option<&str>, username: Option<&str>) -> GroupMemberRow {
+        GroupMemberRow {
+            user_id: "user-1".to_string(),
+            name: name.map(str::to_string),
+            username: username.map(str::to_string),
+            role: "member".to_string(),
+            joined_at: "2026-09-11T00:00:00Z".parse().unwrap(),
+        }
+    }
+
+    fn train_row(name: Option<&str>, username: Option<&str>) -> GroupTrainRow {
+        GroupTrainRow {
+            train_subscription_id: 1,
+            pin_origin_crs: None,
+            pin_destination_crs: None,
+            pin_origin_name: None,
+            pin_destination_name: None,
+            pin_scheduled_departure: None,
+            service_date: "2026-09-11".parse().unwrap(),
+            resolution_status: "pending".to_string(),
+            train_uid: None,
+            status: None,
+            delay_minutes: None,
+            custom_name: None,
+            added_by: "user-1".to_string(),
+            added_by_name: name.map(str::to_string),
+            added_by_username: username.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_real_name_is_the_members_display_name() {
+        let member = GroupMember::from(member_row(Some("Ada Rider"), Some("ada")));
+        assert_eq!(member.display_name.as_deref(), Some("Ada Rider"));
+    }
+
+    #[test]
+    fn a_padded_name_is_trimmed_for_a_member() {
+        let member = GroupMember::from(member_row(Some("  Ada Rider  "), None));
+        assert_eq!(member.display_name.as_deref(), Some("Ada Rider"));
+    }
+
+    /// The reported bug, at the member-list end: a blank name is not a
+    /// label. It falls through to the username, and -- with neither on
+    /// file -- to `None`, NOT to `Some("")`. `None` is what lets the
+    /// frontend's own "A member"/"a member" placeholder fire.
+    #[test]
+    fn a_blank_name_falls_through_to_the_username_for_a_member() {
+        let member = GroupMember::from(member_row(Some(""), Some("ada")));
+        assert_eq!(member.display_name.as_deref(), Some("ada"));
+
+        let member = GroupMember::from(member_row(Some("   "), Some("ada")));
+        assert_eq!(member.display_name.as_deref(), Some("ada"));
+    }
+
+    #[test]
+    fn no_name_and_no_username_collapses_to_none_for_a_member() {
+        assert_eq!(
+            GroupMember::from(member_row(Some(""), Some(""))).display_name,
+            None
+        );
+        assert_eq!(GroupMember::from(member_row(None, None)).display_name, None);
+    }
+
+    #[test]
+    fn a_real_name_is_the_shared_train_attribution() {
+        let train = GroupTrain::from(train_row(Some("Ada Rider"), Some("ada")));
+        assert_eq!(train.added_by_name.as_deref(), Some("Ada Rider"));
+    }
+
+    #[test]
+    fn a_blank_name_falls_through_to_the_username_for_shared_train_attribution() {
+        let train = GroupTrain::from(train_row(Some(""), Some("ada")));
+        assert_eq!(train.added_by_name.as_deref(), Some("ada"));
+
+        let train = GroupTrain::from(train_row(Some("\t\n"), Some("ada")));
+        assert_eq!(train.added_by_name.as_deref(), Some("ada"));
+    }
+
+    #[test]
+    fn no_name_and_no_username_collapses_to_none_for_shared_train_attribution() {
+        assert_eq!(
+            GroupTrain::from(train_row(Some(""), None)).added_by_name,
+            None
+        );
+        assert_eq!(GroupTrain::from(train_row(None, None)).added_by_name, None);
+    }
+
+    /// The privacy half of this fix, end to end: neither of these two "who
+    /// is this person" labels may ever be a member's email address.
+    /// Neither query selects `users.email` any more, AND an email arriving
+    /// through the fields they DO select -- an IdP that puts an address in
+    /// `name` or `preferred_username`, which is legal and common -- is
+    /// declined by `users::display_label` rather than rendered. What the
+    /// group sees instead is the frontend's generic placeholder.
+    #[test]
+    fn a_member_is_never_attributed_by_email() {
+        for row in [
+            member_row(Some(""), Some("rider@example.com")),
+            member_row(Some("rider@example.com"), None),
+            member_row(Some("rider@example.com"), Some("rider@example.com")),
+        ] {
+            let member = GroupMember::from(row);
+            assert_eq!(member.display_name, None);
+            let json = serde_json::to_string(&member).expect("serialize");
+            assert!(!json.contains('@'), "member JSON leaked an email: {json}");
+        }
+
+        for row in [
+            train_row(Some(""), Some("rider@example.com")),
+            train_row(Some("rider@example.com"), None),
+        ] {
+            let train = GroupTrain::from(row);
+            assert_eq!(train.added_by_name, None);
+            let json = serde_json::to_string(&train).expect("serialize");
+            assert!(!json.contains('@'), "train JSON leaked an email: {json}");
+        }
     }
 }

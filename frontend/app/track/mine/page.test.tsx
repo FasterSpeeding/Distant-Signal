@@ -1,9 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import MyTrackedTrainsPage from './page';
 import * as api from '@/lib/api';
-import type { TrackedTrainListItem, TicketListItem } from '@/lib/types';
+import type { TrackedTrainListItem, TicketListItem, SharedGroupTrain } from '@/lib/types';
 
 vi.mock('@/lib/api');
 // The not-logged-in prompt is AutoOpenLoginPrompt -> LoginPromptModal,
@@ -70,7 +70,37 @@ function ticket(overrides: Partial<TicketListItem> = {}): TicketListItem {
   };
 }
 
+function sharedTrain(overrides: Partial<SharedGroupTrain> = {}): SharedGroupTrain {
+  return {
+    groupId: 'group-1',
+    groupName: 'Family',
+    trainSubscriptionId: 50,
+    pinOriginCrs: 'PAD',
+    pinDestinationCrs: 'RDG',
+    pinOriginName: null,
+    pinDestinationName: null,
+    pinScheduledDeparture: '2026-08-31T07:15:00Z',
+    serviceDate: '2026-08-31',
+    resolutionStatus: 'resolved',
+    trainUid: 'S99999',
+    status: 'en_route',
+    delayMinutes: null,
+    customName: null,
+    addedBy: 'user-2',
+    addedByName: 'Sam',
+    ...overrides,
+  };
+}
+
 describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
+  // Every pre-existing test predates group sharing and says nothing about
+  // it -- default the third fetch to "no shared trains" so each of them
+  // still describes exactly the scenario it was written for. The
+  // group-shared cases below override this explicitly.
+  beforeEach(() => {
+    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([]);
+  });
+
   it('null (not logged in): shows an auto-opened login prompt modal', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
     vi.mocked(api.getMyTickets).mockResolvedValue(null);
@@ -302,5 +332,259 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       'href',
       '/track/mine/add-ticket',
     );
+  });
+
+  // The reported bug: a train another member shared into a group the
+  // caller belongs to never reached this page at all -- it only existed on
+  // `/groups/{id}`. These cover it appearing here, and being tagged with
+  // where it came from so it can't be mistaken for one the caller tracked.
+  describe('group-shared trains', () => {
+    it('renders a group-shared train alongside the caller’s own, tagged with its group and sharer', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      // The caller's own row is still there...
+      expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+      // ...and the shared one now is too, with both halves of its
+      // attribution.
+      expect(screen.getByText(/PAD → RDG/)).toBeInTheDocument();
+      expect(screen.getByText('from Family')).toBeInTheDocument();
+      expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
+    });
+
+    it('a caller who tracks nothing themselves still sees trains shared with them, not the empty state', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.queryByText(/haven't tracked any trains or added any tickets yet/)).not.toBeInTheDocument();
+      expect(screen.getByText(/PAD → RDG/)).toBeInTheDocument();
+      expect(screen.getByText('from Family')).toBeInTheDocument();
+    });
+
+    it('a train shared into two of the caller’s groups renders once, tagged with both', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+        sharedTrain({ groupId: 'g1', groupName: 'Family' }),
+        sharedTrain({ groupId: 'g2', groupName: 'Commuters' }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getAllByText(/PAD → RDG/)).toHaveLength(1);
+      expect(screen.getByText('from Family')).toBeInTheDocument();
+      expect(screen.getByText('from Commuters')).toBeInTheDocument();
+    });
+
+    it('a resolved shared train links to the public /train/{uid}/{date} page', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByRole('link', { name: /PAD → RDG/ })).toHaveAttribute(
+        'href',
+        '/train/S99999/2026-08-31',
+      );
+    });
+
+    it('a shared train with a uid but a not-yet-resolved status is still linked', async () => {
+      // `trains_id` (and so `trainUid`) lands well before the status
+      // reaches `resolved`, and `/train/{uid}/{date}` is public the whole
+      // time -- gating the link on `resolved` would render these as dead
+      // text for no reason. The caller's own rows can afford the stricter
+      // test only because they have an owner-scoped by-id fallback.
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+        sharedTrain({ resolutionStatus: 'schedule_matched', trainUid: 'S99999', status: null }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByRole('link', { name: /PAD → RDG/ })).toHaveAttribute(
+        'href',
+        '/train/S99999/2026-08-31',
+      );
+    });
+
+    it('a shared train with no uid is not linked at all — the by-id route is owner-scoped', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+        sharedTrain({ resolutionStatus: 'pending', trainUid: null, status: null }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText(/PAD → RDG/)).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /PAD → RDG/ })).not.toBeInTheDocument();
+      expect(screen.getByText('Pending match')).toBeInTheDocument();
+    });
+
+    it('renders the shared train’s live status and delay badges, same as an own row', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain({ delayMinutes: 9 })]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText('En route')).toBeInTheDocument();
+      expect(screen.getByText('9m late')).toBeInTheDocument();
+    });
+
+    it('a sharer with no name or username is credited as "a member", never a raw user id', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+        sharedTrain({ addedBy: 'sso-subject-1234', addedByName: null }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText('Shared by a member')).toBeInTheDocument();
+      expect(screen.queryByText(/sso-subject-1234/)).not.toBeInTheDocument();
+    });
+
+    /** A BLANK name, not a null one -- what an identity provider with no
+     * name on file for the sharer actually sends. `??` treats `''` as a
+     * usable label, so this row read "Shared by " with nothing after it.
+     * The backend normalizes blanks away now; this guards the rows written
+     * before it did, exactly as `/groups/{id}`'s own row does. */
+    it('a sharer whose name is blank rather than null is still credited as "a member"', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+        sharedTrain({ addedBy: 'sso-subject-1234', addedByName: '   ' }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText('Shared by a member')).toBeInTheDocument();
+    });
+
+    it('offers no rename control on someone else’s shared train', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      // Exactly one Rename button on the page: the caller's own row's.
+      expect(screen.getAllByRole('button', { name: 'Rename' })).toHaveLength(1);
+    });
+
+    it('never shows a ticket under a shared train, even when the caller has one for the same id', async () => {
+      // The shared train's `trainSubscriptionId` deliberately collides with
+      // one of the caller's OWN ticket's `trackedTrainId` here: tickets are
+      // keyed off the caller's own tracked-train ids, and a shared row must
+      // never pick one up by id collision (spec §4 forbids a shared train
+      // carrying ticket data at all).
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 1 })]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ id: 3, trackedTrainId: 1 })]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+        sharedTrain({ trainSubscriptionId: 1, pinOriginCrs: 'PAD', pinDestinationCrs: 'RDG' }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      // Same id as the caller's own train, so it's filtered out entirely
+      // rather than rendered twice.
+      expect(screen.queryByText(/PAD → RDG/)).not.toBeInTheDocument();
+      expect(screen.getAllByText(/LNER/)).toHaveLength(1);
+    });
+
+    it('a shared train row carries both tags in the same row, not stranded elsewhere on the page', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      const sharedRow = screen.getByText(/PAD → RDG/).closest('.mantine-Card-root');
+      expect(sharedRow).not.toBeNull();
+      expect(within(sharedRow as HTMLElement).getByText('from Family')).toBeInTheDocument();
+      expect(within(sharedRow as HTMLElement).getByText('Shared by Sam')).toBeInTheDocument();
+    });
+
+    it('a null (401) shared-trains response degrades to the caller’s own list, not a crash', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue(null);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+      expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
+    });
+
+    it('renders the tracker’s own custom name on a shared row, not a recomputed route label', async () => {
+      // Carrying the sharer's `customName` is the spec's headline reason
+      // for sharing at all (§4: same computed default the tracker sees, or
+      // their own name if they set one).
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+        sharedTrain({ customName: 'School run' }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText('School run')).toBeInTheDocument();
+      expect(screen.queryByText(/PAD → RDG/)).not.toBeInTheDocument();
+    });
+
+    it('puts the caller’s own rows before the shared ones, each half in its endpoint’s order', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+        sharedTrain({ trainSubscriptionId: 50, customName: 'Shared first' }),
+        sharedTrain({ trainSubscriptionId: 51, customName: 'Shared second' }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      const rendered = [...document.querySelectorAll('.mantine-Card-root')].map(
+        (card) => card.textContent ?? '',
+      );
+      const ownIndex = rendered.findIndex((text) => text.includes('WAT → WOK'));
+      const firstSharedIndex = rendered.findIndex((text) => text.includes('Shared first'));
+      const secondSharedIndex = rendered.findIndex((text) => text.includes('Shared second'));
+      expect(ownIndex).toBeGreaterThanOrEqual(0);
+      expect(ownIndex).toBeLessThan(firstSharedIndex);
+      expect(firstSharedIndex).toBeLessThan(secondSharedIndex);
+    });
+
+    it('a failing shared-trains fetch still renders the caller’s own list rather than erroring the page', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockRejectedValue(new Error('API request failed: 500'));
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+      expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
+    });
+
+    it('shared trains do not feed the personal reliability digest', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain({ delayMinutes: 30 })]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      // The digest is "Your reliability" -- someone else's train is not
+      // the caller's own punctuality record, so the card renders off the
+      // caller's own trains/tickets only.
+      expect(screen.getByText(/PAD → RDG/)).toBeInTheDocument();
+      expect(screen.queryByText('Your reliability')).not.toBeInTheDocument();
+    });
   });
 });

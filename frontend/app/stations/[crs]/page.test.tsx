@@ -15,6 +15,7 @@ vi.mock('@/lib/api', async () => {
     getPreferences: vi.fn(),
     getStationName: vi.fn(),
     getStationSampleStats: vi.fn(),
+    getStationAccessibility: vi.fn(),
     getAllTocs: vi.fn(),
   };
 });
@@ -78,6 +79,7 @@ describe('StationDisruptionPage -- outage behaviour', () => {
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
     vi.mocked(api.getStopPointDisruption).mockResolvedValue([report('ecml', 'East Coast Main Line')]);
     vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
+    vi.mocked(api.getStationAccessibility).mockResolvedValue({});
     vi.mocked(api.getAllTocs).mockResolvedValue([]);
   });
 
@@ -137,6 +139,7 @@ describe('StationDisruptionPage -- line-coverage distinction', () => {
     vi.mocked(api.getStationName).mockResolvedValue('Raynes Park');
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
     vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
+    vi.mocked(api.getStationAccessibility).mockResolvedValue({});
     vi.mocked(api.getAllTocs).mockResolvedValue([]);
   });
 
@@ -179,6 +182,7 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
     vi.mocked(api.getStationName).mockResolvedValue('London Kings Cross');
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
     vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
+    vi.mocked(api.getStationAccessibility).mockResolvedValue({});
   });
 
   it('renders the "not part of our live departure sampling" copy when the route 404s', async () => {
@@ -252,6 +256,94 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
     // sample ones, via formatSampleSummary's existing precedence chain.
     expect(screen.getByText('Avg delay 2.1 min · 2% cancelled')).toBeInTheDocument();
     expect(screen.queryByText('Avg delay 3.5 min · 0% cancelled')).not.toBeInTheDocument();
+  });
+});
+
+describe('StationDisruptionPage -- accessibility & facilities', () => {
+  // A fourth, independent coverage question again: this station has
+  // ordinary line coverage and ordinary sampling throughout, so only
+  // `getStationAccessibility` varies per test -- design spec Decision 9's
+  // three honest states.
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+    vi.stubGlobal('fetch', vi.fn());
+    vi.mocked(api.getStationName).mockResolvedValue('London Kings Cross');
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
+    vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
+    vi.mocked(api.getAllTocs).mockResolvedValue([]);
+  });
+
+  it('renders the "not yet captured" copy when the route 404s', async () => {
+    vi.mocked(api.getStationAccessibility).mockRejectedValue(
+      new ApiNotFoundError('no station reference data for: KGX'),
+    );
+
+    await renderPage();
+
+    expect(
+      screen.getByText("We don't have station reference data for this station yet."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('No accessibility or facilities details have been published for this station.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders the "nothing published" copy for a row with no allowlisted keys', async () => {
+    vi.mocked(api.getStationAccessibility).mockResolvedValue({});
+
+    await renderPage();
+
+    expect(
+      screen.getByText('No accessibility or facilities details have been published for this station.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("We don't have station reference data for this station yet."),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders grouped headings and at least one rendered value for a populated response, end to end through the real component tree', async () => {
+    vi.mocked(api.getStationAccessibility).mockResolvedValue({
+      stationAccessibility: { stepFree: true },
+      carParks: [{ spaces: 120 }],
+    });
+
+    await renderPage();
+
+    expect(screen.getByText('Step-free access & assistance')).toBeInTheDocument();
+    expect(screen.getByText('Getting here')).toBeInTheDocument();
+    expect(screen.getByText('Step free:')).toBeInTheDocument();
+    expect(screen.getByText('Yes')).toBeInTheDocument();
+    expect(screen.getByText('Car parks')).toBeInTheDocument();
+  });
+
+  it('renders the raw-JSON fallback without throwing for a deliberately malformed shape', async () => {
+    vi.mocked(api.getStationAccessibility).mockResolvedValue({
+      lifts: { level1: { level2: { level3: 'too deep' } } },
+    });
+
+    await expect(renderPage()).resolves.toBeDefined();
+    expect(screen.getByRole('button', { name: 'Raw data' })).toBeInTheDocument();
+  });
+
+  // Same stale-serving posture as every other section on this page: a
+  // non-404 failure with nothing cached is not swallowed into a coverage
+  // state, it propagates to app/error.tsx.
+  it('throws (not "unavailable") for a non-404 failure with nothing cached', async () => {
+    vi.mocked(api.getStationAccessibility).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+    await expect(renderPage()).rejects.toThrow('connect ECONNREFUSED');
+  });
+
+  it('keeps rendering the last-known facilities when a later fetch fails', async () => {
+    vi.mocked(api.getStationAccessibility).mockResolvedValue({ staffAssistance: 'Available all day' });
+    await renderPage();
+    cleanup();
+
+    vi.mocked(api.getStationAccessibility).mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+    await renderPage();
+    expect(screen.getByText('Available all day')).toBeInTheDocument();
   });
 });
 

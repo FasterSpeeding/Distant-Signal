@@ -53,6 +53,23 @@ describe('AuthStatus', () => {
     expect(screen.getByText('a@b.com')).toBeInTheDocument();
   });
 
+  /** An identity provider with no name on file for a user sends a BLANK
+   * `name` claim rather than omitting it, and it reaches the session shape
+   * as `''` -- which `??` treats as a perfectly good label, leaving the nav
+   * bar with an empty gap next to "Log out". Same defect the group member
+   * list and shared-train attribution had. */
+  it('falls back to the email when the name is blank rather than null', () => {
+    renderWithMantine(
+      <AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: '   ' }} />,
+    );
+    expect(screen.getByText('a@b.com')).toBeInTheDocument();
+  });
+
+  it('falls back to "Signed in" when both name and email are blank', () => {
+    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', email: '', name: '' }} />);
+    expect(screen.getByText('Signed in')).toBeInTheDocument();
+  });
+
   it('falls back to "Signed in" when both name and email are null', () => {
     renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', email: null, name: null }} />);
     expect(screen.getByText('Signed in')).toBeInTheDocument();
