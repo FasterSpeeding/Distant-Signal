@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { renderWithMantine } from '@/test/render';
 import { JourneyProgress } from './JourneyProgress';
@@ -171,5 +171,69 @@ describe('JourneyProgress', () => {
     );
     const nodes = container.querySelectorAll('[data-journey-node]');
     expect(nodes[1]).toHaveAttribute('data-node-state', 'marker');
+  });
+
+  it('always shows the origin and terminus station names as visible text, but not an intermediate node\'s', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin' }),
+          stop({ crs: 'CLJ', name: 'Clapham Junction', kind: 'Intermediate' }),
+          stop({ crs: 'WOK', name: 'Woking', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+      />,
+    );
+    expect(screen.getByText('London Waterloo')).toBeInTheDocument();
+    expect(screen.getByText('Woking')).toBeInTheDocument();
+    expect(screen.queryByText('Clapham Junction')).not.toBeInTheDocument();
+  });
+
+  it('reveals an intermediate node\'s name and scheduled time via Tooltip on hover', async () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin' }),
+          stop({
+            crs: 'CLJ',
+            name: 'Clapham Junction',
+            kind: 'Intermediate',
+            scheduledArrival: '2026-09-12T08:15:00Z',
+          }),
+          stop({ crs: 'WOK', name: 'Woking', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+      />,
+    );
+    const trigger = screen.getByLabelText(/Clapham Junction/);
+    fireEvent.mouseEnter(trigger);
+    // 2026-09-12 is within BST (UTC+1) -- 08:15Z renders as 09:15 London
+    // time, same `formatTime`/Europe-London posture `JourneyTimeline` uses.
+    expect(await screen.findByText('09:15')).toBeInTheDocument();
+  });
+
+  it('reveals a bare node\'s name even with no scheduled time known', async () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin' }),
+          stop({ crs: 'CLJ', name: 'Clapham Junction', kind: 'Intermediate' }),
+          stop({ crs: 'WOK', name: 'Woking', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+      />,
+    );
+    const trigger = screen.getByLabelText('Clapham Junction');
+    fireEvent.mouseEnter(trigger);
+    expect(await screen.findByText('Clapham Junction')).toBeInTheDocument();
   });
 });

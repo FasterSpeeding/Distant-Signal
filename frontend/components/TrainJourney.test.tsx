@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TrainJourney } from './TrainJourney';
 import type { TrackedTrainState } from '@/lib/types';
@@ -345,8 +345,12 @@ describe('TrainJourney', () => {
         })}
       />,
     );
-    expect(screen.getByRole('table', { name: 'Journey timeline' })).toBeInTheDocument();
-    expect(screen.getByText('Reading')).toBeInTheDocument();
+    const table = screen.getByRole('table', { name: 'Journey timeline' });
+    expect(table).toBeInTheDocument();
+    // JourneyProgress (Task 3 onward) also prints "Reading" as an
+    // always-visible origin label, so scope this assertion to the table
+    // itself rather than the whole document.
+    expect(within(table).getByText('Reading')).toBeInTheDocument();
   });
 
   it('renders the JourneyTimeline for schedule_matched, not just resolved', () => {
@@ -418,8 +422,12 @@ describe('TrainJourney', () => {
     expect(screen.getByText('Next calling point: Woking')).toBeInTheDocument();
     expect(screen.getByText(/ETA/)).toBeInTheDocument();
     // ...alongside the timeline, not instead of it.
-    expect(screen.getByRole('table', { name: 'Journey timeline' })).toBeInTheDocument();
-    expect(screen.getByText('Reading')).toBeInTheDocument();
+    const table = screen.getByRole('table', { name: 'Journey timeline' });
+    expect(table).toBeInTheDocument();
+    // JourneyProgress (Task 3 onward) also prints "Reading" as an
+    // always-visible origin label, so scope this assertion to the table
+    // itself rather than the whole document.
+    expect(within(table).getByText('Reading')).toBeInTheDocument();
   });
 
   it('renders no JourneyTimeline for pending, even if journeyStops were somehow non-null', () => {

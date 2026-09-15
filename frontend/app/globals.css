@@ -1076,10 +1076,18 @@ a[data-text-link='always'] {
    precedent exists anywhere else in this frontend, so none is introduced
    here either). `top: 9px` is half of the larger (18px) Origin/Terminate
    node diameter, so the line meets every node's vertical center. */
+/* `align-items: flex-start` anchors every node's flex item to the row's
+   top edge, regardless of its own total height (an endpoint's item is
+   taller than a bare intermediate node's once Task 3 adds an
+   always-visible label below the endpoint's circle). Each node then
+   centers its own circle inside a fixed-height `NODE_CIRCLE_SLOT` box
+   (`components/JourneyProgress.tsx`) anchored at that same top edge, so
+   every circle's vertical center lands at the same offset -- matching this
+   rule's own `top: 9px` below -- independent of what renders beneath it. */
 .journeyProgressLine {
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
 }
 
 .journeyProgressLine::before {

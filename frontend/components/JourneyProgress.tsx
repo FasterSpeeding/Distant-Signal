@@ -1,9 +1,21 @@
 'use client';
 
-import { Box } from '@mantine/core';
+import { Box, Stack, Text, Tooltip } from '@mantine/core';
+import { formatTime } from '@/lib/dateFormat';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
 
 const NODE_SLOT_WIDTH = 56;
+
+/** The largest node diameter (`nodeDiameter`'s Origin/Terminate case).
+ * Every node's circle -- whatever kind, whatever renders below it (an
+ * always-visible label for an endpoint, nothing for a bare intermediate
+ * node) -- is centered inside a slot of this fixed height, anchored to the
+ * top of its flex item (`.journeyProgressLine`'s `align-items: flex-start`
+ * in `globals.css`). That keeps every circle's vertical center at the same
+ * offset (`NODE_CIRCLE_SLOT / 2`, matching the connecting line's own
+ * `top: 9px`) regardless of the varying total height Task 3's endpoint
+ * labels (and Task 6's `mayHaveArrived` glyph) introduce below the circle. */
+const NODE_CIRCLE_SLOT = 18;
 
 /** See this component's extra props beyond `{ stops }`: `resolutionStatus`,
  * `status`, `trainUid`, and `mayHaveArrived` are needed to render the full
@@ -123,32 +135,100 @@ export function JourneyProgress({ stops }: JourneyProgressProps) {
   return (
     <Box role="img" aria-label={ariaLabel} style={{ overflowX: 'auto' }}>
       <Box className="journeyProgressLine" style={{ minWidth: stops.length * NODE_SLOT_WIDTH }}>
-        {stops.map((stop, index) => {
-          const diameter = nodeDiameter(stop.kind);
-          const state = nodeState(index, lastIndex);
-          const delay = delayState(stop.delayMinutes);
-          return (
-            <Box
-              key={`${stop.crs ?? 'unknown'}-${index}`}
-              style={{ flex: `0 0 ${NODE_SLOT_WIDTH}px`, display: 'flex', justifyContent: 'center' }}
-            >
-              <Box
-                data-journey-node
-                data-node-state={state}
-                data-delay-state={delay}
-                aria-hidden="true"
-                style={{
-                  width: diameter,
-                  height: diameter,
-                  borderRadius: '50%',
-                  zIndex: 1,
-                  ...circleStyle(state, delay),
-                }}
-              />
-            </Box>
-          );
-        })}
+        {stops.map((stop, index) => (
+          <JourneyProgressNode
+            key={`${stop.crs ?? 'unknown'}-${index}`}
+            stop={stop}
+            index={index}
+            lastIndex={lastIndex}
+          />
+        ))}
       </Box>
+    </Box>
+  );
+}
+
+/** Origin/Terminate always print their name as visible text next to the
+ * node (spec Decision 3: "the origin and terminus names are always
+ * printed"). Every other node is a bare circle; a `Tooltip` (matching
+ * `LineDefinitionTooltip.tsx`'s existing hover/focus/touch pattern)
+ * reveals its name and scheduled time on demand instead of permanently
+ * occupying screen space -- with 20-30+ evenly-spaced nodes, a label under
+ * each one collides or truncates into uselessness. The decorative circle
+ * itself is always `aria-hidden`; for a bare node, the Tooltip's
+ * *trigger wrapper* carries its own `aria-label` and stays keyboard
+ * focusable instead. */
+function JourneyProgressNode({
+  stop,
+  index,
+  lastIndex,
+}: {
+  stop: JourneyStop;
+  index: number;
+  lastIndex: number;
+}) {
+  const diameter = nodeDiameter(stop.kind);
+  const state = nodeState(index, lastIndex);
+  const delay = delayState(stop.delayMinutes);
+  const isEndpoint = stop.kind === 'Origin' || stop.kind === 'Terminate';
+  const label = stop.name ?? stop.crs ?? 'Unknown location';
+  const scheduled = stop.scheduledArrival ?? stop.scheduledDeparture;
+
+  const circle = (
+    <Box
+      data-journey-node
+      data-node-state={state}
+      data-delay-state={delay}
+      aria-hidden="true"
+      style={{
+        width: diameter,
+        height: diameter,
+        borderRadius: '50%',
+        zIndex: 1,
+        ...circleStyle(state, delay),
+      }}
+    />
+  );
+
+  const circleSlot = (
+    <Box style={{ height: NODE_CIRCLE_SLOT, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {circle}
+    </Box>
+  );
+
+  if (isEndpoint) {
+    return (
+      <Stack gap={4} align="center" style={{ flex: `0 0 ${NODE_SLOT_WIDTH}px` }}>
+        {circleSlot}
+        <Text size="xs" fw={700} ta="center">
+          {label}
+        </Text>
+      </Stack>
+    );
+  }
+
+  return (
+    <Box
+      style={{
+        flex: `0 0 ${NODE_SLOT_WIDTH}px`,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+      }}
+    >
+      <Tooltip
+        label={
+          <Stack gap={2}>
+            <Text size="xs">{label}</Text>
+            {scheduled && <Text size="xs">{formatTime(scheduled)}</Text>}
+          </Stack>
+        }
+        events={{ hover: true, focus: true, touch: true }}
+      >
+        <Box tabIndex={0} aria-label={label} style={{ height: NODE_CIRCLE_SLOT, display: 'flex', alignItems: 'center' }}>
+          {circle}
+        </Box>
+      </Tooltip>
     </Box>
   );
 }
