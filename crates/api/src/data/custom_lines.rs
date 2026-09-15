@@ -241,12 +241,65 @@ pub async fn delete_custom_line(pool: &PgPool, id: &str, user_id: &str) -> Resul
     Ok(deleted)
 }
 
+/// Every custom-line id in `ids` that `user_id` may READ: either they own
+/// it outright, or its owner has granted it (see
+/// docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md
+/// §2.3-§2.7) into at least one group `user_id` is CURRENTLY a member of.
+///
+/// This is the single gate every custom-line read path funnels through --
+/// `routes::lines::get_line`/`get_line_definition` and
+/// `routes::line_status::filter_private_custom_rows`/
+/// `get_line_status_history` -- replacing what used to be a bare
+/// `owners_for_ids` comparison at each of them. Each of those checks became
+/// strictly WIDER by exactly one disjunct ("or granted into one of my
+/// groups"); none of them lost a condition.
+///
+/// One query, not one grant-lookup per id, via a LEFT JOIN through
+/// `custom_line_group_grants` + `group_members`, because `get_mode_status`
+/// calls this with every custom-line row on the instance and must not gain
+/// an N+1.
+///
+/// Access is resolved LIVE on every call: deleting the grant row makes the
+/// very next request from a now-ungranted member miss this set, with
+/// nothing cached or capability-shaped left over to revoke separately
+/// (design §2.5).
+///
+/// Deliberately returns a `HashSet`, not a `HashMap<String, Option<String>>`
+/// like [`owners_for_ids`]: callers here only ever need "can this caller
+/// read this id," never "who owns it," so there is no reason for this
+/// function's shape to hand an owner's user id to a caller that has no
+/// business with it.
+pub async fn readable_custom_line_ids(
+    pool: &PgPool,
+    ids: &[String],
+    user_id: &str,
+) -> Result<std::collections::HashSet<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT cl.id \
+         FROM custom_lines cl \
+         LEFT JOIN custom_line_group_grants g ON g.line_id = cl.id \
+         LEFT JOIN group_members gm ON gm.group_id = g.group_id AND gm.user_id = $2 \
+         WHERE cl.id = ANY($1) AND (cl.user_id = $2 OR gm.user_id IS NOT NULL)",
+    )
+    .bind(ids)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 /// Owners for every custom-prefixed id in `ids`, for filtering a bulk
 /// status response by ownership without an N+1 query per row (see
 /// `crate::routes::line_status`'s three affected handlers). Catalogue/TfL
 /// ids in `ids` simply won't match anything here -- callers should look
 /// them up unconditionally in the returned map and treat "no entry" as
 /// "not a custom line, leave it alone," never as "unowned."
+///
+/// NOTE for new read gates: this is the narrower, owner-only primitive and
+/// is no longer what the custom-line read paths use. Group sharing means
+/// "readable by this caller" is strictly wider than "owned by this caller"
+/// -- use [`readable_custom_line_ids`] instead, or a shared custom line
+/// will be invisible to the very members its owner granted it to.
 pub async fn owners_for_ids(
     pool: &PgPool,
     ids: &[String],
@@ -320,6 +373,352 @@ mod tests {
 #[cfg(test)]
 mod db_tests {
     use super::*;
+
+    /// Shared fixtures for the group-grant tests below (the older tests in
+    /// this module predate them and still connect/seed inline -- left as
+    /// they are rather than churned).
+    mod fixtures {
+        use sqlx::PgPool;
+        use sqlx::postgres::PgPoolOptions;
+
+        pub async fn connect() -> PgPool {
+            let database_url =
+                std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+            PgPoolOptions::new()
+                .connect(&database_url)
+                .await
+                .expect("connect to postgres")
+        }
+
+        pub async fn seed_user(pool: &PgPool, id: &str) {
+            sqlx::query(
+                "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) \
+                 ON CONFLICT (id) DO NOTHING",
+            )
+            .bind(id)
+            .bind(format!("{id}@example.com"))
+            .bind(id)
+            .execute(pool)
+            .await
+            .expect("seed fixture user");
+        }
+
+        pub async fn seed_group(pool: &PgPool, name: &str, owner_id: &str) -> String {
+            crate::data::groups::create_group(pool, name, owner_id)
+                .await
+                .expect("seed fixture group")
+        }
+
+        pub async fn seed_membership(pool: &PgPool, group_id: &str, user_id: &str) {
+            sqlx::query(
+                "INSERT INTO group_members (group_id, user_id, role, joined_at) \
+                 VALUES ($1, $2, 'member', NOW()) ON CONFLICT DO NOTHING",
+            )
+            .bind(group_id)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("seed fixture membership");
+        }
+
+        pub async fn grant(pool: &PgPool, group_id: &str, line_id: &str, granted_by: &str) {
+            sqlx::query(
+                "INSERT INTO custom_line_group_grants (group_id, line_id, granted_by) \
+                 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+            )
+            .bind(group_id)
+            .bind(line_id)
+            .bind(granted_by)
+            .execute(pool)
+            .await
+            .expect("seed fixture grant");
+        }
+
+        /// Deletes groups first, then custom lines and pins, then users --
+        /// `groups.created_by` and `custom_line_group_grants.granted_by`
+        /// both reference `users(id)` with no cascade, so users must go
+        /// last.
+        pub async fn cleanup(pool: &PgPool, group_ids: &[&str], user_ids: &[&str]) {
+            for id in group_ids {
+                sqlx::query("DELETE FROM groups WHERE id = $1")
+                    .bind(id)
+                    .execute(pool)
+                    .await
+                    .ok();
+            }
+            for id in user_ids {
+                sqlx::query("DELETE FROM custom_lines WHERE user_id = $1")
+                    .bind(id)
+                    .execute(pool)
+                    .await
+                    .ok();
+                sqlx::query("DELETE FROM pinned_lines WHERE user_id = $1")
+                    .bind(id)
+                    .execute(pool)
+                    .await
+                    .ok();
+                sqlx::query("DELETE FROM users WHERE id = $1")
+                    .bind(id)
+                    .execute(pool)
+                    .await
+                    .ok();
+            }
+        }
+
+        pub fn new_line(name: &str) -> super::NewCustomLine {
+            super::NewCustomLine {
+                name: name.to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                readable_custom_line_ids_includes_the_owners_own_line_with_no_grant \
+                -- --ignored --test-threads=1`"]
+    async fn readable_custom_line_ids_includes_the_owners_own_line_with_no_grant() {
+        // Baseline: this function must never be a strict widening that
+        // accidentally requires a grant even for the line's own owner.
+        let pool = fixtures::connect().await;
+        fixtures::seed_user(&pool, "TEST-GRANT-READ-OWNER-1").await;
+        let line = insert_custom_line(
+            &pool,
+            fixtures::new_line("Grant Read Test 1"),
+            "TEST-GRANT-READ-OWNER-1",
+        )
+        .await
+        .expect("insert line");
+
+        let readable = readable_custom_line_ids(
+            &pool,
+            std::slice::from_ref(&line.id),
+            "TEST-GRANT-READ-OWNER-1",
+        )
+        .await
+        .expect("query");
+        assert!(readable.contains(&line.id));
+
+        fixtures::cleanup(&pool, &[], &["TEST-GRANT-READ-OWNER-1"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                readable_custom_line_ids_includes_a_granted_line_for_a_fellow_member \
+                -- --ignored --test-threads=1`"]
+    async fn readable_custom_line_ids_includes_a_granted_line_for_a_fellow_member() {
+        let pool = fixtures::connect().await;
+        fixtures::seed_user(&pool, "TEST-GRANT-READ-OWNER-2").await;
+        fixtures::seed_user(&pool, "TEST-GRANT-READ-MEMBER-2").await;
+        let group_id = fixtures::seed_group(&pool, "Grant Read 2", "TEST-GRANT-READ-OWNER-2").await;
+        fixtures::seed_membership(&pool, &group_id, "TEST-GRANT-READ-MEMBER-2").await;
+        let line = insert_custom_line(
+            &pool,
+            fixtures::new_line("Grant Read Test 2"),
+            "TEST-GRANT-READ-OWNER-2",
+        )
+        .await
+        .expect("insert line");
+        fixtures::grant(&pool, &group_id, &line.id, "TEST-GRANT-READ-OWNER-2").await;
+
+        let readable = readable_custom_line_ids(
+            &pool,
+            std::slice::from_ref(&line.id),
+            "TEST-GRANT-READ-MEMBER-2",
+        )
+        .await
+        .expect("query");
+        assert!(
+            readable.contains(&line.id),
+            "a fellow group member must be able to read a line granted into that group"
+        );
+
+        fixtures::cleanup(
+            &pool,
+            &[&group_id],
+            &["TEST-GRANT-READ-OWNER-2", "TEST-GRANT-READ-MEMBER-2"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                readable_custom_line_ids_excludes_a_granted_line_for_a_non_member \
+                -- --ignored --test-threads=1`"]
+    async fn readable_custom_line_ids_excludes_a_granted_line_for_a_non_member() {
+        // The core privacy case. The stranger is deliberately a member of a
+        // DIFFERENT group that has grants of its own, so a query that
+        // forgot to correlate `group_members.group_id` with the grant's
+        // would pass every other test in this file and fail only this one.
+        let pool = fixtures::connect().await;
+        fixtures::seed_user(&pool, "TEST-GRANT-READ-OWNER-3").await;
+        fixtures::seed_user(&pool, "TEST-GRANT-READ-STRANGER-3").await;
+        let group_a = fixtures::seed_group(&pool, "Grant Read 3A", "TEST-GRANT-READ-OWNER-3").await;
+        let group_b =
+            fixtures::seed_group(&pool, "Grant Read 3B", "TEST-GRANT-READ-STRANGER-3").await;
+        let line_a = insert_custom_line(
+            &pool,
+            fixtures::new_line("Grant Read Test 3A"),
+            "TEST-GRANT-READ-OWNER-3",
+        )
+        .await
+        .expect("insert line A");
+        let line_b = insert_custom_line(
+            &pool,
+            fixtures::new_line("Grant Read Test 3B"),
+            "TEST-GRANT-READ-STRANGER-3",
+        )
+        .await
+        .expect("insert line B");
+        fixtures::grant(&pool, &group_a, &line_a.id, "TEST-GRANT-READ-OWNER-3").await;
+        fixtures::grant(&pool, &group_b, &line_b.id, "TEST-GRANT-READ-STRANGER-3").await;
+
+        let readable = readable_custom_line_ids(
+            &pool,
+            &[line_a.id.clone(), line_b.id.clone()],
+            "TEST-GRANT-READ-STRANGER-3",
+        )
+        .await
+        .expect("query");
+        assert!(
+            !readable.contains(&line_a.id),
+            "a line granted into a group the caller is NOT in must stay invisible"
+        );
+        assert!(
+            readable.contains(&line_b.id),
+            "positive control: the caller's own line is still readable"
+        );
+
+        fixtures::cleanup(
+            &pool,
+            &[&group_a, &group_b],
+            &["TEST-GRANT-READ-OWNER-3", "TEST-GRANT-READ-STRANGER-3"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                readable_custom_line_ids_excludes_a_line_after_its_grant_is_revoked \
+                -- --ignored --test-threads=1`"]
+    async fn readable_custom_line_ids_excludes_a_line_after_its_grant_is_revoked() {
+        // Design §2.5: revocation is immediate and complete, because access
+        // is resolved live on every call and there is nothing cached to
+        // separately invalidate. Read, revoke, read again.
+        let pool = fixtures::connect().await;
+        fixtures::seed_user(&pool, "TEST-GRANT-REVOKE-OWNER").await;
+        fixtures::seed_user(&pool, "TEST-GRANT-REVOKE-MEMBER").await;
+        let group_id =
+            fixtures::seed_group(&pool, "Grant Revoke Read", "TEST-GRANT-REVOKE-OWNER").await;
+        fixtures::seed_membership(&pool, &group_id, "TEST-GRANT-REVOKE-MEMBER").await;
+        let line = insert_custom_line(
+            &pool,
+            fixtures::new_line("Grant Revoke Read Test"),
+            "TEST-GRANT-REVOKE-OWNER",
+        )
+        .await
+        .expect("insert line");
+        fixtures::grant(&pool, &group_id, &line.id, "TEST-GRANT-REVOKE-OWNER").await;
+
+        assert!(
+            readable_custom_line_ids(
+                &pool,
+                std::slice::from_ref(&line.id),
+                "TEST-GRANT-REVOKE-MEMBER",
+            )
+            .await
+            .expect("query before")
+            .contains(&line.id)
+        );
+
+        let removed = crate::data::groups::remove_custom_line_grant(
+            &pool,
+            &group_id,
+            &line.id,
+            "TEST-GRANT-REVOKE-OWNER",
+            false,
+        )
+        .await
+        .expect("revoke");
+        assert!(removed);
+
+        assert!(
+            !readable_custom_line_ids(
+                &pool,
+                std::slice::from_ref(&line.id),
+                "TEST-GRANT-REVOKE-MEMBER",
+            )
+            .await
+            .expect("query after")
+            .contains(&line.id),
+            "revocation must cut off access on the very next read"
+        );
+
+        fixtures::cleanup(
+            &pool,
+            &[&group_id],
+            &["TEST-GRANT-REVOKE-OWNER", "TEST-GRANT-REVOKE-MEMBER"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_custom_line_cascades_its_group_grants -- --ignored --test-threads=1`"]
+    async fn delete_custom_line_cascades_its_group_grants() {
+        // Design §2.2: the FK does this, not application code --
+        // `delete_custom_line` itself is completely unaware grants exist.
+        // Also re-asserts the existing `pinned_lines` cleanup alongside it,
+        // since the two live in the same transaction and a future edit
+        // could plausibly break either.
+        let pool = fixtures::connect().await;
+        fixtures::seed_user(&pool, "TEST-GRANT-CASCADE-OWNER").await;
+        let group_a =
+            fixtures::seed_group(&pool, "Grant Cascade A", "TEST-GRANT-CASCADE-OWNER").await;
+        let group_b =
+            fixtures::seed_group(&pool, "Grant Cascade B", "TEST-GRANT-CASCADE-OWNER").await;
+        let line = insert_custom_line(
+            &pool,
+            fixtures::new_line("Grant Cascade Test"),
+            "TEST-GRANT-CASCADE-OWNER",
+        )
+        .await
+        .expect("insert line");
+        fixtures::grant(&pool, &group_a, &line.id, "TEST-GRANT-CASCADE-OWNER").await;
+        fixtures::grant(&pool, &group_b, &line.id, "TEST-GRANT-CASCADE-OWNER").await;
+
+        let deleted = delete_custom_line(&pool, &line.id, "TEST-GRANT-CASCADE-OWNER")
+            .await
+            .expect("delete line");
+        assert!(deleted);
+
+        let remaining: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM custom_line_group_grants WHERE line_id = $1")
+                .bind(&line.id)
+                .fetch_one(&pool)
+                .await
+                .expect("count grants");
+        assert_eq!(
+            remaining.0, 0,
+            "every grant into every group should have cascaded away with the line"
+        );
+        let pins: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM pinned_lines WHERE line_id = $1")
+            .bind(&line.id)
+            .fetch_one(&pool)
+            .await
+            .expect("count pins");
+        assert_eq!(pins.0, 0, "the existing pinned_lines cleanup still runs");
+
+        fixtures::cleanup(&pool, &[&group_a, &group_b], &["TEST-GRANT-CASCADE-OWNER"]).await;
+    }
 
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
