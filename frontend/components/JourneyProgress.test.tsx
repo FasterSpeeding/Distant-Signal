@@ -350,10 +350,11 @@ describe('JourneyProgress', () => {
 describe('JourneyProgress auto-scroll', () => {
   beforeEach(() => {
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    window.Element.prototype.scrollTo = vi.fn();
   });
 
-  it('scrolls the marker node into view, centered, on mount when a marker exists', () => {
-    renderWithMantine(
+  it('scrolls its own scroll container, centering the marker, on mount when a marker exists', () => {
+    const { container } = renderWithMantine(
       <JourneyProgress
         stops={[
           stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
@@ -365,12 +366,108 @@ describe('JourneyProgress auto-scroll', () => {
         mayHaveArrived={false}
       />,
     );
-    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith(
-      expect.objectContaining({ inline: 'center', behavior: 'smooth' }),
+    const scroller = container.querySelector('[data-journey-progress-scroll]');
+    expect(scroller).toBeInTheDocument();
+    expect(window.Element.prototype.scrollTo).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: 'smooth' }),
     );
+    expect((window.Element.prototype.scrollTo as ReturnType<typeof vi.fn>).mock.instances[0]).toBe(scroller);
   });
 
-  it('does not call scrollIntoView when there is no marker (lastReachedIndex === -1)', () => {
+  // jsdom has no layout engine, so every rect is zero and the effect's
+  // arithmetic is invisible to an assertion on the un-stubbed render: `left`
+  // would come out `0` whether the implementation centered the marker,
+  // dropped the `+ scrollLeft` term, or inverted the delta's sign. Stubbing
+  // the two rects and a non-zero starting scroll position is the one way to
+  // pin the actual formula without a browser.
+  it('centers the marker by the measured delta, from wherever the container is already scrolled to', () => {
+    const { container, rerender } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', kind: 'Intermediate' }),
+          stop({ crs: 'C', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+
+    const scroller = container.querySelector<HTMLElement>('[data-journey-progress-scroll]')!;
+    scroller.getBoundingClientRect = () => ({ left: 20, width: 300 }) as DOMRect;
+    Object.defineProperty(scroller, 'scrollLeft', { value: 40, configurable: true, writable: true });
+    (window.Element.prototype.scrollTo as ReturnType<typeof vi.fn>).mockClear();
+
+    // Advance the marker onto the middle stop, whose node we give a known
+    // position: center 500 + 12/2 = 506, against a container center of
+    // 20 + 300/2 = 170. Delta 336, on top of a scrollLeft of 40 -> 376.
+    const marker = container.querySelectorAll<HTMLElement>('[data-journey-node]')[1];
+    marker.getBoundingClientRect = () => ({ left: 500, width: 12 }) as DOMRect;
+
+    rerender(
+      <MantineProvider theme={theme}>
+        <JourneyProgress
+          stops={[
+            stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+            stop({ crs: 'B', kind: 'Intermediate', actualArrival: '2026-09-12T08:15:00Z' }),
+            stop({ crs: 'C', kind: 'Terminate' }),
+          ]}
+          resolutionStatus="resolved"
+          status="en_route"
+          trainUid="C1"
+          mayHaveArrived={false}
+        />
+      </MantineProvider>,
+    );
+
+    expect(window.Element.prototype.scrollTo).toHaveBeenCalledWith({ left: 376, behavior: 'smooth' });
+  });
+
+  // The ref the effect measures must be on the circle itself. A refactor
+  // moving it to the surrounding slot or node would still "work" but would
+  // center a differently-sized box, drifting the marker off center by half
+  // the difference.
+  it('measures the marker circle itself, not its surrounding slot', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    const marker = container.querySelector('[data-node-state="marker"]');
+    expect(marker).toHaveAttribute('data-journey-node');
+  });
+
+  // The mobile-layout regression this component shipped with: `scrollIntoView`
+  // scrolls EVERY scrollable ancestor including the document, and defaults
+  // `block` to `'start'`, so on a phone (where the diagram is below the fold)
+  // opening a train page yanked the whole page down to the diagram.
+  it('never scrolls the page itself -- no scrollIntoView call reaches the document', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+          stop({ crs: 'B', kind: 'Intermediate', actualArrival: '2026-09-12T08:30:00Z' }),
+          stop({ crs: 'C', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    expect(window.HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('does not scroll at all when there is no marker (lastReachedIndex === -1)', () => {
     renderWithMantine(
       <JourneyProgress
         stops={[stop({ crs: 'A', kind: 'Origin' }), stop({ crs: 'B', kind: 'Terminate' })]}
@@ -380,6 +477,7 @@ describe('JourneyProgress auto-scroll', () => {
         mayHaveArrived={false}
       />,
     );
+    expect(window.Element.prototype.scrollTo).not.toHaveBeenCalled();
     expect(window.HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
   });
 
@@ -410,7 +508,7 @@ describe('JourneyProgress auto-scroll', () => {
         mayHaveArrived={false}
       />,
     );
-    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith(
+    expect(window.Element.prototype.scrollTo).toHaveBeenCalledWith(
       expect.objectContaining({ behavior: 'auto' }),
     );
   });
@@ -429,7 +527,7 @@ describe('JourneyProgress auto-scroll', () => {
         mayHaveArrived={false}
       />,
     );
-    (window.HTMLElement.prototype.scrollIntoView as ReturnType<typeof vi.fn>).mockClear();
+    (window.Element.prototype.scrollTo as ReturnType<typeof vi.fn>).mockClear();
 
     rerender(
       <MantineProvider theme={theme}>
@@ -446,7 +544,101 @@ describe('JourneyProgress auto-scroll', () => {
         />
       </MantineProvider>,
     );
-    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(window.Element.prototype.scrollTo).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The diagram's whole horizontal scale (slot width, endpoint slot width) is
+// declared in `app/globals.css` so a `max-width: $mantine-breakpoint-sm`
+// media query can rescale it for a phone -- a media query cannot reach into
+// a React style object. These assert the contract that makes that possible:
+// the component contributes only the data-derived COUNTS inline, and every
+// px measurement stays in the stylesheet.
+describe('JourneyProgress responsive layout contract', () => {
+  const threeStops = [
+    stop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin' }),
+    stop({ crs: 'CLJ', name: 'Clapham Junction', kind: 'Intermediate' }),
+    stop({ crs: 'WOK', name: 'Woking', kind: 'Terminate' }),
+  ];
+
+  function renderThree() {
+    return renderWithMantine(
+      <JourneyProgress
+        stops={threeStops}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+      />,
+    );
+  }
+
+  it('publishes the stop count and the endpoint count as CSS custom properties on the scroll box', () => {
+    const { container } = renderThree();
+    const scroller = container.querySelector<HTMLElement>('[data-journey-progress-scroll]');
+    expect(scroller).toBeInTheDocument();
+    expect(scroller!.style.getPropertyValue('--journey-progress-count')).toBe('3');
+    expect(scroller!.style.getPropertyValue('--journey-progress-endpoint-count')).toBe('2');
+  });
+
+  it('counts endpoints honestly when a journey has no Origin/Terminate stop at all', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[stop({ crs: 'A', kind: 'Intermediate' }), stop({ crs: 'B', kind: 'Intermediate' })]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+      />,
+    );
+    const scroller = container.querySelector<HTMLElement>('[data-journey-progress-scroll]');
+    expect(scroller!.style.getPropertyValue('--journey-progress-count')).toBe('2');
+    expect(scroller!.style.getPropertyValue('--journey-progress-endpoint-count')).toBe('0');
+  });
+
+  it('leaves every horizontal px measurement to the stylesheet -- no inline width/flex on the scroll box or any node', () => {
+    const { container } = renderThree();
+    const scroller = container.querySelector<HTMLElement>('[data-journey-progress-scroll]')!;
+    expect(scroller.style.minWidth).toBe('');
+    expect(scroller.style.width).toBe('');
+
+    const line = container.querySelector<HTMLElement>('.journeyProgressLine')!;
+    expect(line.style.minWidth).toBe('');
+
+    // Selected by the `data-` attribute, NOT by `.journeyProgressNode`: the
+    // regression this guards against is someone reverting to an inline
+    // `style={{ flex: '0 0 56px' }}`, which would take the class with it and
+    // leave a class-based `querySelectorAll` matching nothing and passing
+    // vacuously. The length assertion is the other half of that guard.
+    const nodes = container.querySelectorAll<HTMLElement>('[data-journey-node-slot]');
+    expect(nodes).toHaveLength(3);
+    nodes.forEach((node) => {
+      expect(node.style.flex).toBe('');
+      expect(node.style.width).toBe('');
+      expect(node.style.minWidth).toBe('');
+    });
+  });
+
+  it('gives every node the shared slot class, with the wider modifier on endpoints only', () => {
+    const { container } = renderThree();
+    const nodes = container.querySelectorAll('.journeyProgressNode');
+    expect(nodes).toHaveLength(3);
+    expect(nodes[0]).toHaveClass('journeyProgressNode--endpoint');
+    expect(nodes[1]).not.toHaveClass('journeyProgressNode--endpoint');
+    expect(nodes[2]).toHaveClass('journeyProgressNode--endpoint');
+  });
+
+  it("constrains an endpoint's always-visible label to its slot so it can't widen the row", () => {
+    const { container } = renderThree();
+    const labels = container.querySelectorAll('.journeyProgressLabel');
+    expect(labels).toHaveLength(2);
+    expect(labels[0]).toHaveTextContent('London Waterloo');
+    expect(labels[1]).toHaveTextContent('Woking');
+  });
+
+  it("gives an intermediate node's Tooltip trigger the enlarged tap-target class", () => {
+    renderThree();
+    expect(screen.getByLabelText('Clapham Junction')).toHaveClass('journeyProgressTrigger');
   });
 });
 
