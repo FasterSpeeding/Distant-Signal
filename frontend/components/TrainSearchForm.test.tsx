@@ -345,6 +345,97 @@ describe('TrainSearchForm', () => {
 
     expect(await screen.findByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    // The button doesn't just vanish -- the list says it is complete.
+    expect(
+      screen.getByText("You've reached the end — no more scheduled trains match those filters."),
+    ).toBeInTheDocument();
+  });
+
+  it('says the end has been reached once the last page is in, rather than just dropping the button', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        search: (url) =>
+          url.includes('after=CURSOR1')
+            ? new Response(searchBody(PAGE_TWO, null), { status: 200 })
+            : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
+      }),
+    );
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    // While a next page exists, the end must not be claimed.
+    expect(await screen.findByRole('button', { name: 'Load more' })).toBeInTheDocument();
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(
+      await screen.findByText("You've reached the end — no more scheduled trains match those filters."),
+    ).toBeInTheDocument();
+  });
+
+  it('does not claim the end of results when a Load more page fails -- it reports the failure and keeps the retry', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        search: (url) =>
+          url.includes('after=CURSOR1')
+            ? new Response('boom', { status: 500 })
+            : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
+      }),
+    );
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText("Couldn't load more results. Try again.")).toBeInTheDocument();
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
+    // A failed next page must not wipe out the page already on screen, nor
+    // escalate to the whole-search error state.
+    expect(screen.getByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't search for trains right now. Try again.")).not.toBeInTheDocument();
+  });
+
+  it('clears a previous Load more failure when a fresh search is run', async () => {
+    let failNextPage = true;
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        search: (url) =>
+          url.includes('after=CURSOR1') && failNextPage
+            ? new Response('boom', { status: 500 })
+            : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
+      }),
+    );
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+    await screen.findByText("Couldn't load more results. Try again.");
+
+    failNextPage = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() =>
+      expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument(),
+    );
+  });
+
+  it('shows neither Load more nor the end-of-results line when the search matched nothing', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({ search: () => new Response(searchBody([]), { status: 200 }) }),
+    );
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await screen.findByText('No scheduled trains match those filters right now.');
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
   it('offers Load more when the response carries a nextCursor', async () => {
@@ -462,6 +553,48 @@ describe('TrainSearchForm', () => {
       expect(screen.queryByText('11:40 · EUS → MAN → WAT')).not.toBeInTheDocument(),
     );
     expect(screen.getByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
+  });
+
+  it('discards a Load more page that lands after a fresh search has already replaced the results', async () => {
+    // Search is not disabled while a page is in flight, so this ordering is
+    // reachable: page 2 of the OLD search resolves last. Its rows and its
+    // cursor belong to a result set that is no longer on screen and must not
+    // be merged into the new one. (IncidentSearchForm.test.tsx pins the same
+    // guard on the same shape of bug.)
+    let resolvePageTwo!: (response: Response) => void;
+    const pageTwo = new Promise<Response>((resolve) => {
+      resolvePageTwo = resolve;
+    });
+    let searchCalls = 0;
+    const passThrough = mockFetchByUrl();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.startsWith('/api/trains/search')) return passThrough(input);
+      searchCalls += 1;
+      if (searchCalls === 1) {
+        return Promise.resolve(new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }));
+      }
+      // Call 2 is page 2 of search 1, held open; call 3 is search 2.
+      if (searchCalls === 2) return pageTwo;
+      return Promise.resolve(new Response(searchBody(PAGE_THREE, null), { status: 200 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' })); // page 2 of search 1
+    fireEvent.click(screen.getByRole('button', { name: 'Search' })); // search 2
+    await screen.findByText('13:15 · CRE → MAN → WAT');
+
+    resolvePageTwo(new Response(searchBody(PAGE_TWO, 'CURSOR2'), { status: 200 }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("You've reached the end — no more scheduled trains match those filters."),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('11:40 · EUS → MAN → WAT')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
   it('sends stops_at uppercased when entered directly (not just via a suggestion pick)', async () => {
