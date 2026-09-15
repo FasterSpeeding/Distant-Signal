@@ -19,6 +19,51 @@ fn verified_email(identity: &OidcIdentity) -> Option<&str> {
         .flatten()
 }
 
+/// A claim that is PRESENT but blank (`""`, or whitespace only) carries
+/// exactly as much information as an absent one, and every consumer of
+/// `users.name`/`users.email` in this app treats "absent" as "fall back to
+/// something else" -- so the two have to be made indistinguishable here,
+/// at the boundary, rather than at each of those consumers.
+///
+/// This is not hypothetical: an identity provider with no name on file for
+/// a user generally sends `"name": ""` rather than omitting the claim
+/// (Authentik's own `profile` scope mapping returns the user's `name`
+/// attribute verbatim, and that attribute is optional and defaults to the
+/// empty string). Stored raw, that empty string answers every
+/// `Option`-shaped "does this user have a name?" downstream with a
+/// confident yes -- `Some("")` is `Some`, and `"" ?? placeholder` is `""`
+/// -- and so gets rendered as the label itself: a group member row that is
+/// just a role badge, a "Shared by " with nothing after it, an empty
+/// nav-bar label.
+///
+/// Also trims: a name of `"  Ada  "` is `"Ada"`, never rendered with its
+/// padding intact.
+pub fn non_blank(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|trimmed| !trimmed.is_empty())
+}
+
+/// The one label this app is willing to show OTHER people for a user:
+/// their `users.name`, or nothing at all.
+///
+/// Deliberately NOT `name.or(email)`, which is what the group member list
+/// and shared-train attribution used to do. `users` holds exactly one
+/// non-email identifier -- `name` (`id` is the opaque OIDC subject, and
+/// `groups` is the access-group list, neither of which is a person's
+/// name) -- so when `name` is missing there is nothing to fall back TO
+/// except the email, and a group is a set of people who may have joined
+/// via nothing but a link: shipping one member's email address to the
+/// rest of them is a privacy leak, not a display-name fallback. `None`
+/// here is the signal for the frontend to render its own generic
+/// placeholder ("A member" / "a member") instead.
+///
+/// (Whoever wants a real fallback should plumb a genuine non-email
+/// identifier -- the `preferred_username` claim, say -- through
+/// `auth::oidc` into its own `users` column first. Nothing reads that
+/// claim today.)
+pub fn display_label(name: Option<String>) -> Option<String> {
+    non_blank(name.as_deref()).map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,6 +94,41 @@ mod tests {
         i.email = None;
         assert_eq!(verified_email(&i), None);
     }
+
+    #[test]
+    fn non_blank_keeps_a_real_value_but_trims_it() {
+        assert_eq!(non_blank(Some("Ada Rider")), Some("Ada Rider"));
+        assert_eq!(non_blank(Some("  Ada Rider  ")), Some("Ada Rider"));
+    }
+
+    #[test]
+    fn non_blank_maps_every_shape_of_blank_onto_none() {
+        assert_eq!(non_blank(None), None);
+        assert_eq!(non_blank(Some("")), None);
+        assert_eq!(non_blank(Some("   ")), None);
+        assert_eq!(non_blank(Some("\t\n")), None);
+    }
+
+    fn label(name: Option<&str>) -> Option<String> {
+        display_label(name.map(str::to_string))
+    }
+
+    #[test]
+    fn display_label_keeps_a_real_name_trimmed() {
+        assert_eq!(label(Some("Ada Rider")), Some("Ada Rider".to_string()));
+        assert_eq!(label(Some("  Ada Rider  ")), Some("Ada Rider".to_string()));
+    }
+
+    /// Half the reported bug: a present-but-blank `name` is not a label.
+    /// It used to be treated as one (`Some("")` is `Some`), which is what
+    /// rendered an empty member row and a "Shared by " with nothing after
+    /// it.
+    #[test]
+    fn display_label_treats_a_blank_name_as_no_name_at_all() {
+        assert_eq!(label(Some("")), None);
+        assert_eq!(label(Some("   ")), None);
+        assert_eq!(label(None), None);
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -65,8 +145,16 @@ pub struct User {
 /// docs/superpowers/specs/2026-09-02-mcp-server-oauth-access-groups-design.md's
 /// Global Constraints: a group removed in Authentik is reflected on the
 /// user's very next login.
+///
+/// `name`/`email` are normalized through `non_blank` on the way in, so a
+/// blank claim is stored as SQL `NULL` rather than as an empty string --
+/// the read side (`display_label`, and the session shape's own
+/// name-else-email fallback) then needs no special case for a value this
+/// app never writes. The read side normalizes too, for rows written
+/// before this normalization existed.
 pub async fn upsert_user(pool: &PgPool, identity: &OidcIdentity) -> Result<User> {
-    let email = verified_email(identity);
+    let email = non_blank(verified_email(identity));
+    let name = non_blank(identity.name.as_deref());
     let row = sqlx::query_as::<_, User>(
         "INSERT INTO users (id, email, name, groups, created_at, last_login_at) \
          VALUES ($1, $2, $3, $4, NOW(), NOW()) \
@@ -77,7 +165,7 @@ pub async fn upsert_user(pool: &PgPool, identity: &OidcIdentity) -> Result<User>
     )
     .bind(&identity.sub)
     .bind(email)
-    .bind(&identity.name)
+    .bind(name)
     .bind(&identity.groups)
     .fetch_one(pool)
     .await?;

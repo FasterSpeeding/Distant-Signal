@@ -839,6 +839,10 @@ export interface GroupDetail {
 
 export interface GroupMember {
   userId: string;
+  /** The member's own name, or `null` when their identity provider has no
+   * name on file for them -- never their email address (the backend
+   * deliberately doesn't fall back to one: `crates/api/src/data/users.rs`'s
+   * `display_label`). Render `null` as a generic placeholder. */
   displayName: string | null;
   role: GroupRole;
   joinedAt: string; // RFC3339
@@ -861,6 +865,8 @@ export interface GroupTrain {
   delayMinutes: number | null;
   customName: string | null;
   addedBy: string;
+  /** Same contract as `GroupMember.displayName`: the sharer's own name, or
+   * `null` -- never their email address. */
   addedByName: string | null;
 }
 
