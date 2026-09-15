@@ -394,13 +394,17 @@ function JourneyProgressNode({
         width: diameter,
         height: diameter,
         borderRadius: '50%',
-        // `position` is what makes the `zIndex` below do anything at all --
-        // `z-index` is ignored on a statically-positioned box. The
-        // connecting line is drawn as absolutely-positioned
-        // `.journeyProgressNode::before`/`::after` pseudo-elements, and
-        // positioned boxes paint above in-flow ones regardless of source
-        // order, so without this the grey line drew straight across the
-        // middle of every circle.
+        // The `zIndex` below is what keeps the connecting line
+        // (absolutely-positioned `.journeyProgressNode::before`/`::after`
+        // in globals.css, painted with the z-index:0 group) from drawing
+        // straight across the middle of every circle. It already applied
+        // without `position`, but only by way of a Flexbox special case --
+        // this circle is a flex item of `circleSlot`, and a flex item's
+        // `z-index` creates a stacking context even when it is statically
+        // positioned (CSS Flexbox 1 section 4.3, Flex Item Z-Ordering).
+        // `position: relative` makes the z-index apply under the ordinary
+        // rule instead, so the circle keeps painting above the line even if
+        // `circleSlot` ever stops being a flex container.
         position: 'relative',
         zIndex: 1,
         ...circleStyle(state, delay),
