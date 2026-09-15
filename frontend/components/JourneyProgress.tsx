@@ -153,11 +153,12 @@ interface ProgressCopy {
 /** One pair of strings for every row of the status/resolution decision
  * table -- see this plan's Global Constraints for the table copied
  * verbatim from the spec. `caption` is the always-visible `Text` shown
- * under the diagram; `ariaLabel` is the `role="img"` container's textual
- * restatement (spec Decision 6). They are independent strings, not one
- * string reused twice, because the aria-label states the exact stop
- * position ("stop N of Total") a sighted caption doesn't need spelled
- * out. */
+ * under the diagram; `ariaLabel` is the diagram container's textual
+ * restatement (spec Decision 6 -- the container is a labelled
+ * `role="group"`, see `JourneyProgress`'s own comment for why that role
+ * and not `role="img"`). They are independent strings, not one string
+ * reused twice, because the aria-label states the exact stop position
+ * ("stop N of Total") a sighted caption doesn't need spelled out. */
 function progressCopy(
   stops: JourneyStop[],
   lastIndex: number,
@@ -257,7 +258,22 @@ export function JourneyProgress({ stops, resolutionStatus, status, trainUid, may
 
   return (
     <Stack gap="xs">
-      <Box role="img" aria-label={ariaLabel} style={{ overflowX: 'auto' }}>
+      {/* `role="group"` + `aria-label`, NOT `role="img"`. Spec Decision 6
+          asks for two things at once: (a) a single container-level string
+          that restates what the diagram shows, and (b) per-node `Tooltip`
+          triggers that "remain independently focusable/readable for a
+          sighted keyboard user who wants the intermediate-stop detail".
+          `role="img"` can only deliver (a): per ARIA, an `img`'s subtree is
+          presentational, so every descendant -- including those focusable
+          triggers -- is dropped from the accessibility tree. That made the
+          triggers focusable but silent (a keyboard user tabs onto a node
+          and a screen reader announces nothing), which is a WCAG 4.1.2
+          Name/Role/Value failure and contradicts Decision 6's own second
+          bullet. `group` keeps (a) -- the label is announced on entering
+          the container, exactly as the `img` label was -- while letting
+          (b) actually work. Do NOT change this back to `img` without also
+          making the triggers non-focusable; the two halves must agree. */}
+      <Box role="group" aria-label={ariaLabel} style={{ overflowX: 'auto' }}>
         <Box
           className="journeyProgressLine"
           style={
@@ -301,8 +317,11 @@ export function JourneyProgress({ stops, resolutionStatus, status, trainUid, may
  * occupying screen space -- with 20-30+ evenly-spaced nodes, a label under
  * each one collides or truncates into uselessness. The decorative circle
  * itself is always `aria-hidden`; for a bare node, the Tooltip's
- * *trigger wrapper* carries its own `aria-label` and stays keyboard
- * focusable instead. */
+ * *trigger wrapper* -- a style-reset `<button>` -- carries its own
+ * `aria-label` and stays keyboard focusable instead. An endpoint node has
+ * no trigger and is not focusable at all: its name is already visible
+ * text, so a tab stop there would announce something the reader can
+ * already read. */
 function JourneyProgressNode({
   stop,
   index,
@@ -397,10 +416,39 @@ function JourneyProgressNode({
         {/* Wraps the same `circleSlot` used for an endpoint node -- rather
             than a hand-duplicated copy of its style -- so the two node
             kinds can never drift out of alignment with each other. The
-            focusable/labelled Tooltip trigger itself is this outer `Box`;
-            it has no fixed size of its own and just inherits `circleSlot`'s
-            height. */}
-        <Box tabIndex={0} aria-label={label}>
+            focusable/labelled Tooltip trigger itself is this outer
+            element; it has no fixed size of its own and just inherits
+            `circleSlot`'s height.
+
+            A real `<button>` (style-reset to nothing, since the circle
+            inside is the entire visual), not a bare `tabIndex={0}` div:
+            the same "focusable element with a real role and its own
+            `aria-label`" shape `LineDefinitionTooltip.tsx`'s `ActionIcon`
+            trigger already uses, which is the existing codebase pattern
+            spec Decision 6 points at. A focusable div has role `generic`,
+            and an `aria-label` on a `generic` element names nothing, so
+            that shape would leave the trigger focusable-but-silent even
+            now that the container is a `group`. `aria-describedby` for the
+            tooltip body itself is added by Mantine/floating-ui's
+            `useRole(..., { role: 'tooltip' })` while it's open. There is
+            deliberately no `onClick`: hover/focus/touch all reveal the
+            same tooltip, and a keyboard press falls through to the
+            Tooltip's own focus handling. */}
+        <Box
+          component="button"
+          type="button"
+          aria-label={label}
+          style={{
+            display: 'block',
+            padding: 0,
+            margin: 0,
+            border: 'none',
+            background: 'none',
+            font: 'inherit',
+            color: 'inherit',
+            cursor: 'pointer',
+          }}
+        >
           {circleSlot}
         </Box>
       </Tooltip>

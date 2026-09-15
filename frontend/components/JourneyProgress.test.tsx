@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react';
+import { act, fireEvent, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MantineProvider } from '@mantine/core';
 import { renderWithMantine } from '@/test/render';
@@ -74,10 +74,10 @@ describe('JourneyProgress', () => {
       />,
     );
     expect(container.querySelectorAll('[data-journey-node]')).toHaveLength(0);
-    expect(screen.getByRole('img')).toBeInTheDocument();
+    expect(screen.getByRole('group')).toBeInTheDocument();
   });
 
-  it('carries a role="img" and a "currently at" aria-label once a marker exists', () => {
+  it('carries a role="group" and a "currently at" aria-label once a marker exists', () => {
     renderWithMantine(
       <JourneyProgress
         stops={[stop({ crs: 'WAT', kind: 'Origin' }), stop({ crs: 'WOK', kind: 'Terminate' })]}
@@ -88,7 +88,7 @@ describe('JourneyProgress', () => {
       />,
     );
     expect(
-      screen.getByRole('img', { name: /Journey progress: matched to train/ }),
+      screen.getByRole('group', { name: /Journey progress: matched to train/ }),
     ).toBeInTheDocument();
   });
 
@@ -282,6 +282,100 @@ describe('JourneyProgress', () => {
     expect(trigger).not.toHaveAttribute('aria-hidden');
   });
 
+  // Regression guard for the keyboard trap the mobile-scaling review found:
+  // the diagram's container used to be `role="img"`, whose subtree ARIA
+  // treats as presentational, so these focusable Tooltip triggers were in
+  // the tab order but announced nothing (WCAG 2.1.1 + 4.1.2). The fix is
+  // BOTH halves together -- a `group` container, and triggers that carry a
+  // real role plus an accessible name -- so these tests assert both.
+  describe('keyboard reachability of the per-node Tooltip triggers', () => {
+    function renderThreeStopJourney() {
+      return renderWithMantine(
+        <JourneyProgress
+          stops={[
+            stop({ crs: 'A', name: 'Alpha', kind: 'Origin' }),
+            stop({ crs: 'B', name: 'Bravo', kind: 'Intermediate' }),
+            stop({ crs: 'C', name: 'Charlie', kind: 'Terminate' }),
+          ]}
+          resolutionStatus="resolved"
+          status="en_route"
+          trainUid="C1"
+          mayHaveArrived={false}
+        />,
+      );
+    }
+
+    it('labels the diagram container as a group, never as a presentational img', () => {
+      const { container } = renderThreeStopJourney();
+      expect(container.querySelector('[role="img"]')).not.toBeInTheDocument();
+      expect(screen.getByRole('group', { name: /^Journey progress: / })).toBeInTheDocument();
+    });
+
+    it('exposes each intermediate node trigger as a named button, not an anonymous focusable div', () => {
+      renderThreeStopJourney();
+      const trigger = screen.getByRole('button', { name: 'Bravo' });
+      expect(trigger.tagName).toBe('BUTTON');
+      // A `<button>` is focusable by default; it must not have been opted
+      // back out of the tab order, since spec Decision 6 wants these
+      // reachable.
+      expect(trigger).not.toHaveAttribute('tabindex', '-1');
+      // `act` because focusing opens the Tooltip, which is a state update.
+      act(() => trigger.focus());
+      expect(trigger).toHaveFocus();
+    });
+
+    it('gives an accessible name to every element left in the tab order', () => {
+      const { container } = renderThreeStopJourney();
+      const focusable = Array.from(
+        container.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]'),
+      ).filter((el) => el.getAttribute('tabindex') !== '-1');
+      expect(focusable.length).toBeGreaterThan(0);
+      for (const el of focusable) {
+        // Either its own label or its text content -- an empty name here is
+        // exactly the "focusable but silent" defect being guarded against.
+        const name = el.getAttribute('aria-label') ?? el.textContent ?? '';
+        expect(name.trim(), `${el.outerHTML} has no accessible name`).not.toBe('');
+        // And nothing in the tab order may sit inside a subtree ARIA drops
+        // (`aria-hidden`, or a presentational `role="img"`/`role="presentation"`).
+        expect(el.closest('[aria-hidden="true"], [role="img"], [role="presentation"], [role="none"]')).toBeNull();
+      }
+    });
+
+    it('adds no tab stop for an endpoint node, whose name is already visible text', () => {
+      renderThreeStopJourney();
+      // One button for the single Intermediate stop; Origin/Terminate print
+      // their names instead of hiding them behind a focusable tooltip.
+      expect(screen.getAllByRole('button')).toHaveLength(1);
+      expect(screen.queryByRole('button', { name: 'Alpha' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Charlie' })).not.toBeInTheDocument();
+    });
+
+    it('opens the tooltip on keyboard focus and describes the trigger while it is open', async () => {
+      renderWithMantine(
+        <JourneyProgress
+          stops={[
+            stop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin' }),
+            stop({
+              crs: 'CLJ',
+              name: 'Clapham Junction',
+              kind: 'Intermediate',
+              scheduledArrival: '2026-09-12T08:15:00Z',
+            }),
+            stop({ crs: 'WOK', name: 'Woking', kind: 'Terminate' }),
+          ]}
+          resolutionStatus="resolved"
+          status="en_route"
+          trainUid="C21373"
+          mayHaveArrived={false}
+        />,
+      );
+      const trigger = screen.getByRole('button', { name: 'Clapham Junction' });
+      fireEvent.focus(trigger);
+      expect(await screen.findByText('09:15')).toBeInTheDocument();
+      expect(trigger).toHaveAttribute('aria-describedby');
+    });
+  });
+
   it('always shows the origin and terminus station names as visible text, but not an intermediate node\'s', () => {
     renderWithMantine(
       <JourneyProgress
@@ -463,7 +557,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
     );
     expect(screen.getByText("Scheduled route shown — live tracking hasn't started yet.")).toBeInTheDocument();
     expect(
-      screen.getByRole('img', { name: 'Journey progress: scheduled route shown, live tracking not yet started' }),
+      screen.getByRole('group', { name: 'Journey progress: scheduled route shown, live tracking not yet started' }),
     ).toBeInTheDocument();
   });
 
@@ -481,7 +575,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
       screen.getByText('Matched to train C21373 — waiting for its first movement report.'),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('img', {
+      screen.getByRole('group', {
         name: 'Journey progress: matched to train C21373, waiting for first movement report',
       }),
     ).toBeInTheDocument();
@@ -502,7 +596,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
     );
     expect(screen.getByText('Currently at Alpha.')).toBeInTheDocument();
     expect(
-      screen.getByRole('img', { name: 'Journey progress: currently at Alpha, stop 1 of 2' }),
+      screen.getByRole('group', { name: 'Journey progress: currently at Alpha, stop 1 of 2' }),
     ).toBeInTheDocument();
   });
 
@@ -521,7 +615,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
     );
     expect(screen.getByText('Currently at Bravo.')).toBeInTheDocument();
     expect(
-      screen.getByRole('img', { name: 'Journey progress: currently at Bravo (may have arrived), stop 2 of 2' }),
+      screen.getByRole('group', { name: 'Journey progress: currently at Bravo (may have arrived), stop 2 of 2' }),
     ).toBeInTheDocument();
   });
 
@@ -540,7 +634,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
     );
     expect(screen.getByText('Cancelled — last confirmed at Alpha.')).toBeInTheDocument();
     expect(
-      screen.getByRole('img', { name: 'Journey progress: cancelled, last confirmed at Alpha, stop 1 of 2' }),
+      screen.getByRole('group', { name: 'Journey progress: cancelled, last confirmed at Alpha, stop 1 of 2' }),
     ).toBeInTheDocument();
   });
 
@@ -556,7 +650,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
     );
     expect(screen.getByText('Cancelled — no movement was ever confirmed.')).toBeInTheDocument();
     expect(
-      screen.getByRole('img', { name: 'Journey progress: cancelled before any confirmed movement' }),
+      screen.getByRole('group', { name: 'Journey progress: cancelled before any confirmed movement' }),
     ).toBeInTheDocument();
   });
 
@@ -574,7 +668,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
       />,
     );
     expect(screen.getByText('Arrived at Bravo.')).toBeInTheDocument();
-    expect(screen.getByRole('img', { name: 'Journey progress: arrived at Bravo' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Journey progress: arrived at Bravo' })).toBeInTheDocument();
   });
 
   it('empty stops array: "Not yet started" caption/aria-label, defensively (not reachable via the real TrainJourney guard, but must not crash)', () => {
@@ -582,6 +676,6 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
       <JourneyProgress stops={[]} resolutionStatus="resolved" status="en_route" trainUid="C1" mayHaveArrived={false} />,
     );
     expect(screen.getByText('Not yet started.')).toBeInTheDocument();
-    expect(screen.getByRole('img', { name: 'Journey progress: not yet started' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Journey progress: not yet started' })).toBeInTheDocument();
   });
 });
