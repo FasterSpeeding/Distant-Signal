@@ -103,7 +103,7 @@ async fn get_station_accessibility(
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
-    tracing::error!(error = ?err, "reference search failed");
+    tracing::error!(error = ?err, "reference read failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         "operation failed".to_string(),
@@ -140,6 +140,19 @@ mod tests {
     #[test]
     fn sanitize_query_passes_through_non_whitespace_unchanged() {
         assert_eq!(sanitize_query("SW"), Some("SW"));
+    }
+
+    /// `/stations/{crs}/accessibility` sits one segment under the existing
+    /// literal `/stations` route, and `matchit` panics at insert time on an
+    /// overlapping path or on two routes using different parameter names at
+    /// the same position (this crate's other `{crs}` routes --
+    /// `station_stats.rs`, `departures.rs` -- all agree on that name).
+    /// Building the router is therefore the whole assertion; the behavioural
+    /// half lives in `db_tests` below, which ordinary `cargo test -p api`
+    /// skips for want of a database. This one always runs.
+    #[test]
+    fn router_builds_without_a_route_conflict() {
+        let _router: Router = router();
     }
 }
 

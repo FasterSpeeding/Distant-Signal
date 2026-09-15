@@ -46,7 +46,7 @@ describe('StationAccessibilitySection', () => {
     expect(screen.getByText('Staff assistance')).toBeInTheDocument();
     expect(screen.getByText('Available 06:00-23:00')).toBeInTheDocument();
     expect(screen.getByText('Car parks')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Show 1 item' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '1 item' })).toBeInTheDocument();
   });
 
   it('pluralizes the item-count control rather than saying "1 items"', () => {
@@ -55,7 +55,7 @@ describe('StationAccessibilitySection', () => {
         result={{ coverage: 'present', data: { carParks: [{ spaces: 120 }, { spaces: 40 }] } }}
       />,
     );
-    expect(screen.getByRole('button', { name: 'Show 2 items' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '2 items' })).toBeInTheDocument();
   });
 
   it('keeps an array-of-objects list collapsed until asked, then reveals each item', async () => {
@@ -66,7 +66,7 @@ describe('StationAccessibilitySection', () => {
     );
     expect(screen.queryByText('120')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show 2 items' }));
+    fireEvent.click(screen.getByRole('button', { name: '2 items' }));
 
     expect(await screen.findByText('120')).toBeInTheDocument();
     expect(screen.getByText('40')).toBeInTheDocument();
@@ -85,7 +85,7 @@ describe('StationAccessibilitySection', () => {
     // Collapsed by default, so the raw JSON itself is not in the document
     // until the control is used -- only the control is asserted here.
     expect(screen.queryByText(/too deep/)).not.toBeInTheDocument();
-    const control = screen.getByRole('button', { name: 'Show raw data' });
+    const control = screen.getByRole('button', { name: 'Raw data' });
     expect(control).toBeInTheDocument();
 
     fireEvent.click(control);
@@ -123,7 +123,7 @@ describe('StationAccessibilitySection', () => {
       />,
     );
     expect(screen.queryByText('Cycling')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Show raw data' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Raw data' })).not.toBeInTheDocument();
     expect(screen.getByText('Lifts')).toBeInTheDocument();
   });
 
@@ -152,5 +152,54 @@ describe('StationAccessibilitySection', () => {
       'Platform & station facilities',
       'Getting here',
     ]);
+  });
+
+  // The regression this guards: a 200 whose every allowlisted value is
+  // empty is `coverage: 'present'` at the page level (the response object
+  // has keys), but renders no groups -- without this, the section was a
+  // bare heading with no sentence and no content under it.
+  it('falls back to the "nothing published" copy when every present key renders to nothing', () => {
+    renderWithMantine(
+      <StationAccessibilitySection
+        result={{ coverage: 'present', data: { cycling: {}, carParks: [], lifts: { notes: null } } }}
+      />,
+    );
+    expect(
+      screen.getByText('No accessibility or facilities details have been published for this station.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("We don't have station reference data for this station yet."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Facilities')).not.toBeInTheDocument();
+  });
+
+  it('does not show the "nothing published" copy alongside real content', () => {
+    renderWithMantine(
+      <StationAccessibilitySection result={{ coverage: 'present', data: { lifts: { count: 2 } } }} />,
+    );
+    expect(
+      screen.queryByText('No accessibility or facilities details have been published for this station.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('drops an empty-valued row inside a shallow object instead of labelling blank space', () => {
+    renderWithMantine(
+      <StationAccessibilitySection
+        result={{ coverage: 'present', data: { lifts: { count: 2, features: [], notes: '' } } }}
+      />,
+    );
+    expect(screen.getByText('Count:')).toBeInTheDocument();
+    expect(screen.queryByText('Features:')).not.toBeInTheDocument();
+    expect(screen.queryByText('Notes:')).not.toBeInTheDocument();
+  });
+
+  it('skips an array whose every item renders to nothing', () => {
+    renderWithMantine(
+      <StationAccessibilitySection result={{ coverage: 'present', data: { carParks: [{}, {}] } }} />,
+    );
+    expect(screen.queryByText('Car parks')).not.toBeInTheDocument();
+    expect(
+      screen.getByText('No accessibility or facilities details have been published for this station.'),
+    ).toBeInTheDocument();
   });
 });

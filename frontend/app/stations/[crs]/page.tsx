@@ -114,7 +114,15 @@ async function fetchStationSampleStats(crs: string): Promise<StationSampleStatsR
  * Correction 5 / Decision 9: those are two different, already-representable
  * database states (the column is `NOT NULL DEFAULT '{}'`, but a CRS can
  * have no `stations` row at all) and must stay visibly distinct in the UI,
- * not collapsed into one "no data" message. */
+ * not collapsed into one "no data" message.
+ *
+ * `'unavailable'` is defence in depth rather than a routinely-reached
+ * state on this page: `lookupStation` above resolves the heading through
+ * `getStationName`, which searches the same `stations` table, so a CRS with
+ * no row there already `notFound()`s the whole page before this runs. It
+ * remains reachable if the row disappears between the two reads, and the
+ * distinct copy is what the spec asks for regardless -- don't "simplify" it
+ * away on the grounds that it looks unreachable. */
 type StationAccessibilityResult =
   | { coverage: 'unavailable' }
   | { coverage: 'empty' }

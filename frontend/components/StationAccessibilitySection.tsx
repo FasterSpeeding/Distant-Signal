@@ -47,13 +47,34 @@ function Disclosure({ label, children }: { label: string; children: React.ReactN
   return (
     <Accordion chevronPosition="left" keepMounted={false}>
       <AccordionItem value="disclosure">
-        <AccordionControl>
-          <Text size="sm">{label}</Text>
-        </AccordionControl>
+        {/* A bare string, not a `<Text>`: `AccordionControl` renders its
+            children inside a `<button>`, and Mantine's `<Text>` is a `<p>`,
+            which is not valid button content. */}
+        <AccordionControl>{label}</AccordionControl>
         <AccordionPanel>{children}</AccordionPanel>
       </AccordionItem>
     </Accordion>
   );
+}
+
+/** Every category group that has at least one key rendering to something.
+ * Computed before any JSX so the section can tell "present, and here it
+ * is" from "present, but every value the feed published was empty" -- the
+ * latter reads as the same fact as a `200 {}` and gets the same sentence,
+ * rather than a heading with nothing under it. */
+function renderableGroups(data: StationAccessibilityData) {
+  return ACCESSIBILITY_CATEGORIES.map((category) => ({
+    heading: category.heading,
+    // A key whose value renders to nothing at all (an empty object, an
+    // empty array, an object whose every own value was null) is skipped
+    // outright rather than printing a label with blank space under it --
+    // Decision 7's "don't invent a row for data that isn't there", one
+    // level below the group it applies to.
+    entries: category.keys
+      .filter((key) => hasRenderableValue(data[key]))
+      .map((key) => ({ key, value: renderAccessibilityValue(data[key]) }))
+      .filter((entry) => !isEmptyRenderable(entry.value)),
+  })).filter((group) => group.entries.length > 0);
 }
 
 /** Renders one already-computed `RenderableValue` -- see
@@ -68,8 +89,11 @@ function AccessibilityValue({ value }: { value: RenderableValue }) {
   if (value.kind === 'rows') {
     return (
       <Stack gap={2}>
-        {value.rows.map((row) => (
-          <Group key={row.label} gap="xs" wrap="wrap">
+        {value.rows.map((row, index) => (
+          // Two different source keys can humanize to the same label, so
+          // the label alone is not a safe key.
+          // eslint-disable-next-line react/no-array-index-key -- see above
+          <Group key={`${row.label}-${index}`} gap="xs" wrap="wrap">
             <Text size="sm" fw={500}>
               {row.label}:
             </Text>
@@ -80,7 +104,11 @@ function AccessibilityValue({ value }: { value: RenderableValue }) {
     );
   }
   if (value.kind === 'items') {
-    const label = value.count === 1 ? 'Show 1 item' : `Show ${value.count} items`;
+    // No "Show" verb: the control keeps one static accessible name in both
+    // states, and the chevron plus `aria-expanded` carry open/closed. A
+    // button still reading "Show 2 items" while the items are on screen
+    // would contradict its own `aria-expanded="true"`.
+    const label = value.count === 1 ? '1 item' : `${value.count} items`;
     return (
       <Disclosure label={label}>
         <Stack gap="sm">
@@ -93,7 +121,7 @@ function AccessibilityValue({ value }: { value: RenderableValue }) {
     );
   }
   return (
-    <Disclosure label="Show raw data">
+    <Disclosure label="Raw data">
       <Code block>{value.json}</Code>
     </Disclosure>
   );
@@ -114,6 +142,14 @@ function AccessibilityValue({ value }: { value: RenderableValue }) {
  * different sentences -- never collapsed into one "no data" message
  * (Correction 5). */
 export function StationAccessibilitySection({ result }: StationAccessibilitySectionProps) {
+  const groups = result.coverage === 'present' ? renderableGroups(result.data) : [];
+  // A `200` whose every allowlisted value turned out to be `{}`/`[]` is the
+  // same fact as a `200 {}` from the reader's point of view -- the station
+  // has published nothing -- so it gets the same sentence rather than an
+  // empty section under a heading.
+  const nothingPublished =
+    result.coverage === 'empty' || (result.coverage === 'present' && groups.length === 0);
+
   return (
     <Stack gap="xs">
       <Title order={2} size="h4">
@@ -122,39 +158,26 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
       {result.coverage === 'unavailable' && (
         <Text c="dimmed">We don&apos;t have station reference data for this station yet.</Text>
       )}
-      {result.coverage === 'empty' && (
+      {nothingPublished && (
         <Text c="dimmed">
           No accessibility or facilities details have been published for this station.
         </Text>
       )}
-      {result.coverage === 'present' &&
-        ACCESSIBILITY_CATEGORIES.map((category) => {
-          // A key whose value renders to nothing at all (an empty object,
-          // an empty array, an object whose every own value was null) is
-          // skipped outright rather than printing a label with blank space
-          // under it -- Decision 7's "don't invent a row for data that
-          // isn't there", one level below the group it applies to.
-          const rendered = category.keys
-            .filter((key) => hasRenderableValue(result.data[key]))
-            .map((key) => ({ key, value: renderAccessibilityValue(result.data[key]) }))
-            .filter((entry) => !isEmptyRenderable(entry.value));
-          if (rendered.length === 0) return null;
-          return (
-            <Stack key={category.heading} gap={4}>
-              <Text size="sm" fw={700}>
-                {category.heading}
+      {groups.map((group) => (
+        <Stack key={group.heading} gap={4}>
+          <Text size="sm" fw={700}>
+            {group.heading}
+          </Text>
+          {group.entries.map((entry) => (
+            <Stack key={entry.key} gap={2} pl="sm">
+              <Text size="sm" fw={500}>
+                {humanizeKey(entry.key)}
               </Text>
-              {rendered.map((entry) => (
-                <Stack key={entry.key} gap={2} pl="sm">
-                  <Text size="sm" fw={500}>
-                    {humanizeKey(entry.key)}
-                  </Text>
-                  <AccessibilityValue value={entry.value} />
-                </Stack>
-              ))}
+              <AccessibilityValue value={entry.value} />
             </Stack>
-          );
-        })}
+          ))}
+        </Stack>
+      ))}
     </Stack>
   );
 }

@@ -50,21 +50,26 @@ export function hasRenderableValue(value: unknown): boolean {
 }
 
 /** True when a rendered value would put nothing at all on the page -- an
- * empty object, an empty array, an object whose every own value was null.
- * The section component skips such a key rather than printing a label with
- * blank space under it: the same "don't invent a row for data that isn't
- * there" rule Decision 7 applies to whole category groups, applied one
- * level down. Kept out of `renderAccessibilityValue` deliberately, so that
- * function stays a faithful description of the value it was given and the
- * decision to hide is the display layer's. */
+ * empty object, an empty array, an object whose every own value was null,
+ * or an array of any of those. The section component skips such a key
+ * rather than printing a label with blank space under it, and treats a
+ * whole response of them as "nothing published": the same "don't invent a
+ * row for data that isn't there" rule Decision 7 applies to category
+ * groups, applied one and two levels down.
+ *
+ * Kept out of `renderAccessibilityValue` deliberately, so that function
+ * stays a faithful description of the value it was given and the decision
+ * to hide is the display layer's. Recursion terminates because
+ * `renderAccessibilityValue`'s depth limit means an `'items'` entry's
+ * children are never themselves `'items'`. */
 export function isEmptyRenderable(value: RenderableValue): boolean {
   switch (value.kind) {
     case 'text':
       return value.text.trim() === '';
     case 'rows':
-      return value.rows.length === 0;
+      return value.rows.every((row) => row.value.trim() === '');
     case 'items':
-      return value.count === 0;
+      return value.items.every(isEmptyRenderable);
     case 'raw':
       return value.json.trim() === '';
   }
@@ -109,18 +114,25 @@ function raw(value: unknown): RenderableValue {
  * "shallow object" branch. Any own value that is itself an object, or an
  * array containing anything but primitives, is deeper than this branch
  * covers: the **whole** object then degrades to raw JSON rather than
- * rendering the shallow half and silently dropping the rest. */
+ * rendering the shallow half and silently dropping the rest.
+ *
+ * An own value that renders to no text at all (`''`, `[]`) is dropped for
+ * the same reason a `null` one is: a label followed by blank space is
+ * worse than no row. */
 function renderShallowObject(value: Record<string, unknown>): RenderableValue {
   const rows: { label: string; value: string }[] = [];
   for (const [key, own] of Object.entries(value)) {
     if (!hasRenderableValue(own)) continue;
+    let text: string;
     if (isPrimitive(own)) {
-      rows.push({ label: humanizeKey(key), value: primitiveText(own) });
+      text = primitiveText(own);
     } else if (Array.isArray(own) && own.every(isPrimitive)) {
-      rows.push({ label: humanizeKey(key), value: own.map(primitiveText).join(', ') });
+      text = own.map(primitiveText).join(', ');
     } else {
       return raw(value);
     }
+    if (text.trim() === '') continue;
+    rows.push({ label: humanizeKey(key), value: text });
   }
   return { kind: 'rows', rows };
 }
@@ -137,8 +149,16 @@ function renderShallowObject(value: Record<string, unknown>): RenderableValue {
  * with a nested object inside it, degrades to raw JSON instead of
  * recursing further. That bound is what makes "never produces a wall of
  * text" and "terminates on any input" true by construction rather than by
- * trusting the upstream payload's depth. */
-export function renderAccessibilityValue(value: unknown, depth = 0): RenderableValue {
+ * trusting the upstream payload's depth.
+ *
+ * Takes no `depth` argument of its own: `renderAt` below carries it, so a
+ * caller writing `array.map(renderAccessibilityValue)` cannot accidentally
+ * pass the array index as a depth. */
+export function renderAccessibilityValue(value: unknown): RenderableValue {
+  return renderAt(value, 0);
+}
+
+function renderAt(value: unknown, depth: number): RenderableValue {
   if (isPrimitive(value)) {
     return { kind: 'text', text: primitiveText(value) };
   }
@@ -156,7 +176,7 @@ export function renderAccessibilityValue(value: unknown, depth = 0): RenderableV
     return {
       kind: 'items',
       count: value.length,
-      items: value.map((item) => renderAccessibilityValue(item, depth + 1)),
+      items: value.map((item) => renderAt(item, depth + 1)),
     };
   }
 

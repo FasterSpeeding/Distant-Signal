@@ -323,7 +323,7 @@ describe('StationDisruptionPage -- accessibility & facilities', () => {
     });
 
     await expect(renderPage()).resolves.toBeDefined();
-    expect(screen.getByRole('button', { name: 'Show raw data' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Raw data' })).toBeInTheDocument();
   });
 
   // Same stale-serving posture as every other section on this page: a
