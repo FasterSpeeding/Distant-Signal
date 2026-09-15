@@ -184,12 +184,15 @@ export function IncidentSearchForm({
   async function handleLoadMore() {
     if (results === null || results === 'error') return;
     if (results.nextCursor === null || loadingMore) return;
+    // The exact result-set object this page is a continuation of. Search is
+    // not disabled while a page is in flight, so a fresh search can resolve
+    // first and leave this response describing a result set that is no
+    // longer on screen; `handleSubmit` always installs a BRAND NEW object,
+    // so identity is all that is needed to spot that. Without this check the
+    // stale page would append its rows to (and stamp its cursor, or its
+    // failure, onto) somebody else's search.
+    const pagedFrom = results;
     setLoadingMore(true);
-    // Clear any previous failure up front so a retry doesn't sit under a
-    // stale error line while it is in flight.
-    setResults((current) =>
-      current !== null && current !== 'error' ? { ...current, loadMoreFailed: false } : current,
-    );
     try {
       // Rebuilt from the ORIGINAL search's query string (`results.query`),
       // never from live `searchParamsFor()` -- see `handleSubmit`'s comment.
@@ -200,14 +203,12 @@ export function IncidentSearchForm({
         // The cursor is kept, not nulled: this page just failed to load, and
         // the reader gets a named error plus a working retry rather than a
         // list that quietly stops one page short of the end.
-        setResults((current) =>
-          current !== null && current !== 'error' ? { ...current, loadMoreFailed: true } : current,
-        );
+        setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
         return;
       }
       const body: IncidentSearchResponse = await response.json();
       setResults((current) =>
-        current !== null && current !== 'error'
+        current === pagedFrom
           ? {
               ...current,
               rows: [...current.rows, ...body.results],
@@ -217,9 +218,7 @@ export function IncidentSearchForm({
           : current,
       );
     } catch {
-      setResults((current) =>
-        current !== null && current !== 'error' ? { ...current, loadMoreFailed: true } : current,
-      );
+      setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
     } finally {
       setLoadingMore(false);
     }

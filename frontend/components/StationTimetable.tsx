@@ -99,8 +99,21 @@ export function StationTimetable({ crs }: { crs: string }) {
     return () => activeRequest.current?.abort();
   }, []);
 
-  function startRequest(): AbortController {
+  /** Aborts whatever is in flight, and clears `loadingMore` with it. The
+   * two belong together: an aborted request deliberately skips its own
+   * `finally` (see `handleLoadMore`), so if that request was a "Load more"
+   * nothing else would ever put the flag back down -- and the next page's
+   * button would render permanently disabled and permanently spinning, the
+   * exact "button that does nothing" `LoadMoreControl` exists to eliminate.
+   * Safe to call unconditionally: `handleLoadMore` raises the flag AFTER
+   * `startRequest`. */
+  function abortActiveRequest() {
     activeRequest.current?.abort();
+    setLoadingMore(false);
+  }
+
+  function startRequest(): AbortController {
+    abortActiveRequest();
     const controller = new AbortController();
     activeRequest.current = controller;
     return controller;
@@ -138,9 +151,6 @@ export function StationTimetable({ crs }: { crs: string }) {
     const controller = startRequest();
     const after = results.nextCursor;
     setLoadingMore(true);
-    // Clear any previous failure up front so a retry doesn't sit under a
-    // stale error line while it is in flight.
-    setResults((current) => (hasRows(current) ? { ...current, loadMoreFailed: false } : current));
     try {
       const response = await fetch(`/api/trains/search?station=${crs.toUpperCase()}&after=${after}`, {
         signal: controller.signal,
@@ -177,7 +187,7 @@ export function StationTimetable({ crs }: { crs: string }) {
     if (value !== null) {
       void loadFirstPage();
     } else {
-      activeRequest.current?.abort();
+      abortActiveRequest();
       setResults(null);
     }
   }

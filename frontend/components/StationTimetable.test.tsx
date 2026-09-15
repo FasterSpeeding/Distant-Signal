@@ -196,6 +196,76 @@ describe('StationTimetable', () => {
     expect(screen.getByText('08:22 · PAD → RDG → BRI')).toBeInTheDocument();
   });
 
+  it('retrying a failed page really does page on, clearing the error and ending the list', async () => {
+    let afterCalls = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (!String(input).includes('after=CURSOR1')) {
+        return Promise.resolve(new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }));
+      }
+      afterCalls += 1;
+      return afterCalls === 1
+        ? Promise.resolve(new Response('boom', { status: 500 }))
+        : Promise.resolve(new Response(searchBody(PAGE_TWO, null), { status: 200 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<StationTimetable crs="RDG" />);
+
+    fireEvent.click(expand());
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+    await screen.findByText("Couldn't load more results. Try again.");
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText('11:40 · PAD → RDG → BRI')).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
+    expect(screen.getByText("You've reached the end — no more scheduled departures today.")).toBeInTheDocument();
+  });
+
+  it('collapsing mid-"Load more" leaves a working button on re-expand, not one stuck spinning', async () => {
+    // The in-flight page is ABORTED by the collapse, and an aborted request
+    // deliberately skips its own cleanup -- so nothing else clears the
+    // "loading more" flag. Without an explicit reset the re-expanded panel
+    // renders a permanently disabled, permanently spinning button: the exact
+    // "button that does nothing" this footer exists to eliminate.
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      String(input).includes('after=CURSOR1')
+        ? new Promise<Response>(() => {}) // never resolves; the collapse aborts it
+        : Promise.resolve(new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 })),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<StationTimetable crs="RDG" />);
+
+    fireEvent.click(expand());
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+    fireEvent.click(expand()); // collapse, aborting the in-flight page
+    fireEvent.click(expand()); // re-expand: a fresh first page
+
+    await screen.findByText('08:22 · PAD → RDG → BRI');
+    expect(await screen.findByRole('button', { name: 'Load more' })).toBeEnabled();
+  });
+
+  it('a fresh first page clears a previous "Load more" failure', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      String(input).includes('after=CURSOR1')
+        ? Promise.resolve(new Response('boom', { status: 500 }))
+        : Promise.resolve(new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 })),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<StationTimetable crs="RDG" />);
+
+    fireEvent.click(expand());
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+    await screen.findByText("Couldn't load more results. Try again.");
+
+    fireEvent.click(expand()); // collapse
+    fireEvent.click(expand()); // re-expand
+
+    await screen.findByText('08:22 · PAD → RDG → BRI');
+    await waitFor(() =>
+      expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument(),
+    );
+  });
+
   it('shows neither Load more nor the end-of-results line when the first page came back empty', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(searchBody([]), { status: 200 }))));
     renderWithMantine(<StationTimetable crs="RDG" />);

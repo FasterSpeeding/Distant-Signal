@@ -1,6 +1,6 @@
 'use client';
 
-import { Button, Group, Stack, Text } from '@mantine/core';
+import { Box, Button, Group, Stack, Text } from '@mantine/core';
 
 /** The one "Load more" footer every cursor-paginated results list in this
  * app renders below its rows -- `TrainSearchForm`, `IncidentSearchForm` and
@@ -31,10 +31,22 @@ import { Button, Group, Stack, Text } from '@mantine/core';
  * Callers are expected to keep the shared "You've reached the end — …"
  * opening so the states read alike across pages.
  *
- * Both messages are `role="status"`/`role="alert"` live regions: they appear
- * in response to pressing "Load more", and the button they replace or
- * accompany may be the element that still holds focus, so a screen reader
- * would otherwise get no feedback at all from the press. */
+ * Both messages share ONE always-mounted `role="status"` live region, empty
+ * while there is still a next page, rather than each being its own region
+ * mounted only when it has something to say. That is deliberate on two
+ * counts. A live region inserted into the DOM together with its text is
+ * announced inconsistently across screen readers, whereas text inserted into
+ * a region that was already there is announced reliably -- and it is the
+ * "already there" case that matters, because these messages appear in
+ * response to pressing "Load more". The other half is that a one-page result
+ * mounts region and text together on first render, which is exactly the case
+ * that should NOT be announced: nothing happened, the reader simply arrived
+ * at a short list.
+ *
+ * What the live region cannot do is preserve focus: reaching the end unmounts
+ * the button, and if that button held focus it falls back to the document.
+ * The announcement is the mitigation, not a fix -- moving focus onto a
+ * non-interactive status line would be its own surprise. */
 export function LoadMoreControl({
   hasMore,
   loading,
@@ -53,32 +65,36 @@ export function LoadMoreControl({
    * match these filters." */
   endMessage: string;
 }) {
-  if (!hasMore) {
-    // `failed` with no cursor left to retry with can't happen from any
-    // caller today (they all keep the cursor on failure), but reporting the
-    // failure still beats claiming the list is complete when it isn't.
-    return failed ? (
-      <Text size="sm" c="red" role="alert">
-        Couldn&apos;t load more results.
-      </Text>
-    ) : (
-      <Text size="sm" c="dimmed" role="status">
-        {endMessage}
-      </Text>
-    );
-  }
+  // Exactly one line, or none. A retry in flight suppresses the previous
+  // failure rather than leaving a stale error sitting under a spinner --
+  // which is also why callers don't need to clear their own failure flag
+  // when they start a retry. "Try again" is only offered when there is
+  // still a cursor to retry with; `failed` without one can't happen from
+  // any caller today, but reporting the failure still beats claiming the
+  // list is complete when it isn't.
+  const message =
+    failed && !loading
+      ? `Couldn't load more results.${hasMore ? ' Try again.' : ''}`
+      : !hasMore && !failed
+        ? endMessage
+        : '';
+
   return (
-    <Stack gap={4}>
-      {failed && !loading && (
-        <Text size="sm" c="red" role="alert">
-          Couldn&apos;t load more results. Try again.
-        </Text>
+    <Stack gap={message ? 4 : 0}>
+      {hasMore && (
+        <Group>
+          <Button variant="default" size="xs" onClick={onLoadMore} disabled={loading} loading={loading}>
+            Load more
+          </Button>
+        </Group>
       )}
-      <Group>
-        <Button variant="default" size="xs" onClick={onLoadMore} disabled={loading} loading={loading}>
-          Load more
-        </Button>
-      </Group>
+      <Box role="status" aria-live="polite">
+        {message && (
+          <Text size="sm" c={failed ? 'red' : 'dimmed'}>
+            {message}
+          </Text>
+        )}
+      </Box>
     </Stack>
   );
 }

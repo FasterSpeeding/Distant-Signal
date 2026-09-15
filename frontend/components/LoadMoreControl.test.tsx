@@ -24,7 +24,18 @@ describe('LoadMoreControl', () => {
     expect(screen.getByText(END_MESSAGE)).toBeInTheDocument();
   });
 
-  it('announces the end-of-results message as a live region, since it replaces the button that was just pressed', () => {
+  it('keeps the live region mounted, and silent, while there are more pages', () => {
+    renderWithMantine(
+      <LoadMoreControl hasMore loading={false} onLoadMore={() => {}} endMessage={END_MESSAGE} />,
+    );
+
+    // Present from the start -- a region inserted into the DOM together with
+    // its text is announced inconsistently, so the end message has to land in
+    // a region that was already there -- but silent while paging continues.
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+  });
+
+  it('puts the end-of-results message in that same live region', () => {
     renderWithMantine(
       <LoadMoreControl hasMore={false} loading={false} onLoadMore={() => {}} endMessage={END_MESSAGE} />,
     );
@@ -44,29 +55,28 @@ describe('LoadMoreControl', () => {
   });
 
   it('disables the button while a page is in flight', () => {
-    renderWithMantine(
-      <LoadMoreControl hasMore loading onLoadMore={() => {}} endMessage={END_MESSAGE} />,
-    );
+    renderWithMantine(<LoadMoreControl hasMore loading onLoadMore={() => {}} endMessage={END_MESSAGE} />);
 
     expect(screen.getByRole('button', { name: 'Load more' })).toBeDisabled();
   });
 
-  it('reports a failed page as an error and keeps the button for a retry -- it must NOT read as the end of the list', () => {
+  it('reports a failed page and keeps the button for a retry -- it must NOT read as the end of the list', () => {
     renderWithMantine(
       <LoadMoreControl hasMore loading={false} failed onLoadMore={() => {}} endMessage={END_MESSAGE} />,
     );
 
-    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load more results. Try again.");
+    expect(screen.getByRole('status')).toHaveTextContent("Couldn't load more results. Try again.");
     expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
     expect(screen.queryByText(END_MESSAGE)).not.toBeInTheDocument();
   });
 
-  it('hides the previous failure while the retry is in flight', () => {
+  it('hides the previous failure, and disables the button, while the retry is in flight', () => {
     renderWithMantine(
       <LoadMoreControl hasMore loading failed onLoadMore={() => {}} endMessage={END_MESSAGE} />,
     );
 
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+    expect(screen.getByRole('button', { name: 'Load more' })).toBeDisabled();
   });
 
   it('reports the failure rather than claiming the end of the list when there is no cursor left to retry with', () => {
@@ -74,7 +84,10 @@ describe('LoadMoreControl', () => {
       <LoadMoreControl hasMore={false} loading={false} failed onLoadMore={() => {}} endMessage={END_MESSAGE} />,
     );
 
-    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load more results.");
+    // No "Try again" -- there is nothing left to retry with -- but the list
+    // must still not claim to be complete.
+    expect(screen.getByRole('status')).toHaveTextContent("Couldn't load more results.");
+    expect(screen.queryByText(/Try again/)).not.toBeInTheDocument();
     expect(screen.queryByText(END_MESSAGE)).not.toBeInTheDocument();
   });
 });

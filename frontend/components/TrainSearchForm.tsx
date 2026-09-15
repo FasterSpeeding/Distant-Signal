@@ -313,10 +313,15 @@ export function TrainSearchForm({
     // value, or absent, never a stale-vs-live mismatch either way. This
     // keeps this request unambiguously "page 2 of the same search".
     const pageOneDate = results.date;
+    // The exact result-set object this page is a continuation of. Search is
+    // not disabled while a page is in flight, so a fresh search can resolve
+    // first and leave this response describing a result set that is no
+    // longer on screen; `handleSubmit` always installs a BRAND NEW object,
+    // so identity is all that is needed to spot that. Without this check the
+    // stale page would append its rows to (and stamp its cursor, or its
+    // failure, onto) somebody else's search.
+    const pagedFrom = results;
     setLoadingMore(true);
-    // Clear any previous failure up front so a retry doesn't sit under a
-    // stale error line while it is in flight.
-    setResults((current) => (hasRows(current) ? { ...current, loadMoreFailed: false } : current));
     try {
       const params = searchParams();
       if (pageOneDate) {
@@ -330,12 +335,12 @@ export function TrainSearchForm({
         // The cursor is kept, not nulled: this page just failed to load, and
         // the reader gets a named error plus a working retry rather than a
         // list that quietly stops one page short of the end.
-        setResults((current) => (hasRows(current) ? { ...current, loadMoreFailed: true } : current));
+        setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
         return;
       }
       const body: TrainSearchResponse = await response.json();
       setResults((current) =>
-        hasRows(current)
+        current === pagedFrom
           ? {
               rows: [...current.rows, ...body.results],
               nextCursor: body.nextCursor,
@@ -345,7 +350,7 @@ export function TrainSearchForm({
           : current,
       );
     } catch {
-      setResults((current) => (hasRows(current) ? { ...current, loadMoreFailed: true } : current));
+      setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
     } finally {
       setLoadingMore(false);
     }

@@ -224,6 +224,89 @@ describe('IncidentSearchForm', () => {
     ).toBeInTheDocument();
   });
 
+  it('reports a "Load more" whose fetch throws the same way it reports a non-2xx', async () => {
+    fetchMock
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
+      // Lazily, via mockImplementationOnce: a `Promise.reject` built eagerly
+      // at mock-setup time is unhandled until the second call consumes it.
+      .mockImplementationOnce(() => Promise.reject(new Error('network down')));
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText("Couldn't load more results. Try again.")).toBeInTheDocument();
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
+  });
+
+  it('clears a previous "Load more" failure when a fresh search is run', async () => {
+    fetchMock
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
+      .mockReturnValueOnce(errorResponse())
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '3' })], nextCursor: null }));
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    await screen.findByText("Couldn't load more results. Try again.");
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(
+      await screen.findByText("You've reached the end — no more incidents match these filters."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
+  });
+
+  it('discards a "Load more" page that lands after a fresh search has already replaced the results', async () => {
+    // Search is not disabled while a page is in flight, so this ordering is
+    // reachable: page 2 of the OLD search resolves last. Its rows, its cursor
+    // and its failure flag all belong to a result set that is no longer on
+    // screen and must not be merged into the new one.
+    let resolvePageTwo!: (response: Response) => void;
+    const pageTwo = new Promise<Response>((resolve) => {
+      resolvePageTwo = resolve;
+    });
+    fetchMock
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
+      .mockReturnValueOnce(pageTwo)
+      .mockReturnValueOnce(
+        okResponse({
+          results: [summary({ incidentId: '9', summary: 'Points failure at Woking' })],
+          nextCursor: null,
+        }),
+      );
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' })); // page 2 of search 1
+    fireEvent.click(screen.getByRole('button', { name: 'Search' })); // search 2
+    await screen.findByText('Points failure at Woking');
+
+    resolvePageTwo({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          results: [summary({ incidentId: '2', summary: 'Trespass incident at Woking' })],
+          nextCursor: 'cursor-b',
+        }),
+    } as unknown as Response);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("You've reached the end — no more incidents match these filters."),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('Trespass incident at Woking')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
+
   it('renders the empty-results message, not a blank screen', async () => {
     fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
