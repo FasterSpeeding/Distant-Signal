@@ -118,6 +118,11 @@ describe('StationDisruptionPage -- outage behaviour', () => {
       screen.getByRole('heading', { name: 'Disruptions at London Kings Cross (KGX)', level: 1 }),
     ).toBeInTheDocument();
   });
+
+  it('renders the collapsed Scheduled departures section', async () => {
+    await renderPage();
+    expect(screen.getByRole('button', { name: 'Scheduled departures' })).toBeInTheDocument();
+  });
 });
 
 describe('StationDisruptionPage -- line-coverage distinction', () => {
