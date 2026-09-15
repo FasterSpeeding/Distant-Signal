@@ -555,6 +555,48 @@ describe('TrainSearchForm', () => {
     expect(screen.getByText('08:22 · EUS → MAN → WAT')).toBeInTheDocument();
   });
 
+  it('discards a Load more page that lands after a fresh search has already replaced the results', async () => {
+    // Search is not disabled while a page is in flight, so this ordering is
+    // reachable: page 2 of the OLD search resolves last. Its rows and its
+    // cursor belong to a result set that is no longer on screen and must not
+    // be merged into the new one. (IncidentSearchForm.test.tsx pins the same
+    // guard on the same shape of bug.)
+    let resolvePageTwo!: (response: Response) => void;
+    const pageTwo = new Promise<Response>((resolve) => {
+      resolvePageTwo = resolve;
+    });
+    let searchCalls = 0;
+    const passThrough = mockFetchByUrl();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.startsWith('/api/trains/search')) return passThrough(input);
+      searchCalls += 1;
+      if (searchCalls === 1) {
+        return Promise.resolve(new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }));
+      }
+      // Call 2 is page 2 of search 1, held open; call 3 is search 2.
+      if (searchCalls === 2) return pageTwo;
+      return Promise.resolve(new Response(searchBody(PAGE_THREE, null), { status: 200 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' })); // page 2 of search 1
+    fireEvent.click(screen.getByRole('button', { name: 'Search' })); // search 2
+    await screen.findByText('13:15 · CRE → MAN → WAT');
+
+    resolvePageTwo(new Response(searchBody(PAGE_TWO, 'CURSOR2'), { status: 200 }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("You've reached the end — no more scheduled trains match those filters."),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('11:40 · EUS → MAN → WAT')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
+
   it('sends stops_at uppercased when entered directly (not just via a suggestion pick)', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);
