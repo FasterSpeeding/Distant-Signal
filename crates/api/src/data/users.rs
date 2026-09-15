@@ -39,9 +39,13 @@ fn verified_email(identity: &OidcIdentity) -> Option<&str> {
 /// Also trims: a name of `"  Ada  "` is `"Ada"`, never rendered with its
 /// padding intact.
 ///
-/// Applied both when writing a row (`upsert_user`) and when reading one
-/// back, so rows stored before any of this normalization existed read the
-/// same as rows written today.
+/// Applied when writing a row (`upsert_user`) and again on the read path
+/// that renders a label to OTHER people (`display_label`), so rows stored
+/// before any of this normalization existed read the same as rows written
+/// today. The remaining read path -- `get_session_with_user`, showing a
+/// user their own name in the nav bar -- returns `u.name` raw and leans on
+/// the frontend's own `?.trim() ||`; that one is self-view only, so a blank
+/// there costs a fallback, not a wrong label shown to someone else.
 ///
 /// `auth::oidc` has its own twin of this, applied one layer earlier while
 /// choosing WHICH claim becomes the name/username. Two one-line copies of

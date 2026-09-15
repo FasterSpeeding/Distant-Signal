@@ -96,11 +96,11 @@ pub struct RawClaims {
 /// Blank-or-absent are the same thing for every claim this app reads: an
 /// IdP with nothing on file for a field often sends `""` rather than
 /// omitting the claim (Authentik's `profile` mapping returns `User.name`
-/// verbatim, and that column defaults to the empty string -- an unset
-/// `User.attributes` key is the other way round, dropped from the token
-/// entirely by `delete_none_values`, which is why both shapes have to be
-/// handled). Trimmed, because `"  Ada  "` is a name with padding, not a
-/// name.
+/// verbatim, and that column defaults to the empty string -- whereas
+/// `family_name`, which has no such fallback, is dropped from the token
+/// entirely by `delete_none_values` when its attribute is unset, so both
+/// shapes have to be handled). Trimmed, because `"  Ada  "` is a name with
+/// padding, not a name.
 ///
 /// `data::users` keeps its own copy of this, applied when writing a row and
 /// again when reading one back; see its doc comment for why the duplication
@@ -833,6 +833,12 @@ mod tests {
         assert!(!looks_like_email_address("Ada Rider"));
         assert!(!looks_like_email_address("ada"));
         assert!(!looks_like_email_address(""));
+
+        // The documented cost of being blunt, pinned rather than merely
+        // mentioned: a real display name that happens to contain an `@` is
+        // declined too, and that person shows as the generic placeholder.
+        // A false positive is the cheap failure; a leaked address is not.
+        assert!(looks_like_email_address("DJ @ Large"));
     }
 
     /// The boundary REORDERS, it does not drop: when every candidate is
