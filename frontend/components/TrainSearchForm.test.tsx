@@ -206,6 +206,111 @@ describe('TrainSearchForm', () => {
     expect(screen.getByText('10:05 · CRE → MAN → WAT')).toBeInTheDocument();
   });
 
+  // Regression guard for the results list being hard-clipped at a fixed
+  // height. The rows used to sit inside a `<ScrollArea mah={420}
+  // offsetScrollbars>`, whose root is `overflow: hidden` while its viewport
+  // is `height: 100%`; against a root whose own `height` stays `auto` that
+  // percentage resolves to `auto`, so the viewport never overflowed itself
+  // (nothing scrolled) and the root simply clipped everything past 420px --
+  // with no scrollbar to hint at it, since Mantine sizes its own from
+  // `scrollHeight` vs `clientHeight`, equal in that state. jsdom does no
+  // layout, so this asserts the *structure* that caused it instead.
+  //
+  // Note this also rejects `ScrollArea.Autosize` -- the component that
+  // *would* cap the height correctly. Deliberate, matching
+  // `IncidentSearchForm.test.tsx`'s identical guard: the choice here is "no
+  // nested scroller at all, the page scrolls", and `TrainSearchForm.tsx`'s
+  // own comment records why.
+  it('renders the results list in the page flow, with no fixed-height or scroll-container ancestor', async () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('08:22 · EUS → MAN → WAT');
+
+    const list = document.querySelector('[data-train-results]');
+    expect(list).not.toBeNull();
+    const form = (list as HTMLElement).closest('form');
+    expect(form).not.toBeNull();
+
+    // Walk the list itself plus every ancestor up to (and including) the
+    // form -- a clip anywhere on that chain hides rows just as effectively
+    // as one on the list. (Above the form is this component's caller, which
+    // a unit test can't see.)
+    for (
+      let node: HTMLElement | null = list as HTMLElement;
+      node !== null;
+      node = node === form ? null : (node.parentElement as HTMLElement | null)
+    ) {
+      // Mantine's own scroll viewport, whatever set it up.
+      expect(node.hasAttribute('data-scrollarea-viewport')).toBe(false);
+      // Mantine resolves a non-responsive `h`/`mah` style prop straight into
+      // an inline `height`/`max-height` (`parse-style-props.mjs`), so
+      // reading those back off `style` is enough -- no computed style, no
+      // layout, which is just as well under jsdom.
+      expect(node.style.maxHeight).toBe('');
+      expect(node.style.height).toBe('');
+      // Only catches a hand-written inline clip -- Mantine's own
+      // `overflow: hidden` arrives via the `.m_d57069b5` class, which the
+      // `data-scrollarea-viewport` check above is what actually covers.
+      expect(node.style.overflow).not.toBe('hidden');
+      expect(node.style.overflowY).not.toBe('hidden');
+    }
+  });
+
+  it('keeps every "Load more" page in the one in-flow list', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        search: (url) =>
+          url.includes('after=CURSOR1')
+            ? new Response(searchBody(PAGE_TWO, null), { status: 200 })
+            : new Response(searchBody(PAGE_ONE, 'CURSOR1'), { status: 200 }),
+      }),
+    );
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('08:22 · EUS → MAN → WAT');
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    await screen.findByText('11:40 · EUS → MAN → WAT');
+
+    // Page 2's rows must land in the SAME in-flow list as page 1's, so the
+    // page's own scrollbar reaches them -- under the removed `ScrollArea`
+    // each "Load more" appended straight into the clipped region.
+    const list = document.querySelector('[data-train-results]') as HTMLElement;
+    for (const label of ['08:22 · EUS → MAN → WAT', '10:05 · CRE → MAN → WAT', '11:40 · EUS → MAN → WAT']) {
+      expect(list.contains(screen.getByText(label))).toBe(true);
+    }
+  });
+
+  // The row header can no longer be `wrap="nowrap"`: without the removed
+  // `ScrollArea` viewport to absorb it into its own horizontal scroll, a
+  // summary plus "View live status" plus a "Track this train" button is
+  // wider than a ~360px screen, and a `nowrap` flex item's `min-width:
+  // auto` floor would push the whole page sideways. jsdom lays nothing out,
+  // so this is a tripwire against silent reintroduction -- the reasoning
+  // lives in `TrainSearchForm.tsx`'s own comment on this `Group`.
+  it('lets a result row wrap rather than forcing its actions onto the summary line', async () => {
+    vi.stubGlobal('fetch', mockFetchByUrl());
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    const summary = await screen.findByText('08:22 · EUS → MAN → WAT');
+    const row = summary.parentElement as HTMLElement;
+
+    // Mantine's `Group` resolves its `wrap` prop into the inline
+    // `--group-wrap` custom property (`Group.mjs`'s `varsResolver`), which
+    // its stylesheet feeds to `flex-wrap` -- so that variable, not
+    // `style.flexWrap`, is where `wrap="nowrap"` would show up.
+    expect(row.style.getPropertyValue('--group-wrap')).toBe('wrap');
+    // ...and the actions still read flush right on whichever line they land
+    // on, which `justify="space-between"` would NOT do once wrapped.
+    const actions = screen.getAllByRole('link', { name: 'View live status' })[0]
+      .parentElement as HTMLElement;
+    expect(actions.style.marginInlineStart).toBe('auto');
+  });
+
   it('renders a "?" placeholder when origin or destination is unknown', async () => {
     vi.stubGlobal(
       'fetch',

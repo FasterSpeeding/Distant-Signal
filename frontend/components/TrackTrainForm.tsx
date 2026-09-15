@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Autocomplete, Badge, Button, Group, ScrollArea, Stack, Text } from '@mantine/core';
+import { Alert, Autocomplete, Badge, Button, Group, Stack, Text } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -521,7 +521,46 @@ export function TrackTrainForm({
    * already empty (state 5 below) is distinguished from one that had rows
    * but none survived filtering (the two new sentences inside the
    * `'ldbws'`/`'cif'` branches) -- different honest meanings, different
-   * copy. */
+   * copy.
+   *
+   * Neither row-list branch below is wrapped in a `ScrollArea`, and that is
+   * load-bearing. Both used to be (`<ScrollArea mah={220}
+   * offsetScrollbars>`), which did not scroll -- it hard-clipped. A Mantine
+   * `ScrollArea` root is `position: relative; overflow: hidden`
+   * (`@mantine/core/styles/ScrollArea.css`, `.m_d57069b5`) while its
+   * viewport is `height: 100%`. With only `mah` on the root, the root's own
+   * `height` stays `auto`, so that `100%` resolves to `auto` too (CSS 2.1
+   * §10.5: a percentage height against a content-sized containing block
+   * computes to `auto`): the viewport grew to its full content height and
+   * so never overflowed *itself* -- nothing scrolled -- while the root
+   * clamped to 220px and hid the rest behind `overflow: hidden`. Mantine's
+   * own scrollbar is sized from `scrollHeight` vs `clientHeight`, equal
+   * here, so it never appeared to hint at it either, and the native one is
+   * suppressed (`scrollbar-width: none`).
+   *
+   * That is worse here than in the two list pages with the same defect
+   * (`IncidentSearchForm.tsx`, since fixed, and `TrainSearchForm.tsx`):
+   * these rows are `role="button"` pickers, not text. At ~28px a row the
+   * 220px cap landed after roughly 4-5 of them, and every row past it was
+   * unselectable -- unreachable by pointer and by wheel, and reachable by
+   * keyboard only into a dead end (a browser does scroll an `overflow:
+   * hidden` box to reveal a focused descendant, which parked the box at an
+   * offset the user had no gesture to undo, hiding the *earlier* rows
+   * instead). Silently, too: the rows were in the DOM and in the a11y tree,
+   * so nothing said a departure had been hidden.
+   *
+   * `ScrollArea.Autosize` IS the Mantine component that supports a max
+   * height (it wraps the root in a `display: flex` / `flex: 1` /
+   * `overflow: hidden` chain, which is what makes the root's height
+   * definite), but a bounded scroller isn't wanted here anyway: this picker
+   * is rendered in the page flow inside the form (see the `mih={72}`
+   * `Stack` below), not in a popover or a dropdown, so there is no
+   * containing box it has to fit. Both sources are capped at 10 rows
+   * upstream -- LDBWS by `poller-ldbws`'s `--num-rows` (default 10) and CIF
+   * by `schedule_network_departures`' "next 10, now-forward" publication
+   * (`crates/api/migrations/20260904110000_schedule_network_departures.sql`)
+   * -- so the unbounded list is ~280px at worst, barely past the cap it
+   * replaces, and the page's own scrollbar reaches all of it. */
   function pickerContent() {
     if (!originValid) {
       return (
@@ -581,43 +620,45 @@ export function TrackTrainForm({
         );
       }
       return (
-        <ScrollArea mah={220} offsetScrollbars>
-          <Stack gap="xs">
-            {filtered.map((row) => {
-              const clickable = !row.isCancelled;
-              const badge = row.isCancelled ? (
-                <Badge color="red">Cancelled</Badge>
-              ) : row.delayMinutes > 0 ? (
-                <Badge color="orange">+{row.delayMinutes} min</Badge>
-              ) : (
-                <Badge color="green">On time</Badge>
-              );
-              return (
-                <Group
-                  key={row.serviceId}
-                  justify="space-between"
-                  wrap="nowrap"
-                  role={clickable ? 'button' : undefined}
-                  tabIndex={clickable ? 0 : undefined}
-                  onClick={clickable ? () => pickDeparture(row) : undefined}
-                  onKeyDown={
-                    clickable
-                      ? (event) => {
-                          if (event.key === 'Enter' || event.key === ' ') pickDeparture(row);
-                        }
-                      : undefined
-                  }
-                  style={{ cursor: clickable ? 'pointer' : 'default', opacity: clickable ? 1 : 0.6 }}
-                >
-                  <Text size="sm">
-                    {row.scheduled} · {row.destinationCrs} · {row.operator}
-                  </Text>
-                  {badge}
-                </Group>
-              );
-            })}
-          </Stack>
-        </ScrollArea>
+        // Deliberately NOT wrapped in a `ScrollArea` -- see
+        // `pickerContent`'s own doc comment for the full reasoning. This
+        // branch's rows are `role="button"` pickers, so the clipping this
+        // used to cause made them literally unselectable.
+        <Stack gap="xs" data-departure-picker-rows>
+          {filtered.map((row) => {
+            const clickable = !row.isCancelled;
+            const badge = row.isCancelled ? (
+              <Badge color="red">Cancelled</Badge>
+            ) : row.delayMinutes > 0 ? (
+              <Badge color="orange">+{row.delayMinutes} min</Badge>
+            ) : (
+              <Badge color="green">On time</Badge>
+            );
+            return (
+              <Group
+                key={row.serviceId}
+                justify="space-between"
+                wrap="nowrap"
+                role={clickable ? 'button' : undefined}
+                tabIndex={clickable ? 0 : undefined}
+                onClick={clickable ? () => pickDeparture(row) : undefined}
+                onKeyDown={
+                  clickable
+                    ? (event) => {
+                        if (event.key === 'Enter' || event.key === ' ') pickDeparture(row);
+                      }
+                    : undefined
+                }
+                style={{ cursor: clickable ? 'pointer' : 'default', opacity: clickable ? 1 : 0.6 }}
+              >
+                <Text size="sm">
+                  {row.scheduled} · {row.destinationCrs} · {row.operator}
+                </Text>
+                {badge}
+              </Group>
+            );
+          })}
+        </Stack>
       );
     }
     // picker.source === 'cif' -- Operator never filters this source
@@ -639,69 +680,70 @@ export function TrackTrainForm({
             No upcoming scheduled departures match the destination you&apos;ve entered.
           </Text>
         ) : (
-          <ScrollArea mah={220} offsetScrollbars>
-            <Stack gap="xs">
-              {filtered.map((row) => (
-                <Group
-                  key={row.uid}
-                  justify="space-between"
-                  wrap="nowrap"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => pickCifDeparture(row)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') pickCifDeparture(row);
-                  }}
-                  style={{ cursor: 'pointer' }}
+          // Deliberately NOT wrapped in a `ScrollArea` -- see
+          // `pickerContent`'s own doc comment, and the LDBWS branch's own
+          // copy of this note. Same `role="button"` rows, same defect.
+          <Stack gap="xs" data-departure-picker-rows>
+            {filtered.map((row) => (
+              <Group
+                key={row.uid}
+                justify="space-between"
+                wrap="nowrap"
+                role="button"
+                tabIndex={0}
+                onClick={() => pickCifDeparture(row)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') pickCifDeparture(row);
+                }}
+                style={{ cursor: 'pointer' }}
+              >
+                <Text size="sm">
+                  {row.scheduled}
+                  {row.destinationCrs ? ` · ${row.destinationCrs}` : ''}
+                </Text>
+                {/* A secondary action, deliberately separate from the row's
+                    own click-to-select behaviour above: this navigates to
+                    the train's own public status page
+                    (`/train/[uid]/[date]`) WITHOUT filling/submitting the
+                    tracking form at all, for a visitor who just wants to
+                    look, not track. `row.uid` is a real CIF schedule UID
+                    here (unlike the LDBWS branch above, whose
+                    `DepartureRow` carries no train UID at all -- Darwin's
+                    `serviceId` is a different identifier scheme entirely,
+                    and the public page is keyed on the CIF/TRUST one --
+                    so that branch has nothing honest to link this action
+                    to and doesn't render it).
+
+                    `stopPropagation` on BOTH handlers, not just `onClick`:
+                    this link sits inside the row's own `role="button"`
+                    `onClick`/`onKeyDown`, so without it, either activation
+                    path would ALSO select the row for tracking --
+                    a plain click bubbles up to the row's `onClick`, and an
+                    Enter/Space keydown on the focused link bubbles up to
+                    the row's `onKeyDown` before the browser's own
+                    synthesized click on the anchor even fires. The link
+                    keeps its own native Enter-to-follow behaviour and
+                    remains a normal, independently tab-reachable focus
+                    stop -- only the *bubbling into the row* is stopped.
+
+                    The linked date is `row.dayOffset` days past today, not
+                    a single hoisted "today" shared by every row -- the
+                    public train page is keyed by `(train_uid,
+                    service_date)`, and a post-midnight row's real
+                    service_date is tomorrow, not today (same reasoning as
+                    `pickCifDeparture` itself). */}
+                <TextLink
+                  href={`/train/${encodeURIComponent(row.uid)}/${dayjs()
+                    .add(row.dayOffset ?? 0, 'day')
+                    .format('YYYY-MM-DD')}`}
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
                 >
-                  <Text size="sm">
-                    {row.scheduled}
-                    {row.destinationCrs ? ` · ${row.destinationCrs}` : ''}
-                  </Text>
-                  {/* A secondary action, deliberately separate from the row's
-                      own click-to-select behaviour above: this navigates to
-                      the train's own public status page
-                      (`/train/[uid]/[date]`) WITHOUT filling/submitting the
-                      tracking form at all, for a visitor who just wants to
-                      look, not track. `row.uid` is a real CIF schedule UID
-                      here (unlike the LDBWS branch above, whose
-                      `DepartureRow` carries no train UID at all -- Darwin's
-                      `serviceId` is a different identifier scheme entirely,
-                      and the public page is keyed on the CIF/TRUST one --
-                      so that branch has nothing honest to link this action
-                      to and doesn't render it).
-
-                      `stopPropagation` on BOTH handlers, not just `onClick`:
-                      this link sits inside the row's own `role="button"`
-                      `onClick`/`onKeyDown`, so without it, either activation
-                      path would ALSO select the row for tracking --
-                      a plain click bubbles up to the row's `onClick`, and an
-                      Enter/Space keydown on the focused link bubbles up to
-                      the row's `onKeyDown` before the browser's own
-                      synthesized click on the anchor even fires. The link
-                      keeps its own native Enter-to-follow behaviour and
-                      remains a normal, independently tab-reachable focus
-                      stop -- only the *bubbling into the row* is stopped.
-
-                      The linked date is `row.dayOffset` days past today, not
-                      a single hoisted "today" shared by every row -- the
-                      public train page is keyed by `(train_uid,
-                      service_date)`, and a post-midnight row's real
-                      service_date is tomorrow, not today (same reasoning as
-                      `pickCifDeparture` itself). */}
-                  <TextLink
-                    href={`/train/${encodeURIComponent(row.uid)}/${dayjs()
-                      .add(row.dayOffset ?? 0, 'day')
-                      .format('YYYY-MM-DD')}`}
-                    onClick={(event) => event.stopPropagation()}
-                    onKeyDown={(event) => event.stopPropagation()}
-                  >
-                    View live status
-                  </TextLink>
-                </Group>
-              ))}
-            </Stack>
-          </ScrollArea>
+                  View live status
+                </TextLink>
+              </Group>
+            ))}
+          </Stack>
         )}
       </>
     );
@@ -780,9 +822,11 @@ export function TrackTrainForm({
       {/* Always present -- never absent from the DOM, per
           docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
           Decision 4. `mih={72}` blunts the size jump between the
-          one/two-line text states; row-list states remain bounded by
-          `ScrollArea`'s own `mah={220}` and can legitimately grow past
-          the minimum. */}
+          one/two-line text states; row-list states can legitimately grow
+          past the minimum and are deliberately given no maximum -- see
+          `pickerContent`'s own doc comment for why the `mah`-capped
+          `ScrollArea` that used to bound them was a clip, not a scroller,
+          and why nothing replaced it. */}
       <Stack gap="xs" mih={72}>
         {pickerContent()}
       </Stack>
