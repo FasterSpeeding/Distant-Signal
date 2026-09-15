@@ -222,8 +222,8 @@ describe('DashboardPage', () => {
 
   // The "Right now" list is capped at 5 cards while its heading states the
   // true total, so anything past the fifth affected line used to be counted
-  // and then silently dropped. These cover the overflow line that now names
-  // what is missing and links out to the full list.
+  // and then silently dropped. These cover the overflow line that now says
+  // how many are missing and links out to the full list.
   describe('"Right now" overflow beyond the 5 rendered cards', () => {
     // Zero-padded names so the module's alphabetical tiebreak (every line
     // here shares one severity) is the numeric order the assertions read in.
@@ -240,7 +240,16 @@ describe('DashboardPage', () => {
       });
     }
 
-    it('names the lines it is not showing and links to the full list', async () => {
+    /** The overflow affordance's own link, not the identically-labelled
+     * "Browse all lines" this page already renders beside its intro/"Your
+     * Lines" heading -- found by scoping to the row the overflow sentence
+     * sits in, so the assertion can't accidentally pass on the other one. */
+    function overflowLink(sentence: RegExp) {
+      const note = screen.getByText(sentence);
+      return within(note.parentElement as HTMLElement).getByRole('link', { name: 'Browse all lines' });
+    }
+
+    it('counts the lines it is not showing and links to the full list', async () => {
       vi.mocked(api.getLineStatusForMode).mockResolvedValue(disruptedReports(12));
       renderWithMantine(await DashboardPage());
       expect(screen.getByText(/12 lines not at Good Service right now/)).toBeInTheDocument();
@@ -248,16 +257,47 @@ describe('DashboardPage', () => {
       expect(screen.getByRole('link', { name: /Line 05/ })).toBeInTheDocument();
       expect(screen.queryByRole('link', { name: /Line 06/ })).not.toBeInTheDocument();
       expect(
-        screen.getByText(/Showing the 5 most disrupted — 7 more lines are not at Good Service\./),
+        screen.getByText(/Showing the first 5 — 7 more lines are not at Good Service\./),
       ).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: 'View all lines' })).toHaveAttribute('href', '/lines');
+      expect(overflowLink(/7 more lines are not at Good Service/)).toHaveAttribute('href', '/lines');
     });
 
     it('says "line is", not "lines are", when exactly one is hidden', async () => {
       vi.mocked(api.getLineStatusForMode).mockResolvedValue(disruptedReports(6));
       renderWithMantine(await DashboardPage());
       expect(
-        screen.getByText(/Showing the 5 most disrupted — 1 more line is not at Good Service\./),
+        screen.getByText(/Showing the first 5 — 1 more line is not at Good Service\./),
+      ).toBeInTheDocument();
+    });
+
+    it('hides the least severe lines, not an arbitrary five', async () => {
+      // Guards the "first" in the copy actually meaning worst-first: four
+      // severe lines plus two mild ones, and it must be the mild pair that
+      // ends up behind the overflow line. Named so alphabetical order alone
+      // would put the mild ones FIRST, so this fails if the severity sort is
+      // dropped or reversed.
+      const mild = (id: string, name: string) =>
+        report({
+          id,
+          name,
+          lineStatuses: [
+            { statusSeverity: 9, statusSeverityDescription: 'Minor Delays', reason: '', sampleAvailability: { state: 'no-coverage' } } as never,
+          ],
+        });
+      vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+        mild('aardvark', 'Aardvark'),
+        mild('abacus', 'Abacus'),
+        ...disruptedReports(4),
+      ]);
+      renderWithMantine(await DashboardPage());
+      expect(screen.getByText(/6 lines not at Good Service right now/)).toBeInTheDocument();
+      // Four severe lines fill four of the five slots; the fifth goes to the
+      // alphabetically-first mild line, and only "Abacus" is hidden.
+      expect(screen.getByRole('link', { name: /Line 04/ })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /Aardvark/ })).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /Abacus/ })).not.toBeInTheDocument();
+      expect(
+        screen.getByText(/Showing the first 5 — 1 more line is not at Good Service\./),
       ).toBeInTheDocument();
     });
 
@@ -268,14 +308,16 @@ describe('DashboardPage', () => {
       renderWithMantine(await DashboardPage());
       expect(screen.getByText(/5 lines not at Good Service right now/)).toBeInTheDocument();
       expect(screen.getByRole('link', { name: /Line 05/ })).toBeInTheDocument();
-      expect(screen.queryByText(/most disrupted/)).not.toBeInTheDocument();
-      expect(screen.queryByRole('link', { name: 'View all lines' })).not.toBeInTheDocument();
+      expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument();
+      // The anonymous branch's own "Browse all lines" is still there; what
+      // must be absent is a second one, from the overflow row.
+      expect(screen.getAllByRole('link', { name: 'Browse all lines' })).toHaveLength(1);
     });
 
     it('shows no overflow line for a short list', async () => {
       vi.mocked(api.getLineStatusForMode).mockResolvedValue(disruptedReports(2));
       renderWithMantine(await DashboardPage());
-      expect(screen.queryByText(/most disrupted/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument();
     });
 
     it('counts only lines the module itself lists -- good-service and merged TfL rows inflate neither half', async () => {
@@ -297,7 +339,7 @@ describe('DashboardPage', () => {
       renderWithMantine(await DashboardPage());
       expect(screen.getByText(/6 lines not at Good Service right now/)).toBeInTheDocument();
       expect(
-        screen.getByText(/Showing the 5 most disrupted — 1 more line is not at Good Service\./),
+        screen.getByText(/Showing the first 5 — 1 more line is not at Good Service\./),
       ).toBeInTheDocument();
     });
 
@@ -308,11 +350,11 @@ describe('DashboardPage', () => {
       renderWithMantine(await DashboardPage());
       expect(screen.getByRole('heading', { name: 'Right now', level: 2 })).toBeInTheDocument();
       expect(
-        screen.getByText(/Showing the 5 most disrupted — 2 more lines are not at Good Service\./),
+        screen.getByText(/Showing the first 5 — 2 more lines are not at Good Service\./),
       ).toBeInTheDocument();
-      // "Browse all lines" beside "Your Lines" also points at /lines; the
-      // overflow affordance is its own distinctly-named link, not that one.
-      expect(screen.getByRole('link', { name: 'View all lines' })).toHaveAttribute('href', '/lines');
+      // "Browse all lines" beside the "Your Lines" heading points at /lines
+      // too, so this scopes to the overflow row's own copy of it.
+      expect(overflowLink(/2 more lines are not at Good Service/)).toHaveAttribute('href', '/lines');
     });
   });
 

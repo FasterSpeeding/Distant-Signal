@@ -436,18 +436,36 @@ function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodService
             // state in `useState`, and `app/lines/page.tsx` takes no
             // `searchParams` -- so this cannot hand the destination the
             // "not at Good Service" context the way `/incidents` links can
-            // hand over their filters. It links to the full list anyway and
-            // says plainly what it is: every affected line is reachable
-            // there (sorted to the top in one click on Status), which is
-            // strictly better than the previous state of the remaining
-            // lines being counted but unreachable. Wording avoids promising
-            // a filtered view.
+            // hand over their filters. It links to the full list anyway:
+            // every affected line is reachable and status-badged there (its
+            // Status column can be sorted worst-first, though that takes two
+            // clicks -- `toggleSort` starts a fresh column at `asc`, and
+            // `severityRank` ranks Good Service lowest), which beats the
+            // remaining lines being counted and then unreachable. The copy
+            // promises the full list, not a filtered view.
+            //
+            // "the first N", not "the N most disrupted": the sort ranks by
+            // `severityRank`'s five groups and tiebreaks alphabetically, so
+            // two lines in the same group are ordered by name -- a Suspended
+            // line can sit below a Rail Replacement one. "First" is what the
+            // module can actually promise.
+            //
+            // Deliberately reuses this page's existing label for `/lines`
+            // ("Browse all lines", beside the anonymous intro and the "Your
+            // Lines" heading) rather than inventing a second name for the
+            // same destination on the same page.
             <Group gap="xs" wrap="wrap">
               <Text size="sm" c="dimmed">
-                Showing the {worst.length} most disrupted — {hidden} more{' '}
+                Showing the first {worst.length} — {hidden} more{' '}
                 {hidden === 1 ? 'line is' : 'lines are'} not at Good Service.
               </Text>
-              <TextLink href="/lines">View all lines</TextLink>
+              {/* `underline="always"`: this sits in the flow of a sentence
+                  rather than in a nav or beside a heading, so colour must
+                  not be the only thing marking it (see TextLink's own doc
+                  comment, WCAG 1.4.1). */}
+              <TextLink href="/lines" underline="always">
+                Browse all lines
+              </TextLink>
             </Group>
           )}
         </>
