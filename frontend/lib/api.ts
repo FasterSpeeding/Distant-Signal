@@ -29,6 +29,7 @@ import type {
   GroupDetail,
   GroupMember,
   GroupTrain,
+  SharedGroupTrain,
   GroupJoinPreview,
 } from './types';
 
@@ -621,6 +622,26 @@ export async function getGroupMembers(id: string): Promise<GroupMember[]> {
 export async function getGroupTrains(id: string): Promise<GroupTrain[]> {
   const url = `${baseUrl()}/public/groups/${id}/trains`;
   return fetchJson<GroupTrain[]>(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+}
+
+/** `GET /public/groups/shared-trains` -- every train OTHER members have
+ * shared into any group the caller belongs to (never the caller's own
+ * tracked trains, which `getMyTrackedTrains()` already returns), each
+ * tagged with the group it came from and who shared it. Feeds
+ * `/track/mine`, which renders these alongside the caller's own rows.
+ *
+ * `null` on a `401`, exactly like `getMyGroups`/`getMyTrackedTrains` above
+ * and for the same reason: no id in the path, so a `401` can only ever
+ * mean "not logged in". `/track/mine` still keys its whole logged-out
+ * branch off `getMyTrackedTrains()` alone (see that page's own comment) --
+ * this one's `null` is folded into `[]` there, since "anonymous" is
+ * already answered by the time it's read. */
+export async function getSharedGroupTrains(): Promise<SharedGroupTrain[] | null> {
+  const url = `${baseUrl()}/public/groups/shared-trains`;
+  const response = await fetch(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+  if (response.status === 401) return null;
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<SharedGroupTrain[]>;
 }
 
 /** `GET /public/groups/join/{token}` -- unauthenticated on the backend

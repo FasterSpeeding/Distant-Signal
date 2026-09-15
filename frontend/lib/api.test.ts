@@ -28,6 +28,7 @@ import {
   getChatbotAccess,
   getStationSampleStats,
   getStationAccessibility,
+  getSharedGroupTrains,
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from './api';
@@ -757,6 +758,34 @@ describe('api client', () => {
   it('getMyTrackedTrains still throws on a non-401 failure', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
     await expect(getMyTrackedTrains()).rejects.toThrow(/500/);
+  });
+
+  it('getSharedGroupTrains fetches the correct URL, forwarding cookies, with no caching', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    await getSharedGroupTrains();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/groups/shared-trains',
+      expect.objectContaining({
+        cache: 'no-store',
+        headers: { Cookie: 'distant_signal_session=abc123' },
+      }),
+    );
+  });
+
+  it('getSharedGroupTrains returns null on a 401 (not logged in), matching getMyTrackedTrains', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('no session', { status: 401 })));
+    await expect(getSharedGroupTrains()).resolves.toBeNull();
+  });
+
+  it('getSharedGroupTrains resolves an empty array as "no groups / nothing shared", not null', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    await expect(getSharedGroupTrains()).resolves.toEqual([]);
+  });
+
+  it('getSharedGroupTrains still throws on a non-401 failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    await expect(getSharedGroupTrains()).rejects.toThrow(/500/);
   });
 
   it('getDelayRepayEstimate fetches the correct URL with no caching', async () => {

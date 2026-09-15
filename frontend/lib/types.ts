@@ -892,6 +892,23 @@ export interface GroupTrain {
   addedByName: string | null;
 }
 
+/** `GET /public/groups/shared-trains`'s per-item shape
+ * (`crates/api/src/data/groups.rs`'s `SharedTrain`): a `GroupTrain` plus
+ * the group it was shared into, since this route's rows come from every
+ * group the caller belongs to at once rather than one named group.
+ *
+ * One item per (group, train) pair -- a train shared into two of the
+ * caller's groups arrives twice, once per group, so no attribution is
+ * lost on the wire; `/track/mine` merges those back into a single row
+ * carrying both group tags. Never includes the caller's OWN tracked
+ * trains (those are `TrackedTrainListItem`s already), and carries the same
+ * "never shown" privacy constraint `GroupTrain` does -- no tickets, no
+ * notification state, no exact tracked-at timestamp. */
+export interface SharedGroupTrain extends GroupTrain {
+  groupId: string;
+  groupName: string;
+}
+
 export interface GroupJoinPreview {
   groupId: string;
   groupName: string;
