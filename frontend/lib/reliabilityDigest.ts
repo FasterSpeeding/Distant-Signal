@@ -95,3 +95,50 @@ export function computePunctualitySummary(trains: TrackedTrainListItem[], today:
     worstJourneys,
   };
 }
+
+export interface DelayRepayRollup {
+  attachedTicketsWithOperator: number;
+  eligibleCount: number;
+  bandCounts: Record<string, number>;
+}
+
+/** The Delay Repay half's whole aggregation. Population is "tracked trains
+ * with an attached ticket that has a non-null operator" -- NOT "all
+ * tracked trains" (operator data only reliably exists via an attached
+ * ticket; the NR-primary "track this train" flow never captures one, and
+ * tracked-train read models carry no operator field at all -- spec
+ * Correction 2). A standalone ticket (`trackedTrainId: null`) is excluded
+ * from both numerator and denominator: there is no journey yet to have
+ * been delayed on. An attached ticket with `operator: null` is excluded
+ * from the denominator too, NOT counted as "0% eligible" -- this app has
+ * no idea whether that operator would have paid out at all, and folding
+ * "we don't know" into the same bucket as "we know and it's zero" would
+ * misstate the denominator's own meaning (spec Decision 3).
+ *
+ * Consumes `TicketListItem.estimate` -- the already-serialized output of
+ * `estimate_delay_repay`, computed once server-side by
+ * `build_ticket_list_item` -- never calls `estimate_delay_repay` itself
+ * (spec Correction 5). Deliberately computes NO average/blended
+ * percentage and NO currency total: `percentage` is a percentage of an
+ * unknown fare (this app never stores ticket prices), so averaging two
+ * different tickets' percentages produces a number with no unit anyone
+ * can act on (spec Correction 1, Decision 3). `bandCounts`' keys are
+ * `${scheme}-${bandMinutes}` (e.g. "DR15-30") -- a plain count per band
+ * actually observed, nothing more. */
+export function computeDelayRepayRollup(tickets: TicketListItem[]): DelayRepayRollup {
+  const attached = tickets.filter((t) => t.trackedTrainId !== null && t.operator !== null);
+  const eligible = attached.filter((t) => t.estimate !== null);
+
+  const bandCounts: Record<string, number> = {};
+  for (const t of eligible) {
+    const estimate = t.estimate!;
+    const key = `${estimate.scheme}-${estimate.bandMinutes}`;
+    bandCounts[key] = (bandCounts[key] ?? 0) + 1;
+  }
+
+  return {
+    attachedTicketsWithOperator: attached.length,
+    eligibleCount: eligible.length,
+    bandCounts,
+  };
+}

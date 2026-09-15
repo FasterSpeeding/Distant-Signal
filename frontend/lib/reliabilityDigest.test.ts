@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { isEligibleForPunctuality, computePunctualitySummary } from './reliabilityDigest';
-import type { TrackedTrainListItem } from './types';
+import { isEligibleForPunctuality, computePunctualitySummary, computeDelayRepayRollup } from './reliabilityDigest';
+import type { TrackedTrainListItem, TicketListItem } from './types';
 
 const TODAY = '2026-09-12';
 
@@ -127,5 +127,77 @@ describe('computePunctualitySummary', () => {
     );
     expect(summary.avgDelayMinutes).toBe(5);
     expect(summary.cancelledCount).toBe(1);
+  });
+});
+
+function ticket(overrides: Partial<TicketListItem> = {}): TicketListItem {
+  return {
+    id: 1,
+    trackedTrainId: 1,
+    operator: 'LNER',
+    ticketType: null,
+    originCrs: 'KGX',
+    destinationCrs: 'YRK',
+    originName: null,
+    destinationName: null,
+    source: 'manual',
+    createdAt: '2026-09-09T12:00:00Z',
+    serviceDate: '2026-09-10',
+    pinOriginCrs: 'KGX',
+    pinDestinationCrs: 'YRK',
+    pinScheduledDeparture: '2026-09-10T09:00:00Z',
+    resolutionStatus: 'resolved',
+    trainUid: 'W12345',
+    status: 'completed',
+    delayMinutes: 35,
+    estimate: { scheme: 'DR30', bandMinutes: 30, percentage: 50, disclaimer: 'estimate disclaimer' },
+    claimUrl: 'https://delayrepay.lner.co.uk/delayrepayV2/',
+    disclaimer: 'route disclaimer',
+    customName: null,
+    ...overrides,
+  };
+}
+
+describe('computeDelayRepayRollup', () => {
+  it('a standalone ticket (trackedTrainId: null) is excluded from both numerator and denominator', () => {
+    const rollup = computeDelayRepayRollup([ticket({ trackedTrainId: null, estimate: null })]);
+    expect(rollup.attachedTicketsWithOperator).toBe(0);
+    expect(rollup.eligibleCount).toBe(0);
+  });
+
+  it('an attached ticket with operator: null is excluded from the denominator, not counted as ineligible', () => {
+    const rollup = computeDelayRepayRollup([ticket({ operator: null, estimate: null })]);
+    expect(rollup.attachedTicketsWithOperator).toBe(0);
+    expect(rollup.eligibleCount).toBe(0);
+  });
+
+  it('an attached ticket with a non-null operator but a null estimate counts toward the denominator only', () => {
+    const rollup = computeDelayRepayRollup([ticket({ estimate: null })]);
+    expect(rollup.attachedTicketsWithOperator).toBe(1);
+    expect(rollup.eligibleCount).toBe(0);
+  });
+
+  it('bandCounts tallies one ticket in each of the three known bands', () => {
+    const rollup = computeDelayRepayRollup([
+      ticket({ id: 1, estimate: { scheme: 'DR15', bandMinutes: 15, percentage: 25, disclaimer: 'd' } }),
+      ticket({ id: 2, estimate: { scheme: 'DR15', bandMinutes: 30, percentage: 50, disclaimer: 'd' } }),
+      ticket({ id: 3, estimate: { scheme: 'DR30', bandMinutes: 60, percentage: 100, disclaimer: 'd' } }),
+    ]);
+    expect(rollup.attachedTicketsWithOperator).toBe(3);
+    expect(rollup.eligibleCount).toBe(3);
+    expect(rollup.bandCounts).toEqual({
+      'DR15-15': 1,
+      'DR15-30': 1,
+      'DR30-60': 1,
+    });
+  });
+
+  it('never produces a currency/percentage total field of any kind', () => {
+    const rollup = computeDelayRepayRollup([ticket()]);
+    expect(rollup).not.toHaveProperty('totalPercentage');
+    expect(rollup).not.toHaveProperty('averagePercentage');
+    expect(rollup).not.toHaveProperty('estimatedTotal');
+    expect(rollup).not.toHaveProperty('total');
+    expect(Object.keys(rollup).sort()).toEqual(['attachedTicketsWithOperator', 'bandCounts', 'eligibleCount']);
   });
 });
