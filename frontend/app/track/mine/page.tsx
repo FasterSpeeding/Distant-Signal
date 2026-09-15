@@ -1,6 +1,6 @@
 import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import Link from 'next/link';
-import { getMyTrackedTrains, getMyTickets } from '@/lib/api';
+import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
 import { TextLink } from '@/components/TextLink';
 import { TicketSummary } from '@/components/TicketSummary';
@@ -13,6 +13,7 @@ import { RenameTicketButton } from '@/components/RenameTicketButton';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
+import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import type { TrackedTrainListItem, TicketListItem } from '@/lib/types';
 
 // See app/page.tsx's own `revalidate = 0` comment for the rationale: this
@@ -47,9 +48,22 @@ export const revalidate = 0;
  * `AuthenticatedUser`-only, also no id in its path), so a `null` from one
  * always means a `null` from the other in practice -- this page still
  * defensively falls back to `[]` for `tickets` rather than assuming that
- * invariant blindly, since the two are independent HTTP calls. */
+ * invariant blindly, since the two are independent HTTP calls.
+ *
+ * `getSharedGroupTrains()` is the third call, gated and null-on-401 in
+ * exactly the same way, and is what makes this "my trains" rather than
+ * "trains I personally pressed Track on": a train someone shared into a
+ * group the caller belongs to belongs in this list too, tagged with where
+ * it came from. Before this, sharing a train had no effect whatsoever on
+ * the recipient's own tracked-trains page -- the only place a shared train
+ * appeared at all was `/groups/{id}`, which a member had to already think
+ * to open. */
 export default async function MyTrackedTrainsPage() {
-  const [trains, tickets] = await Promise.all([getMyTrackedTrains(), getMyTickets()]);
+  const [trains, tickets, sharedTrains] = await Promise.all([
+    getMyTrackedTrains(),
+    getMyTickets(),
+    getSharedGroupTrains(),
+  ]);
 
   if (trains === null) {
     return (
@@ -74,7 +88,24 @@ export default async function MyTrackedTrainsPage() {
     ticketsByTrain.set(ticket.trackedTrainId, existing);
   }
 
-  const nothingToShow = trains.length === 0 && unattachedTickets.length === 0;
+  // De-duplicated per train, and filtered against the caller's own rows --
+  // see `mergeSharedTrains`' own doc comment for why both halves of that
+  // are the frontend's job rather than the query's.
+  const shared = mergeSharedTrains(sharedTrains ?? [], new Set(trains.map((t) => t.id)));
+
+  // Split deliberately. `hasOwnContent` is the OLD `!nothingToShow`, and
+  // still gates the reliability digest alone: that card is the caller's
+  // own punctuality/Delay Repay record ("Your reliability"), computed from
+  // their own trains and tickets, so a shared train is not evidence about
+  // it and must not make an otherwise-empty digest appear.
+  //
+  // `nothingToShow` now also accounts for shared trains: a member who
+  // tracks nothing themselves but has trains shared with them has
+  // something to show, and the empty state ("you haven't tracked any
+  // trains") would be both wrong and -- since it's the branch that hides
+  // the list entirely -- the very bug this page had.
+  const hasOwnContent = trains.length > 0 || unattachedTickets.length > 0;
+  const nothingToShow = !hasOwnContent && shared.length === 0;
 
   return (
     <Stack p="lg" gap="lg">
@@ -85,7 +116,7 @@ export default async function MyTrackedTrainsPage() {
           <TextLink href="/track/mine/add-ticket">Add a ticket</TextLink>
         </Group>
       </Group>
-      {!nothingToShow && <ReliabilityDigest trains={trains} tickets={tickets ?? []} />}
+      {hasOwnContent && <ReliabilityDigest trains={trains} tickets={tickets ?? []} />}
       {nothingToShow ? (
         <Text c="dimmed">
           You haven&apos;t tracked any trains or added any tickets yet.{' '}
@@ -93,10 +124,26 @@ export default async function MyTrackedTrainsPage() {
         </Text>
       ) : (
         <>
-          {trains.length > 0 && (
+          {(trains.length > 0 || shared.length > 0) && (
+            // ONE list, not a "shared with me" section of its own: the
+            // whole point of the fix is that a shared train sits alongside
+            // the caller's own, which is also why each shared row carries
+            // its "from <group>"/"Shared by <who>" tags -- in a merged
+            // list, a row with no attribution would read as one the caller
+            // tracked themselves.
+            //
+            // Own rows first, shared rows after, each half in the order
+            // its own endpoint returned. The two halves have no comparable
+            // ordering key to interleave on: the caller's own are ordered
+            // by `trackedAt`, which a shared train deliberately never
+            // exposes (spec §4's "Never shown" list), so any merged
+            // ordering would have to invent one.
             <Stack gap="xs">
               {trains.map((train) => (
                 <TrackedTrainListRow key={train.id} train={train} tickets={ticketsByTrain.get(train.id) ?? []} />
+              ))}
+              {shared.map((row) => (
+                <SharedTrainListRow key={row.train.trainSubscriptionId} row={row} />
               ))}
             </Stack>
           )}
@@ -212,6 +259,85 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
   );
 }
 
+/** A train another member shared into a group the caller belongs to,
+ * rendered in the same list as the caller's own rows above.
+ *
+ * Deliberately NOT a `TrackedTrainListRow` with extra props: none of that
+ * row's controls apply to a train the caller doesn't own. There's no
+ * rename (`POST /Train/{id}/name` is owner-scoped), no ticket sub-list
+ * (spec §4 forbids a shared train ever carrying ticket data at all), and
+ * no delete. What's left in common -- the display name, the when line, the
+ * status/delay badges -- is shared directly (`trackedTrainDisplayName`,
+ * `RowStatusBadge`) rather than duplicated.
+ *
+ * The header only links when the train has resolved to a real
+ * `(trainUid, serviceDate)`: that's `/train/[uid]/[date]`, which is public
+ * and unscoped. The by-id fallback the caller's own rows use
+ * (`/train/by-id/{id}` -> `GET /Train/{id}`) is owner-scoped and 404s for
+ * everyone else, so offering it here would be a link whose only possible
+ * outcome is a dead end -- the same reasoning `/groups/{id}`'s own shared
+ * rows apply by linking nowhere at all. */
+function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
+  const { train, groupNames } = row;
+  const displayName = trackedTrainDisplayName({
+    customName: train.customName,
+    pinOriginCrs: train.pinOriginCrs,
+    pinOriginName: train.pinOriginName,
+    pinDestinationCrs: train.pinDestinationCrs,
+    pinDestinationName: train.pinDestinationName,
+    serviceDate: train.serviceDate,
+    pinScheduledDeparture: train.pinScheduledDeparture,
+  });
+  // Same date-only degradation as the own-train row directly above, for
+  // the same reason (a pin with no schedule data yet has no departure
+  // time, and `Invalid Date` is never an acceptable label).
+  const when = train.pinScheduledDeparture
+    ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
+    : formatDate(train.serviceDate);
+  const href =
+    train.resolutionStatus === 'resolved' && train.trainUid
+      ? `/train/${train.trainUid}/${train.serviceDate}`
+      : null;
+  const heading = <Text fw={500}>{displayName}</Text>;
+
+  return (
+    <Card withBorder>
+      <Stack gap={4}>
+        <Group justify="space-between" wrap="nowrap" align="flex-start">
+          {href ? (
+            <Link href={href} style={{ textDecoration: 'none', color: 'inherit', flex: 1 }}>
+              {heading}
+            </Link>
+          ) : (
+            heading
+          )}
+          <RowStatusBadge train={train} />
+        </Group>
+        <Text size="sm" c="dimmed">
+          {when}
+        </Text>
+        <Group gap="xs" wrap="wrap">
+          {/* One badge per group this train reached the caller through --
+              a train shared into two of their groups is two tags, not an
+              arbitrarily-picked one. `addedByName` is `null` when the
+              sharer has neither a name nor a verified email on their
+              account; "a member" then, never a raw user id -- same
+              wording and same fallback `/groups/{id}`'s shared rows
+              already use. */}
+          {groupNames.map((groupName) => (
+            <Badge key={groupName} variant="light" color="grape">
+              from {groupName}
+            </Badge>
+          ))}
+          <Text size="sm" c="dimmed">
+            Shared by {train.addedByName ?? 'a member'}
+          </Text>
+        </Group>
+      </Stack>
+    </Card>
+  );
+}
+
 function UnattachedTicketRow({ ticket, trains }: { ticket: TicketListItem; trains: TrackedTrainListItem[] }) {
   // Same "find or track the train this is for" mechanism
   // `TicketEntryForm`'s own post-save next step uses -- the ticket's
@@ -270,7 +396,17 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: 'Cancelled',
 };
 
-function RowStatusBadge({ train }: { train: TrackedTrainListItem }) {
+/** Structural, not `TrackedTrainListItem`: `SharedTrainListRow` renders
+ * the identical badges off a `SharedGroupTrain`, whose `resolutionStatus`/
+ * `status` are plain `string`s on the wire rather than the own-list's
+ * narrowed unions. Both shapes satisfy this, and neither needs an adapter
+ * -- the branching below already treats every value as an opaque token
+ * (`STATUS_LABELS` falls back to the raw string for anything unlisted). */
+function RowStatusBadge({
+  train,
+}: {
+  train: { resolutionStatus: string; status: string | null; delayMinutes: number | null };
+}) {
   // `pending`/`unresolved` show the resolution status itself -- no
   // journey status exists yet for either. Once `resolved`, the journey
   // `status` plus a delay badge takes over, reusing the same "Xm
