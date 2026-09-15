@@ -27,6 +27,7 @@ import {
   getIncident,
   getChatbotAccess,
   getStationSampleStats,
+  getStationAccessibility,
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from './api';
@@ -141,6 +142,33 @@ describe('api client', () => {
       'http://test-api:8080/public/stations/EDB/sample-stats',
       expect.objectContaining({ cache: 'no-store' }),
     );
+  });
+
+  it('getStationAccessibility fetches the correct URL with hour caching', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ lifts: { count: 2 } }), { status: 200 })),
+    );
+    await expect(getStationAccessibility('EUS')).resolves.toEqual({ lifts: { count: 2 } });
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/stations/EUS/accessibility',
+      expect.objectContaining({ next: { revalidate: 3600 } }),
+    );
+  });
+
+  // The 404 is a meaningful application state for this route ("no stations
+  // row for this CRS at all"), distinct from the 200 {} the same route
+  // returns for a row that published no allowlisted keys -- the page-level
+  // wrapper words the two differently, so this must not collapse into a
+  // generic Error.
+  it('getStationAccessibility throws ApiNotFoundError on a 404', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    await expect(getStationAccessibility('ZZZ')).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('getStationAccessibility resolves an empty object as an ordinary 200, not an error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    await expect(getStationAccessibility('ZZZ')).resolves.toEqual({});
   });
 
   it('getLineStatusHistory builds the correct range URL', async () => {
