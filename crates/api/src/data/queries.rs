@@ -1981,6 +1981,533 @@ pub async fn lines_currently_reporting_incident(
     Ok(rows)
 }
 
+/// Deliberately lighter than `IncidentRow` -- no `description`, no
+/// `validity_periods`. See
+/// docs/superpowers/specs/2026-09-12-incident-archive-design.md Decision 7:
+/// a list row that may render dozens per page has no use for either field,
+/// and `description`'s raw HTML would otherwise force every list-rendering
+/// call site to sanitize it for nothing.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct IncidentSummaryRow {
+    pub incident_id: String,
+    pub summary: String,
+    pub operators: Vec<String>,
+    pub affected_stations: Vec<String>,
+    pub priority: i32,
+    pub is_planned: bool,
+    pub is_cleared: bool,
+    pub first_seen_at: chrono::DateTime<chrono::Utc>,
+    pub fetched_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Keyset cursor for `search_incidents`, matching
+/// `CallingPointDepartureCursor`'s own shape and rationale exactly (see
+/// that struct's doc comment) but over `(first_seen_at DESC, incident_id
+/// DESC)` instead of `(scheduled, train_uid)`. `routes::incidents` encodes
+/// this onto the wire and parses it back; nothing outside that module
+/// should construct one from user input directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncidentSearchCursor {
+    pub first_seen_at: chrono::DateTime<chrono::Utc>,
+    pub incident_id: String,
+}
+
+/// One page of incident-archive search results. `next_cursor` is `Some`
+/// only when there is genuinely at least one more row (the query fetches
+/// `limit + 1` to know that) -- same convention as
+/// `CallingPointDeparturePage`.
+#[derive(Debug, Clone)]
+pub struct IncidentSearchPage {
+    pub results: Vec<IncidentSummaryRow>,
+    pub next_cursor: Option<IncidentSearchCursor>,
+}
+
+/// The incident archive's one read: a keyset-paginated, dynamically
+/// filtered scan of `incidents`, ordered newest-`first_seen_at`-first with
+/// ties broken by `incident_id` descending -- see
+/// docs/superpowers/specs/2026-09-12-incident-archive-design.md Decision 4.
+/// Modelled directly on `search_schedule_calling_point_departures`'s
+/// "`fetch = limit + 1`, one extra row to detect `has_more`,
+/// `($n::type IS NULL OR condition)` per optional filter, keyset tuple
+/// comparison in `WHERE`, matching `ORDER BY`" shape.
+///
+/// **Unlike that function, this one never returns `Ok(None)`.** There is
+/// no "has this day been published yet" concept for `incidents` -- an
+/// unfiltered request that matches nothing (or a filter combination that
+/// matches nothing) is `Ok` with an empty `results` Vec, always a `200`
+/// with an empty array at the route layer, never a `404`.
+///
+/// `affected_stations` is the resolved station list for the caller's
+/// `line` filter (Decision 2's approximation) when one was given, or
+/// `None` for "no line filter" -- this function has no knowledge of line
+/// catalogues at all; that resolution happens in `routes::incidents`
+/// before this is called.
+#[allow(clippy::too_many_arguments)]
+pub async fn search_incidents(
+    pool: &PgPool,
+    operators: Option<Vec<String>>,
+    affected_stations: Option<Vec<String>>,
+    is_planned: Option<bool>,
+    is_cleared: Option<bool>,
+    priority_min: Option<i32>,
+    priority_max: Option<i32>,
+    first_seen_from: Option<chrono::DateTime<chrono::Utc>>,
+    first_seen_to: Option<chrono::DateTime<chrono::Utc>>,
+    after: Option<&IncidentSearchCursor>,
+    limit: i64,
+) -> Result<IncidentSearchPage> {
+    let fetch = limit.saturating_add(1);
+
+    let rows: Vec<IncidentSummaryRow> = sqlx::query_as(
+        r#"
+            SELECT incident_id, summary, operators, affected_stations, priority,
+                   is_planned, is_cleared, first_seen_at, fetched_at
+            FROM incidents
+            WHERE ($1::text[]      IS NULL OR operators && $1)
+              AND ($2::text[]      IS NULL OR affected_stations && $2)
+              AND ($3::boolean     IS NULL OR is_planned = $3)
+              AND ($4::boolean     IS NULL OR is_cleared = $4)
+              AND ($5::integer     IS NULL OR priority >= $5)
+              AND ($6::integer     IS NULL OR priority <= $6)
+              AND ($7::timestamptz IS NULL OR first_seen_at >= $7)
+              AND ($8::timestamptz IS NULL OR first_seen_at <= $8)
+              AND ($9::timestamptz IS NULL
+                   OR (first_seen_at, incident_id) < ($9, $10))
+            ORDER BY first_seen_at DESC, incident_id DESC
+            LIMIT $11
+            "#,
+    )
+    .bind(operators)
+    .bind(affected_stations)
+    .bind(is_planned)
+    .bind(is_cleared)
+    .bind(priority_min)
+    .bind(priority_max)
+    .bind(first_seen_from)
+    .bind(first_seen_to)
+    .bind(after.map(|c| c.first_seen_at))
+    .bind(after.map(|c| c.incident_id.as_str()))
+    .bind(fetch)
+    .fetch_all(pool)
+    .await?;
+
+    let has_more = rows.len() as i64 > limit;
+    let mut page_rows = rows;
+    if has_more {
+        page_rows.truncate(limit as usize);
+    }
+
+    let next_cursor = if has_more {
+        page_rows.last().map(|r| IncidentSearchCursor {
+            first_seen_at: r.first_seen_at,
+            incident_id: r.incident_id.clone(),
+        })
+    } else {
+        None
+    };
+
+    Ok(IncidentSearchPage {
+        results: page_rows,
+        next_cursor,
+    })
+}
+
+/// Every fixture incident_id in this module is prefixed `archive-test-`
+/// and cleaned up by prefix, rather than day-scoped like the calling-point
+/// search tests (`incidents` has no natural per-test partition key the way
+/// `schedule_destination_departures` has `service_date`).
+#[cfg(test)]
+mod incident_search_query_tests {
+    use super::*;
+    use chrono::TimeZone;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    async fn delete_fixtures(pool: &PgPool) {
+        sqlx::query("DELETE FROM incidents WHERE incident_id LIKE 'archive-test-%'")
+            .execute(pool)
+            .await
+            .expect("cleanup fixture incidents rows");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_incident(
+        pool: &PgPool,
+        incident_id: &str,
+        operators: &[&str],
+        affected_stations: &[&str],
+        priority: i32,
+        is_planned: bool,
+        is_cleared: bool,
+        first_seen_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        sqlx::query(
+            "INSERT INTO incidents \
+                (incident_id, summary, description, operators, affected_stations, priority, \
+                 is_planned, is_cleared, first_seen_at) \
+             VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(incident_id)
+        .bind(format!("Fixture incident {incident_id}"))
+        .bind(operators)
+        .bind(affected_stations)
+        .bind(priority)
+        .bind(is_planned)
+        .bind(is_cleared)
+        .bind(first_seen_at)
+        .execute(pool)
+        .await
+        .expect("seed fixture incidents row");
+    }
+
+    fn at(hour: u32) -> chrono::DateTime<chrono::Utc> {
+        // Every fixture timestamp lands on a fixed far-future day so ties
+        // and ordering are exact and reproducible, mirroring
+        // `schedule_destination_departures_query_tests::fixture_date`'s own
+        // "far future, deterministic" rationale.
+        chrono::Utc
+            .with_ymd_and_hms(2099, 1, 1, hour, 0, 0)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn search_incidents_with_no_filters_returns_every_row_newest_first_ties_broken_by_incident_id_desc()
+     {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        seed_incident(&pool, "archive-test-1", &["VT"], &["WAT"], 1, false, false, at(9)).await;
+        // Two incidents sharing the SAME first_seen_at -- the tiebreak this
+        // test exists to prove.
+        seed_incident(&pool, "archive-test-2", &["VT"], &["WAT"], 1, false, false, at(10)).await;
+        seed_incident(&pool, "archive-test-3", &["VT"], &["WAT"], 1, false, false, at(10)).await;
+
+        let page = search_incidents(
+            &pool, None, None, None, None, None, None, None, None, None, 100,
+        )
+        .await
+        .expect("search");
+
+        let ids: Vec<&str> = page.results.iter().map(|r| r.incident_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["archive-test-3", "archive-test-2", "archive-test-1"],
+            "newest first_seen_at first; a tie at the same first_seen_at breaks on \
+             incident_id descending: {ids:?}"
+        );
+        assert!(page.next_cursor.is_none());
+        delete_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn search_incidents_operator_filter_matches_on_overlap_not_exact_match() {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        seed_incident(&pool, "archive-test-a", &["VT", "SW"], &["WAT"], 1, false, false, at(9)).await;
+        seed_incident(&pool, "archive-test-b", &["GW"], &["PAD"], 1, false, false, at(9)).await;
+
+        let page = search_incidents(
+            &pool,
+            Some(vec!["SW".to_string()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+
+        let ids: Vec<&str> = page.results.iter().map(|r| r.incident_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["archive-test-a"],
+            "an incident with operators {{VT, SW}} matches a request for SW alone: {ids:?}"
+        );
+        delete_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn search_incidents_affected_stations_filter_matches_on_overlap_and_excludes_no_overlap_incidents()
+     {
+        // This is the direct regression proving the "line" filter's
+        // approximation limitation at the primitive level: an incident with
+        // NO station overlap at all (the shape a real KeywordOnly/
+        // OperatorOnly-only matcher hit would have -- see Correction 1 of
+        // the design spec) is correctly absent from a station-overlap
+        // filter's results, even though such an incident could be
+        // perfectly real for that line via the matcher's other tiers.
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        seed_incident(&pool, "archive-test-c", &["VT"], &["WAT", "WOK"], 1, false, false, at(9)).await;
+        seed_incident(&pool, "archive-test-d", &["VT"], &[], 1, false, false, at(9)).await;
+
+        let page = search_incidents(
+            &pool,
+            None,
+            Some(vec!["WOK".to_string()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+
+        let ids: Vec<&str> = page.results.iter().map(|r| r.incident_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["archive-test-c"],
+            "an incident with no affected_stations overlap must be excluded, even though it \
+             shares an operator with the filtered line: {ids:?}"
+        );
+        delete_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn search_incidents_from_to_bounds_are_inclusive() {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        seed_incident(&pool, "archive-test-e", &["VT"], &["WAT"], 1, false, false, at(8)).await;
+        seed_incident(&pool, "archive-test-f", &["VT"], &["WAT"], 1, false, false, at(9)).await;
+        seed_incident(&pool, "archive-test-g", &["VT"], &["WAT"], 1, false, false, at(10)).await;
+
+        let page = search_incidents(
+            &pool,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(at(8)),
+            Some(at(9)),
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+
+        let ids: Vec<&str> = page.results.iter().map(|r| r.incident_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["archive-test-f", "archive-test-e"],
+            "both bounds are inclusive; archive-test-g (hour 10) must be excluded: {ids:?}"
+        );
+        delete_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn search_incidents_planned_and_cleared_filters() {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        seed_incident(&pool, "archive-test-h", &["VT"], &["WAT"], 1, true, false, at(9)).await;
+        seed_incident(&pool, "archive-test-i", &["VT"], &["WAT"], 1, false, true, at(9)).await;
+
+        let planned_only = search_incidents(
+            &pool, None, None, Some(true), None, None, None, None, None, None, 100,
+        )
+        .await
+        .expect("search");
+        assert_eq!(
+            planned_only.results.iter().map(|r| r.incident_id.as_str()).collect::<Vec<_>>(),
+            vec!["archive-test-h"]
+        );
+
+        let cleared_only = search_incidents(
+            &pool, None, None, None, Some(true), None, None, None, None, None, 100,
+        )
+        .await
+        .expect("search");
+        assert_eq!(
+            cleared_only.results.iter().map(|r| r.incident_id.as_str()).collect::<Vec<_>>(),
+            vec!["archive-test-i"]
+        );
+        delete_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn search_incidents_priority_range_is_inclusive() {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        seed_incident(&pool, "archive-test-j", &["VT"], &["WAT"], 1, false, false, at(9)).await;
+        seed_incident(&pool, "archive-test-k", &["VT"], &["WAT"], 2, false, false, at(9)).await;
+        seed_incident(&pool, "archive-test-l", &["VT"], &["WAT"], 3, false, false, at(9)).await;
+
+        let page = search_incidents(
+            &pool,
+            None,
+            None,
+            None,
+            None,
+            Some(2),
+            Some(2),
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+
+        assert_eq!(
+            page.results.iter().map(|r| r.incident_id.as_str()).collect::<Vec<_>>(),
+            vec!["archive-test-k"]
+        );
+        delete_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn search_incidents_combines_filters_with_and_semantics() {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        // Matches operator AND planned AND priority range:
+        seed_incident(&pool, "archive-test-m", &["VT"], &["WAT"], 5, true, false, at(9)).await;
+        // Fails on operator only:
+        seed_incident(&pool, "archive-test-n", &["GW"], &["WAT"], 5, true, false, at(9)).await;
+        // Fails on planned only:
+        seed_incident(&pool, "archive-test-o", &["VT"], &["WAT"], 5, false, false, at(9)).await;
+        // Fails on priority range only:
+        seed_incident(&pool, "archive-test-p", &["VT"], &["WAT"], 1, true, false, at(9)).await;
+
+        let page = search_incidents(
+            &pool,
+            Some(vec!["VT".to_string()]),
+            None,
+            Some(true),
+            None,
+            Some(4),
+            Some(6),
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+
+        assert_eq!(
+            page.results.iter().map(|r| r.incident_id.as_str()).collect::<Vec<_>>(),
+            vec!["archive-test-m"],
+            "only the row matching every filter simultaneously must be returned"
+        );
+        delete_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn search_incidents_keyset_pagination_pages_without_gaps_or_repeats_and_breaks_ties_on_incident_id_desc()
+     {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        // Five incidents, three of them sharing one first_seen_at, forcing
+        // the tiebreak to matter mid-pagination.
+        seed_incident(&pool, "archive-test-q1", &["VT"], &["WAT"], 1, false, false, at(9)).await;
+        seed_incident(&pool, "archive-test-q2", &["VT"], &["WAT"], 1, false, false, at(9)).await;
+        seed_incident(&pool, "archive-test-q3", &["VT"], &["WAT"], 1, false, false, at(9)).await;
+        seed_incident(&pool, "archive-test-r", &["VT"], &["WAT"], 1, false, false, at(8)).await;
+        seed_incident(&pool, "archive-test-s", &["VT"], &["WAT"], 1, false, false, at(10)).await;
+
+        let mut cursor: Option<IncidentSearchCursor> = None;
+        let mut collected: Vec<String> = Vec::new();
+        loop {
+            let page = search_incidents(
+                &pool,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                cursor.as_ref(),
+                1,
+            )
+            .await
+            .expect("search");
+            assert_eq!(page.results.len(), 1, "limit=1 must return exactly one row per page");
+            collected.push(page.results[0].incident_id.clone());
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+
+        assert_eq!(
+            collected,
+            vec![
+                "archive-test-s",
+                "archive-test-q3",
+                "archive-test-q2",
+                "archive-test-q1",
+                "archive-test-r",
+            ],
+            "no gaps, no repeats, tie broken by incident_id descending: {collected:?}"
+        );
+        delete_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn search_incidents_with_no_matches_returns_ok_with_an_empty_vec_never_none() {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        seed_incident(&pool, "archive-test-t", &["VT"], &["WAT"], 1, false, false, at(9)).await;
+
+        let page = search_incidents(
+            &pool,
+            Some(vec!["ZZ".to_string()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search never fails on an unmatched filter -- there is no 404 concept here");
+
+        assert!(page.results.is_empty());
+        assert!(page.next_cursor.is_none());
+        delete_fixtures(&pool).await;
+    }
+}
+
 // --- Movement Events Queries ---
 
 /// One `train_movement_events` row, already collapsed to the latest
