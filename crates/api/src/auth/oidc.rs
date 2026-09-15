@@ -29,6 +29,13 @@ pub struct OidcIdentity {
     pub email: Option<String>,
     pub email_verified: bool,
     pub name: Option<String>,
+    /// The `preferred_username` claim -- the standard `profile`-scope
+    /// claim this app already asks for, and the ONLY non-email identifier
+    /// besides `name` that reaches us. It exists here so a user whose IdP
+    /// has no name on file for them still has something to be shown as in
+    /// a shared group, instead of their email address (which must never be
+    /// shown to other members -- see `data::users::display_label`).
+    pub preferred_username: Option<String>,
     pub groups: Vec<String>,
 }
 
@@ -46,6 +53,7 @@ pub struct RawClaims {
     pub email: Option<String>,
     pub email_verified: Option<bool>,
     pub name: Option<String>,
+    pub preferred_username: Option<String>,
     pub groups: Option<Vec<String>>,
 }
 
@@ -61,6 +69,7 @@ pub fn identity_from_claims(claims: RawClaims) -> OidcIdentity {
         email: claims.email,
         email_verified: claims.email_verified.unwrap_or(false),
         name: claims.name,
+        preferred_username: claims.preferred_username,
         groups: claims.groups.unwrap_or_default(),
     }
 }
@@ -300,6 +309,10 @@ impl OidcClient {
                 .name()
                 .and_then(|n| n.get(None))
                 .map(|n| n.as_str().to_string()),
+            // Not a `LocalizedClaim`, unlike `name` -- `preferred_username`
+            // is a single value in the spec, so there is no language tag to
+            // select here.
+            preferred_username: claims.preferred_username().map(|u| u.as_str().to_string()),
             groups: claims.additional_claims().groups.clone(),
         };
         let refresh_token = token_response.refresh_token().map(|t| t.secret().clone());
@@ -322,6 +335,7 @@ mod tests {
             email: Some("rider@example.com".to_string()),
             email_verified,
             name: Some("Ada Rider".to_string()),
+            preferred_username: Some("ada".to_string()),
             groups,
         }
     }
@@ -331,6 +345,19 @@ mod tests {
         let identity = identity_from_claims(claims(Some(true)));
         assert_eq!(identity.sub, "user-123");
         assert_eq!(identity.name, Some("Ada Rider".to_string()));
+    }
+
+    /// Mapped through unfiltered, exactly like `name`: it is
+    /// `data::users` that decides a blank one is no identifier at all,
+    /// and `data::users::display_label` that decides where it ranks.
+    #[test]
+    fn preferred_username_passes_through_unconditionally() {
+        let identity = identity_from_claims(claims(Some(true)));
+        assert_eq!(identity.preferred_username, Some("ada".to_string()));
+
+        let mut raw = claims(Some(true));
+        raw.preferred_username = None;
+        assert_eq!(identity_from_claims(raw).preferred_username, None);
     }
 
     #[test]

@@ -440,7 +440,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       expect(screen.getByText('9m late')).toBeInTheDocument();
     });
 
-    it('a sharer with no name or email is credited as "a member", never a raw user id', async () => {
+    it('a sharer with no name or username is credited as "a member", never a raw user id', async () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
@@ -451,6 +451,23 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       expect(screen.getByText('Shared by a member')).toBeInTheDocument();
       expect(screen.queryByText(/sso-subject-1234/)).not.toBeInTheDocument();
+    });
+
+    /** A BLANK name, not a null one -- what an identity provider with no
+     * name on file for the sharer actually sends. `??` treats `''` as a
+     * usable label, so this row read "Shared by " with nothing after it.
+     * The backend normalizes blanks away now; this guards the rows written
+     * before it did, exactly as `/groups/{id}`'s own row does. */
+    it('a sharer whose name is blank rather than null is still credited as "a member"', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+        sharedTrain({ addedBy: 'sso-subject-1234', addedByName: '   ' }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText('Shared by a member')).toBeInTheDocument();
     });
 
     it('offers no rename control on someone else’s shared train', async () => {

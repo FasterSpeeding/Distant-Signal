@@ -164,83 +164,208 @@ describe('IncidentSearchForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     await waitFor(() => expect(screen.getAllByText('Signal failure at Woking')).toHaveLength(2));
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+
+    // Both pages' rows land in the ONE in-flow list, so the page's own
+    // scrollbar reaches every one of them -- see the structural guard
+    // below for why that matters.
+    const list = document.querySelector('[data-incident-results]') as HTMLElement;
+    for (const row of screen.getAllByText('Signal failure at Woking')) {
+      expect(list.contains(row)).toBe(true);
+    }
   });
 
   // Regression guard for the archive being hard-clipped at a fixed height.
   // The list used to sit inside a `<ScrollArea mah={520}>`, whose root is
-  // `overflow: hidden` while its viewport is `height: 100%` -- against a
-  // root whose own `height` is `auto` that percentage resolves to `auto`,
-  // so the viewport never overflowed itself (no scroll) and the root
-  // clipped everything past 520px (nothing reachable). jsdom does no
-  // layout, so this asserts the *structure* that caused it instead: the
-  // results list must not be inside a Mantine scroll viewport, and no
-  // ancestor between it and the form may pin a height.
+  // `overflow: hidden` while its viewport is `height: 100%`; against a root
+  // whose own `height` stays `auto` that percentage resolves to `auto`, so
+  // the viewport never overflowed itself (nothing scrolled) and the root
+  // clipped everything past 520px. jsdom does no layout, so this asserts
+  // the *structure* that caused it instead: the results list must not be
+  // inside a Mantine scroll viewport, and no ancestor up to the form may
+  // pin a height.
+  //
+  // Note this also rejects `ScrollArea.Autosize` -- the component that
+  // *would* cap the height correctly. That is deliberate rather than
+  // incidental: the choice here is "no nested scroller at all, the page
+  // scrolls", and `IncidentSearchForm.tsx`'s own comment records why.
   it('renders the results list in the page flow, with no fixed-height or scroll-container ancestor', async () => {
-    fetchMock.mockReturnValue(
-      okResponse({ results: [summary({ incidentId: '1' })], nextCursor: null }),
-    );
+    fetchMock.mockReturnValue(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     await screen.findByText('Signal failure at Woking');
 
     const list = document.querySelector('[data-incident-results]');
     expect(list).not.toBeNull();
-
     const form = (list as HTMLElement).closest('form');
     expect(form).not.toBeNull();
 
     // Walk the list itself plus every ancestor up to (and including) the
-    // form -- a clip anywhere on that chain hides the rows just as
-    // effectively as one on the list.
+    // form -- a clip anywhere on that chain hides rows just as effectively
+    // as one on the list. (Above the form is this component's caller, which
+    // a unit test can't see; `app/incidents/page.tsx` and `app/layout.tsx`
+    // are out of scope here.)
     for (
       let node: HTMLElement | null = list as HTMLElement;
       node !== null;
       node = node === form ? null : (node.parentElement as HTMLElement | null)
     ) {
+      // Mantine's own scroll viewport, whatever set it up.
       expect(node.hasAttribute('data-scrollarea-viewport')).toBe(false);
-      // Mantine resolves the `h`/`mah` style props straight into inline
-      // `height`/`max-height` (verified against the rendered DOM: a
-      // `<ScrollArea mah={520}>` root carries
-      // `max-height: calc(32.5rem * var(--mantine-scale))`), so reading
-      // them back off `style` is enough -- no computed-style/CSSOM layout
-      // is needed, which is just as well under jsdom. The `--mah`/`--h`
-      // custom properties are checked too, in case a future Mantine
-      // switches to the variable-plus-class form its other props use.
+      // Mantine resolves a non-responsive `h`/`mah` style prop straight
+      // into an inline `height`/`max-height` (`parse-style-props.mjs`), so
+      // reading those back off `style` is enough -- no computed style, no
+      // layout, which is just as well under jsdom. Verified against the
+      // rendered DOM: a `<ScrollArea mah={520}>` root carries
+      // `max-height: calc(32.5rem * var(--mantine-scale))`.
       expect(node.style.maxHeight).toBe('');
       expect(node.style.height).toBe('');
-      expect(node.style.getPropertyValue('--mah')).toBe('');
-      expect(node.style.getPropertyValue('--h')).toBe('');
+      // Only catches a hand-written inline clip -- Mantine's own
+      // `overflow: hidden` arrives via the `.m_d57069b5` class, which the
+      // `data-scrollarea-viewport` check above is what actually covers.
       expect(node.style.overflow).not.toBe('hidden');
       expect(node.style.overflowY).not.toBe('hidden');
     }
   });
 
-  it('keeps every loaded row in the document after "Load more", none clipped away', async () => {
+  it('says the end has been reached once the last page is in, rather than just dropping the button', async () => {
     fetchMock
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '2' })], nextCursor: null }));
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+    // While more pages remain the end-of-results copy must NOT be claimed.
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(
+      await screen.findByText("You've reached the end — no more incidents match these filters."),
+    ).toBeInTheDocument();
+  });
+
+  it('says the end has been reached when the very first page is also the last one', async () => {
+    fetchMock.mockReturnValue(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: null }));
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(
+      await screen.findByText("You've reached the end — no more incidents match these filters."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
+
+  it('does not claim the end of results when a "Load more" page fails -- it reports the failure and keeps the retry', async () => {
+    fetchMock
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
+      .mockReturnValueOnce(errorResponse());
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText("Couldn't load more results. Try again.")).toBeInTheDocument();
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
+    // The cursor is still valid, so the retry has to still be offered.
+    expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
+
+    // ...and retrying really does page on from the same cursor, clearing the error.
+    fetchMock.mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '2' })], nextCursor: null }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    await waitFor(() => expect(screen.getAllByText('Signal failure at Woking')).toHaveLength(2));
+    expect(new URL(fetchMock.mock.calls[2][0], 'http://localhost').searchParams.get('after')).toBe('cursor-a');
+    expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("You've reached the end — no more incidents match these filters."),
+    ).toBeInTheDocument();
+  });
+
+  it('reports a "Load more" whose fetch throws the same way it reports a non-2xx', async () => {
+    fetchMock
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
+      // Lazily, via mockImplementationOnce: a `Promise.reject` built eagerly
+      // at mock-setup time is unhandled until the second call consumes it.
+      .mockImplementationOnce(() => Promise.reject(new Error('network down')));
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText("Couldn't load more results. Try again.")).toBeInTheDocument();
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
+  });
+
+  it('clears a previous "Load more" failure when a fresh search is run', async () => {
+    fetchMock
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
+      .mockReturnValueOnce(errorResponse())
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '3' })], nextCursor: null }));
+
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    await screen.findByText("Couldn't load more results. Try again.");
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(
+      await screen.findByText("You've reached the end — no more incidents match these filters."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
+  });
+
+  it('discards a "Load more" page that lands after a fresh search has already replaced the results', async () => {
+    // Search is not disabled while a page is in flight, so this ordering is
+    // reachable: page 2 of the OLD search resolves last. Its rows, its cursor
+    // and its failure flag all belong to a result set that is no longer on
+    // screen and must not be merged into the new one.
+    let resolvePageTwo!: (response: Response) => void;
+    const pageTwo = new Promise<Response>((resolve) => {
+      resolvePageTwo = resolve;
+    });
+    fetchMock
+      .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
+      .mockReturnValueOnce(pageTwo)
       .mockReturnValueOnce(
         okResponse({
-          results: [summary({ incidentId: '1', summary: 'Row one' })],
-          nextCursor: 'cursor-a',
-        }),
-      )
-      .mockReturnValueOnce(
-        okResponse({
-          results: [summary({ incidentId: '2', summary: 'Row two' })],
+          results: [summary({ incidentId: '9', summary: 'Points failure at Woking' })],
           nextCursor: null,
         }),
       );
 
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await screen.findByText('Row one');
-    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
-    await screen.findByText('Row two');
+    await screen.findByText('Signal failure at Woking');
 
-    // Both rows are siblings in the one in-flow list, so the page's own
-    // scrollbar reaches them; neither is stranded in a nested scroller.
-    const list = document.querySelector('[data-incident-results]') as HTMLElement;
-    expect(list.contains(screen.getByText('Row one'))).toBe(true);
-    expect(list.contains(screen.getByText('Row two'))).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' })); // page 2 of search 1
+    fireEvent.click(screen.getByRole('button', { name: 'Search' })); // search 2
+    await screen.findByText('Points failure at Woking');
+
+    resolvePageTwo({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          results: [summary({ incidentId: '2', summary: 'Trespass incident at Woking' })],
+          nextCursor: 'cursor-b',
+        }),
+    } as unknown as Response);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("You've reached the end — no more incidents match these filters."),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('Trespass incident at Woking')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
   it('renders the empty-results message, not a blank screen', async () => {
@@ -248,6 +373,9 @@ describe('IncidentSearchForm', () => {
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     await screen.findByText('No incidents match these filters.');
+    // "Nothing matched" already says everything; it must not be doubled up
+    // with the end-of-pagination line.
+    expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
   });
 
   it('renders an error message on a failed search, not a thrown error', async () => {
