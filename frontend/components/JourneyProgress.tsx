@@ -3,20 +3,31 @@
 import { useEffect, useRef } from 'react';
 import { Box, Stack, Text, Tooltip } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
+import { journeyStopLabel } from './JourneyTimeline';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
 
 const NODE_SLOT_WIDTH = 56;
 
-/** The largest node diameter (`nodeDiameter`'s Origin/Terminate case).
- * Every node's circle -- whatever kind, whatever renders below it (an
+/** The one place an Origin/Terminate node's diameter is defined --
+ * `nodeDiameter` and `NODE_CIRCLE_SLOT` both derive from this so the two
+ * can never silently drift apart. */
+const ENDPOINT_DIAMETER = 18;
+const INTERMEDIATE_DIAMETER = 12;
+
+/** Every node's circle -- whatever kind, whatever renders below it (an
  * always-visible label for an endpoint, nothing for a bare intermediate
  * node) -- is centered inside a slot of this fixed height, anchored to the
  * top of its flex item (`.journeyProgressLine`'s `align-items: flex-start`
  * in `globals.css`). That keeps every circle's vertical center at the same
- * offset (`NODE_CIRCLE_SLOT / 2`, matching the connecting line's own
- * `top: 9px`) regardless of the varying total height Task 3's endpoint
- * labels (and Task 6's `mayHaveArrived` glyph) introduce below the circle. */
-const NODE_CIRCLE_SLOT = 18;
+ * offset (`NODE_CIRCLE_SLOT / 2`) regardless of the varying total height
+ * Task 3's endpoint labels (and Task 6's `mayHaveArrived` glyph) introduce
+ * below the circle. Set equal to `ENDPOINT_DIAMETER` -- the largest circle
+ * -- so no circle ever overflows its own slot. The connecting line's own
+ * vertical offset (`.journeyProgressLine::before`'s `top` in `globals.css`)
+ * reads this same value back via the `--journey-progress-node-slot` CSS
+ * custom property set below, rather than duplicating the number, so the
+ * two can't desync either. */
+const NODE_CIRCLE_SLOT = ENDPOINT_DIAMETER;
 
 /** See this component's extra props beyond `{ stops }`: `resolutionStatus`,
  * `status`, `trainUid`, and `mayHaveArrived` are needed to render the full
@@ -67,7 +78,7 @@ function lastReachedIndex(stops: JourneyStop[]): number {
 }
 
 function nodeDiameter(kind: JourneyStop['kind']): number {
-  return kind === 'Origin' || kind === 'Terminate' ? 18 : 12;
+  return kind === 'Origin' || kind === 'Terminate' ? ENDPOINT_DIAMETER : INTERMEDIATE_DIAMETER;
 }
 
 type NodeState = 'reached' | 'marker' | 'not-reached' | 'cancelled-remaining';
@@ -160,8 +171,7 @@ function progressCopy(
   }
 
   const total = stops.length;
-  const markerName =
-    lastIndex >= 0 ? (stops[lastIndex].name ?? stops[lastIndex].crs ?? 'Unknown location') : null;
+  const markerName = lastIndex >= 0 ? journeyStopLabel(stops[lastIndex]) : null;
   const stopNumber = lastIndex + 1;
 
   if (status === 'cancelled') {
@@ -178,7 +188,7 @@ function progressCopy(
   }
 
   if (status === 'completed') {
-    const terminusName = stops[total - 1].name ?? stops[total - 1].crs ?? 'Unknown location';
+    const terminusName = journeyStopLabel(stops[total - 1]);
     return {
       caption: `Arrived at ${terminusName}.`,
       ariaLabel: `Journey progress: arrived at ${terminusName}`,
@@ -219,6 +229,22 @@ function progressCopy(
 export function JourneyProgress({ stops, resolutionStatus, status, trainUid, mayHaveArrived }: JourneyProgressProps) {
   const lastIndex = lastReachedIndex(stops);
   const nodeRefs = useRef<Array<HTMLDivElement | null>>([]);
+  // One stable callback-ref per index, cached across renders, so a re-render
+  // that doesn't change `stops.length` (e.g. a poll refresh with the same
+  // stop count) doesn't hand every node a brand-new ref function -- React
+  // would otherwise call the old one with `null` and the new one with the
+  // element on every single render, for every node, for no reason.
+  const nodeRefSetters = useRef<Map<number, (el: HTMLDivElement | null) => void>>(new Map());
+  function nodeRefSetter(index: number) {
+    let setter = nodeRefSetters.current.get(index);
+    if (!setter) {
+      setter = (el) => {
+        nodeRefs.current[index] = el;
+      };
+      nodeRefSetters.current.set(index, setter);
+    }
+    return setter;
+  }
   const { caption, ariaLabel } = progressCopy(stops, lastIndex, resolutionStatus, status, trainUid, mayHaveArrived);
 
   useEffect(() => {
@@ -232,7 +258,21 @@ export function JourneyProgress({ stops, resolutionStatus, status, trainUid, may
   return (
     <Stack gap="xs">
       <Box role="img" aria-label={ariaLabel} style={{ overflowX: 'auto' }}>
-        <Box className="journeyProgressLine" style={{ minWidth: stops.length * NODE_SLOT_WIDTH }}>
+        <Box
+          className="journeyProgressLine"
+          style={
+            {
+              minWidth: stops.length * NODE_SLOT_WIDTH,
+              // Read back by `.journeyProgressLine::before`'s `top` in
+              // globals.css, instead of that rule hardcoding half of
+              // `NODE_CIRCLE_SLOT` as its own separate literal -- so the
+              // connecting line's vertical position can't silently drift
+              // out of sync with the circle-centering slot it's meant to
+              // bisect.
+              '--journey-progress-node-slot': `${NODE_CIRCLE_SLOT}px`,
+            } as React.CSSProperties
+          }
+        >
           {stops.map((stop, index) => (
             <JourneyProgressNode
               key={`${stop.crs ?? 'unknown'}-${index}`}
@@ -241,9 +281,7 @@ export function JourneyProgress({ stops, resolutionStatus, status, trainUid, may
               lastIndex={lastIndex}
               status={status}
               mayHaveArrived={mayHaveArrived}
-              nodeRef={(el) => {
-                nodeRefs.current[index] = el;
-              }}
+              nodeRef={nodeRefSetter(index)}
             />
           ))}
         </Box>
@@ -284,8 +322,11 @@ function JourneyProgressNode({
   const state = nodeState(index, lastIndex, status);
   const delay = delayState(stop.delayMinutes);
   const isEndpoint = stop.kind === 'Origin' || stop.kind === 'Terminate';
-  const label = stop.name ?? stop.crs ?? 'Unknown location';
-  const scheduled = stop.scheduledArrival ?? stop.scheduledDeparture;
+  const label = journeyStopLabel(stop);
+  // Same departure-first precedence as `JourneyTimeline.tsx`'s own
+  // `scheduled` (see `journeyStopLabel`'s doc comment) -- this tooltip
+  // shows the exact same time that stop's row shows in the table below.
+  const scheduled = stop.scheduledDeparture ?? stop.scheduledArrival;
   const isMarker = state === 'marker';
 
   const circle = (
@@ -353,8 +394,14 @@ function JourneyProgressNode({
         }
         events={{ hover: true, focus: true, touch: true }}
       >
-        <Box tabIndex={0} aria-label={label} style={{ height: NODE_CIRCLE_SLOT, display: 'flex', alignItems: 'center' }}>
-          {circle}
+        {/* Wraps the same `circleSlot` used for an endpoint node -- rather
+            than a hand-duplicated copy of its style -- so the two node
+            kinds can never drift out of alignment with each other. The
+            focusable/labelled Tooltip trigger itself is this outer `Box`;
+            it has no fixed size of its own and just inherits `circleSlot`'s
+            height. */}
+        <Box tabIndex={0} aria-label={label}>
+          {circleSlot}
         </Box>
       </Tooltip>
       {glyph}
