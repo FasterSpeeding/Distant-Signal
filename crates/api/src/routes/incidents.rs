@@ -227,6 +227,15 @@ async fn search_incidents(
         .map(|s| normalize_rfc3339("to", s))
         .transpose()?;
 
+    if let (Some(from_bound), Some(to_bound)) = (from, to) {
+        if from_bound > to_bound {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "from must not be after to".to_string(),
+            ));
+        }
+    }
+
     if let (Some(min), Some(max)) = (params.priority_min, params.priority_max) {
         if min > max {
             return Err((
@@ -742,6 +751,21 @@ mod db_tests {
         let (status, body) = get(&pool, vec![], "/incidents?priority_min=5&priority_max=1").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("priority"), "400 body should name the field: {body}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search -- --ignored --test-threads=1`"]
+    async fn incident_search_from_after_to_is_a_400() {
+        let pool = connect().await;
+        let (status, body) = get(
+            &pool,
+            vec![],
+            "/incidents?from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("from"), "400 body should name the field: {body}");
     }
 
     #[tokio::test]
