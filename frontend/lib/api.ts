@@ -24,6 +24,7 @@ import type {
   TicketListItem,
   IncidentDetail,
   StationOperatorSampleStats,
+  StationAccessibilityData,
   GroupSummary,
   GroupDetail,
   GroupMember,
@@ -123,6 +124,22 @@ export async function getStopPointDisruption(crs: string): Promise<LineStatusRep
 export async function getStationSampleStats(crs: string): Promise<StationOperatorSampleStats[]> {
   return fetchJson<StationOperatorSampleStats[]>(`${baseUrl()}/public/stations/${crs}/sample-stats`, {
     cache: 'no-store',
+  });
+}
+
+/** `GET /public/stations/{crs}/accessibility` -- filtered RDM station
+ * facilities/accessibility data (design spec Decisions 3-4). Cached for an
+ * hour, same convention as `getStationName`/`getAllTocs`: the underlying
+ * feed's own documented poll interval is 24 hours
+ * (`crates/poller-stations/src/main.rs`), so this is reference data, not a
+ * live feed, and does not warrant `cache: 'no-store'`. Throws
+ * `ApiNotFoundError` on a 404 (no `stations` row for this CRS at all) via
+ * `errorForResponse`, same as every other `fetchJson` caller --
+ * `fetchStationAccessibility` in `app/stations/[crs]/page.tsx` catches it
+ * and renders it as a different sentence from a `200 {}`. */
+export async function getStationAccessibility(crs: string): Promise<StationAccessibilityData> {
+  return fetchJson<StationAccessibilityData>(`${baseUrl()}/public/stations/${crs}/accessibility`, {
+    next: { revalidate: 3600 },
   });
 }
 

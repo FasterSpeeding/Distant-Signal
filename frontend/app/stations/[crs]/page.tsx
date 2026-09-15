@@ -6,6 +6,7 @@ import {
   getPreferences,
   getStationName,
   getStationSampleStats,
+  getStationAccessibility,
   getAllTocs,
   ApiNotFoundError,
 } from '@/lib/api';
@@ -14,12 +15,18 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { IssueList } from '@/components/IssueList';
 import { PinToggle } from '@/components/PinToggle';
 import { ShareButton } from '@/components/ShareButton';
+import { StationAccessibilitySection } from '@/components/StationAccessibilitySection';
 import { StationTimetable } from '@/components/StationTimetable';
 import { TextLink } from '@/components/TextLink';
 import { worstStatus, severityRank, severityLabel } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
-import type { LineStatusReport, Preferences, StationOperatorSampleStats } from '@/lib/types';
+import type {
+  LineStatusReport,
+  Preferences,
+  StationAccessibilityData,
+  StationOperatorSampleStats,
+} from '@/lib/types';
 
 /** Three outcomes, not two. The previous version collapsed "there is no
  * such station" and "the name lookup failed" into a single `null`, so the
@@ -99,6 +106,38 @@ async function fetchStationSampleStats(crs: string): Promise<StationSampleStatsR
   }
 }
 
+/** A third, independent coverage question from the two above -- whether
+ * this app has ever captured `stations` reference data for this CRS at all
+ * (`404`, `'unavailable'`), vs. whether it has but none of the twelve
+ * allowlisted accessibility keys were present (`200 {}`, `'empty'`). See
+ * docs/superpowers/specs/2026-09-12-station-accessibility-design.md
+ * Correction 5 / Decision 9: those are two different, already-representable
+ * database states (the column is `NOT NULL DEFAULT '{}'`, but a CRS can
+ * have no `stations` row at all) and must stay visibly distinct in the UI,
+ * not collapsed into one "no data" message.
+ *
+ * `'unavailable'` is defence in depth rather than a routinely-reached
+ * state on this page: `lookupStation` above resolves the heading through
+ * `getStationName`, which searches the same `stations` table, so a CRS with
+ * no row there already `notFound()`s the whole page before this runs. It
+ * remains reachable if the row disappears between the two reads, and the
+ * distinct copy is what the spec asks for regardless -- don't "simplify" it
+ * away on the grounds that it looks unreachable. */
+type StationAccessibilityResult =
+  | { coverage: 'unavailable' }
+  | { coverage: 'empty' }
+  | { coverage: 'present'; data: StationAccessibilityData };
+
+async function fetchStationAccessibility(crs: string): Promise<StationAccessibilityResult> {
+  try {
+    const data = await withStaleFallback(`stationAccessibility:${crs}`, () => getStationAccessibility(crs));
+    return Object.keys(data).length === 0 ? { coverage: 'empty' } : { coverage: 'present', data };
+  } catch (err) {
+    if (err instanceof ApiNotFoundError) return { coverage: 'unavailable' };
+    throw err;
+  }
+}
+
 /** Per-page Open Graph/Twitter/`<title>` metadata for a shared station
  * link. Reuses `lookupStation`/`fetchStationDisruptions` -- the exact same
  * helpers the page component calls -- so the resulting `fetch()` calls
@@ -162,13 +201,14 @@ export default async function StationDisruptionPage({
     notFound();
   }
 
-  const [{ reports, coverage }, preferences, sampleStatsResult, tocs] = await Promise.all([
+  const [{ reports, coverage }, preferences, sampleStatsResult, accessibilityResult, tocs] = await Promise.all([
     fetchStationDisruptions(crs),
     // Per-user, so it fails closed to "nothing pinned" (the shape a 401
     // already returns) rather than being stale-served -- design spec
     // Decision 5. The pin button reads as unpinned during an outage.
     getPreferences().catch(() => NO_PREFERENCES),
     fetchStationSampleStats(crs),
+    fetchStationAccessibility(crs),
     // Hour-cached reference data used only to label operator rows in the
     // sample-stats section below; an empty list degrades to bare ATOC
     // codes rather than the whole page -- same pattern as
@@ -275,6 +315,15 @@ export default async function StationDisruptionPage({
 
       <Divider />
       <StationTimetable crs={crs} />
+
+      {/* Accessibility & facilities -- a fourth independent block, keyed by
+          a third, orthogonal coverage question again: whether this app has
+          any `stations` reference row for this CRS at all. Deliberately
+          headed "Accessibility & facilities" rather than bare
+          "Accessibility", which in this codebase means WCAG (design spec
+          Correction 4 / Decision 8). */}
+      <Divider />
+      <StationAccessibilitySection result={accessibilityResult} />
     </Stack>
   );
 }
