@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import AllLinesPage from './page';
+import AllLinesPage, { metadata } from './page';
 import * as api from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
 import type { LineStatusReport, LineSummary, Suggestion, Preferences } from '@/lib/types';
@@ -113,5 +113,51 @@ describe('AllLinesPage', () => {
 
     await renderPage();
     expect(screen.getByRole('heading', { name: 'All Lines', level: 1 })).toBeInTheDocument();
+  });
+});
+
+describe('metadata', () => {
+  it('titles the page after its own heading, suffixed with the site name', () => {
+    expect(metadata.title).toBe('All Lines — Distant Signal');
+  });
+
+  it('describes the whole-network line table rather than inheriting the generic site description', () => {
+    expect(metadata.description).toBe(
+      "Every National Rail and TfL line this app tracks, in one sortable table: each line's worst current status, plus its average delay and cancellation figures where they're available, filterable by operator — and your own custom lines alongside them once you're logged in.",
+    );
+  });
+
+  it('hedges custom lines behind logging in, since an unfurler bot never sees any', () => {
+    // `GET /public/lines` (crates/api/src/routes/lines.rs's `list_lines`)
+    // appends custom lines only for an AUTHENTICATED caller, and only that
+    // caller's own. Every consumer of this metadata is a session-less bot,
+    // so an unconditional "with your custom lines" would describe rows the
+    // recipient of the link cannot possibly see.
+    expect(metadata.description).toMatch(/custom lines.*logged in/);
+  });
+
+  it("doesn't promise delay and cancellation figures on every row", () => {
+    // AllLinesTable renders an em dash (with a "why not" tooltip) whenever
+    // a line has neither fullCoverageStats nor sampleStats -- normal, not
+    // an outage -- so the copy is hedged rather than absolute.
+    expect(metadata.description).toMatch(/where they're available/);
+  });
+
+  it('mirrors the same title and description into openGraph and twitter', () => {
+    // See the equivalent case in app/incidents/page.test.tsx for why the
+    // mirror is asserted against literals rather than against
+    // `metadata.title`/`.description`.
+    expect(metadata.openGraph).toMatchObject({
+      title: 'All Lines — Distant Signal',
+      description:
+        "Every National Rail and TfL line this app tracks, in one sortable table: each line's worst current status, plus its average delay and cancellation figures where they're available, filterable by operator — and your own custom lines alongside them once you're logged in.",
+      type: 'website',
+    });
+    expect(metadata.twitter).toMatchObject({
+      card: 'summary',
+      title: 'All Lines — Distant Signal',
+      description:
+        "Every National Rail and TfL line this app tracks, in one sortable table: each line's worst current status, plus its average delay and cancellation figures where they're available, filterable by operator — and your own custom lines alongside them once you're logged in.",
+    });
   });
 });

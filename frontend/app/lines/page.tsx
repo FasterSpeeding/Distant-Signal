@@ -1,4 +1,5 @@
 import { Group, Stack, Title } from '@mantine/core';
+import type { Metadata } from 'next';
 import { getAllLines, getAllTocs, getLineStatusForMode, getPreferences } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { DISPLAYED_MODES_PARAM } from '@/lib/modes';
@@ -7,6 +8,52 @@ import { TextLink } from '@/components/TextLink';
 import { AllLinesTable } from './AllLinesTable';
 
 export const revalidate = 0;
+
+/** Per-page Open Graph/Twitter/`<title>` metadata, in the same four-field
+ * shape every detail page in this app already emits (see
+ * `app/train/[uid]/[date]/page.tsx`'s `generateMetadata` for the canonical
+ * version, and `app/page.tsx`'s own static export for why these top-level
+ * pages spell it as a plain `export const metadata` instead). This route
+ * takes no params of any kind -- no dynamic segment, no `searchParams` --
+ * so a static export is the only shape that makes sense here.
+ *
+ * Title matches the page's own `<h1>` ("All Lines"), which is also this
+ * route's nav label, so the tab title and the heading a visitor lands on
+ * agree -- the same rule `/incidents`, `/trains` and `/stations` follow.
+ *
+ * Three phrases in the description are load-bearing and must not be
+ * "tightened":
+ *
+ * - "National Rail and TfL lines" -- `GET /public/lines`
+ *   (`crates/api/src/routes/lines.rs`'s `list_lines`) concatenates the
+ *   static line catalogue with `queries::tfl_line_summaries`, so the table
+ *   genuinely carries both, not just heavy-rail routes.
+ * - "your own custom lines once you're logged in" -- that same handler
+ *   appends custom lines ONLY for an authenticated caller, and only that
+ *   caller's own (a line merely shared with them through a group is
+ *   deliberately excluded from this list; see the handler's own comment).
+ *   An anonymous visitor -- which is every link-unfurler bot, none of
+ *   which carry a session cookie -- sees none, hence the hedge rather
+ *   than a flat promise.
+ * - "where they're available" -- the Avg Delay and Cancelled cells render
+ *   an em dash with a "why not" tooltip whenever a line has no stats
+ *   (`AllLinesTable`'s `representative?.fullCoverageStats ??
+ *   representative?.sampleStats`), which is normal, not an outage.
+ *
+ * Deliberately says nothing about the country filter: it is self-hiding
+ * below two distinct countries and today every reachable row is GB (see
+ * `AllLinesTable`'s `countryOptions`), so describing it would promise a
+ * control nobody currently sees. */
+const METADATA_TITLE = 'All Lines — Distant Signal';
+const METADATA_DESCRIPTION =
+  "Every National Rail and TfL line this app tracks, in one sortable table: each line's worst current status, plus its average delay and cancellation figures where they're available, filterable by operator — and your own custom lines alongside them once you're logged in.";
+
+export const metadata: Metadata = {
+  title: METADATA_TITLE,
+  description: METADATA_DESCRIPTION,
+  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
+  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
+};
 
 // The exact shape getPreferences() already returns for a 401, named so the
 // fallback below is typed as `Preferences` rather than inferred with
