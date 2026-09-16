@@ -6,10 +6,10 @@ or migration changes.** Written to the same rigor as
 `docs/superpowers/specs/2026-09-12-incident-archive-design.md` (the feature
 this one proposes extending, now shipped), and following
 `docs/superpowers/specs/2026-09-12-group-lines-design.md`'s shape for a
-design whose honest conclusion is "not yet" — the designs are still worked
-out in full below (Section 5), so that a future decision to overturn the
-recommendation does not start from zero, but the recommendation itself is
-not a formality.
+design whose honest conclusion is "not yet" — the alternatives are still
+costed in Section 5, the two disruption-shaped ones in real design detail,
+so that a future decision to overturn the recommendation does not start
+from zero. The recommendation itself is not a formality.
 
 **Two findings up front, for anyone reading only this far:** the briefed
 assumption that Elizabeth line and London Overground incidents are already
@@ -27,6 +27,7 @@ Required reading consumed in full before this document was written:
 `docs/superpowers/specs/2026-08-31-other-uk-transit-networks-research.md`
 (its "Confirmed out of scope" section);
 `docs/superpowers/specs/2026-08-31-incident-detail-page-design.md`;
+`docs/superpowers/specs/2026-09-02-line-history-list-spamminess-research.md`;
 `crates/poller-incidents/src/{main,schema}.rs`;
 `crates/poller-tfl/src/{main,config,schema}.rs` and `crates/poller-tfl/src/dlr/`;
 `crates/api/src/routes/{incidents,line_status,lines,ingest,reference}.rs`;
@@ -445,8 +446,8 @@ are docs-only (`d54708c`, `d96dee9`).
 **This is a smaller problem than it looks, and an earlier draft of this
 document got it wrong.** Every row in the shipped archive links to
 `/incidents/[id]` (`frontend/components/IncidentSearchForm.tsx:331`), and
-it is tempting to conclude a TfL row would have nowhere to go. It would:
-`/lines/{tfl-line-id}` already exists and already renders that line's
+it is tempting to conclude a TfL row would have nowhere to go. It has
+somewhere: `/lines/{tfl-line-id}` already exists and already renders that line's
 current TfL disruption text (§2d-bis, verified live). The 2026-09-07 plan
 chose a dedicated `/tfl-lines/[id]` over it on *fit* grounds — its own
 Decision 1 says `/lines/[id]` "already works end-to-end … with no
@@ -553,10 +554,22 @@ reached its recommendation for partly wrong reasons.
 
 ## 4. Scope
 
-**In scope for the question:** TfL modes with no National Rail
-counterpart — **tube, DLR, tram**. Also, secondarily, the TfL-sourced side
-of the seven merged railways (Elizabeth line, six Overground lines), whose
-NR side is already archived (§1d).
+Scope has two axes — which modes, and which *capability* — and §1 and
+§2d-bis narrowed both.
+
+**Modes in scope:** TfL modes with no National Rail counterpart — **tube,
+DLR, tram**. Secondarily, the TfL-sourced side of the seven merged railways
+(Elizabeth line, six Overground lines), whose NR side is already archived
+(§1d).
+
+**Capability in scope: a *cross-line* browse, and only that.** Per
+§2d-bis, a TfL line's current disruption and its seven-day history are both
+already persisted, rendered and reachable, per line. So this document is
+not asking "can TfL disruptions be shown at all" — they are — but the
+narrower "can they be browsed across lines the way `/incidents` browses
+National Rail incidents across the network." Every option in Section 5 is
+costed against that narrower question, and §9 item 4 records that nobody
+has actually confirmed it is the ask.
 
 **Not in scope, and why:**
 
@@ -570,7 +583,7 @@ NR side is already archived (§1d).
   `docs/superpowers/specs/2026-08-31-other-uk-transit-networks-research.md`;
   none is ingested today.
 
-## 5. The four designs, worked out in full (in case the recommendation is overturned)
+## 5. The four options, costed (A and B in design detail; C and D in outline)
 
 Four options were considered — A and B build disruption-shaped rows, C and
 D do not. Each is costed honestly; Section 6 recommends against building an
@@ -751,30 +764,49 @@ Its real costs, which are not zero:
   need `(computed_at DESC, id DESC)` or similar. One migration, same shape
   as `incidents_first_seen_at_id`.
 - **No `source` column** (§2d), so "TfL only" is a `line_id LIKE 'tfl-%'`
-  prefix predicate — workable but ugly, and a good reason to add the column
-  properly rather than pattern-match a primary key.
-- **Seven days deep, hard**, and unlike Option B this cannot be extended by
-  a new table with its own retention: it *is* `line_status_history`, so
-  raising the depth means raising `history_retention_days` for every line,
-  National Rail included, on a table written every aggregation cycle for
-  109+ lines. That is a storage decision with blast radius well beyond TfL.
-- **Volume, and the spamminess problem at network scale.** One tube line
-  produced 229 status recomputes in seven days (§2d-bis). Across the tube,
-  DLR and tram that is plausibly thousands of rows a week before National
-  Rail lines are counted, and
+  prefix predicate — workable but ugly, and the reason to add the column
+  properly rather than pattern-match an id convention.
+- **Seven days deep** — and extending that is coupled to the previous
+  bullet. As things stand `prune_history` is source-blind, so raising the
+  depth means raising `history_retention_days` for every line, National
+  Rail included, on a table written every aggregation cycle for 109+ lines
+  — a storage decision with blast radius well beyond TfL. **Adding the
+  `source` column decouples it**: `prune_history` could then keep TfL rows
+  longer than aggregator rows, making TfL depth a cheap, contained
+  decision. These two bullets are one piece of work, not two, and doing
+  them together is what makes Option D's depth adjustable at all.
+- **A new route, query, cursor and frontend surface** — the same
+  components Option B needs, minus the table and the ingest branch. Not
+  free, and not counted as free here just because the storage is free:
+  a `search_line_status_history`-shaped query, keyset encode/decode
+  mirroring `routes::incidents`, and a results surface on `/incidents` or
+  its own page. Roughly Option B's cost minus its riskiest third.
+- **Volume — but not, on inspection, the spamminess research's actual
+  failure mode.** One tube line produced 229 status recomputes in seven
+  days (§2d-bis), so a tube+DLR+tram browse is plausibly low thousands of
+  rows a week. It is tempting to cite
   `docs/superpowers/specs/2026-09-02-line-history-list-spamminess-research.md`
-  diagnosed the *per-line* version of this list as unhelpfully noisy. The
-  incident archive could set that concern aside because `incidents` is one
-  row per real incident; `line_status_history` has no such guarantee.
+  as showing that list is known to read badly, and an earlier draft of this
+  document did. **That citation does not transfer, and saying so is the
+  difference between a blocker and a cost.** That research's primary root
+  cause is specifically LDBWS-sample-derived `reason` text —
+  `infer_from_samples`' per-cycle counts and its `"(most cited: …)"` suffix
+  — churning on every aggregation cycle for what is one ongoing situation,
+  and it carries its own scoping note that *incident*-derived spans are not
+  broken that way. TfL rows are neither: they are written by
+  `upsert_tfl_line_status` behind `tfl_statuses_changed`/`normalize_for_diff`
+  (`crates/api/src/data/queries.rs:342-373`), over TfL's own prose, which
+  does not carry per-cycle numbers. The observed 229 writes against ~2,000
+  polls in the same week is that diff guard working, not defeating itself.
 
-  **Partly already answered, though, which is why this is a cost and not a
-  blocker:** the existing Timeline rendering already collapses churn —
-  §2d-bis observed one entry standing in for 24 underlying rows — so a
-  cross-line view would inherit a working mitigation rather than needing a
-  new one. What it would *not* inherit is any guarantee that the collapse
-  holds up once entries from 15+ lines interleave, since the existing
-  grouping is per-line-per-day by construction. That is the specific thing
-  to test, and it is narrower than "is this feature viable".
+  What remains is ordinary volume plus genuine severity oscillation during
+  real incidents (§2d-bis's "severity changed 24 times" spans one hour of
+  an actual line suspension — real events, not text churn). The existing
+  Timeline already collapses that, so Option D inherits a working
+  mitigation. **The one thing it would not inherit is any guarantee the
+  collapse still reads well once 15+ lines interleave**, since the existing
+  grouping is per-line-per-day by construction. That is the specific,
+  narrow question to answer — not "is this list inherently spam".
 
 Option D is snapshot-shaped, not disruption-shaped: it can answer "what
 were TfL's lines reporting on Tuesday afternoon" but not "show me that
@@ -857,7 +889,8 @@ anywhere — so "match what `incidents` does" is not an available answer.
   (re-verified: no `prune_incidents` exists in `crates/aggregator`), still
   scoped out, exactly as the 2026-09-12 spec scoped it out.
 - **Designing retention or a `source` column for
-  `line_status_history`.** Named in §2d and §6 as a precondition; not
+  `line_status_history`.** Named in §2d and §5 Option D as coupled and as a
+  precondition for adjustable TfL depth, and in §6's closing note; not
   designed here.
 - **Re-litigating the 2026-09-07 spec's Option A vs. Option B call.** This
   document re-verified its inputs and found them unchanged; it does not
@@ -884,10 +917,34 @@ anywhere — so "match what `incidents` does" is not an available answer.
 - **Merging the two archives into one blended result list.** Rejected on
   its merits in §5 Option B, not merely deferred.
 
-## 8. Testing approach (if Option B or D is ever built)
+## 8. Testing approach (if Option D or B is ever built)
 
 Recorded so a future plan does not have to re-derive it. Nothing here is a
-task list for now.
+task list for now. Split by option, since §6 recommends D over B and the
+two need substantially different coverage.
+
+**Option D (the recommended shape, if anything is built):**
+
+- `crates/api/src/data/queries.rs`: a cross-line
+  `search_line_status_history`-shaped query — no-filter ordering
+  (`computed_at DESC`, tie-broken on the surrogate `id`), the mode/line
+  filters, `from`/`to` inclusivity, and the keyset
+  pages-without-gaps-or-repeats case across a `computed_at` tie, modelled
+  on
+  `search_incidents_keyset_pagination_pages_without_gaps_or_repeats_and_breaks_ties_on_incident_id_desc`.
+- A regression test that the TfL/aggregator split is done on a real
+  predicate and not a `line_id` prefix — i.e. that it still works for a
+  hypothetical non-`tfl-`-prefixed TfL line id. This is the test that
+  forces the `source` column rather than letting `LIKE 'tfl-%'` calcify.
+- Pruning: `prune_history` with a source-aware retention keeps TfL rows
+  past the aggregator cutoff and still deletes them at their own. The
+  guard against a regression here is that TfL rows are currently deleted
+  by a job that never wrote them (§2d).
+- Frontend: the day-collapsing that already works per line still collapses
+  correctly when rows from several lines interleave — the one behavior
+  §5 Option D names as genuinely untested at this shape.
+
+**Option B (only if the identity decision is reversed):**
 
 - `crates/api/src/data/queries.rs`: `search_tfl_disruptions` mirroring
   `search_incidents`'s existing suite — no-filter ordering, each filter in
@@ -971,13 +1028,20 @@ task list for now.
   200 with live content) where the draft claimed there was "nowhere to
   link"; that the 2026-09-07 plan's page is therefore a preference, not a
   prerequisite; and that the options analysis had omitted its own cheapest
-  option, Option D. §2d-bis, §2e, §5 Option C/D and §6 all say so
-  explicitly, because a design document that silently repairs its own
-  reasoning is harder to trust than one that shows the repair.
+  option, Option D. A second review round then caught that Option D's own
+  headline objection was miscited — the spamminess research's diagnosed
+  root cause is LDBWS-sample-derived text, which does not reach TfL rows —
+  and that its retention and `source`-column costs are one piece of work,
+  not two. §2d-bis, §2e, §5 Option C/D, §6 and §8 all carry the
+  corrections explicitly, because a design document that silently repairs
+  its own reasoning is harder to trust than one that shows the repair. Net
+  effect across both rounds: Option D looks cheaper and less risky than the
+  first draft implied, which is an argument for acting on §6 item 4 sooner,
+  not later.
 - The recommendation is "not yet" for an archive, with four ordered,
-  actionable items rather than a vague deferral, and the designs it
-  declines to build are still written out concretely (§5 Options B and D)
-  so overturning it does not mean starting over — the same structure
+  actionable items rather than a vague deferral, and the alternatives it
+  declines are still costed (§5 — Option B in design detail, Option D in
+  outline) so overturning it does not mean starting over — the same structure
   `docs/superpowers/specs/2026-09-12-group-lines-design.md` used. Two of
   the four items (2 and 3) are things to do *now*, so this is not a "no"
   wearing a schedule.
