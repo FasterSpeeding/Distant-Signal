@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { Box, Stack, Text, Tooltip } from '@mantine/core';
+import { Box, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import { journeyStopLabel } from './JourneyTimeline';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
@@ -160,11 +160,12 @@ interface ProgressCopy {
 /** One pair of strings for every row of the status/resolution decision
  * table -- see this plan's Global Constraints for the table copied
  * verbatim from the spec. `caption` is the always-visible `Text` shown
- * under the diagram; `ariaLabel` is the `role="img"` container's textual
- * restatement (spec Decision 6). They are independent strings, not one
- * string reused twice, because the aria-label states the exact stop
- * position ("stop N of Total") a sighted caption doesn't need spelled
- * out. */
+ * under the diagram; `ariaLabel` is the diagram container's textual
+ * restatement (spec Decision 6 -- the container is a labelled
+ * `role="group"`, see `JourneyProgress`'s own comment for why that role
+ * and not `role="img"`). They are independent strings, not one string
+ * reused twice, because the aria-label states the exact stop position
+ * ("stop N of Total") a sighted caption doesn't need spelled out. */
 function progressCopy(
   stops: JourneyStop[],
   lastIndex: number,
@@ -293,11 +294,31 @@ export function JourneyProgress({ stops, resolutionStatus, status, trainUid, may
 
   return (
     <Stack gap="xs">
+      {/* `role="group"` + `aria-label`, NOT `role="img"`. Spec Decision 6
+          asks for two things at once: (a) a single container-level string
+          that restates what the diagram shows, and (b) per-node `Tooltip`
+          triggers that "remain independently focusable/readable for a
+          sighted keyboard user who wants the intermediate-stop detail".
+          `role="img"` can only deliver (a): per ARIA, an `img`'s subtree is
+          presentational, so every descendant -- including those focusable
+          triggers -- is dropped from the accessibility tree. That made the
+          triggers focusable but silent (a keyboard user tabs onto a node
+          and a screen reader announces nothing), which is a WCAG 4.1.2
+          Name/Role/Value failure and contradicts Decision 6's own second
+          bullet. `group` keeps (a) -- the same per-state label, announced
+          on entering the container -- while letting (b) actually work. A
+          group name is announced at group entry rather than inline like an
+          `img`'s, and a low-verbosity screen reader may skip it, so the
+          `caption` `Text` rendered as this box's sibling below is the
+          always-present, always-read restatement of the same fact; the two
+          are deliberately redundant. Do NOT change this back to `img`
+          without also making the triggers non-focusable; the two halves
+          must agree. */}
       <Box
         ref={scrollRef}
         className="journeyProgressScroll"
         data-journey-progress-scroll
-        role="img"
+        role="group"
         aria-label={ariaLabel}
         style={
           {
@@ -355,8 +376,11 @@ export function JourneyProgress({ stops, resolutionStatus, status, trainUid, may
  * occupying screen space -- with 20-30+ evenly-spaced nodes, a label under
  * each one collides or truncates into uselessness. The decorative circle
  * itself is always `aria-hidden`; for a bare node, the Tooltip's
- * *trigger wrapper* carries its own `aria-label` and stays keyboard
- * focusable instead. */
+ * *trigger wrapper* -- a style-reset `<button>` -- carries its own
+ * `aria-label` and stays keyboard focusable instead. An endpoint node has
+ * no trigger and is not focusable at all: its name is already visible
+ * text, so a tab stop there would announce something the reader can
+ * already read. */
 function JourneyProgressNode({
   stop,
   index,
@@ -463,14 +487,44 @@ function JourneyProgressNode({
         {/* Wraps the same `circleSlot` used for an endpoint node -- rather
             than a hand-duplicated copy of its style -- so the two node
             kinds can never drift out of alignment with each other. The
-            focusable/labelled Tooltip trigger itself is this outer `Box`.
-            `.journeyProgressTrigger` stretches it to the full slot width
-            and floors its height at 24px: the circle it wraps is 12px
+            focusable/labelled Tooltip trigger itself is this outer
+            element. `.journeyProgressTrigger` stretches it to the full slot
+            width and floors its height at 24px: the circle it wraps is 12px
             across, and a 12px tap target is the only route to an
-            intermediate stop's name on a touch screen. */}
-        <Box tabIndex={0} aria-label={label} className="journeyProgressTrigger">
+            intermediate stop's name on a touch screen.
+
+            A real button, not a bare `tabIndex={0}` div: the same
+            "focusable element with a real role and its own `aria-label`"
+            shape `LineDefinitionTooltip.tsx`'s `ActionIcon` trigger
+            already uses, which is the existing codebase pattern spec
+            Decision 6 points at. A focusable div has role `generic`, and
+            an `aria-label` on a `generic` element names nothing, so that
+            shape would leave the trigger focusable-but-silent even now
+            that the container is a `group`.
+
+            `UnstyledButton` (already used by `AllLinesTable.tsx`) rather
+            than a hand-rolled `component="button"` style reset, because it
+            carries Mantine's `.mantine-focus-auto` class -- so a focused
+            node shows the SAME focus ring as every other control in the
+            app, not the UA default -- plus the `appearance`/
+            `-webkit-tap-highlight-color` resets a hand-rolled one keeps
+            forgetting (without the latter, iOS Safari paints a grey tap
+            box around the 12px circle). Its layout still comes entirely
+            from `.journeyProgressTrigger`, which is declared after
+            Mantine's own styles and so wins on source order.
+
+            `aria-describedby` for the tooltip body itself is added by
+            Mantine/floating-ui's `useRole(..., { role: 'tooltip' })` while
+            it's open. There is deliberately no `onClick` and pressing
+            Enter/Space does nothing -- the tooltip is already open from
+            focus, and hover/focus/touch are the only things that reveal
+            it. That inert-on-activation trigger is the accepted tradeoff
+            of the APG tooltip pattern (a focusable element must have a
+            real role, and `button` is the one screen readers announce
+            reliably), not an unfinished handler. */}
+        <UnstyledButton type="button" aria-label={label} className="journeyProgressTrigger">
           {circleSlot}
-        </Box>
+        </UnstyledButton>
       </Tooltip>
       {glyph}
     </Box>

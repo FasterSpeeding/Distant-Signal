@@ -471,7 +471,7 @@ describe('TrainJourney', () => {
         })}
       />,
     );
-    expect(screen.getByRole('img', { name: /Journey progress/ })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: /Journey progress/ })).toBeInTheDocument();
   });
 
   it('renders no JourneyProgress for pending, even if journeyStops were somehow non-null', () => {
