@@ -36,8 +36,11 @@ impl GroupRole {
         matches!(self, GroupRole::Owner | GroupRole::Admin)
     }
 
-    /// Promoting a member to `admin` and deleting the group outright are
-    /// the two actions reserved for `owner` alone (§3).
+    /// Promoting a member to `admin`, demoting an `admin` back to a plain
+    /// member, and deleting the group outright are the actions reserved
+    /// for `owner` alone (§3 for the first and last; demotion is the
+    /// reverse of promotion and inherits the same gate -- see
+    /// `data::groups::demote_to_member`).
     pub fn is_owner(self) -> bool {
         matches!(self, GroupRole::Owner)
     }
@@ -351,6 +354,32 @@ pub async fn promote_to_admin(pool: &PgPool, group_id: &str, target_user_id: &st
     let result = sqlx::query(
         "UPDATE group_members SET role = 'admin' \
          WHERE group_id = $1 AND user_id = $2 AND role = 'member'",
+    )
+    .bind(group_id)
+    .bind(target_user_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Demotes an `admin` back to a plain `member` -- the exact inverse of
+/// `promote_to_admin`, and gated the same way (only `owner` may demote;
+/// the route's job). A no-op (`false`) if the target isn't currently an
+/// `admin` -- already a plain `member`, the `owner`, or not a member at
+/// all.
+///
+/// The `role = 'admin'` predicate is the same structural defense
+/// `promote_to_admin`'s `role = 'member'` one is, and it matters more
+/// here: the `owner` row's role is never `'admin'`, so this statement can
+/// never strip ownership even if a future caller forgets the route's own
+/// owner guard. Spec §2.1 makes the creator a PERMANENT owner ("an owner
+/// can never be removed or demoted by a co-admin, protecting against
+/// being locked out of a group you created"), and this is where that
+/// promise is kept at the data layer.
+pub async fn demote_to_member(pool: &PgPool, group_id: &str, target_user_id: &str) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE group_members SET role = 'member' \
+         WHERE group_id = $1 AND user_id = $2 AND role = 'admin'",
     )
     .bind(group_id)
     .bind(target_user_id)
@@ -1680,6 +1709,132 @@ mod db_tests {
             .await
             .ok();
         cleanup(&pool, &["TEST-GROUPS-PROMOTE-OWNER-2"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                demote_to_member_demotes_an_admin -- --ignored`"]
+    async fn demote_to_member_demotes_an_admin() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-DEMOTE-OWNER").await;
+        seed_user(&pool, "TEST-GROUPS-DEMOTE-ADMIN").await;
+        let group_id = create_group(&pool, "Demote Test", "TEST-GROUPS-DEMOTE-OWNER")
+            .await
+            .expect("create group");
+        sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'admin')")
+            .bind(&group_id)
+            .bind("TEST-GROUPS-DEMOTE-ADMIN")
+            .execute(&pool)
+            .await
+            .expect("seed admin");
+
+        let demoted = demote_to_member(&pool, &group_id, "TEST-GROUPS-DEMOTE-ADMIN")
+            .await
+            .expect("demote");
+        assert!(demoted);
+        let role = get_member_role(&pool, &group_id, "TEST-GROUPS-DEMOTE-ADMIN")
+            .await
+            .expect("query")
+            .expect("still a member");
+        assert_eq!(
+            role,
+            GroupRole::Member,
+            "a demoted admin stays in the group -- demotion changes their role, it is not a \
+             removal"
+        );
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(
+            &pool,
+            &["TEST-GROUPS-DEMOTE-OWNER", "TEST-GROUPS-DEMOTE-ADMIN"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                demote_to_member_is_a_noop_against_the_owner_row -- --ignored`"]
+    async fn demote_to_member_is_a_noop_against_the_owner_row() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-DEMOTE-OWNER-2").await;
+        let group_id = create_group(&pool, "Demote Owner Test", "TEST-GROUPS-DEMOTE-OWNER-2")
+            .await
+            .expect("create group");
+
+        // The counterpart to `promote_to_admin_is_a_noop_against_the_owner_row`,
+        // and the more important direction of the two: spec §2.1's
+        // "permanent owner" promise means no statement in this crate may
+        // ever move the owner row off `'owner'`. The route gates this to
+        // owner-only and refuses an owner target outright; this pins the
+        // data layer's own defense-in-depth independent of that.
+        let demoted = demote_to_member(&pool, &group_id, "TEST-GROUPS-DEMOTE-OWNER-2")
+            .await
+            .expect("demote attempt");
+        assert!(!demoted);
+        let role = get_member_role(&pool, &group_id, "TEST-GROUPS-DEMOTE-OWNER-2")
+            .await
+            .expect("query")
+            .expect("still a member");
+        assert_eq!(role, GroupRole::Owner);
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &["TEST-GROUPS-DEMOTE-OWNER-2"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                demote_to_member_is_a_noop_against_a_plain_member -- --ignored`"]
+    async fn demote_to_member_is_a_noop_against_a_plain_member() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GROUPS-DEMOTE-OWNER-3").await;
+        seed_user(&pool, "TEST-GROUPS-DEMOTE-PLAIN").await;
+        let group_id = create_group(&pool, "Demote Plain Test", "TEST-GROUPS-DEMOTE-OWNER-3")
+            .await
+            .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GROUPS-DEMOTE-PLAIN")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+
+        // Demoting someone who is already a plain member reports `false`
+        // rather than silently "succeeding", so the route can tell the
+        // caller their view of the group is stale (409) instead of
+        // pretending a role change happened.
+        let demoted = demote_to_member(&pool, &group_id, "TEST-GROUPS-DEMOTE-PLAIN")
+            .await
+            .expect("demote attempt");
+        assert!(!demoted);
+        let role = get_member_role(&pool, &group_id, "TEST-GROUPS-DEMOTE-PLAIN")
+            .await
+            .expect("query")
+            .expect("still a member");
+        assert_eq!(role, GroupRole::Member);
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(
+            &pool,
+            &["TEST-GROUPS-DEMOTE-OWNER-3", "TEST-GROUPS-DEMOTE-PLAIN"],
+        )
+        .await;
     }
 
     #[tokio::test]

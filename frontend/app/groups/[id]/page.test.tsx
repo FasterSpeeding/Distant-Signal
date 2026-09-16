@@ -322,6 +322,26 @@ describe('GroupDetailPage', () => {
       expect(screen.getAllByRole('button', { name: 'Remove' }).length).toBeGreaterThan(0);
     });
 
+    it('an owner viewer sees "Demote to member" on the admin row only', async () => {
+      await renderAs(OWNER, 'owner');
+      // One admin in the fixture group -> exactly one demote control, and
+      // it is not offered against the owner's own row (a permanent owner:
+      // the backend 403s that) or against the plain member (nothing to
+      // demote -- they get "Promote to admin" instead).
+      expect(screen.getAllByRole('button', { name: 'Demote to member' })).toHaveLength(1);
+      expect(screen.getAllByRole('button', { name: 'Promote to admin' })).toHaveLength(1);
+    });
+
+    it('an admin viewer does NOT see "Demote to member" (the backend is owner-only)', async () => {
+      await renderAs(ADMIN, 'admin');
+      expect(screen.queryByRole('button', { name: 'Demote to member' })).not.toBeInTheDocument();
+    });
+
+    it('a plain member viewer does NOT see "Demote to member"', async () => {
+      await renderAs(PLAIN, 'member');
+      expect(screen.queryByRole('button', { name: 'Demote to member' })).not.toBeInTheDocument();
+    });
+
     it('a plain member viewer does NOT see "Remove from group" on someone else\'s shared train', async () => {
       await renderAs(PLAIN, 'member', [sharedTrain(ADMIN.userId, 41)]);
       expect(screen.queryByRole('button', { name: 'Remove from group' })).not.toBeInTheDocument();
