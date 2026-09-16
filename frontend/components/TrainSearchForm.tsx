@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
-import { Alert, Autocomplete, Button, Group, Stack, Text, TextInput } from '@mantine/core';
-import { DatePickerInput } from '@mantine/dates';
+import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
+import { DatePickerInput, TimeInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
@@ -11,6 +11,28 @@ import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
+/** The exact `"HH:MM"` shape the four time filters put on the wire
+ * (`from`/`to`/`arrival_from`/`arrival_to`, all parsed server-side by
+ * `crates/api/src/routes/trains.rs`'s `normalize_time`).
+ *
+ * Deliberately KEPT now that those four fields are `@mantine/dates`'
+ * `TimeInput` (a native `<input type="time">`) rather than a free-text
+ * `TextInput`, because that control is NOT equivalent to this check --
+ * it is narrower in one direction and wider in the other.
+ *
+ * Narrower: a native time input's value sanitization drops outright
+ * nonsense (`"25:99"`) to `""` before it can ever reach `onChange`, so
+ * that class of input no longer produces an error at all, it simply never
+ * lands. Wider: the values it DOES accept are "valid HTML time strings",
+ * which include a seconds component -- `"09:00:30"` survives sanitization
+ * untouched even though `step` is 60 and no seconds segment is offered in
+ * the UI. `"HH:MM:SS"` is not what this API parses, so that is the case
+ * this pattern still genuinely catches, as an inline error rather than a
+ * 400 from the server.
+ *
+ * It is also the guard for a browser with no `type="time"` support at all,
+ * where the control degrades to a plain text field with no sanitization
+ * whatsoever. */
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** Mirrors the backend's exact window --
@@ -573,18 +595,45 @@ export function TrainSearchForm({
         }}
         error={stopsAt.length > 0 && !stopsAtValid ? 'Must be a 3-letter CRS code' : null}
       />
+      {/* All four time filters are `@mantine/dates`' `TimeInput`, not a bare
+       * `TextInput` -- the field used to require the caller to TYPE
+       * "09:00" into a free-text box with the format only hinted at by a
+       * placeholder. `TimeInput` is Mantine's thin wrapper over a native
+       * `<input type="time">`, so the browser contributes its own
+       * time-picker affordance (a clock button opening the platform picker,
+       * and per-segment hour/minute spinners) while STILL accepting typed
+       * digits -- picking is added as an option, typing is not taken away.
+       *
+       * Value shape is unchanged, which is the whole point: a native time
+       * input's value is already exactly the `"HH:MM"` (`step` defaults to
+       * 60, so no seconds) these four fields have always put on the wire as
+       * `from`/`to`/`arrival_from`/`arrival_to`, and an emptied field is
+       * `""` exactly as before -- so `searchParams()`, the optional-filter
+       * `.trim()` gating and `TIME_PATTERN` all keep working untouched, and
+       * clearing a field still drops its query param.
+       *
+       * `DateTimePicker`/`DatePickerInput` (this app's existing date
+       * controls, including the "Date (optional)" field just above) are
+       * deliberately NOT what's used here: those carry a calendar, and
+       * these four are time-of-day filters ON a date chosen separately --
+       * a second calendar per field would be four more ways to disagree
+       * with the one date the search actually runs against.
+       *
+       * No `placeholder`: a native time input renders its own HH:MM
+       * segment hints and ignores `placeholder` entirely, so the old
+       * "09:00"/"12:00" hints would have been dead props. The format they
+       * used to teach now lives in the control itself, and the error copy
+       * below still names it for the degraded-to-text case. */}
       <Group grow align="flex-start">
-        <TextInput
+        <TimeInput
           label="Earliest departure (optional)"
-          placeholder="09:00"
           description={`Only trains at ${stationDisplay} at or after this time.`}
           value={fromTime}
           onChange={(event) => setFromTime(event.currentTarget.value)}
           error={fromTime.length > 0 && !fromValid ? 'Must be a time like 09:00' : null}
         />
-        <TextInput
+        <TimeInput
           label="Latest departure (optional)"
-          placeholder="12:00"
           description={`Only trains at ${stationDisplay} at or before this time.`}
           value={toTime}
           onChange={(event) => setToTime(event.currentTarget.value)}
@@ -593,17 +642,15 @@ export function TrainSearchForm({
       </Group>
       {stopsAt.trim() !== '' && (
         <Group grow align="flex-start">
-          <TextInput
+          <TimeInput
             label="Earliest arrival (optional)"
-            placeholder="09:00"
             description={`Only trains reaching ${stopsAtDisplay} at or after this time -- separate from Earliest/Latest departure above, which are about ${stationDisplay}.`}
             value={arrivalFrom}
             onChange={(event) => setArrivalFrom(event.currentTarget.value)}
             error={arrivalFrom.length > 0 && !arrivalFromValid ? 'Must be a time like 09:00' : null}
           />
-          <TextInput
+          <TimeInput
             label="Latest arrival (optional)"
-            placeholder="09:30"
             description={`Only trains reaching ${stopsAtDisplay} at or before this time.`}
             value={arrivalTo}
             onChange={(event) => setArrivalTo(event.currentTarget.value)}

@@ -35,12 +35,21 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
-// See TrackTrainForm.test.tsx's identical mock (lines 62-97) for why a
-// thin stand-in is used instead of driving the real popover calendar:
-// fireEvent.change needs a real <input>, and DatePickerInput's real
-// control isn't one. Keeps the same onChange(string | null) contract
-// TrainSearchForm actually depends on.
-vi.mock('@mantine/dates', () => ({
+// A PARTIAL mock: only `DatePickerInput` is stubbed out, and everything
+// else `@mantine/dates` exports -- notably `TimeInput`, which backs this
+// form's four time filters -- comes through as the real component. See
+// TrackTrainForm.test.tsx's identical `DatePickerInput` mock (lines 62-97)
+// for why that one specifically needs a thin stand-in: fireEvent.change
+// needs a real <input>, and DatePickerInput's real control isn't one. Keeps
+// the same onChange(string | null) contract TrainSearchForm depends on.
+//
+// `TimeInput` deliberately is NOT stubbed: it is a thin wrapper over a real
+// native `<input type="time">`, so it already IS a real input that
+// fireEvent.change drives, and stubbing it would leave these tests
+// asserting against a hand-written stand-in rather than the control the
+// page actually renders.
+vi.mock('@mantine/dates', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@mantine/dates')>()),
   DatePickerInput: ({
     label,
     value,
@@ -194,6 +203,108 @@ describe('TrainSearchForm', () => {
         '/api/trains/search?station=MAN&origin=EUS&stops_at=OXF&from=09%3A00&to=12%3A00',
       ),
     );
+  });
+
+  /** The four time filters are `@mantine/dates`' `TimeInput`, not a
+   * free-text `TextInput` -- a real native `<input type="time">`, which is
+   * what gives the browser's own clock/picker affordance and its
+   * hour/minute segments. These pin the control's identity and the
+   * behaviours the swap had to preserve: the same `"HH:MM"` wire value,
+   * still typeable, still clearable, still validated. */
+  describe('time filters use a real time picker', () => {
+    const TIME_FIELDS = [
+      'Earliest departure (optional)',
+      'Latest departure (optional)',
+      'Earliest arrival (optional)',
+      'Latest arrival (optional)',
+    ];
+
+    it('renders every time filter as a native time input, not a free-text box', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      // `initialStopsAt` so the arrival pair (which only renders once Stops
+      // at is filled in) is on screen alongside the departure pair.
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
+
+      for (const label of TIME_FIELDS) {
+        expect(screen.getByLabelText(label)).toHaveAttribute('type', 'time');
+      }
+    });
+
+    it('steps by whole minutes, so the control never offers or emits seconds', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
+
+      // `step=60` is what keeps a native time input's value at "HH:MM" --
+      // the exact shape `from`/`to`/`arrival_from`/`arrival_to` are parsed
+      // as server-side. A seconds segment would put "HH:MM:SS" on the wire.
+      for (const label of TIME_FIELDS) {
+        expect(screen.getByLabelText(label)).toHaveAttribute('step', '60');
+      }
+    });
+
+    it('keeps each time filter optional and individually clearable', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+        target: { value: '09:00' },
+      });
+      fireEvent.change(screen.getByLabelText('Latest departure (optional)'), {
+        target: { value: '12:00' },
+      });
+      // Emptying one field must drop only ITS query param -- a native time
+      // input reports a cleared value as `''`, exactly as the free-text
+      // field it replaced did, so the existing `.trim()` gating still holds.
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+        target: { value: '' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+      await waitFor(() =>
+        expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&to=12%3A00'),
+      );
+    });
+
+    it('still flags a time the wire format does not accept', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      // `"09:00:30"` is a VALID HTML time string, so a `type="time"`
+      // input's own value sanitization lets it straight through to
+      // `onChange` (jsdom does too -- verified, unlike outright garbage
+      // such as `"25:99"`, which sanitizes to `""` below). It is still not
+      // a value this API accepts: `from`/`to`/`arrival_from`/`arrival_to`
+      // are parsed as bare `"HH:MM"`. So the component's own
+      // `TIME_PATTERN` check is not dead weight after the swap to a picker
+      // -- this is the case it still catches.
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+        target: { value: '09:00:30' },
+      });
+
+      expect(screen.getByText('Must be a time like 09:00')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+    });
+
+    it('refuses a nonsense time outright instead of putting it on the wire', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      // The upgrade from a free-text box: `"25:99"` is not a valid HTML
+      // time string, so the control never adopts it at all (it sanitizes
+      // to `""`). The old `TextInput` accepted the keystrokes and only
+      // *then* showed an error; now there is nothing to error about,
+      // and `from` is simply absent -- never sent as a malformed value.
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+        target: { value: '25:99' },
+      });
+      expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+    });
   });
 
   it('renders one row per result, with time, origin and destination', async () => {
