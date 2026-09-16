@@ -1108,9 +1108,15 @@ a[data-text-link='always'] {
      there -- without this it chains to the page/browser, which on a phone
      is the back-navigation gesture. */
   overscroll-behavior-x: contain;
-  /* Room for the marker node's `boxShadow` halo (`circleStyle`), which
-     would otherwise be clipped by this scroll container's own edges. */
-  padding-block: 4px;
+  /* Room for the marker node's `boxShadow` halo (`circleStyle`) and for a
+     focused trigger's outline, both of which would otherwise be clipped by
+     this scroll container's own edges (`overflow-x: auto` computes
+     `overflow-y` to `auto` too, and clipping happens at the padding box --
+     so this padding really is area the halo and the ring can occupy).
+     6px, not the halo's own 3px: Mantine's `.mantine-focus-auto` ring is a
+     2px outline at a 2px offset, so 4px is an exact fit with no slack for a
+     `--mantine-scale` bump or a custom `focusClassName`. */
+  padding-block: 6px;
 }
 
 /* `width: 100%` + a `min-width` computed from the node counts, rather than
@@ -1229,10 +1235,13 @@ a[data-text-link='always'] {
 /* The bare intermediate node's Tooltip trigger. The circle it wraps is
    12px across, well under the 24x24 CSS px minimum pointer target size, so
    the trigger is stretched to the full slot width and given a floor on its
-   height instead of being left to hug the circle. (Pointer targets only --
-   the diagram is a `role="img"`, and the accessible route to an
-   intermediate stop's name is the `JourneyTimeline` table rendered
-   directly below it.) `align-items: flex-start` keeps the circle pinned to
+   height instead of being left to hug the circle. (This is the pointer
+   target; the same element is also the keyboard/screen-reader route to an
+   intermediate stop's name -- it is an `UnstyledButton` carrying that
+   name as its `aria-label`, inside a `role="group"` container that no
+   longer hides its own subtree the way the original `role="img"` did. The
+   `JourneyTimeline` table below remains the full, non-schematic copy of
+   the same data.) `align-items: flex-start` keeps the circle pinned to
    the top of the trigger so the extra height grows downwards only and the
    circle's center stays on the connecting line. */
 .journeyProgressTrigger {
