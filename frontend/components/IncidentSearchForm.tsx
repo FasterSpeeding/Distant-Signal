@@ -8,7 +8,6 @@ import {
   Group,
   MultiSelect,
   NumberInput,
-  ScrollArea,
   SegmentedControl,
   Select,
   Stack,
@@ -16,6 +15,7 @@ import {
 } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
+import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
 import { formatDateTime } from '@/lib/dateFormat';
 import type { IncidentSearchResponse, IncidentSummary, LineSummary, Suggestion } from '@/lib/types';
@@ -34,8 +34,19 @@ function calendarDaysAgo(days: number): string {
  * these `rows` -- captured once at submit time, mirroring
  * `TrainSearchForm.tsx`'s own capture of `date` for the identical reason:
  * `handleLoadMore` must page through THIS search's filters, never whatever
- * live filter state the form happens to hold when "Load more" is pressed. */
-type Results = { rows: IncidentSummary[]; nextCursor: string | null; query: string } | 'error' | null;
+ * live filter state the form happens to hold when "Load more" is pressed.
+ *
+ * `loadMoreFailed` records that the LAST "Load more" press errored, so the
+ * footer can say so instead of pretending the list ended there. It lives in
+ * this variant (rather than its own `useState`) for the same reason
+ * `nextCursor` does: a fresh search replaces the whole object, so the flag
+ * cannot outlive the result set it describes. The cursor is deliberately
+ * kept on failure -- it is still a valid cursor, so the retry the footer
+ * offers is a real one. */
+type Results =
+  | { rows: IncidentSummary[]; nextCursor: string | null; query: string; loadMoreFailed: boolean }
+  | 'error'
+  | null;
 
 /** `/incidents`'s one interactive component: filter form plus a
  * cursor-paginated, "Load more"-driven results list over
@@ -161,7 +172,7 @@ export function IncidentSearchForm({
         return;
       }
       const body: IncidentSearchResponse = await response.json();
-      setResults({ rows: body.results, nextCursor: body.nextCursor, query });
+      setResults({ rows: body.results, nextCursor: body.nextCursor, query, loadMoreFailed: false });
     } catch {
       setResults('error');
     } finally {
@@ -172,6 +183,14 @@ export function IncidentSearchForm({
   async function handleLoadMore() {
     if (results === null || results === 'error') return;
     if (results.nextCursor === null || loadingMore) return;
+    // The exact result-set object this page is a continuation of. Search is
+    // not disabled while a page is in flight, so a fresh search can resolve
+    // first and leave this response describing a result set that is no
+    // longer on screen; `handleSubmit` always installs a BRAND NEW object,
+    // so identity is all that is needed to spot that. Without this check the
+    // stale page would append its rows to (and stamp its cursor, or its
+    // failure, onto) somebody else's search.
+    const pagedFrom = results;
     setLoadingMore(true);
     try {
       // Rebuilt from the ORIGINAL search's query string (`results.query`),
@@ -180,21 +199,25 @@ export function IncidentSearchForm({
       params.set('after', results.nextCursor);
       const response = await fetch(`/api/incidents?${params.toString()}`);
       if (!response.ok) {
-        setResults((current) =>
-          current !== null && current !== 'error' ? { ...current, nextCursor: null } : current,
-        );
+        // The cursor is kept, not nulled: this page just failed to load, and
+        // the reader gets a named error plus a working retry rather than a
+        // list that quietly stops one page short of the end.
+        setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
         return;
       }
       const body: IncidentSearchResponse = await response.json();
       setResults((current) =>
-        current !== null && current !== 'error'
-          ? { ...current, rows: [...current.rows, ...body.results], nextCursor: body.nextCursor }
+        current === pagedFrom
+          ? {
+              ...current,
+              rows: [...current.rows, ...body.results],
+              nextCursor: body.nextCursor,
+              loadMoreFailed: false,
+            }
           : current,
       );
     } catch {
-      setResults((current) =>
-        current !== null && current !== 'error' ? { ...current, nextCursor: null } : current,
-      );
+      setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
     } finally {
       setLoadingMore(false);
     }
@@ -231,45 +254,113 @@ export function IncidentSearchForm({
     }
     return (
       <>
-        <ScrollArea mah={520} offsetScrollbars>
-          <Stack gap="sm">
-            {results.rows.map((row) => (
-              <Stack key={row.incidentId} gap={4}>
-                <Group justify="space-between" wrap="nowrap">
-                  <TextLink href={`/incidents/${encodeURIComponent(row.incidentId)}`} underline="always">
-                    {row.summary}
-                  </TextLink>
-                  <Text size="xs" c="dimmed">
-                    {formatDateTime(row.firstSeenAt)}
-                  </Text>
-                </Group>
-                <Group gap="xs">
-                  <Badge color={row.isPlanned ? 'blue' : 'orange'}>
-                    {row.isPlanned ? 'Planned Work' : 'Real-Time'}
+        {/* Deliberately NOT wrapped in a `ScrollArea` (`mah`-capped or
+         * otherwise). It used to be, and that hard-clipped the archive: a
+         * Mantine `ScrollArea` root is `position: relative; overflow: hidden`
+         * (`@mantine/core/styles/ScrollArea.css`, `.m_d57069b5`) while its
+         * viewport is `height: 100%`. With only `mah` on the root, the root's
+         * own `height` stays `auto`, so that `100%` resolves to `auto` too
+         * (CSS 2.1 §10.5: a percentage height against a content-sized
+         * containing block computes to `auto`) -- the viewport grows to its
+         * full content height and therefore never overflows *itself*, so it
+         * never scrolls, while the root clamps to the cap and clips
+         * everything past it with `overflow: hidden`. Net effect: no pointer,
+         * wheel or scrollbar gesture could reach a result past the cap
+         * (keyboard focus still could -- browsers scroll an `overflow:
+         * hidden` box to reveal a focused descendant -- which left the box
+         * parked at an offset with no way back), and each "Load more"
+         * appended rows straight into the clipped region. Worse on a ~360px
+         * phone, where rows are two or three lines tall so the cap landed
+         * after only a handful of them. Nothing hinted that anything had
+         * been cut off: Mantine hides the native scrollbar
+         * (`scrollbar-width: none`) and draws its own, and that one is
+         * sized from `scrollHeight` vs `clientHeight` -- equal here -- so it
+         * never appeared either.
+         *
+         * `ScrollArea.Autosize` IS the Mantine component that supports a max
+         * height (it wraps the root in a `display: flex` / `flex: 1` /
+         * `overflow: hidden` chain, which is what makes the root's height
+         * definite). It is still not used here: letting the page scroll is
+         * what `StationTimetable.tsx` -- the other paginated "Load more"
+         * list in this app -- already does, rendering its rows as a plain
+         * `Stack` with no inner scroll region. (`TrainSearchForm.tsx`, which
+         * this component's header says it mirrors, still has the
+         * `mah`-capped `ScrollArea` described above; it has the same latent
+         * defect and is simply out of scope for this fix, so it is not the
+         * precedent to copy.) A nested scroller buys nothing here anyway --
+         * the filter form above is short, so there are no sticky controls to
+         * preserve -- while costing real usability on touch, where it steals
+         * the page's own scroll gesture. */}
+        <Stack gap="sm" data-incident-results>
+          {results.rows.map((row) => (
+            <Stack key={row.incidentId} gap={4}>
+              {/* `wrap` is left at Mantine's wrapping default rather than
+               * `nowrap`: at ~360px the summary and the timestamp cannot
+               * share a line, and forcing them to shrank the timestamp
+               * until it broke mid-value ("19 Aug 2026," etc. across four
+               * lines) -- under `nowrap` its floor is `min-width: auto`,
+               * i.e. its widest *word*, not the whole value. The timestamp
+               * instead stays unbreakable and claims the end of whichever
+               * line it lands on. `margin-inline-start: auto` rather than
+               * the `Group`'s `justify` because `space-between` leaves a
+               * *wrapped* single-item line at `flex-start`, which would
+               * left-align the date under a long summary on desktop; with
+               * the auto margin it reads flush right whether it shares the
+               * summary's line or wraps below it.
+               *
+               * `rowGap` overrides `Group`'s own `md` gap on the wrap axis
+               * only (an inline longhand beats the class's `gap` shorthand).
+               * Without it a wrapped timestamp sat 16px under its summary
+               * while the badge row below sat 4px under the timestamp, so
+               * the date read as a label on the badges rather than on the
+               * incident it belongs to. The horizontal `md` gap is
+               * deliberately left alone.
+               *
+               * `overflowWrap: 'anywhere'` (inherited, so it reaches the
+               * `TextLink` anchor, which takes no style of its own) is what
+               * the removed `ScrollArea`'s `overflow: hidden` used to
+               * provide by accident: a Knowledgebase summary can contain an
+               * unbroken token longer than a 360px screen (a URL, a Welsh
+               * station name), and a flex item's `min-width: auto` floor is
+               * its longest word -- so without this the row would push the
+               * whole page sideways. `anywhere` rather than `break-word`
+               * precisely because it DOES lower that intrinsic minimum,
+               * which is the whole point here; same choice, same reason, as
+               * `.journeyProgressLabel` in `app/globals.css`. */}
+              <Group style={{ rowGap: 2, overflowWrap: 'anywhere' }}>
+                <TextLink href={`/incidents/${encodeURIComponent(row.incidentId)}`} underline="always">
+                  {row.summary}
+                </TextLink>
+                <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap', marginInlineStart: 'auto' }}>
+                  {formatDateTime(row.firstSeenAt)}
+                </Text>
+              </Group>
+              <Group gap="xs">
+                <Badge color={row.isPlanned ? 'blue' : 'orange'}>
+                  {row.isPlanned ? 'Planned Work' : 'Real-Time'}
+                </Badge>
+                <Badge color={row.isCleared ? 'gray' : 'green'}>{row.isCleared ? 'Cleared' : 'Active'}</Badge>
+                {row.operators.map((code) => (
+                  <Badge key={code} variant="outline" color="grape">
+                    {code}
                   </Badge>
-                  <Badge color={row.isCleared ? 'gray' : 'green'}>{row.isCleared ? 'Cleared' : 'Active'}</Badge>
-                  {row.operators.map((code) => (
-                    <Badge key={code} variant="outline" color="grape">
-                      {code}
-                    </Badge>
-                  ))}
-                  {row.affectedStations.map((crs) => (
-                    <Badge key={crs} variant="outline" color="gray">
-                      {crs}
-                    </Badge>
-                  ))}
-                </Group>
-              </Stack>
-            ))}
-          </Stack>
-        </ScrollArea>
-        {results.nextCursor !== null && (
-          <Group>
-            <Button variant="default" size="xs" onClick={handleLoadMore} disabled={loadingMore} loading={loadingMore}>
-              Load more
-            </Button>
-          </Group>
-        )}
+                ))}
+                {row.affectedStations.map((crs) => (
+                  <Badge key={crs} variant="outline" color="gray">
+                    {crs}
+                  </Badge>
+                ))}
+              </Group>
+            </Stack>
+          ))}
+        </Stack>
+        <LoadMoreControl
+          hasMore={results.nextCursor !== null}
+          loading={loadingMore}
+          failed={results.loadMoreFailed}
+          onLoadMore={handleLoadMore}
+          endMessage="You've reached the end — no more incidents match these filters."
+        />
       </>
     );
   }
