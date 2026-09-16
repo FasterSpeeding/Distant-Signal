@@ -450,7 +450,9 @@ export function TrainSearchForm({
              * a line: the row's max-content is ~430px ("09:00 · PAD → RDG →
              * BRI" ~160px, "View live status" ~110px, the button ~130px,
              * plus the gaps) against ~310px of content box inside the
-             * page `Container`'s padding.
+             * `lg` padding on `app/trains/page.tsx`'s own `Stack`. (Not the
+             * main `Container`'s -- that is explicitly `px={0}`, see
+             * `app/layout.tsx`'s own comment on why.)
              *
              * `nowrap` did NOT overflow the page -- worth spelling out,
              * because that is the obvious guess and it is wrong. Mantine's
@@ -460,10 +462,10 @@ export function TrainSearchForm({
              * contribution to zero (the same mechanism `app/globals.css`'s
              * `[data-status-badge]` override documents), so the row's
              * intrinsic floor was only ~130px and it always "fit". It fit
-             * by SQUASHING: the summary broke across three or four lines
-             * at its longest-word floor while the button clipped to "Track
-             * this tr" -- clipped flat, since that label sets no
-             * `text-overflow`, so the action lost its own name. That was
+             * by SQUASHING: the summary broke onto a second line while the
+             * button clipped mid-word -- clipped flat, since that label
+             * sets no `text-overflow`, so the action lost its own name
+             * with nothing to signal it had been cut. That was
              * equally true inside the removed `ScrollArea` (its content box
              * is `display: table; min-width: 100%`, which does not exceed
              * the available width either), so this is a pre-existing
