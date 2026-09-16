@@ -859,6 +859,8 @@ export interface GroupDetail {
   /** Same contract as `GroupMember.displayName`: the owner's own name, or
    * `null` -- never their email address. */
   ownerName: string | null;
+  /** Same contract as `GroupMember.displayTag`. */
+  ownerTag: string | null;
   memberCount: number;
   role: GroupRole;
   // `null` for a plain `member` -- the invite link is only ever included
@@ -872,8 +874,18 @@ export interface GroupMember {
   /** The member's own name, or `null` when their identity provider has no
    * name on file for them -- never their email address (the backend
    * deliberately doesn't fall back to one: `crates/api/src/data/users.rs`'s
-   * `display_label`). Render `null` as a generic placeholder. */
+   * `display_label`). Render `null` as a generic placeholder -- via
+   * `lib/memberLabel.ts`'s `memberLabel`, which also appends `displayTag`. */
   displayName: string | null;
+  /** Six hex characters that distinguish this member from the other
+   * placeholder-rendered members of the same group, and `null` whenever
+   * `displayName` is set (a real name is never suffixed). Derived from
+   * `userId` and never from an email address -- see
+   * `crates/api/src/data/users.rs`'s `MemberDisplay`. Without it, an
+   * identity provider whose username claim is the user's email by design
+   * (Entra ID's UPN) renders every single member of a group as the same
+   * indistinguishable "A member". */
+  displayTag: string | null;
   role: GroupRole;
   joinedAt: string; // RFC3339
 }
@@ -898,6 +910,8 @@ export interface GroupTrain {
   /** Same contract as `GroupMember.displayName`: the sharer's own name, or
    * `null` -- never their email address. */
   addedByName: string | null;
+  /** Same contract as `GroupMember.displayTag`, for the sharer. */
+  addedByTag: string | null;
 }
 
 /** `GET /public/groups/shared-trains`'s per-item shape
