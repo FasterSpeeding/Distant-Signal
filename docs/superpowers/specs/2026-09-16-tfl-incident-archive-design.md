@@ -6,10 +6,18 @@ or migration changes.** Written to the same rigor as
 `docs/superpowers/specs/2026-09-12-incident-archive-design.md` (the feature
 this one proposes extending, now shipped), and following
 `docs/superpowers/specs/2026-09-12-group-lines-design.md`'s shape for a
-design whose honest conclusion is "not yet" — the design is still worked
+design whose honest conclusion is "not yet" — the designs are still worked
 out in full below (Section 5), so that a future decision to overturn the
 recommendation does not start from zero, but the recommendation itself is
 not a formality.
+
+**Two findings up front, for anyone reading only this far:** the briefed
+assumption that Elizabeth line and London Overground incidents are already
+in the archive is **confirmed**, against live production data, not just
+against the code (§1b). And the archive's Line filter returns **zero rows
+for every line**, National Rail included, because the column it filters on
+is never populated (§1c) — a live defect that has nothing to do with TfL
+and that §6 puts ahead of anything in this document's nominal subject.
 
 Required reading consumed in full before this document was written:
 `docs/superpowers/specs/2026-09-12-incident-archive-design.md`;
@@ -53,18 +61,20 @@ TfL services that do not touch National Rail infrastructure at all.
 
 ## 1. Verifying the Elizabeth line / Overground assumption
 
-**Verdict: the assumption holds on its own terms, and the code contains no
-TfL-branding exclusion anywhere. But it rests on a premise the brief did
-not state, and it sits next to a separate, network-wide defect that will
-make a user testing it conclude the opposite.** All three parts below are
-verified against the code, not inferred.
+**Verdict: the assumption holds, confirmed end to end. The code contains
+no TfL-branding exclusion anywhere (§1a), and live production data shows
+real Elizabeth line and Overground incidents in the archive right now
+(§1b). It nonetheless sits next to a separate, network-wide defect that
+will make a user testing it conclude the opposite (§1c).** Everything
+below is verified against the code or against the running deployment, not
+inferred.
 
 ### 1a. The assumption holds: nothing in the pipeline excludes an operator
 
 `incidents` has exactly one production writer of its feed columns:
 `queries::upsert_incidents` (`crates/api/src/data/queries.rs:83`), reached
 only via `POST /private/incidents`
-(`crates/api/src/routes/ingest.rs:34-37`, handler at `:162-171`), whose
+(`crates/api/src/routes/ingest.rs:36-39`, handler at `:163-171`), whose
 only client is `poller-incidents`
 (`crates/poller-incidents/src/main.rs:54-71`,
 `crates/poller-incidents/src/config.rs`'s `api_ingest_url` default). The
@@ -75,12 +85,12 @@ only (`crates/enricher/src/queries.rs:81-88`, called once from
 That single ingest path applies **no operator, region, mode or branding
 filter at any layer**:
 
-- `crates/poller-incidents/src/schema.rs::parse_incidents` (`:114`) maps
+- `crates/poller-incidents/src/schema.rs::parse_incidents` (`:116`) maps
   every `PtIncident` in the RDM XML document to an `IncidentMessage`,
   carrying `operators` through verbatim as raw `OperatorRef` ATOC codes
   (`schema.rs:77-88`). No allowlist, no skip.
 - `upsert_incidents` binds them verbatim into `operators TEXT[]`
-  (`queries.rs:144`, `:166`).
+  (`queries.rs:143`, `:165`).
 - `queries::search_incidents` (`queries.rs:2046-2092`) applies
   `($1::text[] IS NULL OR operators && $1)` — an unfiltered request has no
   operator predicate at all.
@@ -99,7 +109,7 @@ The 2026-08-22 TfL-service-metrics spec's Area 2 ("Overground is not
 ingested on the NR side at all — no `lines/overground-*.toml` files
 exist") is **out of date**: those files now exist, and the TfL↔NR merge
 shipped for all seven railways
-(`crates/common/src/lib.rs:266-273`'s `TFL_TO_NR_LINE_ID`, suppression at
+(`crates/common/src/lib.rs:269-277`'s `TFL_TO_NR_LINE_ID`, suppression at
 `crates/api/src/routes/lines.rs:387-407`, overlay at
 `crates/api/src/routes/line_status.rs:100-127` and
 `crates/api/src/render.rs:34-46`).
@@ -122,24 +132,32 @@ directly from the above:
   (`frontend/components/IncidentSearchForm.tsx:90`), and all nine
   Elizabeth/Overground catalogue lines are `source: 'catalogue'`.
 
-### 1b. The premise the brief did not state, and which this document cannot verify
+### 1b. The premise the brief did not state — checked against live data, and it holds
 
 "The archive covers all National Rail Knowledgebase incidents regardless of
 operator branding" is true **of this app's code**. Whether RDM's
 Knowledgebase Incidents feed itself actually publishes incidents attributed
-to `XR` and `LO` is an upstream data question, and no live feed capture was
-taken for this document (no RDM credentials were exercised here — the same
-"unmeasured, stated plainly" caveat the incident-archive spec attached to
-its own row-count assumption). There are two failure modes the code could
-not detect if they occurred upstream: RDM omitting these operators from the
-feed entirely, or publishing them under an `OperatorRef` this app's TOC
-reference data does not carry.
+to `XR` and `LO` is a separate, upstream data question the code cannot
+answer: RDM could omit those operators from the feed, or publish them under
+an `OperatorRef` this app's TOC reference data does not carry, and nothing
+in §1a would detect either.
 
-**This is cheaply checkable and should be checked before anyone relies on
-1a**: one query against a populated deployment —
-`SELECT DISTINCT unnest(operators) FROM incidents;` — settles it. Doing so
-is explicitly recommended in Section 6 and is a precondition, not a
-follow-up.
+**So it was checked empirically, against the live deployment
+(https://ds.cursed.solutions, 2026-09-16), rather than left as a caveat.
+It holds.** Both operator codes return real, current rows:
+
+```
+GET /api/incidents?operator=XR  -> {"operators":["XR"], "priority":2, "isCleared":true,
+  "summary":"Residual disruption to Elizabeth line services between Shenfield and Romford", ...}
+GET /api/incidents?operator=LO  -> {"operators":["LO"], "priority":2, "isCleared":true,
+  "summary":"Disruption to London Overground services to / from West Croydon", ...}
+```
+
+(Queried through `/api/incidents`, the frontend's same-origin proxy —
+`/public/incidents` is not internet-exposed directly.) **The briefed
+assumption is confirmed end to end, not merely un-contradicted by the
+code.** Elizabeth line and London Overground incidents are in the archive
+today and are reachable through its Operator filter.
 
 ### 1c. The gap the assumption does not anticipate: the Line filter matches nothing, for any line
 
@@ -157,6 +175,7 @@ other production code path writes that column — the only other `INSERT
 INTO incidents` statements naming it are inside `#[cfg(test)]` modules
 (`crates/enricher/src/main.rs:544`, `crates/api/src/routes/incidents.rs:601`,
 `crates/api/src/data/queries.rs:2154`,
+`crates/api/src/data/queries.rs:3184`,
 `crates/aggregator/src/queries.rs:1056`). So **`incidents.affected_stations`
 is `'{}'` on every production row.**
 
@@ -164,7 +183,16 @@ The archive's `line` filter resolves a catalogue line id to its CRS list
 (`crates/api/src/routes/incidents.rs:203-215`) and applies
 `affected_stations && $2` (`crates/api/src/data/queries.rs:2067`) — against
 always-empty arrays. **It therefore returns zero rows for every line, in
-production, today.** The incident-archive spec's Decision 2 anticipated the
+production, today — confirmed live, not only reasoned from the code:**
+
+```
+GET /api/incidents?line=elizabeth-line     -> {"nextCursor":null,"results":[]}
+GET /api/incidents?line=overground-mildmay -> {"nextCursor":null,"results":[]}
+```
+
+while the unfiltered and `operator=`-filtered queries above return plenty
+of rows, every one of them carrying `"affectedStations":[]`. The
+incident-archive spec's Decision 2 anticipated the
 filter would *under-count* relative to the real matcher
 (`KeywordOnly`/`OperatorOnly` matches invisible to it) and worded the UI
 copy accordingly; it did not anticipate that the column it filters on is
@@ -249,7 +277,8 @@ The DLR pilot (`crates/poller-tfl/src/dlr/`) infers `SampleStats` for one
 pilot station (Poplar, outbound) by diffing Arrivals against the published
 Timetable, and writes nothing of its own — it mutates the in-memory
 `LineStatusReport` for `tfl-dlr` before the normal batch POST
-(`main.rs:206-235`). It is `dlr_pilot_enabled = false` by default and is
+(`merge_dlr_sample_stats` at `main.rs:207-215`,
+`mark_dlr_pending` at `:226-236`). It is `dlr_pilot_enabled = false` by default and is
 not enabled in `docker-compose.yml`. It produces no disruption records and
 is not a candidate archive source.
 
@@ -287,7 +316,7 @@ pub struct TflDisruption {
 
 **There is no id field on either, and none in TfL's wire shape that would
 survive a poll.** TfL's `lineStatuses[].id` is a per-response ordinal
-(`"id": 0` in the captured fixture at `schema.rs:248-256`) and is
+(`"id": 0` in the captured fixture at `schema.rs:234`) and is
 deliberately not modelled. The only identifier attached to a TfL disruption
 anywhere in this app is `Disruption.source = "tfl-line-status-{line_id}"`
 (`schema.rs:143`) — keyed off the **line**, so three simultaneous statuses
@@ -306,7 +335,7 @@ TfL never runs the enricher's extraction pipeline.
 
 ### 2d. Where TfL disruptions are persisted, and for how long
 
-`upsert_tfl_line_status` (`crates/api/src/data/queries.rs:387-452`) writes
+`upsert_tfl_line_status` (`crates/api/src/data/queries.rs:387-457`) writes
 one `line_status` row per line with `source = 'tfl'`, appends one
 `line_status_history` row when `tfl_statuses_changed`, and prunes TfL rows
 missing from the batch (`queries.rs:446`). So TfL disruption text exists in
@@ -320,7 +349,7 @@ Two facts about that history table decide most of this design:
    migration added `source` to `line_status` only
    (`crates/api/migrations/20260822120000_line_status_source.sql:29`). A
    history row carries `(id, line_id, statuses, computed_at)`
-   (`20260510023522_initial.sql:89-96`); TfL rows are distinguishable only
+   (`20260510023522_initial.sql:89-94`); TfL rows are distinguishable only
    by the `tfl-` id prefix.
 2. **It is pruned at 7 days by default, and the pruner is blind to
    source.** `crates/aggregator/src/queries.rs:488-496`:
@@ -347,27 +376,66 @@ last Tuesday' is what this poller wrote into `line_status_history` at the
 time."*
 
 **Net: the deepest TfL disruption archive that could be built from existing
-data is seven days old, and shrinks to nothing the moment the aggregator's
-prune runs.** That is not a retention gap to fix later; it is the ceiling
-on the feature.
+data is seven days old.** That is the ceiling on any feature built over
+this data, and it is a policy number rather than a law of nature — but
+raising it needs a decision (§6), and no amount of engineering recovers
+depth that was already deleted.
+
+### 2d-bis. A seven-day TfL disruption history is already browsable, per line
+
+This was nearly missed and is the single most important piece of current
+state in this document, so it is called out separately rather than left
+implicit.
+
+`GET /Line/{id}/Status/{from}/to/{to}`
+(`crates/api/src/routes/line_status.rs:361-405`, `get_line_status_history`)
+special-cases only `custom-` ids for an ownership check and otherwise
+passes any id straight to `queries::line_status_history_for_range`. It has
+no `source` awareness and needs none — `tfl-victoria` is just a `line_id`.
+`frontend/app/lines/[id]/history/` is likewise id-agnostic.
+
+**Verified against the live deployment (https://ds.cursed.solutions,
+2026-09-16), not only by reading the code:** `/lines/tfl-victoria` returns
+`200` and renders the line's current TfL disruption text ("Minor Delays"),
+and `/lines/tfl-victoria/history` returns `200` with both its Timeline and
+Trends tabs. `/tfl-lines/victoria` returns `404`, confirming §2e.
+
+So the honest statement of the gap is narrower than "TfL has no disruption
+history in this app". TfL disruption history exists, is persisted, is
+rendered, and is reachable — **per line, for seven days**. What is missing
+is a *cross-line* browse: the thing `/incidents` is to `/lines/[id]`'s own
+per-line incident rendering. That reframing is load-bearing for Section 5.
 
 ### 2e. The TfL incident page from 2026-09-07 was never implemented
 
 `docs/superpowers/specs/2026-09-07-tfl-incident-page-design.md` recommended
 Option B (a live-snapshot page, no synthetic incident identity), and
 `docs/superpowers/plans/2026-09-07-tfl-incident-page-v1-implementation-plan.md`
-resolved its open questions into a concrete task list. Neither shipped:
+resolved its open questions into a concrete task list. Neither shipped, 359 commits later:
 `crates/api/src/routes/tfl_lines.rs` does not exist and is not in
 `crates/api/src/routes/mod.rs`'s module list; `frontend/app/tfl-lines/`
 does not exist; `queries::tfl_line_status_by_id`, `getTflLine` and
 `tflLineIdFromSource` do not exist. The only two commits for that feature
-are docs-only (`d54708c`, `d96dee9`), and 358 commits have landed since.
+are docs-only (`d54708c`, `d96dee9`).
 
-This matters directly: **a TfL row in the archive would have nowhere to
-link to.** Every row in the shipped archive links to `/incidents/[id]`
-(`frontend/components/IncidentSearchForm.tsx:331`). There is no TfL
-equivalent of that destination, and the repo has already decided what it
-should be and then not built it.
+**This is a smaller problem than it looks, and an earlier draft of this
+document got it wrong.** Every row in the shipped archive links to
+`/incidents/[id]` (`frontend/components/IncidentSearchForm.tsx:331`), and
+it is tempting to conclude a TfL row would have nowhere to go. It would:
+`/lines/{tfl-line-id}` already exists and already renders that line's
+current TfL disruption text (§2d-bis, verified live). The 2026-09-07 plan
+chose a dedicated `/tfl-lines/[id]` over it on *fit* grounds — its own
+Decision 1 says `/lines/[id]` "already works end-to-end … with no
+special-casing needed" but carries edit/delete management chrome, trend
+charts and a filter/accordion `IssueList` that do not suit a single-purpose
+link target — **not** because no destination existed. So `/tfl-lines/[id]`
+is a preference, not a prerequisite for anything in Section 5.
+
+What genuinely is missing from that plan is smaller and worth keeping on
+the list: `tflLineIdFromSource`, which would close the dead end at
+`frontend/lib/incidents.ts:11-14` where a TfL `Disruption.source` resolves
+to no link at all, even though it carries a line id that would resolve
+fine.
 
 ### 2f. The `incidents` table, and what a TfL disruption would have to fit into
 
@@ -378,7 +446,8 @@ The current 22-column shape, assembled from
 `20260821090000_incident_severity_escalation.sql:13-17`,
 `20260822090000_incident_extraction_periods.sql:21-22`, and
 `20260912090000_incidents_first_seen_at_id.sql` (index only), reduced to
-the columns the archive actually reads:
+the eleven columns the archive reads plus the enricher block (which it does
+not read, listed because a TfL row would have to carry them as `NULL`):
 
 | column | today | a TfL disruption |
 | --- | --- | --- |
@@ -387,7 +456,7 @@ the columns the archive actually reads:
 | `description TEXT NOT NULL` | RDM HTML, sanitized on render | `reason`/`disruption.description`, plain text; often a compound multi-segment string (2026-09-07 spec §3) |
 | `operators TEXT[]` | ATOC codes | the literal `"TfL"` for every line, tube to tram (`crates/common/src/lib.rs:230-235`) — one value, zero selectivity |
 | `affected_stations TEXT[]` | CRS codes — empty on every production row (§1c) | Naptan ids, dropped at the poller (`schema.rs:136-145`) |
-| `priority INTEGER NOT NULL` | raw RDM `IncidentPriority`, no documented enum | `statusSeverity` 0–20, a *different* scale with different semantics; mapped to `common::Severity` where 20 means Recovering, not TfL's "Service Closed" (`crates/common/src/lib.rs:1613-1625`) |
+| `priority INTEGER NOT NULL` | raw RDM `IncidentPriority`, no documented enum | `statusSeverity` 0–20, a *different* scale — identical to this app's `Severity` for codes 0–14 and divergent above (TfL 15 is Diverted where ours is 21; TfL 20 is Service Closed where ours is the NR extension Recovering), which is why `severity_from_tfl_code` exists to translate rather than pass through (`crates/common/src/lib.rs:191-231`) |
 | `validity_periods JSONB` | repeated RDM periods | TfL `validityPeriods[]`, already collapsed to one by `select_validity` (`schema.rs:186-209`) — the only column with a clean analogue |
 | `is_planned BOOLEAN` | RDM `Planned` | derivable from `disruption.category == "PlannedWork"`, but `Information` maps to neither value |
 | `is_cleared BOOLEAN` | RDM `ClearedIncident`; the feed retains cleared incidents for a time | **nothing corresponds** — a TfL disruption simply stops appearing in the next poll |
@@ -397,7 +466,7 @@ the columns the archive actually reads:
 There is **no country, region, mode or network column on `incidents`, and
 no proxy for one.** (Country filtering elsewhere in this app is
 frontend-only and currently inert:
-`frontend/lib/modes.ts:68`'s `MODE_TO_COUNTRY` is deliberately an empty
+`frontend/lib/modes.ts:67`'s `MODE_TO_COUNTRY` is deliberately an empty
 record, so `countryForMode` returns `'Gb'` for everything — per
 `docs/superpowers/specs/2026-09-05-country-filtering-design.md`'s own
 Decisions 2–4. The only network-ish column in the schema is `network` on
@@ -422,12 +491,24 @@ assumed.
    data.
 2. **No lifecycle.** `is_cleared` is a fact RDM publishes. TfL publishes a
    complete re-statement of current status every 300s; "cleared" is
-   inferred from absence, which is indistinguishable from a feed outage,
-   a rename, or the line being dropped from the polled mode set.
-3. **No archive depth.** Seven days, pruned by a source-blind job (§2d),
-   with no upstream history endpoint to backfill from. An "archive" whose
-   deepest row is a week old is not the same product as one that reaches
-   back to first ingest.
+   inferred from absence, which is indistinguishable from a rename or the
+   line being dropped from the polled mode set. **Narrower than it first
+   looks, and deliberately so**: the whole-feed-outage case is already
+   guarded, on both sides — `upsert_tfl_line_status` returns `Ok(0)` on an
+   empty batch rather than mass-deleting
+   (`crates/api/src/data/queries.rs:388-390`, whose doc comment reads
+   *"'TfL returned nothing' is a fault"*), and
+   `crates/poller-tfl/src/main.rs:158-163` refuses to post one. The
+   residual ambiguity is per-line-within-a-non-empty-batch, and the same
+   guard pattern would carry into anything built here.
+3. **No archive depth, today.** Seven days (§2d), with no upstream history
+   endpoint to backfill from. Two distinguishable problems live under this
+   heading and should not be conflated: a **retention policy** (7 days,
+   changeable by decision, though it needs a `source` column on
+   `line_status_history` first, since `prune_history` is source-blind) and
+   a **cold start** (a new table would begin empty and could never recover
+   the past, exactly as `incidents` could not at its own first ingest).
+   Only the second is structural.
 4. **No shared vocabulary for search.** The archive's filters are
    ATOC operator codes, CRS-resolved catalogue lines, `is_planned`, and a
    raw RDM priority integer. TfL has a single pseudo-operator, Naptan
@@ -436,9 +517,15 @@ assumed.
    that are inert for one half of the rows and filters that are inert for
    the other.
 
-Mismatches 1 and 2 are properties of TfL's API and cannot be engineered
-away — only papered over. Mismatch 3 is a policy choice this repo could
-change. Mismatch 4 is a design problem with real solutions (Section 5).
+Only mismatch 1 is both structural and unavoidable: it is a property of
+TfL's API, and every design that wants disruption-shaped rows has to paper
+over it. Mismatch 2 is real but narrow. Mismatch 3 is half policy, half
+cold start. Mismatch 4 is a design problem with real solutions (Section 5).
+**The important consequence is that mismatch 1 only binds a design that
+tries to build disruption-shaped rows** — Option D in Section 5 sidesteps
+it entirely by staying snapshot-shaped, which is why it is the cheapest
+option and why an earlier draft of this document, which omitted it,
+reached its recommendation for partly wrong reasons.
 
 ## 4. Scope
 
@@ -459,10 +546,12 @@ NR side is already archived (§1d).
   `docs/superpowers/specs/2026-08-31-other-uk-transit-networks-research.md`;
   none is ingested today.
 
-## 5. The design, worked out in full (in case the recommendation is overturned)
+## 5. The four designs, worked out in full (in case the recommendation is overturned)
 
-Three options were considered. Each is costed honestly; the recommendation
-in Section 6 picks none of them for now.
+Four options were considered — A and B build disruption-shaped rows, C and
+D do not. Each is costed honestly; Section 6 recommends against building an
+archive from any of them now, while pulling two cheap pieces out of C and
+naming D as the shape to build if the decision is reversed.
 
 ### Option A — put TfL disruptions in the `incidents` table
 
@@ -533,7 +622,7 @@ mirrors `incidents_first_seen_at_id` exactly so the cursor mechanics are
 the same code shape.
 
 **Ingest.** A new branch inside `upsert_tfl_line_status`
-(`crates/api/src/data/queries.rs:387-452`), in the same transaction that
+(`crates/api/src/data/queries.rs:387-457`), in the same transaction that
 already diffs and writes `line_status`: for each status entry with a
 `disruption`, compute the synthetic key, `ON CONFLICT DO UPDATE
 last_seen_at = NOW()`, and mark `is_current = FALSE` for any row of a line
@@ -557,9 +646,10 @@ against its own route — **not** one blended list. Blending is the thing to
 avoid: a single result list whose rows carry mutually inapplicable badges
 (an ATOC operator badge on a tube row, a "TfL" badge on every tube row) and
 whose filter panel greys half out per row would be worse than two honest
-lists. Rows would link to whatever the 2026-09-07 plan's
-`/tfl-lines/[id]` page becomes — which does not exist (§2e), so Option B
-cannot ship before that does.
+lists. Rows would link to `/lines/{tfl-line-id}`, which already exists and
+already renders that line's disruption (§2d-bis), or to the 2026-09-07
+plan's narrower `/tfl-lines/[id]` if that is built first — either works;
+neither blocks the other.
 
 **Why Option B is not recommended *now*** — four reasons, in order of
 weight:
@@ -571,92 +661,158 @@ weight:
    a stable URL asserts "this is one tracked real-world event," and TfL's
    feed gives no basis for that assertion. `is_current`/`last_seen_at`
    soften the claim; they do not establish it.
-2. **The archive would be seven days deep at ship** (§2d), because no
-   TfL history predating the feature exists to backfill from, and
-   `prune_history` would not even be the constraint — the new table would
-   simply start empty. An archive that answers "what happened on the
-   Victoria line last month" with silence for its first month, and with
-   whatever the (separately undecided) retention policy allows thereafter,
-   is a different product from the one the incident archive is.
-3. **There is nowhere for a row to link.** The detail page this repo
-   already designed and planned for exactly this purpose was never built
-   (§2e). Shipping a browse over rows that cannot be opened repeats the
-   "a page built and left unreachable" failure the incident-detail spec
-   explicitly warned against, from the other end.
+2. **Option D gets most of the value for a fraction of the cost.** A
+   cross-line browse over `line_status_history` (below) needs one index
+   and no new identity concept. Option B's entire additional contribution
+   over Option D is disruption-shaped rows — which is precisely the part
+   mismatch 1 says cannot be made truthful. Paying for a new table, a new
+   ingest branch and a new lifecycle to buy the one part that is unsound
+   is the wrong trade.
+3. **It would start empty and could never be backfilled.** No TfL history
+   predating the feature exists in a form the new table could ingest, and
+   TfL publishes no history endpoint. An archive that answers "what
+   happened on the Victoria line last month" with silence for its first
+   month is a different product from the one `/incidents` is. (Note this
+   is the cold-start half of mismatch 3, not the retention half —
+   `prune_history` would not be the constraint, since the new table would
+   have its own knob.)
 4. **The equivalent feature for National Rail is half-broken.** Its Line
-   filter matches nothing (§1c). Fixing a live defect in the shipped
-   feature outranks doubling its surface area.
+   filter matches nothing (§1c, confirmed live). Fixing a live defect in
+   the shipped feature outranks doubling its surface area.
 
-### Option C — do nothing to the archive; make the existing TfL surfaces reachable
+### Option C — do nothing to the archive; close the remaining TfL dead end
 
-Ship the 2026-09-07 plan (the live-snapshot `/tfl-lines/[id]` page), which
-already has a written, decision-resolved implementation plan, and leave
+Ship the 2026-09-07 plan (the `/tfl-lines/[id]` page), and leave
 `/incidents` National-Rail-only with honest copy saying so.
 
-This is not an archive, and it is not pretending to be. It gives a TfL
-disruption a destination, closes the `incidentIdFromSource` dead end
-(`frontend/lib/incidents.ts:11-14`), and — critically — produces the
-evidence Option B is currently missing: whether anyone wants TfL disruption
-*history* at all, or whether "what is the Victoria line doing right now,
-and how has it looked today" is the whole ask.
+**Weaker than an earlier draft of this document claimed, and worth saying
+so plainly.** That draft sold Option C as (a) giving TfL disruptions a
+destination and (b) producing the demand signal Option B lacks. Both
+collapse on inspection:
+
+- The destination already exists — `/lines/{tfl-line-id}` (§2d-bis).
+- The v1 plan's own Decision 2 puts the history section **out of scope for
+  v1** ("ship 'current status only'"), so the page it describes could not
+  generate evidence about demand for *history* even in principle. And the
+  surface that does show TfL history already ships, so any signal it
+  produces is already available.
+
+What Option C genuinely adds is narrower: a link-target-shaped page without
+`/lines/[id]`'s management chrome, and `tflLineIdFromSource` closing the
+`frontend/lib/incidents.ts:11-14` dead end. Both worth doing; neither is an
+archive, and neither unblocks one.
+
+### Option D — a cross-line search over `line_status_history`, as it already exists
+
+**The cheapest option, and the one an earlier draft of this document
+omitted — its absence was a real hole in the analysis, not a judgment
+call.** §2d-bis establishes that TfL disruption history is already
+persisted, already rendered, and already browsable *per line*, for seven
+days. The only thing `/incidents` does that `/lines/{id}/history` does not
+is drop the line filter. So: a route that reads `line_status_history`
+across lines, newest-first, keyset-paginated, filtered by mode, line set
+and time range.
+
+**No new table. No new ingest path. No synthetic per-disruption identity —
+so mismatch 1, the one structural blocker that sinks Options A and B, never
+arises.** Rows are snapshots, which is what the data actually is, and each
+links to `/lines/{id}` (which exists) or `/lines/{id}/history` (which
+exists).
+
+Its real costs, which are not zero:
+
+- **A new index.** `line_status_history`'s only index is
+  `(line_id, computed_at DESC)` (`20260510023522_initial.sql:96`). A
+  cross-line, time-ordered keyset scan has nothing supporting it; it would
+  need `(computed_at DESC, id DESC)` or similar. One migration, same shape
+  as `incidents_first_seen_at_id`.
+- **No `source` column** (§2d), so "TfL only" is a `line_id LIKE 'tfl-%'`
+  prefix predicate — workable but ugly, and a good reason to add the column
+  properly rather than pattern-match a primary key.
+- **Seven days deep, hard**, and unlike Option B this cannot be extended by
+  a new table with its own retention: it *is* `line_status_history`, so
+  raising the depth means raising `history_retention_days` for every line,
+  National Rail included, on a table written every aggregation cycle for
+  109+ lines. That is a storage decision with blast radius well beyond TfL.
+- **The spamminess problem, at network scale.**
+  `docs/superpowers/specs/2026-09-02-line-history-list-spamminess-research.md`
+  diagnosed the *per-line* version of exactly this list as unhelpfully
+  noisy, with unnormalized reason text defeating both the write-side
+  change guard and the read-side day-collapsing. A cross-network version is
+  that same list multiplied by every line at once. The incident archive
+  could set that concern aside because `incidents` is one row per real
+  incident; `line_status_history` has no such guarantee, and this is the
+  objection Option D has to answer before it is worth building.
+
+Option D is snapshot-shaped, not disruption-shaped: it can answer "what
+were TfL's lines reporting on Tuesday afternoon" but not "show me that
+signal failure as one thing." Whether that is the product anyone wants is
+the open question — but it is a question about *value*, answerable by
+asking, rather than a question about feasibility.
 
 ## 6. Recommendation
 
-**Not yet. Do not extend the incident archive to TfL services now.** The
-recommendation has four parts, in order.
+**Not yet — do not build a TfL incident archive.** But the gap this
+document was asked to close turns out to be smaller than the brief
+supposed, and two of the four things worth doing about it are cheap. In
+order:
 
-**1. Confirm the Elizabeth line / Overground assumption against live
-data — this week, before anything else.** Section 1 verified there is no
-code-level exclusion, which is the part that was in doubt; it could not
-verify that RDM's feed actually carries `XR` and `LO`. One query —
-`SELECT DISTINCT unnest(operators) FROM incidents;` — settles it, and its
-answer changes the framing of everything else. If those codes are present,
-the archive already covers the two TfL-branded railways most people mean
-when they say "TfL", and the remaining gap is tube/DLR/tram only. If they
-are absent, there is a National Rail ingest bug to fix that has nothing to
-do with TfL and is more urgent than this document's subject.
+**1. The briefed assumption is confirmed; treat the remaining gap as
+tube/DLR/tram only.** §1b verified against the live deployment that `XR`
+and `LO` Knowledgebase incidents are in the archive today and are reachable
+through its Operator filter. The archive already covers the two TfL-branded
+railways most people mean when they say "TfL". No work is required here —
+this item exists to record that the question is closed, not open.
 
-**2. Fix the archive's Line filter, or make its emptiness honest.**
-`affected_stations` is empty on every production row (§1c), so the filter
-the UI presents most prominently returns nothing for any line. Two
-defensible fixes, neither designed here: populate the column (parse
+**2. Fix the archive's Line filter, or make its emptiness honest — this is
+the most urgent item in this document, and it is not a TfL problem.**
+`affected_stations` is empty on every production row, and the Line filter
+returns zero rows for every line (§1c, confirmed live). Two defensible
+fixes, neither designed here: populate the column (parse
 `Affects.RoutesAffected`, or write the aggregator matcher's
 `evidence.stations` back), or replace the filter with one backed by real
 data (the catalogue line's `operators`, which would at least return the
 `OperatorOnly` tier honestly). Either needs its own spec. Until one lands,
 the Line control should say what it does — an empty result there is
 currently indistinguishable from "this railway is not archived," which is
-exactly the wrong lesson for someone testing Elizabeth line coverage.
+exactly the wrong lesson for someone testing Elizabeth line coverage, and
+is how this whole question is most likely to be asked again.
 
-**3. Ship the TfL live-snapshot page that is already planned** (Option C,
-`docs/superpowers/plans/2026-09-07-tfl-incident-page-v1-implementation-plan.md`).
-It is fully specified, its open questions are resolved, it needs no
-migration, and it is a hard prerequisite for Option B regardless (§5,
-reason 3). It also generates the demand signal Option B lacks.
+**3. Close the TfL link dead end, cheaply.** Add `tflLineIdFromSource`
+(`frontend/lib/incidents.ts`) so a TfL `Disruption.source` resolves to
+`/lines/{tfl-line-id}` — a page that already exists and already renders
+that line's disruption (§2d-bis). This is a few lines, not the 2026-09-07
+plan's whole `/tfl-lines/[id]` page, which remains optional polish rather
+than a prerequisite for anything (§2e).
 
-**4. Revisit a TfL archive only when at least two of these are true**, and
-treat this as the concrete test, not a vague "later":
+**4. If a cross-network TfL browse is genuinely wanted, build Option D,
+not Option B — but answer one question first.** Option D reads
+`line_status_history` as it already exists: one index, no new table, no
+synthetic identity, rows linking to pages that already work. Its blocker is
+not feasibility but value, and specifically the spamminess research's
+finding applied at network scale (§5 Option D). **The question to answer
+before building it is: does a cross-network list of raw status snapshots
+read as useful or as noise?** That is answerable by looking at
+`/lines/{id}/history`'s existing Timeline tab for a few TfL lines and
+imagining it unfiltered — cheaper than any prototype.
 
-- **A destination page exists** (item 3 shipped).
-- **A retention decision has been made** for TfL disruption history —
-  either `line_status_history`'s 7 days is raised for TfL rows (which
-  needs a `source` column on that table first, since `prune_history` is
-  source-blind), or Option B's own table gets its own retention knob. Note
-  that `incidents`/`incident_history` still have *no* pruning at all, so
-  "match what incidents does" is not an available answer; that gap, flagged
-  by the 2026-08-31 spec and again by the 2026-09-12 spec, is still open
-  and was re-verified for this document.
-- **TfL publishes a stable disruption id**, or a product decision
-  explicitly accepts fuzzy identity with UI framing that says
-  "probably the same disruption" rather than asserting it. The 2026-09-07
-  spec made this call on honesty grounds and flagged it as reversible by
-  someone with more context on how the request arose; that remains true.
-- **The National Rail archive's own filters work** (item 2 shipped).
+**Do not build Option A (TfL rows inside `incidents`) at all**, and treat
+Option B (a parallel `tfl_disruptions` table with synthetic identity) as
+gated on TfL publishing a stable disruption id, or on an explicit product
+decision to accept fuzzy identity framed to the user as "probably the same
+disruption" rather than asserted as fact. The 2026-09-07 spec made that
+call on honesty grounds and flagged it as reversible by someone with more
+context on how the request arose; that remains true, and nothing in the
+input data has changed since. Section 5 sketches Option B concretely enough
+to plan from should it be reversed.
 
-If a decision-maker overturns this and wants TfL in the archive sooner,
-**Option B is the shape to build** — a parallel table and a parallel route
-behind a mode toggle, never Option A's blending into `incidents`. Section 5
-sketches it concretely enough to plan from.
+**One thing that must be decided before either D or B, and is not decided
+here:** retention. TfL disruption history lives for seven days (§2d).
+Option D inherits that number and cannot change it without changing it for
+every National Rail line too, on a table written every aggregation cycle.
+Option B would need its own knob. Note that `incidents`/`incident_history`
+still have *no* pruning at all — re-verified: no `prune_incidents` exists
+anywhere — so "match what `incidents` does" is not an available answer.
 
 ## 7. Non-goals
 
@@ -675,10 +831,15 @@ sketches it concretely enough to plan from.
   document re-verified its inputs and found them unchanged; it does not
   re-open the decision.
 - **Segment-level parsing of TfL's compound status text.** Deferred by the
-  2026-09-07 spec's Section 3 and still deferred. It would matter more
-  under Option B than under a live-snapshot page (a hash-keyed identity
-  degrades further on compound text), which is another argument for
-  ordering the live page first.
+  2026-09-07 spec's Section 3 and still deferred. It bites Option B hardest
+  (a hash-keyed identity degrades further on compound text) and Option D
+  not at all (a snapshot list renders the string verbatim, as
+  `/lines/[id]`'s `IssueList` already does) — one more reason to prefer D.
+- **Designing Option D's route, index or UI in detail.** §5 establishes it
+  is the cheapest shape and names its two real costs (a new index, the
+  spamminess risk at network scale); it is not designed to
+  implementation-readiness here, because §6 item 4 puts a value question
+  ahead of it that this document cannot answer alone.
 - **Naptan↔CRS reconciliation.** Would only become necessary if a TfL
   archive wanted station-level filtering; Option B's `mode`/`line` filters
   deliberately avoid needing it.
@@ -691,7 +852,7 @@ sketches it concretely enough to plan from.
 - **Merging the two archives into one blended result list.** Rejected on
   its merits in §5 Option B, not merely deferred.
 
-## 8. Testing approach (if Option B is ever built)
+## 8. Testing approach (if Option B or D is ever built)
 
 Recorded so a future plan does not have to re-derive it. Nothing here is a
 task list for now.
@@ -720,9 +881,12 @@ task list for now.
 
 ## 9. Open questions / risks
 
-1. **Does RDM's Knowledgebase feed actually publish `XR` and `LO`
-   incidents?** Unverified (§1b). The single highest-value check in this
-   document, and cheap.
+1. ~~**Does RDM's Knowledgebase feed actually publish `XR` and `LO`
+   incidents?**~~ **Closed.** Checked against the live deployment during
+   this document's review pass and confirmed: both codes return real rows
+   (§1b). Left in the list, struck through rather than deleted, because it
+   was this document's highest-priority open question and the fact that it
+   is now answered changes §6's framing.
 2. **Was the archive's `line` filter ever exercised against production
    data?** Its tests seed `affected_stations` directly
    (`crates/api/src/data/queries.rs:2154`), so they pass while the
@@ -730,17 +894,20 @@ task list for now.
    ingest path, and worth checking whether other features depend on that
    column the same way.
 3. **How much TfL disruption history exists right now?** Bounded above by
-   7 days (§2d) but not measured; no live database was queried for this
-   document. If `history_retention_days` is overridden in the real
+   7 days (§2d) but not measured — the live checks in §1b/§1c/§2d-bis went
+   through public HTTP routes, not the database, so row counts and the
+   real configured retention were not observed. If `history_retention_days` is overridden in the real
    deployment, the ceiling differs — the value is duplicated between
    `crates/aggregator/src/config.rs:22-24` and
    `crates/api/src/data/config.rs:183-197`; `docker-compose.yml` and the
    Helm chart both source the two env vars from one value, but nothing in
    the code enforces it, as that second doc comment says itself.
-4. **Is "TfL in the archive" actually the ask, or is "a TfL disruption
-   page" the ask?** The 2026-09-07 spec raised the same question about its
-   own feature and left it open; it is still open, and it is the question
-   §6 item 3 is designed to answer empirically rather than by guessing.
+4. **Is "TfL in the archive" actually the ask?** Given §2d-bis — a TfL
+   line's current disruption and its seven-day history are both already
+   browsable — the residual ask is specifically a *cross-line* view. Nobody
+   has said that is what they want; it is this document's inference from
+   the brief. Worth confirming before §6 item 4 is acted on, because if the
+   real ask was "I want to see TfL disruptions at all", it is already met.
 5. **Would a synthetic TfL identity survive contact with real data?** The
    2026-09-07 spec's failure modes were reasoned from one captured example
    and TfL's documented behavior, not measured against a corpus. Before
@@ -757,18 +924,31 @@ task list for now.
   claim is repeated, it was re-verified rather than cited on trust — this
   turned up two things prior specs got right at the time and are now stale
   about: the 2026-08-22 spec's "no `lines/overground-*.toml` files exist"
-  (they do now, and the merge shipped for all six), and the 2026-09-12
+  (they do now, and the merge shipped for all seven), and the 2026-09-12
   spec's implicit assumption that `incidents.affected_stations` carries
   data (it does not).
 - The brief's assumption is answered explicitly in §1 with a verdict
-  sentence, rather than being left implicit in the surrounding detail: it
-  holds at the code level, rests on an unverified upstream premise, and is
-  contradicted by user-visible behavior for an unrelated reason.
-- The recommendation is "not yet" with four ordered, checkable conditions
-  for revisiting, and the design it declines to build is still written out
-  concretely (§5 Option B) so overturning the recommendation does not mean
-  starting over — the same structure
-  `docs/superpowers/specs/2026-09-12-group-lines-design.md` used.
+  sentence rather than left implicit: it holds at the code level, it holds
+  against live production data (§1b), and it is nonetheless contradicted by
+  user-visible behavior for an unrelated reason (§1c).
+- **This document was materially wrong in an earlier draft and the
+  corrections are marked in place rather than quietly absorbed.** An
+  independent review caught three: that TfL disruptions already have a
+  destination page and a seven-day per-line history browse
+  (`/lines/{tfl-id}` and `/lines/{tfl-id}/history`, both verified returning
+  200 with live content) where the draft claimed there was "nowhere to
+  link"; that the 2026-09-07 plan's page is therefore a preference, not a
+  prerequisite; and that the options analysis had omitted its own cheapest
+  option, Option D. §2d-bis, §2e, §5 Option C/D and §6 all say so
+  explicitly, because a design document that silently repairs its own
+  reasoning is harder to trust than one that shows the repair.
+- The recommendation is "not yet" for an archive, with four ordered,
+  actionable items rather than a vague deferral, and the designs it
+  declines to build are still written out concretely (§5 Options B and D)
+  so overturning it does not mean starting over — the same structure
+  `docs/superpowers/specs/2026-09-12-group-lines-design.md` used. Two of
+  the four items (2 and 3) are things to do *now*, so this is not a "no"
+  wearing a schedule.
 - Scope check against the brief: TfL modes actually in scope are named and
   narrowed to three with evidence (§2a, §4), including the explicit finding
   that "TfL Rail" is not a separate mode; whether TfL data can support a
@@ -777,3 +957,8 @@ task list for now.
   B); the search/filter UX adaptation is designed (§5 Option B, frontend);
   and the recommendation is stated as "not yet" with the conditions that
   would change it, rather than forced into a "yes".
+- Claims about live behavior are marked as such and were actually checked
+  against https://ds.cursed.solutions on 2026-09-16 (§1b, §1c, §2d-bis,
+  §2e), not inferred from the code alone. Claims that remain unmeasured —
+  row counts, the deployment's real `history_retention_days` — are named in
+  §9 rather than quietly assumed.
