@@ -16,14 +16,22 @@ import { StationSearchForm } from './StationSearchForm';
  * `/trains` follow.
  *
  * The description reaches past this page into what a result actually shows
- * (`app/stations/[crs]/page.tsx`: disruptions, live departures, per-operator
- * sample stats, and accessibility & facilities) rather than only restating
- * the search box, because "search for a station" alone says nothing about
- * why a reader would want to. Keep it in step with that page if its
- * sections change. */
+ * (`app/stations/[crs]/page.tsx`: disruptions, scheduled departures,
+ * per-operator sample stats, and accessibility & facilities) rather than
+ * only restating the search box, because "search for a station" alone says
+ * nothing about why a reader would want to. Keep it in step with that page
+ * if its sections change.
+ *
+ * Two words in it are load-bearing and must not be "tightened" into
+ * something snappier: "scheduled" departures, because `StationTimetable`
+ * disclaims in so many words that its rows are "from the scheduled
+ * timetable, not live running information"; and "delay and cancellation
+ * stats" rather than "punctuality", because that section is an LDBWS
+ * SAMPLE (headed "Sample stats by operator", and a station can be outside
+ * the sampling entirely), not a punctuality record. */
 const METADATA_TITLE = 'Station Disruption Lookup — Distant Signal';
 const METADATA_DESCRIPTION =
-  'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its live departures, per-operator punctuality and its accessibility & facilities.';
+  'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats and its accessibility & facilities.';
 
 export const metadata: Metadata = {
   title: METADATA_TITLE,

@@ -21,8 +21,9 @@ export const revalidate = 0;
  * people paste. Deliberately left as one honest description of the page
  * itself; revisit only if shared filtered links become a real use.
  *
- * Title matches the page's own `<h1>` below ("Incident Archive"), not the
- * nav label, so the tab title and the heading a visitor lands on agree. */
+ * Title matches the page's own `<h1>` below ("Incident Archive"), which is
+ * also this route's nav label, so the tab title and the heading a visitor
+ * lands on agree. */
 const METADATA_TITLE = 'Incident Archive — Distant Signal';
 const METADATA_DESCRIPTION =
   'Search National Rail Knowledgebase incidents across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.';

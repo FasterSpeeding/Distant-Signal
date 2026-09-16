@@ -43,15 +43,20 @@ export const revalidate = 0;
  *
  * A static `export const metadata` rather than an async
  * `generateMetadata()`: this route takes no params, and the copy below is
- * the same for every visitor. It deliberately does NOT describe the
- * logged-in dashboard's pinned sections as though they were always there
- * -- `generateMetadata` COULD read the session and vary the text, but the
- * only consumers of this are link-unfurler bots, which never carry a
- * session cookie and would therefore always get the anonymous branch's
- * wording anyway (the same reasoning `app/groups/join/[token]/page.tsx`
- * spells out for its own deliberately-unauthenticated fetch). Paying a
- * `getSession()` round trip per request to render a string no bot can ever
- * see would be pure cost.
+ * deliberately the same for every visitor. `generateMetadata` COULD read
+ * the session and vary the text with it, but the only consumers of this
+ * are link-unfurler bots, which never carry a session cookie and would
+ * therefore always get the anonymous branch's wording anyway (the same
+ * reasoning `app/groups/join/[token]/page.tsx` spells out for its own
+ * deliberately-unauthenticated fetch). Paying a `getSession()` round trip
+ * per request to render a string no bot can ever see would be pure cost.
+ *
+ * Because that bot only ever renders the ANONYMOUS branch, the description
+ * describes what that branch actually shows -- the live "Right now" module
+ * -- and hedges the pinned/tracked sections as something logging in
+ * unlocks, echoing the anonymous branch's own subtitle below rather than
+ * promising sections a logged-out visitor will not find on the page they
+ * were just linked to.
  *
  * Unlike every other page's, this title carries no `X — ` prefix: the site
  * name IS this page's name, and "Distant Signal — Distant Signal" is not
@@ -68,7 +73,7 @@ export const revalidate = 0;
  * `/stations` spell theirs. */
 const METADATA_TITLE = 'Distant Signal';
 const METADATA_DESCRIPTION =
-  "Live UK rail line status at a glance: which lines aren't running a Good Service right now, plus the lines and stations you've pinned and the trains you're tracking.";
+  "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines and stations you care about, and track your trains, once you're logged in.";
 
 export const metadata: Metadata = {
   title: METADATA_TITLE,

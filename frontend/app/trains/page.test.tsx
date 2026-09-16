@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import TrainsPage, { metadata } from './page';
+// Namespace import alongside the named one purely so the "no
+// generateMetadata export" case below can test the module's shape.
+import * as pageModule from './page';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
@@ -112,32 +115,48 @@ describe('metadata', () => {
 
   it('describes network-wide scheduled-train search rather than inheriting the generic site description', () => {
     expect(metadata.description).toBe(
-      'Search scheduled UK trains by any station they call at, narrowing by origin, a station they stop at later, and date. Open any result for its live status, or track it to get updates.',
+      'Search scheduled UK trains by any station they call at, narrowing by origin, another station along its route, and date. Open any result for its live status, or track it to get updates.',
     );
+  });
+
+  it("doesn't imply the stops-at filter is ordered, because it isn't", () => {
+    // `stops_at` is a plain membership test against the whole calling-point
+    // list (crates/api/src/data/queries.rs says so in as many words), so a
+    // stop EARLIER than the searched station matches too. Wording like "a
+    // station they stop at later" would promise a relational constraint
+    // the query does not enforce -- TrainSearchForm's own field
+    // description is equally careful about this.
+    expect(metadata.description).not.toMatch(/later|next stop|after/i);
+    expect(metadata.description).toMatch(/along its route/);
   });
 
   it('mirrors the same title and description into openGraph and twitter', () => {
     // See the equivalent case in app/incidents/page.test.tsx for why the
-    // mirror itself is asserted rather than just the fields' presence.
+    // mirror is asserted against literals rather than against
+    // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: metadata.title,
-      description: metadata.description,
+      title: 'Find a Train — Distant Signal',
+      description:
+        'Search scheduled UK trains by any station they call at, narrowing by origin, another station along its route, and date. Open any result for its live status, or track it to get updates.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
-      title: metadata.title,
-      description: metadata.description,
+      title: 'Find a Train — Distant Signal',
+      description:
+        'Search scheduled UK trains by any station they call at, narrowing by origin, another station along its route, and date. Open any result for its live status, or track it to get updates.',
     });
   });
 
   it('stays static, so a per-visitor ?ticketId= can never reach a shared preview card', () => {
     // The <h1>'s own copy DOES vary with `attachTicketId` (covered above);
-    // the metadata deliberately does not. A `generateMetadata` here would
-    // be handed `searchParams` and could leak one visitor's ticket into a
-    // cached unfurl -- this asserts the export is a plain object, not a
-    // function, so that door stays shut.
-    expect(typeof metadata).toBe('object');
-    expect(metadata.description).not.toMatch(/ticket/i);
+    // the metadata deliberately does not. Next hands `generateMetadata`
+    // the same `searchParams` this page component gets, so adding one here
+    // would put one visitor's ticket within reach of a cached, shared
+    // unfurl. Asserted as "this module exports no generateMetadata at all"
+    // -- `typeof metadata === 'object'` would NOT catch it, since Next's
+    // function form is a separate, differently-named export that can sit
+    // alongside this one.
+    expect('generateMetadata' in pageModule).toBe(false);
   });
 });

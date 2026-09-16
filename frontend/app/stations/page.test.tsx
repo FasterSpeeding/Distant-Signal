@@ -33,29 +33,35 @@ describe('metadata', () => {
 
   it('describes station lookup rather than inheriting the generic site description', () => {
     expect(metadata.description).toBe(
-      'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its live departures, per-operator punctuality and its accessibility & facilities.',
+      'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats and its accessibility & facilities.',
     );
+  });
+
+  it("doesn't call the timetable rows live, which the page they describe explicitly disclaims", () => {
+    // StationTimetable heads its section "Scheduled departures" and says
+    // outright that its rows are "from the scheduled timetable, not live
+    // running information, and may be up to 30 minutes out of date" --
+    // metadata promising "live departures" would contradict the very page
+    // it is a preview of.
+    expect(metadata.description).toMatch(/scheduled departures/);
+    expect(metadata.description).not.toMatch(/live departures/);
   });
 
   it('mirrors the same title and description into openGraph and twitter', () => {
     // See the equivalent case in app/incidents/page.test.tsx for why the
-    // mirror itself is asserted rather than just the fields' presence.
+    // mirror is asserted against literals rather than against
+    // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: metadata.title,
-      description: metadata.description,
+      title: 'Station Disruption Lookup — Distant Signal',
+      description:
+        'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats and its accessibility & facilities.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
-      title: metadata.title,
-      description: metadata.description,
+      title: 'Station Disruption Lookup — Distant Signal',
+      description:
+        'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats and its accessibility & facilities.',
     });
-  });
-
-  it('is distinct from the station DETAIL page metadata it sits above', () => {
-    // app/stations/[crs]/page.tsx's generateMetadata produces
-    // "<Name> (CRS) — Distant Signal"; this search page must not be
-    // mistaken for one of those in a list of unfurled links.
-    expect(metadata.title).not.toMatch(/\([A-Z]{3}\)/);
   });
 });

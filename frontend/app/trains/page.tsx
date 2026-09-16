@@ -17,10 +17,18 @@ import { TrainSearchForm } from '@/components/TrainSearchForm';
  * ordinary, shareable purpose instead.
  *
  * Title matches the page's own `<h1>` ("Find a Train"), which is also the
- * nav label for this route. */
+ * nav label for this route.
+ *
+ * "another station along its route" is deliberate and must not be tightened
+ * into "a later stop" or "a station it stops at next": `stops_at` is an
+ * unordered membership test against the whole calling-point list (see
+ * `crates/api/src/data/queries.rs`, which spells this out, and
+ * `TrainSearchForm`'s own equally careful field description: "Any station
+ * this train calls at along its route, not necessarily its destination").
+ * A stop EARLIER than the searched station matches too. */
 const METADATA_TITLE = 'Find a Train — Distant Signal';
 const METADATA_DESCRIPTION =
-  'Search scheduled UK trains by any station they call at, narrowing by origin, a station they stop at later, and date. Open any result for its live status, or track it to get updates.';
+  'Search scheduled UK trains by any station they call at, narrowing by origin, another station along its route, and date. Open any result for its live status, or track it to get updates.';
 
 export const metadata: Metadata = {
   title: METADATA_TITLE,

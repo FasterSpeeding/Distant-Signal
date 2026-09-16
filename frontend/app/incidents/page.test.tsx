@@ -73,16 +73,21 @@ describe('metadata', () => {
     // `app/layout.tsx` has no `openGraph`/`twitter` at all -- so a page
     // that set only `title`/`description` would unfurl with no og:title
     // whatsoever. Asserting the mirror (rather than just "openGraph
-    // exists") is what stops the three copies drifting apart.
+    // exists") is what stops the three copies drifting apart. Spelled as
+    // literals rather than as `metadata.title`/`.description`: those read
+    // the same two consts the subject does, so a self-comparison would be
+    // structurally incapable of failing.
     expect(metadata.openGraph).toMatchObject({
-      title: metadata.title,
-      description: metadata.description,
+      title: 'Incident Archive — Distant Signal',
+      description:
+        'Search National Rail Knowledgebase incidents across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
-      title: metadata.title,
-      description: metadata.description,
+      title: 'Incident Archive — Distant Signal',
+      description:
+        'Search National Rail Knowledgebase incidents across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
     });
   });
 });
