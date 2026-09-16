@@ -78,6 +78,7 @@ function sharedTrain(overrides: Partial<SharedGroupTrain> = {}): SharedGroupTrai
     customName: null,
     addedBy: 'user-2',
     addedByName: 'Sam',
+    addedByTag: null,
     ...overrides,
   };
 }
@@ -729,6 +730,29 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     renderWithMantine(await DashboardPage());
 
     expect(screen.getByText('Shared by a member')).toBeInTheDocument();
+  });
+
+  /** Same distinguishing suffix /track/mine and /groups/{id} render, on the
+   * home page's copy of the shared-train row: two sharers this app cannot
+   * name are two different credits, not one repeated "a member". */
+  it('credits two unnameable sharers distinguishably', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+      sharedTrain({ trainSubscriptionId: 50, addedBy: 'sso-1', addedByName: null, addedByTag: 'a1b2c3' }),
+      sharedTrain({
+        trainSubscriptionId: 51,
+        pinOriginCrs: 'WOK',
+        pinDestinationCrs: 'WAT',
+        addedBy: 'sso-2',
+        addedByName: null,
+        addedByTag: 'd4e5f6',
+      }),
+    ]);
+
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText('Shared by a member (#a1b2c3)')).toBeInTheDocument();
+    expect(screen.getByText('Shared by a member (#d4e5f6)')).toBeInTheDocument();
   });
 
   it('offers no edit/delete/ticket control on someone else’s shared train', async () => {

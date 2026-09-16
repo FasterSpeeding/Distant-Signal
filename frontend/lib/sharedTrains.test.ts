@@ -20,6 +20,7 @@ function sharedTrain(overrides: Partial<SharedGroupTrain> = {}): SharedGroupTrai
     customName: null,
     addedBy: 'user-2',
     addedByName: 'Sam',
+    addedByTag: null,
     ...overrides,
   };
 }

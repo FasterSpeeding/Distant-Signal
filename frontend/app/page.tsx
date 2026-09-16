@@ -22,6 +22,7 @@ import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
 import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
+import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import type { LineStatus, LineStatusReport, Preferences, TrackedTrainListItem } from '@/lib/types';
 
 // See app/lines/[id]/page.tsx-adjacent history page and this repo's other
@@ -543,17 +544,17 @@ function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
               sharer has neither a name nor a username on their account --
               never their email, which is not something to show the rest of
               a group (`crates/api/src/data/users.rs`'s `display_label`).
-              "a member" then, never a raw user id -- same wording and same
-              fallback /track/mine and /groups/{id} already use, and
-              `?.trim() ||` rather than `??` for the same reason they use
-              it: a blank name is not a label either. */}
+              "a member" then, never a raw user id, suffixed with the
+              sharer's `addedByTag` so two such sharers don't read
+              identically -- same helper and same wording /track/mine and
+              /groups/{id} already use (`lib/memberLabel.ts`). */}
           {groupNames.map((groupName) => (
             <Badge key={groupName} variant="light" color="grape">
               from {groupName}
             </Badge>
           ))}
           <Text size="sm" c="dimmed">
-            Shared by {train.addedByName?.trim() || 'a member'}
+            Shared by {memberLabel(train.addedByName, train.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
           </Text>
         </Group>
       </Stack>
