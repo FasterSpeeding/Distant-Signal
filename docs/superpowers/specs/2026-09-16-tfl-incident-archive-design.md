@@ -851,8 +851,10 @@ than a prerequisite for anything (§2e).
 
 **4. If a cross-network TfL browse is genuinely wanted, build Option D,
 not Option B — but answer one question first.** Option D reads
-`line_status_history` as it already exists: one index, no new table, no
-synthetic identity, rows linking to pages that already work. Its blocker is
+`line_status_history` as it already exists: an index and a `source` column,
+a route and a results surface, but no new table, no ingest branch and no
+synthetic identity, with rows linking to pages that already work. Its
+blocker is
 not feasibility but value, and specifically volume: 229 status recomputes
 for one tube line in one week (§2d-bis). **The question to answer before
 building it is whether the existing Timeline's churn-collapsing still reads
@@ -872,11 +874,15 @@ to plan from should it be reversed.
 
 **One thing that must be decided before either D or B, and is not decided
 here:** retention. TfL disruption history lives for seven days (§2d).
-Option D inherits that number and cannot change it without changing it for
-every National Rail line too, on a table written every aggregation cycle.
-Option B would need its own knob. Note that `incidents`/`incident_history`
-still have *no* pruning at all — re-verified: no `prune_incidents` exists
-anywhere — so "match what `incidents` does" is not an available answer.
+Option D inherits that number, and changing it is coupled to adding the
+`source` column to `line_status_history` — without the column,
+`prune_history` is source-blind and raising TfL's depth raises every
+National Rail line's too, on a table written every aggregation cycle; with
+it, TfL depth becomes a contained decision (§5 Option D). Option B would
+need its own knob instead. Note that `incidents`/`incident_history` still
+have *no* pruning at all — re-verified: no `prune_incidents` exists
+anywhere — so "match what `incidents` does" is not an available answer for
+either.
 
 ## 7. Non-goals
 
