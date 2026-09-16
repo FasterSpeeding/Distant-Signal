@@ -1012,7 +1012,18 @@ pub async fn grant_custom_line(
 ) -> Result<bool> {
     let mut tx = pool.begin().await?;
     let owned: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM custom_lines WHERE id = $1 AND user_id = $2 FOR UPDATE")
+        // `FOR KEY SHARE`, not `FOR UPDATE`: the minimal lock that still
+        // blocks a concurrent DELETE of this row (the only race this guard
+        // exists for -- under READ COMMITTED a plain transaction would not
+        // close the window, since a DELETE committed between the SELECT
+        // and the INSERT still raises the FK violation), while leaving the
+        // owner free to rename the same line in another tab. It is also
+        // exactly the lock the INSERT's own FK check takes a moment later,
+        // so the two are self-compatible. Every path that touches both
+        // tables takes `custom_lines` first (here, and
+        // `delete_custom_line`), and nothing takes them the other way
+        // round, so there is no lock cycle to deadlock on.
+        sqlx::query_as("SELECT id FROM custom_lines WHERE id = $1 AND user_id = $2 FOR KEY SHARE")
             .bind(line_id)
             .bind(user_id)
             .fetch_optional(&mut *tx)

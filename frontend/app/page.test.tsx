@@ -553,6 +553,25 @@ describe('DashboardPage -- Lines shared with you section', () => {
     expect(screen.queryByRole('heading', { name: 'Lines shared with you' })).not.toBeInTheDocument();
   });
 
+  it('still shows a pinned shared line that has no status row yet, rather than dropping it', async () => {
+    // The dedupe above keys off what "Your Lines" will ACTUALLY render
+    // (`pinnedLineReports`), not off `preferences.pinnedLines`. The two
+    // differ for a line the aggregator hasn't computed a status for yet:
+    // it's pinned, but absent from `allReports`, so "Your Lines" skips it.
+    // Excluding it here too would drop it from the page entirely.
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: ['custom-my-commute'],
+      pinnedStations: [],
+    });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
+    vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([sharedLine()]);
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByRole('heading', { name: 'Lines shared with you' })).toBeInTheDocument();
+    expect(screen.getAllByText('My Commute')).toHaveLength(1);
+  });
+
   it('survives the shared-lines fetch failing, rather than blanking the dashboard', async () => {
     vi.mocked(api.getSession).mockResolvedValue(loggedIn);
     vi.mocked(api.getSharedGroupCustomLines).mockRejectedValue(new Error('boom'));

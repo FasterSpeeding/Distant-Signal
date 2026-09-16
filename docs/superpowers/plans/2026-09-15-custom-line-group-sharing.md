@@ -258,7 +258,7 @@ them, flagged here so a reviewer does not mistake them for regressions:
 ## File Structure
 
 ```
-crates/api/migrations/20260915090000_custom_line_group_grants.sql   NEW   (Task 1)
+crates/api/migrations/20260915100000_custom_line_group_grants.sql   NEW   (Task 1)
 
 crates/api/src/data/custom_lines.rs
   + readable_custom_line_ids()
@@ -306,7 +306,7 @@ frontend/app/page.tsx                    MODIFIED (Lines shared with you) (Task 
 
 ## Task 1: Migration — `custom_line_group_grants`
 
-**Files:** `crates/api/migrations/20260915090000_custom_line_group_grants.sql` (new)
+**Files:** `crates/api/migrations/20260915100000_custom_line_group_grants.sql` (new)
 
 - [ ] **Step 1: Write the table exactly as design §2.2 specifies.**
   ```sql
@@ -326,8 +326,13 @@ frontend/app/page.tsx                    MODIFIED (Lines shared with you) (Task 
   own custom line at grant time, so there is no "stale pin of a never-real
   id" tolerance requirement), and that the `line_id` cascade is the entire
   implementation of "the owner deleted the line" cleanup.
-- [ ] **Step 3: Verify** `sqlx migrate` picks it up — the filename sorts
-  after `20260912090000_incidents_first_seen_at_id.sql`.
+- [ ] **Step 3: Verify** `sqlx migrate` picks it up, and that no other
+  migration already claims its version number. (It originally used
+  `20260915090000`; main landed `20260915090000_normalize_blank_user_names.sql`
+  on that same version while this branch was in review, so it was renamed
+  to `20260915100000`, which also sorts after main's
+  `20260915093000_users_username.sql`. `sqlx` keys on the numeric prefix
+  alone, so a duplicate is a hard error, not a silent ordering quirk.)
 
 ## Task 2: `custom_lines::readable_custom_line_ids`
 

@@ -114,37 +114,37 @@ export default async function DashboardPage() {
   // Decision 3.
   const [preferences, allReports, myTrackedTrains, sharedGroupTrains, sharedCustomLines] =
     await Promise.all([
-    // Fails closed to "nothing pinned" -- the exact shape getPreferences
-    // already returns for a 401 -- rather than being stale-served: this is
-    // per-user data, and the design spec's Decision 5 excludes per-user
-    // state from the stale cache on correctness grounds. Losing the pinned
-    // sections for the duration of an outage is materially better than
-    // losing the whole page, which is what an unguarded throw here did.
-    getPreferences().catch(() => NO_PREFERENCES),
-    // Every displayed mode, not just national-rail: a pinned TfL line would
-    // otherwise be silently missing from "Your Lines".
-    withStaleFallback(`lineStatusForMode:${DISPLAYED_MODES_PARAM}`, () =>
-      getLineStatusForMode(DISPLAYED_MODES_PARAM),
-    ),
-    // null is getMyTrackedTrains()'s own established "not logged in" value,
-    // and the call site below already collapses it to []. Same fail-closed
-    // rationale as preferences above.
-    getMyTrackedTrains().catch(() => null),
-    // Trains OTHER members shared into a group the caller belongs to.
-    // Gated and null-on-401 in exactly the same way as the call above, and
-    // `.catch(() => null)` for the same reason /track/mine gives for its
-    // own copy of this call: the group-shared half of this section is
-    // auxiliary, so a backend hiccup there must cost the caller the shared
-    // rows, never their own rows or the whole dashboard. `null` is already
-    // a value this page handles (it is the 401 return), so the failure
-    // collapses into the existing "nothing shared with you" branch.
-    getSharedGroupTrains().catch(() => null),
-    // Custom LINES other members have shared into a group the caller
-    // belongs to -- the lines-section counterpart of the call directly
-    // above, with the same null-on-401 / fail-closed treatment for the
-    // same reason.
-    getSharedGroupCustomLines().catch(() => null),
-  ]);
+      // Fails closed to "nothing pinned" -- the exact shape getPreferences
+      // already returns for a 401 -- rather than being stale-served: this is
+      // per-user data, and the design spec's Decision 5 excludes per-user
+      // state from the stale cache on correctness grounds. Losing the pinned
+      // sections for the duration of an outage is materially better than
+      // losing the whole page, which is what an unguarded throw here did.
+      getPreferences().catch(() => NO_PREFERENCES),
+      // Every displayed mode, not just national-rail: a pinned TfL line would
+      // otherwise be silently missing from "Your Lines".
+      withStaleFallback(`lineStatusForMode:${DISPLAYED_MODES_PARAM}`, () =>
+        getLineStatusForMode(DISPLAYED_MODES_PARAM),
+      ),
+      // null is getMyTrackedTrains()'s own established "not logged in" value,
+      // and the call site below already collapses it to []. Same fail-closed
+      // rationale as preferences above.
+      getMyTrackedTrains().catch(() => null),
+      // Trains OTHER members shared into a group the caller belongs to.
+      // Gated and null-on-401 in exactly the same way as the call above, and
+      // `.catch(() => null)` for the same reason /track/mine gives for its
+      // own copy of this call: the group-shared half of this section is
+      // auxiliary, so a backend hiccup there must cost the caller the shared
+      // rows, never their own rows or the whole dashboard. `null` is already
+      // a value this page handles (it is the 401 return), so the failure
+      // collapses into the existing "nothing shared with you" branch.
+      getSharedGroupTrains().catch(() => null),
+      // Custom LINES other members have shared into a group the caller
+      // belongs to -- the lines-section counterpart of the call directly
+      // above, with the same null-on-401 / fail-closed treatment for the
+      // same reason.
+      getSharedGroupCustomLines().catch(() => null),
+    ]);
 
   // Hoisted above the anonymous/authenticated branch so both can read it:
   // it's a pure function (see its own doc comment) of `allReports`, which
@@ -293,12 +293,20 @@ export default async function DashboardPage() {
   //
   // A granted member CAN pin a shared line (`pinned_lines` takes any id),
   // and "Your Lines" above renders it straight out of `allReports` when
-  // they have -- so the pinned set is excluded here, or the same line
-  // would render twice on one screen. "Your Lines" wins that tie: the
-  // caller put it there on purpose.
+  // they have -- so those are excluded here, or the same line would render
+  // twice on one screen. "Your Lines" wins that tie: the caller put it
+  // there on purpose.
+  //
+  // Keyed off `pinnedLineReports`, NOT `preferences.pinnedLines`: the two
+  // differ for a pinned line the aggregator has not written a
+  // `line_status` row for yet (a brand-new custom line, before its first
+  // cycle). Such an id is in `preferences.pinnedLines` but absent from
+  // `allReports`, so "Your Lines" does not render it -- excluding it here
+  // too would drop it from the home page entirely rather than deduplicate
+  // it. `pinnedLineReports` is exactly the set that section will render.
   const sharedLines: MergedSharedCustomLine[] = mergeSharedCustomLines(
     sharedCustomLines ?? [],
-    new Set(preferences.pinnedLines),
+    new Set(pinnedLineReports.map((report) => report.id)),
   );
   const reportByLineId = new Map(allReports.map((report) => [report.id, report]));
 
