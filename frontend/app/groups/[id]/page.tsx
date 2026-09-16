@@ -24,6 +24,7 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { LoginLink } from '@/components/LoginLink';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { worstStatus } from '@/lib/severity';
+import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import type { GroupCustomLine, GroupMember, GroupTrain, LineStatusReport } from '@/lib/types';
 
 export const revalidate = 0;
@@ -212,13 +213,13 @@ function MemberRow({
   canManage: boolean;
   viewerIsOwner: boolean;
 }) {
-  // `?.trim() ||`, not `??`: a member whose identity provider has no name
-  // on file for them can reach here as a BLANK `displayName` rather than a
-  // null one (see `data::users::non_blank` for why -- the backend now
-  // normalizes that to null on both read and write, but rows written
-  // before it did still exist, and `??` would happily render the empty
-  // string as this row's entire label).
-  const label = member.displayName?.trim() || 'A member';
+  // `memberLabel`, not a bare `displayName`: a member whose identity
+  // provider has no name on file for them (or only an email-shaped one,
+  // which the backend declines to show) renders as the generic
+  // placeholder, suffixed with their `displayTag` so several such members
+  // are still separate rows rather than one repeated "A member". See
+  // `lib/memberLabel.ts`.
+  const label = memberLabel(member.displayName, member.displayTag);
   const isOwner = member.role === 'owner';
   return (
     <Group justify="space-between" wrap="nowrap">
@@ -268,9 +269,12 @@ function SharedTrainRow({
         <Stack gap={4}>
           <Text fw={500}>{displayName}</Text>
           <Text size="sm" c="dimmed">
-            {/* `?.trim() ||`, not `??` -- same blank-vs-null display-name
-                reasoning as `MemberRow`'s own `label` above. */}
-            Shared by {train.addedByName?.trim() || 'a member'}
+            {/* Same helper as `MemberRow`'s own `label` above, so the
+                credit on this card and the row in the member list above
+                carry the same "(#a1b2c3)" for the same person -- which is
+                the whole way to answer "who shared this?" when the IdP
+                gives this app no showable name for anyone. */}
+            Shared by {memberLabel(train.addedByName, train.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
             {train.status && ` · ${train.status}`}
             {train.delayMinutes !== null && train.delayMinutes > 0 && ` · ${train.delayMinutes}m late`}
           </Text>
@@ -317,9 +321,11 @@ function SharedCustomLineRow({
             <Text fw={500}>{line.lineName}</Text>
           </Link>
           <Text size="sm" c="dimmed">
-            {/* `?.trim() ||`, not `??` -- same blank-vs-null display-name
-                rule the member rows and the shared-train row above use. */}
-            Shared by {line.grantedByName?.trim() || 'a member'}
+            {/* `memberLabel`, not a hand-rolled fallback -- same helper
+                the member rows and the shared-train row above use, so all
+                three agree on blank-vs-null and on how an unnameable
+                member is told apart (an opaque tag, never an email). */}
+            Shared by {memberLabel(line.grantedByName, line.grantedByTag, MEMBER_PLACEHOLDER_INLINE)}
           </Text>
         </Stack>
         <Group gap="xs" wrap="nowrap">

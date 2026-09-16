@@ -160,6 +160,8 @@ pub struct GroupDetail {
     pub name: String,
     pub owner_id: String,
     pub owner_name: Option<String>,
+    /// Set only when `owner_name` is `None`; see `GroupMember.display_tag`.
+    pub owner_tag: Option<String>,
     pub member_count: i64,
     pub role: GroupRole,
 }
@@ -212,18 +214,31 @@ pub async fn get_group_detail(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|r| GroupDetail {
-        id: r.id,
-        name: r.name,
-        owner_id: r.owner_id,
+    Ok(row.map(GroupDetail::from))
+}
+
+/// A `From` impl rather than an inline closure in `get_group_detail` for
+/// the same reason `GroupMember`/`GroupTrain`/`SharedTrain` have one: the
+/// owner's label goes to every member of the group including plain ones,
+/// so it gets the identical treatment the other three do, and the only
+/// tests that can reach `get_group_detail` itself need a live database
+/// (`db_tests`, all `#[ignore]`d).
+impl From<GroupDetailRow> for GroupDetail {
+    fn from(row: GroupDetailRow) -> Self {
         // Same helper as the member list and shared-train attribution:
-        // this field also goes to every member of the group including
-        // plain ones, so it gets the identical name-else-username,
-        // never-an-email, blank-is-not-a-label treatment.
-        owner_name: users::display_label(r.owner_name, r.owner_username),
-        member_count: r.member_count,
-        role: GroupRole::from_db(&r.role),
-    }))
+        // name-else-username, never an email, a blank is not a label --
+        // and the same distinguishing tag when none of that yields one.
+        let owner = users::MemberDisplay::of(row.owner_name, row.owner_username, &row.owner_id);
+        GroupDetail {
+            id: row.id,
+            name: row.name,
+            owner_id: row.owner_id,
+            owner_name: owner.label,
+            owner_tag: owner.tag,
+            member_count: row.member_count,
+            role: GroupRole::from_db(&row.role),
+        }
+    }
 }
 
 /// `false` if no group has that id -- the route maps this to `404`.
@@ -270,27 +285,38 @@ struct GroupMemberRow {
 /// member whose IdP sent no name) leaks more than the feature needs. The
 /// fallback is their `username` instead. `None` means "neither on file",
 /// which the frontend renders as its own generic "A member" placeholder.
-/// Same rule, same helper (`users::display_label`), as
+/// Same rule, same helper (`users::MemberDisplay`), as
 /// `GroupTrain.added_by_name` one struct away.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMember {
     pub user_id: String,
     pub display_name: Option<String>,
+    /// Set when -- and only when -- `display_name` is `None`: six hex
+    /// characters the frontend appends to its own placeholder, so a group
+    /// whose IdP gives this app no showable name for anybody (Entra ID,
+    /// where `preferred_username` is the email-shaped UPN) renders "A
+    /// member (#a1b2c3)" per member instead of the same "A member" on
+    /// every single row. Derived from `user_id`, which this struct already
+    /// carries in the clear, and never from an email -- see
+    /// `users::MemberDisplay`.
+    pub display_tag: Option<String>,
     pub role: GroupRole,
     pub joined_at: DateTime<Utc>,
 }
 
 impl From<GroupMemberRow> for GroupMember {
     fn from(row: GroupMemberRow) -> Self {
+        // `users::MemberDisplay`, not a bare `row.name`: a
+        // blank-but-present name ("" -- what an IdP with no name on file
+        // for the user actually sends) is not a label, and used to render
+        // as an empty member row. See that type's own doc comment, and
+        // `display_name_collapse_tests` below.
+        let display = users::MemberDisplay::of(row.name, row.username, &row.user_id);
         GroupMember {
             user_id: row.user_id,
-            // `users::display_label`, not a bare `row.name`: a
-            // blank-but-present name ("" -- what an IdP with no name on
-            // file for the user actually sends) is not a label, and used
-            // to render as an empty member row. See that function's own
-            // doc comment, and `display_name_collapse_tests` below.
-            display_name: users::display_label(row.name, row.username),
+            display_name: display.label,
+            display_tag: display.tag,
             role: GroupRole::from_db(&row.role),
             joined_at: row.joined_at,
         }
@@ -744,10 +770,17 @@ pub struct GroupTrain {
     pub custom_name: Option<String>,
     pub added_by: String,
     pub added_by_name: Option<String>,
+    /// Set only when `added_by_name` is `None`, and appended by the
+    /// frontend to its "a member" placeholder so two sharers whose IdP
+    /// gives this app no showable name are still told apart. Same
+    /// contract, same derivation, as `GroupMember.display_tag`.
+    pub added_by_tag: Option<String>,
 }
 
 impl From<GroupTrainRow> for GroupTrain {
     fn from(row: GroupTrainRow) -> Self {
+        let added_by =
+            users::MemberDisplay::of(row.added_by_name, row.added_by_username, &row.added_by);
         GroupTrain {
             train_subscription_id: row.train_subscription_id,
             pin_origin_crs: row.pin_origin_crs,
@@ -764,12 +797,13 @@ impl From<GroupTrainRow> for GroupTrain {
             added_by: row.added_by,
             // The sharer's `users.name`, else their `users.username` --
             // never the raw internal user_id, and never their email (see
-            // `users::display_label`: attribution shown to a whole group
+            // `users::MemberDisplay`: attribution shown to a whole group
             // is not the place to reveal one member's email address).
             // Shared with the member list via that same helper so the two
             // can't drift on what counts as a usable name -- a blank one
             // doesn't; see `display_name_collapse_tests` below.
-            added_by_name: users::display_label(row.added_by_name, row.added_by_username),
+            added_by_name: added_by.label,
+            added_by_tag: added_by.tag,
         }
     }
 }
@@ -855,10 +889,14 @@ pub struct SharedTrain {
     pub custom_name: Option<String>,
     pub added_by: String,
     pub added_by_name: Option<String>,
+    /// Same contract as `GroupTrain.added_by_tag`.
+    pub added_by_tag: Option<String>,
 }
 
 impl From<SharedTrainRow> for SharedTrain {
     fn from(row: SharedTrainRow) -> Self {
+        let added_by =
+            users::MemberDisplay::of(row.added_by_name, row.added_by_username, &row.added_by);
         SharedTrain {
             group_id: row.group_id,
             group_name: row.group_name,
@@ -877,11 +915,12 @@ impl From<SharedTrainRow> for SharedTrain {
             added_by: row.added_by,
             // Same "name, else username, else nothing -- and never an
             // email" collapse `GroupTrain::from` already applies, via the
-            // same `users::display_label`; see its own comment. This shape
+            // same `users::MemberDisplay`; see its own comment. This shape
             // is strictly more exposed than `GroupTrain` (it reaches a
             // member without them opening the group at all), so it is the
             // last place that should be laxer about it.
-            added_by_name: users::display_label(row.added_by_name, row.added_by_username),
+            added_by_name: added_by.label,
+            added_by_tag: added_by.tag,
         }
     }
 }
@@ -1121,22 +1160,33 @@ pub struct GroupCustomLine {
     pub line_name: String,
     pub granted_by: String,
     pub granted_by_name: Option<String>,
+    /// Same contract, same derivation, as `GroupTrain.added_by_tag`: set
+    /// only when there is no showable name, so a group whose IdP can name
+    /// nobody still tells its members' shares apart.
+    pub granted_by_tag: Option<String>,
 }
 
 impl From<GroupCustomLineRow> for GroupCustomLine {
     fn from(row: GroupCustomLineRow) -> Self {
+        let granted_by = users::MemberDisplay::of(
+            row.granted_by_name,
+            row.granted_by_username,
+            &row.granted_by,
+        );
         GroupCustomLine {
             line_id: row.line_id,
             line_name: row.line_name,
             granted_by: row.granted_by,
-            // `users::display_label` -- the sharer's `users.name`, else
-            // their `users.username`, else nothing. Never the raw internal
-            // user id, and never their email: attribution shown to a whole
-            // group is not the place to reveal one member's email address.
-            // Shared with `GroupTrain::from` and the member list via that
-            // same helper so none of them can drift on what counts as a
-            // usable name (a blank one doesn't).
-            granted_by_name: users::display_label(row.granted_by_name, row.granted_by_username),
+            // The sharer's `users.name`, else their `users.username` --
+            // never the raw internal user id, and never their email (see
+            // `users::MemberDisplay`: attribution shown to a whole group
+            // is not the place to reveal one member's email address, and
+            // an email-shaped value in either field is declined rather
+            // than rendered). Shared with `GroupTrain::from` and the
+            // member list via that same helper so none of them can drift
+            // on what counts as a usable name -- a blank one doesn't.
+            granted_by_name: granted_by.label,
+            granted_by_tag: granted_by.tag,
         }
     }
 }
@@ -1188,21 +1238,31 @@ pub struct SharedCustomLine {
     pub line_name: String,
     pub granted_by: String,
     pub granted_by_name: Option<String>,
+    /// Same contract as `GroupCustomLine.granted_by_tag`.
+    pub granted_by_tag: Option<String>,
 }
 
 impl From<SharedCustomLineRow> for SharedCustomLine {
     fn from(row: SharedCustomLineRow) -> Self {
+        let granted_by = users::MemberDisplay::of(
+            row.granted_by_name,
+            row.granted_by_username,
+            &row.granted_by,
+        );
         SharedCustomLine {
             group_id: row.group_id,
             group_name: row.group_name,
             line_id: row.line_id,
             line_name: row.line_name,
             granted_by: row.granted_by,
-            // Same `users::display_label` collapse `GroupCustomLine::from`
-            // applies -- see its own comment. This shape is strictly MORE
-            // exposed (it reaches a member on the home page without them
-            // opening the group at all), so it must never be laxer.
-            granted_by_name: users::display_label(row.granted_by_name, row.granted_by_username),
+            // Same "name, else username, else nothing -- and never an
+            // email" collapse `GroupCustomLine::from` already applies, via
+            // the same `users::MemberDisplay`; see its own comment. This
+            // shape is strictly more exposed (it reaches a member on the
+            // home page without them opening the group at all), so it is
+            // the last place that should be laxer about it.
+            granted_by_name: granted_by.label,
+            granted_by_tag: granted_by.tag,
         }
     }
 }
@@ -3029,9 +3089,9 @@ mod custom_line_grant_wire_shape_tests {
     /// so a field added here by accident is exactly the failure that
     /// matters. In particular it must never grow a `grantedByEmail` field,
     /// or any other raw-email one: `GroupCustomLine::from` collapses the
-    /// sharer down to `users::display_label` (name, else username, else
-    /// nothing) precisely so that an email address can never become one
-    /// member's label shown to the rest of a group.
+    /// sharer down to `users::MemberDisplay` (name, else username, else
+    /// nothing plus an opaque tag) precisely so that an email address can
+    /// never become one member's label shown to the rest of a group.
     #[test]
     fn group_custom_line_json_is_identity_and_attribution_only() {
         let value = serde_json::to_value(GroupCustomLine {
@@ -3039,6 +3099,7 @@ mod custom_line_grant_wire_shape_tests {
             line_name: "My Commute".to_string(),
             granted_by: "user-1".to_string(),
             granted_by_name: Some("Alex".to_string()),
+            granted_by_tag: None,
         })
         .expect("serialize");
         let mut keys: Vec<&str> = value
@@ -3050,7 +3111,13 @@ mod custom_line_grant_wire_shape_tests {
         keys.sort_unstable();
         assert_eq!(
             keys,
-            vec!["grantedBy", "grantedByName", "lineId", "lineName"]
+            vec![
+                "grantedBy",
+                "grantedByName",
+                "grantedByTag",
+                "lineId",
+                "lineName"
+            ]
         );
     }
 
@@ -3068,6 +3135,7 @@ mod custom_line_grant_wire_shape_tests {
             line_name: "My Commute".to_string(),
             granted_by: "user-1".to_string(),
             granted_by_name: Some("Alex".to_string()),
+            granted_by_tag: None,
         })
         .expect("serialize");
         let mut keys: Vec<&str> = value
@@ -3082,6 +3150,7 @@ mod custom_line_grant_wire_shape_tests {
             vec![
                 "grantedBy",
                 "grantedByName",
+                "grantedByTag",
                 "groupId",
                 "groupName",
                 "lineId",
@@ -3128,6 +3197,33 @@ mod custom_line_grant_wire_shape_tests {
         );
         assert_eq!(GroupCustomLine::from(row(None, None)).granted_by_name, None);
     }
+
+    /// The tag appears exactly when the label doesn't -- same contract
+    /// `GroupTrain`/`GroupMember` already hold, so a group whose IdP can
+    /// name nobody still tells one member's shared line from another's
+    /// without revealing anything about either person.
+    #[test]
+    fn granted_by_tag_is_set_only_when_there_is_no_showable_name() {
+        let row = |name: Option<&str>| GroupCustomLineRow {
+            line_id: "custom-x".to_string(),
+            line_name: "X".to_string(),
+            granted_by: "user-1".to_string(),
+            granted_by_name: name.map(str::to_string),
+            granted_by_username: None,
+        };
+        assert_eq!(
+            GroupCustomLine::from(row(Some("Alex"))).granted_by_tag,
+            None
+        );
+        let unnameable = GroupCustomLine::from(row(None));
+        assert_eq!(unnameable.granted_by_name, None);
+        assert!(
+            unnameable
+                .granted_by_tag
+                .is_some_and(|tag| tag.len() == 6 && tag.chars().all(|c| c.is_ascii_hexdigit())),
+            "an unnameable sharer gets the same six-hex-character tag every other shape uses"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3155,6 +3251,7 @@ mod group_train_wire_shape_tests {
             custom_name: None,
             added_by: "user-1".to_string(),
             added_by_name: Some("Alex".to_string()),
+            added_by_tag: None,
         };
         let value = serde_json::to_value(&train).expect("serialize");
         let mut keys: Vec<&str> = value
@@ -3169,6 +3266,7 @@ mod group_train_wire_shape_tests {
             vec![
                 "addedBy",
                 "addedByName",
+                "addedByTag",
                 "customName",
                 "delayMinutes",
                 "pinDestinationCrs",
@@ -3208,6 +3306,7 @@ mod shared_train_wire_shape_tests {
             custom_name: None,
             added_by: "user-1".to_string(),
             added_by_name: Some("Alex".to_string()),
+            added_by_tag: None,
         }
     }
 
@@ -3233,6 +3332,7 @@ mod shared_train_wire_shape_tests {
             vec![
                 "addedBy",
                 "addedByName",
+                "addedByTag",
                 "customName",
                 "delayMinutes",
                 "groupId",
@@ -3318,6 +3418,7 @@ mod group_member_wire_shape_tests {
         let member = GroupMember {
             user_id: "user-1".to_string(),
             display_name: Some("Alex".to_string()),
+            display_tag: None,
             role: GroupRole::Member,
             joined_at: "2026-09-11T00:00:00Z".parse().unwrap(),
         };
@@ -3329,7 +3430,10 @@ mod group_member_wire_shape_tests {
             .map(String::as_str)
             .collect();
         keys.sort_unstable();
-        assert_eq!(keys, vec!["displayName", "joinedAt", "role", "userId"]);
+        assert_eq!(
+            keys,
+            vec!["displayName", "displayTag", "joinedAt", "role", "userId"]
+        );
     }
 }
 
@@ -3363,6 +3467,28 @@ mod display_name_collapse_tests {
 
     fn train_row(name: Option<&str>, username: Option<&str>) -> GroupTrainRow {
         GroupTrainRow {
+            train_subscription_id: 1,
+            pin_origin_crs: None,
+            pin_destination_crs: None,
+            pin_origin_name: None,
+            pin_destination_name: None,
+            pin_scheduled_departure: None,
+            service_date: "2026-09-11".parse().unwrap(),
+            resolution_status: "pending".to_string(),
+            train_uid: None,
+            status: None,
+            delay_minutes: None,
+            custom_name: None,
+            added_by: "user-1".to_string(),
+            added_by_name: name.map(str::to_string),
+            added_by_username: username.map(str::to_string),
+        }
+    }
+
+    fn shared_row(name: Option<&str>, username: Option<&str>) -> SharedTrainRow {
+        SharedTrainRow {
+            group_id: "group-1".to_string(),
+            group_name: "Family".to_string(),
             train_subscription_id: 1,
             pin_origin_crs: None,
             pin_destination_crs: None,
@@ -3439,8 +3565,145 @@ mod display_name_collapse_tests {
         assert_eq!(GroupTrain::from(train_row(None, None)).added_by_name, None);
     }
 
+    fn detail_row(name: Option<&str>, username: Option<&str>) -> GroupDetailRow {
+        GroupDetailRow {
+            id: "group-1".to_string(),
+            name: "Family".to_string(),
+            owner_id: "user-1".to_string(),
+            owner_name: name.map(str::to_string),
+            owner_username: username.map(str::to_string),
+            member_count: 2,
+            role: "member".to_string(),
+        }
+    }
+
+    /// `GroupDetail.owner_name` is the fourth cross-user label, and the
+    /// one whose only other tests need a live database -- so the collapse
+    /// and the tag are pinned here rather than left to the `#[ignore]`d
+    /// `db_tests`. Same rule as the other three: a name, else a username,
+    /// else nothing at all plus a tag, and never an email.
+    #[test]
+    fn a_groups_owner_gets_the_same_label_and_tag_treatment_as_its_members() {
+        let named = GroupDetail::from(detail_row(Some("Ada Rider"), Some("ada")));
+        assert_eq!(named.owner_name.as_deref(), Some("Ada Rider"));
+        assert_eq!(named.owner_tag, None);
+
+        let by_username = GroupDetail::from(detail_row(Some(""), Some("ada")));
+        assert_eq!(by_username.owner_name.as_deref(), Some("ada"));
+        assert_eq!(by_username.owner_tag, None);
+
+        let unnameable = GroupDetail::from(detail_row(
+            Some("owner@example.com"),
+            Some("owner@example.com"),
+        ));
+        assert_eq!(unnameable.owner_name, None);
+        assert!(unnameable.owner_tag.is_some());
+
+        // And it is the SAME tag the owner's own row in the member list
+        // carries -- one user, one tag, wherever they appear.
+        let mut member = member_row(Some("owner@example.com"), Some("owner@example.com"));
+        member.user_id = "user-1".to_string();
+        assert_eq!(unnameable.owner_tag, GroupMember::from(member).display_tag);
+
+        let mut other_owner = detail_row(Some("owner@example.com"), Some("owner@example.com"));
+        other_owner.owner_id = "user-2".to_string();
+        assert_ne!(
+            unnameable.owner_tag,
+            GroupDetail::from(other_owner).owner_tag
+        );
+    }
+
+    /// A member this app CAN name carries no tag at all -- the suffix is
+    /// strictly for the placeholder path, and "Ada Rider" must keep
+    /// rendering as exactly "Ada Rider".
+    #[test]
+    fn a_nameable_member_or_sharer_carries_no_tag() {
+        assert_eq!(
+            GroupMember::from(member_row(Some("Ada Rider"), Some("ada"))).display_tag,
+            None
+        );
+        assert_eq!(
+            GroupMember::from(member_row(Some("  "), Some("ada"))).display_tag,
+            None
+        );
+        assert_eq!(
+            GroupTrain::from(train_row(None, Some("ada"))).added_by_tag,
+            None
+        );
+    }
+
+    /// The Entra-ID case: `name` and `preferred_username` are BOTH the
+    /// user's email-shaped UPN, so neither member can be named and both
+    /// rows used to read as the identical "A member" -- leaving an admin
+    /// no way to tell which row is whom. The labels are still (correctly)
+    /// `None`, but the two rows are now distinguishable.
+    #[test]
+    fn two_unnameable_members_are_still_told_apart() {
+        let row = |user_id: &str, email: &str| {
+            let mut row = member_row(Some(email), Some(email));
+            row.user_id = user_id.to_string();
+            row
+        };
+        let one = GroupMember::from(row("user-1", "ada@example.com"));
+        let two = GroupMember::from(row("user-2", "grace@example.com"));
+
+        assert_eq!(one.display_name, None);
+        assert_eq!(two.display_name, None);
+        assert!(one.display_tag.is_some());
+        assert_ne!(one.display_tag, two.display_tag);
+    }
+
+    /// Same for "Shared by ..." attribution, on both of the shapes that
+    /// carry it: two sharers the app can't name are two distinguishable
+    /// credits, not one indistinguishable one.
+    #[test]
+    fn two_unnameable_sharers_are_still_told_apart() {
+        let row = |user_id: &str| {
+            let mut row = train_row(Some(""), Some("upn@example.com"));
+            row.added_by = user_id.to_string();
+            row
+        };
+        let one = GroupTrain::from(row("user-1"));
+        let two = GroupTrain::from(row("user-2"));
+        assert_eq!(one.added_by_name, None);
+        assert!(one.added_by_tag.is_some());
+        assert_ne!(one.added_by_tag, two.added_by_tag);
+
+        // `SharedTrain` (the `/track/mine` + home-page shape) reaches a
+        // member without them opening the group, so it gets the identical
+        // treatment rather than a laxer one.
+        let shared = |user_id: &str| {
+            let mut row = shared_row(Some("upn@example.com"), Some("upn@example.com"));
+            row.added_by = user_id.to_string();
+            SharedTrain::from(row)
+        };
+        assert_eq!(shared("user-1").added_by_name, None);
+        assert_ne!(shared("user-1").added_by_tag, shared("user-2").added_by_tag);
+        assert_eq!(shared("user-1").added_by_tag, shared("user-1").added_by_tag);
+    }
+
+    /// The tag is per-USER, not per-row: the same person shows the same
+    /// suffix in the member list and in every train they shared, which is
+    /// the entire point -- "who added this?" has to be answerable by
+    /// matching the credit against a row of the member list.
+    #[test]
+    fn one_user_gets_one_tag_across_the_member_list_and_their_shared_trains() {
+        let mut member = member_row(Some("upn@example.com"), Some("upn@example.com"));
+        member.user_id = "user-7".to_string();
+        let mut train = train_row(Some("upn@example.com"), Some("upn@example.com"));
+        train.added_by = "user-7".to_string();
+
+        assert_eq!(
+            GroupMember::from(member).display_tag,
+            GroupTrain::from(train).added_by_tag
+        );
+    }
+
     /// The privacy half of this fix, end to end: neither of these two "who
-    /// is this person" labels may ever be a member's email address.
+    /// is this person" labels may ever be a member's email address, and
+    /// nor may the tag that now accompanies them -- the serialization
+    /// assertions below run with the tag populated (these rows are exactly
+    /// the placeholder path) and so cover it too.
     /// Neither query selects `users.email` any more, AND an email arriving
     /// through the fields they DO select -- an IdP that puts an address in
     /// `name` or `preferred_username`, which is legal and common -- is

@@ -10,6 +10,7 @@ function row(overrides: Partial<SharedGroupCustomLine> = {}): SharedGroupCustomL
     lineName: 'My Commute',
     grantedBy: 'user-1',
     grantedByName: 'Alex',
+    grantedByTag: null,
     ...overrides,
   };
 }

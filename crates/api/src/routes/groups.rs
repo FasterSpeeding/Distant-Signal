@@ -232,6 +232,10 @@ struct GroupDetailResponse {
     name: String,
     owner_id: String,
     owner_name: Option<String>,
+    /// Present only when `owner_name` is absent -- the distinguishing
+    /// suffix for the generic placeholder; see
+    /// `groups::GroupMember.display_tag`.
+    owner_tag: Option<String>,
     member_count: i64,
     role: GroupRole,
     // No dedicated `GET` route exists in the spec's API table for reading
@@ -267,6 +271,7 @@ async fn get_group(
         name: detail.name,
         owner_id: detail.owner_id,
         owner_name: detail.owner_name,
+        owner_tag: detail.owner_tag,
         member_count: detail.member_count,
         role: detail.role,
         invite_link,

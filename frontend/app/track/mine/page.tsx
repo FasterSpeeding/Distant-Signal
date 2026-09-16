@@ -14,6 +14,7 @@ import { formatDate, formatTime } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
+import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import type { TrackedTrainListItem, TicketListItem } from '@/lib/types';
 
 // See app/page.tsx's own `revalidate = 0` comment for the rationale: this
@@ -343,17 +344,17 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
               sharer has neither a name nor a username on their account --
               never their email, which is not something to show the rest
               of a group (`crates/api/src/data/users.rs`'s
-              `display_label`). "a member" then, never a raw user id --
-              same wording and same fallback `/groups/{id}`'s shared rows
-              already use, and `?.trim() ||` rather than `??` for the same
-              reason they use it: a blank name is not a label either. */}
+              `display_label`). "a member" then, never a raw user id,
+              suffixed with the sharer's `addedByTag` so two such sharers
+              don't read identically -- same helper and same wording as
+              `/groups/{id}`'s shared rows (`lib/memberLabel.ts`). */}
           {groupNames.map((groupName) => (
             <Badge key={groupName} variant="light" color="grape">
               from {groupName}
             </Badge>
           ))}
           <Text size="sm" c="dimmed">
-            Shared by {train.addedByName?.trim() || 'a member'}
+            Shared by {memberLabel(train.addedByName, train.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
           </Text>
         </Group>
       </Stack>

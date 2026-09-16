@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
-import { Alert, Autocomplete, Button, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
+import { Alert, Autocomplete, Button, Group, Stack, Text, TextInput } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { LoadMoreControl } from './LoadMoreControl';
@@ -411,28 +411,102 @@ export function TrainSearchForm({
           These are from the scheduled timetable, not live running information, and may be up to 30
           minutes out of date. Open a train to see its live status.
         </Text>
-        <ScrollArea mah={420} offsetScrollbars>
-          <Stack gap="xs">
-            {results.rows.map((row) => (
-              <Group key={`${row.uid}-${row.scheduled}`} justify="space-between" wrap="nowrap">
-                <Text size="sm">
-                  {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationCrs ?? '?'}
-                </Text>
-                <Group gap="sm" wrap="nowrap">
-                  <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>
-                    View live status
-                  </TextLink>
-                  <TrackThisTrainButton
-                    uid={row.uid}
-                    date={displayDate}
-                    attachTicketId={attachTicketId}
-                    size="xs"
-                  />
-                </Group>
+        {/* Deliberately NOT wrapped in a `ScrollArea` (`mah`-capped or
+         * otherwise). It used to be (`<ScrollArea mah={420}
+         * offsetScrollbars>`), and that hard-clipped the results: a Mantine
+         * `ScrollArea` root is `position: relative; overflow: hidden`
+         * (`@mantine/core/styles/ScrollArea.css`, `.m_d57069b5`) while its
+         * viewport is `height: 100%`. With only `mah` on the root, the
+         * root's own `height` stays `auto`, so that `100%` resolves to
+         * `auto` too (CSS 2.1 §10.5: a percentage height against a
+         * content-sized containing block computes to `auto`) -- the
+         * viewport grows to its full content height and therefore never
+         * overflows *itself*, so it never scrolls, while the root clamps to
+         * the cap and clips everything past it with `overflow: hidden`. No
+         * pointer, wheel or scrollbar gesture could reach a row past 420px,
+         * and each "Load more" appended rows straight into the clipped
+         * region. Nothing hinted anything had been cut off either: Mantine
+         * hides the native scrollbar (`scrollbar-width: none`) and draws its
+         * own, sized from `scrollHeight` vs `clientHeight` -- equal here --
+         * so it never appeared.
+         *
+         * `ScrollArea.Autosize` IS the Mantine component that supports a max
+         * height (it wraps the root in a `display: flex` / `flex: 1` /
+         * `overflow: hidden` chain, which is what makes the root's height
+         * definite). It is still not what's used: letting the page scroll is
+         * what `StationTimetable.tsx` (the other paginated "Load more" list
+         * over these same CIF rows) and `IncidentSearchForm.tsx` (which this
+         * component's results section mirrors) both already do. A nested
+         * scroller buys nothing here -- there are no sticky controls above
+         * the list to keep on screen -- while costing real usability on
+         * touch, where it steals the page's own scroll gesture. */}
+        <Stack gap="xs" data-train-results>
+          {results.rows.map((row) => (
+            /* `wrap` is left at Mantine's wrapping default rather than
+             * `nowrap` (which is what `StationTimetable.tsx`'s otherwise
+             * identical row still uses -- fine there, because its actions
+             * are a bare link). These rows carry a link AND a
+             * `TrackThisTrainButton`, and at ~360px the three cannot share
+             * a line: the row's max-content is ~430px ("09:00 · PAD → RDG →
+             * BRI" ~160px, "View live status" ~110px, the button ~130px,
+             * plus the gaps) against ~310px of content box inside the
+             * `lg` padding on `app/trains/page.tsx`'s own `Stack`. (Not the
+             * main `Container`'s -- that is explicitly `px={0}`, see
+             * `app/layout.tsx`'s own comment on why.)
+             *
+             * `nowrap` did NOT overflow the page -- worth spelling out,
+             * because that is the obvious guess and it is wrong. Mantine's
+             * button label (`.m_811560b9` in `@mantine/core/styles/
+             * Button.css`) is `white-space: nowrap; overflow: hidden`, and
+             * `overflow: hidden` drops an element's min-content
+             * contribution to zero (the same mechanism `app/globals.css`'s
+             * `[data-status-badge]` override documents), so the row's
+             * intrinsic floor was only ~130px and it always "fit". It fit
+             * by SQUASHING: the summary broke onto a second line while the
+             * button clipped mid-word -- clipped flat, since that label
+             * sets no `text-overflow`, so the action lost its own name
+             * with nothing to signal it had been cut. That was
+             * equally true inside the removed `ScrollArea` (its content box
+             * is `display: table; min-width: 100%`, which does not exceed
+             * the available width either), so this is a pre-existing
+             * mobile defect being fixed alongside the clipping, not
+             * fallout from removing the scroller.
+             *
+             * `marginInlineStart: 'auto'` on the actions rather than the
+             * `Group`'s `justify="space-between"`, for the same reason
+             * `IncidentSearchForm.tsx`'s row header does it: `space-between`
+             * leaves a *wrapped* single-item line at `flex-start`, which
+             * would left-align the actions under a long summary on desktop;
+             * with the auto margin they read flush right whether they share
+             * the summary's line or wrap below it. The inner actions
+             * `Group` keeps `nowrap` -- the link and the button are a pair
+             * that fits a 360px line together and reads wrong split up.
+             *
+             * `rowGap` overrides `Group`'s own `md` gap on the wrap axis
+             * only (an inline longhand beats the class's `gap` shorthand),
+             * exactly as `IncidentSearchForm.tsx`'s row header does.
+             * Without it wrapped actions sat 16px below their own summary
+             * but only 10px above the NEXT train's (the enclosing `Stack`'s
+             * `xs`), so "View live status"/"Track this train" read as
+             * belonging to the row beneath them. */
+            <Group key={`${row.uid}-${row.scheduled}`} style={{ rowGap: 4 }}>
+              <Text size="sm">
+                {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationCrs ?? '?'}
+              </Text>
+              <Group gap="sm" wrap="nowrap" style={{ marginInlineStart: 'auto' }}>
+                <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>
+                  View live status
+                </TextLink>
+                <TrackThisTrainButton
+                  uid={row.uid}
+                  date={displayDate}
+                  attachTicketId={attachTicketId}
+                  size="xs"
+                />
               </Group>
-            ))}
-          </Stack>
-        </ScrollArea>
+            </Group>
+          ))}
+        </Stack>
         <LoadMoreControl
           hasMore={results.nextCursor !== null}
           loading={loadingMore}
