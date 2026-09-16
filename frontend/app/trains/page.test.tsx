@@ -126,7 +126,12 @@ describe('metadata', () => {
     // station they stop at later" would promise a relational constraint
     // the query does not enforce -- TrainSearchForm's own field
     // description is equally careful about this.
-    expect(metadata.description).not.toMatch(/later|next stop|after/i);
+    //
+    // Targeted at the actual mistake rather than at the word "later"
+    // anywhere: a future rewording that legitimately says "after" or
+    // "later" about something else (departures after a given time, say)
+    // shouldn't fail this case for the wrong reason.
+    expect(metadata.description).not.toMatch(/stops? at .*later|later stop|stop it makes after/i);
     expect(metadata.description).toMatch(/along its route/);
   });
 

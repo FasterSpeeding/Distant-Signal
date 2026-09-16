@@ -69,7 +69,7 @@ describe('metadata.appleWebApp', () => {
   });
 });
 
-describe('metadata openGraph/twitter inheritance', () => {
+describe('metadata: what the root layout deliberately omits', () => {
   it('has no openGraph or twitter of its own, which is why every page repeats its title into both', () => {
     // The premise the per-page metadata exports rest on, asserted rather
     // than left as prose in this file's own comment. Next merges page

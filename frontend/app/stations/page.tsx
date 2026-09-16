@@ -31,7 +31,7 @@ import { StationSearchForm } from './StationSearchForm';
  * the sampling entirely), not a punctuality record. */
 const METADATA_TITLE = 'Station Disruption Lookup — Distant Signal';
 const METADATA_DESCRIPTION =
-  'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats and its accessibility & facilities.';
+  'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats, and its accessibility & facilities.';
 
 export const metadata: Metadata = {
   title: METADATA_TITLE,

@@ -33,7 +33,7 @@ describe('metadata', () => {
 
   it('describes station lookup rather than inheriting the generic site description', () => {
     expect(metadata.description).toBe(
-      'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats and its accessibility & facilities.',
+      'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats, and its accessibility & facilities.',
     );
   });
 
@@ -54,14 +54,14 @@ describe('metadata', () => {
     expect(metadata.openGraph).toMatchObject({
       title: 'Station Disruption Lookup — Distant Signal',
       description:
-        'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats and its accessibility & facilities.',
+        'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats, and its accessibility & facilities.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
       title: 'Station Disruption Lookup — Distant Signal',
       description:
-        'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats and its accessibility & facilities.',
+        'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats, and its accessibility & facilities.',
     });
   });
 });
