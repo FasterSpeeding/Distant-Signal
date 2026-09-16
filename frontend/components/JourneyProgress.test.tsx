@@ -302,6 +302,36 @@ describe('JourneyProgress', () => {
       return (clone.textContent ?? '').trim();
     }
 
+    /** Everything the Tab key would stop on inside `container`, in DOM
+     * order -- the same selector both tab-order assertions below use, so
+     * they can't disagree about what "in the tab order" means. */
+    function tabbable(container: HTMLElement): HTMLElement[] {
+      return Array.from(
+        container.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]'),
+      ).filter((el) => el.getAttribute('tabindex') !== '-1' && !el.hasAttribute('disabled'));
+    }
+
+    /** Three intermediate stops, not one, so the per-element loop below
+     * actually iterates: with a single trigger a regression that only
+     * affected, say, the marker node would slip through. */
+    function renderFiveStopJourney() {
+      return renderWithMantine(
+        <JourneyProgress
+          stops={[
+            stop({ crs: 'A', name: 'Alpha', kind: 'Origin', actualDeparture: '2026-09-12T08:00:00Z' }),
+            stop({ crs: 'B', name: 'Bravo', kind: 'Intermediate', actualArrival: '2026-09-12T08:10:00Z' }),
+            stop({ crs: 'C', name: 'Charlie', kind: 'Intermediate' }),
+            stop({ crs: 'D', name: 'Delta', kind: 'Intermediate' }),
+            stop({ crs: 'E', name: 'Echo', kind: 'Terminate' }),
+          ]}
+          resolutionStatus="resolved"
+          status="en_route"
+          trainUid="C1"
+          mayHaveArrived
+        />,
+      );
+    }
+
     function renderThreeStopJourney() {
       return renderWithMantine(
         <JourneyProgress
@@ -321,7 +351,11 @@ describe('JourneyProgress', () => {
     it('labels the diagram container as a group, never as a presentational img', () => {
       const { container } = renderThreeStopJourney();
       expect(container.querySelector('[role="img"]')).not.toBeInTheDocument();
-      expect(screen.getByRole('group', { name: /^Journey progress: / })).toBeInTheDocument();
+      const group = screen.getByRole('group', { name: /^Journey progress: / });
+      // The labelled group and the scroll box are the SAME element -- the
+      // node the mobile-scaling fix scrolls is the one carrying the role,
+      // not a wrapper around it.
+      expect(group).toBe(container.querySelector('[data-journey-progress-scroll]'));
     });
 
     it('exposes each intermediate node trigger as a named button, not an anonymous focusable div', () => {
@@ -337,21 +371,18 @@ describe('JourneyProgress', () => {
       // (`getByRole`/`.focus()` would both still pass for a
       // `tabindex="-1"` element, which is reachable by script but not by
       // the Tab key).
-      const tabbable = Array.from(
-        container.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]'),
-      ).filter((el) => el.getAttribute('tabindex') !== '-1' && !el.hasAttribute('disabled'));
-      expect(tabbable).toContain(trigger);
+      expect(tabbable(container)).toContain(trigger);
       // `act` because focusing opens the Tooltip, which is a state update.
       act(() => trigger.focus());
       expect(trigger).toHaveFocus();
     });
 
     it('gives an accessible name to every element left in the tab order', () => {
-      const { container } = renderThreeStopJourney();
-      const focusable = Array.from(
-        container.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]'),
-      ).filter((el) => el.getAttribute('tabindex') !== '-1');
-      expect(focusable.length).toBeGreaterThan(0);
+      const { container } = renderFiveStopJourney();
+      const focusable = tabbable(container);
+      // One per intermediate stop -- pinned exactly, so this loop can't
+      // quietly shrink to nothing and still pass.
+      expect(focusable).toHaveLength(3);
       for (const el of focusable) {
         // Either its own label or its text content, minus any `aria-hidden`
         // subtree (text a reader never speaks can't be the element's name)
