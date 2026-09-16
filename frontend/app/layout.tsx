@@ -25,7 +25,7 @@ import type { DataFreshness } from '@/lib/types';
 // page that wants its own link-preview card overrides `title`/`description`
 // and adds its own `openGraph`/`twitter`: the five detail routes do it via
 // `generateMetadata` (see `app/train/[uid]/[date]/page.tsx` for the
-// canonical shape), and the seven navigation-level pages -- `/`,
+// canonical shape), and the seven top-level pages -- `/`,
 // `/incidents`, `/trains`, `/stations`, `/lines`, `/track` and `/groups` --
 // via a static `export const metadata`. Note that Next merges these
 // per-field, not per-object: a page that sets `title` but no `openGraph`

@@ -123,7 +123,7 @@ describe('metadata', () => {
 
   it('describes the whole-network line table rather than inheriting the generic site description', () => {
     expect(metadata.description).toBe(
-      "Every National Rail and TfL line this app tracks, in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available — and your own custom lines once you're logged in.",
+      "Every National Rail and TfL line this app tracks — plus your own custom lines once you're logged in — in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available.",
     );
   });
 
@@ -134,6 +134,18 @@ describe('metadata', () => {
     // so an unconditional "with your custom lines" would describe rows the
     // recipient of the link cannot possibly see.
     expect(metadata.description).toMatch(/custom lines.*logged in/);
+  });
+
+  it('keeps both halves of that hedge inside the length an unfurler will show', () => {
+    // Unfurlers commonly truncate a description around 155-200 characters.
+    // A cut landing between "your own custom lines" and "once you're
+    // logged in" would render the flat promise the hedge exists to avoid,
+    // so the whole clause is front-loaded rather than trailed off the end
+    // -- asserted, because that property is invisible in the string itself
+    // and was silently lost by one earlier rewording.
+    const description = metadata.description ?? '';
+    expect(description.indexOf("once you're logged in")).toBeGreaterThan(-1);
+    expect(description.indexOf("once you're logged in") + "once you're logged in".length).toBeLessThan(155);
   });
 
   it("doesn't promise delay and cancellation figures on every row", () => {
@@ -152,14 +164,14 @@ describe('metadata', () => {
     expect(metadata.openGraph).toMatchObject({
       title: 'All Lines — Distant Signal',
       description:
-        "Every National Rail and TfL line this app tracks, in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available — and your own custom lines once you're logged in.",
+        "Every National Rail and TfL line this app tracks — plus your own custom lines once you're logged in — in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available.",
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
       title: 'All Lines — Distant Signal',
       description:
-        "Every National Rail and TfL line this app tracks, in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available — and your own custom lines once you're logged in.",
+        "Every National Rail and TfL line this app tracks — plus your own custom lines once you're logged in — in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available.",
     });
   });
 });

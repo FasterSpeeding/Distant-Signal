@@ -26,7 +26,7 @@ export const revalidate = 0;
  * Three phrases in the description are load-bearing and must not be
  * "tightened":
  *
- * - "National Rail and TfL lines" -- `GET /public/lines`
+ * - "National Rail and TfL line" -- `GET /public/lines`
  *   (`crates/api/src/routes/lines.rs`'s `list_lines`) concatenates the
  *   static line catalogue with a merge-filtered
  *   `queries::tfl_line_summaries` (its `!is_merged_into_nr_line` filter
@@ -39,10 +39,12 @@ export const revalidate = 0;
  *   deliberately excluded from this list; see the handler's own comment).
  *   An anonymous visitor -- which is every link-unfurler bot, none of
  *   which carry a session cookie -- sees none, hence the hedge rather
- *   than a flat promise. Kept in the FIRST half of the sentence-final
- *   clause rather than trailed off the end, since unfurlers commonly
- *   truncate a description around 155-200 characters and this is the
- *   claim least safe to lose.
+ *   than a flat promise. That is also why the whole clause sits up front
+ *   rather than at the end: unfurlers commonly truncate a description
+ *   around 155-200 characters, and a cut landing between "your own custom
+ *   lines" and "once you're logged in" would turn the hedge into exactly
+ *   the flat promise it exists to avoid. Both halves are inside the first
+ *   ~100 characters here; keep them there when rewording.
  * - "where available" -- the Avg Delay and Cancelled cells render an em
  *   dash for a line with no stats at all (`AllLinesTable`'s
  *   `representative?.fullCoverageStats ?? representative?.sampleStats`),
@@ -56,7 +58,7 @@ export const revalidate = 0;
  * control nobody currently sees. */
 const METADATA_TITLE = 'All Lines — Distant Signal';
 const METADATA_DESCRIPTION =
-  "Every National Rail and TfL line this app tracks, in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available — and your own custom lines once you're logged in.";
+  "Every National Rail and TfL line this app tracks — plus your own custom lines once you're logged in — in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available.";
 
 export const metadata: Metadata = {
   title: METADATA_TITLE,
