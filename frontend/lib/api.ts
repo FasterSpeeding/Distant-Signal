@@ -30,6 +30,8 @@ import type {
   GroupMember,
   GroupTrain,
   SharedGroupTrain,
+  GroupCustomLine,
+  SharedGroupCustomLine,
   GroupJoinPreview,
 } from './types';
 
@@ -642,6 +644,32 @@ export async function getSharedGroupTrains(): Promise<SharedGroupTrain[] | null>
   if (response.status === 401) return null;
   if (!response.ok) throw errorForResponse(url, response);
   return response.json() as Promise<SharedGroupTrain[]>;
+}
+
+/** `GET /public/groups/{id}/lines/custom` -- the custom lines members have
+ * shared into this group. Any current member may read it; a non-member
+ * gets the group's usual `404`. Throws on a `401`, like `getGroupTrains`
+ * and for the same reason (there is an id in the path). */
+export async function getGroupCustomLines(id: string): Promise<GroupCustomLine[]> {
+  const url = `${baseUrl()}/public/groups/${id}/lines/custom`;
+  return fetchJson<GroupCustomLine[]>(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+}
+
+/** `GET /public/groups/shared-custom-lines` -- every custom line OTHER
+ * members have shared into any group the caller belongs to (never the
+ * caller's own, which already reach them through `/public/lines`), each
+ * tagged with the group it came from and who shared it. Feeds the home
+ * page's "Lines shared with you" section.
+ *
+ * `null` on a `401`, exactly like `getSharedGroupTrains`/`getMyGroups`
+ * above and for the same reason: no id in the path, so a `401` can only
+ * ever mean "not logged in". */
+export async function getSharedGroupCustomLines(): Promise<SharedGroupCustomLine[] | null> {
+  const url = `${baseUrl()}/public/groups/shared-custom-lines`;
+  const response = await fetch(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+  if (response.status === 401) return null;
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<SharedGroupCustomLine[]>;
 }
 
 /** `GET /public/groups/join/{token}` -- unauthenticated on the backend

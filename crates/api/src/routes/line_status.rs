@@ -132,11 +132,22 @@ fn rows_to_json(rows: Vec<queries::LineStatusRow>, detail: bool) -> Vec<Value> {
         .collect()
 }
 
-/// Drops any row whose id is a private custom line the caller doesn't own.
-/// Catalogue/TfL rows (no `custom-` prefix) are always kept untouched.
+/// Drops any row whose id is a private custom line the caller may not
+/// read -- neither their own, nor granted (see
+/// docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md
+/// §3.2) into a group they're currently a member of. Catalogue/TfL rows
+/// (no `custom-` prefix) are always kept untouched.
+///
 /// `user` is `None` for an anonymous caller -- every custom-line row is
-/// dropped for them, since an anonymous caller can never be the owner of
-/// anything.
+/// dropped for them, unchanged by group sharing: an anonymous caller owns
+/// nothing and is a member of nothing, so there is no `user_id` worth
+/// binding and the query is skipped entirely.
+///
+/// Group sharing widened this check by exactly one disjunct ("or granted
+/// into one of my groups"), via
+/// [`custom_lines::readable_custom_line_ids`]; nothing that used to be
+/// filtered out on ownership grounds is now let through on any other
+/// basis.
 async fn filter_private_custom_rows(
     pool: &sqlx::PgPool,
     rows: Vec<queries::LineStatusRow>,
@@ -150,18 +161,18 @@ async fn filter_private_custom_rows(
     if custom_ids.is_empty() {
         return Ok(rows);
     }
-    let owners = custom_lines::owners_for_ids(pool, &custom_ids).await?;
+    let Some(caller) = user else {
+        // Anonymous: no custom-line row is ever readable, and there is no
+        // id to bind a grant lookup against.
+        return Ok(rows
+            .into_iter()
+            .filter(|row| !row.id.starts_with("custom-"))
+            .collect());
+    };
+    let readable = custom_lines::readable_custom_line_ids(pool, &custom_ids, &caller.id).await?;
     Ok(rows
         .into_iter()
-        .filter(|row| {
-            let Some(owner) = owners.get(&row.id) else {
-                return true; // not a custom-line row after all (shouldn't happen given the prefix check, but never drop on a lookup miss)
-            };
-            match (user, owner) {
-                (Some(caller), Some(owner_id)) => &caller.id == owner_id,
-                _ => false,
-            }
-        })
+        .filter(|row| !row.id.starts_with("custom-") || readable.contains(&row.id))
         .collect())
 }
 
@@ -353,14 +364,23 @@ async fn get_line_status_history(
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
     if id.starts_with("custom-") {
-        let owners = custom_lines::owners_for_ids(&app.database, std::slice::from_ref(&id))
+        // Readable means owned OR granted into a group the caller is
+        // currently in (custom-line group sharing, design §3.2) -- one
+        // more disjunct on the existing ownership gate, never a
+        // replacement for it. An anonymous caller short-circuits with no
+        // query at all, exactly as before.
+        let readable_by_caller = match &user {
+            Some(caller) => custom_lines::readable_custom_line_ids(
+                &app.database,
+                std::slice::from_ref(&id),
+                &caller.id,
+            )
             .await
-            .map_err(internal_error)?;
-        let owned_by_caller = match (&user, owners.get(&id)) {
-            (Some(caller), Some(Some(owner_id))) => &caller.id == owner_id,
-            _ => false,
+            .map_err(internal_error)?
+            .contains(&id),
+            None => false,
         };
-        if !owned_by_caller {
+        if !readable_by_caller {
             return Ok(Json(vec![])); // identical shape to a genuinely unknown id -- this route has never distinguished the two.
         }
     }
@@ -2067,5 +2087,184 @@ mod db_tests {
             row.get("sampleCycles").is_none(),
             "must not leak the sample-stats field name"
         );
+    }
+
+    // --- custom-line group sharing ------------------------------------
+    //
+    // The HTTP-level counterpart to
+    // `custom_lines::db_tests::readable_custom_line_ids_*`: a data-layer
+    // test can prove what the query returns, never which rows the HANDLER
+    // actually lets through.
+
+    /// Seeds a group owned by `owner_id` with `member_id` as a plain
+    /// member, and grants `line_id` into it. Returns the group id.
+    async fn seed_group_with_grant(
+        pool: &PgPool,
+        name: &str,
+        owner_id: &str,
+        member_id: &str,
+        line_id: &str,
+    ) -> String {
+        let group_id = crate::data::groups::create_group(pool, name, owner_id)
+            .await
+            .expect("create fixture group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind(member_id)
+        .execute(pool)
+        .await
+        .expect("seed fixture membership");
+        crate::data::groups::grant_custom_line(pool, &group_id, line_id, owner_id)
+            .await
+            .expect("seed fixture grant");
+        group_id
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_status_includes_a_granted_custom_row_for_a_member_only -- --ignored \
+                --test-threads=1`"]
+    async fn get_line_status_includes_a_granted_custom_row_for_a_member_only() {
+        let pool = connect().await;
+
+        seed_session(&pool, "TEST-LS-GRANT-OWNER").await;
+        let member_token = seed_session(&pool, "TEST-LS-GRANT-MEMBER").await;
+        let stranger_token = seed_session(&pool, "TEST-LS-GRANT-STRANGER").await;
+        let custom = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Line Status Granted".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-LS-GRANT-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+        seed_line_status(&pool, &custom.id, "national-rail", "[]").await;
+        let group_id = seed_group_with_grant(
+            &pool,
+            "Line Status Grant Group",
+            "TEST-LS-GRANT-OWNER",
+            "TEST-LS-GRANT-MEMBER",
+            &custom.id,
+        )
+        .await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let uri = format!("/Line/{}/Status", custom.id);
+
+        let (status, body) = request(router.clone(), uri.clone(), Some(&member_token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ids_in(&body), vec![custom.id.clone()]);
+
+        // A logged-in caller in no group of the owner's gets the same
+        // 404-for-a-lone-unreadable-custom-id an unknown id gets, and an
+        // anonymous caller gets it too -- neither path was loosened.
+        let (status, _) = request(router.clone(), uri.clone(), Some(&stranger_token)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = request(router.clone(), uri.clone(), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Revoking cuts the member off on the very next request (§2.5).
+        crate::data::groups::remove_custom_line_grant(
+            &pool,
+            &group_id,
+            &custom.id,
+            "TEST-LS-GRANT-OWNER",
+            true,
+        )
+        .await
+        .expect("revoke the grant");
+        let (status, _) = request(router, uri, Some(&member_token)).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "revocation must take effect immediately, with nothing cached to invalidate"
+        );
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_line_status(&pool, &custom.id).await;
+        for id in [
+            "TEST-LS-GRANT-OWNER",
+            "TEST-LS-GRANT-MEMBER",
+            "TEST-LS-GRANT-STRANGER",
+        ] {
+            cleanup_user(&pool, id).await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_status_history_a_granted_custom_id_returns_real_history -- --ignored \
+                --test-threads=1`"]
+    async fn get_line_status_history_a_granted_custom_id_returns_real_history() {
+        let pool = connect().await;
+
+        seed_session(&pool, "TEST-HIST-GRANT-OWNER").await;
+        let member_token = seed_session(&pool, "TEST-HIST-GRANT-MEMBER").await;
+        let stranger_token = seed_session(&pool, "TEST-HIST-GRANT-STRANGER").await;
+        let custom = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test History Granted".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-HIST-GRANT-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+        seed_line_status_history(&pool, &custom.id, active_status_json()).await;
+        let group_id = seed_group_with_grant(
+            &pool,
+            "History Grant Group",
+            "TEST-HIST-GRANT-OWNER",
+            "TEST-HIST-GRANT-MEMBER",
+            &custom.id,
+        )
+        .await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let uri = format!(
+            "/Line/{}/Status/2000-01-01T00:00:00Z/to/2100-01-01T00:00:00Z",
+            custom.id
+        );
+
+        let (status, body) = request(router.clone(), uri.clone(), Some(&member_token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().map(Vec::len), Some(1));
+
+        // Unchanged for everyone else: the same empty array a genuinely
+        // unknown id produces, never a 403 and never a different shape.
+        let (status, body) = request(router, uri, Some(&stranger_token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, Value::Array(vec![]));
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_line_status_history(&pool, &custom.id).await;
+        for id in [
+            "TEST-HIST-GRANT-OWNER",
+            "TEST-HIST-GRANT-MEMBER",
+            "TEST-HIST-GRANT-STRANGER",
+        ] {
+            cleanup_user(&pool, id).await;
+        }
     }
 }

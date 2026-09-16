@@ -14,6 +14,7 @@ import { ShareButton } from '@/components/ShareButton';
 import { TextLink } from '@/components/TextLink';
 import { worstStatus, severityLabel } from '@/lib/severity';
 import { resolveHalfHourlyRange } from '@/lib/history';
+import type { LineGroupRef } from '@/lib/types';
 import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
 
@@ -100,15 +101,16 @@ export default async function LineDetailPage({
   // tells a custom line apart from a catalogue one, without needing a
   // second "is this custom" field on the status endpoint itself.
   //
-  // `isCustom` alone is now also the *ownership* gate below, not just the
-  // catalogue/custom distinction — `getCustomLine` collapses a 401
-  // (not logged in) and a 404 (logged in but not the owner, or truly
-  // unknown id) into the same `ApiNotFoundError` (Task 10 Step 2 /
-  // Decision 8 of docs/superpowers/specs/2026-08-31-private-custom-lines-and-tracked-trains-design.md).
-  // So by the time this catch block finishes, either `isCustom` is `false`
-  // (never render Edit/Delete), or it's `true` *and* the call above
-  // actually succeeded for this specific caller with this specific
-  // cookie — which, given that collapse, only happens for the real owner.
+  // `isCustom` is ONLY the catalogue/custom distinction again. It used to
+  // double as the ownership gate, on the (then correct) grounds that
+  // `getCustomLine` collapses a 401 and a 404 into one `ApiNotFoundError`,
+  // so a success could only ever be the real owner. Custom-line group
+  // sharing
+  // (docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md)
+  // ended that: a member of a group the owner shared the line into now
+  // gets a `200` here too, with the same full detail. Ownership is
+  // therefore read from the response's own `isOwner` flag below, and that
+  // -- not "the fetch succeeded" -- is what gates Edit/Delete.
   // There's deliberately no separate "please log in, this might be yours"
   // prompt here the way the tracked-train pages have (see
   // frontend/app/train/[uid]/[date]/page.tsx,
@@ -124,13 +126,16 @@ export default async function LineDetailPage({
   // (lib/api.ts) -- a rejected fetch or a 5xx arrives as a plain Error, and
   // rethrowing it here sent this page straight to app/error.tsx, blanking
   // it during exactly the backend outage this feature exists to survive.
-  // Failing closed is also the safe direction on its own terms: the only
-  // thing `isCustom` gates is the Edit/Delete pair, so "we could not
-  // confirm you own this" must never render owner controls -- the same
-  // posture the ownership reasoning above already depends on.
+  // Failing closed is also the safe direction on its own terms: both
+  // `isCustom` and `viewerOwnsLine` stay `false` when we could not confirm
+  // anything, so owner controls are never rendered on a guess.
   let isCustom = true;
+  let viewerOwnsLine = false;
+  let sharedWithGroups: LineGroupRef[] = [];
   try {
-    await getCustomLine(id);
+    const customLine = await getCustomLine(id);
+    viewerOwnsLine = customLine.isOwner;
+    sharedWithGroups = customLine.sharedWithGroups;
   } catch {
     isCustom = false;
   }
@@ -168,16 +173,17 @@ export default async function LineDetailPage({
           {definition && <LineDefinitionTooltip stations={definition.stations} operators={definition.operators} />}
         </Group>
         <Group gap="sm">
-          {/* Gated on `isCustom` alone -- no separate `isOwner` check needed
-              here. By the time this line is reached, `getCustomLine` has
-              already either thrown (so `isCustom` is `false`) or succeeded
-              for this exact caller/cookie, and its 401-collapses-into-404
-              behavior (Task 10 Step 2 / Decision 8, see the comment on the
-              `getCustomLine` call above) means the only way it can succeed
-              is for the real owner. There's no remaining path where
-              `isCustom` is `true` and the viewer isn't the owner, so
-              `isCustom` is now the whole gate. */}
-          {isCustom && (
+          {/* Gated on the response's own `isOwner`, NOT on `isCustom`.
+              Those were the same thing until custom-line group sharing
+              made a `200` from `getCustomLine` reachable for a granted
+              non-owner too (see the comment on that call above). A
+              granted member who saw Edit/Delete here would be offered
+              controls whose only possible outcome is a 404 -- on someone
+              else's private line, which also reads as "this is mine". The
+              backend refuses them regardless (`update_line`/`delete_line`
+              are owner-only and completely grant-blind); this is the
+              never-render-a-control-that-can-only-fail half. */}
+          {isCustom && viewerOwnsLine && (
             <>
               {/* Plain `<Link>` wrapping `Button`, not `component={Link}`
                   on a Mantine polymorphic prop — this page is a Server
@@ -195,6 +201,28 @@ export default async function LineDetailPage({
         </Group>
       </Group>
       {category && <Text c="dimmed">Category: {category}</Text>}
+      {/* Explains to a granted group member why they can see a line that
+          isn't theirs and has no edit controls -- without this the page
+          just silently lacks the buttons an owner would have. Deliberately
+          names no group: which of the owner's groups this line reaches the
+          viewer through is the owner's business (see
+          `CustomLineDetail.sharedWithGroups`), and the home page's "Lines
+          shared with you" section already carries the "from <group>" tag
+          for the groups this viewer is actually in. */}
+      {isCustom && !viewerOwnsLine && (
+        <Text c="dimmed">Shared with you through a group. Only its owner can edit it.</Text>
+      )}
+      {isCustom && viewerOwnsLine && sharedWithGroups.length > 0 && (
+        <Text c="dimmed">
+          Shared with:{' '}
+          {sharedWithGroups.map((group, index) => (
+            <span key={group.id}>
+              {index > 0 && ', '}
+              <Link href={`/groups/${group.id}`}>{group.name}</Link>
+            </span>
+          ))}
+        </Text>
+      )}
       <Text c="dimmed">Operators: {report.operators.join(', ')}</Text>
       <TextLink href={`/lines/${id}/history`} underline="always">
         View history

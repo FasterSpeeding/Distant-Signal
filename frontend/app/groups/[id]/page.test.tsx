@@ -1,26 +1,44 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import GroupDetailPage from './page';
 import {
   getGroup,
+  getGroupCustomLines,
   getGroupMembers,
   getGroupTrains,
+  getLineStatus,
   getSession,
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from '@/lib/api';
-import type { GroupMember, GroupRole, GroupTrain } from '@/lib/types';
+import type {
+  GroupCustomLine,
+  GroupMember,
+  GroupRole,
+  GroupTrain,
+  LineStatusReport,
+} from '@/lib/types';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
   return {
     ...actual,
     getGroup: vi.fn(),
+    getGroupCustomLines: vi.fn(),
     getGroupMembers: vi.fn(),
     getGroupTrains: vi.fn(),
+    getLineStatus: vi.fn(),
     getSession: vi.fn(),
   };
+});
+
+// Every test that gets past the group fetch renders the shared-custom-lines
+// section, so both of its calls need a default; individual tests below
+// override what they care about.
+beforeEach(() => {
+  vi.mocked(getGroupCustomLines).mockResolvedValue([]);
+  vi.mocked(getLineStatus).mockResolvedValue([]);
 });
 
 vi.mock('next/navigation', () => ({
@@ -375,6 +393,122 @@ describe('GroupDetailPage', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
       await waitFor(() => screen.getByText(/lose access to every train shared/));
       expect(screen.queryByText(/delete it for good/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('shared custom lines', () => {
+    const SHARER = 'user-sharer';
+
+    function line(overrides: Partial<GroupCustomLine> = {}): GroupCustomLine {
+      return {
+        lineId: 'custom-my-commute',
+        lineName: 'My Commute',
+        grantedBy: SHARER,
+        grantedByName: 'Sam',
+        grantedByTag: null,
+        ...overrides,
+      };
+    }
+
+    function report(): LineStatusReport {
+      return {
+        $type: 'DistantSignal.LineStatusReport',
+        id: 'custom-my-commute',
+        name: 'My Commute',
+        modeName: 'national-rail',
+        operators: ['SW'],
+        computedAt: '2026-09-15T09:00:00Z',
+        lineStatuses: [
+          {
+            statusSeverity: 6,
+            statusSeverityDescription: 'Severe Delays',
+            reason: 'signalling',
+            sampleAvailability: { state: 'no-coverage' },
+          } as never,
+        ],
+      };
+    }
+
+    async function renderAsViewer(viewerId: string, role: GroupRole) {
+      vi.mocked(getGroup).mockResolvedValue({
+        id: 'grp-1',
+        name: 'Family',
+        ownerId: 'user-owner',
+        ownerName: 'Alex',
+        ownerTag: null,
+        memberCount: 3,
+        role,
+        inviteLink: null,
+      });
+      vi.mocked(getGroupMembers).mockResolvedValue([]);
+      vi.mocked(getGroupTrains).mockResolvedValue([]);
+      vi.mocked(getSession).mockResolvedValue({
+        authenticated: true,
+        id: viewerId,
+        email: null,
+        name: null,
+      });
+      renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
+    }
+
+    it('renders an empty state when nothing has been shared', async () => {
+      await renderAsViewer('user-owner', 'owner');
+      expect(
+        screen.getByText('No custom lines have been shared into this group yet.'),
+      ).toBeInTheDocument();
+    });
+
+    it('renders a shared line with its attribution, status badge and link out', async () => {
+      vi.mocked(getGroupCustomLines).mockResolvedValue([line()]);
+      vi.mocked(getLineStatus).mockResolvedValue([report()]);
+      await renderAsViewer('user-other', 'member');
+
+      expect(screen.getByRole('heading', { name: 'Shared custom lines' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'My Commute' })).toHaveAttribute(
+        'href',
+        '/lines/custom-my-commute',
+      );
+      expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
+      expect(screen.getByText('Severe Delays')).toBeInTheDocument();
+    });
+
+    it('still renders the row when no status has been computed for the line yet', async () => {
+      vi.mocked(getGroupCustomLines).mockResolvedValue([line()]);
+      vi.mocked(getLineStatus).mockRejectedValue(new ApiNotFoundError('no matching line(s)'));
+      await renderAsViewer('user-other', 'member');
+
+      expect(screen.getByRole('link', { name: 'My Commute' })).toBeInTheDocument();
+    });
+
+    it('a plain member who did not share it sees no "Stop sharing" control', async () => {
+      vi.mocked(getGroupCustomLines).mockResolvedValue([line()]);
+      await renderAsViewer('user-bystander', 'member');
+
+      expect(screen.queryByRole('button', { name: 'Stop sharing' })).not.toBeInTheDocument();
+    });
+
+    it('the member who shared it DOES see "Stop sharing", even as a plain member', async () => {
+      vi.mocked(getGroupCustomLines).mockResolvedValue([line()]);
+      await renderAsViewer(SHARER, 'member');
+
+      expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeInTheDocument();
+    });
+
+    it('an admin sees "Stop sharing" on someone else\'s shared line', async () => {
+      vi.mocked(getGroupCustomLines).mockResolvedValue([line()]);
+      await renderAsViewer('user-admin', 'admin');
+
+      expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeInTheDocument();
+    });
+
+    it('never offers an Edit or Delete control for a line the viewer does not own', async () => {
+      // A grant is read-only: not even a group owner can edit or delete a
+      // member's custom line, and this page must never suggest otherwise.
+      vi.mocked(getGroupCustomLines).mockResolvedValue([line()]);
+      await renderAsViewer('user-owner', 'owner');
+
+      expect(screen.queryByRole('button', { name: /^Edit/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Delete line/i })).not.toBeInTheDocument();
     });
   });
 });

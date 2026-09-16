@@ -77,6 +77,16 @@ pub fn router() -> Router {
             "/groups/shared-trains",
             axum::routing::get(list_shared_trains_route),
         )
+        // A third literal segment at `/groups/{id}`'s dynamic position,
+        // resolved ahead of it by the same matchit precedence the two
+        // above already rely on (and which
+        // `tests::shared_custom_lines_literal_route_wins_over_same_position_dynamic_id_route`
+        // pins). Group ids are 32 random base64url bytes, so no real group
+        // can ever be shadowed by this path.
+        .route(
+            "/groups/shared-custom-lines",
+            axum::routing::get(list_shared_custom_lines_route),
+        )
         .route(
             "/groups/{id}/trains",
             axum::routing::get(list_group_trains_route).post(add_group_train),
@@ -84,6 +94,22 @@ pub fn router() -> Router {
         .route(
             "/groups/{id}/trains/{train_subscription_id}",
             axum::routing::delete(remove_group_train),
+        )
+        // Custom-line group grants. A distinct `.../lines/custom` sub-path
+        // rather than a bare `.../lines`: a future `group_lines`
+        // (catalogue/TfL sharing, designed but not built) has genuinely
+        // different add-permission semantics -- "any member, any known
+        // public line" versus "the line's own owner, only" -- and keeping
+        // each handler answering exactly one unambiguous question is worth
+        // more than a shorter path. See
+        // docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md §3.3.
+        .route(
+            "/groups/{id}/lines/custom",
+            axum::routing::get(list_group_custom_lines_route).post(add_custom_line_grant),
+        )
+        .route(
+            "/groups/{id}/lines/custom/{line_id}",
+            axum::routing::delete(remove_custom_line_grant_route),
         )
 }
 
@@ -559,6 +585,136 @@ async fn remove_group_train(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ---------------------------------------------------------------------------
+// Custom-line group grants. See
+// docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md.
+// ---------------------------------------------------------------------------
+
+/// `GET /groups/{id}/lines/custom` -- every custom line granted into this
+/// group. Any current member may see the list (design §3.3); mere
+/// membership is the whole permission model, so `require_member` is the
+/// entire gate, exactly as for `list_group_trains_route`.
+async fn list_group_custom_lines_route(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(group_id): Path<String>,
+) -> Result<Json<Vec<groups::GroupCustomLine>>, (StatusCode, String)> {
+    require_member(&app, &group_id, &user.id).await?;
+
+    let lines = groups::list_group_custom_lines(&app.database, &group_id)
+        .await
+        .map_err(internal_error("list group custom lines"))?;
+    Ok(Json(lines))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddCustomLineGrantRequest {
+    line_id: String,
+}
+
+/// `POST /groups/{id}/lines/custom` -- share one of the caller's OWN
+/// custom lines into this group.
+///
+/// Two independent gates, in this order: the caller must be a current
+/// member (`require_member`, `404` otherwise -- a non-member has no
+/// legitimate claim to know the group exists), and they must OWN the line
+/// (`groups::grant_custom_line`'s own `WHERE id = $1 AND user_id = $2`).
+/// The second is deliberately not relaxed for an `admin`/`owner` of the
+/// group: a group's management structure has no standing over a member's
+/// private custom line, and letting it decide that line's visibility would
+/// be the first ownership exception this resource has ever had (design
+/// §2.3).
+///
+/// "No such line" and "exists, but isn't yours" are the same `404` with
+/// `get_line`'s own message, never `403` and never `400` -- an outside
+/// caller must not be able to tell the two apart here any more than they
+/// can at `GET /public/lines/{id}`.
+async fn add_custom_line_grant(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(group_id): Path<String>,
+    Json(req): Json<AddCustomLineGrantRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    require_member(&app, &group_id, &user.id).await?;
+
+    let granted = groups::grant_custom_line(&app.database, &group_id, &req.line_id, &user.id)
+        .await
+        .map_err(internal_error("grant custom line to group"))?;
+    if !granted {
+        return Err((StatusCode::NOT_FOUND, "custom line not found".to_string()));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /groups/{id}/lines/custom/{lineId}` -- revoke a grant. The
+/// member who granted it, or any `admin`/`owner` of the group (design
+/// §2.4, the same sharer-or-manager rule `remove_group_train` uses).
+///
+/// This is the ONE route in this file that deliberately does not call
+/// `require_member`, and the reason is design §2.7: a grant deliberately
+/// SURVIVES its granter leaving the group, and that decision is only
+/// defensible because the departed owner keeps the ability to revoke it
+/// themselves. `require_member` would `404` them and quietly strip that
+/// ability away, leaving a line shared into a group its owner can no
+/// longer reach. So: resolve the caller's role as an `Option`, treat "not
+/// a member" as simply "not a manager", and let
+/// `remove_custom_line_grant`'s own `granted_by = $3` branch be the gate.
+///
+/// This leaks nothing. A caller who is neither a manager of the group nor
+/// the granter deletes zero rows and gets `404 "no shared custom line with
+/// that id"` -- identical to what a member targeting an unknown grant
+/// gets, and identical to what a total stranger guessing a group id gets.
+async fn remove_custom_line_grant_route(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path((group_id, line_id)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let role = groups::get_member_role(&app.database, &group_id, &user.id)
+        .await
+        .map_err(internal_error("check group membership"))?;
+
+    let removed = groups::remove_custom_line_grant(
+        &app.database,
+        &group_id,
+        &line_id,
+        &user.id,
+        role.is_some_and(GroupRole::can_manage),
+    )
+    .await
+    .map_err(internal_error("remove custom line grant"))?;
+    if !removed {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no shared custom line with that id".to_string(),
+        ));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /groups/shared-custom-lines` -- every custom line OTHER members
+/// have granted into any group the caller belongs to, minus the caller's
+/// own lines, each tagged with the group it came from and who shared it.
+/// Feeds the home page's "Lines shared with you" section.
+///
+/// No group id in the path and so no `require_member` gate, for exactly
+/// the reason `list_shared_trains_route` has none: the caller's own
+/// membership rows ARE the scope of
+/// `groups::list_shared_custom_lines_for_user`'s query, so a non-member
+/// simply gets nothing rather than a `404`. Membership in zero groups and
+/// membership in groups with nothing shared into them are both an empty
+/// array -- the same "no signal about groups you can't see" posture the
+/// rest of this file keeps.
+async fn list_shared_custom_lines_route(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+) -> Result<Json<Vec<groups::SharedCustomLine>>, (StatusCode, String)> {
+    let lines = groups::list_shared_custom_lines_for_user(&app.database, &user.id)
+        .await
+        .map_err(internal_error("list shared custom lines"))?;
+    Ok(Json(lines))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -632,6 +788,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(&body[..], b"shared");
+    }
+
+    /// The same precedence check for `/groups/shared-custom-lines`, the
+    /// third literal segment this file registers at `/groups/{id}`'s
+    /// dynamic position. Same hand-rolled two-route shape as its two
+    /// siblings above, for the same reason.
+    #[tokio::test]
+    async fn shared_custom_lines_literal_route_wins_over_same_position_dynamic_id_route() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = axum::Router::new()
+            .route(
+                "/groups/shared-custom-lines",
+                axum::routing::get(|| async { "shared-lines" }),
+            )
+            .route("/groups/{id}", axum::routing::get(|| async { "dynamic" }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/groups/shared-custom-lines")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"shared-lines");
     }
 }
 
@@ -1181,6 +1371,375 @@ mod db_tests {
             &[
                 "TEST-ROUTE-GROUPS-SHARED-SHARER",
                 "TEST-ROUTE-GROUPS-SHARED-VIEWER",
+            ],
+        )
+        .await;
+    }
+
+    // ------------------------------------------------------------------
+    // Custom-line group grants. The permission questions below are ones a
+    // data-layer test cannot answer, because they are about which callers
+    // the HANDLER lets reach the query at all.
+    // ------------------------------------------------------------------
+
+    /// Seeds one custom line owned by `user_id` through the real write
+    /// path, so the row is exactly what `POST /public/lines` produces.
+    async fn seed_custom_line(pool: &PgPool, user_id: &str, name: &str) -> String {
+        crate::data::custom_lines::insert_custom_line(
+            pool,
+            crate::data::custom_lines::NewCustomLine {
+                name: name.to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            user_id,
+        )
+        .await
+        .expect("seed a custom line")
+        .id
+    }
+
+    async fn count_grants(pool: &PgPool, group_id: &str) -> i64 {
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM custom_line_group_grants WHERE group_id = $1")
+                .bind(group_id)
+                .fetch_one(pool)
+                .await
+                .expect("count grants");
+        row.0
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                add_custom_line_grant_refuses_a_line_the_caller_does_not_own -- --ignored \
+                --test-threads=1`"]
+    async fn add_custom_line_grant_refuses_a_line_the_caller_does_not_own() {
+        // The group's OWNER -- maximally privileged inside the group --
+        // attempting to share a plain member's private line. 404, and no
+        // row written: a group's management structure has no standing over
+        // a member's custom line (design §2.3).
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-GRANT-GOWNER-1").await;
+        seed_session(&pool, "TEST-ROUTE-GRANT-MEMBER-1").await;
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Route Grant Test 1",
+            "TEST-ROUTE-GRANT-GOWNER-1",
+        )
+        .await
+        .expect("create fixture group");
+        seed_membership(&pool, &group_id, "TEST-ROUTE-GRANT-MEMBER-1", "member").await;
+        let line_id = seed_custom_line(&pool, "TEST-ROUTE-GRANT-MEMBER-1", "Route Grant 1").await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = post_json(
+            router,
+            format!("/groups/{group_id}/lines/custom"),
+            Some(&owner_token),
+            Some(serde_json::json!({ "lineId": line_id })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body,
+            Value::String("custom line not found".to_string()),
+            "the same message GET /public/lines/{{id}} uses, so 'no such line' and \
+             'exists, not yours' stay indistinguishable"
+        );
+        assert_eq!(count_grants(&pool, &group_id).await, 0);
+
+        cleanup(
+            &pool,
+            &group_id,
+            &["TEST-ROUTE-GRANT-GOWNER-1", "TEST-ROUTE-GRANT-MEMBER-1"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                add_custom_line_grant_refuses_a_caller_who_is_not_a_member -- --ignored \
+                --test-threads=1`"]
+    async fn add_custom_line_grant_refuses_a_caller_who_is_not_a_member() {
+        // Owning the line is not enough -- you have to be in the group.
+        let pool = connect().await;
+        seed_session(&pool, "TEST-ROUTE-GRANT-GOWNER-2").await;
+        let outsider_token = seed_session(&pool, "TEST-ROUTE-GRANT-OUTSIDER-2").await;
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Route Grant Test 2",
+            "TEST-ROUTE-GRANT-GOWNER-2",
+        )
+        .await
+        .expect("create fixture group");
+        let line_id = seed_custom_line(&pool, "TEST-ROUTE-GRANT-OUTSIDER-2", "Route Grant 2").await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = post_json(
+            router,
+            format!("/groups/{group_id}/lines/custom"),
+            Some(&outsider_token),
+            Some(serde_json::json!({ "lineId": line_id })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("no group with that id".to_string()));
+        assert_eq!(count_grants(&pool, &group_id).await, 0);
+
+        cleanup(
+            &pool,
+            &group_id,
+            &["TEST-ROUTE-GRANT-GOWNER-2", "TEST-ROUTE-GRANT-OUTSIDER-2"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_custom_line_grant_route_gates_on_sharer_or_manager -- --ignored \
+                --test-threads=1`"]
+    async fn remove_custom_line_grant_route_gates_on_sharer_or_manager() {
+        let pool = connect().await;
+        seed_session(&pool, "TEST-ROUTE-GRANT-RM-GOWNER").await;
+        let sharer_token = seed_session(&pool, "TEST-ROUTE-GRANT-RM-SHARER").await;
+        let bystander_token = seed_session(&pool, "TEST-ROUTE-GRANT-RM-BYSTANDER").await;
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Route Grant Remove",
+            "TEST-ROUTE-GRANT-RM-GOWNER",
+        )
+        .await
+        .expect("create fixture group");
+        for member in [
+            "TEST-ROUTE-GRANT-RM-SHARER",
+            "TEST-ROUTE-GRANT-RM-BYSTANDER",
+        ] {
+            seed_membership(&pool, &group_id, member, "member").await;
+        }
+        let line_id = seed_custom_line(&pool, "TEST-ROUTE-GRANT-RM-SHARER", "Route Grant RM").await;
+        crate::data::groups::grant_custom_line(
+            &pool,
+            &group_id,
+            &line_id,
+            "TEST-ROUTE-GRANT-RM-SHARER",
+        )
+        .await
+        .expect("seed fixture grant");
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, _) = delete_request(
+            router.clone(),
+            format!("/groups/{group_id}/lines/custom/{line_id}"),
+            Some(&bystander_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            count_grants(&pool, &group_id).await,
+            1,
+            "the refused revoke must not have taken effect"
+        );
+
+        let (status, _) = delete_request(
+            router,
+            format!("/groups/{group_id}/lines/custom/{line_id}"),
+            Some(&sharer_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(count_grants(&pool, &group_id).await, 0);
+
+        cleanup(
+            &pool,
+            &group_id,
+            &[
+                "TEST-ROUTE-GRANT-RM-GOWNER",
+                "TEST-ROUTE-GRANT-RM-SHARER",
+                "TEST-ROUTE-GRANT-RM-BYSTANDER",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_custom_line_grant_route_still_works_for_a_granter_who_left_the_group \
+                -- --ignored --test-threads=1`"]
+    async fn remove_custom_line_grant_route_still_works_for_a_granter_who_left_the_group() {
+        // The HTTP-level proof of design §2.7's load-bearing claim: the
+        // grant survives its granter leaving, and that is only acceptable
+        // because the granter can still revoke it afterwards. A
+        // `require_member` gate on this route would silently break exactly
+        // that -- which is why this handler deliberately has none.
+        let pool = connect().await;
+        seed_session(&pool, "TEST-ROUTE-GRANT-LEFT-GOWNER").await;
+        let sharer_token = seed_session(&pool, "TEST-ROUTE-GRANT-LEFT-SHARER").await;
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Route Grant Left",
+            "TEST-ROUTE-GRANT-LEFT-GOWNER",
+        )
+        .await
+        .expect("create fixture group");
+        seed_membership(&pool, &group_id, "TEST-ROUTE-GRANT-LEFT-SHARER", "member").await;
+        let line_id =
+            seed_custom_line(&pool, "TEST-ROUTE-GRANT-LEFT-SHARER", "Route Grant Left").await;
+        crate::data::groups::grant_custom_line(
+            &pool,
+            &group_id,
+            &line_id,
+            "TEST-ROUTE-GRANT-LEFT-SHARER",
+        )
+        .await
+        .expect("seed fixture grant");
+
+        crate::data::groups::remove_member(&pool, &group_id, "TEST-ROUTE-GRANT-LEFT-SHARER")
+            .await
+            .expect("the sharer leaves the group");
+        assert_eq!(
+            count_grants(&pool, &group_id).await,
+            1,
+            "precondition (§2.7): the grant survives the granter leaving"
+        );
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, _) = delete_request(
+            router,
+            format!("/groups/{group_id}/lines/custom/{line_id}"),
+            Some(&sharer_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(count_grants(&pool, &group_id).await, 0);
+
+        cleanup(
+            &pool,
+            &group_id,
+            &[
+                "TEST-ROUTE-GRANT-LEFT-GOWNER",
+                "TEST-ROUTE-GRANT-LEFT-SHARER",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                custom_line_grant_list_routes_are_member_scoped -- --ignored --test-threads=1`"]
+    async fn custom_line_grant_list_routes_are_member_scoped() {
+        let pool = connect().await;
+        let sharer_token = seed_session(&pool, "TEST-ROUTE-GRANT-LIST-SHARER").await;
+        let viewer_token = seed_session(&pool, "TEST-ROUTE-GRANT-LIST-VIEWER").await;
+        let stranger_token = seed_session(&pool, "TEST-ROUTE-GRANT-LIST-STRANGER").await;
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Route Grant List",
+            "TEST-ROUTE-GRANT-LIST-SHARER",
+        )
+        .await
+        .expect("create fixture group");
+        seed_membership(&pool, &group_id, "TEST-ROUTE-GRANT-LIST-VIEWER", "member").await;
+        let line_id =
+            seed_custom_line(&pool, "TEST-ROUTE-GRANT-LIST-SHARER", "Route Grant List").await;
+        crate::data::groups::grant_custom_line(
+            &pool,
+            &group_id,
+            &line_id,
+            "TEST-ROUTE-GRANT-LIST-SHARER",
+        )
+        .await
+        .expect("seed fixture grant");
+
+        let router = test_router(test_app(pool.clone()));
+
+        // A member sees the group's granted lines.
+        let (status, body) = request(
+            router.clone(),
+            format!("/groups/{group_id}/lines/custom"),
+            Some(&viewer_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = body.as_array().expect("an array");
+        assert_eq!(rows.len(), 1, "got {body:?}");
+        assert_eq!(
+            rows[0].get("lineId").and_then(Value::as_str),
+            Some(line_id.as_str())
+        );
+        assert_eq!(
+            rows[0].get("grantedByName").and_then(Value::as_str),
+            Some("TEST-ROUTE-GRANT-LIST-SHARER")
+        );
+
+        // A non-member gets the group's usual 404, not an empty list.
+        let (status, _) = request(
+            router.clone(),
+            format!("/groups/{group_id}/lines/custom"),
+            Some(&stranger_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // The caller-scoped list: the viewer gets the shared line tagged
+        // with its group; the sharer does NOT get their own line back;
+        // the stranger gets nothing; an anonymous caller gets 401.
+        let (status, body) = request(
+            router.clone(),
+            "/groups/shared-custom-lines".to_string(),
+            Some(&viewer_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = body.as_array().expect("an array");
+        assert_eq!(rows.len(), 1, "got {body:?}");
+        assert_eq!(
+            rows[0].get("groupName").and_then(Value::as_str),
+            Some("Route Grant List")
+        );
+        assert_eq!(
+            rows[0].get("lineName").and_then(Value::as_str),
+            Some("Route Grant List")
+        );
+
+        let (_, body) = request(
+            router.clone(),
+            "/groups/shared-custom-lines".to_string(),
+            Some(&sharer_token),
+        )
+        .await;
+        assert_eq!(
+            body.as_array().map(Vec::len),
+            Some(0),
+            "a caller's own custom line must never come back as a shared one: {body:?}"
+        );
+
+        let (_, body) = request(
+            router.clone(),
+            "/groups/shared-custom-lines".to_string(),
+            Some(&stranger_token),
+        )
+        .await;
+        assert_eq!(body.as_array().map(Vec::len), Some(0), "got {body:?}");
+
+        let (status, _) = request(router, "/groups/shared-custom-lines".to_string(), None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        cleanup(
+            &pool,
+            &group_id,
+            &[
+                "TEST-ROUTE-GRANT-LIST-SHARER",
+                "TEST-ROUTE-GRANT-LIST-VIEWER",
+                "TEST-ROUTE-GRANT-LIST-STRANGER",
             ],
         )
         .await;
