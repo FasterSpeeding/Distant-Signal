@@ -1,0 +1,101 @@
+import { describe, it, expect, vi } from 'vitest';
+import { screen } from '@testing-library/react';
+import { renderWithMantine } from '@/test/render';
+import TrackPage, { metadata } from './page';
+// Namespace import alongside the named one purely so the "no
+// generateMetadata export" case below can test the module's shape -- same
+// pattern app/trains/page.test.tsx uses for the same reason.
+import * as pageModule from './page';
+
+// The page mounts TrackTrainForm, a client component that calls
+// useRouter() at the top of its body -- same stub app/trains/page.test.tsx
+// and app/stations/page.test.tsx install for their own forms.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn() }),
+  usePathname: () => '/track',
+  useSearchParams: () => new URLSearchParams(''),
+}));
+
+// TrackTrainForm's departures picker fires a real fetch as soon as its
+// origin field holds a valid CRS, and its useSuggestions hooks fetch for
+// any non-empty query. Nothing here is pre-filled, but an inert 200 keeps
+// this file independent of network behaviour either way.
+vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+
+describe('TrackPage', () => {
+  it('renders the heading, the default subtitle and the tracking form', async () => {
+    renderWithMantine(await TrackPage({ searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByRole('heading', { name: 'Track a Train', level: 1 })).toBeInTheDocument();
+    expect(screen.getByText(/Pin a specific train to see its live position/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
+  });
+
+  it('swaps in the ticket-specific subtitle for a valid ?ticketId=', async () => {
+    renderWithMantine(await TrackPage({ searchParams: Promise.resolve({ ticketId: '42' }) }));
+
+    expect(screen.getByText(/Find or track the train your saved ticket is for/)).toBeInTheDocument();
+  });
+});
+
+describe('metadata', () => {
+  it('titles the page after its own heading, suffixed with the site name', () => {
+    expect(metadata.title).toBe('Track a Train — Distant Signal');
+  });
+
+  it('describes pinning one train rather than inheriting the generic site description', () => {
+    expect(metadata.description).toBe(
+      'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it.',
+    );
+  });
+
+  it("doesn't call the picker's departures live, since it falls back to the scheduled timetable", () => {
+    // TrackTrainForm's CIF branch says outright that it is "showing the
+    // scheduled timetable instead — this is not live running information
+    // and may be up to 30 minutes out of date" for any station LDBWS has
+    // no board for, so "the live departure board" would be a promise the
+    // page can't always keep. "live position" (the pin itself, which IS
+    // live) is a different claim and deliberately kept.
+    expect(metadata.description).toMatch(/upcoming departures/);
+    expect(metadata.description).not.toMatch(/live departure/i);
+  });
+
+  it('mirrors the same title and description into openGraph and twitter', () => {
+    // See the equivalent case in app/incidents/page.test.tsx for why the
+    // mirror is asserted against literals rather than against
+    // `metadata.title`/`.description`.
+    expect(metadata.openGraph).toMatchObject({
+      title: 'Track a Train — Distant Signal',
+      description:
+        'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it.',
+      type: 'website',
+    });
+    expect(metadata.twitter).toMatchObject({
+      card: 'summary',
+      title: 'Track a Train — Distant Signal',
+      description:
+        'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it.',
+    });
+  });
+
+  it('stays static, so a per-visitor ?ticketId=/?origin= can never reach a shared preview card', () => {
+    // The subtitle's copy DOES vary with `attachTicketId` (covered above);
+    // the metadata deliberately does not. Next hands `generateMetadata`
+    // the same `searchParams` this page component gets, so adding one here
+    // would put one visitor's saved ticket -- or the station they happened
+    // to arrive from -- within reach of a cached, shared unfurl. Asserted
+    // as "this module exports no generateMetadata at all" --
+    // `typeof metadata === 'object'` would NOT catch it, since Next's
+    // function form is a separate, differently-named export that can sit
+    // alongside this one.
+    expect('generateMetadata' in pageModule).toBe(false);
+  });
+
+  it('says nothing about tickets, the one searchParam with a page-visible branch', () => {
+    // Belt-and-braces alongside the structural check above: even a future
+    // hand-written static description must not describe the
+    // `?ticketId=`-only flow, since an unfurler bot never carries that
+    // param and would be previewing a page state it cannot reach.
+    expect(JSON.stringify(metadata)).not.toMatch(/ticket/i);
+  });
+});

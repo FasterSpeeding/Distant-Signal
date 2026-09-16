@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import GroupsPage from './page';
+import GroupsPage, { metadata } from './page';
 import { getMyGroups } from '@/lib/api';
 
 vi.mock('@/lib/api', () => ({
@@ -42,5 +42,52 @@ describe('GroupsPage', () => {
     ]);
     renderWithMantine(await GroupsPage());
     expect(screen.getByText('1 member')).toBeInTheDocument();
+  });
+});
+
+describe('metadata', () => {
+  it('titles the page after its own heading, suffixed with the site name', () => {
+    expect(metadata.title).toBe('Groups — Distant Signal');
+  });
+
+  it('explains what a group is rather than inheriting the generic site description', () => {
+    expect(metadata.description).toBe(
+      'Groups are how tracked trains and custom lines get shared with other people. Log in to see the ones you belong to — each with its member count and your role in it — or create a group and invite people to it.',
+    );
+  });
+
+  it('hedges the listing behind logging in, which is the only branch a bot can render', () => {
+    // `getMyGroups()` returns null on a 401 and this page then shows only
+    // "Log in to see your groups." -- and no link-unfurler bot carries a
+    // session cookie, so that IS the page they preview. Describing "your
+    // groups, listed" flatly would promise a list the link's recipient
+    // will not find.
+    expect(metadata.description).toMatch(/Log in to see/);
+  });
+
+  it('names both kinds of thing a group shares, not just trains', () => {
+    // The empty state on this page mentions only tracked trains, but
+    // app/groups/[id]/page.tsx renders a shared-trains section AND a
+    // "Shared custom lines" one (getGroupTrains/getGroupCustomLines), so
+    // the preview card describes both.
+    expect(metadata.description).toMatch(/tracked trains and custom lines/);
+  });
+
+  it('mirrors the same title and description into openGraph and twitter', () => {
+    // See the equivalent case in app/incidents/page.test.tsx for why the
+    // mirror is asserted against literals rather than against
+    // `metadata.title`/`.description`.
+    expect(metadata.openGraph).toMatchObject({
+      title: 'Groups — Distant Signal',
+      description:
+        'Groups are how tracked trains and custom lines get shared with other people. Log in to see the ones you belong to — each with its member count and your role in it — or create a group and invite people to it.',
+      type: 'website',
+    });
+    expect(metadata.twitter).toMatchObject({
+      card: 'summary',
+      title: 'Groups — Distant Signal',
+      description:
+        'Groups are how tracked trains and custom lines get shared with other people. Log in to see the ones you belong to — each with its member count and your role in it — or create a group and invite people to it.',
+    });
   });
 });
