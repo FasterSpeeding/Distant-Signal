@@ -395,10 +395,34 @@ no `source` awareness and needs none — `tfl-victoria` is just a `line_id`.
 `frontend/app/lines/[id]/history/` is likewise id-agnostic.
 
 **Verified against the live deployment (https://ds.cursed.solutions,
-2026-09-16), not only by reading the code:** `/lines/tfl-victoria` returns
-`200` and renders the line's current TfL disruption text ("Minor Delays"),
-and `/lines/tfl-victoria/history` returns `200` with both its Timeline and
-Trends tabs. `/tfl-lines/victoria` returns `404`, confirming §2e.
+2026-09-16) in a real browser, not only by reading the code or fetching
+HTML:** `/lines/tfl-victoria` renders the line's current TfL disruption
+("Minor Delays"), and `/lines/tfl-victoria/history` renders a populated
+seven-day Timeline, headed *"229 status recomputes across 21 incidents,
+newest first"*, with entries such as:
+
+> **16 Sept 2026** — Part Suspended · "Victoria Line: No service Seven
+> Sisters to Walthamstow Central while emergency services deal with a
+> casualty on the track. SEVERE delays on the rest of the line…"
+> 11:08–12:08 *(severity changed 24 times)*
+
+`/tfl-lines/victoria` returns `404`, confirming §2e.
+
+Three things in that output matter beyond "the page works":
+
+- The rendering is **already disruption-shaped to the eye** — day-grouped,
+  severity-badged, with the full TfL prose and a time range per entry — even
+  though the underlying rows are snapshots. The existing UI even calls them
+  "incidents" in its own header copy.
+- It already **collapses churn**: "(severity changed 24 times)" is one
+  rendered entry standing in for 24 underlying `line_status_history` rows.
+  That is the read-side mitigation
+  `docs/superpowers/specs/2026-09-02-line-history-list-spamminess-research.md`
+  discussed, already built and already applied to TfL rows.
+- The seven-day window is **visibly full**, not sparse: 229 recomputes for
+  one tube line in a week.
+
+So the honest statement of the gap is narrower than "TfL has no disruption
 
 So the honest statement of the gap is narrower than "TfL has no disruption
 history in this app". TfL disruption history exists, is persisted, is
@@ -734,15 +758,23 @@ Its real costs, which are not zero:
   raising the depth means raising `history_retention_days` for every line,
   National Rail included, on a table written every aggregation cycle for
   109+ lines. That is a storage decision with blast radius well beyond TfL.
-- **The spamminess problem, at network scale.**
+- **Volume, and the spamminess problem at network scale.** One tube line
+  produced 229 status recomputes in seven days (§2d-bis). Across the tube,
+  DLR and tram that is plausibly thousands of rows a week before National
+  Rail lines are counted, and
   `docs/superpowers/specs/2026-09-02-line-history-list-spamminess-research.md`
-  diagnosed the *per-line* version of exactly this list as unhelpfully
-  noisy, with unnormalized reason text defeating both the write-side
-  change guard and the read-side day-collapsing. A cross-network version is
-  that same list multiplied by every line at once. The incident archive
-  could set that concern aside because `incidents` is one row per real
-  incident; `line_status_history` has no such guarantee, and this is the
-  objection Option D has to answer before it is worth building.
+  diagnosed the *per-line* version of this list as unhelpfully noisy. The
+  incident archive could set that concern aside because `incidents` is one
+  row per real incident; `line_status_history` has no such guarantee.
+
+  **Partly already answered, though, which is why this is a cost and not a
+  blocker:** the existing Timeline rendering already collapses churn —
+  §2d-bis observed one entry standing in for 24 underlying rows — so a
+  cross-line view would inherit a working mitigation rather than needing a
+  new one. What it would *not* inherit is any guarantee that the collapse
+  holds up once entries from 15+ lines interleave, since the existing
+  grouping is per-line-per-day by construction. That is the specific thing
+  to test, and it is narrower than "is this feature viable".
 
 Option D is snapshot-shaped, not disruption-shaped: it can answer "what
 were TfL's lines reporting on Tuesday afternoon" but not "show me that
@@ -789,12 +821,12 @@ than a prerequisite for anything (§2e).
 not Option B — but answer one question first.** Option D reads
 `line_status_history` as it already exists: one index, no new table, no
 synthetic identity, rows linking to pages that already work. Its blocker is
-not feasibility but value, and specifically the spamminess research's
-finding applied at network scale (§5 Option D). **The question to answer
-before building it is: does a cross-network list of raw status snapshots
-read as useful or as noise?** That is answerable by looking at
-`/lines/{id}/history`'s existing Timeline tab for a few TfL lines and
-imagining it unfiltered — cheaper than any prototype.
+not feasibility but value, and specifically volume: 229 status recomputes
+for one tube line in one week (§2d-bis). **The question to answer before
+building it is whether the existing Timeline's churn-collapsing still reads
+as useful once 15+ lines interleave**, since that collapsing is per-line
+per-day by construction. Looking at `/lines/{id}/history` for a few TfL
+lines side by side answers it more cheaply than a prototype.
 
 **Do not build Option A (TfL rows inside `incidents`) at all**, and treat
 Option B (a parallel `tfl_disruptions` table with synthetic identity) as
@@ -959,6 +991,8 @@ task list for now.
   would change it, rather than forced into a "yes".
 - Claims about live behavior are marked as such and were actually checked
   against https://ds.cursed.solutions on 2026-09-16 (§1b, §1c, §2d-bis,
-  §2e), not inferred from the code alone. Claims that remain unmeasured —
-  row counts, the deployment's real `history_retention_days` — are named in
-  §9 rather than quietly assumed.
+  §2e) — the API assertions by querying `/api/incidents` directly, and
+  §2d-bis by rendering `/lines/tfl-victoria/history` in a real browser
+  rather than trusting the served HTML. Claims that remain unmeasured —
+  total row counts, the deployment's real `history_retention_days` — are
+  named in §9 rather than quietly assumed.
