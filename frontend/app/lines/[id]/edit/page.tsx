@@ -20,6 +20,20 @@ export default async function EditCustomLinePage({
     throw err;
   }
 
+  // A `200` from `getCustomLine` stopped meaning "you own this" when
+  // custom-line group sharing landed: a member of a group the owner shared
+  // the line into gets the same full detail (see
+  // docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md
+  // §3.2/§3.5). Rendering the edit form for them would be a form whose
+  // only possible outcome is a 404 from an owner-only `PUT`, on someone
+  // else's private line. The backend is still the authority
+  // (`update_custom_line` is gated purely on `user_id = caller.id` and is
+  // completely grant-blind); this makes the page agree with it, and 404s
+  // for the same reason a non-owner has always been 404'd here.
+  if (!line.isOwner) {
+    notFound();
+  }
+
   return (
     // `Center` plus a `maw` matching CustomLineForm's own `maw={480}` keeps
     // this chrome's width in lockstep with the form's, so the heading lines

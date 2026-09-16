@@ -88,6 +88,7 @@ function sharedTrain(overrides: Partial<SharedGroupTrain> = {}): SharedGroupTrai
     customName: null,
     addedBy: 'user-2',
     addedByName: 'Sam',
+    addedByTag: null,
     ...overrides,
   };
 }
@@ -468,6 +469,41 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       renderWithMantine(await MyTrackedTrainsPage());
 
       expect(screen.getByText('Shared by a member')).toBeInTheDocument();
+    });
+
+    /** Two unnameable sharers -- the Entra-ID case, where the username
+     * claim IS the user's email-shaped UPN so the backend can name nobody
+     * -- must still credit two different people, or this list says every
+     * shared train came from the same anonymous "a member". The tag is
+     * derived from the sharer's opaque id, never from their address (see
+     * `crates/api/src/data/users.rs`'s `MemberDisplay`), and matches the
+     * one their row carries in the group's own member list. */
+    it('credits two unnameable sharers distinguishably, still never an email or raw id', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+        sharedTrain({
+          trainSubscriptionId: 50,
+          addedBy: 'sso-subject-1234',
+          addedByName: null,
+          addedByTag: 'a1b2c3',
+        }),
+        sharedTrain({
+          trainSubscriptionId: 51,
+          pinOriginCrs: 'WOK',
+          pinDestinationCrs: 'WAT',
+          addedBy: 'sso-subject-5678',
+          addedByName: null,
+          addedByTag: 'd4e5f6',
+        }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText('Shared by a member (#a1b2c3)')).toBeInTheDocument();
+      expect(screen.getByText('Shared by a member (#d4e5f6)')).toBeInTheDocument();
+      expect(screen.queryByText(/sso-subject-/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/@/)).not.toBeInTheDocument();
     });
 
     it('offers no rename control on someone else’s shared train', async () => {

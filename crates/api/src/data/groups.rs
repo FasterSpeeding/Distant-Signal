@@ -160,6 +160,8 @@ pub struct GroupDetail {
     pub name: String,
     pub owner_id: String,
     pub owner_name: Option<String>,
+    /// Set only when `owner_name` is `None`; see `GroupMember.display_tag`.
+    pub owner_tag: Option<String>,
     pub member_count: i64,
     pub role: GroupRole,
 }
@@ -212,18 +214,31 @@ pub async fn get_group_detail(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|r| GroupDetail {
-        id: r.id,
-        name: r.name,
-        owner_id: r.owner_id,
+    Ok(row.map(GroupDetail::from))
+}
+
+/// A `From` impl rather than an inline closure in `get_group_detail` for
+/// the same reason `GroupMember`/`GroupTrain`/`SharedTrain` have one: the
+/// owner's label goes to every member of the group including plain ones,
+/// so it gets the identical treatment the other three do, and the only
+/// tests that can reach `get_group_detail` itself need a live database
+/// (`db_tests`, all `#[ignore]`d).
+impl From<GroupDetailRow> for GroupDetail {
+    fn from(row: GroupDetailRow) -> Self {
         // Same helper as the member list and shared-train attribution:
-        // this field also goes to every member of the group including
-        // plain ones, so it gets the identical name-else-username,
-        // never-an-email, blank-is-not-a-label treatment.
-        owner_name: users::display_label(r.owner_name, r.owner_username),
-        member_count: r.member_count,
-        role: GroupRole::from_db(&r.role),
-    }))
+        // name-else-username, never an email, a blank is not a label --
+        // and the same distinguishing tag when none of that yields one.
+        let owner = users::MemberDisplay::of(row.owner_name, row.owner_username, &row.owner_id);
+        GroupDetail {
+            id: row.id,
+            name: row.name,
+            owner_id: row.owner_id,
+            owner_name: owner.label,
+            owner_tag: owner.tag,
+            member_count: row.member_count,
+            role: GroupRole::from_db(&row.role),
+        }
+    }
 }
 
 /// `false` if no group has that id -- the route maps this to `404`.
@@ -270,27 +285,38 @@ struct GroupMemberRow {
 /// member whose IdP sent no name) leaks more than the feature needs. The
 /// fallback is their `username` instead. `None` means "neither on file",
 /// which the frontend renders as its own generic "A member" placeholder.
-/// Same rule, same helper (`users::display_label`), as
+/// Same rule, same helper (`users::MemberDisplay`), as
 /// `GroupTrain.added_by_name` one struct away.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMember {
     pub user_id: String,
     pub display_name: Option<String>,
+    /// Set when -- and only when -- `display_name` is `None`: six hex
+    /// characters the frontend appends to its own placeholder, so a group
+    /// whose IdP gives this app no showable name for anybody (Entra ID,
+    /// where `preferred_username` is the email-shaped UPN) renders "A
+    /// member (#a1b2c3)" per member instead of the same "A member" on
+    /// every single row. Derived from `user_id`, which this struct already
+    /// carries in the clear, and never from an email -- see
+    /// `users::MemberDisplay`.
+    pub display_tag: Option<String>,
     pub role: GroupRole,
     pub joined_at: DateTime<Utc>,
 }
 
 impl From<GroupMemberRow> for GroupMember {
     fn from(row: GroupMemberRow) -> Self {
+        // `users::MemberDisplay`, not a bare `row.name`: a
+        // blank-but-present name ("" -- what an IdP with no name on file
+        // for the user actually sends) is not a label, and used to render
+        // as an empty member row. See that type's own doc comment, and
+        // `display_name_collapse_tests` below.
+        let display = users::MemberDisplay::of(row.name, row.username, &row.user_id);
         GroupMember {
             user_id: row.user_id,
-            // `users::display_label`, not a bare `row.name`: a
-            // blank-but-present name ("" -- what an IdP with no name on
-            // file for the user actually sends) is not a label, and used
-            // to render as an empty member row. See that function's own
-            // doc comment, and `display_name_collapse_tests` below.
-            display_name: users::display_label(row.name, row.username),
+            display_name: display.label,
+            display_tag: display.tag,
             role: GroupRole::from_db(&row.role),
             joined_at: row.joined_at,
         }
@@ -404,6 +430,25 @@ pub async fn remove_member(
 
     // Departed-member cleanup (§2.2, decided) -- same transaction as the
     // removal below.
+    //
+    // `custom_line_group_grants` is DELIBERATELY not cleaned up here, a
+    // considered divergence from this cleanup rather than an omission --
+    // see docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md
+    // §2.7. The cleanup below exists because a shared train's underlying
+    // `train_subscriptions` row is itself private to the departing member
+    // and may vanish the moment they untrack it. Neither premise holds for
+    // a granted custom line: leaving a group changes nothing about
+    // `custom_lines.user_id` (ownership is fixed and has no transfer path
+    // at all), and the remaining members' access was granted deliberately
+    // by the owner and does not depend on the owner's continued presence.
+    // Auto-revoking here would also silently drop the grant on a
+    // leave-and-rejoin, with nothing restoring it. The owner keeps three
+    // independent ways to revoke at any time: `remove_custom_line_grant`
+    // as the granter (which, per that function and its route, works even
+    // after they leave), any current `admin`/`owner` removing it, or
+    // deleting the line outright (the FK cascades every grant everywhere).
+    // `remove_member_does_not_touch_custom_line_group_grants_even_when_the_departing_member_is_the_grantor`
+    // pins this.
     sqlx::query("DELETE FROM group_trains WHERE group_id = $1 AND added_by = $2")
         .bind(group_id)
         .bind(target_user_id)
@@ -725,10 +770,17 @@ pub struct GroupTrain {
     pub custom_name: Option<String>,
     pub added_by: String,
     pub added_by_name: Option<String>,
+    /// Set only when `added_by_name` is `None`, and appended by the
+    /// frontend to its "a member" placeholder so two sharers whose IdP
+    /// gives this app no showable name are still told apart. Same
+    /// contract, same derivation, as `GroupMember.display_tag`.
+    pub added_by_tag: Option<String>,
 }
 
 impl From<GroupTrainRow> for GroupTrain {
     fn from(row: GroupTrainRow) -> Self {
+        let added_by =
+            users::MemberDisplay::of(row.added_by_name, row.added_by_username, &row.added_by);
         GroupTrain {
             train_subscription_id: row.train_subscription_id,
             pin_origin_crs: row.pin_origin_crs,
@@ -745,12 +797,13 @@ impl From<GroupTrainRow> for GroupTrain {
             added_by: row.added_by,
             // The sharer's `users.name`, else their `users.username` --
             // never the raw internal user_id, and never their email (see
-            // `users::display_label`: attribution shown to a whole group
+            // `users::MemberDisplay`: attribution shown to a whole group
             // is not the place to reveal one member's email address).
             // Shared with the member list via that same helper so the two
             // can't drift on what counts as a usable name -- a blank one
             // doesn't; see `display_name_collapse_tests` below.
-            added_by_name: users::display_label(row.added_by_name, row.added_by_username),
+            added_by_name: added_by.label,
+            added_by_tag: added_by.tag,
         }
     }
 }
@@ -836,10 +889,14 @@ pub struct SharedTrain {
     pub custom_name: Option<String>,
     pub added_by: String,
     pub added_by_name: Option<String>,
+    /// Same contract as `GroupTrain.added_by_tag`.
+    pub added_by_tag: Option<String>,
 }
 
 impl From<SharedTrainRow> for SharedTrain {
     fn from(row: SharedTrainRow) -> Self {
+        let added_by =
+            users::MemberDisplay::of(row.added_by_name, row.added_by_username, &row.added_by);
         SharedTrain {
             group_id: row.group_id,
             group_name: row.group_name,
@@ -858,11 +915,12 @@ impl From<SharedTrainRow> for SharedTrain {
             added_by: row.added_by,
             // Same "name, else username, else nothing -- and never an
             // email" collapse `GroupTrain::from` already applies, via the
-            // same `users::display_label`; see its own comment. This shape
+            // same `users::MemberDisplay`; see its own comment. This shape
             // is strictly more exposed than `GroupTrain` (it reaches a
             // member without them opening the group at all), so it is the
             // last place that should be laxer about it.
-            added_by_name: users::display_label(row.added_by_name, row.added_by_username),
+            added_by_name: added_by.label,
+            added_by_tag: added_by.tag,
         }
     }
 }
@@ -943,6 +1001,374 @@ pub async fn list_shared_trains_for_user(pool: &PgPool, user_id: &str) -> Result
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(SharedTrain::from).collect())
+}
+
+// ---------------------------------------------------------------------------
+// Custom-line group grants (`custom_line_group_grants`). See
+// docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md and
+// docs/superpowers/plans/2026-09-15-custom-line-group-sharing.md.
+//
+// A grant conveys READ access only, and nothing in this section is ever
+// consulted by `custom_lines::update_custom_line`/`delete_custom_line` --
+// those remain gated purely on `user_id = caller.id`, exactly as before
+// this feature. The read side lives in
+// `custom_lines::readable_custom_line_ids`, not here.
+// ---------------------------------------------------------------------------
+
+/// Grants `group_id` read access to one of the CALLER'S OWN custom lines.
+///
+/// Ownership is enforced at the APPLICATION layer, the exact
+/// `WHERE id = $1 AND user_id = $2` shape [`add_train_to_group`] already
+/// uses for trains and `train_tracking.rs` uses for tickets. This is the
+/// deliberate restriction of design §2.3, worth stating plainly: a group's
+/// `admin`/`owner` has NO special standing over a custom line they don't
+/// own and cannot force a member's private line into the group's shared
+/// view. Only the line's own owner can choose to share it.
+///
+/// Returns `false` if `line_id` doesn't exist or isn't owned by `user_id`
+/// -- the route maps both, indistinguishably, to `404` with `get_line`'s
+/// own "custom line not found" message, never `403` and never `400`.
+///
+/// Idempotent: re-granting an already-granted line is a silent no-op
+/// (`ON CONFLICT (group_id, line_id) DO NOTHING`), matching
+/// [`add_train_to_group`].
+///
+/// The caller must ALSO be a current member of the group -- that half is
+/// the route's `require_member` gate, not this function's job.
+///
+/// The ownership check and the insert share one transaction, unlike
+/// [`add_train_to_group`]'s two separate statements. Not for safety --
+/// `custom_lines` has no ownership-transfer path at all, so the check can
+/// never become MORE permissive between the two -- but because
+/// `custom_line_group_grants.line_id` carries a real FK: an owner deleting
+/// the line from a second tab in that window would otherwise turn a clean
+/// `404` into an FK-violation `500`.
+pub async fn grant_custom_line(
+    pool: &PgPool,
+    group_id: &str,
+    line_id: &str,
+    user_id: &str,
+) -> Result<bool> {
+    let mut tx = pool.begin().await?;
+    let owned: Option<(String,)> =
+        // `FOR KEY SHARE`, not `FOR UPDATE`: the minimal lock that still
+        // blocks a concurrent DELETE of this row (the only race this guard
+        // exists for -- under READ COMMITTED a plain transaction would not
+        // close the window, since a DELETE committed between the SELECT
+        // and the INSERT still raises the FK violation), while leaving the
+        // owner free to rename the same line in another tab. It is also
+        // exactly the lock the INSERT's own FK check takes a moment later,
+        // so the two are self-compatible. Every path that touches both
+        // tables takes `custom_lines` first (here, and
+        // `delete_custom_line`), and nothing takes them the other way
+        // round, so there is no lock cycle to deadlock on.
+        sqlx::query_as("SELECT id FROM custom_lines WHERE id = $1 AND user_id = $2 FOR KEY SHARE")
+            .bind(line_id)
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if owned.is_none() {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    sqlx::query(
+        "INSERT INTO custom_line_group_grants (group_id, line_id, granted_by, granted_at) \
+         VALUES ($1, $2, $3, NOW()) \
+         ON CONFLICT (group_id, line_id) DO NOTHING",
+    )
+    .bind(group_id)
+    .bind(line_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// Revokes a grant. `caller_can_manage` should be the route's own
+/// already-resolved `GroupRole::can_manage()` -- an `admin`/`owner` may
+/// remove ANY grant; anyone else may only remove one THEY granted (design
+/// §2.4, identical in shape to [`remove_train_from_group`]).
+///
+/// Removing a grant never touches `custom_lines` itself: the line, its
+/// content and its ownership are completely unaffected, and only the
+/// group's VISIBILITY into it changes. Because access is resolved live on
+/// every read ([`crate::data::custom_lines::readable_custom_line_ids`]),
+/// the revocation takes effect on the very next request with nothing else
+/// to invalidate (design §2.5).
+///
+/// Note the sharer branch checks `granted_by = $3` against the caller's own
+/// id and NOT against current group membership, which is what lets a
+/// granter who has since left the group still revoke their own grant
+/// (design §2.7) -- the route for this deliberately does not
+/// `require_member` for exactly that reason.
+///
+/// Returns `false` if no matching row was deleted (unknown grant, or a
+/// non-manager targeting someone else's) -- the route maps that to `404`.
+pub async fn remove_custom_line_grant(
+    pool: &PgPool,
+    group_id: &str,
+    line_id: &str,
+    user_id: &str,
+    caller_can_manage: bool,
+) -> Result<bool> {
+    let result = if caller_can_manage {
+        sqlx::query("DELETE FROM custom_line_group_grants WHERE group_id = $1 AND line_id = $2")
+            .bind(group_id)
+            .bind(line_id)
+            .execute(pool)
+            .await?
+    } else {
+        sqlx::query(
+            "DELETE FROM custom_line_group_grants \
+             WHERE group_id = $1 AND line_id = $2 AND granted_by = $3",
+        )
+        .bind(group_id)
+        .bind(line_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?
+    };
+    Ok(result.rows_affected() > 0)
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct GroupCustomLineRow {
+    line_id: String,
+    line_name: String,
+    granted_by: String,
+    granted_by_name: Option<String>,
+    granted_by_username: Option<String>,
+}
+
+/// A custom line granted into a group, as `GET /groups/{id}/lines/custom`
+/// returns it.
+///
+/// Deliberately carries only the line's identity and its attribution --
+/// no stations, operators, headcode filters or status. Not because those
+/// are secret from a granted member (they explicitly are not, design
+/// §3.5: full detail or nothing), but because the group page reads them
+/// through the ordinary `/lines/{id}` and `GET /Line/{ids}/Status` routes
+/// this feature already widened, rather than duplicating a second,
+/// parallel status-rendering path into the groups module that would then
+/// have to be kept in sync with the first.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupCustomLine {
+    pub line_id: String,
+    pub line_name: String,
+    pub granted_by: String,
+    pub granted_by_name: Option<String>,
+    /// Same contract, same derivation, as `GroupTrain.added_by_tag`: set
+    /// only when there is no showable name, so a group whose IdP can name
+    /// nobody still tells its members' shares apart.
+    pub granted_by_tag: Option<String>,
+}
+
+impl From<GroupCustomLineRow> for GroupCustomLine {
+    fn from(row: GroupCustomLineRow) -> Self {
+        let granted_by = users::MemberDisplay::of(
+            row.granted_by_name,
+            row.granted_by_username,
+            &row.granted_by,
+        );
+        GroupCustomLine {
+            line_id: row.line_id,
+            line_name: row.line_name,
+            granted_by: row.granted_by,
+            // The sharer's `users.name`, else their `users.username` --
+            // never the raw internal user id, and never their email (see
+            // `users::MemberDisplay`: attribution shown to a whole group
+            // is not the place to reveal one member's email address, and
+            // an email-shaped value in either field is declined rather
+            // than rendered). Shared with `GroupTrain::from` and the
+            // member list via that same helper so none of them can drift
+            // on what counts as a usable name -- a blank one doesn't.
+            granted_by_name: granted_by.label,
+            granted_by_tag: granted_by.tag,
+        }
+    }
+}
+
+/// Every custom line granted into `group_id`, oldest-granted first. No
+/// permission check here -- the route's own `require_member` call gates "is
+/// the caller even a member", exactly as it does for
+/// [`list_group_trains`].
+pub async fn list_group_custom_lines(
+    pool: &PgPool,
+    group_id: &str,
+) -> Result<Vec<GroupCustomLine>> {
+    let rows: Vec<GroupCustomLineRow> = sqlx::query_as(
+        "SELECT g.line_id, cl.name AS line_name, \
+                g.granted_by, u.name AS granted_by_name, u.username AS granted_by_username \
+         FROM custom_line_group_grants g \
+         JOIN custom_lines cl ON cl.id = g.line_id \
+         JOIN users u ON u.id = g.granted_by \
+         WHERE g.group_id = $1 \
+         ORDER BY g.granted_at, g.line_id",
+    )
+    .bind(group_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(GroupCustomLine::from).collect())
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct SharedCustomLineRow {
+    group_id: String,
+    group_name: String,
+    line_id: String,
+    line_name: String,
+    granted_by: String,
+    granted_by_name: Option<String>,
+    granted_by_username: Option<String>,
+}
+
+/// One custom line granted into one group the CALLER is a member of --
+/// [`GroupCustomLine`] plus the two fields that only make sense once rows
+/// from several groups land in one list (`group_id`/`group_name`, the
+/// "from <group>" tag the home page renders).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedCustomLine {
+    pub group_id: String,
+    pub group_name: String,
+    pub line_id: String,
+    pub line_name: String,
+    pub granted_by: String,
+    pub granted_by_name: Option<String>,
+    /// Same contract as `GroupCustomLine.granted_by_tag`.
+    pub granted_by_tag: Option<String>,
+}
+
+impl From<SharedCustomLineRow> for SharedCustomLine {
+    fn from(row: SharedCustomLineRow) -> Self {
+        let granted_by = users::MemberDisplay::of(
+            row.granted_by_name,
+            row.granted_by_username,
+            &row.granted_by,
+        );
+        SharedCustomLine {
+            group_id: row.group_id,
+            group_name: row.group_name,
+            line_id: row.line_id,
+            line_name: row.line_name,
+            granted_by: row.granted_by,
+            // Same "name, else username, else nothing -- and never an
+            // email" collapse `GroupCustomLine::from` already applies, via
+            // the same `users::MemberDisplay`; see its own comment. This
+            // shape is strictly more exposed (it reaches a member on the
+            // home page without them opening the group at all), so it is
+            // the last place that should be laxer about it.
+            granted_by_name: granted_by.label,
+            granted_by_tag: granted_by.tag,
+        }
+    }
+}
+
+/// Every custom line granted into ANY group `user_id` belongs to,
+/// EXCLUDING the ones they own themselves. This is what lets the home page
+/// show a group-shared custom line alongside the caller's own pinned
+/// lines, tagged with where it came from -- the exact shape (and the exact
+/// reasoning) [`list_shared_trains_for_user`] already established for
+/// trains.
+///
+/// `cl.user_id <> $1` is the deliberate half of that, parallel to that
+/// function's `ts.user_id <> $1`: the caller's OWN custom lines already
+/// reach the home page through `pinned_lines`/`GET /public/lines`, with
+/// their own edit controls (which a shared row deliberately has none of),
+/// and a line they granted into two groups would otherwise render three
+/// times on one page.
+///
+/// One row per (group, line) pair, NOT per line: a line granted into two
+/// groups the caller is in is genuinely two attributions, and collapsing
+/// that server-side would throw away one of the two group names the page
+/// tags the row with. The frontend merges them back into one row carrying
+/// both tags (`frontend/lib/sharedCustomLines.ts`).
+///
+/// No permission check beyond the `group_members me` join, which IS the
+/// check: a row can only appear here via a group the caller is currently a
+/// member of, so a non-member simply gets nothing rather than a `404`, and
+/// there is no single group id to gate on anyway.
+///
+/// `granted_at` is an ordering key only and is never selected into the
+/// response, with `line_id` breaking ties so the order is total and stable
+/// across calls.
+pub async fn list_shared_custom_lines_for_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<Vec<SharedCustomLine>> {
+    let rows: Vec<SharedCustomLineRow> = sqlx::query_as(
+        "SELECT g.id AS group_id, g.name AS group_name, \
+                gr.line_id, cl.name AS line_name, \
+                gr.granted_by, u.name AS granted_by_name, u.username AS granted_by_username \
+         FROM group_members me \
+         JOIN groups g ON g.id = me.group_id \
+         JOIN custom_line_group_grants gr ON gr.group_id = g.id \
+         JOIN custom_lines cl ON cl.id = gr.line_id \
+         JOIN users u ON u.id = gr.granted_by \
+         WHERE me.user_id = $1 AND cl.user_id <> $1 \
+         ORDER BY gr.granted_at DESC, gr.line_id DESC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(SharedCustomLine::from).collect())
+}
+
+/// A group a custom line is shared into, as the line's OWNER sees it on
+/// their own edit page ("Shared with: Family, Commute Buddies").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LineGroupRef {
+    pub id: String,
+    pub name: String,
+}
+
+/// Every group `line_id` is currently granted into, alphabetically --
+/// **empty unless `caller_id` owns the line.**
+///
+/// This is the one query in this module whose output is a description of
+/// somebody's group memberships, so the owner-only rule is enforced HERE,
+/// in the `EXISTS` clause, and not only by `routes::lines::get_line`
+/// calling it behind an `if is_owner`. Both guards say the same thing; a
+/// future refactor that loses the caller-side one still cannot make this
+/// return anything to a non-owner. That is what satisfies design §3.5's
+/// privacy goal: a fellow group member must never learn which OTHER
+/// groups the owner has also shared this line into.
+///
+/// For the owner it deliberately lists EVERY group the line is granted
+/// into, including one they have since LEFT (which design §2.7 explicitly
+/// allows to keep its grant). Scoping this to the owner's current
+/// memberships -- as the design sketched -- would hide a live grant from
+/// the one person whose data it is and who is entitled to revoke it
+/// (`remove_custom_line_grant`'s granter branch works after they leave,
+/// precisely so they can). That would be the real privacy failure, not a
+/// protection.
+pub async fn groups_shared_with_line(
+    pool: &PgPool,
+    line_id: &str,
+    caller_id: &str,
+) -> Result<Vec<LineGroupRef>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT g.id, g.name FROM custom_line_group_grants gr \
+         JOIN groups g ON g.id = gr.group_id \
+         WHERE gr.line_id = $1 \
+           AND EXISTS ( \
+             SELECT 1 FROM custom_lines cl \
+             WHERE cl.id = gr.line_id AND cl.user_id = $2 \
+           ) \
+         ORDER BY g.name, g.id",
+    )
+    .bind(line_id)
+    .bind(caller_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name)| LineGroupRef { id, name })
+        .collect())
 }
 
 #[cfg(test)]
@@ -2170,6 +2596,634 @@ mod db_tests {
         )
         .await;
     }
+
+    // -----------------------------------------------------------------
+    // Custom-line group grants.
+    // -----------------------------------------------------------------
+
+    /// Seeds one custom line owned by `user_id` through the real write
+    /// path (`insert_custom_line`), so the row -- and the `pinned_lines`
+    /// row it creates alongside -- is exactly what the app would produce.
+    async fn seed_custom_line(pool: &PgPool, user_id: &str, name: &str) -> String {
+        crate::data::custom_lines::insert_custom_line(
+            pool,
+            crate::data::custom_lines::NewCustomLine {
+                name: name.to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            user_id,
+        )
+        .await
+        .expect("seed a custom line")
+        .id
+    }
+
+    /// Groups first (cascading their members, trains, invite links and
+    /// grants), then each user's custom lines and pins, then the users --
+    /// `groups.created_by` and `custom_line_group_grants.granted_by` both
+    /// reference `users(id)` with no cascade, so users must go last.
+    async fn cleanup_lines_groups_and_users(pool: &PgPool, group_ids: &[&str], user_ids: &[&str]) {
+        for id in group_ids {
+            sqlx::query("DELETE FROM groups WHERE id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .ok();
+        }
+        for id in user_ids {
+            sqlx::query("DELETE FROM custom_lines WHERE user_id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM pinned_lines WHERE user_id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .ok();
+        }
+        cleanup(pool, user_ids).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                grant_custom_line_rejects_a_line_the_caller_does_not_own -- --ignored \
+                --test-threads=1`"]
+    async fn grant_custom_line_rejects_a_line_the_caller_does_not_own() {
+        // A group's OWNER has no standing whatsoever over a member's
+        // private custom line (design §2.3). Proves the refusal really
+        // refused, not merely returned `false`: the table is queried
+        // directly afterwards.
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GRANT-ADD-GOWNER-1").await;
+        seed_user(&pool, "TEST-GRANT-ADD-STRANGER-1").await;
+        let group_id = create_group(&pool, "Grant Add Test 1", "TEST-GRANT-ADD-GOWNER-1")
+            .await
+            .expect("create group");
+        let line_id = seed_custom_line(&pool, "TEST-GRANT-ADD-STRANGER-1", "Grant Add 1").await;
+
+        let granted = grant_custom_line(&pool, &group_id, &line_id, "TEST-GRANT-ADD-GOWNER-1")
+            .await
+            .expect("grant attempt");
+        assert!(!granted);
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM custom_line_group_grants WHERE group_id = $1")
+                .bind(&group_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count grants");
+        assert_eq!(count.0, 0, "the refused grant must not have been written");
+
+        cleanup_lines_groups_and_users(
+            &pool,
+            &[&group_id],
+            &["TEST-GRANT-ADD-GOWNER-1", "TEST-GRANT-ADD-STRANGER-1"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                grant_custom_line_is_idempotent -- --ignored --test-threads=1`"]
+    async fn grant_custom_line_is_idempotent() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GRANT-IDEM-OWNER").await;
+        let group_id = create_group(&pool, "Grant Idem Test", "TEST-GRANT-IDEM-OWNER")
+            .await
+            .expect("create group");
+        let line_id = seed_custom_line(&pool, "TEST-GRANT-IDEM-OWNER", "Grant Idem").await;
+
+        assert!(
+            grant_custom_line(&pool, &group_id, &line_id, "TEST-GRANT-IDEM-OWNER")
+                .await
+                .expect("first grant")
+        );
+        assert!(
+            grant_custom_line(&pool, &group_id, &line_id, "TEST-GRANT-IDEM-OWNER")
+                .await
+                .expect("second grant is a no-op, not an error")
+        );
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM custom_line_group_grants WHERE group_id = $1")
+                .bind(&group_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count grants");
+        assert_eq!(count.0, 1);
+
+        cleanup_lines_groups_and_users(&pool, &[&group_id], &["TEST-GRANT-IDEM-OWNER"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_custom_line_grant_a_non_manager_can_only_remove_their_own -- --ignored \
+                --test-threads=1`"]
+    async fn remove_custom_line_grant_a_non_manager_can_only_remove_their_own() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GRANT-RM-GOWNER").await;
+        seed_user(&pool, "TEST-GRANT-RM-SHARER").await;
+        seed_user(&pool, "TEST-GRANT-RM-BYSTANDER").await;
+        let group_id = create_group(&pool, "Grant Remove Test", "TEST-GRANT-RM-GOWNER")
+            .await
+            .expect("create group");
+        for member in ["TEST-GRANT-RM-SHARER", "TEST-GRANT-RM-BYSTANDER"] {
+            sqlx::query(
+                "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+            )
+            .bind(&group_id)
+            .bind(member)
+            .execute(&pool)
+            .await
+            .expect("seed member");
+        }
+        let line_id = seed_custom_line(&pool, "TEST-GRANT-RM-SHARER", "Grant Remove").await;
+        grant_custom_line(&pool, &group_id, &line_id, "TEST-GRANT-RM-SHARER")
+            .await
+            .expect("grant");
+
+        // A plain member who didn't grant it: refused.
+        assert!(
+            !remove_custom_line_grant(
+                &pool,
+                &group_id,
+                &line_id,
+                "TEST-GRANT-RM-BYSTANDER",
+                false,
+            )
+            .await
+            .expect("bystander remove attempt")
+        );
+        // The granter themselves, still a plain member: allowed.
+        assert!(
+            remove_custom_line_grant(&pool, &group_id, &line_id, "TEST-GRANT-RM-SHARER", false)
+                .await
+                .expect("sharer remove")
+        );
+
+        cleanup_lines_groups_and_users(
+            &pool,
+            &[&group_id],
+            &[
+                "TEST-GRANT-RM-GOWNER",
+                "TEST-GRANT-RM-SHARER",
+                "TEST-GRANT-RM-BYSTANDER",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_custom_line_grant_allows_a_manager_to_remove_anyones -- --ignored \
+                --test-threads=1`"]
+    async fn remove_custom_line_grant_allows_a_manager_to_remove_anyones() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GRANT-RM2-GOWNER").await;
+        seed_user(&pool, "TEST-GRANT-RM2-SHARER").await;
+        let group_id = create_group(&pool, "Grant Remove Test 2", "TEST-GRANT-RM2-GOWNER")
+            .await
+            .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GRANT-RM2-SHARER")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        let line_id = seed_custom_line(&pool, "TEST-GRANT-RM2-SHARER", "Grant Remove 2").await;
+        grant_custom_line(&pool, &group_id, &line_id, "TEST-GRANT-RM2-SHARER")
+            .await
+            .expect("grant");
+
+        assert!(
+            remove_custom_line_grant(&pool, &group_id, &line_id, "TEST-GRANT-RM2-GOWNER", true)
+                .await
+                .expect("manager remove")
+        );
+        // The line itself is completely untouched -- only the group's
+        // visibility into it changed (design §2.4).
+        let still_there: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM custom_lines WHERE id = $1")
+            .bind(&line_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count lines");
+        assert_eq!(still_there.0, 1);
+
+        cleanup_lines_groups_and_users(
+            &pool,
+            &[&group_id],
+            &["TEST-GRANT-RM2-GOWNER", "TEST-GRANT-RM2-SHARER"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                remove_member_does_not_touch_custom_line_group_grants_even_when_the_departing_member_is_the_grantor \
+                -- --ignored --test-threads=1`"]
+    async fn remove_member_does_not_touch_custom_line_group_grants_even_when_the_departing_member_is_the_grantor()
+     {
+        // The direct proof of design §2.7, and the one test here that
+        // actively DISPROVES a `group_trains`-shaped intuition rather than
+        // confirming one -- so it asserts both halves in the same
+        // transaction's aftermath: the departed member's shared TRAIN is
+        // pulled (existing behaviour, unchanged) while their granted LINE
+        // survives.
+        //
+        // The reasoning, not just the outcome: `group_trains`' cleanup
+        // exists because a shared train's underlying subscription is the
+        // departing member's own private row and can vanish the moment
+        // they untrack it. A custom line's ownership is completely
+        // unaffected by anyone leaving a group -- there is no ownership
+        // event here at all, and no successor rule, because
+        // `custom_lines.user_id` has no transfer path of any kind. The
+        // remaining members' access was a deliberate, still-standing
+        // choice by an owner who retains three ways to revoke it.
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GRANT-LEAVE-GOWNER").await;
+        seed_user(&pool, "TEST-GRANT-LEAVE-SHARER").await;
+        let group_id = create_group(&pool, "Grant Leave Test", "TEST-GRANT-LEAVE-GOWNER")
+            .await
+            .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GRANT-LEAVE-SHARER")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        let line_id = seed_custom_line(&pool, "TEST-GRANT-LEAVE-SHARER", "Grant Leave").await;
+        grant_custom_line(&pool, &group_id, &line_id, "TEST-GRANT-LEAVE-SHARER")
+            .await
+            .expect("grant");
+        let train_id = seed_train_subscription(&pool, "TEST-GRANT-LEAVE-SHARER").await;
+        add_train_to_group(&pool, &group_id, train_id, "TEST-GRANT-LEAVE-SHARER")
+            .await
+            .expect("share a train too");
+
+        let outcome = remove_member(&pool, &group_id, "TEST-GRANT-LEAVE-SHARER")
+            .await
+            .expect("remove member");
+        assert_eq!(outcome, RemoveMemberOutcome::Removed { new_owner: None });
+
+        let grants: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM custom_line_group_grants WHERE group_id = $1")
+                .bind(&group_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count grants");
+        assert_eq!(
+            grants.0, 1,
+            "the departed grantor's custom-line grant must SURVIVE (§2.7)"
+        );
+        let trains: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM group_trains WHERE group_id = $1")
+                .bind(&group_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count trains");
+        assert_eq!(
+            trains.0, 0,
+            "control: the departed member's shared train is still pulled, unchanged"
+        );
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(train_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_lines_groups_and_users(
+            &pool,
+            &[&group_id],
+            &["TEST-GRANT-LEAVE-GOWNER", "TEST-GRANT-LEAVE-SHARER"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                delete_group_cascades_custom_line_group_grants -- --ignored --test-threads=1`"]
+    async fn delete_group_cascades_custom_line_group_grants() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GRANT-GDEL-OWNER").await;
+        let group_id = create_group(&pool, "Grant Group Delete", "TEST-GRANT-GDEL-OWNER")
+            .await
+            .expect("create group");
+        let line_id = seed_custom_line(&pool, "TEST-GRANT-GDEL-OWNER", "Grant Group Delete").await;
+        grant_custom_line(&pool, &group_id, &line_id, "TEST-GRANT-GDEL-OWNER")
+            .await
+            .expect("grant");
+
+        assert!(delete_group(&pool, &group_id).await.expect("delete group"));
+        let grants: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM custom_line_group_grants WHERE group_id = $1")
+                .bind(&group_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count grants");
+        assert_eq!(grants.0, 0, "grants should cascade with the group");
+        // The line itself outlives the group it was shared into.
+        let lines: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM custom_lines WHERE id = $1")
+            .bind(&line_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count lines");
+        assert_eq!(lines.0, 1);
+
+        cleanup_lines_groups_and_users(&pool, &[&group_id], &["TEST-GRANT-GDEL-OWNER"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_shared_custom_lines_for_user_excludes_own_lines_and_other_peoples_groups \
+                -- --ignored --test-threads=1`"]
+    async fn list_shared_custom_lines_for_user_excludes_own_lines_and_other_peoples_groups() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GRANT-SHARED-SHARER").await;
+        seed_user(&pool, "TEST-GRANT-SHARED-VIEWER").await;
+        seed_user(&pool, "TEST-GRANT-SHARED-STRANGER").await;
+        let group_id = create_group(&pool, "Grant Shared Test", "TEST-GRANT-SHARED-SHARER")
+            .await
+            .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GRANT-SHARED-VIEWER")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        let sharer_line =
+            seed_custom_line(&pool, "TEST-GRANT-SHARED-SHARER", "Grant Shared A").await;
+        let viewer_line =
+            seed_custom_line(&pool, "TEST-GRANT-SHARED-VIEWER", "Grant Shared B").await;
+        grant_custom_line(&pool, &group_id, &sharer_line, "TEST-GRANT-SHARED-SHARER")
+            .await
+            .expect("grant the sharer's line");
+        grant_custom_line(&pool, &group_id, &viewer_line, "TEST-GRANT-SHARED-VIEWER")
+            .await
+            .expect("grant the viewer's own line");
+
+        let shared = list_shared_custom_lines_for_user(&pool, "TEST-GRANT-SHARED-VIEWER")
+            .await
+            .expect("list");
+        assert_eq!(
+            shared.len(),
+            1,
+            "the viewer's OWN granted line must not come back as a shared one, got {shared:?}"
+        );
+        assert_eq!(shared[0].line_id, sharer_line);
+        assert_eq!(shared[0].group_id, group_id);
+        assert_eq!(shared[0].group_name, "Grant Shared Test");
+        assert_eq!(shared[0].line_name, "Grant Shared A");
+        assert_eq!(
+            shared[0].granted_by_name.as_deref(),
+            Some("TEST-GRANT-SHARED-SHARER")
+        );
+
+        let stranger = list_shared_custom_lines_for_user(&pool, "TEST-GRANT-SHARED-STRANGER")
+            .await
+            .expect("list for a stranger");
+        assert!(
+            stranger.is_empty(),
+            "a non-member must see nothing from this group, got {stranger:?}"
+        );
+
+        cleanup_lines_groups_and_users(
+            &pool,
+            &[&group_id],
+            &[
+                "TEST-GRANT-SHARED-SHARER",
+                "TEST-GRANT-SHARED-VIEWER",
+                "TEST-GRANT-SHARED-STRANGER",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                list_group_custom_lines_and_groups_shared_with_line_round_trip -- --ignored \
+                --test-threads=1`"]
+    async fn list_group_custom_lines_and_groups_shared_with_line_round_trip() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-GRANT-LIST-OWNER").await;
+        let group_a = create_group(&pool, "Grant List A", "TEST-GRANT-LIST-OWNER")
+            .await
+            .expect("create group A");
+        let group_b = create_group(&pool, "Grant List B", "TEST-GRANT-LIST-OWNER")
+            .await
+            .expect("create group B");
+        let line_id = seed_custom_line(&pool, "TEST-GRANT-LIST-OWNER", "Grant List Line").await;
+        for group_id in [&group_a, &group_b] {
+            grant_custom_line(&pool, group_id, &line_id, "TEST-GRANT-LIST-OWNER")
+                .await
+                .expect("grant");
+        }
+
+        let in_a = list_group_custom_lines(&pool, &group_a)
+            .await
+            .expect("list");
+        assert_eq!(in_a.len(), 1);
+        assert_eq!(in_a[0].line_id, line_id);
+        assert_eq!(in_a[0].line_name, "Grant List Line");
+        assert_eq!(in_a[0].granted_by, "TEST-GRANT-LIST-OWNER");
+        assert!(in_a[0].granted_by_name.is_some());
+
+        let groups = groups_shared_with_line(&pool, &line_id, "TEST-GRANT-LIST-OWNER")
+            .await
+            .expect("groups for line");
+        let names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, vec!["Grant List A", "Grant List B"]);
+
+        // Owner-only at the QUERY level, not just at the route's own
+        // `if is_owner` branch: a fellow member of one of these groups
+        // must never learn which OTHER groups the line reaches.
+        seed_user(&pool, "TEST-GRANT-LIST-MEMBER").await;
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_a)
+        .bind("TEST-GRANT-LIST-MEMBER")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        assert!(
+            groups_shared_with_line(&pool, &line_id, "TEST-GRANT-LIST-MEMBER")
+                .await
+                .expect("groups for a non-owner")
+                .is_empty(),
+            "a granted member must get nothing back from this query"
+        );
+
+        cleanup_lines_groups_and_users(
+            &pool,
+            &[&group_a, &group_b],
+            &["TEST-GRANT-LIST-OWNER", "TEST-GRANT-LIST-MEMBER"],
+        )
+        .await;
+    }
+}
+
+#[cfg(test)]
+mod custom_line_grant_wire_shape_tests {
+    use super::*;
+
+    /// Pins `GroupCustomLine`'s exact JSON key set, for the same reason
+    /// `group_train_json_never_includes_ticket_or_notification_fields`
+    /// pins `GroupTrain`'s: this shape crosses a privacy boundary (it
+    /// reaches every member of a group, for a line only one of them owns),
+    /// so a field added here by accident is exactly the failure that
+    /// matters. In particular it must never grow a `grantedByEmail` field,
+    /// or any other raw-email one: `GroupCustomLine::from` collapses the
+    /// sharer down to `users::MemberDisplay` (name, else username, else
+    /// nothing plus an opaque tag) precisely so that an email address can
+    /// never become one member's label shown to the rest of a group.
+    #[test]
+    fn group_custom_line_json_is_identity_and_attribution_only() {
+        let value = serde_json::to_value(GroupCustomLine {
+            line_id: "custom-my-commute".to_string(),
+            line_name: "My Commute".to_string(),
+            granted_by: "user-1".to_string(),
+            granted_by_name: Some("Alex".to_string()),
+            granted_by_tag: None,
+        })
+        .expect("serialize");
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "grantedBy",
+                "grantedByName",
+                "grantedByTag",
+                "lineId",
+                "lineName"
+            ]
+        );
+    }
+
+    /// `SharedCustomLine` is `GroupCustomLine` plus exactly
+    /// `groupId`/`groupName` -- this shape is strictly MORE exposed (it
+    /// reaches a member on the home page without them opening the group at
+    /// all), so no future edit may widen it past what the group page
+    /// already shows the same member.
+    #[test]
+    fn shared_custom_line_json_is_group_custom_line_plus_group_attribution() {
+        let value = serde_json::to_value(SharedCustomLine {
+            group_id: "group-1".to_string(),
+            group_name: "Family".to_string(),
+            line_id: "custom-my-commute".to_string(),
+            line_name: "My Commute".to_string(),
+            granted_by: "user-1".to_string(),
+            granted_by_name: Some("Alex".to_string()),
+            granted_by_tag: None,
+        })
+        .expect("serialize");
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "grantedBy",
+                "grantedByName",
+                "grantedByTag",
+                "groupId",
+                "groupName",
+                "lineId",
+                "lineName",
+            ]
+        );
+    }
+
+    /// The same `users::display_label` collapse every other attribution
+    /// field in this module applies: `name`, else `username`, else
+    /// nothing -- a blank is not a name, and an email address is never a
+    /// label shown to the rest of a group, whichever claim it arrived in.
+    #[test]
+    fn granted_by_name_falls_back_to_username_and_never_to_an_email() {
+        let row = |name: Option<&str>, username: Option<&str>| GroupCustomLineRow {
+            line_id: "custom-x".to_string(),
+            line_name: "X".to_string(),
+            granted_by: "user-1".to_string(),
+            granted_by_name: name.map(str::to_string),
+            granted_by_username: username.map(str::to_string),
+        };
+        assert_eq!(
+            GroupCustomLine::from(row(Some("Alex"), Some("alex"))).granted_by_name,
+            Some("Alex".to_string())
+        );
+        assert_eq!(
+            GroupCustomLine::from(row(None, Some("alex"))).granted_by_name,
+            Some("alex".to_string())
+        );
+        assert_eq!(
+            GroupCustomLine::from(row(Some("   "), Some("alex"))).granted_by_name,
+            Some("alex".to_string()),
+            "a blank name is not a name"
+        );
+        assert_eq!(
+            GroupCustomLine::from(row(Some("alex@example.com"), Some("alex"))).granted_by_name,
+            Some("alex".to_string()),
+            "an email address in the name claim must not become the label"
+        );
+        assert_eq!(
+            GroupCustomLine::from(row(Some("alex@example.com"), None)).granted_by_name,
+            None,
+            "with no usable non-email label at all, nothing is shown"
+        );
+        assert_eq!(GroupCustomLine::from(row(None, None)).granted_by_name, None);
+    }
+
+    /// The tag appears exactly when the label doesn't -- same contract
+    /// `GroupTrain`/`GroupMember` already hold, so a group whose IdP can
+    /// name nobody still tells one member's shared line from another's
+    /// without revealing anything about either person.
+    #[test]
+    fn granted_by_tag_is_set_only_when_there_is_no_showable_name() {
+        let row = |name: Option<&str>| GroupCustomLineRow {
+            line_id: "custom-x".to_string(),
+            line_name: "X".to_string(),
+            granted_by: "user-1".to_string(),
+            granted_by_name: name.map(str::to_string),
+            granted_by_username: None,
+        };
+        assert_eq!(
+            GroupCustomLine::from(row(Some("Alex"))).granted_by_tag,
+            None
+        );
+        let unnameable = GroupCustomLine::from(row(None));
+        assert_eq!(unnameable.granted_by_name, None);
+        assert!(
+            unnameable
+                .granted_by_tag
+                .is_some_and(|tag| tag.len() == 6 && tag.chars().all(|c| c.is_ascii_hexdigit())),
+            "an unnameable sharer gets the same six-hex-character tag every other shape uses"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2197,6 +3251,7 @@ mod group_train_wire_shape_tests {
             custom_name: None,
             added_by: "user-1".to_string(),
             added_by_name: Some("Alex".to_string()),
+            added_by_tag: None,
         };
         let value = serde_json::to_value(&train).expect("serialize");
         let mut keys: Vec<&str> = value
@@ -2211,6 +3266,7 @@ mod group_train_wire_shape_tests {
             vec![
                 "addedBy",
                 "addedByName",
+                "addedByTag",
                 "customName",
                 "delayMinutes",
                 "pinDestinationCrs",
@@ -2250,6 +3306,7 @@ mod shared_train_wire_shape_tests {
             custom_name: None,
             added_by: "user-1".to_string(),
             added_by_name: Some("Alex".to_string()),
+            added_by_tag: None,
         }
     }
 
@@ -2275,6 +3332,7 @@ mod shared_train_wire_shape_tests {
             vec![
                 "addedBy",
                 "addedByName",
+                "addedByTag",
                 "customName",
                 "delayMinutes",
                 "groupId",
@@ -2360,6 +3418,7 @@ mod group_member_wire_shape_tests {
         let member = GroupMember {
             user_id: "user-1".to_string(),
             display_name: Some("Alex".to_string()),
+            display_tag: None,
             role: GroupRole::Member,
             joined_at: "2026-09-11T00:00:00Z".parse().unwrap(),
         };
@@ -2371,7 +3430,10 @@ mod group_member_wire_shape_tests {
             .map(String::as_str)
             .collect();
         keys.sort_unstable();
-        assert_eq!(keys, vec!["displayName", "joinedAt", "role", "userId"]);
+        assert_eq!(
+            keys,
+            vec!["displayName", "displayTag", "joinedAt", "role", "userId"]
+        );
     }
 }
 
@@ -2405,6 +3467,28 @@ mod display_name_collapse_tests {
 
     fn train_row(name: Option<&str>, username: Option<&str>) -> GroupTrainRow {
         GroupTrainRow {
+            train_subscription_id: 1,
+            pin_origin_crs: None,
+            pin_destination_crs: None,
+            pin_origin_name: None,
+            pin_destination_name: None,
+            pin_scheduled_departure: None,
+            service_date: "2026-09-11".parse().unwrap(),
+            resolution_status: "pending".to_string(),
+            train_uid: None,
+            status: None,
+            delay_minutes: None,
+            custom_name: None,
+            added_by: "user-1".to_string(),
+            added_by_name: name.map(str::to_string),
+            added_by_username: username.map(str::to_string),
+        }
+    }
+
+    fn shared_row(name: Option<&str>, username: Option<&str>) -> SharedTrainRow {
+        SharedTrainRow {
+            group_id: "group-1".to_string(),
+            group_name: "Family".to_string(),
             train_subscription_id: 1,
             pin_origin_crs: None,
             pin_destination_crs: None,
@@ -2481,8 +3565,145 @@ mod display_name_collapse_tests {
         assert_eq!(GroupTrain::from(train_row(None, None)).added_by_name, None);
     }
 
+    fn detail_row(name: Option<&str>, username: Option<&str>) -> GroupDetailRow {
+        GroupDetailRow {
+            id: "group-1".to_string(),
+            name: "Family".to_string(),
+            owner_id: "user-1".to_string(),
+            owner_name: name.map(str::to_string),
+            owner_username: username.map(str::to_string),
+            member_count: 2,
+            role: "member".to_string(),
+        }
+    }
+
+    /// `GroupDetail.owner_name` is the fourth cross-user label, and the
+    /// one whose only other tests need a live database -- so the collapse
+    /// and the tag are pinned here rather than left to the `#[ignore]`d
+    /// `db_tests`. Same rule as the other three: a name, else a username,
+    /// else nothing at all plus a tag, and never an email.
+    #[test]
+    fn a_groups_owner_gets_the_same_label_and_tag_treatment_as_its_members() {
+        let named = GroupDetail::from(detail_row(Some("Ada Rider"), Some("ada")));
+        assert_eq!(named.owner_name.as_deref(), Some("Ada Rider"));
+        assert_eq!(named.owner_tag, None);
+
+        let by_username = GroupDetail::from(detail_row(Some(""), Some("ada")));
+        assert_eq!(by_username.owner_name.as_deref(), Some("ada"));
+        assert_eq!(by_username.owner_tag, None);
+
+        let unnameable = GroupDetail::from(detail_row(
+            Some("owner@example.com"),
+            Some("owner@example.com"),
+        ));
+        assert_eq!(unnameable.owner_name, None);
+        assert!(unnameable.owner_tag.is_some());
+
+        // And it is the SAME tag the owner's own row in the member list
+        // carries -- one user, one tag, wherever they appear.
+        let mut member = member_row(Some("owner@example.com"), Some("owner@example.com"));
+        member.user_id = "user-1".to_string();
+        assert_eq!(unnameable.owner_tag, GroupMember::from(member).display_tag);
+
+        let mut other_owner = detail_row(Some("owner@example.com"), Some("owner@example.com"));
+        other_owner.owner_id = "user-2".to_string();
+        assert_ne!(
+            unnameable.owner_tag,
+            GroupDetail::from(other_owner).owner_tag
+        );
+    }
+
+    /// A member this app CAN name carries no tag at all -- the suffix is
+    /// strictly for the placeholder path, and "Ada Rider" must keep
+    /// rendering as exactly "Ada Rider".
+    #[test]
+    fn a_nameable_member_or_sharer_carries_no_tag() {
+        assert_eq!(
+            GroupMember::from(member_row(Some("Ada Rider"), Some("ada"))).display_tag,
+            None
+        );
+        assert_eq!(
+            GroupMember::from(member_row(Some("  "), Some("ada"))).display_tag,
+            None
+        );
+        assert_eq!(
+            GroupTrain::from(train_row(None, Some("ada"))).added_by_tag,
+            None
+        );
+    }
+
+    /// The Entra-ID case: `name` and `preferred_username` are BOTH the
+    /// user's email-shaped UPN, so neither member can be named and both
+    /// rows used to read as the identical "A member" -- leaving an admin
+    /// no way to tell which row is whom. The labels are still (correctly)
+    /// `None`, but the two rows are now distinguishable.
+    #[test]
+    fn two_unnameable_members_are_still_told_apart() {
+        let row = |user_id: &str, email: &str| {
+            let mut row = member_row(Some(email), Some(email));
+            row.user_id = user_id.to_string();
+            row
+        };
+        let one = GroupMember::from(row("user-1", "ada@example.com"));
+        let two = GroupMember::from(row("user-2", "grace@example.com"));
+
+        assert_eq!(one.display_name, None);
+        assert_eq!(two.display_name, None);
+        assert!(one.display_tag.is_some());
+        assert_ne!(one.display_tag, two.display_tag);
+    }
+
+    /// Same for "Shared by ..." attribution, on both of the shapes that
+    /// carry it: two sharers the app can't name are two distinguishable
+    /// credits, not one indistinguishable one.
+    #[test]
+    fn two_unnameable_sharers_are_still_told_apart() {
+        let row = |user_id: &str| {
+            let mut row = train_row(Some(""), Some("upn@example.com"));
+            row.added_by = user_id.to_string();
+            row
+        };
+        let one = GroupTrain::from(row("user-1"));
+        let two = GroupTrain::from(row("user-2"));
+        assert_eq!(one.added_by_name, None);
+        assert!(one.added_by_tag.is_some());
+        assert_ne!(one.added_by_tag, two.added_by_tag);
+
+        // `SharedTrain` (the `/track/mine` + home-page shape) reaches a
+        // member without them opening the group, so it gets the identical
+        // treatment rather than a laxer one.
+        let shared = |user_id: &str| {
+            let mut row = shared_row(Some("upn@example.com"), Some("upn@example.com"));
+            row.added_by = user_id.to_string();
+            SharedTrain::from(row)
+        };
+        assert_eq!(shared("user-1").added_by_name, None);
+        assert_ne!(shared("user-1").added_by_tag, shared("user-2").added_by_tag);
+        assert_eq!(shared("user-1").added_by_tag, shared("user-1").added_by_tag);
+    }
+
+    /// The tag is per-USER, not per-row: the same person shows the same
+    /// suffix in the member list and in every train they shared, which is
+    /// the entire point -- "who added this?" has to be answerable by
+    /// matching the credit against a row of the member list.
+    #[test]
+    fn one_user_gets_one_tag_across_the_member_list_and_their_shared_trains() {
+        let mut member = member_row(Some("upn@example.com"), Some("upn@example.com"));
+        member.user_id = "user-7".to_string();
+        let mut train = train_row(Some("upn@example.com"), Some("upn@example.com"));
+        train.added_by = "user-7".to_string();
+
+        assert_eq!(
+            GroupMember::from(member).display_tag,
+            GroupTrain::from(train).added_by_tag
+        );
+    }
+
     /// The privacy half of this fix, end to end: neither of these two "who
-    /// is this person" labels may ever be a member's email address.
+    /// is this person" labels may ever be a member's email address, and
+    /// nor may the tag that now accompanies them -- the serialization
+    /// assertions below run with the tag populated (these rows are exactly
+    /// the placeholder path) and so cover it too.
     /// Neither query selects `users.email` any more, AND an email arriving
     /// through the fields they DO select -- an IdP that puts an address in
     /// `name` or `preferred_username`, which is legal and common -- is

@@ -66,12 +66,29 @@ struct LineSummary {
 /// which only exist for custom lines and are exactly what an edit form
 /// needs to pre-fill.
 ///
-/// No `isOwner` field: `get_line` requires `AuthenticatedUser` and 404s
-/// anything that isn't the caller's own line (doesn't exist, someone
-/// else's, or a legacy NULL-owner row alike), so a `200` from this
-/// endpoint is by construction always the real owner's own line — the
-/// frontend no longer needs a signal to distinguish owner from non-owner
-/// here.
+/// `isOwner` exists again, and this is load-bearing. The 2026-08-31
+/// privacy hardening removed it on the (then true) grounds that "a `200`
+/// from this endpoint is by construction always the real owner's own
+/// line." Custom-line group sharing
+/// (docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md)
+/// made that false: a granted group member now gets a `200` here too, with
+/// the same full detail (§3.5 -- full detail or nothing; a custom line has
+/// no private per-viewer overlay to withhold). `frontend/app/lines/[id]/page.tsx`
+/// had come to use "did `getCustomLine` succeed" as its ownership gate for
+/// the Edit/Delete controls, so without this flag a granted member would
+/// be shown mutation controls for someone else's line whose only possible
+/// outcome is a `404`. The backend is still the authority
+/// (`update_line`/`delete_line` are completely grant-blind and unchanged);
+/// this is the "never render a control that can only fail" half.
+///
+/// `sharedWithGroups` is populated ONLY when `isOwner` is true, and is
+/// `[]` for every other caller -- that, not a query-level scope, is what
+/// keeps a fellow group member from learning which OTHER groups the owner
+/// shared this line into (design §3.5). For the owner it lists every group
+/// the line is currently granted into, including one they have since left
+/// (which keeps its grant, per §2.7) -- hiding a live grant from the
+/// person entitled to revoke it would be the real privacy failure. See
+/// `groups::groups_shared_with_line`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CustomLineDetail {
@@ -81,6 +98,8 @@ struct CustomLineDetail {
     stations: Vec<String>,
     headcode_prefixes: Vec<String>,
     destination_crs_filter: Vec<String>,
+    is_owner: bool,
+    shared_with_groups: Vec<crate::data::groups::LineGroupRef>,
 }
 
 /// Minimal cross-source projection — just enough to answer "what stations
@@ -292,7 +311,24 @@ async fn get_line_definition(
         return Err((StatusCode::NOT_FOUND, "line not found".to_string()));
     };
     let caller_owns_it = matches!((&user, &owner), (Some(u), Some(o)) if &u.id == o);
-    if !caller_owns_it {
+    // ...or the caller is a member of a group the owner granted this line
+    // into (custom-line group sharing, design §3.2): one more disjunct on
+    // the ownership gate, same 404 and same message for everyone outside
+    // both sets. An anonymous caller has no `user_id` to bind and so falls
+    // straight through to the 404 with no extra query, exactly as before.
+    let caller_may_read = caller_owns_it
+        || match &user {
+            Some(u) => custom_lines::readable_custom_line_ids(
+                &app.database,
+                std::slice::from_ref(&id),
+                &u.id,
+            )
+            .await
+            .map_err(internal_error)?
+            .contains(&id),
+            None => false,
+        };
+    if !caller_may_read {
         return Err((StatusCode::NOT_FOUND, "line not found".to_string()));
     }
 
@@ -324,6 +360,17 @@ async fn list_lines(
     // none at all, same shape as today's default but now also true for a
     // logged-in non-owner. Catalogue and TfL entries here are completely
     // unaffected -- no filtering, no auth requirement change.
+    //
+    // Deliberately NOT widened by custom-line group sharing (design §3.2),
+    // unlike the four read gates that were: this list is "what can I
+    // create/edit" -- it backs the All Lines table's own-lines rows, the
+    // edit-picker flows, and the group share picker -- not "what am I
+    // allowed to view". A line granted to the caller through a group
+    // appears on that group's page, on the home page's "Lines shared with
+    // you" section, and at /lines/{id}; listing it HERE would blur "mine
+    // to edit" with "visible to me via a group" and would also offer the
+    // caller a line they don't own in the share picker, which
+    // `groups::grant_custom_line` would then refuse.
     if let Some(user) = &user {
         let custom = custom_lines::list_custom_lines_for_user(&app.database, &user.id)
             .await
@@ -464,9 +511,36 @@ async fn get_line(
     let Some((line, owner)) = line else {
         return Err((StatusCode::NOT_FOUND, "custom line not found".to_string()));
     };
-    if owner.as_deref() != Some(user.id.as_str()) {
-        return Err((StatusCode::NOT_FOUND, "custom line not found".to_string()));
+    let is_owner = owner.as_deref() == Some(user.id.as_str());
+    if !is_owner {
+        // Not the owner -- but they may still be a member of a group the
+        // owner granted this line into (custom-line group sharing, design
+        // §3.2). One more disjunct on the existing ownership gate; anyone
+        // outside BOTH sets still gets the identical 404 and the identical
+        // message a total stranger gets, so "doesn't exist" and "exists,
+        // not shared with you" stay indistinguishable. Never 403.
+        let readable = custom_lines::readable_custom_line_ids(
+            &app.database,
+            std::slice::from_ref(&id),
+            &user.id,
+        )
+        .await
+        .map_err(internal_error)?;
+        if !readable.contains(&id) {
+            return Err((StatusCode::NOT_FOUND, "custom line not found".to_string()));
+        }
     }
+
+    // Owner-only. Guarded twice on purpose: this branch, and
+    // `groups_shared_with_line`'s own `EXISTS (... cl.user_id = $2)` --
+    // see that function's doc comment and `CustomLineDetail`'s.
+    let shared_with_groups = if is_owner {
+        crate::data::groups::groups_shared_with_line(&app.database, &id, &user.id)
+            .await
+            .map_err(internal_error)?
+    } else {
+        Vec::new()
+    };
 
     Ok(Json(CustomLineDetail {
         id: line.id,
@@ -475,6 +549,8 @@ async fn get_line(
         stations: line.stations,
         headcode_prefixes: line.headcode_prefixes,
         destination_crs_filter: line.destination_crs_filter,
+        is_owner,
+        shared_with_groups,
     }))
 }
 
@@ -564,6 +640,74 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
         StatusCode::INTERNAL_SERVER_ERROR,
         "operation failed".to_string(),
     )
+}
+
+#[cfg(test)]
+mod custom_line_detail_wire_shape_tests {
+    use super::*;
+
+    /// Pins `CustomLineDetail`'s exact JSON key set, the same way
+    /// `data::groups`'s `group_train_wire_shape_tests` pins `GroupTrain`'s.
+    /// This is the most privacy-sensitive shape this file serves: since
+    /// custom-line group sharing it reaches a NON-owner (a fellow group
+    /// member) in full, so a field added here by accident is disclosed to
+    /// everyone in every group the line is shared into. `isOwner` and
+    /// `sharedWithGroups` are load-bearing and must not be dropped either
+    /// -- the frontend's Edit/Delete gate reads the first.
+    #[test]
+    fn custom_line_detail_json_keys_are_exactly_the_definition_plus_the_two_sharing_fields() {
+        let value = serde_json::to_value(CustomLineDetail {
+            id: "custom-my-commute".to_string(),
+            name: "My Commute".to_string(),
+            operators: vec!["SW".to_string()],
+            stations: vec!["WOK".to_string(), "CLJ".to_string()],
+            headcode_prefixes: vec![],
+            destination_crs_filter: vec![],
+            is_owner: true,
+            shared_with_groups: vec![],
+        })
+        .expect("serialize");
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "destinationCrsFilter",
+                "headcodePrefixes",
+                "id",
+                "isOwner",
+                "name",
+                "operators",
+                "sharedWithGroups",
+                "stations",
+            ]
+        );
+    }
+
+    /// `LineGroupRef` carries a group's id and display name and nothing
+    /// else -- never a member list, a role, a member count, or the
+    /// grant's own timestamp.
+    #[test]
+    fn line_group_ref_json_carries_only_an_id_and_a_name() {
+        let value = serde_json::to_value(crate::data::groups::LineGroupRef {
+            id: "grp-1".to_string(),
+            name: "Family".to_string(),
+        })
+        .expect("serialize");
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["id", "name"]);
+    }
 }
 
 #[cfg(test)]
@@ -802,6 +946,47 @@ mod db_tests {
             .expect("connect to postgres")
     }
 
+    /// Issues a `PUT` or `DELETE` against `/public/lines/{id}` -- the two
+    /// owner-only mutation routes, which custom-line group sharing
+    /// deliberately did NOT widen. Same `(status, JSON-or-plain-text body)`
+    /// return shape as `get_line` below.
+    async fn mutate(
+        router: axum::Router,
+        method: &str,
+        id: &str,
+        raw_token: Option<&str>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(format!("/public/lines/{id}"));
+        if let Some(token) = raw_token {
+            builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
+        }
+        let request = match body {
+            Some(value) => builder
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&value).expect("serialize request body"),
+                ))
+                .expect("build request"),
+            None => builder.body(Body::empty()).expect("build request"),
+        };
+        let response = router.oneshot(request).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+            })
+        };
+        (status, value)
+    }
+
     /// Issues `GET /public/lines/{id}`, optionally with a session cookie.
     async fn get_line(
         router: axum::Router,
@@ -915,8 +1100,8 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
-                the_real_owner_gets_200_with_full_detail_and_no_is_owner_field -- --ignored`"]
-    async fn the_real_owner_gets_200_with_full_detail_and_no_is_owner_field() {
+                the_real_owner_gets_200_with_full_detail_and_is_owner_true -- --ignored`"]
+    async fn the_real_owner_gets_200_with_full_detail_and_is_owner_true() {
         let pool = connect().await;
 
         let owner_token = seed_session(&pool, "TEST-GET-LINE-REAL-OWNER").await;
@@ -975,14 +1160,166 @@ mod db_tests {
                 .map(Vec::len),
             Some(1)
         );
-        // The point of this task: the vestigial ownership flag is gone
-        // entirely, not just always-true.
-        assert!(
-            !object.contains_key("isOwner"),
-            "isOwner must not appear in the response body at all"
+        // `isOwner` was removed by the 2026-08-31 privacy hardening (a
+        // `200` proved ownership back then) and REINSTATED by custom-line
+        // group sharing, which made a `200` reachable for a granted
+        // non-owner too. It is what the frontend's Edit/Delete gate reads,
+        // so "true for the real owner" is the load-bearing half of that
+        // pair -- see
+        // `a_granted_group_member_gets_200_with_is_owner_false_and_no_shared_groups`
+        // for the other.
+        assert_eq!(object.get("isOwner").and_then(Value::as_bool), Some(true));
+        // No grants exist for this line, so the owner's own "Shared with"
+        // list is empty rather than absent.
+        assert_eq!(
+            object
+                .get("sharedWithGroups")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
         );
 
         cleanup_user(&pool, "TEST-GET-LINE-REAL-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                a_granted_group_member_gets_200_with_is_owner_false_and_no_shared_groups \
+                -- --ignored --test-threads=1`"]
+    async fn a_granted_group_member_gets_200_with_is_owner_false_and_no_shared_groups() {
+        // The HTTP-level version of the read-path widening: a fellow group
+        // member gets the SAME full detail the owner does (design §3.5 --
+        // full detail or nothing), but `isOwner: false` so no mutation
+        // control is ever rendered for them, and an EMPTY
+        // `sharedWithGroups` so they never learn which other groups the
+        // owner shared this line into.
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-GET-LINE-GRANT-OWNER").await;
+        let member_token = seed_session(&pool, "TEST-GET-LINE-GRANT-MEMBER").await;
+        let stranger_token = seed_session(&pool, "TEST-GET-LINE-GRANT-STRANGER").await;
+
+        let line = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Granted Detail Line".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-GET-LINE-GRANT-OWNER",
+        )
+        .await
+        .expect("insert fixture line");
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Get Line Grant Group",
+            "TEST-GET-LINE-GRANT-OWNER",
+        )
+        .await
+        .expect("create fixture group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GET-LINE-GRANT-MEMBER")
+        .execute(&pool)
+        .await
+        .expect("seed fixture membership");
+        crate::data::groups::grant_custom_line(
+            &pool,
+            &group_id,
+            &line.id,
+            "TEST-GET-LINE-GRANT-OWNER",
+        )
+        .await
+        .expect("seed fixture grant");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+
+        let (status, body) = get_line(router.clone(), &line.id, Some(&member_token)).await;
+        assert_eq!(status, StatusCode::OK);
+        let object = body.as_object().expect("200 body should be a JSON object");
+        assert_eq!(
+            object.get("name").and_then(Value::as_str),
+            Some("Test Granted Detail Line")
+        );
+        assert_eq!(object.get("isOwner").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            object
+                .get("sharedWithGroups")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0),
+            "a granted member must never learn which groups this line is shared into"
+        );
+
+        // The owner sees the grant reflected back on their own copy.
+        let (status, body) = get_line(router.clone(), &line.id, Some(&owner_token)).await;
+        assert_eq!(status, StatusCode::OK);
+        let groups = body
+            .get("sharedWithGroups")
+            .and_then(Value::as_array)
+            .expect("owner's sharedWithGroups");
+        assert_eq!(groups.len(), 1, "got {groups:?}");
+        assert_eq!(
+            groups[0].get("name").and_then(Value::as_str),
+            Some("Get Line Grant Group")
+        );
+
+        // Someone in no group at all is still completely shut out, with
+        // the same 404 and the same message a nonexistent id gets.
+        let (status, body) = get_line(router.clone(), &line.id, Some(&stranger_token)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("custom line not found".to_string()));
+
+        // A grant conveys READ access and nothing else (design §5's first
+        // non-goal). Pinned at the HTTP level, not left implicit in
+        // "`update_custom_line`/`delete_custom_line` were not modified":
+        // this is precisely the invariant a future refactor that "made the
+        // write gate match the read gate" would break, and the existing
+        // non-owner tests in this file use a plain stranger, so they would
+        // keep passing through exactly that mistake.
+        let (status, body) = mutate(
+            router.clone(),
+            "PUT",
+            &line.id,
+            Some(&member_token),
+            Some(serde_json::json!({
+                "name": "Hijacked",
+                "operators": ["SW"],
+                "stations": ["WOK", "CLJ"],
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("custom line not found".to_string()));
+
+        let (status, body) = mutate(router, "DELETE", &line.id, Some(&member_token), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("custom line not found".to_string()));
+
+        let (still_named,): (String,) =
+            sqlx::query_as("SELECT name FROM custom_lines WHERE id = $1")
+                .bind(&line.id)
+                .fetch_one(&pool)
+                .await
+                .expect("the line must still exist, unchanged");
+        assert_eq!(still_named, "Test Granted Detail Line");
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        for id in [
+            "TEST-GET-LINE-GRANT-OWNER",
+            "TEST-GET-LINE-GRANT-MEMBER",
+            "TEST-GET-LINE-GRANT-STRANGER",
+        ] {
+            cleanup_user(&pool, id).await;
+        }
     }
 
     #[tokio::test]
@@ -1297,6 +1634,92 @@ mod db_tests {
         );
 
         cleanup_user(&pool, "TEST-GET-LINE-DEF-REAL-OWNER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_definition_a_granted_group_member_gets_200_but_a_non_member_404s \
+                -- --ignored --test-threads=1`"]
+    async fn get_line_definition_a_granted_group_member_gets_200_but_a_non_member_404s() {
+        // `get_line_definition` is the fourth of the read gates custom-line
+        // group sharing widened, and the easiest one to forget: unlike
+        // `get_line` it takes `OptionalAuthenticatedUser` and serves
+        // catalogue ids to anyone, so its custom branch is a narrow strip
+        // of code with two very different callers passing through it.
+        let pool = connect().await;
+        seed_session(&pool, "TEST-GET-DEF-GRANT-OWNER").await;
+        let member_token = seed_session(&pool, "TEST-GET-DEF-GRANT-MEMBER").await;
+        let stranger_token = seed_session(&pool, "TEST-GET-DEF-GRANT-STRANGER").await;
+
+        let line = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Granted Definition Line".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-GET-DEF-GRANT-OWNER",
+        )
+        .await
+        .expect("insert fixture line");
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Get Definition Grant Group",
+            "TEST-GET-DEF-GRANT-OWNER",
+        )
+        .await
+        .expect("create fixture group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-GET-DEF-GRANT-MEMBER")
+        .execute(&pool)
+        .await
+        .expect("seed fixture membership");
+        crate::data::groups::grant_custom_line(
+            &pool,
+            &group_id,
+            &line.id,
+            "TEST-GET-DEF-GRANT-OWNER",
+        )
+        .await
+        .expect("seed fixture grant");
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+
+        let (status, body) =
+            get_line_definition(router.clone(), &line.id, Some(&member_token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body.get("stations").and_then(Value::as_array).map(Vec::len),
+            Some(2)
+        );
+
+        // A logged-in caller in none of the owner's groups, and an
+        // anonymous one, both get the identical 404 an unknown id gets.
+        let (status, body) =
+            get_line_definition(router.clone(), &line.id, Some(&stranger_token)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, Value::String("line not found".to_string()));
+        let (status, _) = get_line_definition(router, &line.id, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        for id in [
+            "TEST-GET-DEF-GRANT-OWNER",
+            "TEST-GET-DEF-GRANT-MEMBER",
+            "TEST-GET-DEF-GRANT-STRANGER",
+        ] {
+            cleanup_user(&pool, id).await;
+        }
     }
 
     #[tokio::test]
@@ -1794,8 +2217,7 @@ mod db_tests {
         }
         assert_eq!(entries[0]["uid"], "TEST-TRAINS-3-A");
         assert_eq!(
-            entries[0]["callingPoints"],
-            population[0]["calling_points"],
+            entries[0]["callingPoints"], population[0]["calling_points"],
             "callingPoints must be the raw population entry, unchanged"
         );
 

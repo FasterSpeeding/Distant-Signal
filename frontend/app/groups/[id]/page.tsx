@@ -1,8 +1,11 @@
 import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
+import Link from 'next/link';
 import {
   getGroup,
+  getGroupCustomLines,
   getGroupMembers,
   getGroupTrains,
+  getLineStatus,
   getSession,
   ApiNotFoundError,
   ApiUnauthorizedError,
@@ -15,9 +18,14 @@ import { DeleteGroupButton } from '@/components/DeleteGroupButton';
 import { GroupInviteLinkCard } from '@/components/GroupInviteLinkCard';
 import { RemoveGroupTrainButton } from '@/components/RemoveGroupTrainButton';
 import { AddTrainToGroupButton } from '@/components/AddTrainToGroupButton';
+import { AddCustomLineToGroupButton } from '@/components/AddCustomLineToGroupButton';
+import { RemoveCustomLineGrantButton } from '@/components/RemoveCustomLineGrantButton';
+import { StatusBadge } from '@/components/StatusBadge';
 import { LoginLink } from '@/components/LoginLink';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
-import type { GroupMember, GroupTrain } from '@/lib/types';
+import { worstStatus } from '@/lib/severity';
+import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
+import type { GroupCustomLine, GroupMember, GroupTrain, LineStatusReport } from '@/lib/types';
 
 export const revalidate = 0;
 
@@ -65,11 +73,35 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
     throw err;
   }
 
-  const [members, trains, session] = await Promise.all([
+  const [members, trains, customLines, session] = await Promise.all([
     getGroupMembers(id),
     getGroupTrains(id),
+    getGroupCustomLines(id),
     getSession().catch(() => ({ authenticated: false, id: null, email: null, name: null })),
   ]);
+
+  // Live status for the shared custom lines, read through the ordinary
+  // `/Line/{ids}/Status` route rather than a second, parallel status path
+  // baked into `GET /groups/{id}/lines/custom`. That route is exactly the
+  // one a grant widens, so this is also the end-to-end proof the widening
+  // works for this viewer.
+  //
+  // Only `ApiNotFoundError` is swallowed, not every failure: that route
+  // 404s when it matches nothing at all (a line the aggregator hasn't
+  // computed a status for yet), which is an ordinary state here and should
+  // degrade to "no badge". A 401, a 5xx or a dead socket is not, and
+  // silently rendering every shared line as statusless would hide it.
+  let customLineReports: LineStatusReport[] = [];
+  if (customLines.length > 0) {
+    customLineReports = await getLineStatus(
+      customLines.map((l) => l.lineId),
+      false,
+    ).catch((err) => {
+      if (err instanceof ApiNotFoundError) return [];
+      throw err;
+    });
+  }
+  const reportByLineId = new Map(customLineReports.map((r) => [r.id, r]));
   const currentUserId = session.authenticated ? session.id : null;
   const canManage = group.role === 'owner' || group.role === 'admin';
   // Distinct from `canManage`: the backend gates promotion and group
@@ -133,6 +165,39 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
           ))
         )}
       </Stack>
+
+      <Divider />
+
+      {/* A fourth, separate section rather than folding custom lines into
+          "Shared trains" (or into a future catalogue-line section): the
+          add-affordance is genuinely different -- only a line's own OWNER
+          can share it, unlike a public catalogue line anyone could add --
+          and a merged list would have to explain per row why some entries
+          can be added by anyone and others only by one specific person.
+          See the design doc §3.4. */}
+      <Stack gap="sm">
+        <Group justify="space-between" align="baseline">
+          <Title order={2}>Shared custom lines</Title>
+          <AddCustomLineToGroupButton
+            groupId={id}
+            excludeLineIds={customLines.map((l) => l.lineId)}
+          />
+        </Group>
+        {customLines.length === 0 ? (
+          <Text c="dimmed">No custom lines have been shared into this group yet.</Text>
+        ) : (
+          customLines.map((line) => (
+            <SharedCustomLineRow
+              key={line.lineId}
+              groupId={id}
+              line={line}
+              report={reportByLineId.get(line.lineId)}
+              canManage={canManage}
+              currentUserId={currentUserId}
+            />
+          ))
+        )}
+      </Stack>
     </Stack>
   );
 }
@@ -148,13 +213,13 @@ function MemberRow({
   canManage: boolean;
   viewerIsOwner: boolean;
 }) {
-  // `?.trim() ||`, not `??`: a member whose identity provider has no name
-  // on file for them can reach here as a BLANK `displayName` rather than a
-  // null one (see `data::users::non_blank` for why -- the backend now
-  // normalizes that to null on both read and write, but rows written
-  // before it did still exist, and `??` would happily render the empty
-  // string as this row's entire label).
-  const label = member.displayName?.trim() || 'A member';
+  // `memberLabel`, not a bare `displayName`: a member whose identity
+  // provider has no name on file for them (or only an email-shaped one,
+  // which the backend declines to show) renders as the generic
+  // placeholder, suffixed with their `displayTag` so several such members
+  // are still separate rows rather than one repeated "A member". See
+  // `lib/memberLabel.ts`.
+  const label = memberLabel(member.displayName, member.displayTag);
   const isOwner = member.role === 'owner';
   return (
     <Group justify="space-between" wrap="nowrap">
@@ -204,9 +269,12 @@ function SharedTrainRow({
         <Stack gap={4}>
           <Text fw={500}>{displayName}</Text>
           <Text size="sm" c="dimmed">
-            {/* `?.trim() ||`, not `??` -- same blank-vs-null display-name
-                reasoning as `MemberRow`'s own `label` above. */}
-            Shared by {train.addedByName?.trim() || 'a member'}
+            {/* Same helper as `MemberRow`'s own `label` above, so the
+                credit on this card and the row in the member list above
+                carry the same "(#a1b2c3)" for the same person -- which is
+                the whole way to answer "who shared this?" when the IdP
+                gives this app no showable name for anyone. */}
+            Shared by {memberLabel(train.addedByName, train.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
             {train.status && ` · ${train.status}`}
             {train.delayMinutes !== null && train.delayMinutes > 0 && ` · ${train.delayMinutes}m late`}
           </Text>
@@ -214,6 +282,62 @@ function SharedTrainRow({
         {canRemove && (
           <RemoveGroupTrainButton groupId={groupId} trainSubscriptionId={train.trainSubscriptionId} />
         )}
+      </Group>
+    </Card>
+  );
+}
+
+/** One custom line shared into this group.
+ *
+ * Deliberately view-only for everyone except the line's owner, who reaches
+ * their edit controls through `/lines/{id}` (this row links there) and not
+ * from here. A grant conveys read access and nothing else: no member --
+ * not even a group `admin`/`owner` -- can edit or delete a line they don't
+ * own, and the backend refuses it regardless of what this page renders.
+ *
+ * `canRemove` mirrors `groups::remove_custom_line_grant`'s own
+ * sharer-or-manager check exactly, the same way `SharedTrainRow`'s does:
+ * "Stop sharing" only revokes the group's visibility and never touches the
+ * line. */
+function SharedCustomLineRow({
+  groupId,
+  line,
+  report,
+  canManage,
+  currentUserId,
+}: {
+  groupId: string;
+  line: GroupCustomLine;
+  report: LineStatusReport | undefined;
+  canManage: boolean;
+  currentUserId: string | null;
+}) {
+  const canRemove = canManage || (currentUserId !== null && line.grantedBy === currentUserId);
+  return (
+    <Card withBorder>
+      <Group justify="space-between" wrap="nowrap" align="flex-start">
+        <Stack gap={4}>
+          <Link href={`/lines/${line.lineId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+            <Text fw={500}>{line.lineName}</Text>
+          </Link>
+          <Text size="sm" c="dimmed">
+            {/* `memberLabel`, not a hand-rolled fallback -- same helper
+                the member rows and the shared-train row above use, so all
+                three agree on blank-vs-null and on how an unnameable
+                member is told apart (an opaque tag, never an email). */}
+            Shared by {memberLabel(line.grantedByName, line.grantedByTag, MEMBER_PLACEHOLDER_INLINE)}
+          </Text>
+        </Stack>
+        <Group gap="xs" wrap="nowrap">
+          {report && <StatusBadge severity={worstStatus(report).statusSeverity} />}
+          {canRemove && (
+            <RemoveCustomLineGrantButton
+              groupId={groupId}
+              lineId={line.lineId}
+              lineName={line.lineName}
+            />
+          )}
+        </Group>
       </Group>
     </Card>
   );

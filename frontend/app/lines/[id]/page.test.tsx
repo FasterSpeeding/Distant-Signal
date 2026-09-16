@@ -77,6 +77,8 @@ function customLine(overrides: Partial<CustomLineDetail> = {}): CustomLineDetail
     stations: ['WOK', 'CLJ'],
     headcodePrefixes: [],
     destinationCrsFilter: [],
+    isOwner: true,
+    sharedWithGroups: [],
     ...overrides,
   };
 }
@@ -140,11 +142,47 @@ describe('LineDetailPage Edit/Delete visibility', () => {
     await screen.findByText('Not enough sampled data yet for this line.');
   });
 
-  it('a custom line (getCustomLine resolves) shows Edit/Delete -- ownership is already enforced by getCustomLine 404ing for anyone else', async () => {
-    vi.mocked(api.getCustomLine).mockResolvedValue(customLine());
+  it('a custom line the caller OWNS (isOwner: true) shows Edit/Delete', async () => {
+    vi.mocked(api.getCustomLine).mockResolvedValue(customLine({ isOwner: true }));
     await renderPage();
     expect(screen.getByRole('link', { name: 'Edit' })).toHaveAttribute('href', '/lines/custom-my-commute/edit');
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    await screen.findByText('Not enough sampled data yet for this line.');
+  });
+
+  // A `200` from `getCustomLine` used to prove ownership by itself. Custom-
+  // line group sharing ended that: a member of a group the line was shared
+  // into gets the same full detail with `isOwner: false`, and must be shown
+  // no mutation control -- both because the backend would 404 the attempt
+  // and because offering them reads as "this line is yours".
+  it('a custom line SHARED with the caller (isOwner: false) shows neither Edit nor Delete', async () => {
+    vi.mocked(api.getCustomLine).mockResolvedValue(customLine({ isOwner: false }));
+    await renderPage();
+    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Shared with you through a group. Only its owner can edit it.'),
+    ).toBeInTheDocument();
+    await screen.findByText('Not enough sampled data yet for this line.');
+  });
+
+  it('a shared line never names the groups its owner shared it into', async () => {
+    // `sharedWithGroups` is owner-only on the wire; this pins that the page
+    // would not render it even if a future backend change leaked one.
+    vi.mocked(api.getCustomLine).mockResolvedValue(
+      customLine({ isOwner: false, sharedWithGroups: [{ id: 'grp-secret', name: 'Secret Group' }] }),
+    );
+    await renderPage();
+    expect(screen.queryByText(/Secret Group/)).not.toBeInTheDocument();
+    await screen.findByText('Not enough sampled data yet for this line.');
+  });
+
+  it("shows the owner their line's own 'Shared with' group list, linked", async () => {
+    vi.mocked(api.getCustomLine).mockResolvedValue(
+      customLine({ isOwner: true, sharedWithGroups: [{ id: 'grp-1', name: 'Family' }] }),
+    );
+    await renderPage();
+    expect(screen.getByRole('link', { name: 'Family' })).toHaveAttribute('href', '/groups/grp-1');
     await screen.findByText('Not enough sampled data yet for this line.');
   });
 });

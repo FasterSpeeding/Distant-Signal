@@ -380,8 +380,10 @@ without help, and this app already has accessibility precedent to follow
 `2026-09-02-frontend-accessibility-audit-research.md`'s existing pass over
 this codebase). Concretely:
 
-- The outer container carries `role="img"` and an `aria-label` that states
-  the same fact the visual marker states: `aria-label="Journey progress:
+- The outer container carries a container-level role (`role="group"` — see
+  the correction below; originally written as `role="img"`) and an
+  `aria-label` that states the same fact the visual marker states:
+  `aria-label="Journey progress:
   currently at {name}, {n} of {total} stops"` (or, for the `-1`/no-marker
   states, `"Journey progress: not yet started"` / `"...cancelled, last
   confirmed at {name}"` etc., one string per row of the Decision 5 table).
@@ -394,6 +396,26 @@ this codebase). Concretely:
   focusable/readable for a sighted keyboard user who wants the
   intermediate-stop detail — matching `Tooltip`'s existing accessible
   pattern elsewhere in this codebase, not inventing a new one.
+  - **Correction (2026-09-15), from the review of the mobile-scaling
+    fix**: the two bullets above were originally written as `role="img"`
+    on the container *plus* focusable per-node triggers, which ARIA does
+    not allow to coexist — an `img`'s subtree is presentational, so every
+    descendant, focusable trigger included, is dropped from the
+    accessibility tree. As shipped that made the triggers focusable but
+    silent: a sighted keyboard user tabbed onto a node and a screen reader
+    announced nothing (WCAG 2.1.1 / 4.1.2). The container is therefore
+    `role="group"` with the exact same per-state `aria-label` strings
+    listed above — the "at a glance" restatement this decision is really
+    about is unchanged, and `group` is announced on entering the container
+    just as the `img` label was — while the second bullet's focusable
+    triggers now actually work. Each trigger is a style-reset `<button>`
+    carrying the stop's name as its `aria-label` (the same focusable
+    element + own accessible name shape `LineDefinitionTooltip.tsx`'s
+    `ActionIcon` trigger already uses), rather than a bare
+    `tabIndex={0}` `<div>`, whose `generic` role names nothing. Endpoint
+    nodes stay non-focusable: their names are already visible text, and
+    the full stop-by-stop detail is in the `JourneyTimeline` table below
+    regardless.
 - Color is never the only signal: the "you are here" halo/ring is a shape
   difference, not just a color difference (colorblind-safe by
   construction, and consistent with `delayBadge`'s own text labels
@@ -498,7 +520,8 @@ reinvented):
     terminus), plus the inference badge/glyph present.
   - Origin/Terminate nodes render at the distinguishing larger size;
     intermediate nodes don't.
-  - Container `role="img"` + `aria-label` text matches the expected string
+  - Container `role="group"` (see Decision 6's 2026-09-15 correction) +
+    `aria-label` text matches the expected string
     for each of the Decision 5 table's rows — one test per row, mirroring
     how `TrainJourney.test.tsx` already has one test per state-table row
     for `StatusMessage`.

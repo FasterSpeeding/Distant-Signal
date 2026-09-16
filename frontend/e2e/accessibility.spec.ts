@@ -32,6 +32,23 @@ const REAL_STATION_CRS = process.env.E2E_REAL_STATION_CRS ?? 'PAD';
 // this spec and get miscategorized as a regression in this work.
 const RULES_UNDER_TEST = ['color-contrast', 'landmark-one-main', 'region', 'heading-order', 'page-has-heading-one'];
 
+// Deliberately NOT covered here: `/train/[uid]/[date]` (and so
+// `JourneyProgress`, the progress diagram it renders). Unlike the line,
+// incident and station identifiers above, a `train_uid`/date pair is only
+// resolvable for as long as that schedule is live in the feed, so there is
+// no stable fixture to hardcode or default an env var to -- a route added
+// here would start failing on a date nobody changed anything on. That
+// component's accessibility invariants (the diagram container's
+// `role="group"` + per-state `aria-label`, every focusable tooltip trigger
+// carrying a real role and name, nothing focusable left inside an
+// ARIA-removed subtree) are asserted deterministically instead, in
+// `components/JourneyProgress.test.tsx`'s "keyboard reachability" block.
+// Note the other half of that gap: `RULES_UNDER_TEST` above is scoped to
+// one plan's five rules, so even a route that did render the diagram
+// wouldn't catch such a regression through this suite -- the rules that
+// would (`scrollable-region-focusable`, `nested-interactive`,
+// `aria-hidden-focus`, `button-name`) aren't in the list.
+
 async function expectNoViolations(page: import('@playwright/test').Page) {
   const results = await new AxeBuilder({ page }).withRules(RULES_UNDER_TEST).analyze();
   expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);

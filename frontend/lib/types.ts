@@ -343,6 +343,19 @@ export interface CustomLineDetail {
   stations: string[];
   headcodePrefixes: string[];
   destinationCrsFilter: string[];
+  /** Whether the CALLER owns this line. A `200` from
+   * `GET /public/lines/{id}` used to prove ownership by itself; custom-line
+   * group sharing made that false (a granted group member gets the same
+   * full detail), so every edit/delete affordance must gate on this flag
+   * rather than on "the fetch succeeded". The backend is still the
+   * authority -- `PUT`/`DELETE` remain owner-only and grant-blind -- this
+   * is what stops the UI offering a control that can only ever 404. */
+  isOwner: boolean;
+  /** Every group this line is currently shared into. Populated ONLY when
+   * `isOwner` is true; always `[]` for a granted non-owner, so a fellow
+   * group member never learns which other groups the owner shared it
+   * into. */
+  sharedWithGroups: LineGroupRef[];
 }
 
 export interface LineDefinitionSummary {
@@ -859,6 +872,8 @@ export interface GroupDetail {
   /** Same contract as `GroupMember.displayName`: the owner's own name, or
    * `null` -- never their email address. */
   ownerName: string | null;
+  /** Same contract as `GroupMember.displayTag`. */
+  ownerTag: string | null;
   memberCount: number;
   role: GroupRole;
   // `null` for a plain `member` -- the invite link is only ever included
@@ -872,8 +887,18 @@ export interface GroupMember {
   /** The member's own name, or `null` when their identity provider has no
    * name on file for them -- never their email address (the backend
    * deliberately doesn't fall back to one: `crates/api/src/data/users.rs`'s
-   * `display_label`). Render `null` as a generic placeholder. */
+   * `display_label`). Render `null` as a generic placeholder -- via
+   * `lib/memberLabel.ts`'s `memberLabel`, which also appends `displayTag`. */
   displayName: string | null;
+  /** Six hex characters that distinguish this member from the other
+   * placeholder-rendered members of the same group, and `null` whenever
+   * `displayName` is set (a real name is never suffixed). Derived from
+   * `userId` and never from an email address -- see
+   * `crates/api/src/data/users.rs`'s `MemberDisplay`. Without it, an
+   * identity provider whose username claim is the user's email by design
+   * (Entra ID's UPN) renders every single member of a group as the same
+   * indistinguishable "A member". */
+  displayTag: string | null;
   role: GroupRole;
   joinedAt: string; // RFC3339
 }
@@ -898,6 +923,8 @@ export interface GroupTrain {
   /** Same contract as `GroupMember.displayName`: the sharer's own name, or
    * `null` -- never their email address. */
   addedByName: string | null;
+  /** Same contract as `GroupMember.displayTag`, for the sharer. */
+  addedByTag: string | null;
 }
 
 /** `GET /public/groups/shared-trains`'s per-item shape
@@ -915,6 +942,51 @@ export interface GroupTrain {
 export interface SharedGroupTrain extends GroupTrain {
   groupId: string;
   groupName: string;
+}
+
+/** A custom line granted into a group by its OWNER
+ * (`crates/api/src/data/groups.rs`'s `GroupCustomLine`) -- identity and
+ * attribution only. The line's definition and live status are read through
+ * the ordinary `/lines/{id}` and `/Line/{ids}/Status` routes, which the
+ * grant widens for every member of the group, rather than being duplicated
+ * onto this shape.
+ *
+ * A grant conveys READ access only: no group member other than the owner
+ * can ever edit, delete, or re-share the line. */
+export interface GroupCustomLine {
+  lineId: string;
+  lineName: string;
+  grantedBy: string;
+  /** Same contract as `GroupMember.displayName`/`GroupTrain.addedByName`:
+   * the sharer's own name, or `null` -- never their email address. */
+  grantedByName: string | null;
+  /** Same contract as `GroupTrain.addedByTag`: set only when
+   * `grantedByName` is `null`, so a group whose IdP can name nobody can
+   * still tell one member's shared line from another's. Render through
+   * `memberLabel`, never on its own. */
+  grantedByTag: string | null;
+}
+
+/** `GET /public/groups/shared-custom-lines`'s per-item shape
+ * (`crates/api/src/data/groups.rs`'s `SharedCustomLine`): a
+ * `GroupCustomLine` plus the group it was granted into, since this route's
+ * rows come from every group the caller belongs to at once.
+ *
+ * One item per (group, line) pair -- a line granted into two of the
+ * caller's groups arrives twice, so no attribution is lost on the wire;
+ * `lib/sharedCustomLines.ts` merges those back into a single row carrying
+ * both group tags. Never includes the caller's OWN custom lines. */
+export interface SharedGroupCustomLine extends GroupCustomLine {
+  groupId: string;
+  groupName: string;
+}
+
+/** One group a custom line is shared into, as its OWNER sees it on their
+ * own edit page. Only ever populated for the owner -- see
+ * `CustomLineDetail.sharedWithGroups`. */
+export interface LineGroupRef {
+  id: string;
+  name: string;
 }
 
 export interface GroupJoinPreview {

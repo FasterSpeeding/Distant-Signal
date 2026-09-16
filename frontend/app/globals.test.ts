@@ -402,6 +402,11 @@ describe('journey progress diagram layout', () => {
     const rule = css.match(/\.journeyProgressScroll\s*\{[^}]*\}/);
     expect(rule![0]).toContain('overflow-x: auto');
     expect(rule![0]).toContain('overscroll-behavior-x: contain');
+    // Not decoration: `overflow-x: auto` computes `overflow-y` to `auto`
+    // too, and the nodes sit at y=0 of the scroll content -- so this
+    // padding is the only thing keeping the marker's halo and a focused
+    // trigger's focus ring (WCAG 2.4.7) off the clip edge.
+    expect(rule![0]).toContain('padding-block: 6px');
   });
 
   it('sizes the node row from the counts the component supplies', () => {

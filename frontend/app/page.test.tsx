@@ -4,7 +4,12 @@ import { renderWithMantine } from '@/test/render';
 import DashboardPage, { metadata } from './page';
 import * as api from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
-import type { LineStatusReport, SharedGroupTrain, TrackedTrainListItem } from '@/lib/types';
+import type {
+  LineStatusReport,
+  SharedGroupCustomLine,
+  SharedGroupTrain,
+  TrackedTrainListItem,
+} from '@/lib/types';
 
 vi.mock('@/lib/api');
 // `withStaleFallback` (lib/liveDataCache.ts) reads the session cookie via
@@ -78,6 +83,7 @@ function sharedTrain(overrides: Partial<SharedGroupTrain> = {}): SharedGroupTrai
     customName: null,
     addedBy: 'user-2',
     addedByName: 'Sam',
+    addedByTag: null,
     ...overrides,
   };
 }
@@ -100,6 +106,7 @@ beforeEach(() => {
   vi.mocked(api.getSharedGroupTrains).mockResolvedValue([]);
   vi.mocked(api.getStationName).mockResolvedValue(null);
   vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
+  vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue(null);
 });
 
 describe('DashboardPage', () => {
@@ -587,6 +594,134 @@ describe('DashboardPage -- pinned station line-coverage distinction', () => {
   });
 });
 
+describe('DashboardPage -- Lines shared with you section', () => {
+  function sharedLine(overrides: Partial<SharedGroupCustomLine> = {}): SharedGroupCustomLine {
+    return {
+      groupId: 'grp-1',
+      groupName: 'Family',
+      lineId: 'custom-my-commute',
+      lineName: 'My Commute',
+      grantedBy: 'user-2',
+      grantedByName: 'Sam',
+      grantedByTag: null,
+      ...overrides,
+    };
+  }
+
+  const loggedIn = { authenticated: true as const, id: 'u1', email: 'a@b.com', name: 'A' };
+
+  it('is absent entirely when nothing has been shared with the caller', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByRole('heading', { name: 'Lines shared with you' })).not.toBeInTheDocument();
+  });
+
+  it('is absent for an anonymous visitor even if the endpoint somehow returned rows', async () => {
+    // The anonymous branch returns before this section is ever rendered --
+    // a shared custom line is only ever visible to a signed-in member.
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([sharedLine()]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByRole('heading', { name: 'Lines shared with you' })).not.toBeInTheDocument();
+    expect(screen.queryByText('My Commute')).not.toBeInTheDocument();
+  });
+
+  it('renders a shared line with its group tag, its sharer, and a link to the line', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([sharedLine()]);
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByRole('heading', { name: 'Lines shared with you' })).toBeInTheDocument();
+    expect(screen.getByText('My Commute')).toBeInTheDocument();
+    expect(screen.getByText('from Family')).toBeInTheDocument();
+    expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /My Commute/ })).toHaveAttribute(
+      'href',
+      '/lines/custom-my-commute',
+    );
+  });
+
+  it("tags a line shared into two of the caller's groups with both, on one row", async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([
+      sharedLine({ groupId: 'grp-1', groupName: 'Family' }),
+      sharedLine({ groupId: 'grp-2', groupName: 'Commute Buddies' }),
+    ]);
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getAllByText('My Commute')).toHaveLength(1);
+    expect(screen.getByText('from Family')).toBeInTheDocument();
+    expect(screen.getByText('from Commute Buddies')).toBeInTheDocument();
+  });
+
+  it('falls back to "a member" rather than a raw user id when the sharer has no display name', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([sharedLine({ grantedByName: null })]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByText('Shared by a member')).toBeInTheDocument();
+    expect(screen.queryByText(/user-2/)).not.toBeInTheDocument();
+  });
+
+  it('renders no owner controls of any kind on a shared line -- it is view-only', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([sharedLine()]);
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.queryByRole('button', { name: /edit/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /stop sharing/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /pin/i })).not.toBeInTheDocument();
+  });
+
+  it('does not render a shared line twice when the caller has also pinned it', async () => {
+    // A granted member can pin a shared line like any other, and "Your
+    // Lines" renders it from allReports -- so it must not also appear
+    // under "Lines shared with you".
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: ['custom-my-commute'],
+      pinnedStations: [],
+    });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({ id: 'custom-my-commute', name: 'My Commute' }),
+    ]);
+    vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([sharedLine()]);
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getAllByText('My Commute')).toHaveLength(1);
+    expect(screen.queryByRole('heading', { name: 'Lines shared with you' })).not.toBeInTheDocument();
+  });
+
+  it('still shows a pinned shared line that has no status row yet, rather than dropping it', async () => {
+    // The dedupe above keys off what "Your Lines" will ACTUALLY render
+    // (`pinnedLineReports`), not off `preferences.pinnedLines`. The two
+    // differ for a line the aggregator hasn't computed a status for yet:
+    // it's pinned, but absent from `allReports`, so "Your Lines" skips it.
+    // Excluding it here too would drop it from the page entirely.
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: ['custom-my-commute'],
+      pinnedStations: [],
+    });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
+    vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([sharedLine()]);
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByRole('heading', { name: 'Lines shared with you' })).toBeInTheDocument();
+    expect(screen.getAllByText('My Commute')).toHaveLength(1);
+  });
+
+  it('survives the shared-lines fetch failing, rather than blanking the dashboard', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getSharedGroupCustomLines).mockRejectedValue(new Error('boom'));
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByRole('heading', { name: 'Your Lines' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Lines shared with you' })).not.toBeInTheDocument();
+  });
+});
+
 // The home page's own copy of the /track/mine fix: a train another member
 // shared into a group the caller belongs to is one of "their" trains for
 // the purposes of this section, and before this it was invisible here --
@@ -729,6 +864,29 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     renderWithMantine(await DashboardPage());
 
     expect(screen.getByText('Shared by a member')).toBeInTheDocument();
+  });
+
+  /** Same distinguishing suffix /track/mine and /groups/{id} render, on the
+   * home page's copy of the shared-train row: two sharers this app cannot
+   * name are two different credits, not one repeated "a member". */
+  it('credits two unnameable sharers distinguishably', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+      sharedTrain({ trainSubscriptionId: 50, addedBy: 'sso-1', addedByName: null, addedByTag: 'a1b2c3' }),
+      sharedTrain({
+        trainSubscriptionId: 51,
+        pinOriginCrs: 'WOK',
+        pinDestinationCrs: 'WAT',
+        addedBy: 'sso-2',
+        addedByName: null,
+        addedByTag: 'd4e5f6',
+      }),
+    ]);
+
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText('Shared by a member (#a1b2c3)')).toBeInTheDocument();
+    expect(screen.getByText('Shared by a member (#d4e5f6)')).toBeInTheDocument();
   });
 
   it('offers no edit/delete/ticket control on someone else’s shared train', async () => {

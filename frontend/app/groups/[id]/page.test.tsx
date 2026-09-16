@@ -1,26 +1,44 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import GroupDetailPage from './page';
 import {
   getGroup,
+  getGroupCustomLines,
   getGroupMembers,
   getGroupTrains,
+  getLineStatus,
   getSession,
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from '@/lib/api';
-import type { GroupMember, GroupRole, GroupTrain } from '@/lib/types';
+import type {
+  GroupCustomLine,
+  GroupMember,
+  GroupRole,
+  GroupTrain,
+  LineStatusReport,
+} from '@/lib/types';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
   return {
     ...actual,
     getGroup: vi.fn(),
+    getGroupCustomLines: vi.fn(),
     getGroupMembers: vi.fn(),
     getGroupTrains: vi.fn(),
+    getLineStatus: vi.fn(),
     getSession: vi.fn(),
   };
+});
+
+// Every test that gets past the group fetch renders the shared-custom-lines
+// section, so both of its calls need a default; individual tests below
+// override what they care about.
+beforeEach(() => {
+  vi.mocked(getGroupCustomLines).mockResolvedValue([]);
+  vi.mocked(getLineStatus).mockResolvedValue([]);
 });
 
 vi.mock('next/navigation', () => ({
@@ -42,13 +60,14 @@ describe('GroupDetailPage', () => {
       name: 'Family',
       ownerId: 'user-1',
       ownerName: 'Alex',
+      ownerTag: null,
       memberCount: 2,
       role: 'owner',
       inviteLink: { token: 'tok', expiresAt: '2026-09-18T00:00:00Z' },
     });
     vi.mocked(getGroupMembers).mockResolvedValue([
-      { userId: 'user-1', displayName: 'Alex', role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
-      { userId: 'user-2', displayName: 'Sam', role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
+      { userId: 'user-1', displayName: 'Alex', displayTag: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+      { userId: 'user-2', displayName: 'Sam', displayTag: null, role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([
       {
@@ -66,6 +85,7 @@ describe('GroupDetailPage', () => {
         customName: null,
         addedBy: 'user-2',
         addedByName: 'Sam',
+        addedByTag: null,
       },
     ]);
     vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
@@ -98,13 +118,14 @@ describe('GroupDetailPage', () => {
       name: 'Family',
       ownerId: 'user-1',
       ownerName: 'Alex',
+      ownerTag: null,
       memberCount: 2,
       role: 'member',
       inviteLink: null,
     });
     vi.mocked(getGroupMembers).mockResolvedValue([
-      { userId: 'user-1', displayName: 'Alex', role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
-      { userId: 'user-2', displayName: '   ', role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
+      { userId: 'user-1', displayName: 'Alex', displayTag: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+      { userId: 'user-2', displayName: '   ', displayTag: null, role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([
       {
@@ -122,6 +143,7 @@ describe('GroupDetailPage', () => {
         customName: null,
         addedBy: 'user-2',
         addedByName: '',
+        addedByTag: null,
       },
     ]);
     vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
@@ -132,18 +154,75 @@ describe('GroupDetailPage', () => {
     expect(screen.getByText(/Shared by a member/)).toBeInTheDocument();
   });
 
+  /** The Entra-ID case. `preferred_username` there IS the user's
+   * email-shaped UPN, so the backend declines to name ANY member of the
+   * group (it never shows an address) and every row used to read as the
+   * identical "A member" -- an admin looking at this list had no way to
+   * tell which row was whom, or which of them shared the train below.
+   * `displayTag` is what separates them, and the sharer's tag matches
+   * their own row in the member list so the two can be read together. */
+  it('tells placeholder-rendered members apart by their display tag', async () => {
+    vi.mocked(getGroup).mockResolvedValue({
+      id: 'grp-1',
+      name: 'Family',
+      ownerId: 'user-1',
+      ownerName: null,
+      ownerTag: 'a1b2c3',
+      memberCount: 3,
+      role: 'owner',
+      inviteLink: null,
+    });
+    vi.mocked(getGroupMembers).mockResolvedValue([
+      { userId: 'user-1', displayName: null, displayTag: 'a1b2c3', role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+      { userId: 'user-2', displayName: null, displayTag: 'd4e5f6', role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
+      { userId: 'user-3', displayName: 'Ada Rider', displayTag: null, role: 'member', joinedAt: '2026-09-03T00:00:00Z' },
+    ]);
+    vi.mocked(getGroupTrains).mockResolvedValue([
+      {
+        trainSubscriptionId: 42,
+        pinOriginCrs: 'WOK',
+        pinDestinationCrs: 'WAT',
+        pinOriginName: 'Woking',
+        pinDestinationName: 'London Waterloo',
+        pinScheduledDeparture: '2026-09-11T08:00:00Z',
+        serviceDate: '2026-09-11',
+        resolutionStatus: 'resolved',
+        trainUid: 'A12345',
+        status: null,
+        delayMinutes: null,
+        customName: null,
+        addedBy: 'user-2',
+        addedByName: null,
+        addedByTag: 'd4e5f6',
+      },
+    ]);
+    vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: null });
+
+    renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
+
+    expect(screen.getByText('A member (#a1b2c3)')).toBeInTheDocument();
+    expect(screen.getByText('A member (#d4e5f6)')).toBeInTheDocument();
+    // The member this app CAN name is untouched -- no suffix on a real name.
+    expect(screen.getByText('Ada Rider')).toBeInTheDocument();
+    // ...and the credit on the shared train points at the second member's
+    // row rather than at an anonymous everyone.
+    expect(screen.getByText(/Shared by a member \(#d4e5f6\)/)).toBeInTheDocument();
+    expect(screen.queryByText('A member')).not.toBeInTheDocument();
+  });
+
   it('never renders a Remove button for the owner row', async () => {
     vi.mocked(getGroup).mockResolvedValue({
       id: 'grp-1',
       name: 'Family',
       ownerId: 'user-1',
       ownerName: 'Alex',
+      ownerTag: null,
       memberCount: 1,
       role: 'owner',
       inviteLink: null,
     });
     vi.mocked(getGroupMembers).mockResolvedValue([
-      { userId: 'user-1', displayName: 'Alex', role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+      { userId: 'user-1', displayName: 'Alex', displayTag: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
     ]);
     vi.mocked(getGroupTrains).mockResolvedValue([]);
     vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
@@ -167,18 +246,21 @@ describe('GroupDetailPage', () => {
     const OWNER: GroupMember = {
       userId: 'user-owner',
       displayName: 'Olive',
+      displayTag: null,
       role: 'owner',
       joinedAt: '2026-09-01T00:00:00Z',
     };
     const ADMIN: GroupMember = {
       userId: 'user-admin',
       displayName: 'Adam',
+      displayTag: null,
       role: 'admin',
       joinedAt: '2026-09-02T00:00:00Z',
     };
     const PLAIN: GroupMember = {
       userId: 'user-plain',
       displayName: 'Priya',
+      displayTag: null,
       role: 'member',
       joinedAt: '2026-09-03T00:00:00Z',
     };
@@ -199,6 +281,7 @@ describe('GroupDetailPage', () => {
         customName: `Train ${trainSubscriptionId}`,
         addedBy,
         addedByName: addedBy,
+        addedByTag: null,
       };
     }
 
@@ -210,6 +293,7 @@ describe('GroupDetailPage', () => {
         name: 'Family',
         ownerId: OWNER.userId,
         ownerName: OWNER.displayName,
+        ownerTag: null,
         memberCount: 3,
         role: viewerRole,
         inviteLink: null,
@@ -284,6 +368,7 @@ describe('GroupDetailPage', () => {
         name: 'Family',
         ownerId: OWNER.userId,
         ownerName: OWNER.displayName,
+        ownerTag: null,
         memberCount: 1,
         role: 'owner',
         inviteLink: null,
@@ -308,6 +393,122 @@ describe('GroupDetailPage', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
       await waitFor(() => screen.getByText(/lose access to every train shared/));
       expect(screen.queryByText(/delete it for good/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('shared custom lines', () => {
+    const SHARER = 'user-sharer';
+
+    function line(overrides: Partial<GroupCustomLine> = {}): GroupCustomLine {
+      return {
+        lineId: 'custom-my-commute',
+        lineName: 'My Commute',
+        grantedBy: SHARER,
+        grantedByName: 'Sam',
+        grantedByTag: null,
+        ...overrides,
+      };
+    }
+
+    function report(): LineStatusReport {
+      return {
+        $type: 'DistantSignal.LineStatusReport',
+        id: 'custom-my-commute',
+        name: 'My Commute',
+        modeName: 'national-rail',
+        operators: ['SW'],
+        computedAt: '2026-09-15T09:00:00Z',
+        lineStatuses: [
+          {
+            statusSeverity: 6,
+            statusSeverityDescription: 'Severe Delays',
+            reason: 'signalling',
+            sampleAvailability: { state: 'no-coverage' },
+          } as never,
+        ],
+      };
+    }
+
+    async function renderAsViewer(viewerId: string, role: GroupRole) {
+      vi.mocked(getGroup).mockResolvedValue({
+        id: 'grp-1',
+        name: 'Family',
+        ownerId: 'user-owner',
+        ownerName: 'Alex',
+        ownerTag: null,
+        memberCount: 3,
+        role,
+        inviteLink: null,
+      });
+      vi.mocked(getGroupMembers).mockResolvedValue([]);
+      vi.mocked(getGroupTrains).mockResolvedValue([]);
+      vi.mocked(getSession).mockResolvedValue({
+        authenticated: true,
+        id: viewerId,
+        email: null,
+        name: null,
+      });
+      renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
+    }
+
+    it('renders an empty state when nothing has been shared', async () => {
+      await renderAsViewer('user-owner', 'owner');
+      expect(
+        screen.getByText('No custom lines have been shared into this group yet.'),
+      ).toBeInTheDocument();
+    });
+
+    it('renders a shared line with its attribution, status badge and link out', async () => {
+      vi.mocked(getGroupCustomLines).mockResolvedValue([line()]);
+      vi.mocked(getLineStatus).mockResolvedValue([report()]);
+      await renderAsViewer('user-other', 'member');
+
+      expect(screen.getByRole('heading', { name: 'Shared custom lines' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'My Commute' })).toHaveAttribute(
+        'href',
+        '/lines/custom-my-commute',
+      );
+      expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
+      expect(screen.getByText('Severe Delays')).toBeInTheDocument();
+    });
+
+    it('still renders the row when no status has been computed for the line yet', async () => {
+      vi.mocked(getGroupCustomLines).mockResolvedValue([line()]);
+      vi.mocked(getLineStatus).mockRejectedValue(new ApiNotFoundError('no matching line(s)'));
+      await renderAsViewer('user-other', 'member');
+
+      expect(screen.getByRole('link', { name: 'My Commute' })).toBeInTheDocument();
+    });
+
+    it('a plain member who did not share it sees no "Stop sharing" control', async () => {
+      vi.mocked(getGroupCustomLines).mockResolvedValue([line()]);
+      await renderAsViewer('user-bystander', 'member');
+
+      expect(screen.queryByRole('button', { name: 'Stop sharing' })).not.toBeInTheDocument();
+    });
+
+    it('the member who shared it DOES see "Stop sharing", even as a plain member', async () => {
+      vi.mocked(getGroupCustomLines).mockResolvedValue([line()]);
+      await renderAsViewer(SHARER, 'member');
+
+      expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeInTheDocument();
+    });
+
+    it('an admin sees "Stop sharing" on someone else\'s shared line', async () => {
+      vi.mocked(getGroupCustomLines).mockResolvedValue([line()]);
+      await renderAsViewer('user-admin', 'admin');
+
+      expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeInTheDocument();
+    });
+
+    it('never offers an Edit or Delete control for a line the viewer does not own', async () => {
+      // A grant is read-only: not even a group owner can edit or delete a
+      // member's custom line, and this page must never suggest otherwise.
+      vi.mocked(getGroupCustomLines).mockResolvedValue([line()]);
+      await renderAsViewer('user-owner', 'owner');
+
+      expect(screen.queryByRole('button', { name: /^Edit/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Delete line/i })).not.toBeInTheDocument();
     });
   });
 });
