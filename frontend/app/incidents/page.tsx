@@ -1,8 +1,38 @@
 import { Stack, Title, Text } from '@mantine/core';
+import type { Metadata } from 'next';
 import { getAllLines, getAllTocs } from '@/lib/api';
 import { IncidentSearchForm } from '@/components/IncidentSearchForm';
 
 export const revalidate = 0;
+
+/** Per-page Open Graph/Twitter/`<title>` metadata, in the same four-field
+ * shape every detail page in this app already emits (see
+ * `app/train/[uid]/[date]/page.tsx`'s `generateMetadata` for the canonical
+ * version, and `app/page.tsx`'s own static export for why these top-level
+ * pages spell it as a plain `export const metadata` instead).
+ *
+ * Static rather than an async `generateMetadata()` even though this route
+ * DOES read `searchParams`: `generateMetadata` is handed `searchParams`
+ * too, so a filter-aware title ("Incidents on the South Western Main
+ * Line — Distant Signal") is technically reachable -- but it would have to
+ * re-resolve every `?operator=`/`?line=` code to a display name through
+ * the same `getAllLines()`/`getAllTocs()` lookups the page makes, purely
+ * to decorate a preview card, and a filtered archive URL is not the link
+ * people paste. Deliberately left as one honest description of the page
+ * itself; revisit only if shared filtered links become a real use.
+ *
+ * Title matches the page's own `<h1>` below ("Incident Archive"), not the
+ * nav label, so the tab title and the heading a visitor lands on agree. */
+const METADATA_TITLE = 'Incident Archive — Distant Signal';
+const METADATA_DESCRIPTION =
+  'Search National Rail Knowledgebase incidents across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.';
+
+export const metadata: Metadata = {
+  title: METADATA_TITLE,
+  description: METADATA_DESCRIPTION,
+  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
+  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
+};
 
 /** `/incidents` -- the cross-network incident archive/search page. See
  * docs/superpowers/specs/2026-09-12-incident-archive-design.md. Thin

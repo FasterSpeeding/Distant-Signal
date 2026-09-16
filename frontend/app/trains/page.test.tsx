@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import TrainsPage from './page';
+import TrainsPage, { metadata } from './page';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
@@ -102,5 +102,42 @@ describe('TrainsPage', () => {
     expect(
       screen.queryByText(/it'll be attached automatically once you track it/),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('metadata', () => {
+  it('titles the page after its own heading, suffixed with the site name', () => {
+    expect(metadata.title).toBe('Find a Train — Distant Signal');
+  });
+
+  it('describes network-wide scheduled-train search rather than inheriting the generic site description', () => {
+    expect(metadata.description).toBe(
+      'Search scheduled UK trains by any station they call at, narrowing by origin, a station they stop at later, and date. Open any result for its live status, or track it to get updates.',
+    );
+  });
+
+  it('mirrors the same title and description into openGraph and twitter', () => {
+    // See the equivalent case in app/incidents/page.test.tsx for why the
+    // mirror itself is asserted rather than just the fields' presence.
+    expect(metadata.openGraph).toMatchObject({
+      title: metadata.title,
+      description: metadata.description,
+      type: 'website',
+    });
+    expect(metadata.twitter).toMatchObject({
+      card: 'summary',
+      title: metadata.title,
+      description: metadata.description,
+    });
+  });
+
+  it('stays static, so a per-visitor ?ticketId= can never reach a shared preview card', () => {
+    // The <h1>'s own copy DOES vary with `attachTicketId` (covered above);
+    // the metadata deliberately does not. A `generateMetadata` here would
+    // be handed `searchParams` and could leak one visitor's ticket into a
+    // cached unfurl -- this asserts the export is a plain object, not a
+    // function, so that door stays shut.
+    expect(typeof metadata).toBe('object');
+    expect(metadata.description).not.toMatch(/ticket/i);
   });
 });

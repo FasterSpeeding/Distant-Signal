@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import DashboardPage from './page';
+import DashboardPage, { metadata } from './page';
 import * as api from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
 import type { LineStatusReport, SharedGroupTrain, TrackedTrainListItem } from '@/lib/types';
@@ -885,5 +885,37 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     expect(screen.queryByRole('heading', { name: 'Your Tracked Trains' })).not.toBeInTheDocument();
     expect(screen.queryByText('PAD → RDG')).not.toBeInTheDocument();
     expect(screen.queryByText('from Family')).not.toBeInTheDocument();
+  });
+});
+
+describe('metadata', () => {
+  it("keeps the bare site name as the home page's title, with no redundant suffix", () => {
+    // Every other page is "X — Distant Signal"; the front door is the one
+    // page whose own name IS the site name, and "Distant Signal — Distant
+    // Signal" is not an improvement.
+    expect(metadata.title).toBe('Distant Signal');
+  });
+
+  it('carries its own description rather than only inheriting the site-wide one', () => {
+    expect(metadata.description).toBe(
+      "Live UK rail line status at a glance: which lines aren't running a Good Service right now, plus the lines and stations you've pinned and the trains you're tracking.",
+    );
+  });
+
+  it('mirrors the same title and description into openGraph and twitter', () => {
+    // The root layout has no `openGraph`/`twitter` at all and Next merges
+    // metadata per-field, so without these the site's own front page
+    // unfurls with no og:title anywhere -- which is the whole point of
+    // this export.
+    expect(metadata.openGraph).toMatchObject({
+      title: metadata.title,
+      description: metadata.description,
+      type: 'website',
+    });
+    expect(metadata.twitter).toMatchObject({
+      card: 'summary',
+      title: metadata.title,
+      description: metadata.description,
+    });
   });
 });
