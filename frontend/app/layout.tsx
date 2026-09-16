@@ -18,6 +18,30 @@ import { getDataFreshness, getMyGroups, getSession } from '@/lib/api';
 import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
 import type { DataFreshness } from '@/lib/types';
 
+// Site-wide fallback metadata, and still the live fallback for every route
+// that has not overridden it (`/lines`, `/track`, `/groups` and others
+// currently inherit this wholesale -- this list is not an audit, just a
+// pointer). A page that wants its own link-preview card overrides
+// `title`/`description` and adds its own `openGraph`/`twitter`: the five
+// detail routes do it via `generateMetadata` (see
+// `app/train/[uid]/[date]/page.tsx` for the canonical shape), and `/`,
+// `/incidents`, `/trains` and `/stations` via a static `export const
+// metadata`. Note that Next merges these per-field, not per-object: a page
+// that sets `title` but no `openGraph` inherits NOTHING into `og:title`
+// (there is no `openGraph` here to inherit), which is exactly why each of
+// those pages repeats the pair into all three slots.
+//
+// Deliberately no `metadataBase`: it exists only to resolve RELATIVE URLs
+// in metadata into absolute ones, and nothing in this app emits a metadata
+// URL at all -- no `openGraph.images`, no `openGraph.url`, no
+// `alternates.canonical`, on any route (grep for those before assuming
+// otherwise). With nothing to resolve, a `metadataBase` would be an
+// unused, deploy-environment-specific hostname to keep correct, and this
+// app has no configured public base URL to source one from
+// (`NEXT_PUBLIC_RAILMCP_PUBLIC_URL` is the MCP server's address, not this
+// site's). Add one here -- and only here -- the day a route gains an OG
+// image or a canonical URL; Next will warn at build time if that day
+// arrives and this is still absent.
 export const metadata: Metadata = {
   title: 'Distant Signal',
   description:

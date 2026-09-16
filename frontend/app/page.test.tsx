@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import DashboardPage from './page';
+import DashboardPage, { metadata } from './page';
 import * as api from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
 import type {
@@ -1043,5 +1043,50 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     expect(screen.queryByRole('heading', { name: 'Your Tracked Trains' })).not.toBeInTheDocument();
     expect(screen.queryByText('PAD → RDG')).not.toBeInTheDocument();
     expect(screen.queryByText('from Family')).not.toBeInTheDocument();
+  });
+});
+
+describe('metadata', () => {
+  it("keeps the bare site name as the home page's title, with no redundant suffix", () => {
+    // Every other page is "X — Distant Signal"; the front door is the one
+    // page whose own name IS the site name, and "Distant Signal — Distant
+    // Signal" is not an improvement.
+    expect(metadata.title).toBe('Distant Signal');
+  });
+
+  it('carries its own description rather than only inheriting the site-wide one', () => {
+    expect(metadata.description).toBe(
+      "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines and stations you care about, and track your trains, once you're logged in.",
+    );
+  });
+
+  it('hedges the pinned and tracked sections as logged-in-only, which is all an unfurler bot can ever see', () => {
+    // A link-unfurler carries no session cookie, so it renders the
+    // ANONYMOUS branch -- which has no "Your Lines"/"Your Stations"/"Your
+    // Tracked Trains" sections at all. An unhedged "plus the lines you've
+    // pinned" would promise a logged-out visitor something the page they
+    // were just linked to does not contain.
+    expect(metadata.description).toMatch(/once you're logged in/);
+  });
+
+  it('mirrors the same title and description into openGraph and twitter', () => {
+    // The root layout has no `openGraph`/`twitter` at all and Next merges
+    // metadata per-field, so without these the site's own front page
+    // unfurls with no og:title anywhere -- which is the whole point of
+    // this export. Asserted against the literals, not against
+    // `metadata.title`/`.description`: those read the same consts the
+    // subject does, so a self-comparison could not fail.
+    expect(metadata.openGraph).toMatchObject({
+      title: 'Distant Signal',
+      description:
+        "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines and stations you care about, and track your trains, once you're logged in.",
+      type: 'website',
+    });
+    expect(metadata.twitter).toMatchObject({
+      card: 'summary',
+      title: 'Distant Signal',
+      description:
+        "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines and stations you care about, and track your trains, once you're logged in.",
+    });
   });
 });

@@ -1,5 +1,6 @@
 import { Badge, Stack, Title, SimpleGrid, Text, Group, Card } from '@mantine/core';
 import Link from 'next/link';
+import type { Metadata } from 'next';
 import {
   ApiNotFoundError,
   getLineStatusForMode,
@@ -33,6 +34,56 @@ import type { LineStatus, LineStatusReport, Preferences, TrackedTrainListItem } 
 // prerender it during `next build`, which fails since the `api` service
 // only exists on the compose network at runtime.
 export const revalidate = 0;
+
+/** Per-page Open Graph/Twitter/`<title>` metadata, so pasting this app's
+ * own front door into Slack/Discord/iMessage/etc. unfurls as something
+ * other than the site-wide fallback in `app/layout.tsx`. Same four-field
+ * shape every detail page in this app already emits (`app/train/[uid]/
+ * [date]/page.tsx`, `app/stations/[crs]/page.tsx`, `app/lines/[id]/
+ * page.tsx`, `app/incidents/[id]/page.tsx`, `app/groups/join/[token]/
+ * page.tsx`): `title`/`description` plus an `openGraph` and a `twitter`
+ * carrying the same two strings.
+ *
+ * A static `export const metadata` rather than an async
+ * `generateMetadata()`: this route takes no params, and the copy below is
+ * deliberately the same for every visitor. `generateMetadata` COULD read
+ * the session and vary the text with it, but the only consumers of this
+ * are link-unfurler bots, which never carry a session cookie and would
+ * therefore always get the anonymous branch's wording anyway (the same
+ * reasoning `app/groups/join/[token]/page.tsx` spells out for its own
+ * deliberately-unauthenticated fetch). Paying a `getSession()` round trip
+ * per request to render a string no bot can ever see would be pure cost.
+ *
+ * Because that bot only ever renders the ANONYMOUS branch, the description
+ * describes what that branch actually shows -- the live "Right now" module
+ * -- and hedges the pinned/tracked sections as something logging in
+ * unlocks, echoing the anonymous branch's own subtitle below rather than
+ * promising sections a logged-out visitor will not find on the page they
+ * were just linked to.
+ *
+ * Unlike every other page's, this title carries no `X — ` prefix: the site
+ * name IS this page's name, and "Distant Signal — Distant Signal" is not
+ * an improvement. It is still spelled out here rather than left to
+ * `layout.tsx`'s inherited value, because `openGraph.title`/
+ * `twitter.title` below need the same string and nothing inherits into
+ * those.
+ *
+ * The two strings are bound to consts and referenced three times each for
+ * the same reason the detail pages build local `title`/`description`
+ * variables before returning them: three hand-copied literals is three
+ * places for the `<title>` and the unfurled card to drift apart. The same
+ * pair of consts, with the same names, is how `/incidents`, `/trains` and
+ * `/stations` spell theirs. */
+const METADATA_TITLE = 'Distant Signal';
+const METADATA_DESCRIPTION =
+  "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines and stations you care about, and track your trains, once you're logged in.";
+
+export const metadata: Metadata = {
+  title: METADATA_TITLE,
+  description: METADATA_DESCRIPTION,
+  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
+  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
+};
 
 // The exact shape getPreferences() already returns for a 401, named so the
 // fallback below is typed as `Preferences` rather than inferred with

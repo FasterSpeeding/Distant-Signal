@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import IncidentsPage from './page';
+import IncidentsPage, { metadata } from './page';
 import * as api from '@/lib/api';
 import type { LineSummary, Suggestion } from '@/lib/types';
 
@@ -54,5 +54,40 @@ describe('IncidentsPage', () => {
     expect(
       screen.getByText('SW — South Western Railway', { selector: '.mantine-Pill-label' }),
     ).toBeInTheDocument();
+  });
+});
+
+describe('metadata', () => {
+  it('titles the page after its own heading, suffixed with the site name', () => {
+    expect(metadata.title).toBe('Incident Archive — Distant Signal');
+  });
+
+  it('describes the cross-network archive search rather than inheriting the generic site description', () => {
+    expect(metadata.description).toBe(
+      'Search National Rail Knowledgebase incidents across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
+    );
+  });
+
+  it('mirrors the same title and description into openGraph and twitter', () => {
+    // Next merges page metadata into the root layout's PER FIELD, and
+    // `app/layout.tsx` has no `openGraph`/`twitter` at all -- so a page
+    // that set only `title`/`description` would unfurl with no og:title
+    // whatsoever. Asserting the mirror (rather than just "openGraph
+    // exists") is what stops the three copies drifting apart. Spelled as
+    // literals rather than as `metadata.title`/`.description`: those read
+    // the same two consts the subject does, so a self-comparison would be
+    // structurally incapable of failing.
+    expect(metadata.openGraph).toMatchObject({
+      title: 'Incident Archive — Distant Signal',
+      description:
+        'Search National Rail Knowledgebase incidents across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
+      type: 'website',
+    });
+    expect(metadata.twitter).toMatchObject({
+      card: 'summary',
+      title: 'Incident Archive — Distant Signal',
+      description:
+        'Search National Rail Knowledgebase incidents across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
+    });
   });
 });
