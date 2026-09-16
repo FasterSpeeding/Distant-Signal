@@ -371,8 +371,13 @@ frontend/app/page.tsx                    MODIFIED (Lines shared with you) (Task 
   — design §2.4's two-branch shape verbatim.
 - [ ] **Step 3: `list_group_custom_lines(pool, group_id) -> Vec<GroupCustomLine>`**
   — `{ line_id, line_name, granted_by, granted_by_name }`, joining
-  `custom_lines` and `users`, `ORDER BY granted_at`, collapsing
-  `name.or(email)` the same way `GroupTrain::from` does. **No permission
+  `custom_lines` and `users`, `ORDER BY granted_at`, collapsing the sharer
+  to `users::display_label` (`users.name`, else `users.username`, else
+  nothing) the same way `GroupTrain::from` does. **An email address is
+  never a display-name fallback here or anywhere else in this feature** —
+  not for the group page, not for the home page's shared rows, not in the
+  wire shapes; `display_label` also rejects a name/username claim that is
+  itself an email address. **No permission
   check here** — the route's `require_member` is the gate, stated in the
   doc comment as it is for `list_group_trains`. Live status is deliberately
   *not* joined in: the group page reads it through the existing

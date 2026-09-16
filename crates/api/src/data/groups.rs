@@ -3016,9 +3016,11 @@ mod custom_line_grant_wire_shape_tests {
     /// pins `GroupTrain`'s: this shape crosses a privacy boundary (it
     /// reaches every member of a group, for a line only one of them owns),
     /// so a field added here by accident is exactly the failure that
-    /// matters. In particular it must never grow a `grantedByEmail` field
-    /// -- the `name`-else-`email` collapse in `GroupCustomLine::from` is
-    /// deliberate, matching `GroupMember`'s own no-raw-email rule.
+    /// matters. In particular it must never grow a `grantedByEmail` field,
+    /// or any other raw-email one: `GroupCustomLine::from` collapses the
+    /// sharer down to `users::display_label` (name, else username, else
+    /// nothing) precisely so that an email address can never become one
+    /// member's label shown to the rest of a group.
     #[test]
     fn group_custom_line_json_is_identity_and_attribution_only() {
         let value = serde_json::to_value(GroupCustomLine {
