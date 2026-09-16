@@ -444,16 +444,31 @@ export function TrainSearchForm({
           {results.rows.map((row) => (
             /* `wrap` is left at Mantine's wrapping default rather than
              * `nowrap` (which is what `StationTimetable.tsx`'s otherwise
-             * identical row still uses, because its actions are a bare
-             * link). These rows carry a link AND a `TrackThisTrainButton`,
-             * so at ~360px the summary and the actions cannot share a line:
-             * "09:00 · PAD → RDG → BRI" plus "View live status" plus a
-             * "Track this train" button is wider than the screen, and under
-             * `nowrap` a flex item's `min-width: auto` floor would have
-             * pushed the whole page sideways. That never showed before only
-             * because the removed `ScrollArea`'s viewport absorbed the
-             * overflow into its own (horizontal) scroll; with the scroller
-             * gone the row has to wrap instead.
+             * identical row still uses -- fine there, because its actions
+             * are a bare link). These rows carry a link AND a
+             * `TrackThisTrainButton`, and at ~360px the three cannot share
+             * a line: the row's max-content is ~430px ("09:00 · PAD → RDG →
+             * BRI" ~160px, "View live status" ~110px, the button ~130px,
+             * plus the gaps) against ~310px of content box inside the
+             * page `Container`'s padding.
+             *
+             * `nowrap` did NOT overflow the page -- worth spelling out,
+             * because that is the obvious guess and it is wrong. Mantine's
+             * button label (`.m_811560b9` in `@mantine/core/styles/
+             * Button.css`) is `white-space: nowrap; overflow: hidden`, and
+             * `overflow: hidden` drops an element's min-content
+             * contribution to zero (the same mechanism `app/globals.css`'s
+             * `[data-status-badge]` override documents), so the row's
+             * intrinsic floor was only ~130px and it always "fit". It fit
+             * by SQUASHING: the summary broke across three or four lines
+             * at its longest-word floor while the button clipped to "Track
+             * this tr" -- clipped flat, since that label sets no
+             * `text-overflow`, so the action lost its own name. That was
+             * equally true inside the removed `ScrollArea` (its content box
+             * is `display: table; min-width: 100%`, which does not exceed
+             * the available width either), so this is a pre-existing
+             * mobile defect being fixed alongside the clipping, not
+             * fallout from removing the scroller.
              *
              * `marginInlineStart: 'auto'` on the actions rather than the
              * `Group`'s `justify="space-between"`, for the same reason
@@ -463,8 +478,16 @@ export function TrainSearchForm({
              * with the auto margin they read flush right whether they share
              * the summary's line or wrap below it. The inner actions
              * `Group` keeps `nowrap` -- the link and the button are a pair
-             * that fits a 360px line together and reads wrong split up. */
-            <Group key={`${row.uid}-${row.scheduled}`}>
+             * that fits a 360px line together and reads wrong split up.
+             *
+             * `rowGap` overrides `Group`'s own `md` gap on the wrap axis
+             * only (an inline longhand beats the class's `gap` shorthand),
+             * exactly as `IncidentSearchForm.tsx`'s row header does.
+             * Without it wrapped actions sat 16px below their own summary
+             * but only 10px above the NEXT train's (the enclosing `Stack`'s
+             * `xs`), so "View live status"/"Track this train" read as
+             * belonging to the row beneath them. */
+            <Group key={`${row.uid}-${row.scheduled}`} style={{ rowGap: 4 }}>
               <Text size="sm">
                 {row.scheduled} · {row.originCrs ?? '?'} → {row.stationCrs} → {row.destinationCrs ?? '?'}
               </Text>

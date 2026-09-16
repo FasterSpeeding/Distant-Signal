@@ -253,6 +253,12 @@ describe('TrainSearchForm', () => {
       // Only catches a hand-written inline clip -- Mantine's own
       // `overflow: hidden` arrives via the `.m_d57069b5` class, which the
       // `data-scrollarea-viewport` check above is what actually covers.
+      // Known gap, accepted: a RESPONSIVE `mah={{ base: 420 }}` compiles to
+      // a generated stylesheet rule rather than an inline style, as would a
+      // clip arriving via a CSS module or a global class, and neither would
+      // be seen here. The `data-scrollarea-viewport` check still catches
+      // every `ScrollArea`-shaped reintroduction, which is the realistic
+      // one.
       expect(node.style.overflow).not.toBe('hidden');
       expect(node.style.overflowY).not.toBe('hidden');
     }
@@ -309,6 +315,13 @@ describe('TrainSearchForm', () => {
     const actions = screen.getAllByRole('link', { name: 'View live status' })[0]
       .parentElement as HTMLElement;
     expect(actions.style.marginInlineStart).toBe('auto');
+    // ...and a wrapped actions line stays visually tied to ITS summary
+    // rather than to the next train's. `Group`'s default `md` gap applies
+    // on the wrap axis too, which would put the actions 16px below their
+    // own summary but only 10px (the enclosing `Stack`'s `xs`) above the
+    // row beneath -- see `TrainSearchForm.tsx`'s own comment on this
+    // `Group`, and `IncidentSearchForm.tsx`'s identical `rowGap` note.
+    expect(row.style.rowGap).toBe('4px');
   });
 
   it('renders a "?" placeholder when origin or destination is unknown', async () => {

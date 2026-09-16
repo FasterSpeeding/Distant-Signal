@@ -540,8 +540,10 @@ export function TrackTrainForm({
    *
    * That is worse here than in the two list pages with the same defect
    * (`IncidentSearchForm.tsx`, since fixed, and `TrainSearchForm.tsx`):
-   * these rows are `role="button"` pickers, not text. At ~28px a row the
-   * 220px cap landed after roughly 4-5 of them, and every row past it was
+   * these rows are `role="button"` pickers, not text. A row is ~30px of
+   * pitch (a `size="sm"` line -- 14px at Mantine's `--mantine-line-height-
+   * sm: 1.45`, so ~20px -- plus the `Stack`'s 10px `xs` gap), so the 220px
+   * cap landed after about seven of them, and every row past that was
    * unselectable -- unreachable by pointer and by wheel, and reachable by
    * keyboard only into a dead end (a browser does scroll an `overflow:
    * hidden` box to reveal a focused descendant, which parked the box at an
@@ -555,12 +557,17 @@ export function TrackTrainForm({
    * definite), but a bounded scroller isn't wanted here anyway: this picker
    * is rendered in the page flow inside the form (see the `mih={72}`
    * `Stack` below), not in a popover or a dropdown, so there is no
-   * containing box it has to fit. Both sources are capped at 10 rows
-   * upstream -- LDBWS by `poller-ldbws`'s `--num-rows` (default 10) and CIF
-   * by `schedule_network_departures`' "next 10, now-forward" publication
-   * (`crates/api/migrations/20260904110000_schedule_network_departures.sql`)
-   * -- so the unbounded list is ~280px at worst, barely past the cap it
-   * replaces, and the page's own scrollbar reaches all of it. */
+   * containing box it has to fit. Both sources publish about 10 rows in
+   * practice -- CIF by a hard cap (`schedule-reference`'s
+   * `MAX_DEPARTURES_PER_STATION = 10`, truncated before publication, which
+   * `schedule_network_departures`' own migration header records as
+   * "next-10, now-forward-filtered"), LDBWS only by the DEFAULT of
+   * `poller-ldbws`'s `--num-rows` flag, which an operator can raise (see
+   * `crates/poller-ldbws/src/main.rs`, which explicitly contemplates a
+   * configured value "much larger than 10"). So ~290px at worst today,
+   * barely past the 220px cap it replaces -- and, unlike that cap, an
+   * LDBWS board configured longer degrades into more page to scroll
+   * rather than into hidden departures. */
   function pickerContent() {
     if (!originValid) {
       return (

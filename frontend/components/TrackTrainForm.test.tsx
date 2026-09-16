@@ -1157,8 +1157,9 @@ describe('TrackTrainForm', () => {
     // viewport is `height: 100%`; against a root whose own `height` stays
     // `auto` that percentage resolves to `auto`, so the viewport never
     // overflowed itself (nothing scrolled) and the root simply clipped
-    // everything past 220px. At ~28px a row that landed after roughly 4-5
-    // of them, and -- because these rows are `role="button"` pickers, not
+    // everything past 220px. At ~30px of pitch a row (a `size="sm"` line
+    // plus the `Stack`'s `xs` gap) that landed after about seven of
+    // them, and -- because these rows are `role="button"` pickers, not
     // text -- every departure past the cap was silently UNSELECTABLE: not
     // reachable by pointer, not by wheel (there was no scroller to spin),
     // and by keyboard only into a dead end, since revealing a focused
@@ -1172,13 +1173,13 @@ describe('TrackTrainForm', () => {
     // guards: the choice here is "no nested scroller at all, the page
     // scrolls", and `pickerContent`'s own doc comment records why.
     describe('every picker row stays reachable, however many there are', () => {
-      /** Deliberately 8 rows -- comfortably past the ~4-5 that used to fit
-       * inside the removed 220px cap, and at the upstream ceiling's order
-       * of magnitude (both sources publish at most 10; see
-       * `pickerContent`'s own doc comment). '10:50' is the one that
-       * mattered: under the old `ScrollArea` it was rendered, exposed to
-       * the a11y tree, and yet impossible to select. */
-      const MANY_LDBWS = Array.from({ length: 8 }, (_, i) => ({
+      /** Deliberately 10 rows -- the number both sources actually publish
+       * (see `pickerContent`'s own doc comment), and comfortably past the
+       * ~7 that used to fit inside the removed 220px cap. '10:55', the
+       * last, is the one that mattered: under the old `ScrollArea` it was
+       * rendered and exposed to the a11y tree, and yet impossible to
+       * select. */
+      const MANY_LDBWS = Array.from({ length: 10 }, (_, i) => ({
         serviceId: `svc-${i}`,
         operator: 'SW',
         destinationCrs: 'BSK',
@@ -1190,7 +1191,7 @@ describe('TrackTrainForm', () => {
         delayReason: null,
         skippedStations: [],
       }));
-      const MANY_CIF = Array.from({ length: 8 }, (_, i) => ({
+      const MANY_CIF = Array.from({ length: 10 }, (_, i) => ({
         uid: `C2000${i}`,
         scheduled: `10:${String(10 + i * 5).padStart(2, '0')}`,
         dayOffset: 0,
@@ -1224,12 +1225,18 @@ describe('TrackTrainForm', () => {
           // Only catches a hand-written inline clip -- Mantine's own
           // `overflow: hidden` arrives via the `.m_d57069b5` class, which
           // the `data-scrollarea-viewport` check above is what covers.
+          // Known gap, accepted: a RESPONSIVE `mah={{ base: 220 }}` compiles
+          // to a generated stylesheet rule rather than an inline style, as
+          // would a clip arriving via a CSS module or a global class, and
+          // neither would be seen here. The `data-scrollarea-viewport` check
+          // still catches every `ScrollArea`-shaped reintroduction, which is
+          // the realistic one.
           expect(node.style.overflow).not.toBe('hidden');
           expect(node.style.overflowY).not.toBe('hidden');
         }
       }
 
-      it('LDBWS: the 8th row is in the same in-flow list as the 1st, under no clipping ancestor', async () => {
+      it('LDBWS: the last row is in the same in-flow list as the first, under no clipping ancestor', async () => {
         vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
         vi.stubGlobal(
           'fetch',
@@ -1238,7 +1245,7 @@ describe('TrackTrainForm', () => {
         renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
 
         const first = await screen.findByRole('button', { name: /10:10/ });
-        const last = screen.getByRole('button', { name: /10:45/ });
+        const last = screen.getByRole('button', { name: /10:55/ });
         const list = document.querySelector('[data-departure-picker-rows]') as HTMLElement;
         expect(list.contains(first)).toBe(true);
         expect(list.contains(last)).toBe(true);
@@ -1260,14 +1267,14 @@ describe('TrackTrainForm', () => {
         );
         renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
 
-        // The 8th row -- roughly 220px down the list, i.e. exactly the one
-        // the old clip made unclickable.
-        const eighth = await screen.findByRole('button', { name: /10:45/ });
+        // The 10th row -- roughly 280px down the list, well past where
+        // the old 220px clip cut it off and made it unclickable.
+        const last = await screen.findByRole('button', { name: /10:55/ });
         const today = dayjs().format('YYYY-MM-DD');
-        fireEvent.click(eighth);
+        fireEvent.click(last);
 
         expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(
-          `${today} 10:45:00`,
+          `${today} 10:55:00`,
         );
       });
 
@@ -1279,21 +1286,21 @@ describe('TrackTrainForm', () => {
         );
         renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
 
-        const eighth = await screen.findByRole('button', { name: /10:45/ });
+        const last = await screen.findByRole('button', { name: /10:55/ });
         // A keyboard user reaches it by tabbing: every row is its own focus
         // stop, so assert this one really is one rather than assuming it.
-        expect(eighth).toHaveAttribute('tabindex', '0');
-        eighth.focus();
-        expect(document.activeElement).toBe(eighth);
+        expect(last).toHaveAttribute('tabindex', '0');
+        last.focus();
+        expect(document.activeElement).toBe(last);
         const today = dayjs().format('YYYY-MM-DD');
-        fireEvent.keyDown(eighth, { key: 'Enter' });
+        fireEvent.keyDown(last, { key: 'Enter' });
 
         expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(
-          `${today} 10:45:00`,
+          `${today} 10:55:00`,
         );
       });
 
-      it('CIF: the 8th row is in the same in-flow list, under no clipping ancestor, and still selectable', async () => {
+      it('CIF: the last row is in the same in-flow list, under no clipping ancestor, and still selectable', async () => {
         vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
         vi.stubGlobal(
           'fetch',
@@ -1305,16 +1312,16 @@ describe('TrackTrainForm', () => {
         renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
 
         const first = await screen.findByRole('button', { name: /10:10/ });
-        const eighth = screen.getByRole('button', { name: /10:45/ });
+        const last = screen.getByRole('button', { name: /10:55/ });
         const list = document.querySelector('[data-departure-picker-rows]') as HTMLElement;
         expect(list.contains(first)).toBe(true);
-        expect(list.contains(eighth)).toBe(true);
+        expect(list.contains(last)).toBe(true);
         expectNoClippingAncestor();
 
         const today = dayjs().format('YYYY-MM-DD');
-        fireEvent.click(eighth);
+        fireEvent.click(last);
         expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(
-          `${today} 10:45:00`,
+          `${today} 10:55:00`,
         );
       });
     });
