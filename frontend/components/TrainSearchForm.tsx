@@ -2,10 +2,11 @@
 
 import { useState, type FormEvent } from 'react';
 import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
-import { DatePickerInput, TimeInput } from '@mantine/dates';
+import { DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
+import { TimeFilterInput } from './TimeFilterInput';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
@@ -595,18 +596,19 @@ export function TrainSearchForm({
         }}
         error={stopsAt.length > 0 && !stopsAtValid ? 'Must be a 3-letter CRS code' : null}
       />
-      {/* All four time filters are `@mantine/dates`' `TimeInput`, not a bare
-       * `TextInput` -- the field used to require the caller to TYPE
-       * "09:00" into a free-text box with the format only hinted at by a
-       * placeholder. `TimeInput` is Mantine's thin wrapper over a native
-       * `<input type="time">`, so the browser contributes its own
-       * time-picker affordance (a clock button opening the platform picker,
-       * and per-segment hour/minute spinners) while STILL accepting typed
-       * digits -- picking is added as an option, typing is not taken away.
+      {/* All four time filters are `TimeFilterInput` -- a native
+       * `<input type="time">` with a clock button that opens the platform
+       * time picker and a clear button -- not the free-text `TextInput`
+       * they used to be, which required the caller to TYPE "HH:MM"
+       * correctly with nothing but a "09:00" placeholder to go on. See
+       * `TimeFilterInput`'s own doc comment for why the two buttons have to
+       * be supplied explicitly rather than left to the native control, and
+       * why `@mantine/dates`' `TimePicker` isn't used instead. Typing is
+       * not taken away: the segments still accept digits and arrow keys.
        *
        * Value shape is unchanged, which is the whole point: a native time
-       * input's value is already exactly the `"HH:MM"` (`step` defaults to
-       * 60, so no seconds) these four fields have always put on the wire as
+       * input's value is already exactly the `"HH:MM"` (`step` is 60, so
+       * never seconds) these four fields have always put on the wire as
        * `from`/`to`/`arrival_from`/`arrival_to`, and an emptied field is
        * `""` exactly as before -- so `searchParams()`, the optional-filter
        * `.trim()` gating and `TIME_PATTERN` all keep working untouched, and
@@ -619,42 +621,51 @@ export function TrainSearchForm({
        * a second calendar per field would be four more ways to disagree
        * with the one date the search actually runs against.
        *
-       * No `placeholder`: a native time input renders its own HH:MM
-       * segment hints and ignores `placeholder` entirely, so the old
-       * "09:00"/"12:00" hints would have been dead props. The format they
-       * used to teach now lives in the control itself, and the error copy
-       * below still names it for the degraded-to-text case. */}
+       * No `placeholder`: a native time input renders its own `--:--`
+       * segment hints and never paints a `placeholder`, so the old
+       * "09:00"/"12:00" hints would show on no browser that supports the
+       * control -- and the format they used to teach is now taught by the
+       * control's own segments instead. (They WOULD still render on a
+       * browser old enough to degrade `type="time"` to a text box; that is
+       * the only thing dropping them costs, against keeping four props
+       * that are invisible everywhere else.) The four error strings now
+       * all name the same "09:00" example rather than each echoing its own
+       * removed placeholder. */}
       <Group grow align="flex-start">
-        <TimeInput
+        <TimeFilterInput
           label="Earliest departure (optional)"
+          name="earliest departure"
           description={`Only trains at ${stationDisplay} at or after this time.`}
           value={fromTime}
-          onChange={(event) => setFromTime(event.currentTarget.value)}
+          onChange={setFromTime}
           error={fromTime.length > 0 && !fromValid ? 'Must be a time like 09:00' : null}
         />
-        <TimeInput
+        <TimeFilterInput
           label="Latest departure (optional)"
+          name="latest departure"
           description={`Only trains at ${stationDisplay} at or before this time.`}
           value={toTime}
-          onChange={(event) => setToTime(event.currentTarget.value)}
-          error={toTime.length > 0 && !toValid ? 'Must be a time like 12:00' : null}
+          onChange={setToTime}
+          error={toTime.length > 0 && !toValid ? 'Must be a time like 09:00' : null}
         />
       </Group>
       {stopsAt.trim() !== '' && (
         <Group grow align="flex-start">
-          <TimeInput
+          <TimeFilterInput
             label="Earliest arrival (optional)"
+            name="earliest arrival"
             description={`Only trains reaching ${stopsAtDisplay} at or after this time -- separate from Earliest/Latest departure above, which are about ${stationDisplay}.`}
             value={arrivalFrom}
-            onChange={(event) => setArrivalFrom(event.currentTarget.value)}
+            onChange={setArrivalFrom}
             error={arrivalFrom.length > 0 && !arrivalFromValid ? 'Must be a time like 09:00' : null}
           />
-          <TimeInput
+          <TimeFilterInput
             label="Latest arrival (optional)"
+            name="latest arrival"
             description={`Only trains reaching ${stopsAtDisplay} at or before this time.`}
             value={arrivalTo}
-            onChange={(event) => setArrivalTo(event.currentTarget.value)}
-            error={arrivalTo.length > 0 && !arrivalToValid ? 'Must be a time like 09:30' : null}
+            onChange={setArrivalTo}
+            error={arrivalTo.length > 0 && !arrivalToValid ? 'Must be a time like 09:00' : null}
           />
         </Group>
       )}

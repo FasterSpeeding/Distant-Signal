@@ -205,40 +205,38 @@ describe('TrainSearchForm', () => {
     );
   });
 
-  /** The four time filters are `@mantine/dates`' `TimeInput`, not a
-   * free-text `TextInput` -- a real native `<input type="time">`, which is
-   * what gives the browser's own clock/picker affordance and its
-   * hour/minute segments. These pin the control's identity and the
-   * behaviours the swap had to preserve: the same `"HH:MM"` wire value,
-   * still typeable, still clearable, still validated. */
+  /** The four time filters are `TimeFilterInput` -- a native
+   * `<input type="time">` with an explicit picker button and clear button
+   * -- not the free-text `TextInput` they used to be. `TimeFilterInput`'s
+   * own tests cover the control in isolation; these are the integration
+   * facts only this form can prove: that all four are wired up, that their
+   * affordances are distinguishable from each other, and that the swap
+   * left the wire values and validation exactly as they were. */
   describe('time filters use a real time picker', () => {
     const TIME_FIELDS = [
-      'Earliest departure (optional)',
-      'Latest departure (optional)',
-      'Earliest arrival (optional)',
-      'Latest arrival (optional)',
+      { label: 'Earliest departure (optional)', name: 'earliest departure' },
+      { label: 'Latest departure (optional)', name: 'latest departure' },
+      { label: 'Earliest arrival (optional)', name: 'earliest arrival' },
+      { label: 'Latest arrival (optional)', name: 'latest arrival' },
     ];
 
-    it('renders every time filter as a native time input, not a free-text box', () => {
+    it('renders every time filter as a native time input with its own picker button', () => {
       vi.stubGlobal('fetch', mockFetchByUrl());
       // `initialStopsAt` so the arrival pair (which only renders once Stops
-      // at is filled in) is on screen alongside the departure pair.
+      // at is filled in) is on screen alongside the departure pair -- all
+      // four at once is the case where their button names have to differ.
       renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
 
-      for (const label of TIME_FIELDS) {
-        expect(screen.getByLabelText(label)).toHaveAttribute('type', 'time');
-      }
-    });
-
-    it('steps by whole minutes, so the control never offers or emits seconds', () => {
-      vi.stubGlobal('fetch', mockFetchByUrl());
-      renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
-
-      // `step=60` is what keeps a native time input's value at "HH:MM" --
-      // the exact shape `from`/`to`/`arrival_from`/`arrival_to` are parsed
-      // as server-side. A seconds segment would put "HH:MM:SS" on the wire.
-      for (const label of TIME_FIELDS) {
-        expect(screen.getByLabelText(label)).toHaveAttribute('step', '60');
+      for (const { label, name } of TIME_FIELDS) {
+        const input = screen.getByLabelText(label);
+        expect(input).toHaveAttribute('type', 'time');
+        // `step=60` is what keeps a native time input's value at "HH:MM" --
+        // the exact shape `from`/`to`/`arrival_from`/`arrival_to` are parsed
+        // as server-side. A seconds segment would put "HH:MM:SS" on the wire.
+        expect(input).toHaveAttribute('step', '60');
+        // `getByRole` throws on more than one match, so this doubles as the
+        // assertion that the four buttons are uniquely named.
+        expect(screen.getByRole('button', { name: `Pick ${name}` })).toBeInTheDocument();
       }
     });
 
@@ -253,17 +251,34 @@ describe('TrainSearchForm', () => {
       fireEvent.change(screen.getByLabelText('Latest departure (optional)'), {
         target: { value: '12:00' },
       });
-      // Emptying one field must drop only ITS query param -- a native time
-      // input reports a cleared value as `''`, exactly as the free-text
-      // field it replaced did, so the existing `.trim()` gating still holds.
-      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
-        target: { value: '' },
-      });
+      // Driven through the field's real clear button rather than a
+      // synthetic empty-string change event, because that button is the
+      // only way back to empty on a touch device (a native time input
+      // opens a wheel picker with no keyboard to Backspace with, and
+      // Mantine's own stylesheet hides the native clear control).
+      fireEvent.click(screen.getByRole('button', { name: 'Clear earliest departure' }));
+
+      // Only the cleared field's param is dropped; the other survives.
       fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
       await waitFor(() =>
         expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&to=12%3A00'),
       );
+    });
+
+    it('offers a clear button only on the time filters that have a value', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      expect(screen.queryByRole('button', { name: 'Clear earliest departure' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Clear latest departure' })).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+        target: { value: '09:00' },
+      });
+
+      expect(screen.getByRole('button', { name: 'Clear earliest departure' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Clear latest departure' })).not.toBeInTheDocument();
     });
 
     it('still flags a time the wire format does not accept', () => {
@@ -304,6 +319,21 @@ describe('TrainSearchForm', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
       await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+    });
+
+    it('blocks the search on an unacceptable ARRIVAL time too, not just a departure one', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
+
+      // The arrival pair is conditionally rendered, so its contribution to
+      // `canSearch` is easy to lose without noticing -- pinned separately
+      // from the departure pair's for that reason.
+      fireEvent.change(screen.getByLabelText('Latest arrival (optional)'), {
+        target: { value: '09:30:15' },
+      });
+
+      expect(screen.getByText('Must be a time like 09:00')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
     });
   });
 
