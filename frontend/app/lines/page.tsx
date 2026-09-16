@@ -17,28 +17,38 @@ export const revalidate = 0;
  * takes no params of any kind -- no dynamic segment, no `searchParams` --
  * so a static export is the only shape that makes sense here.
  *
- * Title matches the page's own `<h1>` ("All Lines"), which is also this
- * route's nav label, so the tab title and the heading a visitor lands on
- * agree -- the same rule `/incidents`, `/trains` and `/stations` follow.
+ * Title matches the page's own `<h1>` ("All Lines"), so the tab title and
+ * the heading a visitor lands on agree -- the same rule `/incidents`,
+ * `/trains` and `/stations` follow. Here the `<h1>` also happens to be the
+ * nav label; on `/stations` the two differ and the `<h1>` still wins (see
+ * that page's own comment).
  *
  * Three phrases in the description are load-bearing and must not be
  * "tightened":
  *
  * - "National Rail and TfL lines" -- `GET /public/lines`
  *   (`crates/api/src/routes/lines.rs`'s `list_lines`) concatenates the
- *   static line catalogue with `queries::tfl_line_summaries`, so the table
- *   genuinely carries both, not just heavy-rail routes.
+ *   static line catalogue with a merge-filtered
+ *   `queries::tfl_line_summaries` (its `!is_merged_into_nr_line` filter
+ *   drops the TfL rows whose railway is already represented by an NR
+ *   catalogue row, e.g. the Elizabeth line), so the table genuinely
+ *   carries both networks, not just heavy-rail routes.
  * - "your own custom lines once you're logged in" -- that same handler
  *   appends custom lines ONLY for an authenticated caller, and only that
  *   caller's own (a line merely shared with them through a group is
  *   deliberately excluded from this list; see the handler's own comment).
  *   An anonymous visitor -- which is every link-unfurler bot, none of
  *   which carry a session cookie -- sees none, hence the hedge rather
- *   than a flat promise.
- * - "where they're available" -- the Avg Delay and Cancelled cells render
- *   an em dash with a "why not" tooltip whenever a line has no stats
- *   (`AllLinesTable`'s `representative?.fullCoverageStats ??
- *   representative?.sampleStats`), which is normal, not an outage.
+ *   than a flat promise. Kept in the FIRST half of the sentence-final
+ *   clause rather than trailed off the end, since unfurlers commonly
+ *   truncate a description around 155-200 characters and this is the
+ *   claim least safe to lose.
+ * - "where available" -- the Avg Delay and Cancelled cells render an em
+ *   dash for a line with no stats at all (`AllLinesTable`'s
+ *   `representative?.fullCoverageStats ?? representative?.sampleStats`),
+ *   with a "why not" tooltip where there is a representative status to
+ *   explain it from and a bare dash where there isn't. Normal, not an
+ *   outage.
  *
  * Deliberately says nothing about the country filter: it is self-hiding
  * below two distinct countries and today every reachable row is GB (see
@@ -46,7 +56,7 @@ export const revalidate = 0;
  * control nobody currently sees. */
 const METADATA_TITLE = 'All Lines — Distant Signal';
 const METADATA_DESCRIPTION =
-  "Every National Rail and TfL line this app tracks, in one sortable table: each line's worst current status, plus its average delay and cancellation figures where they're available, filterable by operator — and your own custom lines alongside them once you're logged in.";
+  "Every National Rail and TfL line this app tracks, in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available — and your own custom lines once you're logged in.";
 
 export const metadata: Metadata = {
   title: METADATA_TITLE,

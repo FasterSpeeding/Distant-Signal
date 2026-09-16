@@ -123,7 +123,7 @@ describe('metadata', () => {
 
   it('describes the whole-network line table rather than inheriting the generic site description', () => {
     expect(metadata.description).toBe(
-      "Every National Rail and TfL line this app tracks, in one sortable table: each line's worst current status, plus its average delay and cancellation figures where they're available, filterable by operator — and your own custom lines alongside them once you're logged in.",
+      "Every National Rail and TfL line this app tracks, in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available — and your own custom lines once you're logged in.",
     );
   });
 
@@ -137,10 +137,12 @@ describe('metadata', () => {
   });
 
   it("doesn't promise delay and cancellation figures on every row", () => {
-    // AllLinesTable renders an em dash (with a "why not" tooltip) whenever
-    // a line has neither fullCoverageStats nor sampleStats -- normal, not
-    // an outage -- so the copy is hedged rather than absolute.
-    expect(metadata.description).toMatch(/where they're available/);
+    // AllLinesTable renders an em dash for a line with neither
+    // fullCoverageStats nor sampleStats -- with a "why not" tooltip where
+    // there is a representative status to explain it from, and a bare dash
+    // where there isn't. Normal, not an outage, so the copy is hedged
+    // rather than absolute.
+    expect(metadata.description).toMatch(/where available/);
   });
 
   it('mirrors the same title and description into openGraph and twitter', () => {
@@ -150,14 +152,14 @@ describe('metadata', () => {
     expect(metadata.openGraph).toMatchObject({
       title: 'All Lines — Distant Signal',
       description:
-        "Every National Rail and TfL line this app tracks, in one sortable table: each line's worst current status, plus its average delay and cancellation figures where they're available, filterable by operator — and your own custom lines alongside them once you're logged in.",
+        "Every National Rail and TfL line this app tracks, in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available — and your own custom lines once you're logged in.",
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
       title: 'All Lines — Distant Signal',
       description:
-        "Every National Rail and TfL line this app tracks, in one sortable table: each line's worst current status, plus its average delay and cancellation figures where they're available, filterable by operator — and your own custom lines alongside them once you're logged in.",
+        "Every National Rail and TfL line this app tracks, in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available — and your own custom lines once you're logged in.",
     });
   });
 });
