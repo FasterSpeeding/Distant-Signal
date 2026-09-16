@@ -284,10 +284,10 @@ export function IncidentSearchForm({
          * what `StationTimetable.tsx` -- the other paginated "Load more"
          * list in this app -- already does, rendering its rows as a plain
          * `Stack` with no inner scroll region. (`TrainSearchForm.tsx`, which
-         * this component's header says it mirrors, still has the
-         * `mah`-capped `ScrollArea` described above; it has the same latent
-         * defect and is simply out of scope for this fix, so it is not the
-         * precedent to copy.) A nested scroller buys nothing here anyway --
+         * this component's header says it mirrors, and `TrackTrainForm.tsx`'s
+         * departure picker both carried the same `mah`-capped `ScrollArea`
+         * and have since been fixed the same way.) A nested scroller buys
+         * nothing here anyway --
          * the filter form above is short, so there are no sticky controls to
          * preserve -- while costing real usability on touch, where it steals
          * the page's own scroll gesture. */}

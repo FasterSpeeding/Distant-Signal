@@ -1150,6 +1150,181 @@ describe('TrackTrainForm', () => {
       // many rows survived filtering -- it still renders.
       expect(screen.getByText(/Live departure boards aren't available for this station/)).toBeInTheDocument();
     });
+
+    // Regression guard for the picker being hard-clipped at a fixed height.
+    // Both row-list branches used to sit inside a `<ScrollArea mah={220}
+    // offsetScrollbars>`, whose root is `overflow: hidden` while its
+    // viewport is `height: 100%`; against a root whose own `height` stays
+    // `auto` that percentage resolves to `auto`, so the viewport never
+    // overflowed itself (nothing scrolled) and the root simply clipped
+    // everything past 220px. At ~30px of pitch a row (a `size="sm"` line
+    // plus the `Stack`'s `xs` gap) that landed after about seven of
+    // them, and -- because these rows are `role="button"` pickers, not
+    // text -- every departure past the cap was silently UNSELECTABLE: not
+    // reachable by pointer, not by wheel (there was no scroller to spin),
+    // and by keyboard only into a dead end, since revealing a focused
+    // descendant of an `overflow: hidden` box scrolls it to an offset the
+    // user then has no gesture to undo. jsdom does no layout, so these
+    // assert the *structure* that caused it plus the behaviour it broke.
+    //
+    // Note the structural guard also rejects `ScrollArea.Autosize` -- the
+    // component that *would* cap the height correctly. Deliberate, matching
+    // `IncidentSearchForm.test.tsx`/`TrainSearchForm.test.tsx`'s identical
+    // guards: the choice here is "no nested scroller at all, the page
+    // scrolls", and `pickerContent`'s own doc comment records why.
+    describe('every picker row stays reachable, however many there are', () => {
+      /** Deliberately 10 rows -- the number both sources actually publish
+       * (see `pickerContent`'s own doc comment), and comfortably past the
+       * ~7 that used to fit inside the removed 220px cap. '10:55', the
+       * last, is the one that mattered: under the old `ScrollArea` it was
+       * rendered and exposed to the a11y tree, and yet impossible to
+       * select. */
+      const MANY_LDBWS = Array.from({ length: 10 }, (_, i) => ({
+        serviceId: `svc-${i}`,
+        operator: 'SW',
+        destinationCrs: 'BSK',
+        scheduled: `10:${String(10 + i * 5).padStart(2, '0')}`,
+        estimated: 'On time',
+        isCancelled: false,
+        delayMinutes: 0,
+        cancelReason: null,
+        delayReason: null,
+        skippedStations: [],
+      }));
+      const MANY_CIF = Array.from({ length: 10 }, (_, i) => ({
+        uid: `C2000${i}`,
+        scheduled: `10:${String(10 + i * 5).padStart(2, '0')}`,
+        dayOffset: 0,
+        destinationCrs: 'CRE',
+      }));
+
+      /** Walks the row list plus every ancestor up to (and including) the
+       * form, asserting none of them is a clipped-but-non-scrolling box. A
+       * clip anywhere on that chain hides rows just as effectively as one
+       * on the list itself. */
+      function expectNoClippingAncestor() {
+        const list = document.querySelector('[data-departure-picker-rows]');
+        expect(list).not.toBeNull();
+        const form = (list as HTMLElement).closest('form');
+        expect(form).not.toBeNull();
+        for (
+          let node: HTMLElement | null = list as HTMLElement;
+          node !== null;
+          node = node === form ? null : (node.parentElement as HTMLElement | null)
+        ) {
+          // Mantine's own scroll viewport, whatever set it up.
+          expect(node.hasAttribute('data-scrollarea-viewport')).toBe(false);
+          // Mantine resolves a non-responsive `h`/`mah` style prop straight
+          // into an inline `height`/`max-height` (`parse-style-props.mjs`),
+          // so reading those back off `style` is enough -- no computed
+          // style, no layout, which is just as well under jsdom. Verified
+          // against the rendered DOM: a `<ScrollArea mah={220}>` root
+          // carried `max-height: calc(13.75rem * var(--mantine-scale))`.
+          expect(node.style.maxHeight).toBe('');
+          expect(node.style.height).toBe('');
+          // Only catches a hand-written inline clip -- Mantine's own
+          // `overflow: hidden` arrives via the `.m_d57069b5` class, which
+          // the `data-scrollarea-viewport` check above is what covers.
+          // Known gap, accepted: a RESPONSIVE `mah={{ base: 220 }}` compiles
+          // to a generated stylesheet rule rather than an inline style, as
+          // would a clip arriving via a CSS module or a global class, and
+          // neither would be seen here. The `data-scrollarea-viewport` check
+          // still catches every `ScrollArea`-shaped reintroduction, which is
+          // the realistic one.
+          expect(node.style.overflow).not.toBe('hidden');
+          expect(node.style.overflowY).not.toBe('hidden');
+        }
+      }
+
+      it('LDBWS: the last row is in the same in-flow list as the first, under no clipping ancestor', async () => {
+        vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
+        vi.stubGlobal(
+          'fetch',
+          mockFetchByUrl({ departures: () => new Response(JSON.stringify(MANY_LDBWS), { status: 200 }) }),
+        );
+        renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+
+        const first = await screen.findByRole('button', { name: /10:10/ });
+        const last = screen.getByRole('button', { name: /10:55/ });
+        const list = document.querySelector('[data-departure-picker-rows]') as HTMLElement;
+        expect(list.contains(first)).toBe(true);
+        expect(list.contains(last)).toBe(true);
+        expectNoClippingAncestor();
+      });
+
+      // The two "still selectable" cases below are a contract, not a
+      // reproduction: jsdom lays nothing out, so a synthetic click or
+      // keydown reaches a clipped node just as happily as a visible one --
+      // both of these DO pass against the old `ScrollArea`. What catches
+      // the regression is `expectNoClippingAncestor` above; these pin down
+      // what the structure is protecting, and would catch a "fix" that
+      // removed the clip by making the rows inert instead.
+      it('LDBWS: a row well past the old 220px cap is still selectable by pointer', async () => {
+        vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
+        vi.stubGlobal(
+          'fetch',
+          mockFetchByUrl({ departures: () => new Response(JSON.stringify(MANY_LDBWS), { status: 200 }) }),
+        );
+        renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+
+        // The 10th row -- roughly 280px down the list, well past where
+        // the old 220px clip cut it off and made it unclickable.
+        const last = await screen.findByRole('button', { name: /10:55/ });
+        const today = dayjs().format('YYYY-MM-DD');
+        fireEvent.click(last);
+
+        expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(
+          `${today} 10:55:00`,
+        );
+      });
+
+      it('LDBWS: that same row is still selectable by keyboard (Enter on the focused row)', async () => {
+        vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
+        vi.stubGlobal(
+          'fetch',
+          mockFetchByUrl({ departures: () => new Response(JSON.stringify(MANY_LDBWS), { status: 200 }) }),
+        );
+        renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+
+        const last = await screen.findByRole('button', { name: /10:55/ });
+        // A keyboard user reaches it by tabbing: every row is its own focus
+        // stop, so assert this one really is one rather than assuming it.
+        expect(last).toHaveAttribute('tabindex', '0');
+        last.focus();
+        expect(document.activeElement).toBe(last);
+        const today = dayjs().format('YYYY-MM-DD');
+        fireEvent.keyDown(last, { key: 'Enter' });
+
+        expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(
+          `${today} 10:55:00`,
+        );
+      });
+
+      it('CIF: the last row is in the same in-flow list, under no clipping ancestor, and still selectable', async () => {
+        vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
+        vi.stubGlobal(
+          'fetch',
+          mockFetchByUrl({
+            departures: () => new Response('not found', { status: 404 }),
+            scheduleDepartures: () => new Response(JSON.stringify(MANY_CIF), { status: 200 }),
+          }),
+        );
+        renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+
+        const first = await screen.findByRole('button', { name: /10:10/ });
+        const last = screen.getByRole('button', { name: /10:55/ });
+        const list = document.querySelector('[data-departure-picker-rows]') as HTMLElement;
+        expect(list.contains(first)).toBe(true);
+        expect(list.contains(last)).toBe(true);
+        expectNoClippingAncestor();
+
+        const today = dayjs().format('YYYY-MM-DD');
+        fireEvent.click(last);
+        expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(
+          `${today} 10:55:00`,
+        );
+      });
+    });
   });
 
   // Shared-groups follow-up: the "Personal or one of your groups?" prompt.
