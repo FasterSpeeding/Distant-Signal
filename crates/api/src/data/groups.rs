@@ -214,23 +214,31 @@ pub async fn get_group_detail(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|r| {
+    Ok(row.map(GroupDetail::from))
+}
+
+/// A `From` impl rather than an inline closure in `get_group_detail` for
+/// the same reason `GroupMember`/`GroupTrain`/`SharedTrain` have one: the
+/// owner's label goes to every member of the group including plain ones,
+/// so it gets the identical treatment the other three do, and the only
+/// tests that can reach `get_group_detail` itself need a live database
+/// (`db_tests`, all `#[ignore]`d).
+impl From<GroupDetailRow> for GroupDetail {
+    fn from(row: GroupDetailRow) -> Self {
         // Same helper as the member list and shared-train attribution:
-        // this field also goes to every member of the group including
-        // plain ones, so it gets the identical name-else-username,
-        // never-an-email, blank-is-not-a-label treatment -- and the same
-        // distinguishing tag when none of that yields a label.
-        let owner = users::MemberDisplay::of(r.owner_name, r.owner_username, &r.owner_id);
+        // name-else-username, never an email, a blank is not a label --
+        // and the same distinguishing tag when none of that yields one.
+        let owner = users::MemberDisplay::of(row.owner_name, row.owner_username, &row.owner_id);
         GroupDetail {
-            id: r.id,
-            name: r.name,
-            owner_id: r.owner_id,
+            id: row.id,
+            name: row.name,
+            owner_id: row.owner_id,
             owner_name: owner.label,
             owner_tag: owner.tag,
-            member_count: r.member_count,
-            role: GroupRole::from_db(&r.role),
+            member_count: row.member_count,
+            role: GroupRole::from_db(&row.role),
         }
-    }))
+    }
 }
 
 /// `false` if no group has that id -- the route maps this to `404`.
@@ -2540,6 +2548,54 @@ mod display_name_collapse_tests {
             None
         );
         assert_eq!(GroupTrain::from(train_row(None, None)).added_by_name, None);
+    }
+
+    fn detail_row(name: Option<&str>, username: Option<&str>) -> GroupDetailRow {
+        GroupDetailRow {
+            id: "group-1".to_string(),
+            name: "Family".to_string(),
+            owner_id: "user-1".to_string(),
+            owner_name: name.map(str::to_string),
+            owner_username: username.map(str::to_string),
+            member_count: 2,
+            role: "member".to_string(),
+        }
+    }
+
+    /// `GroupDetail.owner_name` is the fourth cross-user label, and the
+    /// one whose only other tests need a live database -- so the collapse
+    /// and the tag are pinned here rather than left to the `#[ignore]`d
+    /// `db_tests`. Same rule as the other three: a name, else a username,
+    /// else nothing at all plus a tag, and never an email.
+    #[test]
+    fn a_groups_owner_gets_the_same_label_and_tag_treatment_as_its_members() {
+        let named = GroupDetail::from(detail_row(Some("Ada Rider"), Some("ada")));
+        assert_eq!(named.owner_name.as_deref(), Some("Ada Rider"));
+        assert_eq!(named.owner_tag, None);
+
+        let by_username = GroupDetail::from(detail_row(Some(""), Some("ada")));
+        assert_eq!(by_username.owner_name.as_deref(), Some("ada"));
+        assert_eq!(by_username.owner_tag, None);
+
+        let unnameable = GroupDetail::from(detail_row(
+            Some("owner@example.com"),
+            Some("owner@example.com"),
+        ));
+        assert_eq!(unnameable.owner_name, None);
+        assert!(unnameable.owner_tag.is_some());
+
+        // And it is the SAME tag the owner's own row in the member list
+        // carries -- one user, one tag, wherever they appear.
+        let mut member = member_row(Some("owner@example.com"), Some("owner@example.com"));
+        member.user_id = "user-1".to_string();
+        assert_eq!(unnameable.owner_tag, GroupMember::from(member).display_tag);
+
+        let mut other_owner = detail_row(Some("owner@example.com"), Some("owner@example.com"));
+        other_owner.owner_id = "user-2".to_string();
+        assert_ne!(
+            unnameable.owner_tag,
+            GroupDetail::from(other_owner).owner_tag
+        );
     }
 
     /// A member this app CAN name carries no tag at all -- the suffix is

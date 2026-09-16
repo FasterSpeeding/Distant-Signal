@@ -130,13 +130,18 @@ const ANONYMOUS_TAG_DOMAIN: &str = "network-rail-status/member-display-tag/v1:";
 /// else. That is the whole privacy argument, and it is deliberately not an
 /// argument about the hash being strong:
 ///
-/// * The user id is ALREADY in every one of these payloads in the clear
-///   (`GroupMember.user_id`, `GroupTrain.added_by`, `GroupDetail.owner_id`
-///   -- the frontend needs it to key rows and to gate the remove/promote
-///   buttons). A value computed from nothing but a field the same response
-///   already carries cannot tell a recipient anything the response did not
-///   already tell them, whatever the function is. The tag is strictly less
-///   informative than `userId` sitting next to it.
+/// * Everyone who can see a tag can ALREADY see the id it came from. The
+///   id is a field of the very same JSON (`GroupMember.user_id`,
+///   `GroupTrain.added_by`, `GroupDetail.owner_id` -- the frontend needs
+///   it to key rows and to gate the remove/promote buttons), and that JSON
+///   is reachable by every member of the group, not only by the ones whose
+///   rendered page happens to carry the id: `routes::groups::list_members`
+///   gates on `require_member` with no role check, and the frontend's
+///   same-origin `/api/[...path]` proxy will forward a plain member's own
+///   `GET /api/groups/{id}/members` straight to it. A value computed from
+///   nothing but a field its whole audience can already fetch tells that
+///   audience nothing new, whatever the function is: the tag is strictly
+///   less informative than the `userId` it is derived from.
 /// * Email, name and username are not inputs. There is therefore no
 ///   candidate-email dictionary to run against the tag at all: hashing a
 ///   guessed address produces nothing comparable to it. This is the
@@ -151,11 +156,18 @@ const ANONYMOUS_TAG_DOMAIN: &str = "network-rail-status/member-display-tag/v1:";
 /// scan down a member list, and visibly a machine token rather than a name
 /// a reader might mistake for the person's actual one.
 ///
-/// Collisions are possible (24 bits) and harmless: two colliding members
-/// render identically, which is exactly the pre-fix behaviour for that
-/// pair and no worse. Widening this is a display change, not a correctness
-/// fix -- but note it is not free either, since the tag is also what a user
-/// recognises another member by across visits.
+/// Collisions are possible and harmless: two colliding members render
+/// identically, which is exactly the pre-fix behaviour for that pair and
+/// no worse -- nothing keys off the tag, it is a display string. Know the
+/// real numbers before leaning on it, though: 24 bits is 16.7M values, so
+/// by the birthday bound a group of ~20 members has roughly a 1-in-90,000
+/// chance of any collision at all, while ~4,800 members in one group would
+/// be an even-money bet. That is comfortable for the friend/family-sized
+/// groups this feature is for and NOT comfortable for an org-wide one.
+/// Widening it (4 bytes, or base32 rather than hex) is a display change
+/// rather than a correctness fix, but is not free either: the tag is also
+/// what a member recognises another member by across visits, so changing
+/// the derivation renames everybody at once.
 fn anonymous_tag(user_id: &str) -> String {
     use sha2::{Digest, Sha256};
 
