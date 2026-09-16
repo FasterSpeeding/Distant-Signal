@@ -43,6 +43,11 @@ const RULES_UNDER_TEST = ['color-contrast', 'landmark-one-main', 'region', 'head
 // carrying a real role and name, nothing focusable left inside an
 // ARIA-removed subtree) are asserted deterministically instead, in
 // `components/JourneyProgress.test.tsx`'s "keyboard reachability" block.
+// Note the other half of that gap: `RULES_UNDER_TEST` above is scoped to
+// one plan's five rules, so even a route that did render the diagram
+// wouldn't catch such a regression through this suite -- the rules that
+// would (`scrollable-region-focusable`, `nested-interactive`,
+// `aria-hidden-focus`, `button-name`) aren't in the list.
 
 async function expectNoViolations(page: import('@playwright/test').Page) {
   const results = await new AxeBuilder({ page }).withRules(RULES_UNDER_TEST).analyze();

@@ -286,8 +286,13 @@ export function JourneyProgress({ stops, resolutionStatus, status, trainUid, may
           without it the ring's top edge is clipped. It shifts the
           connecting line and the nodes together -- `::before`'s `top` is
           resolved inside `.journeyProgressLine`, not here -- so the two
-          stay aligned. */}
-      <Box role="group" aria-label={ariaLabel} style={{ overflowX: 'auto', paddingTop: 4 }}>
+          stay aligned. (`overflow` clips at the padding box, so the
+          padding really is area the ring can occupy.) Mantine's
+          `.mantine-focus-auto` ring needs exactly 4px -- a 2px outline at a
+          2px offset -- so 6px is that plus slack, rather than an exact fit
+          that a `--mantine-scale` bump or a custom `focusClassName` would
+          silently re-clip. */}
+      <Box role="group" aria-label={ariaLabel} style={{ overflowX: 'auto', paddingTop: 6 }}>
         <Box
           className="journeyProgressLine"
           style={
