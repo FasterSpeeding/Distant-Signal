@@ -1812,9 +1812,12 @@ mod db_tests {
         .expect("seed member");
 
         // Demoting someone who is already a plain member reports `false`
-        // rather than silently "succeeding", so the route can tell the
-        // caller their view of the group is stale (409) instead of
-        // pretending a role change happened.
+        // rather than silently "succeeding". The route never actually
+        // reaches this call for such a target -- `demote_rejection`
+        // answers 409 from the role it already read -- so this is the
+        // data layer standing on its own: a direct caller (or the route
+        // losing the race between that read and this write) gets an
+        // honest "nothing changed" instead of a phantom role change.
         let demoted = demote_to_member(&pool, &group_id, "TEST-GROUPS-DEMOTE-PLAIN")
             .await
             .expect("demote attempt");

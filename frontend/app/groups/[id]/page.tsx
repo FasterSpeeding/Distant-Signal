@@ -38,7 +38,8 @@ export const revalidate = 0;
  * predicate the corresponding backend handler uses
  * (`crates/api/src/routes/groups.rs`), not a coarser one -- `canManage`
  * (`admin`/`owner`) for rename, member removal, and the invite-link card;
- * `viewerIsOwner` for promotion and group deletion; sharer-or-manager for
+ * `viewerIsOwner` for promotion, demotion and group deletion;
+ * sharer-or-manager for
  * un-sharing a train. This is presentational only -- the backend is still
  * the authority and refuses any of these regardless -- but showing a user
  * a button whose only possible outcome is a 403/404 is its own bug. */
@@ -105,10 +106,10 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
   const reportByLineId = new Map(customLineReports.map((r) => [r.id, r]));
   const currentUserId = session.authenticated ? session.id : null;
   const canManage = group.role === 'owner' || group.role === 'admin';
-  // Distinct from `canManage`: the backend gates promotion and group
-  // deletion on `GroupRole::is_owner`, NOT `can_manage`
-  // (`crates/api/src/routes/groups.rs`), so showing either control to an
-  // admin would be offering a button whose only outcome is a 403.
+  // Distinct from `canManage`: the backend gates promotion, demotion and
+  // group deletion on `GroupRole::is_owner`, NOT `can_manage`
+  // (`crates/api/src/routes/groups.rs`), so showing any of those controls
+  // to an admin would be offering a button whose only outcome is a 403.
   const viewerIsOwner = group.role === 'owner';
 
   return (

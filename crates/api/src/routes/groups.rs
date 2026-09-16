@@ -466,13 +466,20 @@ fn demote_rejection(target_role: Option<GroupRole>) -> Option<(StatusCode, Strin
 /// `GroupRole::is_owner`, not `can_manage`, for the same reason
 /// `promote_member` uses it: spec §3 reserves promotion to the `owner`
 /// alone, and the power to UNDO a role change belongs with whoever holds
-/// the power to make it. Letting an `admin` demote a peer admin would also
-/// hand every admin a way to strip their co-admins -- a race two admins
-/// could genuinely fight over, and a straightforward escalation for one
-/// admin who wanted to be the only one. The spec's §3 table has no demote
-/// row (the capability didn't exist when it was written); this is the
-/// strictest reading of it that still delivers the feature, and it keeps
-/// the owner as the single source of truth for who holds admin.
+/// the power to make it. The spec's §3 table has no demote row (the
+/// capability didn't exist when it was written); matching promote exactly
+/// is the reading that keeps the `owner` the single source of truth for
+/// who holds admin, so the set of admins can only ever be changed by one
+/// person.
+///
+/// Note this is NOT a claim that admins are powerless against their peers:
+/// spec §3 lets any `admin` REMOVE a peer admin from the group outright
+/// (`remove_member` gates on `can_manage` and protects only the `owner`
+/// row), which is a blunter power than demotion. The argument here is
+/// consistency with promotion, not a new protection -- widening demote to
+/// `can_manage` would only add a quieter, in-place way to do a thing the
+/// spec already thought about, and it would split the authority over the
+/// admin list across everyone on it.
 async fn demote_member(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -953,11 +960,12 @@ mod tests {
 /// `crate::data::groups::db_tests` deliberately doesn't cover, since a
 /// data-layer test can only prove what a query does, never which callers a
 /// HANDLER lets reach it. This file is the most permission-dense route
-/// module in the crate (15 handlers, three distinct role predicates), so
-/// the three cases picked here are the ones where the handler's own gate,
-/// not the data layer's, is the entire behavior: an admin is refused the
-/// owner's row, a non-owner is refused promotion, and the invite link is
-/// withheld from a plain member.
+/// module in the crate (16 handlers, three distinct role predicates), so
+/// the cases picked here are the ones where the handler's own gate, not
+/// the data layer's, is the entire behavior: an admin is refused the
+/// owner's row, a non-owner is refused promotion and demotion, the owner
+/// is refused their own demotion, and the invite link is withheld from a
+/// plain member.
 ///
 /// The `test_app`/`test_router`/`seed_session`/`connect`/`request`/
 /// `post_json`/`delete_request` helpers below are this file's OWN copy of
@@ -1167,8 +1175,8 @@ mod db_tests {
 
     /// Issues a `POST` with a JSON body -- the write-path counterpart to
     /// `request`. `body: None` sends an empty body, which is what the
-    /// bodyless `POST` routes in this file (`promote`, `invite-link`,
-    /// `join`) expect.
+    /// bodyless `POST` routes in this file (`promote`, `demote`,
+    /// `invite-link`, `join`) expect.
     async fn post_json(
         router: axum::Router,
         uri: String,
@@ -1397,6 +1405,8 @@ mod db_tests {
         let admin_token = seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO2-ADMIN").await;
         let member_token = seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO2-MEMBER").await;
         seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO2-TARGET").await;
+        // Deliberately never added to the group below.
+        let outsider_token = seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO2-OUTSIDER").await;
 
         let group_id = crate::data::groups::create_group(
             &pool,
@@ -1433,6 +1443,19 @@ mod db_tests {
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
 
+        // ...and someone who isn't in the group at all gets this file's
+        // 404, not a 403: a non-member has no legitimate claim to learn
+        // whether the group even exists (`require_role`, and the module
+        // doc's own 403-vs-404 policy).
+        let (status, _body) = post_json(
+            test_router(test_app(pool.clone())),
+            format!("/groups/{group_id}/members/TEST-ROUTE-GROUPS-DEMO2-TARGET/demote"),
+            Some(&outsider_token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
         let target_role = crate::data::groups::get_member_role(
             &pool,
             &group_id,
@@ -1443,7 +1466,7 @@ mod db_tests {
         assert_eq!(
             target_role,
             Some(crate::data::groups::GroupRole::Admin),
-            "neither refused demotion may have taken effect"
+            "none of the three refused demotions may have taken effect"
         );
 
         cleanup(
@@ -1454,6 +1477,7 @@ mod db_tests {
                 "TEST-ROUTE-GROUPS-DEMO2-ADMIN",
                 "TEST-ROUTE-GROUPS-DEMO2-MEMBER",
                 "TEST-ROUTE-GROUPS-DEMO2-TARGET",
+                "TEST-ROUTE-GROUPS-DEMO2-OUTSIDER",
             ],
         )
         .await;

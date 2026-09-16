@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import GroupDetailPage from './page';
 import {
@@ -285,6 +285,18 @@ describe('GroupDetailPage', () => {
       };
     }
 
+    /** The rendered member row for `member`, so a per-row assertion can
+     * say WHICH row a control sits on rather than just how many of it the
+     * whole page has. `MemberRow` renders
+     * `<Group>{<Group><Text>label</Text><Badge/></Group>}{controls}</Group>`,
+     * so the row is two levels up from the label's own element. */
+    function memberRow(member: GroupMember): HTMLElement {
+      const label = screen.getByText(member.displayName as string);
+      const row = label.parentElement?.parentElement;
+      if (!row) throw new Error(`no rendered row found for ${member.displayName}`);
+      return row;
+    }
+
     /** Renders the page as `viewer`, with `viewerRole` as their role on the
      * group -- the two always agree in reality, so they're set together. */
     async function renderAs(viewer: GroupMember, viewerRole: GroupRole, trains: GroupTrain[] = []) {
@@ -322,14 +334,20 @@ describe('GroupDetailPage', () => {
       expect(screen.getAllByRole('button', { name: 'Remove' }).length).toBeGreaterThan(0);
     });
 
-    it('an owner viewer sees "Demote to member" on the admin row only', async () => {
+    it('an owner viewer sees "Demote to member" on the admin row and nowhere else', async () => {
       await renderAs(OWNER, 'owner');
-      // One admin in the fixture group -> exactly one demote control, and
-      // it is not offered against the owner's own row (a permanent owner:
-      // the backend 403s that) or against the plain member (nothing to
-      // demote -- they get "Promote to admin" instead).
-      expect(screen.getAllByRole('button', { name: 'Demote to member' })).toHaveLength(1);
-      expect(screen.getAllByRole('button', { name: 'Promote to admin' })).toHaveLength(1);
+      // Asserted per ROW, not as a count: "exactly one demote button on
+      // the page" would still pass if it were rendered against the
+      // OWNER's own row instead -- the permanent-owner row the backend
+      // 403s, i.e. precisely the "button whose only outcome is a 403"
+      // this page's own doc comment exists to prevent.
+      expect(within(memberRow(ADMIN)).getByRole('button', { name: 'Demote to member' })).toBeInTheDocument();
+      expect(within(memberRow(OWNER)).queryByRole('button', { name: 'Demote to member' })).not.toBeInTheDocument();
+      // A plain member has no admin role to lose; they get the opposite
+      // control instead, and only that one.
+      expect(within(memberRow(PLAIN)).queryByRole('button', { name: 'Demote to member' })).not.toBeInTheDocument();
+      expect(within(memberRow(PLAIN)).getByRole('button', { name: 'Promote to admin' })).toBeInTheDocument();
+      expect(within(memberRow(ADMIN)).queryByRole('button', { name: 'Promote to admin' })).not.toBeInTheDocument();
     });
 
     it('an admin viewer does NOT see "Demote to member" (the backend is owner-only)', async () => {
