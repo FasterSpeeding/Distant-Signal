@@ -1113,6 +1113,116 @@ mod tests {
         );
     }
 
+    /// The train detail page renders its header departure time and its
+    /// timetable rows from two **independently written** values, and this
+    /// test is the guard that they name the same instant.
+    ///
+    /// - The header (`frontend/app/train/[uid]/[date]/page.tsx`'s
+    ///   `pinScheduledDeparture: train.scheduledDeparture` ->
+    ///   `frontend/lib/trackingName.ts`'s `formatTime`) renders the
+    ///   `trains.scheduled_departure` **column**, which
+    ///   [`crate::data::trains::find_or_create_train_with_schedule_match`]
+    ///   binds verbatim from the caller's `pin_scheduled_departure` -- an
+    ///   already-zoned `DateTime<Utc>`, never re-converted.
+    /// - The timetable row (`frontend/components/JourneyTimeline.tsx`)
+    ///   renders `stops[i].scheduled_departure`, which
+    ///   [`JourneyStop::from_calling_point`] derives by pushing the
+    ///   calling point's **naive London wall-clock** `bookedDeparture`
+    ///   through [`london_to_utc`].
+    ///
+    /// Nothing in the type system ties those two together: a
+    /// `scheduled_departure` written as a bare wall-clock time with a `Z`
+    /// stapled on ("09:00:00Z" meaning 09:00 *London*) sits happily beside
+    /// a `bookedDeparture` of `"09:00:00"` that this module correctly
+    /// resolves to 08:00Z, and the page then shows 10:00 in its header and
+    /// 09:00 in its table -- a clean one-hour disagreement for the ~7
+    /// months of BST, invisible in winter. That is the class of bug this
+    /// test exists to catch.
+    ///
+    /// In production the two cannot actually drift, and it is worth
+    /// recording why, because it is a real invariant rather than a
+    /// coincidence: `schedule_matching::find_schedule_match` picks the
+    /// matched schedule with `schedule_query::match_pin`, which keeps a
+    /// candidate only when `|pin_scheduled_departure -
+    /// london_to_utc(booked_departure)| <= common::MATCH_TOLERANCE` -- the
+    /// *same* conversion this module applies. `attempt_schedule_match`
+    /// then writes that match's `calling_points` and the pin instant onto
+    /// the `trains` row in one call, so the two columns are always written
+    /// together from one agreeing match. An hour of BST error is 60
+    /// minutes, far outside the 20-minute tolerance, so it would make the
+    /// match fail outright (no `calling_points` at all) rather than
+    /// produce a mismatched pair. A fixture or backfill that writes the
+    /// two columns by hand bypasses that check entirely -- hence this
+    /// test.
+    #[test]
+    fn origin_stops_scheduled_departure_equals_the_pin_instant_it_was_matched_against() {
+        let service_date: NaiveDate = "2026-09-17".parse().unwrap(); // BST: UTC+1
+
+        // Exactly what `trains.calling_points` holds: naive London
+        // wall-clock times, camelCase, no zone.
+        let raw: Vec<RawCallingPoint> = serde_json::from_value(serde_json::json!([
+            {
+                "tiploc": "KNGX",
+                "kind": "Origin",
+                "bookedArrival": null,
+                "bookedDeparture": "09:00:00",
+                "dayOffset": 0
+            },
+            {
+                "tiploc": "EDINBUR",
+                "kind": "Terminate",
+                "bookedArrival": "13:30:00",
+                "bookedDeparture": null,
+                "dayOffset": 0
+            }
+        ]))
+        .expect("the real trains.calling_points wire shape must deserialize");
+
+        // What `trains.scheduled_departure` holds for the same train: the
+        // pin instant, stored already-zoned and NEVER re-converted (see
+        // `find_or_create_train_with_schedule_match`). A correctly
+        // authored one names the same moment as the origin calling point's
+        // 09:00 London wall clock, i.e. 08:00 UTC on a BST date.
+        let pin_scheduled_departure: DateTime<Utc> = "2026-09-17T08:00:00Z".parse().unwrap();
+
+        let stops = stops_from_calling_points(&raw, &HashMap::new(), service_date);
+
+        assert_eq!(
+            stops[0].scheduled_departure,
+            Some(pin_scheduled_departure),
+            "the origin stop's scheduled_departure (rendered in the timetable) and the pin \
+             instant mirrored onto trains.scheduled_departure (rendered in the page header) \
+             must be the same instant -- if this fails, the detail page shows two different \
+             departure times for one train"
+        );
+
+        // The production invariant itself, stated as an assertion:
+        // `match_pin` would only ever have produced this pairing if the
+        // two were within `MATCH_TOLERANCE` of each other.
+        let delta = (pin_scheduled_departure - stops[0].scheduled_departure.unwrap()).abs();
+        assert!(
+            delta <= common::MATCH_TOLERANCE,
+            "schedule_query::match_pin would never have matched this pin to this schedule: \
+             delta {delta} exceeds common::MATCH_TOLERANCE"
+        );
+
+        // And the specific way it goes wrong: a `scheduled_departure`
+        // authored as the wall-clock time with a `Z` stapled on is an hour
+        // late, which is both unequal AND outside the match tolerance --
+        // i.e. unreachable through the real write path.
+        let naively_zoned: DateTime<Utc> = "2026-09-17T09:00:00Z".parse().unwrap();
+        assert_ne!(
+            stops[0].scheduled_departure,
+            Some(naively_zoned),
+            "09:00 London on a BST date is 08:00Z, not 09:00Z"
+        );
+        assert!(
+            (naively_zoned - stops[0].scheduled_departure.unwrap()).abs() > common::MATCH_TOLERANCE,
+            "an hour of BST error must be outside MATCH_TOLERANCE -- that is why the real \
+             schedule-matching path cannot produce this mismatch"
+        );
+    }
+
     /// A **characterization** test, not a regression test: it records that
     /// trimming does nothing for the first remaining gap in `tiploc_key`'s
     /// "What this does NOT fix" note (Vauxhall's `VAUXHLM`, Clapham
