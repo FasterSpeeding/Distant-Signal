@@ -177,6 +177,18 @@ describe('LineDetailPage Edit/Delete visibility', () => {
     await screen.findByText('Not enough sampled data yet for this line.');
   });
 
+  // The unchanged-behaviour half of the no-status-row fix below: when the
+  // status endpoint does answer, the page renders the computed severity
+  // and none of the "not yet computed" copy.
+  it('renders the computed status, not the no-status state, when a status row exists', async () => {
+    vi.mocked(api.getCustomLine).mockResolvedValue(customLine({ isOwner: true }));
+    await renderPage();
+    expect(screen.getByText('Good Service')).toBeInTheDocument();
+    expect(screen.queryByText('No status yet')).not.toBeInTheDocument();
+    expect(screen.queryByText(/No status has been computed for this line yet/)).not.toBeInTheDocument();
+    await screen.findByText('Not enough sampled data yet for this line.');
+  });
+
   it("shows the owner their line's own 'Shared with' group list, linked", async () => {
     vi.mocked(api.getCustomLine).mockResolvedValue(
       customLine({ isOwner: true, sharedWithGroups: [{ id: 'grp-1', name: 'Family' }] }),
@@ -295,6 +307,13 @@ describe('LineDetailPage -- outage behaviour', () => {
 
   // withStaleFallback rethrows ApiNotFoundError unconditionally, so the
   // notFound() branch must keep working even with a warm cache entry.
+  //
+  // Every source is denied here, not just the status one: a 404 from
+  // `/Line/{id}/Status` alone now means "no status row yet", which is not
+  // grounds for a 404 on its own (see the no-status-row describe below).
+  // A line that no source can even name is the real deleted/unknown case,
+  // and that is what this asserts -- with a warm stale entry sitting in
+  // the cache for the very same key, which must not be served.
   it('still 404s for an unknown line rather than serving a stale entry', async () => {
     await renderPage();
     cleanup();
@@ -302,12 +321,159 @@ describe('LineDetailPage -- outage behaviour', () => {
     const { notFound } = await import('next/navigation');
     vi.mocked(notFound).mockClear();
     vi.mocked(api.getLineStatus).mockRejectedValue(new ApiNotFoundError('not found'));
+    vi.mocked(api.getCustomLine).mockRejectedValue(new ApiNotFoundError('not found'));
+    vi.mocked(api.getAllLines).mockResolvedValue([]);
 
     // `notFound` is mocked as a no-op here (the real one throws), so the
-    // page falls through to its own rethrow -- what matters is that the
-    // 404 branch was taken rather than a stale entry being served.
-    await expect(renderPage()).rejects.toThrow('not found');
+    // page renders on past it -- what matters is that the 404 branch was
+    // taken, and that the stale entry was NOT used to render the line.
+    await renderPage();
     expect(notFound).toHaveBeenCalled();
+    expect(screen.queryByRole('heading', { name: 'My Commute', level: 1 })).not.toBeInTheDocument();
+  });
+});
+
+// The bug this describe exists for: a custom line whose own detail page
+// 404'd for its owner. `/Line/{id}/Status` 404s until the aggregator has
+// written a `line_status` row, which a just-created custom line does not
+// have yet, and the page treated that 404 as "no such line" -- even though
+// `GET /public/lines/{id}` was returning the line's full definition
+// happily. The definition is what the bulk of this page renders, so a
+// missing status row must degrade only the status section.
+describe('LineDetailPage -- a line with no status row yet', () => {
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+    vi.mocked(api.getLineStatus).mockRejectedValue(new ApiNotFoundError('no matching line(s)'));
+    vi.mocked(api.getAllLines).mockResolvedValue(lines);
+    vi.mocked(api.getCustomLine).mockResolvedValue(customLine());
+    vi.mocked(api.getLineDefinition).mockResolvedValue({ stations: ['WOK', 'CLJ'], operators: ['SW'] });
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
+    vi.mocked(api.getLineHalfHourlyCoverageStats).mockResolvedValue([]);
+  });
+
+  it("renders the owner's brand-new custom line instead of 404ing it", async () => {
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+
+    await renderPage();
+
+    expect(notFound).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
+    // The definition-derived parts all still render.
+    expect(screen.getByText('Operators: SW')).toBeInTheDocument();
+    expect(screen.getByText('Category: custom')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Edit' })).toHaveAttribute('href', '/lines/custom-my-commute/edit');
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View history' })).toHaveAttribute(
+      'href',
+      '/lines/custom-my-commute/history',
+    );
+    // The embedded trend sections are still wired up -- they read
+    // `line_status_half_hourly_stats`, not `line_status`, so a missing
+    // status row is none of their business. Only the heading is asserted
+    // (it renders outside the Suspense boundaries): with no `IssueList`
+    // on this branch, nothing client-side schedules the re-render this
+    // test environment needs to retry a resolved async-component promise,
+    // so the boundaries' own contents never flush here. That is a
+    // limitation of rendering async Server Components under jsdom, not of
+    // the page -- `HalfHourlyTrendsResults.test.tsx` covers their real
+    // behaviour directly.
+    expect(screen.getByRole('heading', { name: 'Recent trends (last 24 hours)' })).toBeInTheDocument();
+  });
+
+  it('says so honestly rather than claiming Good Service', async () => {
+    await renderPage();
+
+    expect(
+      screen.getByText(
+        'No status has been computed for this line yet. It appears here once the aggregator has run a cycle covering it.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('No status yet')).toBeInTheDocument();
+    // `worstStatus` would have synthesised exactly this for an empty
+    // report -- true of a line the aggregator has assessed, a lie about
+    // one it has never seen.
+    expect(screen.queryByText('Good Service')).not.toBeInTheDocument();
+  });
+
+  it('renders for a group member the line is shared with, minus the owner controls', async () => {
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    vi.mocked(api.getCustomLine).mockResolvedValue(customLine({ isOwner: false }));
+    // A granted non-owner is not shown this line by `GET /public/lines`
+    // (that list is "mine to edit"), so its name can only come from
+    // `getCustomLine` here.
+    vi.mocked(api.getAllLines).mockResolvedValue([]);
+
+    await renderPage();
+
+    expect(notFound).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
+    expect(
+      screen.getByText('Shared with you through a group. Only its owner can edit it.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+  });
+
+  // Not just a custom-line case: a catalogue line is listed from config
+  // regardless of whether `line_status` has a row for it, so the same
+  // degraded-but-rendered page is the right answer there too.
+  it('renders a catalogue line that has no status row', async () => {
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    vi.mocked(api.getCustomLine).mockRejectedValue(new ApiNotFoundError('not found'));
+    vi.mocked(api.getAllLines).mockResolvedValue([
+      { id: 'sw-main', name: 'South Western Main Line', category: 'main-line', operators: ['SW'], source: 'catalogue' },
+    ]);
+
+    await renderPage('sw-main');
+
+    expect(notFound).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: 'South Western Main Line', level: 1 })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+  });
+
+  // The other half of the fix: a genuinely nonexistent id, or someone
+  // else's private custom line (both `getCustomLine` 404 + absent from
+  // `getAllLines`), must still 404 the whole page.
+  it('404s when no source can name the line -- an unknown id, or a line that is not the viewer\'s to see', async () => {
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    vi.mocked(api.getCustomLine).mockRejectedValue(new ApiNotFoundError('not found'));
+    vi.mocked(api.getLineDefinition).mockRejectedValue(new ApiNotFoundError('not found'));
+    vi.mocked(api.getAllLines).mockResolvedValue(lines);
+
+    await renderPage('custom-someone-elses');
+
+    expect(notFound).toHaveBeenCalled();
+    expect(screen.queryByText('My Commute')).not.toBeInTheDocument();
+  });
+
+  // Only a 404 means "no status computed yet". A 5xx or a dropped
+  // connection is an outage, and (with no stale entry to fall back on)
+  // must still reach app/error.tsx's retrying state rather than be
+  // rendered as a confident "this line has no status".
+  it('does not dress a backend outage up as a missing status row', async () => {
+    vi.mocked(api.getLineStatus).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    await expect(renderPage()).rejects.toThrow('connect ECONNREFUSED');
+  });
+
+  // Failing closed: an unreachable backend must not be reported as a
+  // nonexistent line, but it also leaves nothing to render, so `notFound()`
+  // is still the outcome -- what matters is that ownership/existence are
+  // never guessed at from a connectivity failure.
+  it('404s rather than inventing a page when every source is unreachable', async () => {
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    vi.mocked(api.getCustomLine).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    vi.mocked(api.getLineDefinition).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    vi.mocked(api.getAllLines).mockResolvedValue([]);
+
+    await renderPage();
+
+    expect(notFound).toHaveBeenCalled();
+    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
   });
 });
 
@@ -380,11 +546,56 @@ describe('generateMetadata', () => {
     expect(metadata.description).toBe('My Commute: Good Service');
   });
 
-  it('calls notFound() on ApiNotFoundError, matching the page component', async () => {
+  // `generateMetadata` runs independently of the page component and its
+  // own `notFound()` 404s the route by itself -- so it has to draw the
+  // same "no status row" vs. "no such line" distinction the page does, or
+  // it would silently undo the fix for every status-less line.
+  it('calls notFound() when no source can name the line, matching the page component', async () => {
     vi.mocked(api.getLineStatus).mockRejectedValue(new ApiNotFoundError('not found'));
+    vi.mocked(api.getCustomLine).mockRejectedValue(new ApiNotFoundError('not found'));
+    vi.mocked(api.getAllLines).mockResolvedValue([]);
     const { notFound } = await import('next/navigation');
     vi.mocked(notFound).mockClear();
-    await expect(generateMetadata({ params: Promise.resolve({ id: 'unknown' }) })).rejects.toThrow();
+    await generateMetadata({ params: Promise.resolve({ id: 'unknown' }) });
     expect(notFound).toHaveBeenCalled();
+  });
+
+  it('titles a line that has no status row yet, rather than 404ing the route', async () => {
+    vi.mocked(api.getLineStatus).mockRejectedValue(new ApiNotFoundError('no matching line(s)'));
+    vi.mocked(api.getCustomLine).mockResolvedValue(customLine());
+    vi.mocked(api.getAllLines).mockResolvedValue(lines);
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+
+    const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
+
+    expect(notFound).not.toHaveBeenCalled();
+    expect(metadata.title).toBe('My Commute — Distant Signal');
+    expect(metadata.description).toBe('My Commute: no status computed yet');
+    expect(metadata.openGraph?.title).toBe('My Commute — Distant Signal');
+  });
+
+  // Same failing-closed rule as the page's: a `getCustomLine` that blew up
+  // on connectivity is not evidence the line is gone, but it leaves no
+  // name either, so the route still 404s rather than titling a page
+  // "undefined".
+  it('falls back to the all-lines list when the custom-line probe is unreachable', async () => {
+    vi.mocked(api.getLineStatus).mockRejectedValue(new ApiNotFoundError('no matching line(s)'));
+    vi.mocked(api.getCustomLine).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    vi.mocked(api.getAllLines).mockResolvedValue(lines);
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+
+    const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
+
+    expect(notFound).not.toHaveBeenCalled();
+    expect(metadata.title).toBe('My Commute — Distant Signal');
+  });
+
+  it('propagates a non-404 status failure instead of reporting no status', async () => {
+    vi.mocked(api.getLineStatus).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    await expect(
+      generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) }),
+    ).rejects.toThrow('connect ECONNREFUSED');
   });
 });
