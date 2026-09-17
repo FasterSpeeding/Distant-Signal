@@ -346,8 +346,34 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   right after this) is pushed to the bottom of the
                   viewport on a short-content page instead of hugging the
                   content -- see globals.css's comment on that `body` rule
-                  for the full sticky-footer rationale. */}
-              <Container component="main" size="lg" px={0} style={{ flex: 1 }}>
+                  for the full sticky-footer rationale.
+
+                  `w="100%"`: without it, this Container shrink-wrapped to
+                  its content's width instead of matching the nav
+                  Container's (:285) identical `size="lg" px={0}`, so a
+                  page's content edge drifted from the nav's on every route
+                  whose content didn't happen to be exactly 1140px wide --
+                  confirmed against the installed
+                  node_modules/@mantine/core/styles/Container.css: the
+                  `[data-strategy='block']` rule this renders under sets
+                  only `max-width` + `margin-inline: auto`, no `width`. A
+                  flex item's `width:auto` normally stretches to fill the
+                  cross axis (`body`'s default `align-items: normal`
+                  computes to `stretch`), but the CSS Flexbox spec (and
+                  Chromium/Firefox's actual behaviour, verified against a
+                  running dev server) skips that stretch whenever the
+                  item's cross-axis margins are auto -- exactly
+                  `margin-inline: auto` here -- and falls back to
+                  shrink-to-fit sizing instead, capped by `max-width`. That
+                  auto-margin/stretch conflict is also why `align-self:
+                  stretch` on `main` would NOT have fixed this: it hits the
+                  identical spec carve-out and still doesn't stretch a
+                  flex item with auto cross-margins. `w="100%"` gives the
+                  Container an explicit (non-auto) width instead, which
+                  `max-width: 1140px` then clamps exactly like the nav's,
+                  with `margin-inline: auto` centering the clamped box --
+                  matching the nav Container's box on every route. */}
+              <Container component="main" size="lg" px={0} w="100%" style={{ flex: 1 }}>
                 {children}
               </Container>
               <OpenDataAttribution />
