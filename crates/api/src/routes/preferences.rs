@@ -43,9 +43,28 @@ async fn get_preferences(
     let pinned_line_ids = preferences::list_pinned_line_ids(&app.database, &user.id)
         .await
         .map_err(internal_error)?;
-    let custom = custom_lines::list_custom_lines(&app.database)
-        .await
-        .map_err(internal_error)?;
+    // Only the custom lines THIS caller may read count as "known" here.
+    // `PUT /preferences/pinned-lines` validates nothing (see
+    // `preferences::replace_pinned_lines`), so resolving pins against the
+    // instance-wide `list_custom_lines` made this route an existence
+    // oracle: pin a guessed id -- and ids are deterministic slugs of
+    // user-chosen names (`custom_lines::slugify`) -- and it echoed back iff
+    // somebody on the instance really owned a line by that name. Scoping
+    // the lookup to the pinned ids also replaces a full-table read with one
+    // indexed lookup, and still lets a group-shared line stay pinned, which
+    // `list_custom_lines_for_user` alone would not.
+    let pinned_custom_ids: Vec<String> = pinned_line_ids
+        .iter()
+        .filter(|id| id.starts_with(custom_lines::CUSTOM_LINE_ID_PREFIX))
+        .cloned()
+        .collect();
+    let readable_custom_ids = if pinned_custom_ids.is_empty() {
+        std::collections::HashSet::new()
+    } else {
+        custom_lines::readable_custom_line_ids(&app.database, &pinned_custom_ids, &user.id)
+            .await
+            .map_err(internal_error)?
+    };
     // TfL lines live in neither `app.config.lines` (the static catalogue)
     // nor `custom_lines` -- they're ingested straight into `line_status`
     // with `source = 'tfl'` (see `queries::upsert_tfl_line_status`).
@@ -59,7 +78,7 @@ async fn get_preferences(
     let pinned_lines = filter_known_pinned_lines(
         pinned_line_ids,
         app.config.lines.iter().map(|l| l.id.clone()),
-        custom.into_iter().map(|c| c.id),
+        readable_custom_ids,
         tfl.into_iter().map(|l| l.id),
     );
 
@@ -116,11 +135,17 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
 
 /// Filters `pinned_line_ids` down to ones that still resolve to a real
 /// line, dropping stale ids for lines that have since been removed/renamed.
-/// A line is "real" if it appears in the static catalogue, in
-/// `custom_lines`, or among the TfL lines `crates/poller-tfl` has ingested
-/// -- all three are valid targets of `PUT /preferences/pinned-lines`, which
-/// itself validates nothing (see `preferences::replace_pinned_lines`), so
-/// this is the only place a stale or foreign id gets caught.
+/// A line is "real" if it appears in the static catalogue, among the custom
+/// lines THE CALLER MAY READ, or among the TfL lines `crates/poller-tfl` has
+/// ingested -- all three are valid targets of
+/// `PUT /preferences/pinned-lines`, which itself validates nothing (see
+/// `preferences::replace_pinned_lines`), so this is the only place a stale
+/// or foreign id gets caught.
+///
+/// `custom_ids` being caller-scoped is load-bearing, not incidental: an
+/// instance-wide custom-line list here turns an unvalidated pin into a
+/// probe for whether another user owns a line with a given id. See
+/// `get_preferences`.
 ///
 /// Factored out of `get_preferences` so the "TfL ids count as known" rule
 /// is unit-testable without a database, unlike the three id sources
@@ -176,6 +201,20 @@ mod tests {
             vec![],
         );
         assert_eq!(result, vec!["custom-my-commute".to_string()]);
+    }
+
+    /// The existence-oracle regression: `custom_ids` is the set of custom
+    /// lines THE CALLER may read, so another user's private line -- which
+    /// this caller can still *pin*, since the write path validates nothing
+    /// -- must not echo back and confirm it exists.
+    #[test]
+    fn a_pinned_custom_line_the_caller_cannot_read_is_dropped_rather_than_confirmed() {
+        let pinned = vec!["custom-someone-elses-commute".to_string()];
+        let result = filter_known_pinned_lines(pinned, vec![], vec![], vec![]);
+        assert!(
+            result.is_empty(),
+            "pinning a guessed id must not reveal whether anyone owns it"
+        );
     }
 
     #[test]
