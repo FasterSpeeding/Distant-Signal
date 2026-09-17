@@ -447,7 +447,28 @@ describe('LineDetailPage -- a line with no status row yet', () => {
     await renderPage('custom-someone-elses');
 
     expect(notFound).toHaveBeenCalled();
-    expect(screen.queryByText('My Commute')).not.toBeInTheDocument();
+    // `notFound` is a no-op in these tests, so the page renders on past it
+    // -- with nothing in the heading. Asserting the heading is empty (not
+    // merely that it doesn't say "My Commute", which was never a candidate
+    // for this id) is what would catch a future fallback that resolved a
+    // name from a source this viewer isn't entitled to.
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('');
+  });
+
+  // The backend 404s rather than returning an empty array today, so this
+  // is a guard on the defensive branch in `fetchLineStatusResult`, not on
+  // reachable behaviour: the pre-fix code read `.name` straight off
+  // `reports[0]` and would have died on a TypeError.
+  it('treats an empty status array the same as a 404, rather than crashing', async () => {
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+    vi.mocked(api.getLineStatus).mockResolvedValue([]);
+
+    await renderPage();
+
+    expect(notFound).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
+    expect(screen.getByText('No status yet')).toBeInTheDocument();
   });
 
   // Only a 404 means "no status computed yet". A 5xx or a dropped
@@ -590,6 +611,23 @@ describe('generateMetadata', () => {
 
     expect(notFound).not.toHaveBeenCalled();
     expect(metadata.title).toBe('My Commute — Distant Signal');
+  });
+
+  // The page component lets this same fetch throw, and the two halves of
+  // one route must agree: with the line list unreachable we cannot know
+  // whether the id is a catalogue line, and `notFound()` would be a
+  // confident answer we don't have.
+  it('propagates an unreachable line list instead of 404ing the route', async () => {
+    vi.mocked(api.getLineStatus).mockRejectedValue(new ApiNotFoundError('no matching line(s)'));
+    vi.mocked(api.getCustomLine).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    vi.mocked(api.getAllLines).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    const { notFound } = await import('next/navigation');
+    vi.mocked(notFound).mockClear();
+
+    await expect(
+      generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) }),
+    ).rejects.toThrow('connect ECONNREFUSED');
+    expect(notFound).not.toHaveBeenCalled();
   });
 
   it('propagates a non-404 status failure instead of reporting no status', async () => {

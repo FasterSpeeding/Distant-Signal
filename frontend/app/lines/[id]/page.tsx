@@ -157,7 +157,12 @@ const NO_STATUS_BODY =
  *
  * The extra `getCustomLine`/`getAllLines` calls only happen on the
  * no-status-row path, so the overwhelmingly common case (a line with a
- * status) still costs exactly the one deduped status fetch it did before. */
+ * status) still costs exactly the one deduped status fetch it did before.
+ * A bogus `/lines/{id}` does now cost more than the single status call it
+ * used to, here and in the page component both -- that is the price of
+ * telling "no status yet" apart from "no such line" at all, and both are
+ * indexed single-row/whole-list reads, but it is worth knowing about if
+ * this route ever needs rate limiting. */
 export async function generateMetadata({
   params,
 }: {
@@ -168,22 +173,24 @@ export async function generateMetadata({
   const statusResult = await fetchLineStatusResult(id);
 
   if (statusResult.coverage === 'not-computed') {
-    // Both probes fail closed to "no name from this source" (a connectivity
-    // failure must not be reported as a nonexistent line) -- but with no
-    // name from anywhere there is nothing to title the page with, and
-    // `notFound()` is the honest answer, same as the page component's.
+    // Exactly the page component's own two probes, with exactly its two
+    // failure policies, so the two halves of this route cannot disagree
+    // about whether the line exists:
+    //   - `getCustomLine` swallows every failure (it is an
+    //     ownership/existence probe whose 401 and 404 are already
+    //     indistinguishable -- see the page's own long comment on it);
+    //   - `getAllLines` does NOT. If the list is unreachable we genuinely
+    //     do not know whether this id is a catalogue line, and a 404 would
+    //     be a confident answer we don't have. Letting it throw sends the
+    //     route to app/error.tsx's retrying state instead, which is what
+    //     the page component does with the same failure.
     let customLine: CustomLineDetail | null = null;
     try {
       customLine = await getCustomLine(id);
     } catch {
       // swallowed -- see above
     }
-    let summary: LineSummary | undefined;
-    try {
-      summary = (await withStaleFallback('allLines', () => getAllLines())).find((line) => line.id === id);
-    } catch {
-      // swallowed -- see above
-    }
+    const summary = (await withStaleFallback('allLines', () => getAllLines())).find((line) => line.id === id);
     const name = resolveLineName(statusResult, customLine, summary);
     if (name === undefined) {
       notFound();
@@ -362,9 +369,13 @@ export default async function LineDetailPage({
               With no `line_status` row there is no severity to show, and
               `worstStatus`'s synthetic Good Service stand-in would be an
               outright false claim about a line nothing has assessed yet --
-              so the badge is replaced, not fed a default. Gray/light
-              matches the `informational` group's own colour, and
-              `data-status-badge` is the same `app/globals.css`
+              so the badge is replaced, not fed a default.
+
+              Gray/light rather than a filled severity colour, so it reads
+              as the absence of a status rather than as one more severity;
+              it is also the one `variant="light"` pairing `app/globals.css`
+              measured as needing no correction at all (gray 9 on gray 1,
+              13.87:1). `data-status-badge` is the same `app/globals.css`
               ellipsis-opt-out hook `StatusBadge` carries. */}
           {statusResult.coverage === 'present' ? (
             <StatusBadge severity={worstStatus(statusResult.report).statusSeverity} />
