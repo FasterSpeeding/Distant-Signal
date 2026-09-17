@@ -1,7 +1,9 @@
 //! Streams raw CIF `SCHEDULE` text into [`RawSchedule`] blocks.
 //!
 //! No I/O here -- the caller already read the file (or a fixture) into a
-//! `&str`. A single malformed/too-short/non-ASCII line is skipped, never a
+//! `&str`. A single malformed/too-short/non-ASCII line is skipped (though
+//! a `BS`/`LT` one still closes whatever block it follows, exactly as a
+//! well-formed one would -- see [`is_fixed_width_decodable`]), never a
 //! hard parse failure for the whole extraction -- mirroring
 //! `crates/schedule-reference/src/parser.rs::parse_ti_lines`'s own
 //! documented "a single malformed line must not abort the whole
@@ -39,13 +41,31 @@ const MIN_LI_LEN: usize = 20;
 /// hostile file it does, and every fixed-offset slice below would panic
 /// (`"byte index N is not a char boundary"`) rather than skip the line.
 ///
-/// One `is_ascii()` check per line, taken before any slicing, removes that
-/// whole panic class at the source: once a line is known to be ASCII,
-/// every byte index in it is a char boundary by construction, so each
-/// later fixed-offset slice is boundary-safe and only the length check is
-/// left to do. A non-ASCII line is not valid CIF, so it is skipped, the
-/// same as any other malformed line -- never decoded into a truncated or
-/// garbage value that would look like a successful parse.
+/// One `is_ascii()` check per decoded line, taken before any slicing,
+/// removes that whole panic class at the source: once a line is known to
+/// be ASCII, every byte index in it is a char boundary by construction, so
+/// each later fixed-offset slice is boundary-safe and only the length
+/// check is left to do. A non-ASCII line is not valid CIF, so this
+/// function's caller skips it, the same as any other malformed line --
+/// never decoding it into a truncated or garbage value that would look
+/// like a successful parse.
+///
+/// Note what this deliberately does NOT do: it is not scoped to the field
+/// ranges actually sliced, so a stray non-ASCII byte anywhere on the line
+/// -- including in the free-text region past the last field this crate
+/// decodes -- rejects the whole record rather than just the field it sits
+/// in. That is a real widening of "malformed", accepted on purpose: CIF is
+/// ASCII by specification, so a line carrying non-ASCII bytes anywhere has
+/// already failed the format, and a per-field check would be both slower
+/// and easier to leave a hole in.
+///
+/// This is deliberately NOT applied to the record-type dispatch in
+/// [`parse_schedule_records`], which reads the two identity bytes through
+/// `line.as_bytes()` instead -- byte indexing has no char-boundary hazard
+/// at all, so the dispatch stays panic-free without an ASCII check, and a
+/// non-ASCII `BS`/`LT` line still correctly TERMINATES the block it
+/// follows instead of silently letting the next block's calling points
+/// accumulate onto the previous schedule.
 ///
 /// `fuzz/fuzz_targets/parse_schedule_records.rs` is the coverage-guided
 /// harness this was found and verified with; its own doc comment records
@@ -75,14 +95,20 @@ pub fn parse_schedule_records(text: &str) -> Vec<RawSchedule> {
     let mut current: Option<RawSchedule> = None;
 
     for line in text.lines() {
-        // Both halves matter: `len() >= 2` keeps `line[0..2]` in range, and
-        // `is_ascii()` keeps byte index 2 on a char boundary. See
-        // [`is_fixed_width_decodable`].
-        if !is_fixed_width_decodable(line, 2) {
-            continue;
-        }
-        match &line[0..2] {
-            "BS" => {
+        // Dispatch on the two record-identity BYTES, not on `&line[0..2]`.
+        // A `&str` slice would panic when byte index 2 falls inside a
+        // multi-byte character (the very first of this parser's eight
+        // fuzzer-found panic sites); a byte slice pattern cannot, and it
+        // needs no length check either -- a shorter line simply matches
+        // none of the arms. Crucially this also keeps a line whose
+        // identity bytes ARE `BS`/`LT` but whose body is undecodable
+        // (non-ASCII, too short, bad date, ...) flowing into the arms
+        // below, so it still TERMINATES the open block, exactly as an
+        // ASCII-but-malformed one always has. Rejecting such a line before
+        // the dispatch instead would silently append the NEXT block's
+        // calling points to the PREVIOUS schedule.
+        match line.as_bytes() {
+            [b'B', b'S', ..] => {
                 if let Some(prev) = current.take() {
                     out.push(prev);
                 }
@@ -101,21 +127,21 @@ pub fn parse_schedule_records(text: &str) -> Vec<RawSchedule> {
                 // A malformed BS line is skipped; `current` stays `None`
                 // until the next real BS line starts a new block.
             }
-            "LO" => {
+            [b'L', b'O', ..] => {
                 if let Some(cp) = parse_calling_point(line, CallingPointKind::Origin)
                     && let Some(schedule) = current.as_mut()
                 {
                     schedule.calling_points.push(cp);
                 }
             }
-            "LI" => {
+            [b'L', b'I', ..] => {
                 if let Some(cp) = parse_calling_point(line, CallingPointKind::Intermediate)
                     && let Some(schedule) = current.as_mut()
                 {
                     schedule.calling_points.push(cp);
                 }
             }
-            "LT" => {
+            [b'L', b'T', ..] => {
                 if let Some(cp) = parse_calling_point(line, CallingPointKind::Terminate)
                     && let Some(schedule) = current.as_mut()
                 {
@@ -139,9 +165,9 @@ pub fn parse_schedule_records(text: &str) -> Vec<RawSchedule> {
 fn parse_basic_schedule(line: &str) -> Option<BasicSchedule> {
     // Guards every fixed-offset slice below (`3..9`, `9..15`, `15..21`,
     // `21..28`) against BOTH panic conditions at once -- see
-    // [`is_fixed_width_decodable`]. Re-checked here, not just at the one
-    // call site in `parse_schedule_records`, so this function is
-    // panic-free on its own terms rather than by caller convention.
+    // [`is_fixed_width_decodable`]. `21..28` being exactly 7 ASCII
+    // characters is also what bounds the `days_of_week[i]` write below to
+    // `i <= 6` with no length check of its own.
     if !is_fixed_width_decodable(line, MIN_BS_LEN) {
         return None;
     }
@@ -183,11 +209,13 @@ fn parse_calling_point(line: &str, kind: CallingPointKind) -> Option<CallingPoin
         CallingPointKind::Origin | CallingPointKind::Terminate => MIN_LO_LT_LEN,
         CallingPointKind::Intermediate => MIN_LI_LEN,
     };
-    // Guards every fixed-offset slice below (`2..9`, `10..14`, and, for an
-    // `LI` line, `15..19`) against BOTH panic conditions at once -- see
-    // [`is_fixed_width_decodable`]. Re-checked here, not just at the call
-    // sites in `parse_schedule_records`, so this function is panic-free on
-    // its own terms rather than by caller convention.
+    // Guards every fixed-offset read below against BOTH panic conditions
+    // at once -- see [`is_fixed_width_decodable`]. That is the `2..9` and
+    // `10..14` slices plus the `as_bytes()[14]` half-minute byte (which is
+    // why `MIN_LO_LT_LEN` is 15 and not 14), and, for an `LI` line, the
+    // `15..19` slice plus `as_bytes()[19]` (likewise why `MIN_LI_LEN` is 20
+    // and not 19). The byte reads carry no char-boundary hazard of their
+    // own; they are the reason for the length half of the guard.
     if !is_fixed_width_decodable(line, min_len) {
         return None;
     }
@@ -395,26 +423,35 @@ mod tests {
         assert!(cp.is_half_minute_departure);
     }
 
-    // --- Malformed-input regression tests -------------------------------
+    // --- Malformed-input tests ------------------------------------------
     //
-    // Every test below is a regression guard for the same single root
-    // cause an external coverage-guided fuzzing campaign
-    // (cargo-fuzz/libFuzzer + AddressSanitizer) found in this function:
-    // this module's fixed-offset `&line[a..b]` slices were guarded only by
-    // BYTE-LENGTH checks, but a `&str` byte slice also panics when an index
-    // falls INSIDE a multi-byte UTF-8 character. CIF is ASCII by spec, so
-    // real feed bytes never hit it; a corrupted, truncated-mid-character,
-    // re-encoded or hostile file does. Eight distinct slice sites were
-    // affected -- `line[0..2]` in `parse_schedule_records`; `line[3..9]`,
-    // `line[9..15]`, `line[15..21]`, `line[21..28]` in
-    // `parse_basic_schedule`; `line[2..9]`, `line[10..14]`, `line[15..19]`
-    // in `parse_calling_point` -- all now covered by
-    // `is_fixed_width_decodable`'s one ASCII-plus-length guard per line.
+    // An external coverage-guided fuzzing campaign (cargo-fuzz/libFuzzer +
+    // AddressSanitizer) found eight panic sites in this module, all one
+    // root cause: fixed-offset `&line[a..b]` slices guarded only by
+    // BYTE-LENGTH checks, where a `&str` byte slice ALSO panics when an
+    // index falls INSIDE a multi-byte UTF-8 character. CIF is ASCII by
+    // spec, so real feed bytes never hit it; a corrupted,
+    // truncated-mid-character, re-encoded or hostile file does. The eight:
+    // `line[0..2]` in `parse_schedule_records` (since replaced by a byte
+    // dispatch); `line[3..9]`, `line[9..15]`, `line[15..21]`,
+    // `line[21..28]` in `parse_basic_schedule`; `line[2..9]`,
+    // `line[10..14]`, `line[15..19]` in `parse_calling_point`.
     //
-    // A panicking parser is what these assert against: a `#[test]` that
-    // merely RETURNS is already proof of no panic, but each one also
-    // asserts the honest outcome (the bad line is skipped, never decoded
-    // into a truncated/garbage value that would look like a success).
+    // Only the three `..._non_ascii_...` tests below are true regression
+    // guards for that -- they fail if the fix is reverted. The rest are
+    // characterization tests for malformed-input behaviour this parser
+    // already had (truncation, bad dates, bad times, orphaned body lines,
+    // unknown record types), pinned here because the audit that produced
+    // the fix had to reason about each of them to be sure none was a
+    // NINTH panic site, and pinning is what stops that reasoning from
+    // having to be redone. The block-termination pair is a regression
+    // guard for a defect introduced by an earlier draft of the fix
+    // itself -- see its own comment.
+    //
+    // A `#[test]` that merely RETURNS is already proof of no panic, but
+    // each one also asserts the honest outcome (the bad line is skipped,
+    // never decoded into a truncated/garbage value that looks like a
+    // success, and never silently folded into a neighbouring record).
 
     #[test]
     fn non_ascii_lines_do_not_panic() {
@@ -603,9 +640,19 @@ mod tests {
 
     #[test]
     fn a_long_run_of_unknown_and_malformed_record_types_is_inert() {
+        // Two separate hazards interleaved: unknown-but-ASCII two-letter
+        // record identities (which must reach the dispatch and fall
+        // through its catch-all), and non-ASCII junk (which must not reach
+        // any decoder). Neither may disturb the real block that follows.
         let mut lines = Vec::new();
-        for i in 0..200 {
-            lines.push(format!("{i:02}garbage \u{20AC} line"));
+        for (i, prefix) in ["TI", "AA", "ZZ", "HD", "QQ", "L!", "B ", "  "]
+            .into_iter()
+            .cycle()
+            .take(200)
+            .enumerate()
+        {
+            lines.push(format!("{prefix}unknown record {i}"));
+            lines.push(format!("\u{20AC}\u{1F600} junk {i}"));
         }
         lines.push(BS_C00573_PERMANENT.to_string());
         lines.push(LO_EUSTON.to_string());
@@ -613,6 +660,75 @@ mod tests {
         let schedules = parse_schedule_records(&lines.join("\n"));
         assert_eq!(schedules.len(), 1);
         assert_eq!(schedules[0].calling_points.len(), 2);
+    }
+
+    #[test]
+    fn an_undecodable_bs_line_still_terminates_the_previous_block() {
+        // Regression guard for a defect an earlier draft of the
+        // char-boundary fix introduced: rejecting a non-ASCII line BEFORE
+        // the record-type dispatch meant a `BS` line whose body happened
+        // to carry a non-ASCII byte never ran the dispatch's
+        // `current.take()`, so the NEXT block's calling points were
+        // silently appended to the PREVIOUS schedule -- two real trains
+        // merged into one, which is far worse than a dropped record.
+        //
+        // Byte 40 of a `BS` line is in the free-text region this crate
+        // decodes no field from, so this line's every decoded field is
+        // intact and only the ASCII rule rejects it. Whatever the reason a
+        // `BS` line fails to decode, the block before it must close.
+        let mut poisoned = BS_C00574_PERMANENT.to_string();
+        poisoned.replace_range(40..41, "\u{00A3}");
+
+        for second_bs in [
+            poisoned.as_str(),
+            // The same expectation for every OTHER way a BS line can fail
+            // to decode -- the behaviour non-ASCII must not diverge from.
+            "BS",
+            &bs_line_with(9..15, "XXXXXX"),
+            &bs_line_with(3..9, "      "),
+        ] {
+            let text = format!("{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{second_bs}\n{LT_EUSTON}");
+            let schedules = parse_schedule_records(&text);
+            assert_eq!(
+                schedules.len(),
+                1,
+                "only the first block decodes: {second_bs}"
+            );
+            assert_eq!(schedules[0].basic.uid, "C00573");
+            assert_eq!(
+                schedules[0].calling_points.len(),
+                1,
+                "the orphaned LT after an undecodable BS must NOT join C00573: {second_bs}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_undecodable_lt_line_still_terminates_its_own_block() {
+        // The `LT` half of the same defect: `LT` closes a block whether or
+        // not its own calling point decodes, so a non-ASCII `LT` must not
+        // leave the block open for the next one's body to fall into.
+        let mut poisoned = LT_EUSTON.to_string();
+        poisoned.replace_range(24..25, "\u{00A3}");
+
+        // The body lines AFTER the terminator are deliberately orphaned --
+        // no `BS` follows to close the block for it. That is what makes
+        // the `LT`'s own termination observable: leave the block open and
+        // these stops get attributed to C00573.
+        for terminator in [poisoned.as_str(), "LT", "LTEUSTON  ::::"] {
+            let text = format!(
+                "{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{terminator}\n{LO_WATRLMN}\n{LI_CARLILE}"
+            );
+            let schedules = parse_schedule_records(&text);
+            assert_eq!(schedules.len(), 1, "one block: {terminator}");
+            assert_eq!(schedules[0].basic.uid, "C00573");
+            assert_eq!(
+                schedules[0].calling_points.len(),
+                1,
+                "C00573 keeps only its own LO, not the orphans after an \
+                 undecodable LT: {terminator}"
+            );
+        }
     }
 
     #[test]
