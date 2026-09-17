@@ -182,8 +182,9 @@ appears under `stationFacilities.*` (`atm`, `wifi`, `shops`, `refreshments`,
 `loungesAndWaiting.{firstClass,seatingArea,waitingFacility}`,
 `staffAssistance.{helpline,staffHelp}`, `helpAndSupport.staffHelp`, and
 `stationAccessibility.{trainRamp,ticketBarriers}`. Several sites extend it
-with extra scalars (`trainRamp` adds `storage`; `ticketBarriers` adds
-`names`; `toilets` adds three booleans and `locations`).
+with extra siblings (`trainRamp` adds the scalar `storage`;
+`ticketBarriers` adds the array `names`; `toilets` adds three booleans and
+the array `locations`).
 
 A narrower two-field variant `{available, notes}` occurs 155 times — five of
 the seven `transportLinks.*` sub-keys (`airport`, `bus`, `carHire`, `port`,
@@ -326,8 +327,11 @@ from the renderer.
 payload size unmeasured. Measured over the sample, the filtered 12-key
 object as compact JSON is **9,065 characters (min, `BAL`), 20,667 (median,
 `BSK`), 29,919 (max, `MAN`)** — UTF-8 byte counts are a handful higher
-(9,069 / 20,681 / 29,925), the difference being the `£` and accented
-characters of §2.4.
+(9,069 / 20,681 / 29,925). The gap is entirely non-ASCII punctuation and
+currency: across the sample, `£` ×108, `’` ×14, `“`/`”` ×3 each, `–` ×4,
+and — worth knowing before rendering — a zero-width space (U+200B) ×7,
+which will show up as an invisible artifact. The one `é` exists only as the
+ASCII entity `&#233;` and costs nothing on the wire.
 
 That is comfortably small for a synchronously-rendered server component, so
 the risk that open question flagged does not materialise. It is *not*
@@ -364,8 +368,9 @@ Render by detecting the seven patterns structurally, not by switching on the
 12 key names or on sub-field paths. Each pattern is recognised by a
 predicate over the value's own shape (e.g. "an object with a boolean
 `available`"), so a pattern is rendered correctly wherever it appears —
-including at the 396 Pattern-A sites nested three levels deep, which a
-key-name switch would miss.
+including at the 396 Pattern-A sites, which sit two levels below the
+payload root across 18 different paths and which a key-name switch would
+have to enumerate one by one.
 
 This keeps the renderer's contract close to what it is today (a total
 function from `unknown` to something displayable) while making its output
@@ -439,8 +444,9 @@ Two traps the real data sets:
 
 - **Sort before compacting.** `daysOfTheWeek` is *not* in canonical order.
   Four entries arrive out of order, one of them fully reversed
-  (`Sunday,Saturday,…,Monday`) and one interleaved
-  (`Monday,Tuesday,Thursday,Friday,Saturday,Wednesday`). Range compaction
+  (`Sunday,Saturday,…,Monday` at `BTN`), two interleaved
+  (`Monday,Tuesday,Thursday,Friday,Saturday,Wednesday` at `INV`, twice) and
+  one a simple swap (`CDF`). Range compaction
   over array order would produce nonsense. Compact over the seven weekday
   tokens sorted into week order; `Public Holidays` (§2.3) is emitted as its
   own trailing token and never folded into a range.
@@ -485,12 +491,12 @@ verbatim:
   "operatorName": "GREGGS BAKERY", "primaryTelephoneNumber": null }
 ```
 
-Since §4.4 already renders `operatorName`, dropping `name` outright loses
-nothing on this sample and needs no string heuristic. Two earlier drafts of
-this document proposed suffix- and containment-based rules to preserve
-"GREGGS BAKERY"; both were unnecessary, and the suffix one leaked three
-boilerplate names. If the feed later puts something unique in `name`, the
-loss is a duplicated label, not data.
+That generalises: across all 122 contact objects, every `name` either
+contains the word "Details" or is byte-identical to its own `operatorName`.
+Since `operatorName` is rendered anyway, dropping `name` outright loses
+nothing on this sample and needs no string heuristic at all. If the feed
+later puts something unique in `name`, the loss is a duplicated label, not
+data.
 
 ### 4.5 Pattern D — Named-item collection
 
@@ -505,8 +511,7 @@ loss is a duplicated label, not data.
   (§2.3, Pattern E). "Platform 3" followed by "There is a Help Point close
   to this platform" and "Seating is limited on this platform" needs nothing
   else.
-- **Otherwise** — 3 of the 12 paths, not one as an earlier draft of this
-  document claimed:
+- **Otherwise** — 3 of the 12 paths:
   - `carParks.carParks[]` (61 items): scalars as labelled rows, `charges`
     as a rate table skipping null rates, `operator` and `openingHours` via
     Patterns C and B, `accessibleLocations` via Pattern D again.
@@ -560,10 +565,14 @@ Two honest ways forward, both of which this document leaves open:
 
 1. **Label by field, not by shape** — a small deny-list of the fields that
    are codes rather than prose keeps a label; everything else drops it. In
-   this sample there are **zero** code-like strings at depth 1 and exactly
-   one below it (`stationAccessibility.stepFreeCategory.category`), so the
-   list is a single entry. Unlike the ~480-entry dictionary rejected in §6,
-   that is trivially maintainable.
+   this sample there are **zero** code-like strings at depth 1, so the list
+   needs exactly one entry for the case §4.6 is about:
+   `stationAccessibility.stepFreeCategory.category`. (Codes do occur deeper
+   — `crsCode`, `postcode`, the `charges.*` rates — but §4.4 and §4.5
+   already give each of those its own rendering, so they never reach this
+   rule.) Unlike the per-field dictionary rejected in §6, which would need
+   an entry for each of the sample's **171 distinct field names**, that is
+   trivially maintainable.
 2. **Keep every label** for depth-1 scalars and take the redundancy, gaining
    the benefit only inside Pattern D items (§4.5), where the sentence
    finding is unambiguous and no counterexample exists.
@@ -581,34 +590,40 @@ that function is good at, and a better use for it than labelling sentences.
 
 Every `location`, `notes`, `note` and `*Notes` field must be treated as
 HTML, not as text (§2.4) — and so must **`operatorName`**, which §4.4
-otherwise renders as plain text: six of its values carry markup or entities,
-five of them a bare `<a href>` (ScotRail's lost-property contact at `ABD`,
-`DNO` and `INV`; Transport for Wales' at `CDF` and `LLE`). Those 703 + 5
-fields together account for all 708 HTML-bearing strings. Two viable options:
+otherwise renders as plain text: five of its values are a bare `<a href>`
+(ScotRail's lost-property contact at `ABD`, `DNO` and `INV`; Transport for
+Wales' at `CDF` and `LLE`). Those 5 plus the 703 in the note/location
+fields account for all 708 HTML-bearing strings exactly. A sixth
+`operatorName` carries a literal `&` ("Monday - Saturday 07:30 - 21:30 &
+Sunday 09:00 - 21:00", `ABD`) — not markup, but it must still be escaped
+rather than passed through a sanitizer as-is. Two viable options:
 
-**(a) Sanitize and render (recommended).** Strip to an allowlist covering
-exactly the eight tags §2.4 actually observed — `p`, `a`, `strong`, `em`,
-`ul`, `li`, `u`, and `h2` — with `href` restricted to `https:`, `http:` and
-`mailto:` (the three schemes that actually occur; adding `tel:` is harmless
-and future-proof, but omitting `http:` would drop 45 real links). Then
-render inside Mantine's `TypographyStylesProvider`.
-Preserves the structure and, importantly, the hyperlinks: several `notes`
-values carry an operator's assistance phone number or booking URL only as an
-`<a href>`.
+**(a) Sanitize and render (recommended).** Strip to an allowlist of ten
+tags — the eight §2.4 observed (`p`, `a`, `strong`, `em`, `ul`, `li`, `u`,
+`h2`) plus `br` and `ol`, which do not occur today but are innocuous, and
+whose absence from an allowlist would silently destroy formatting if the
+feed started using them. Restrict `href` to `https:`, `http:` and `mailto:`
+— the three schemes that actually occur. Adding `tel:` is harmless and
+future-proof; omitting `http:` would drop 45 real links. Then render inside
+Mantine's `TypographyStylesProvider`.
 
-Two details the observed inventory dictates. `h2` must be **demoted** (to a
+This preserves the structure and, importantly, the hyperlinks: several
+`notes` values carry an operator's assistance phone number or booking URL
+only as an `<a href>`.
+
+One further detail the observed inventory dictates. `h2` must be
+**demoted** (to a
 `strong`, or to `h4` under the section's own `h2`), not passed through: the
 page renders an `h1` (`page.tsx:242`) and this section an `h2`
 (`StationAccessibilitySection.tsx:159-161`), so a stray `h2` from inside a
-note would land in the outline as a sibling of the section heading and
-misrepresent nine notes as top-level sections. Note this is a correctness
+note would land in the outline as a sibling of the section heading. All
+nine `h2`s in the sample sit inside just three notes, all at `MAN`
+(`helpAndSupport.helpPoints.notes`, `staffAssistance.helpPoints.notes` and
+`loungesAndWaiting.waitingFacility.notes`), but that is three notes
+presenting themselves as page-level sections. Note this is a correctness
 argument, not one the test suite enforces: axe's `heading-order` flags
 *skipped* levels, and an `h2` following an `h2` is not a skip, so
 `frontend/e2e/accessibility.spec.ts` would pass either way (see §8).
-
-And `br`/`ol` should still be allowlisted even though neither occurs today:
-allowlisting an absent-but-innocuous tag costs nothing, whereas omitting one
-the feed later starts using silently destroys formatting.
 
 **(b) Strip to text.** Decode all six entities, convert `</p>` and `</li>`
 to line breaks, drop every other tag. No new dependency and no XSS surface,
@@ -681,8 +696,17 @@ none of them:
 | `stationAccessibility.nearestAccessibleStations` | 1 | `{notes, stations}` |
 
 Note `carParks[].operator` is the *parent* of a Pattern C object, not one
-itself, and `stepFreeCategory` carries core step-free content including
-HTML notes — these are not obscure corners.
+itself.
+
+Four of those eight paths already have bespoke handling elsewhere in this
+document — `charges` (36) is §4.5's rate table, `operator` (36) is routed to
+Pattern C, `accessibilityInfo` (39) is recursed as an item's bullets, and
+`postalAddress` (21) is joined into one line by §4.4 — so 132 of the 226
+never reach the terminal branch. The genuinely unhandled residue is **94
+instances across 4 paths**: `cycling.spaces` (31),
+`stationAccessibility.inductionLoop` (31),
+`stationAccessibility.stepFreeCategory` (31, core step-free content
+including HTML notes) and `nearestAccessibleStations` (1).
 
 So the terminal branch does real work, and the two changes to it are:
 
@@ -695,18 +719,23 @@ So the terminal branch does real work, and the two changes to it are:
    `JSON.stringify`. Raw JSON remains the last resort because for a
    genuinely unanticipated shape it is honest and lossless, which the
    original Decision 6 got right.
-2. **Raw `JSON.stringify` should then fire on nothing in the sample** — and
-   that, unlike the stronger claim an earlier draft made, is what the data
-   actually supports.
+2. **Raw `JSON.stringify` should then fire on nothing in the sample.** That
+   is a narrower claim than "no value is unmatched" — 94 instances are
+   unmatched — but it is the one the data supports, because every unmatched
+   instance is a plain object of scalars that the labelled branch renders
+   correctly.
 
 The existing depth limit should be raised, not removed. The deepest real
-chain is **seven containers** below a key's value — `carParks` object →
-`carParks` array → element → `openingHours` array → element → `openPeriod`
-array → `{startTime, endTime}` (at `EDB` among others). The
-`operator → contactDetails → postalAddress` chain an earlier draft cited is
-only six, and picking the wrong one matters: a bound of 6 would **truncate
-car-park opening periods**. Use **8**, which clears the observed maximum by
-one while keeping the "terminates by construction" guarantee.
+chain is **seven containers counting the key's own value** — `carParks`
+object → `carParks` array → element → `openingHours` array → element →
+`openPeriod` array → `{startTime, endTime}` — at `EDB`, `INV` and `KGX`;
+nothing in the sample is deeper. The
+`operator → contactDetails → postalAddress` chain is only six under the
+same convention, and picking the wrong one matters: a bound of 6 would
+**truncate car-park opening periods**. Use **8**, which clears the observed
+maximum by one while keeping the "terminates by construction" guarantee.
+Note the shipped renderer's `depth` parameter is 0-based at the key's value
+(`frontend/lib/stationAccessibility.ts:161`), so translate accordingly.
 
 ### 4.10 Keep everything else
 
@@ -777,8 +806,9 @@ Global Constraint 7 because neither needs a typed sub-field model:
   key-name-agnostic, so it stays inside Global Constraint 7. Measured over
   the sample it saves **14.2%** across all 31 payloads (597,158 → 512,393
   characters), about 2.9 KB off the median station — weight that currently
-  ships to every browser through the RSC flight payload. Real but modest; worth doing as a cheap follow-up, not
-  worth arguing about. The frontend already drops nulls at render time
+  ships to every browser through the RSC flight payload. Real but modest;
+  worth doing as a cheap follow-up, not worth arguing about. The frontend
+  already drops nulls at render time
   (`StationAccessibilitySection.tsx:73-77`), so this changes no output.
 - **Nothing else.** In particular, do not sanitize HTML server-side in
   `crates/api`: that would bake a presentation decision into the wire
@@ -799,8 +829,9 @@ one is offered as a follow-up, not a prerequisite.
    code, more drift, and blind to those shapes wherever they nest.
 3. **A per-field label dictionary** (the option Decision 6 rejected for lack
    of data). Still the wrong answer, for a better reason: §2.3 shows 91% of
-   scalars are self-describing sentences, so the correct move is removing
-   labels, not curating ~480 of them.
+   *depth-1 non-HTML* scalars are self-describing sentences, so the correct
+   move is removing labels, not curating one per each of the sample's 171
+   distinct field names.
 4. **A typed backend IR.** §5.
 5. **Runtime schema validation (zod or similar) on the frontend.** The app
    has no validation library and `fetchJson<T>` casts unvalidated
