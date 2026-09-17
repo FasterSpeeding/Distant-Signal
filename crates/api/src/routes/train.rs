@@ -952,6 +952,14 @@ async fn attach_journey_stops(
             state.may_have_arrived = stops
                 .as_deref()
                 .is_some_and(|stops| crate::data::journey::may_have_arrived(stops, Utc::now()));
+            // Sequence-anchored confirmed arrival -- see
+            // `journey::apply_confirmed_arrival`'s own doc comment for why
+            // the stored status alone can leave a long-finished train
+            // reading `'en_route'` forever.
+            state.status = crate::data::journey::apply_confirmed_arrival(
+                state.status.take(),
+                stops.as_deref(),
+            );
             state.journey_stops = stops;
         }
         Err(err) => {
@@ -1006,6 +1014,14 @@ async fn attach_journey_stops_public(
             state.may_have_arrived = stops
                 .as_deref()
                 .is_some_and(|stops| crate::data::journey::may_have_arrived(stops, Utc::now()));
+            // Same sequence-anchored confirmed-arrival overlay as
+            // `attach_journey_stops` above -- the public route must not
+            // disagree with the tracked-subscription route about whether a
+            // train has finished.
+            state.status = crate::data::journey::apply_confirmed_arrival(
+                state.status.take(),
+                stops.as_deref(),
+            );
             state.journey_stops = stops;
         }
         Err(err) => {
