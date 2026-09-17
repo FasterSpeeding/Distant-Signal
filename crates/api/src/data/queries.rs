@@ -1988,6 +1988,16 @@ pub struct IncidentLineRefRow {
 /// `20260822120000_line_status_source.sql`). No new index: this table is
 /// tens of rows total, matching this repo's own stated rationale for
 /// leaving `line_status.source` itself unindexed.
+///
+/// PRIVACY: this returns EVERY matching `line_status` row, private
+/// custom-line rows included -- it is deliberately an ungated read, like
+/// every other query in this module. Any caller that renders these rows to
+/// an HTTP client MUST first put them through
+/// [`crate::data::custom_lines::retain_readable_custom_rows`]; shipping
+/// this result straight to a response is exactly the disclosure described
+/// in
+/// docs/superpowers/specs/2026-09-16-custom-lines-in-incident-archive-filter-research.md
+/// §5c.
 pub async fn lines_currently_reporting_incident(
     pool: &PgPool,
     source: &str,
