@@ -711,6 +711,10 @@ mod route_scoping_tests {
         let expected_routes = internal_oauth_routes.clone();
 
         let app = std::sync::Arc::new(AppState {
+            // Built from the same catalogue the real `AppState::init`
+            // builds it from, so a test never gets a matcher that
+            // disagrees with its own `config.lines`.
+            line_matcher: common::matcher::LineMatcher::new(&config.lines),
             config,
             database: PgPoolOptions::new()
                 .connect_lazy("postgres://user:password@127.0.0.1:0/placeholder")

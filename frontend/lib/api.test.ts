@@ -321,6 +321,64 @@ describe('api client', () => {
     );
   });
 
+  // All six `/Line/{id}/Stats/...` routes gate a `custom-` line id on the
+  // caller's session (`routes::line_status::caller_may_read_line_id`), so
+  // each must forward the incoming request's cookies -- otherwise the owner
+  // of a private custom line gets an empty chart on their own line's
+  // history page. Table-driven because the six differ only in URL.
+  const statsFetchers: [string, () => Promise<unknown>, string][] = [
+    [
+      'getLineDailyStats',
+      () => getLineDailyStats('wcml', '2026-07-01', '2026-07-07'),
+      'http://test-api:8080/Line/wcml/Stats/2026-07-01/to/2026-07-07',
+    ],
+    [
+      'getLineHalfHourlyStats',
+      () => getLineHalfHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z'),
+      'http://test-api:8080/Line/wcml/Stats/HalfHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+    ],
+    [
+      'getLineHourlyStats',
+      () => getLineHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z'),
+      'http://test-api:8080/Line/wcml/Stats/Hourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+    ],
+    [
+      'getLineSixHourlyStats',
+      () => getLineSixHourlyStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z'),
+      'http://test-api:8080/Line/wcml/Stats/SixHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+    ],
+    [
+      'getLineDailyCoverageStats',
+      () => getLineDailyCoverageStats('wcml', '2026-07-01', '2026-07-07'),
+      'http://test-api:8080/Line/wcml/Stats/Coverage/2026-07-01/to/2026-07-07',
+    ],
+    [
+      'getLineHalfHourlyCoverageStats',
+      () =>
+        getLineHalfHourlyCoverageStats('wcml', '2026-08-31T00:00:00.000Z', '2026-09-01T00:00:00.000Z'),
+      'http://test-api:8080/Line/wcml/Stats/Coverage/HalfHourly/2026-08-31T00:00:00.000Z/to/2026-09-01T00:00:00.000Z',
+    ],
+  ];
+
+  for (const [name, call, url] of statsFetchers) {
+    it(`${name} forwards the incoming request cookies to the backend`, async () => {
+      incomingCookies.header = 'distant_signal_session=abc123';
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+      await call();
+      expect(fetch).toHaveBeenCalledWith(
+        url,
+        expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
+      );
+    });
+
+    it(`${name} sends no Cookie header when the visitor has no cookies at all`, async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+      await call();
+      const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+      expect(init.headers).toBeUndefined();
+    });
+  }
+
   it('getPreferences fetches the correct URL with no caching', async () => {
     vi.stubGlobal(
       'fetch',
@@ -908,6 +966,28 @@ describe('api client', () => {
       'http://test-api:8080/public/incidents/123%2F..%2Flines',
       expect.objectContaining({ cache: 'no-store' }),
     );
+  });
+
+  // The backend gates `currentlyAffectsLines`' private custom-line rows on
+  // the caller's session, so a Server Component rendering the incident page
+  // has to forward the incoming request's cookies -- otherwise the owner of
+  // a custom line loses their own line from "Currently affects". Same
+  // pattern (and same assertion) as `getAllLines` above.
+  it('getIncident forwards the incoming request cookies to the backend', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ incidentId: '123' }), { status: 200 })));
+    await getIncident('123');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/incidents/123',
+      expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
+    );
+  });
+
+  it('getIncident sends no Cookie header when the visitor has no cookies at all', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ incidentId: '123' }), { status: 200 })));
+    await getIncident('123');
+    const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(init.headers).toBeUndefined();
   });
 
   it('getChatbotAccess returns "allowed" for a 200', async () => {

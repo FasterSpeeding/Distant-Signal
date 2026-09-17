@@ -1,16 +1,39 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
-import { Alert, Autocomplete, Button, Group, Stack, Text, TextInput } from '@mantine/core';
+import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
+import { TimeFilterInput } from './TimeFilterInput';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
+/** The exact `"HH:MM"` shape the four time filters put on the wire
+ * (`from`/`to`/`arrival_from`/`arrival_to`, all parsed server-side by
+ * `crates/api/src/routes/trains.rs`'s `normalize_time`).
+ *
+ * Deliberately KEPT now that those four fields are `@mantine/dates`'
+ * `TimeInput` (a native `<input type="time">`) rather than a free-text
+ * `TextInput`, because that control is NOT equivalent to this check --
+ * it is narrower in one direction and wider in the other.
+ *
+ * Narrower: a native time input's value sanitization drops outright
+ * nonsense (`"25:99"`) to `""` before it can ever reach `onChange`, so
+ * that class of input no longer produces an error at all, it simply never
+ * lands. Wider: the values it DOES accept are "valid HTML time strings",
+ * which include a seconds component -- `"09:00:30"` survives sanitization
+ * untouched even though `step` is 60 and no seconds segment is offered in
+ * the UI. `"HH:MM:SS"` is not what this API parses, so that is the case
+ * this pattern still genuinely catches, as an inline error rather than a
+ * 400 from the server.
+ *
+ * It is also the guard for a browser with no `type="time"` support at all,
+ * where the control degrades to a plain text field with no sanitization
+ * whatsoever. */
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** Mirrors the backend's exact window --
@@ -195,6 +218,24 @@ export function TrainSearchForm({
   const [toTime, setToTime] = useState('');
   const [arrivalFrom, setArrivalFrom] = useState('');
   const [arrivalTo, setArrivalTo] = useState('');
+  /** Which of the four time filters are currently HALF-entered -- an hour
+   * segment filled in with the minutes left blank, or vice versa.
+   *
+   * This cannot be read off the four value states above, and that is the
+   * whole reason it exists: a native `<input type="time">` reports a
+   * half-entered time as `''`, exactly like an untouched one (see
+   * `TimeFilterInput`'s own doc comment). Without this, a field visibly
+   * reading "09:--" would be silently dropped by `searchParams()`' own
+   * `.trim()` gating and the search would run as though the caller had
+   * never set that filter at all. `TimeFilterInput` reports the state up
+   * through `onIncompleteChange`; `canSearch` below refuses to search on
+   * it. */
+  const [incompleteTimes, setIncompleteTimes] = useState({
+    from: false,
+    to: false,
+    arrivalFrom: false,
+    arrivalTo: false,
+  });
   const [results, setResults] = useState<Results>(null);
   // The RAW `dateValue` submitted with the last search that came back
   // 404/unpublished, captured at submit time -- separate from `results`
@@ -221,6 +262,16 @@ export function TrainSearchForm({
   const toValid = toTime.trim() === '' || TIME_PATTERN.test(toTime.trim());
   const arrivalFromValid = arrivalFrom.trim() === '' || TIME_PATTERN.test(arrivalFrom.trim());
   const arrivalToValid = arrivalTo.trim() === '' || TIME_PATTERN.test(arrivalTo.trim());
+  /** Gated on `stopsAt` for the arrival pair, mirroring exactly what
+   * `searchParams()` itself does with `arrival_from`/`arrival_to`: those
+   * two fields unmount when Stops at is cleared, and their state is
+   * deliberately remembered in case it is filled back in, so a half-entered
+   * arrival time left behind by a since-removed Stops at must not go on
+   * blocking a search it can no longer contribute a filter to. */
+  const timesComplete =
+    !incompleteTimes.from &&
+    !incompleteTimes.to &&
+    (stopsAt.trim() === '' || (!incompleteTimes.arrivalFrom && !incompleteTimes.arrivalTo));
   const canSearch =
     stationValid &&
     originValid &&
@@ -229,6 +280,7 @@ export function TrainSearchForm({
     toValid &&
     arrivalFromValid &&
     arrivalToValid &&
+    timesComplete &&
     !searching;
 
   const manualHref = attachTicketId !== undefined ? `/track?ticketId=${attachTicketId}` : '/track';
@@ -578,41 +630,84 @@ export function TrainSearchForm({
         }}
         error={stopsAt.length > 0 && !stopsAtValid ? 'Must be a 3-letter CRS code' : null}
       />
+      {/* All four time filters are `TimeFilterInput` -- a native
+       * `<input type="time">` with a clock button that opens the platform
+       * time picker and a clear button -- not the free-text `TextInput`
+       * they used to be, which required the caller to TYPE "HH:MM"
+       * correctly with nothing but a "09:00" placeholder to go on. See
+       * `TimeFilterInput`'s own doc comment for why the two buttons have to
+       * be supplied explicitly rather than left to the native control, and
+       * why `@mantine/dates`' `TimePicker` isn't used instead. Typing is
+       * not taken away: the segments still accept digits and arrow keys.
+       *
+       * Value shape is unchanged, which is the whole point: a native time
+       * input's value is already exactly the `"HH:MM"` (`step` is 60, so
+       * never seconds) these four fields have always put on the wire as
+       * `from`/`to`/`arrival_from`/`arrival_to`, and an emptied field is
+       * `""` exactly as before -- so `searchParams()`, the optional-filter
+       * `.trim()` gating and `TIME_PATTERN` all keep working untouched, and
+       * clearing a field still drops its query param.
+       *
+       * `DateTimePicker`/`DatePickerInput` (this app's existing date
+       * controls, including the "Date (optional)" field just above) are
+       * deliberately NOT what's used here: those carry a calendar, and
+       * these four are time-of-day filters ON a date chosen separately --
+       * a second calendar per field would be four more ways to disagree
+       * with the one date the search actually runs against.
+       *
+       * No `placeholder`: a native time input renders its own `--:--`
+       * segment hints and never paints a `placeholder`, so the old
+       * "09:00"/"12:00" hints would show on no browser that supports the
+       * control -- and the format they used to teach is now taught by the
+       * control's own segments instead. (They WOULD still render on a
+       * browser old enough to degrade `type="time"` to a text box; that is
+       * the only thing dropping them costs, against keeping four props
+       * that are invisible everywhere else.) The four error strings now
+       * all name the same "09:00" example rather than each echoing its own
+       * removed placeholder. */}
       <Group grow align="flex-start">
-        <TextInput
+        <TimeFilterInput
           label="Earliest departure (optional)"
-          placeholder="09:00"
+          name="earliest departure"
           description={`Only trains at ${stationDisplay} at or after this time.`}
           value={fromTime}
-          onChange={(event) => setFromTime(event.currentTarget.value)}
+          onChange={setFromTime}
+          onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, from: incomplete }))}
           error={fromTime.length > 0 && !fromValid ? 'Must be a time like 09:00' : null}
         />
-        <TextInput
+        <TimeFilterInput
           label="Latest departure (optional)"
-          placeholder="12:00"
+          name="latest departure"
           description={`Only trains at ${stationDisplay} at or before this time.`}
           value={toTime}
-          onChange={(event) => setToTime(event.currentTarget.value)}
-          error={toTime.length > 0 && !toValid ? 'Must be a time like 12:00' : null}
+          onChange={setToTime}
+          onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, to: incomplete }))}
+          error={toTime.length > 0 && !toValid ? 'Must be a time like 09:00' : null}
         />
       </Group>
       {stopsAt.trim() !== '' && (
         <Group grow align="flex-start">
-          <TextInput
+          <TimeFilterInput
             label="Earliest arrival (optional)"
-            placeholder="09:00"
+            name="earliest arrival"
             description={`Only trains reaching ${stopsAtDisplay} at or after this time -- separate from Earliest/Latest departure above, which are about ${stationDisplay}.`}
             value={arrivalFrom}
-            onChange={(event) => setArrivalFrom(event.currentTarget.value)}
+            onChange={setArrivalFrom}
+            onIncompleteChange={(incomplete) =>
+              setIncompleteTimes((c) => ({ ...c, arrivalFrom: incomplete }))
+            }
             error={arrivalFrom.length > 0 && !arrivalFromValid ? 'Must be a time like 09:00' : null}
           />
-          <TextInput
+          <TimeFilterInput
             label="Latest arrival (optional)"
-            placeholder="09:30"
+            name="latest arrival"
             description={`Only trains reaching ${stopsAtDisplay} at or before this time.`}
             value={arrivalTo}
-            onChange={(event) => setArrivalTo(event.currentTarget.value)}
-            error={arrivalTo.length > 0 && !arrivalToValid ? 'Must be a time like 09:30' : null}
+            onChange={setArrivalTo}
+            onIncompleteChange={(incomplete) =>
+              setIncompleteTimes((c) => ({ ...c, arrivalTo: incomplete }))
+            }
+            error={arrivalTo.length > 0 && !arrivalToValid ? 'Must be a time like 09:00' : null}
           />
         </Group>
       )}
