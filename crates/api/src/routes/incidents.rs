@@ -5,16 +5,25 @@
 //! docs/superpowers/specs/2026-08-31-incident-detail-page-design.md's
 //! "Public read-route convention" finding: every field this returns is
 //! already fully public today via `GET /Line/{ids}/Status?detail=true`.
+//!
+//! One correction to that finding: `currentlyAffectsLines` was NOT already
+//! fully public. It reads `line_status`, which also holds private
+//! custom-line rows, and `GET /Line/{ids}/Status` gates those rows while
+//! this route did not -- see `get_incident`'s own doc comment. "Never
+//! requires a session" is not the same as "returns the same bytes to
+//! everyone," and this route is now the latter kind of public.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::app::{App, Router};
+use crate::auth::OptionalAuthenticatedUser;
+use crate::data::custom_lines;
 use crate::data::queries;
 
 pub fn router() -> Router {
@@ -275,10 +284,25 @@ async fn search_incidents(
     })))
 }
 
+/// Unauthenticated in the sense that it never *requires* a session, but
+/// it does take an `OptionalAuthenticatedUser`: `currentlyAffectsLines`
+/// reads `line_status`, which holds private custom-line rows alongside the
+/// public catalogue/TfL ones, so the response has to know who is asking
+/// before it can decide which of those rows the caller may see. Same
+/// extractor and same posture as `routes::line_status`'s own handlers --
+/// an anonymous caller gets a normal `200` with fewer lines listed, never
+/// a `401`.
+///
+/// Before this gate existed, the route disclosed any other user's private
+/// custom-line id and name to an anonymous caller, whenever the matcher
+/// had attached this incident to that line
+/// (docs/superpowers/specs/2026-09-16-custom-lines-in-incident-archive-filter-research.md
+/// §5c).
 async fn get_incident(
     State(app): State<App>,
     Path(incident_id): Path<String>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
+) -> Result<([(header::HeaderName, &'static str); 2], Json<Value>), (StatusCode, String)> {
     let Some(incident) = queries::incident_by_id(&app.database, &incident_id)
         .await
         .map_err(internal_error)?
@@ -292,8 +316,31 @@ async fn get_incident(
     let lines = queries::lines_currently_reporting_incident(&app.database, &source)
         .await
         .map_err(internal_error)?;
+    // `lines_currently_reporting_incident` is a raw, ungated read of
+    // `line_status` -- the privacy gate is here, exactly as
+    // `routes::line_status::filter_private_custom_rows` applies the same
+    // shared helper to that table's other readers.
+    let lines = custom_lines::retain_readable_custom_rows(
+        &app.database,
+        lines,
+        user.as_ref().map(|caller| caller.id.as_str()),
+        |row| row.line_id.as_str(),
+    )
+    .await
+    .map_err(internal_error)?;
 
-    Ok(Json(to_incident_detail_json(incident, history, lines)))
+    // This body now varies by session (the custom-line rows above), while
+    // the path still looks like a plain public read. Say so explicitly
+    // rather than relying on no edge rule ever caching `/public/incidents/*`
+    // -- see the research doc's §5d: closing the leak in the application
+    // and re-opening it at the CDN would be the same bug again.
+    Ok((
+        [
+            (header::CACHE_CONTROL, "private, no-store"),
+            (header::VARY, "Cookie"),
+        ],
+        Json(to_incident_detail_json(incident, history, lines)),
+    ))
 }
 
 /// Renders `serde_json::Value` field-by-field via `json!()`, exactly like
@@ -498,9 +545,12 @@ mod db_tests {
 
     use super::*;
     use crate::app::{App, AppState};
+    use crate::auth::hash_session_token;
     use crate::auth::internal_oauth::ServiceTokenVerifier;
     use crate::auth::oidc::{OidcClient, OidcConfig};
     use crate::data::config::{LineCatalogue, ServiceArguments};
+    use crate::data::custom_lines::NewCustomLine;
+    use crate::data::users::insert_session;
 
     /// Local to this test module, matching `routes::trains`'s own
     /// `test_app` -- this codebase's convention is one small
@@ -641,6 +691,114 @@ mod db_tests {
     fn next_cursor(body: &str) -> Option<String> {
         let json: Value = serde_json::from_str(body).unwrap();
         json["nextCursor"].as_str().map(str::to_string)
+    }
+
+    /// Drives `GET /incidents/{id}` end-to-end through the real router,
+    /// optionally as a logged-in caller (`raw_token` is the raw session
+    /// token `seed_session` hands back, sent exactly as the browser would).
+    /// Returns the response headers too -- this route's `Cache-Control`
+    /// is load-bearing now that its body varies by session.
+    async fn get_detail(
+        pool: &PgPool,
+        incident_id: &str,
+        raw_token: Option<&str>,
+    ) -> (StatusCode, axum::http::HeaderMap, Value) {
+        let router: axum::Router = crate::app::Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone(), vec![]));
+        let mut builder = Request::builder().uri(format!("/incidents/{incident_id}"));
+        if let Some(token) = raw_token {
+            builder = builder.header(
+                axum::http::header::COOKIE,
+                format!("distant_signal_session={token}"),
+            );
+        }
+        let response = router
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value = serde_json::from_slice(&body).unwrap_or_else(|_| {
+            Value::String(String::from_utf8(body.to_vec()).expect("body is valid utf8"))
+        });
+        (status, headers, value)
+    }
+
+    /// Every line id in a detail response's `currentlyAffectsLines`.
+    fn affected_line_ids(body: &Value) -> Vec<String> {
+        body["currentlyAffectsLines"]
+            .as_array()
+            .expect("currentlyAffectsLines is an array")
+            .iter()
+            .map(|l| l["id"].as_str().expect("id is a string").to_string())
+            .collect()
+    }
+
+    /// Seeds a real, resolvable session for `user_id` (creating the user if
+    /// needed) and returns the RAW token -- same helper, same contract, as
+    /// `routes::line_status::db_tests::seed_session`.
+    async fn seed_session(pool: &PgPool, user_id: &str) -> String {
+        sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(format!("{user_id}@example.com"))
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("seed fixture user");
+
+        let raw_token = format!("test-raw-session-token-for-{user_id}");
+        insert_session(pool, &hash_session_token(&raw_token), user_id, 14)
+            .await
+            .expect("seed fixture session");
+        raw_token
+    }
+
+    async fn cleanup_user(pool: &PgPool, user_id: &str) {
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture user");
+    }
+
+    /// Seeds one `line_status` row carrying a single status whose
+    /// `disruption.source` is the exact `knowledgebase-incident-{id}`
+    /// string `get_incident` reconstructs -- i.e. the row shape that makes
+    /// this line show up in that incident's `currentlyAffectsLines`. The
+    /// JSONB mirrors `queries::db_tests`' own fixture for this query.
+    async fn seed_line_reporting(pool: &PgPool, line_id: &str, incident_id: &str) {
+        let statuses = format!(
+            "[{{\"severity\":9,\"reason\":\"x\",\"validity\":{{\"from_date\":\"2026-01-01T00:00:00Z\",\
+               \"to_date\":null,\"is_now\":true}},\"data_quality\":\"knowledgebase\",\
+               \"disruption\":{{\"category\":\"RealTime\",\"description\":\"x\",\"affected_stops\":[],\
+               \"affected_routes\":[],\"source\":\"knowledgebase-incident-{incident_id}\"}}}}]"
+        );
+        sqlx::query(
+            "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, computed_at) \
+             VALUES ($1, $2, 'national-rail', '{SW}', $3::jsonb, NOW()) \
+             ON CONFLICT (line_id) DO UPDATE SET statuses = EXCLUDED.statuses, \
+                computed_at = EXCLUDED.computed_at",
+        )
+        .bind(line_id)
+        .bind(format!("Name of {line_id}"))
+        .bind(statuses)
+        .execute(pool)
+        .await
+        .expect("seed fixture line_status row");
+    }
+
+    async fn cleanup_line_status(pool: &PgPool, line_id: &str) {
+        sqlx::query("DELETE FROM line_status WHERE line_id = $1")
+            .bind(line_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture line_status row");
     }
 
     fn fixture_line() -> common::LineDefinition {
@@ -894,5 +1052,192 @@ mod db_tests {
         );
         assert!(results(&body).is_empty());
         assert!(next_cursor(&body).is_none());
+    }
+
+    // --- `currentlyAffectsLines` privacy gate ---------------------------
+    //
+    // `lines_currently_reporting_incident` is an ungated read of
+    // `line_status`, which holds private custom-line rows next to the
+    // public catalogue ones. Until this gate existed, this route handed
+    // any anonymous caller another user's custom-line id AND name (see the
+    // 2026-09-16 custom-line archive research, §5c). These are the
+    // HTTP-level proofs that it no longer does -- a data-layer test can
+    // show what the query returns, never what the handler emits.
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_incident_hides_another_users_custom_line -- --ignored --test-threads=1`"]
+    async fn get_incident_hides_another_users_custom_line_from_anonymous_and_non_owner_callers() {
+        let pool = connect().await;
+        delete_fixtures(&pool).await;
+        let incident_id = "route-test-privacy-1";
+        seed_incident(&pool, incident_id, &["SW"], &["WOK"], 1, false, false).await;
+
+        let owner_token = seed_session(&pool, "TEST-INCIDENT-PRIVACY-OWNER").await;
+        let stranger_token = seed_session(&pool, "TEST-INCIDENT-PRIVACY-STRANGER").await;
+
+        // A public catalogue row and a private custom row, both reporting
+        // the same incident -- the catalogue one is the control: it must
+        // stay visible to everyone, proving the gate drops only what it
+        // should.
+        seed_line_reporting(&pool, "route-test-privacy-catalogue", incident_id).await;
+        let custom = crate::data::custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Mums House To Work".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-INCIDENT-PRIVACY-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+        seed_line_reporting(&pool, &custom.id, incident_id).await;
+
+        // Anonymous: catalogue row only. Asserted twice over -- by exact
+        // id, and by the blanket "no `custom-` prefix anywhere in the
+        // response," so a future custom line seeded by some other fixture
+        // can't slip through this assertion either.
+        let (status, headers, body) = get_detail(&pool, incident_id, None).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "anonymous callers still get a 200, just fewer lines"
+        );
+        let anon_ids = affected_line_ids(&body);
+        assert!(anon_ids.contains(&"route-test-privacy-catalogue".to_string()));
+        assert!(
+            !anon_ids.iter().any(|id| id.starts_with("custom-")),
+            "an anonymous caller must never see a custom line: {anon_ids:?}"
+        );
+        assert!(
+            !body.to_string().contains("Mums House To Work"),
+            "the custom line's NAME must not leak either, not just its id"
+        );
+        assert_eq!(
+            headers
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("private, no-store"),
+            "a session-dependent body must not be cacheable at the edge"
+        );
+
+        // A logged-in caller who neither owns the line nor shares a group
+        // with its owner sees exactly what the anonymous one does.
+        let (status, _, body) = get_detail(&pool, incident_id, Some(&stranger_token)).await;
+        assert_eq!(status, StatusCode::OK);
+        let stranger_ids = affected_line_ids(&body);
+        assert!(stranger_ids.contains(&"route-test-privacy-catalogue".to_string()));
+        assert!(
+            !stranger_ids.contains(&custom.id),
+            "being logged in is not itself permission to read someone else's custom line: \
+             {stranger_ids:?}"
+        );
+
+        // The owner, and only the owner, gets their own line back.
+        let (status, _, body) = get_detail(&pool, incident_id, Some(&owner_token)).await;
+        assert_eq!(status, StatusCode::OK);
+        let owner_ids = affected_line_ids(&body);
+        assert!(owner_ids.contains(&"route-test-privacy-catalogue".to_string()));
+        assert!(
+            owner_ids.contains(&custom.id),
+            "the owner must still see their own custom line -- the gate filters, it does not \
+             blanket-strip: {owner_ids:?}"
+        );
+
+        cleanup_line_status(&pool, "route-test-privacy-catalogue").await;
+        cleanup_line_status(&pool, &custom.id).await;
+        cleanup_user(&pool, "TEST-INCIDENT-PRIVACY-OWNER").await;
+        cleanup_user(&pool, "TEST-INCIDENT-PRIVACY-STRANGER").await;
+        delete_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_incident_shows_a_group_granted_custom_line -- --ignored --test-threads=1`"]
+    async fn get_incident_shows_a_group_granted_custom_line_to_a_member_but_not_a_stranger() {
+        let pool = connect().await;
+        delete_fixtures(&pool).await;
+        let incident_id = "route-test-privacy-2";
+        seed_incident(&pool, incident_id, &["SW"], &["WOK"], 1, false, false).await;
+
+        seed_session(&pool, "TEST-INCIDENT-GRANT-OWNER").await;
+        let member_token = seed_session(&pool, "TEST-INCIDENT-GRANT-MEMBER").await;
+        let stranger_token = seed_session(&pool, "TEST-INCIDENT-GRANT-STRANGER").await;
+
+        let custom = crate::data::custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Incident Grant Shared Line".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-INCIDENT-GRANT-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+        seed_line_reporting(&pool, &custom.id, incident_id).await;
+
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Incident Grant Group",
+            "TEST-INCIDENT-GRANT-OWNER",
+        )
+        .await
+        .expect("create fixture group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-INCIDENT-GRANT-MEMBER")
+        .execute(&pool)
+        .await
+        .expect("seed fixture membership");
+        crate::data::groups::grant_custom_line(
+            &pool,
+            &group_id,
+            &custom.id,
+            "TEST-INCIDENT-GRANT-OWNER",
+        )
+        .await
+        .expect("seed fixture grant");
+
+        let (_, _, body) = get_detail(&pool, incident_id, Some(&member_token)).await;
+        assert!(
+            affected_line_ids(&body).contains(&custom.id),
+            "a current member of a group the line is shared into may read it -- the gate is the \
+             same `readable_custom_line_ids` every other custom-line read uses, not a narrower \
+             owner-only check"
+        );
+
+        let (_, _, body) = get_detail(&pool, incident_id, Some(&stranger_token)).await;
+        assert!(
+            !affected_line_ids(&body).contains(&custom.id),
+            "a logged-in non-member still sees nothing"
+        );
+        let (_, _, body) = get_detail(&pool, incident_id, None).await;
+        assert!(
+            !affected_line_ids(&body).contains(&custom.id),
+            "sharing a line into a group never makes it public"
+        );
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_line_status(&pool, &custom.id).await;
+        for id in [
+            "TEST-INCIDENT-GRANT-OWNER",
+            "TEST-INCIDENT-GRANT-MEMBER",
+            "TEST-INCIDENT-GRANT-STRANGER",
+        ] {
+            cleanup_user(&pool, id).await;
+        }
+        delete_fixtures(&pool).await;
     }
 }

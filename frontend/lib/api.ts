@@ -575,15 +575,24 @@ export async function getMyTickets(): Promise<TicketListItem[] | null> {
   return response.json() as Promise<TicketListItem[]>;
 }
 
-/** `GET /public/incidents/{incidentId}`. Public, unauthenticated read — no
- * cookie forwarding needed, same plain `fetchJson` pattern as
- * `getLineDefinition`/`getCustomLine`. Throws `ApiNotFoundError` on a 404
- * (via `errorForResponse`, same as every other `fetchJson` caller) —
- * `app/incidents/[id]/page.tsx` catches it and calls `notFound()`,
- * identical to `/lines/[id]`'s existing pattern. */
+/** `GET /public/incidents/{incidentId}`. Never *requires* a session, but it
+ * does forward the incoming request's cookies, exactly like `getAllLines()`
+ * and for the same reason: the response's `currentlyAffectsLines` reads
+ * `line_status`, which holds private custom-line rows, so the backend gates
+ * those rows on who is asking (`routes::incidents::get_incident`). A Server
+ * Component's own `fetch` carries none of the browser's cookies (see
+ * `getPreferences`'s comment for the full explanation), so without this the
+ * page would always call the backend anonymously and a logged-in owner
+ * would lose their OWN custom line from "Currently affects" — the
+ * functional half of the same bug the backend gate fixes.
+ *
+ * Still throws `ApiNotFoundError` on a 404 (via `errorForResponse`, same as
+ * every other `fetchJson` caller) — `app/incidents/[id]/page.tsx` catches it
+ * and calls `notFound()`, identical to `/lines/[id]`'s existing pattern. */
 export async function getIncident(incidentId: string): Promise<IncidentDetail> {
   return fetchJson<IncidentDetail>(`${baseUrl()}/public/incidents/${encodeURIComponent(incidentId)}`, {
     cache: 'no-store',
+    ...(await cookieForwardInit()),
   });
 }
 

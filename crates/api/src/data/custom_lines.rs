@@ -288,6 +288,68 @@ pub async fn readable_custom_line_ids(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// The id prefix [`slugify`] stamps onto every custom line, and therefore
+/// the only thing that distinguishes a private, user-owned row from a
+/// public catalogue/TfL one anywhere a table keyed by line id (most
+/// notably `line_status`) is read.
+pub const CUSTOM_LINE_ID_PREFIX: &str = "custom-";
+
+/// Drops every row whose line id names a private custom line the caller
+/// may not read -- neither owned by them, nor granted (see
+/// docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md
+/// §3.2) into a group they are currently a member of. Catalogue/TfL rows
+/// (no `custom-` prefix) are always kept untouched, and a request that
+/// touched no custom row at all costs no extra query.
+///
+/// `caller_user_id` is `None` for an anonymous caller -- every custom-line
+/// row is dropped for them: an anonymous caller owns nothing and is a
+/// member of nothing, so there is no user id worth binding and the grant
+/// lookup is skipped entirely. Anonymous callers therefore see FEWER rows,
+/// never an error; every route using this gate stays usable logged out.
+///
+/// Generic over the row type, with `id_of` naming the field that carries
+/// the line id, because the two tables' row structs disagree on that
+/// field's name -- `queries::LineStatusRow::id` vs
+/// `queries::IncidentLineRefRow::line_id` -- and that cosmetic difference
+/// is not a reason to have two copies of a privacy gate. It lives here,
+/// next to [`readable_custom_line_ids`], rather than in whichever route
+/// module happened to need it first: `GET /public/incidents/{id}` shipped
+/// a live disclosure of other users' custom-line ids and names precisely
+/// because the gate was a private helper inside `routes::line_status` that
+/// a second reader of `line_status` never found (see
+/// docs/superpowers/specs/2026-09-16-custom-lines-in-incident-archive-filter-research.md
+/// §5c). ANY new reader of a line-id-keyed table must funnel through this.
+pub async fn retain_readable_custom_rows<T>(
+    pool: &PgPool,
+    rows: Vec<T>,
+    caller_user_id: Option<&str>,
+    id_of: impl Fn(&T) -> &str,
+) -> Result<Vec<T>> {
+    let custom_ids: Vec<String> = rows
+        .iter()
+        .map(&id_of)
+        .filter(|id| id.starts_with(CUSTOM_LINE_ID_PREFIX))
+        .map(str::to_string)
+        .collect();
+    if custom_ids.is_empty() {
+        return Ok(rows);
+    }
+    let Some(user_id) = caller_user_id else {
+        return Ok(rows
+            .into_iter()
+            .filter(|row| !id_of(row).starts_with(CUSTOM_LINE_ID_PREFIX))
+            .collect());
+    };
+    let readable = readable_custom_line_ids(pool, &custom_ids, user_id).await?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            let id = id_of(row);
+            !id.starts_with(CUSTOM_LINE_ID_PREFIX) || readable.contains(id)
+        })
+        .collect())
+}
+
 /// Owners for every custom-prefixed id in `ids`, for filtering a bulk
 /// status response by ownership without an N+1 query per row (see
 /// `crate::routes::line_status`'s three affected handlers). Catalogue/TfL

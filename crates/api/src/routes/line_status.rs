@@ -148,32 +148,25 @@ fn rows_to_json(rows: Vec<queries::LineStatusRow>, detail: bool) -> Vec<Value> {
 /// [`custom_lines::readable_custom_line_ids`]; nothing that used to be
 /// filtered out on ownership grounds is now let through on any other
 /// basis.
+///
+/// The logic itself now lives in
+/// [`custom_lines::retain_readable_custom_rows`], shared with the other
+/// reader of `line_status` that needs the same gate
+/// (`routes::incidents::get_incident`'s `currentlyAffectsLines`). This
+/// function stays as the `LineStatusRow`-shaped entry point its three
+/// callers here already use; its behaviour is unchanged.
 async fn filter_private_custom_rows(
     pool: &sqlx::PgPool,
     rows: Vec<queries::LineStatusRow>,
     user: &Option<crate::auth::AuthenticatedUser>,
 ) -> anyhow::Result<Vec<queries::LineStatusRow>> {
-    let custom_ids: Vec<String> = rows
-        .iter()
-        .filter(|r| r.id.starts_with("custom-"))
-        .map(|r| r.id.clone())
-        .collect();
-    if custom_ids.is_empty() {
-        return Ok(rows);
-    }
-    let Some(caller) = user else {
-        // Anonymous: no custom-line row is ever readable, and there is no
-        // id to bind a grant lookup against.
-        return Ok(rows
-            .into_iter()
-            .filter(|row| !row.id.starts_with("custom-"))
-            .collect());
-    };
-    let readable = custom_lines::readable_custom_line_ids(pool, &custom_ids, &caller.id).await?;
-    Ok(rows
-        .into_iter()
-        .filter(|row| !row.id.starts_with("custom-") || readable.contains(&row.id))
-        .collect())
+    custom_lines::retain_readable_custom_rows(
+        pool,
+        rows,
+        user.as_ref().map(|caller| caller.id.as_str()),
+        |row| row.id.as_str(),
+    )
+    .await
 }
 
 /// Every mode this deployment has data for. `national-rail` is written by
