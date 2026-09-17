@@ -720,12 +720,10 @@ So the terminal branch does real work, and the two changes to it are:
    genuinely unanticipated shape it is honest and lossless, which the
    original Decision 6 got right.
 2. **Raw `JSON.stringify` should then fire on nothing in the sample.** That
-   is a narrower claim than "no value is unmatched" — 94 instances are
-   unmatched — but it is the one the data supports, because every unmatched
-   instance is a plain object of scalars, a known pattern, or another plain
-   object, all of which the labelled branch renders correctly. (The single
-   `nearestAccessibleStations` is the mixed case: `{notes, stations}`, whose
-   `stations` recurses into Pattern D.)
+   is a narrower claim than "no value is unmatched" — 94 are — but it is the
+   one the data supports, since bullet 1's branch covers every one of them.
+   (The single `nearestAccessibleStations` is the mixed case:
+   `{notes, stations}`, whose `stations` recurses into Pattern D.)
 
 The existing depth limit should be raised, not removed. The deepest real
 chain is **seven containers counting the key's own value** — `carParks`
@@ -747,6 +745,14 @@ one level of margin means allowing `depth` 7, so the bound to implement is
 exactly the observed maximum with no margin at all — which is the sort of
 off-by-one that truncates a car park's opening period the first time the
 feed nests one level further.
+
+One precondition for that arithmetic, easy to miss: today's `renderAt`
+increments `depth` **only** when recursing into array elements, and never
+recurses into an object's values at all (`renderShallowObject` handles
+objects non-recursively and bails to raw). The counts above assume bullet
+1's change — that every container level, object levels included, increments
+`depth`. Implement the two together or the bound means something different
+from what is written here.
 
 ### 4.10 Keep everything else
 
