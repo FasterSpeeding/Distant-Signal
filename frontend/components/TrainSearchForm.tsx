@@ -218,6 +218,24 @@ export function TrainSearchForm({
   const [toTime, setToTime] = useState('');
   const [arrivalFrom, setArrivalFrom] = useState('');
   const [arrivalTo, setArrivalTo] = useState('');
+  /** Which of the four time filters are currently HALF-entered -- an hour
+   * segment filled in with the minutes left blank, or vice versa.
+   *
+   * This cannot be read off the four value states above, and that is the
+   * whole reason it exists: a native `<input type="time">` reports a
+   * half-entered time as `''`, exactly like an untouched one (see
+   * `TimeFilterInput`'s own doc comment). Without this, a field visibly
+   * reading "09:--" would be silently dropped by `searchParams()`' own
+   * `.trim()` gating and the search would run as though the caller had
+   * never set that filter at all. `TimeFilterInput` reports the state up
+   * through `onIncompleteChange`; `canSearch` below refuses to search on
+   * it. */
+  const [incompleteTimes, setIncompleteTimes] = useState({
+    from: false,
+    to: false,
+    arrivalFrom: false,
+    arrivalTo: false,
+  });
   const [results, setResults] = useState<Results>(null);
   // The RAW `dateValue` submitted with the last search that came back
   // 404/unpublished, captured at submit time -- separate from `results`
@@ -244,6 +262,16 @@ export function TrainSearchForm({
   const toValid = toTime.trim() === '' || TIME_PATTERN.test(toTime.trim());
   const arrivalFromValid = arrivalFrom.trim() === '' || TIME_PATTERN.test(arrivalFrom.trim());
   const arrivalToValid = arrivalTo.trim() === '' || TIME_PATTERN.test(arrivalTo.trim());
+  /** Gated on `stopsAt` for the arrival pair, mirroring exactly what
+   * `searchParams()` itself does with `arrival_from`/`arrival_to`: those
+   * two fields unmount when Stops at is cleared, and their state is
+   * deliberately remembered in case it is filled back in, so a half-entered
+   * arrival time left behind by a since-removed Stops at must not go on
+   * blocking a search it can no longer contribute a filter to. */
+  const timesComplete =
+    !incompleteTimes.from &&
+    !incompleteTimes.to &&
+    (stopsAt.trim() === '' || (!incompleteTimes.arrivalFrom && !incompleteTimes.arrivalTo));
   const canSearch =
     stationValid &&
     originValid &&
@@ -252,6 +280,7 @@ export function TrainSearchForm({
     toValid &&
     arrivalFromValid &&
     arrivalToValid &&
+    timesComplete &&
     !searching;
 
   const manualHref = attachTicketId !== undefined ? `/track?ticketId=${attachTicketId}` : '/track';
@@ -638,6 +667,7 @@ export function TrainSearchForm({
           description={`Only trains at ${stationDisplay} at or after this time.`}
           value={fromTime}
           onChange={setFromTime}
+          onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, from: incomplete }))}
           error={fromTime.length > 0 && !fromValid ? 'Must be a time like 09:00' : null}
         />
         <TimeFilterInput
@@ -646,6 +676,7 @@ export function TrainSearchForm({
           description={`Only trains at ${stationDisplay} at or before this time.`}
           value={toTime}
           onChange={setToTime}
+          onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, to: incomplete }))}
           error={toTime.length > 0 && !toValid ? 'Must be a time like 09:00' : null}
         />
       </Group>
@@ -657,6 +688,9 @@ export function TrainSearchForm({
             description={`Only trains reaching ${stopsAtDisplay} at or after this time -- separate from Earliest/Latest departure above, which are about ${stationDisplay}.`}
             value={arrivalFrom}
             onChange={setArrivalFrom}
+            onIncompleteChange={(incomplete) =>
+              setIncompleteTimes((c) => ({ ...c, arrivalFrom: incomplete }))
+            }
             error={arrivalFrom.length > 0 && !arrivalFromValid ? 'Must be a time like 09:00' : null}
           />
           <TimeFilterInput
@@ -665,6 +699,9 @@ export function TrainSearchForm({
             description={`Only trains reaching ${stopsAtDisplay} at or before this time.`}
             value={arrivalTo}
             onChange={setArrivalTo}
+            onIncompleteChange={(incomplete) =>
+              setIncompleteTimes((c) => ({ ...c, arrivalTo: incomplete }))
+            }
             error={arrivalTo.length > 0 && !arrivalToValid ? 'Must be a time like 09:00' : null}
           />
         </Group>

@@ -321,6 +321,55 @@ describe('TrainSearchForm', () => {
       await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
     });
 
+    it('refuses to search on a half-entered time rather than quietly dropping the filter', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      const input = screen.getByLabelText('Earliest departure (optional)') as HTMLInputElement;
+      // A real browser reports a half-entered time ("09:--") as `''` with
+      // `validity.badInput` set; jsdom models neither, so the flag is
+      // forced. Without the wiring this test covers, `''` is
+      // indistinguishable from an untouched field and the search would run
+      // with no `from` at all.
+      Object.defineProperty(input, 'validity', { configurable: true, get: () => ({ badInput: true }) });
+      fireEvent.blur(input);
+
+      expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+    });
+
+    it('stops refusing once a half-entered time is cleared away', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      const input = screen.getByLabelText('Earliest departure (optional)') as HTMLInputElement;
+      Object.defineProperty(input, 'validity', { configurable: true, get: () => ({ badInput: true }) });
+      fireEvent.blur(input);
+
+      Object.defineProperty(input, 'validity', { configurable: true, get: () => ({ badInput: false }) });
+      fireEvent.click(screen.getByRole('button', { name: 'Clear earliest departure' }));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+    });
+
+    it('does not let the picker or clear button submit the form', () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      // Every field sits inside `<Stack component="form">`, so a
+      // right-section button defaulting to `type="submit"` would fire a
+      // whole search on each click.
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+        target: { value: '09:00' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Pick earliest departure' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Clear earliest departure' }));
+
+      expect(searchCallUrls(fetchMock)).toHaveLength(0);
+    });
+
     it('blocks the search on an unacceptable ARRIVAL time too, not just a departure one', () => {
       vi.stubGlobal('fetch', mockFetchByUrl());
       renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
