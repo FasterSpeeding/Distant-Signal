@@ -117,6 +117,95 @@ describe('JourneyProgress', () => {
     expect(nodes[2]).toHaveAttribute('data-node-state', 'not-reached');
   });
 
+  // A same-origin-terminus loop (SWR's Kingston Loop: London Waterloo
+  // round via Kingston and Richmond, back to London Waterloo). `WAT` is
+  // both the first and the last stop, and `CLJ` is called at twice in
+  // between. The marker is placed by INDEX -- `lastReachedIndex` scans the
+  // array from the end -- so it must sit on whichever call was actually
+  // reported, never jump to a later stop that merely shares a CRS.
+  const kingstonLoop = (overrides: {
+    originDeparture?: string;
+    firstCljDeparture?: string;
+    terminusArrival?: string;
+  }) => [
+    stop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin', actualDeparture: overrides.originDeparture ?? null }),
+    stop({
+      crs: 'CLJ',
+      name: 'Clapham Junction',
+      kind: 'Intermediate',
+      actualDeparture: overrides.firstCljDeparture ?? null,
+    }),
+    stop({ crs: 'KNG', name: 'Kingston', kind: 'Intermediate' }),
+    stop({ crs: 'CLJ', name: 'Clapham Junction', kind: 'Intermediate' }),
+    stop({
+      crs: 'WAT',
+      name: 'London Waterloo',
+      kind: 'Terminate',
+      actualArrival: overrides.terminusArrival ?? null,
+      lastEventType: overrides.terminusArrival ? 'ARRIVAL' : null,
+    }),
+  ];
+
+  it('a loop back to its own origin CRS: the marker stays at the origin while only the origin has reported', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={kingstonLoop({ originDeparture: '2026-09-14T06:28:00Z' })}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="L82877"
+        mayHaveArrived={false}
+      />,
+    );
+    const nodes = container.querySelectorAll('[data-journey-node]');
+    expect(nodes[0]).toHaveAttribute('data-node-state', 'marker');
+    expect(nodes[4]).toHaveAttribute('data-node-state', 'not-reached');
+    expect(screen.getByText('Currently at London Waterloo.')).toBeInTheDocument();
+  });
+
+  it('a loop back to its own origin CRS: the marker reaches the terminus only once the terminus itself reports', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={kingstonLoop({
+          originDeparture: '2026-09-14T06:28:00Z',
+          firstCljDeparture: '2026-09-14T06:37:00Z',
+          terminusArrival: '2026-09-14T07:49:00Z',
+        })}
+        resolutionStatus="resolved"
+        status="completed"
+        trainUid="L82877"
+        mayHaveArrived={false}
+      />,
+    );
+    const nodes = container.querySelectorAll('[data-journey-node]');
+    expect(nodes[0]).toHaveAttribute('data-node-state', 'reached');
+    expect(nodes[1]).toHaveAttribute('data-node-state', 'reached');
+    expect(nodes[4]).toHaveAttribute('data-node-state', 'marker');
+    // The completed caption names the FINAL stop by position, not the
+    // first stop that happens to share its CRS.
+    expect(screen.getByText('Arrived at London Waterloo.')).toBeInTheDocument();
+  });
+
+  it('a CRS revisited mid-journey without terminating there keeps the marker on the call that reported', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={kingstonLoop({
+          originDeparture: '2026-09-14T06:28:00Z',
+          firstCljDeparture: '2026-09-14T06:37:00Z',
+        })}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="L82877"
+        mayHaveArrived={false}
+      />,
+    );
+    const nodes = container.querySelectorAll('[data-journey-node]');
+    expect(nodes[1]).toHaveAttribute('data-node-state', 'marker');
+    // The second call at Clapham Junction has not happened yet, even
+    // though a stop with that exact CRS has already been reached.
+    expect(nodes[3]).toHaveAttribute('data-node-state', 'not-reached');
+    expect(nodes[4]).toHaveAttribute('data-node-state', 'not-reached');
+  });
+
   it('renders no marker at all when nothing has been confirmed yet (lastReachedIndex === -1)', () => {
     const { container } = renderWithMantine(
       <JourneyProgress

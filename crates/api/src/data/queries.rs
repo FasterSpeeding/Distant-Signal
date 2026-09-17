@@ -2533,9 +2533,8 @@ mod incident_search_query_tests {
 
 // --- Movement Events Queries ---
 
-/// One `train_movement_events` row, already collapsed to the latest
-/// (`received_at`-DESC) event per distinct `loc_crs` for one `trains_id` --
-/// the per-stop live overlay source
+/// One `train_movement_events` row for one `trains_id` -- the per-stop live
+/// overlay source
 /// (docs/superpowers/specs/2026-09-08-journey-timetable-overlay-design.md
 /// §0.4/§3.3). `loc_crs` is never `NULL` here (`WHERE loc_crs IS NOT NULL`
 /// below) -- a message whose STANOX never translated to a CRS has nothing
@@ -2550,22 +2549,41 @@ pub struct MovementEventRow {
     pub variation_status: Option<String>,
 }
 
-/// `DISTINCT ON (UPPER(loc_crs))` keeps only the most-recently-`received_at`
-/// event for each location -- so a location visited with an ARRIVAL then
-/// later a DEPARTURE collapses to the DEPARTURE (the more complete, more
-/// recent report), matching this app's existing "last reported" framing
-/// (`train_current_state.last_reported_location`/`last_event_type`)
-/// extended to a per-location granularity.
-pub async fn latest_movement_event_per_location(
+/// EVERY retained movement event for one train, oldest-`received_at` first
+/// -- deliberately NOT collapsed to one row per location.
+///
+/// This used to be `latest_movement_event_per_location`, a `DISTINCT ON
+/// (UPPER(loc_crs)) ... ORDER BY received_at DESC` that kept exactly one
+/// event per CRS. That collapse silently corrupted every journey which
+/// visits one station more than once -- the design doc's own §5 Decision 2
+/// named it ("a location visited twice in one journey ... collapses to its
+/// single latest-reported event. Not solved here") and wrote it off as "a
+/// real but rare CIF anomaly". It is neither rare nor an anomaly: every
+/// circular service is shaped that way. South Western Railway's Kingston
+/// Loop (`lines/swr-kingston-loop.toml`) departs London Waterloo and
+/// terminates back at London Waterloo, calling at Vauxhall and Clapham
+/// Junction twice each on the way round -- and the collapse smeared the
+/// TERMINUS's arrival back onto the ORIGIN row, so the train's first stop
+/// claimed an actual arrival 80 minutes after it left.
+///
+/// Splitting the rows back out into per-visit groups needs every event, in
+/// a stable order, so that is what this returns;
+/// `journey::assign_events_to_stops` owns the (now sequence-aware)
+/// assignment. `received_at ASC, id ASC` -- `id` breaks ties
+/// deterministically, because two events of one batch can share a
+/// `received_at` to the microsecond and the old query's "latest received
+/// wins" rule (preserved per visit group, see that function) needs a total
+/// order to be reproducible.
+pub async fn movement_events_for_train(
     pool: &PgPool,
     trains_id: i64,
 ) -> Result<Vec<MovementEventRow>> {
     let rows = sqlx::query_as::<_, MovementEventRow>(
-        "SELECT DISTINCT ON (UPPER(loc_crs)) UPPER(loc_crs) AS loc_crs, event_type, \
+        "SELECT UPPER(loc_crs) AS loc_crs, event_type, \
                 planned_timestamp, actual_timestamp, variation_status \
          FROM train_movement_events \
          WHERE trains_id = $1 AND loc_crs IS NOT NULL \
-         ORDER BY UPPER(loc_crs), received_at DESC",
+         ORDER BY received_at ASC, id ASC",
     )
     .bind(trains_id)
     .fetch_all(pool)
@@ -4787,9 +4805,9 @@ mod journey_timetable_overlay_query_tests {
 
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                latest_movement_event_per_location_dedups_to_the_most_recently_received_event \
+                movement_events_for_train_returns_every_event_oldest_first \
                 -- --ignored --test-threads=1`"]
-    async fn latest_movement_event_per_location_dedups_to_the_most_recently_received_event() {
+    async fn movement_events_for_train_returns_every_event_oldest_first() {
         let pool = test_pool().await;
         let trains_id = crate::data::trains::find_or_create_train(
             &pool,
@@ -4814,13 +4832,21 @@ mod journey_timetable_overlay_query_tests {
         .await
         .expect("seed train_movement_events");
 
-        let rows = latest_movement_event_per_location(&pool, trains_id)
+        let rows = movement_events_for_train(&pool, trains_id)
             .await
-            .expect("latest_movement_event_per_location");
+            .expect("movement_events_for_train");
 
-        assert_eq!(rows.len(), 1, "one location, dedup to its latest event");
+        // BOTH events come back now, oldest-received first, and both carry
+        // an upper-cased `loc_crs` even though one was stored lower-cased.
+        // Collapsing a location to its single latest event is no longer
+        // this query's job -- `journey::assign_events_to_stops` does it per
+        // VISIT instead, which is the only way a circular service's two
+        // separate calls at one station can be told apart.
+        assert_eq!(rows.len(), 2, "every retained event, not one per location");
         assert_eq!(rows[0].loc_crs, "RDG");
-        assert_eq!(rows[0].event_type.as_deref(), Some("DEPARTURE"));
+        assert_eq!(rows[0].event_type.as_deref(), Some("ARRIVAL"));
+        assert_eq!(rows[1].loc_crs, "RDG");
+        assert_eq!(rows[1].event_type.as_deref(), Some("DEPARTURE"));
 
         sqlx::query("DELETE FROM train_movement_events WHERE trains_id = $1")
             .bind(trains_id)
