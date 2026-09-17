@@ -20,23 +20,16 @@ describe('PrideToggle', () => {
     const { container } = renderWithMantine(<PrideToggle />);
     const button = screen.getByRole('button');
 
-    const cycle: Array<[string, string]> = [
-      ['rainbow', '🏳️‍🌈'],
-      ['trans', '🏳️‍⚧️'],
-      ['nonbinary', '🏳️'],
-      ['bisexual', '🏳️'],
-      ['pansexual', '🏳️'],
-      ['asexual', '🏳️'],
-      ['sapphic', '🏳️'],
-      ['lesbian', '🏳️'],
-    ];
+    const modes = ['rainbow', 'trans', 'nonbinary', 'bisexual', 'pansexual', 'asexual', 'sapphic', 'lesbian'];
 
-    for (const [mode, emoji] of cycle) {
+    for (const mode of modes) {
       fireEvent.click(button);
       expect(screen.getByLabelText(`Pride mode: ${mode}. Click to toggle.`)).toBeInTheDocument();
       expect(button).toHaveAttribute('aria-pressed', 'true');
       expect(document.body.dataset.pride).toBe(mode);
-      expect(button).toHaveTextContent(emoji);
+      // Verify swatch is rendered (a span with background gradient)
+      const swatch = button.querySelector('span[style*="background"]');
+      expect(swatch).toBeInTheDocument();
       expect(container.querySelector('.prideSparkles')).toBeInTheDocument();
     }
 
@@ -47,18 +40,27 @@ describe('PrideToggle', () => {
     expect(container.querySelector('.prideSparkles')).not.toBeInTheDocument();
   });
 
-  it('shows a different emoji and sparkle set for rainbow vs. trans', () => {
-    renderWithMantine(<PrideToggle />);
+  it('shows a different swatch and sparkle set for rainbow vs. trans', () => {
+    const { container } = renderWithMantine(<PrideToggle />);
     const button = screen.getByRole('button');
 
-    fireEvent.click(button);
-    expect(button).toHaveTextContent('🏳️‍🌈');
+    fireEvent.click(button); // -> rainbow
+    expect(screen.getByLabelText('Pride mode: rainbow. Click to toggle.')).toBeInTheDocument();
+    let swatch = button.querySelector('span[style*="background"]') as HTMLElement;
+    expect(swatch).toBeInTheDocument();
+    const rainbowBg = swatch.style.background;
 
-    fireEvent.click(button);
-    expect(button).toHaveTextContent('🏳️‍⚧️');
+    fireEvent.click(button); // -> trans
+    expect(screen.getByLabelText('Pride mode: trans. Click to toggle.')).toBeInTheDocument();
+    swatch = button.querySelector('span[style*="background"]') as HTMLElement;
+    expect(swatch).toBeInTheDocument();
+    const transBg = swatch.style.background;
+
+    // Different modes should have different gradients
+    expect(rainbowBg).not.toBe(transBg);
   });
 
-  it('shows the plain white flag glyph, with a distinct sparkle set, for each of the newer flags without a dedicated emoji sequence', () => {
+  it('shows a distinct swatch and sparkle set for each of the nine modes', () => {
     const { container } = renderWithMantine(<PrideToggle />);
     const button = screen.getByRole('button');
 
@@ -67,7 +69,8 @@ describe('PrideToggle', () => {
     fireEvent.click(button);
     fireEvent.click(button);
     expect(screen.getByLabelText('Pride mode: nonbinary. Click to toggle.')).toBeInTheDocument();
-    expect(button).toHaveTextContent('🏳️');
+    let swatch = button.querySelector('span[style*="background"]');
+    expect(swatch).toBeInTheDocument();
     const nonbinarySparkles = container.querySelectorAll('.prideSparkle');
     expect(nonbinarySparkles).toHaveLength(3);
     expect(Array.from(nonbinarySparkles).map((s) => s.textContent)).toEqual(['💛', '🤍', '💜']);
@@ -75,14 +78,16 @@ describe('PrideToggle', () => {
     // -> bisexual
     fireEvent.click(button);
     expect(screen.getByLabelText('Pride mode: bisexual. Click to toggle.')).toBeInTheDocument();
-    expect(button).toHaveTextContent('🏳️');
+    swatch = button.querySelector('span[style*="background"]');
+    expect(swatch).toBeInTheDocument();
     const bisexualSparkles = container.querySelectorAll('.prideSparkle');
     expect(Array.from(bisexualSparkles).map((s) => s.textContent)).toEqual(['💗', '💜', '💙']);
 
     // -> pansexual
     fireEvent.click(button);
     expect(screen.getByLabelText('Pride mode: pansexual. Click to toggle.')).toBeInTheDocument();
-    expect(button).toHaveTextContent('🏳️');
+    swatch = button.querySelector('span[style*="background"]');
+    expect(swatch).toBeInTheDocument();
     const pansexualSparkles = container.querySelectorAll('.prideSparkle');
     expect(Array.from(pansexualSparkles).map((s) => s.textContent)).toEqual(['💗', '💛', '💙']);
   });
@@ -114,5 +119,35 @@ describe('PrideToggle', () => {
     localStorage.setItem('pride-mode', 'true');
     renderWithMantine(<PrideToggle />);
     expect(screen.getByLabelText('Pride mode: rainbow. Click to toggle.')).toBeInTheDocument();
+  });
+
+  it('contains no emoji characters in rendered output', () => {
+    const { container } = renderWithMantine(<PrideToggle />);
+    // Verify no flag emoji in the DOM
+    const html = container.innerHTML;
+    expect(html).not.toContain('🏳️');
+    expect(html).not.toContain('🏳️‍🌈');
+    expect(html).not.toContain('🏳️‍⚧️');
+    // Verify swatch is rendered instead
+    expect(container.querySelector('span[style*="background"]')).not.toBeInTheDocument(); // off mode has no swatch
+  });
+
+  it('all nine modes render distinct visible swatches', () => {
+    const { container } = renderWithMantine(<PrideToggle />);
+    const button = screen.getByRole('button');
+    const modes = ['rainbow', 'trans', 'nonbinary', 'bisexual', 'pansexual', 'asexual', 'sapphic', 'lesbian'];
+    const gradients = new Set<string>();
+
+    for (const mode of modes) {
+      fireEvent.click(button);
+      const swatch = button.querySelector('span[style*="background"]') as HTMLElement;
+      expect(swatch).toBeInTheDocument();
+      const gradient = swatch.style.background;
+      expect(gradient).toBeTruthy();
+      gradients.add(gradient);
+    }
+
+    // All 8 modes should have distinct gradients
+    expect(gradients.size).toBe(8);
   });
 });

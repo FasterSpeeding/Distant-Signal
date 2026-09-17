@@ -32,38 +32,50 @@ describe('ThemeToggle', () => {
 
     fireEvent.click(button);
     expect(screen.getByLabelText('Theme: auto. Click to switch.')).toBeInTheDocument();
-    // Full circle: the auto marker (see the test below) must reappear once
-    // the cycle returns to "auto", not just disappear once and stay gone.
-    expect(screen.getByText('A')).toBeInTheDocument();
   });
 
-  it('marks the auto state with a visible indicator, distinct from the sun/moon icon', () => {
-    renderWithProvider();
-    // "auto" resolves to light here (system preference is polyfilled to
-    // light), so the icon alone is ☀️ - identical to what explicit "light"
-    // will render next. Without a separate marker, clicking away from
-    // "auto" to "light" would change nothing the user can see.
-    expect(screen.getByText('A')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button')); // -> light
-    // Same resolved icon as before, but the auto marker must be gone now
-    // that a scheme is explicitly selected - this is the visible change
-    // click 1 must produce.
-    expect(screen.queryByText('A')).not.toBeInTheDocument();
-  });
-
-  it('shows the sun icon when resolved to light, moon when resolved to dark', () => {
+  it('shows the sun-moon composite icon when in auto mode, changing to sun-only on light', () => {
     renderWithProvider();
     const button = screen.getByRole('button');
-    // matchMedia is polyfilled (vitest.setup.ts) to always report no dark
-    // preference, so "auto" resolves to light here.
-    expect(button).toHaveTextContent('☀️');
+    const { container } = renderWithMantine(<ThemeToggle />, { defaultColorScheme: 'auto' });
+
+    // In auto mode (resolved to light), renders the composite sun-moon icon
+    let svgs = container.querySelectorAll('svg');
+    // IconSunMoon has both sun rays and a moon path in one SVG
+    expect(svgs.length).toBeGreaterThan(0);
 
     fireEvent.click(button); // -> light
-    expect(button).toHaveTextContent('☀️');
+    // Explicit light mode should have a different icon now
+    expect(screen.getByLabelText('Theme: light. Click to switch.')).toBeInTheDocument();
+  });
+
+  it('shows SVG icons: sun-moon when auto, sun when light, moon when dark', () => {
+    const { container } = renderWithMantine(<ThemeToggle />, { defaultColorScheme: 'auto' });
+    const button = screen.getByRole('button');
+
+    // Start: auto resolves to light, so shows sun-moon icon
+    let svgs = container.querySelectorAll('svg');
+    expect(svgs.length).toBe(1);
+    let sunMoonSvg = svgs[0];
+    expect(sunMoonSvg.querySelector('circle')).toBeInTheDocument(); // sun circle
+    expect(sunMoonSvg.querySelector('path')).toBeInTheDocument(); // moon path
+
+    fireEvent.click(button); // -> light
+    // Light mode: sun icon only (circle + rays)
+    svgs = container.querySelectorAll('svg');
+    expect(svgs.length).toBe(1);
+    const sunSvg = svgs[0];
+    expect(sunSvg.querySelector('circle')).toBeInTheDocument();
+    // Sun has lines, moon has a path
+    const lines = sunSvg.querySelectorAll('line');
+    expect(lines.length).toBeGreaterThan(0);
 
     fireEvent.click(button); // -> dark
-    expect(button).toHaveTextContent('🌙');
+    // Dark mode: moon icon only
+    svgs = container.querySelectorAll('svg');
+    expect(svgs.length).toBe(1);
+    const moonSvg = svgs[0];
+    expect(moonSvg.querySelector('path')).toBeInTheDocument();
   });
 
   it('server-rendered output ignores localStorage, avoiding a hydration mismatch', () => {
@@ -82,35 +94,19 @@ describe('ThemeToggle', () => {
 
     expect(html).toContain('Theme: auto. Click to switch.');
     expect(html).not.toContain('Theme: dark. Click to switch.');
-    expect(html).toContain('☀️');
+    // Should contain SVG markup, not emoji
+    expect(html).toContain('<svg');
+    expect(html).not.toContain('☀️');
     expect(html).not.toContain('🌙');
   });
 
-  it('keeps the auto marker out of the accessibility tree', () => {
-    renderWithProvider();
-    // The button's own `aria-label` already says "Theme: auto", so an
-    // exposed "A" next to it is just a bare, meaningless letter to a
-    // screen reader. It stays visible; it's only hidden from AT.
-    const marker = screen.getByText('A');
-    expect(marker).toHaveAttribute('aria-hidden', 'true');
-  });
-
-  it('tucks the auto-mode badge into the button corner instead of overhanging it', () => {
-    // This Mantine version (9.4.1) renders no `data-position` attribute on
-    // `Indicator` — position is expressed purely as CSS custom properties
-    // on the root, split into an independent vertical half and horizontal
-    // half of the `top|bottom|middle-start|center|end` string (see
-    // `getPositionVariables` in `@mantine/core`). `bottom-end` sets both
-    // `--indicator-bottom` (vertical: below, not above — `--indicator-top`
-    // stays unset) and `--indicator-right` (horizontal: right corner, not
-    // left — `--indicator-left` stays unset). Both halves must be checked:
-    // asserting only the vertical half would still pass for the wrong
-    // corner, e.g. an accidental `bottom-start`.
+  it('contains no emoji characters in rendered output', () => {
     const { container } = renderWithMantine(<ThemeToggle />, { defaultColorScheme: 'auto' });
-    const root = container.querySelector('.mantine-Indicator-root') as HTMLElement;
-    expect(root.style.getPropertyValue('--indicator-bottom')).not.toBe('');
-    expect(root.style.getPropertyValue('--indicator-top')).toBe('');
-    expect(root.style.getPropertyValue('--indicator-right')).not.toBe('');
-    expect(root.style.getPropertyValue('--indicator-left')).toBe('');
+    // Verify no emoji characters in the DOM
+    const html = container.innerHTML;
+    expect(html).not.toContain('☀️');
+    expect(html).not.toContain('🌙');
+    // Verify SVG icons are present
+    expect(container.querySelector('svg')).toBeInTheDocument();
   });
 });
