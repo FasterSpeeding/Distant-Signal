@@ -1,6 +1,6 @@
 import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
-import { Stack, Title, Text, Group, Button, Skeleton } from '@mantine/core';
+import { Badge, Stack, Title, Text, Group, Button, Skeleton } from '@mantine/core';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition, getAllLines } from '@/lib/api';
@@ -14,7 +14,13 @@ import { ShareButton } from '@/components/ShareButton';
 import { TextLink } from '@/components/TextLink';
 import { worstStatus, severityLabel } from '@/lib/severity';
 import { resolveHalfHourlyRange } from '@/lib/history';
-import type { LineGroupRef } from '@/lib/types';
+import type {
+  CustomLineDetail,
+  LineDefinitionSummary,
+  LineGroupRef,
+  LineStatusReport,
+  LineSummary,
+} from '@/lib/types';
 import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
 
@@ -23,6 +29,119 @@ import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTre
 // stay dynamic rather than be eligible for build-time prerendering.
 export const revalidate = 0;
 
+/** Whether this line has a `line_status` row yet, kept as a two-state
+ * result instead of being collapsed into "found / not found".
+ *
+ * `GET /Line/{id}/Status` 404s when no `line_status` row matches the id
+ * (`crates/api/src/routes/line_status.rs`'s `get_line_status`: an empty
+ * `rows` after the private-custom-line filter is a `404`). That single
+ * status code covers two genuinely different facts:
+ *
+ *   1. the id names no line this caller may read at all -- a typo, a
+ *      deleted line, or someone else's private custom line; and
+ *   2. the line exists and the caller can read it, but the aggregator has
+ *      not written a status row for it yet.
+ *
+ * (2) is routine, not an error: `line_status` is populated on the
+ * aggregator's own cycle, so every freshly-created custom line has a real
+ * gap between "the line exists" and "the line has a status". Treating the
+ * 404 as (1) unconditionally is what made a brand-new custom line's own
+ * detail page 404 for its owner, even though `GET /public/lines/{id}`
+ * returned the whole definition happily.
+ *
+ * So the 404 is answered here with `'not-computed'` and the page decides
+ * between (1) and (2) using the sources that actually know whether the
+ * line exists (`getCustomLine`/`getAllLines`, both of which already run on
+ * this page for other reasons). Structurally this is the same
+ * "row-missing is a state, not a failure" split
+ * `app/stations/[crs]/page.tsx` already draws for its three station
+ * coverage questions (`fetchStationDisruptions`,
+ * `fetchStationSampleStats`, `fetchStationAccessibility`) -- see those
+ * helpers' comments.
+ *
+ * A `200 []` is folded into the same `'not-computed'` state. The backend
+ * cannot currently produce one (it 404s instead of returning an empty
+ * array), but the previous code indexed `reports[0]` and then read
+ * `.name` off it, so if it ever did, the page died on a `TypeError`
+ * instead of rendering.
+ *
+ * Only `ApiNotFoundError` is absorbed. `withStaleFallback` still gets the
+ * first crack at every other failure (a 5xx or a dropped connection is
+ * served from the stale cache if there's a fresh-enough entry) and
+ * anything it rethrows keeps propagating to `app/error.tsx`, exactly as
+ * before -- an outage must not be rendered as "no status computed yet". */
+type LineStatusResult =
+  | { coverage: 'not-computed' }
+  | { coverage: 'present'; report: LineStatusReport };
+
+async function fetchLineStatusResult(id: string): Promise<LineStatusResult> {
+  let reports;
+  try {
+    reports = await withStaleFallback(`lineStatus:${id}`, () => getLineStatus([id], true));
+  } catch (err) {
+    if (err instanceof ApiNotFoundError) return { coverage: 'not-computed' };
+    throw err;
+  }
+  const report = reports[0];
+  return report === undefined ? { coverage: 'not-computed' } : { coverage: 'present', report };
+}
+
+/** The line's display name, from whichever source actually knows it, or
+ * `undefined` when none of them do -- which is the page's real
+ * "this line does not exist, or you may not see it" signal now that a
+ * missing status row no longer is one.
+ *
+ * The three sources, in order:
+ *
+ *   - the status report, when there is one (the pre-existing behaviour,
+ *     unchanged for every line that has a status row);
+ *   - `GET /public/lines/{id}`, which serves a custom line's full detail
+ *     to its owner AND to a member of a group it's shared into, and 404s
+ *     for everyone else (including anonymous visitors) -- so it can never
+ *     leak a name the caller isn't entitled to;
+ *   - `GET /public/lines`, which always lists every catalogue line
+ *     (they come from config, not from `line_status`) plus the caller's
+ *     own custom lines.
+ *
+ * Pure, so the "which name wins" rule is testable without a fetch, and
+ * shared by the page component and `generateMetadata` so the two cannot
+ * disagree about whether a line exists. */
+function resolveLineName(
+  status: LineStatusResult,
+  customLine: CustomLineDetail | null,
+  summary: LineSummary | undefined,
+): string | undefined {
+  if (status.coverage === 'present') return status.report.name;
+  return customLine?.name ?? summary?.name;
+}
+
+/** Companion to `resolveLineName` for the operator list, same sources in
+ * the same order, plus `GET /public/lines/{id}/definition` last (it has no
+ * name to contribute, so it plays no part in the existence check above,
+ * but it does know the operators for a catalogue line). `[]` when nothing
+ * knows -- the caller renders no operators line at all rather than an
+ * empty one. */
+function resolveLineOperators(
+  status: LineStatusResult,
+  customLine: CustomLineDetail | null,
+  summary: LineSummary | undefined,
+  definition: LineDefinitionSummary | null,
+): string[] {
+  if (status.coverage === 'present') return status.report.operators;
+  return customLine?.operators ?? summary?.operators ?? definition?.operators ?? [];
+}
+
+/** The three pieces of no-status-yet copy, kept together so they stay
+ * consistent with each other. Deliberately none of them says "Good
+ * Service": `worstStatus` synthesises a severity-10 Good Service reading
+ * for a report with no statuses, which is the right answer for a line the
+ * aggregator has looked at and found nothing wrong with, and exactly the
+ * wrong one for a line it has never looked at. */
+const NO_STATUS_BADGE = 'No status yet';
+const NO_STATUS_SUMMARY = 'no status computed yet';
+const NO_STATUS_BODY =
+  'No status has been computed for this line yet. It appears here once the aggregator has run a cycle covering it.';
+
 /** Per-page Open Graph/Twitter/`<title>` metadata for a shared line link.
  * Fetches the same `getLineStatus([id], true)` call (via the same
  * `withStaleFallback` key) the page component itself makes -- Next's fetch
@@ -30,9 +149,20 @@ export const revalidate = 0;
  * (see the equivalent, more detailed comment on
  * `app/train/[uid]/[date]/page.tsx`'s own `generateMetadata`; the
  * reasoning is identical here), so no extra caching wrapper is needed.
- * Same `notFound()`-on-`ApiNotFoundError` handling as the page component,
- * since `generateMetadata` runs independently of it and needs its own
- * equivalent try/catch. */
+ * Same existence test as the page component, via the same
+ * `fetchLineStatusResult`/`resolveLineName` helpers, since
+ * `generateMetadata` runs independently of it and its `notFound()` would
+ * 404 the route on its own -- a page fix alone would have been silently
+ * undone from here.
+ *
+ * The extra `getCustomLine`/`getAllLines` calls only happen on the
+ * no-status-row path, so the overwhelmingly common case (a line with a
+ * status) still costs exactly the one deduped status fetch it did before.
+ * A bogus `/lines/{id}` does now cost more than the single status call it
+ * used to, here and in the page component both -- that is the price of
+ * telling "no status yet" apart from "no such line" at all, and both are
+ * indexed single-row/whole-list reads, but it is worth knowing about if
+ * this route ever needs rate limiting. */
 export async function generateMetadata({
   params,
 }: {
@@ -40,17 +170,42 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { id } = await params;
 
-  let reports;
-  try {
-    reports = await withStaleFallback(`lineStatus:${id}`, () => getLineStatus([id], true));
-  } catch (err) {
-    if (err instanceof ApiNotFoundError) {
+  const statusResult = await fetchLineStatusResult(id);
+
+  if (statusResult.coverage === 'not-computed') {
+    // Exactly the page component's own two probes, with exactly its two
+    // failure policies, so the two halves of this route cannot disagree
+    // about whether the line exists:
+    //   - `getCustomLine` swallows every failure (it is an
+    //     ownership/existence probe whose 401 and 404 are already
+    //     indistinguishable -- see the page's own long comment on it);
+    //   - `getAllLines` does NOT. If the list is unreachable we genuinely
+    //     do not know whether this id is a catalogue line, and a 404 would
+    //     be a confident answer we don't have. Letting it throw sends the
+    //     route to app/error.tsx's retrying state instead, which is what
+    //     the page component does with the same failure.
+    let customLine: CustomLineDetail | null = null;
+    try {
+      customLine = await getCustomLine(id);
+    } catch {
+      // swallowed -- see above
+    }
+    const summary = (await withStaleFallback('allLines', () => getAllLines())).find((line) => line.id === id);
+    const name = resolveLineName(statusResult, customLine, summary);
+    if (name === undefined) {
       notFound();
     }
-    throw err;
+    const title = `${name} — Distant Signal`;
+    const description = `${name}: ${NO_STATUS_SUMMARY}`;
+    return {
+      title,
+      description,
+      openGraph: { title, description, type: 'website' },
+      twitter: { card: 'summary', title, description },
+    };
   }
 
-  const report = reports[0];
+  const report = statusResult.report;
   const worst = worstStatus(report);
   const title = `${report.name} — Distant Signal`;
   const description = worst.reason
@@ -72,29 +227,19 @@ export default async function LineDetailPage({
 }) {
   const { id } = await params;
 
-  // Composed with the existing ApiNotFoundError catch rather than
-  // replacing it: withStaleFallback rethrows ApiNotFoundError
-  // unconditionally (a deleted line is a real application state, not a
-  // connectivity failure), so the notFound() branch keeps working.
-  let reports;
-  try {
-    reports = await withStaleFallback(`lineStatus:${id}`, () => getLineStatus([id], true));
-  } catch (err) {
-    if (err instanceof ApiNotFoundError) {
-      notFound();
-    }
-    throw err;
-  }
-
-  const report = reports[0];
-  const worst = worstStatus(report);
+  // A 404 here no longer 404s the page by itself -- see
+  // `fetchLineStatusResult`'s comment. `withStaleFallback` still rethrows
+  // `ApiNotFoundError` unconditionally (a deleted line is a real
+  // application state, not a connectivity failure) and every other failure
+  // still propagates; all that changed is who decides what the 404 means.
+  const statusResult = await fetchLineStatusResult(id);
 
   // Category only exists on `LineSummary` (from `getAllLines`), not on the
-  // `LineStatusReport` this page otherwise relies on -- fetched here, after
-  // the notFound() check above, so an unknown line id still 404s cleanly.
+  // `LineStatusReport` this page otherwise relies on.
   // Same 'allLines' key as /lines -- one shared entry for one shared request.
   const lines = await withStaleFallback('allLines', () => getAllLines());
-  const category = lines.find((line) => line.id === id)?.category;
+  const summary = lines.find((line) => line.id === id);
+  const category = summary?.category;
 
   // `getCustomLine` 404s for a catalogue-line id (the endpoint only ever
   // reads the `custom_lines` table) — that expected 404 is how this page
@@ -132,8 +277,9 @@ export default async function LineDetailPage({
   let isCustom = true;
   let viewerOwnsLine = false;
   let sharedWithGroups: LineGroupRef[] = [];
+  let customLine: CustomLineDetail | null = null;
   try {
-    const customLine = await getCustomLine(id);
+    customLine = await getCustomLine(id);
     viewerOwnsLine = customLine.isOwner;
     sharedWithGroups = customLine.sharedWithGroups;
   } catch {
@@ -153,6 +299,28 @@ export default async function LineDetailPage({
     // swallowed — see comment above
   }
 
+  // THE existence check for this page, and the only one. It deliberately
+  // sits after all three fetches above rather than straight after the
+  // status fetch, because "does this line exist, for this viewer" is a
+  // question `/Line/{id}/Status` alone cannot answer -- see
+  // `fetchLineStatusResult` and `resolveLineName`.
+  //
+  // What each viewer of a status-less custom line gets, therefore:
+  //   - its owner: a name from `getCustomLine` (and from `getAllLines`) --
+  //     the whole page, with the no-status state below;
+  //   - a member of a group it's shared into: a name from `getCustomLine`
+  //     -- the same page, minus the owner controls, as always;
+  //   - anyone else, signed in or not: `getCustomLine` 404s (it collapses
+  //     401 into the same `ApiNotFoundError`) and `getAllLines` omits it,
+  //     so no name, so `notFound()` -- a private line stays as invisible
+  //     as it was before this change.
+  // A genuinely unknown id fails every source the same way, and 404s.
+  const name = resolveLineName(statusResult, customLine, summary);
+  if (name === undefined) {
+    notFound();
+  }
+  const operators = resolveLineOperators(statusResult, customLine, summary, definition);
+
   // Stamped server-side so IssueList's buckets don't depend on a
   // `Date.now()` that differs between the SSR pass and hydration. Fresh on
   // every request (this route is dynamic) and re-stamped by AutoRefresh.
@@ -169,7 +337,7 @@ export default async function LineDetailPage({
     <Stack p="lg" gap="md">
       <Group justify="space-between">
         <Group gap="xs">
-          <Title order={1}>{report.name}</Title>
+          <Title order={1}>{name}</Title>
           {definition && <LineDefinitionTooltip stations={definition.stations} operators={definition.operators} />}
         </Group>
         <Group gap="sm">
@@ -197,7 +365,25 @@ export default async function LineDetailPage({
             </>
           )}
           <ShareButton />
-          <StatusBadge severity={worst.statusSeverity} />
+          {/* `StatusBadge` only ever renders a real, computed severity.
+              With no `line_status` row there is no severity to show, and
+              `worstStatus`'s synthetic Good Service stand-in would be an
+              outright false claim about a line nothing has assessed yet --
+              so the badge is replaced, not fed a default.
+
+              Gray/light rather than a filled severity colour, so it reads
+              as the absence of a status rather than as one more severity;
+              it is also the one `variant="light"` pairing `app/globals.css`
+              measured as needing no correction at all (gray 9 on gray 1,
+              13.87:1). `data-status-badge` is the same `app/globals.css`
+              ellipsis-opt-out hook `StatusBadge` carries. */}
+          {statusResult.coverage === 'present' ? (
+            <StatusBadge severity={worstStatus(statusResult.report).statusSeverity} />
+          ) : (
+            <Badge color="gray" variant="light" data-status-badge>
+              {NO_STATUS_BADGE}
+            </Badge>
+          )}
         </Group>
       </Group>
       {category && <Text c="dimmed">Category: {category}</Text>}
@@ -223,16 +409,34 @@ export default async function LineDetailPage({
           ))}
         </Text>
       )}
-      <Text c="dimmed">Operators: {report.operators.join(', ')}</Text>
+      {/* Hidden rather than rendered empty: with no status row, operators
+          come from the line's own definition instead, and a line whose
+          definition is also unreachable has nothing honest to put here. */}
+      {operators.length > 0 && <Text c="dimmed">Operators: {operators.join(', ')}</Text>}
       <TextLink href={`/lines/${id}/history`} underline="always">
         View history
       </TextLink>
-      <RepresentativeInfo statuses={report.lineStatuses} />
-      {/* Every issue here belongs to the line already named in the heading,
-          so no per-issue line attribution is needed — that's what the
-          optional `lines` on IssueItem is for on the station page. */}
-      <IssueList items={report.lineStatuses.map((status) => ({ status }))} now={now} />
-      {report.tflStatus && report.tflStatus.length > 0 && (
+      {/* The status section proper. Everything above and below it -- name,
+          category, sharing, operators, owner controls, history link, the
+          embedded trend charts -- describes the line's definition and
+          renders whether or not a status exists; only this part depends on
+          a `line_status` row, so only this part degrades when there isn't
+          one yet. The "no status" branch is deliberately one plain
+          sentence, not a disabled-looking empty IssueList: there is
+          nothing to filter, expand, or come back to here. */}
+      {statusResult.coverage === 'present' ? (
+        <>
+          <RepresentativeInfo statuses={statusResult.report.lineStatuses} />
+          {/* Every issue here belongs to the line already named in the
+              heading, so no per-issue line attribution is needed — that's
+              what the optional `lines` on IssueItem is for on the station
+              page. */}
+          <IssueList items={statusResult.report.lineStatuses.map((status) => ({ status }))} now={now} />
+        </>
+      ) : (
+        <Text c="dimmed">{NO_STATUS_BODY}</Text>
+      )}
+      {statusResult.coverage === 'present' && statusResult.report.tflStatus && statusResult.report.tflStatus.length > 0 && (
         <Stack gap="xs">
           {/* This line has an NR counterpart merged into it (Elizabeth line
               today -- see docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md
@@ -241,7 +445,7 @@ export default async function LineDetailPage({
               above rather than merged into one list, since only the primary
               side has real sampleStats and merging would blur that. */}
           <Text fw={500}>TfL also reports:</Text>
-          <IssueList items={report.tflStatus.map((status) => ({ status }))} now={now} />
+          <IssueList items={statusResult.report.tflStatus.map((status) => ({ status }))} now={now} />
         </Stack>
       )}
       <Stack gap="xs">
