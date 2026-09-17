@@ -250,13 +250,13 @@ strings, and an `operator`), `carParks.carParks[].accessibleLocations[]`
 **Pattern E — Sentence-valued scalar.** Of 372 non-HTML scalar strings at
 depth 1, **340 (91%)** are full sentences beginning with a capital and
 reading as display copy: `tactilePaving: "There are tactile warnings on all
-platforms in use"`, `lifts.statement: "There are lifts"`,
-`platformFacilities.entranceLevels: "The platforms are level with the Main
-Entrance of the station"`, `announcements: "Announcements are made both
-visually and audibly"`. (`lifts.statement: "There are lifts"` is the same
-kind of thing but is deliberately *not* counted among the 340 — it is too
-short to pass the length test §4.6 discusses, which is exactly that test's
-problem.) The feed has already done the prose. The current
+platforms in use"`, `platformFacilities.entranceLevels: "The platforms are
+level with the Main Entrance of the station"`, `announcements:
+"Announcements are made both visually and audibly"`.
+(`lifts.statement: "There are lifts"` is the same kind of prose but is
+*not* among the 340 — it is too short to pass the length test §4.6
+discusses, which is precisely that test's problem.) The feed has already
+done the prose. The current
 renderer's `humanizeKey` puts a redundant label in front of these
 ("Tactile paving: There are tactile warnings…").
 
@@ -452,7 +452,7 @@ Two traps the real data sets:
   own trailing token and never folded into a range.
 - **`24 Hours` does not always mean `openPeriod` is absent.** 106 such
   entries have an empty array and 7 have `null`, but **2 carry a real
-  period** — `LLE`'s `staffHelp.openingTimes` and
+  period** — `LLE`'s `staffAssistance.staffHelp.openingTimes` and
   `helpAndSupport.staffHelp.openingTimes` both say `24 Hours` with
   `openPeriod: [{startTime: "06:10:00.000", endTime: "12:40:00.000"}]`.
   Rendering "24 hours" over that would assert something the record itself
@@ -566,7 +566,7 @@ Two honest ways forward, both of which this document leaves open:
 1. **Label by field, not by shape** — a small deny-list of the fields that
    are codes rather than prose keeps a label; everything else drops it. In
    this sample there are **zero** code-like strings at depth 1, so the list
-   needs exactly one entry for the case §4.6 is about:
+   needs exactly one entry to cover the failure case above:
    `stationAccessibility.stepFreeCategory.category`. (Codes do occur deeper
    — `crsCode`, `postcode`, the `charges.*` rates — but §4.4 and §4.5
    already give each of those its own rendering, so they never reach this
@@ -653,7 +653,7 @@ Every key is an object; each row lists the patterns its contents draw on.
 | `loungesAndWaiting` | A ×3, B, D (`waitingRooms`, `firstClassLounges`), E, boolean | 31/31 |
 | `platformFacilities` | E (`entranceLevels`, `tactileWarnings`), number, D (`platforms`) | 31/31 |
 | `stationFacilities` | A ×11, C, booleans | 31/31 |
-| `helpAndSupport` | A (`staffHelp`), E ×5, F, nested help-points object | 31/31 |
+| `helpAndSupport` | A (`staffHelp`, `helpPoints`), E ×5, F ×2 | 31/31 |
 | `transportLinks` | A-narrow `{available, notes}` ×5, D (`taxiRanks`, `replacementBus.maps`) | 31/31 |
 | `carParks` | D (structured branch), B, C, numbers, booleans, plus 4 unmatched objects (`charges`, `operator`, `accessibilityInfo`, `postalAddress`) | 31/31 |
 | `dropOffPickUp` | A-ish (`available`/`location`/`notes`), D (`points`) | 25/25 |
@@ -722,20 +722,27 @@ So the terminal branch does real work, and the two changes to it are:
 2. **Raw `JSON.stringify` should then fire on nothing in the sample.** That
    is a narrower claim than "no value is unmatched" — 94 instances are
    unmatched — but it is the one the data supports, because every unmatched
-   instance is a plain object of scalars that the labelled branch renders
-   correctly.
+   instance is a plain object of scalars, a known pattern, or another plain
+   object, all of which the labelled branch renders correctly. (The single
+   `nearestAccessibleStations` is the mixed case: `{notes, stations}`, whose
+   `stations` recurses into Pattern D.)
 
 The existing depth limit should be raised, not removed. The deepest real
 chain is **seven containers counting the key's own value** — `carParks`
 object → `carParks` array → element → `openingHours` array → element →
-`openPeriod` array → `{startTime, endTime}` — at `EDB`, `INV` and `KGX`;
-nothing in the sample is deeper. The
+`openPeriod` array → `{startTime, endTime}` — at `EDB`, `INV`, `KGX` and
+`NRW`; nothing in the sample is deeper. The
 `operator → contactDetails → postalAddress` chain is only six under the
 same convention, and picking the wrong one matters: a bound of 6 would
 **truncate car-park opening periods**. Use **8**, which clears the observed
 maximum by one while keeping the "terminates by construction" guarantee.
-Note the shipped renderer's `depth` parameter is 0-based at the key's value
-(`frontend/lib/stationAccessibility.ts:161`), so translate accordingly.
+
+**Stated in the code's own units, to remove the off-by-one this paragraph
+is warning about:** `renderAt`'s `depth` parameter is 0-based at the key's
+value (`frontend/lib/stationAccessibility.ts:161`, entered via
+`renderAt(value, 0)`), so the innermost observed container sits at `depth`
+6. The bound to implement is therefore `depth < 7`, with 8 levels of
+container permitted in total.
 
 ### 4.10 Keep everything else
 
