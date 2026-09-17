@@ -49,7 +49,7 @@ walk straight into.
 ## Finding 1 — what a "line filter" means on this route today
 
 `queries::search_incidents`
-(`crates/api/src/data/queries.rs:2046-2113`) takes **no line concept at
+(`crates/api/src/data/queries.rs:2069-2136`) takes **no line concept at
 all**. Its only two set-shaped filters are plain Postgres array-overlap
 predicates against two columns on `incidents`:
 
@@ -58,9 +58,9 @@ WHERE ($1::text[]      IS NULL OR operators && $1)
   AND ($2::text[]      IS NULL OR affected_stations && $2)
 ```
 
-(`crates/api/src/data/queries.rs:2066-2067`). The function's own doc
+(`crates/api/src/data/queries.rs:2089-2090`). The function's own doc
 comment is explicit that it "has no knowledge of line catalogues at all"
-(`queries.rs:2040-2044`).
+(`queries.rs:2063-2067`).
 
 The line concept lives one layer up, in the route
 (`crates/api/src/routes/incidents.rs:203-215`):
@@ -126,11 +126,9 @@ and the one production writer of the table binds that value straight
 through (`crates/api/src/data/queries.rs:83-220`, `upsert_incidents`; the
 `INSERT INTO incidents … ON CONFLICT … DO UPDATE SET affected_stations =
 EXCLUDED.affected_stations` upsert). Every other `INSERT INTO incidents`
-in the repo is test-fixture seeding
-(`crates/aggregator/src/queries.rs:1056`,
-`crates/api/src/routes/incidents.rs:600`,
-`crates/api/src/data/queries.rs:2153`/`:3184`,
-`crates/enricher/src/main.rs:544`). The enricher writes
+in the repo is test-fixture seeding, inside a `#[cfg(test)]` module
+(`crates/aggregator/src/queries.rs`, `crates/api/src/routes/incidents.rs`,
+`crates/api/src/data/queries.rs` ×2, `crates/enricher/src/main.rs`). The enricher writes
 `extracted_periods`/`source_text_hash`/`extraction_model_version`; it does
 **not** backfill CRS codes.
 
@@ -167,6 +165,17 @@ measured against the shipped data, failing for every line the UI offers.
 (A made-up id such as `line=west-coast-main-line` returns `400 "unknown
 line"` instead, confirming the route's uniform-rejection behavior
 described in Finding 1.)
+
+**Independently corroborated.** A sibling document written the same day
+against a completely different brief —
+`docs/superpowers/specs/2026-09-16-tfl-incident-archive-design.md`, §1c
+("The gap the assumption does not anticipate: the Line filter matches
+nothing, for any line") — traced the identical code path and ran its own
+live probes (`?line=elizabeth-line`, `?line=overground-mildmay`, both
+empty), reaching the same verdict and calling it "a pre-existing,
+network-wide defect of the shipped archive, not a TfL problem." Two
+independent investigations, same conclusion; this is not an artefact of
+how this document sampled the data.
 
 Confirmed a third time through the real UI (headless Chromium against
 production, same date): the `Line (optional)` select offers exactly **109**
@@ -302,7 +311,7 @@ map — into `line_status`, with each incident-derived status carrying
 `line_status_history` snapshot when the statuses changed (`queries.rs:476`).
 
 `queries::lines_currently_reporting_incident`
-(`crates/api/src/data/queries.rs:1968-1982`) already runs the inverse
+(`crates/api/src/data/queries.rs:1991-2005`) already runs the inverse
 join, unnesting that JSONB to answer "which lines currently report this
 incident."
 
@@ -460,7 +469,7 @@ private custom-line ids and names to anonymous callers.**
 `get_incident` (`crates/api/src/routes/incidents.rs:278-297`) has no auth
 extractor, and calls
 `queries::lines_currently_reporting_incident`
-(`crates/api/src/data/queries.rs:1968-1982`):
+(`crates/api/src/data/queries.rs:1991-2005`):
 
 ```sql
 SELECT DISTINCT line_status.line_id, line_status.name
@@ -702,7 +711,9 @@ should carry both as line items, or it is not a complete plan:
   This is shipped-and-live today; it is not hypothetical, and it does not
   need this feature to justify fixing.
 - **File the dead catalogue `line` filter as a bug.** Finding 2 measured
-  it returning zero rows for all 109 catalogue lines. Whether it is fixed
+  it returning zero rows for all 109 catalogue lines, and
+  `2026-09-16-tfl-incident-archive-design.md` §1c found the same thing
+  independently and is blocked on it. Whether it is fixed
   here (Approach B does so as a side effect) or elsewhere, it should exist
   as a tracked defect rather than living only inside this research
   document.
@@ -797,7 +808,12 @@ the app?
    yes, Approach B is close to forced. If no, the design must say what
    the UI does about two adjacent filters with wildly different hit rates.
    Either way this finding should probably become its own bug report
-   rather than being buried in a feature design.
+   rather than being buried in a feature design — and note that
+   `2026-09-16-tfl-incident-archive-design.md` §1c now also blocks on it
+   ("until the archive's line-scoped browse works for the railways it
+   already covers, extending its coverage … is optimising the wrong end of
+   the feature"), so two separate pieces of work are already waiting on the
+   same fix.
 2. **Should `affected_stations` ever be populated?** The Knowledgebase
    feed has no CRS field, only free-text `RoutesAffected`
    (`common/src/lib.rs:586`) — but `crates/enricher` already runs LLM
@@ -857,8 +873,8 @@ the app?
 ## References
 
 - `crates/api/src/data/queries.rs:83-220` (`upsert_incidents`, the one
-  production writer of `incidents`), `:2046-2113` (`search_incidents`),
-  `:2066-2067` (the two array-overlap filters), `:1968-1982`
+  production writer of `incidents`), `:2069-2136` (`search_incidents`),
+  `:2089-2090` (the two array-overlap filters), `:1991-2005`
   (`lines_currently_reporting_incident`)
 - `crates/api/src/routes/incidents.rs:52-91` (`IncidentSearchParams`),
   `:189-276` (`search_incidents` handler), `:203-215` (catalogue-line →
@@ -926,6 +942,9 @@ the app?
   (the only mention of custom lines — a scaling note, not a privacy one)
 - `docs/superpowers/specs/2026-09-05-incident-line-matching-false-positive-design.md`
   (the `OperatorOnly` suppression rule and its rationale)
+- `docs/superpowers/specs/2026-09-16-tfl-incident-archive-design.md:163-216`
+  (§1c — an independent, same-day confirmation of Finding 2 from a
+  different brief, with its own live probes)
 - `docs/superpowers/specs/2026-09-07-tfl-incident-page-design.md:115`,
   `:131-152` (TfL data never reaches `incidents`; the full
   poller → `upsert_incidents` → aggregator → public-route path)
