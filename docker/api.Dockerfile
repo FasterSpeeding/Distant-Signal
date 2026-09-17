@@ -18,10 +18,14 @@
 # resolves to the same rustc 1.88 requirement by way of the icu_* chain
 # above (api additionally hits it via `home`).
 #
-# This image carries TWO binaries: `api` (the ENTRYPOINT) and
+# This image carries THREE binaries: `api` (the ENTRYPOINT),
 # `backfill_trains`, the one-off, idempotent shared-train-identity backfill
 # that MUST be run before this image is first started against a database
-# with pre-existing `tracked_trains` data. `api`'s own startup enforces that
+# with pre-existing `tracked_trains` data, and `backfill_incident_lines`,
+# the one-off, idempotent `incidents.affected_lines` backfill (see
+# docs/incident-affected-lines-backfill.md -- optional, but the incident
+# archive's Line filter returns nothing for pre-existing rows until it has
+# run). `api`'s own startup enforces that
 # ordering (it refuses to apply `20260906140000_drop_legacy_columns.sql`
 # while unbackfilled rows remain), so shipping both here is what makes the
 # enforced sequence actually satisfiable from inside the cluster. See
@@ -75,12 +79,13 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=cargo-target-1.88,target=/app/target,sharing=locked \
     if [ "$CARGO_PROFILE" = "release" ]; then \
-      cargo build --release --bin api --bin backfill_trains; \
+      cargo build --release --bin api --bin backfill_trains --bin backfill_incident_lines; \
     else \
-      cargo build --bin api --bin backfill_trains; \
+      cargo build --bin api --bin backfill_trains --bin backfill_incident_lines; \
     fi \
     && cp /app/target/${CARGO_PROFILE}/api /usr/local/bin/api \
-    && cp /app/target/${CARGO_PROFILE}/backfill_trains /usr/local/bin/backfill_trains
+    && cp /app/target/${CARGO_PROFILE}/backfill_trains /usr/local/bin/backfill_trains \
+    && cp /app/target/${CARGO_PROFILE}/backfill_incident_lines /usr/local/bin/backfill_incident_lines
 
 FROM debian:bookworm-slim
 
@@ -106,6 +111,14 @@ COPY --from=builder /usr/local/bin/api /usr/local/bin/api
 # `api`'s own startup refuses to apply the contract migration until this has
 # been run, so the two can never get out of order silently.
 COPY --from=builder /usr/local/bin/backfill_trains /usr/local/bin/backfill_trains
+# The one-off `incidents.affected_lines` backfill. Unlike `backfill_trains`
+# nothing refuses to start without it -- the archive's Line filter simply
+# finds no pre-existing rows until it has run, which is the behaviour it
+# had before the column existed. It reads the catalogue from `/app/lines`
+# (copied in just below), the same default as `api`'s own `--lines-dir`, so
+# it needs no arguments here either:
+#   kubectl run ... --image=<this image> --command -- /usr/local/bin/backfill_incident_lines
+COPY --from=builder /usr/local/bin/backfill_incident_lines /usr/local/bin/backfill_incident_lines
 COPY --chown=api:api lines/ /app/lines/
 
 # Numeric USER, not the `api` name useradd created above: Kubernetes'

@@ -68,11 +68,11 @@ struct IncidentSearchParams {
     /// all (an "any of" filter).
     operator: Option<String>,
     /// Optional. A single catalogue line id (`app.config.lines`, never a
-    /// custom line). Resolved server-side to that line's own station list,
-    /// then applied as a station-overlap filter -- see this route's own
-    /// doc comment on `search_incidents` for the named approximation this
-    /// implies. An id that doesn't resolve in `app.config.lines` is a
-    /// `400` ("unknown line"), not a 404 or a silently-empty result.
+    /// custom line), matched against `incidents.affected_lines` -- the
+    /// stored output of `common::matcher`, the same function that decides
+    /// which lines report an incident on the live status pages. An id that
+    /// doesn't resolve in `app.config.lines` is a `400` ("unknown line"),
+    /// not a 404 or a silently-empty result.
     line: Option<String>,
     /// Optional, RFC3339. Inclusive lower bound on `first_seen_at`.
     from: Option<String>,
@@ -178,6 +178,7 @@ fn incident_summary_json(row: &queries::IncidentSummaryRow) -> Value {
         "summary": row.summary,
         "operators": row.operators,
         "affectedStations": row.affected_stations,
+        "affectedLines": row.affected_lines,
         "priority": row.priority,
         "isPlanned": row.is_planned,
         "isCleared": row.is_cleared,
@@ -189,12 +190,24 @@ fn incident_summary_json(row: &queries::IncidentSummaryRow) -> Value {
 /// `GET /public/incidents` -- see
 /// docs/superpowers/specs/2026-09-12-incident-archive-design.md Decisions
 /// 1-5. Unauthenticated, per this file's own established public-read
-/// convention. The `line` filter is a named approximation (station-overlap
-/// against the resolved catalogue line's own stations) -- it catches the
-/// matcher's `StationHit`/`ExclusiveSegment`/`SharedSegment` tiers but
-/// misses `KeywordOnly`/`OperatorOnly`; see Correction 1 of the design spec
-/// and this route's own frontend copy (Decision 6) for where that
-/// limitation must stay visible to a user, not just documented here.
+/// convention.
+///
+/// The `line` filter matches `incidents.affected_lines`, which
+/// `queries::upsert_incidents` fills by running `common::matcher` -- the
+/// aggregator's own matcher -- over the incident at ingest. So the archive
+/// and the live status pages agree by construction about which lines an
+/// incident affects, including the `KeywordOnly`/`OperatorOnly` tiers.
+///
+/// It used to resolve the line to its CRS list and apply a station-overlap
+/// filter instead (the design spec's Decision 2 / Correction 1
+/// approximation). That returned zero rows for every line in production,
+/// because `incidents.affected_stations` is never written by anything:
+/// RDM's Incidents XML has no CRS field. See
+/// docs/superpowers/specs/2026-09-16-tfl-incident-archive-design.md 1c.
+/// The one caveat that remains is scope, not emptiness: rows ingested
+/// before `20260917090000_incidents_affected_lines.sql` match no line until
+/// the `backfill_incident_lines` binary has been run (see
+/// docs/incident-affected-lines-backfill.md).
 async fn search_incidents(
     State(app): State<App>,
     Query(params): Query<IncidentSearchParams>,
@@ -209,16 +222,22 @@ async fn search_incidents(
         if list.is_empty() { None } else { Some(list) }
     });
 
-    let affected_stations: Option<Vec<String>> = match params
+    // Validated against the catalogue here rather than simply passed
+    // through: a line id that does not exist must be a 400, not a silently
+    // empty result set. That distinction is the whole reason this defect
+    // was hard to notice -- an empty page reads as "nothing archived for
+    // this line", which is exactly the wrong conclusion.
+    let line: Option<String> = match params
         .line
         .as_deref()
-        .filter(|s| !s.trim().is_empty())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
     {
         Some(line_id) => {
-            let Some(line) = app.config.lines.iter().find(|l| l.id == line_id) else {
+            if !app.line_matcher.knows_line(line_id) {
                 return Err((StatusCode::BAD_REQUEST, "unknown line".to_string()));
-            };
-            Some(line.stations.iter().map(|s| s.crs.clone()).collect())
+            }
+            Some(line_id.to_string())
         }
         None => None,
     };
@@ -265,7 +284,7 @@ async fn search_incidents(
     let page = queries::search_incidents(
         &app.database,
         operators,
-        affected_stations,
+        line,
         params.planned,
         params.cleared,
         params.priority_min,
@@ -611,6 +630,10 @@ mod db_tests {
         };
 
         std::sync::Arc::new(AppState {
+            // Built from the same catalogue the real `AppState::init`
+            // builds it from, so a test never gets a matcher that
+            // disagrees with its own `config.lines`.
+            line_matcher: common::matcher::LineMatcher::new(&config.lines),
             config,
             database: pool,
             redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
@@ -645,6 +668,30 @@ mod db_tests {
             .execute(pool)
             .await
             .expect("cleanup fixture incidents rows");
+    }
+
+    /// Seeds a row with an explicit `affected_lines` array -- the column
+    /// the Line filter matches on, normally written by the matcher inside
+    /// `upsert_incidents`.
+    async fn seed_incident_with_lines(
+        pool: &PgPool,
+        incident_id: &str,
+        operators: &[&str],
+        affected_lines: &[&str],
+    ) {
+        sqlx::query(
+            "INSERT INTO incidents \
+                (incident_id, summary, description, operators, affected_stations, \
+                 affected_lines, priority, is_planned, is_cleared) \
+             VALUES ($1, $2, '', $3, '{}', $4, 1, false, false)",
+        )
+        .bind(incident_id)
+        .bind(format!("Fixture incident {incident_id}"))
+        .bind(operators)
+        .bind(affected_lines)
+        .execute(pool)
+        .await
+        .expect("seed fixture incidents row");
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -888,17 +935,19 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 incident_search -- --ignored --test-threads=1`"]
-    async fn incident_search_known_line_resolves_to_station_overlap_and_excludes_a_no_overlap_incident()
-     {
+    async fn incident_search_known_line_returns_rows_the_matcher_attributed_to_it() {
         let pool = connect().await;
         delete_fixtures(&pool).await;
-        // Matches test-line via WOK (one of the line's own stations).
-        seed_incident(&pool, "route-test-4", &["VT"], &["WOK"], 1, false, false).await;
-        // Same operator as the line, but NO shared station -- the shape a
-        // real OperatorOnly-only matcher hit would have. Must be excluded:
-        // this is the concrete proof the line filter's approximation
-        // misses that tier, per Correction 1 of the design spec.
-        seed_incident(&pool, "route-test-5", &["VT"], &["ZZZ"], 1, false, false).await;
+        // Attributed to test-line by the matcher at ingest.
+        seed_incident_with_lines(&pool, "route-test-4", &["VT"], &["test-line"]).await;
+        // Same operator, attributed to a different line. Must be excluded:
+        // the Line filter is a line filter, not an operator filter in
+        // disguise.
+        seed_incident_with_lines(&pool, "route-test-5", &["VT"], &["other-line"]).await;
+        // The shape every pre-existing production row has until the
+        // backfill runs. Also must be excluded -- an unattributed row is
+        // not silently attributed to whatever line was asked for.
+        seed_incident_with_lines(&pool, "route-test-6", &["VT"], &[]).await;
 
         let (status, body) = get(&pool, vec![fixture_line()], "/incidents?line=test-line").await;
         assert_eq!(status, StatusCode::OK);
@@ -907,7 +956,11 @@ mod db_tests {
         assert_eq!(
             ids,
             vec!["route-test-4"],
-            "only the station-overlap match must be returned: {ids:?}"
+            "only the incident attributed to this line must be returned: {ids:?}"
+        );
+        assert_eq!(
+            rows[0]["affectedLines"][0], "test-line",
+            "the row carries its line attribution onto the wire: {body}"
         );
         delete_fixtures(&pool).await;
     }

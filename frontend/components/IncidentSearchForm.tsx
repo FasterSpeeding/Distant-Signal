@@ -22,6 +22,12 @@ import type { IncidentSearchResponse, IncidentSummary, LineSummary, Suggestion }
 
 type DatePreset = '7d' | '30d' | '90d' | 'all';
 
+/** How many affected-line badges one result row shows before collapsing the
+ * rest into a "+N more". An operator-only incident on a large TOC matches
+ * every catalogue line that TOC runs -- Northern alone is 13 -- which would
+ * otherwise bury the summary under a wall of badges. */
+const MAX_LINE_BADGES = 4;
+
 function calendarDaysAgo(days: number): string {
   return dayjs().subtract(days, 'day').format('YYYY-MM-DD');
 }
@@ -88,6 +94,11 @@ export function IncidentSearchForm({
   initialTo?: string;
 }) {
   const catalogueLines = lines.filter((line) => line.source === 'catalogue');
+  /** Line id -> display name, so a result row's `affectedLines` renders as
+   * "Elizabeth line" rather than "elizabeth-line". An id with no entry (a
+   * line retired from the catalogue since the incident was ingested) falls
+   * back to the raw id rather than disappearing. */
+  const lineNamesById = new Map(catalogueLines.map((line) => [line.id, line.name]));
 
   const [operators, setOperators] = useState<string[]>(
     initialOperator ? initialOperator.split(',').filter(Boolean) : [],
@@ -345,6 +356,32 @@ export function IncidentSearchForm({
                     {code}
                   </Badge>
                 ))}
+                {/* `?? []` is not defensive padding for its own sake: during
+                  * a rolling deploy this bundle can be served against an api
+                  * that predates `affectedLines`, and an unguarded `.map`
+                  * would take the whole results list down rather than just
+                  * omit the badges. Capped at MAX_LINE_BADGES because an
+                  * operator-wide incident on a large TOC genuinely matches a
+                  * dozen-plus catalogue lines. */}
+                {(row.affectedLines ?? []).slice(0, MAX_LINE_BADGES).map((id) => (
+                  <Badge key={id} variant="outline" color="blue" title="Affected line">
+                    {lineNamesById.get(id) ?? id}
+                  </Badge>
+                ))}
+                {(row.affectedLines ?? []).length > MAX_LINE_BADGES && (
+                  <Badge
+                    variant="outline"
+                    color="blue"
+                    /* The names themselves, not a generic label: collapsing
+                     * must hide them from the layout, not lose them. */
+                    title={(row.affectedLines ?? [])
+                      .slice(MAX_LINE_BADGES)
+                      .map((id) => lineNamesById.get(id) ?? id)
+                      .join(', ')}
+                  >
+                    {`+${(row.affectedLines ?? []).length - MAX_LINE_BADGES} more`}
+                  </Badge>
+                )}
                 {row.affectedStations.map((crs) => (
                   <Badge key={crs} variant="outline" color="gray">
                     {crs}
@@ -380,7 +417,7 @@ export function IncidentSearchForm({
       <Select
         label="Line (optional)"
         placeholder="Any line"
-        description="Incidents affecting stations on this line -- a station-overlap approximation, not a real line match. It can miss incidents that only matched a line by keyword or shared operator, with no station in common."
+        description="Incidents attributed to this line by the same matcher that drives its live status page. Incidents archived before this filter was fixed appear here only after a one-off reprocessing pass."
         data={catalogueLines.map((line) => ({ value: line.id, label: line.name }))}
         value={lineId}
         onChange={setLineId}

@@ -444,6 +444,13 @@ that lives next to the line definition. Defaults exist for the common case.
   reference stations by name in free text. We need a station-name → CRS
   lookup with fuzzy matching ("Watford Junction", "Wat Junction", "WFJ"
   all → WFJ). Use the `network-rail-gis` or equivalent reference data.
+  Still open. Note what this does *not* block any more: the incident
+  archive's Line filter used to depend on it (it matched a line's CRS list
+  against `incidents.affected_stations`, a column nothing populates, and so
+  returned zero rows for every line) and now does not — it matches
+  `incidents.affected_lines`, written at ingest by `common::matcher`. What
+  CRS extraction would still buy is the matcher's station/segment tiers,
+  which no production incident reaches today.
 - **Branching lines.** Current model handles linear lines well and
   shared-trunk-then-branch decently. True multi-branch lines (e.g. a
   service that splits at Haslemere with portions to different
@@ -484,8 +491,8 @@ the inference fallback to Good Service.
 pipeline with synthetic inputs, verifying the rendered JSON matches
 expectations.
 
-`crates/aggregator`'s own `mod tests` (in `src/matcher.rs` and
-`src/aggregation.rs`) cover the matcher and aggregator layers, loading the
+`crates/common/src/matcher.rs`'s and `crates/aggregator/src/aggregation.rs`'s
+own `mod tests` cover the matcher and aggregator layers, loading the
 real `lines/` catalogue via `LineDefinition::from_dir` rather than
 synthetic fixtures. Each new line should add at least one shared-trunk and
 one exclusive-segment test case.
@@ -499,8 +506,12 @@ one exclusive-segment test case.
 - Domain types are plain structs deriving `serde::{Serialize, Deserialize}`
   in `crates/common` (e.g. `LineDefinition`), not separate wire-format
   wrapper types.
-- One concept per module within `aggregator`. `matcher.rs` matches.
-  `aggregation.rs` aggregates. Don't merge them.
+- One concept per module. `common::matcher` matches incidents to lines,
+  `common::segments` indexes shared/exclusive track, `aggregator`'s
+  `aggregation.rs` aggregates. Don't merge them. The first two live in
+  `common` rather than `aggregator` because `api` runs the same matcher at
+  ingest to fill `incidents.affected_lines` — there must be exactly one
+  answer to "which lines does this incident affect".
 - `lines/*.toml` is the source of truth for the line catalogue, loaded via
   `LineDefinition::from_dir`. Don't hardcode line data in Rust.
 - Tests live inline as `mod tests` next to the code they cover (see §11),
