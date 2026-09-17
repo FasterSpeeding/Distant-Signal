@@ -97,33 +97,91 @@ html:root[data-mantine-color-scheme='light'] {
   --mantine-color-red-outline: var(--mantine-color-red-9);
   --mantine-color-grape-outline: var(--mantine-color-grape-7);
 
-  /* ---- `variant="light"` orange, the one colour off the palette ramp ---
-     Mantine's light variant pairs `--mantine-color-<name>-light` (shade 1
-     as a 10%-alpha tint) with `--mantine-color-<name>-light-color` (shade
-     9). For every colour this app uses that lands comfortably over AA --
-     except orange, the "delayed" hue: orange 9 (#d9480f) on orange 1
-     (#ffe8cc) is 3.62:1. That is the pairing behind the `7m late` badge on
-     `/`, `/track/mine` and `/train/[uid]/[date]`, the amber badge in
-     `DisruptionDetail`/`IssueList`, and `JourneyTimeline`'s late marker --
-     i.e. delay information, at 11px bold, which is NOT WCAG "large text"
-     (that needs 18.66px bold), so 4.5:1 applies.
+  /* ---- `variant="light"`, the other half `autoContrast` cannot reach ---
+     Mantine's light variant pairs `--mantine-color-<name>-light` (shade 1)
+     as the surface with `--mantine-color-<name>-light-color` (shade 9) as
+     the text. Four of the eight colours this app renders that way do not
+     clear AA, measured shade 9 on shade 1:
 
-     This one cannot be fixed by shade substitution, and that is worth
-     stating because every other rule in this block is one: orange 9 is the
-     END of open-color's orange ramp, and even lightening the background
-     all the way to pure white only reaches 4.30:1 with orange-9 text. The
-     text has to go darker than any orange token Mantine ships.
+       yellow  #e67700 on #fff3bf  2.69:1   <- worst pairing in the app
+       orange  #d9480f on #ffe8cc  3.62:1
+       green   #2b8a3e on #d3f9d8  3.81:1
+       teal    #087f5b on #c3fae8  4.33:1
+       red     #c92a2a on #ffe3e3  4.51:1   (passes -- left alone, below)
+       blue    #1864ab on #d0ebff  4.93:1
+       grape   #862e9c on #f3d9fa  5.59:1
+       gray    #212529 on #f1f3f5 13.87:1
 
-     #b83e08 is the same hue continued one notional step past orange 9
-     (4.74:1 on the #ffe8cc light surface, 5.63:1 on plain white, so it is
-     safe wherever this variable lands). It is the single hand-mixed colour
-     in this file, deliberately confined to ONE variable rather than added
-     to `theme.colors` as a tuple -- the grape spec's "no custom colour
-     tuples" Non-goal still holds for the palette itself. `app/globals.test.ts`
-     asserts both ratios so the value cannot drift unmeasured.
+     These are not decorative: they are the `Nm late` / `On time` /
+     `Nm early` badges on `/`, `/track/mine`, `/train/[uid]/[date]` and
+     `JourneyTimeline`, `EtaBadge`'s ETA-source badge, the amber badge in
+     `DisruptionDetail`/`IssueList`, and the yellow retention `Alert` on
+     `/lines/[id]/history`. Badge text is 11px bold, which is NOT WCAG
+     "large text" (that needs 18.66px bold), so 4.5:1 applies to all of it.
 
-     Dark is untouched: there the pairing inverts to #fff4e6 on #6d2408. */
-  --mantine-color-orange-light-color: #b83e08;
+     None of the four can be fixed by shade substitution, which is what
+     separates this block from the `-outline` one above: shade 9 is the END
+     of open-color's ramp for every colour, and for orange and yellow even
+     lightening the surface all the way to pure white still fails (4.30:1
+     and 3.00:1). The text has to go darker than any token Mantine ships.
+
+     So each failing colour gets ONE hand-mixed value, derived by a single
+     rule rather than picked by eye: scale shade 9's RGB toward black by
+     the smallest whole percentage that clears 4.6:1 against that colour's
+     own shade-1 surface. (4.6 rather than 4.5 so a future palette re-cut
+     of the SURFACE has a little room before this silently drops under AA
+     -- the same "don't ship on the 0.01" reasoning the red-9-over-red-8
+     choice above uses.) The results, with the percentage that produced
+     them and both ratios -- on the tint, and on plain white, since a
+     `light` surface can be painted over a white card:
+
+       yellow  73%  #a85700   4.67:1 on tint,  5.21:1 on white
+       orange  86%  #bb3e0d   4.64:1 on tint,  5.51:1 on white
+       green   89%  #267b37   4.61:1 on tint,  5.29:1 on white
+       teal    96%  #087a57   4.62:1 on tint,  5.34:1 on white
+
+     Red is deliberately NOT in that list: 4.51:1 already clears AA, and
+     hand-mixing a fifth colour to buy 0.15 would put a bespoke hex where a
+     real palette token does the job. `app/globals.test.ts` pins every
+     number above, including red's, so if a re-cut ever pushes red under
+     4.5 it fails there rather than going unnoticed.
+
+     These four hexes are the only hand-mixed colours in this file, and
+     they are confined to ONE CSS variable each rather than added to
+     `theme.colors` as tuples -- the grape spec's "no custom colour tuples"
+     Non-goal still holds for the palette itself.
+
+     Dark is untouched: there the pairing inverts (e.g. orange becomes
+     #fff4e6 on #6d2408), and the sweep in e2e/accessibility.spec.ts runs
+     the whole app in dark too. */
+  --mantine-color-yellow-light-color: #a85700;
+  --mantine-color-orange-light-color: #bb3e0d;
+  --mantine-color-green-light-color: #267b37;
+  --mantine-color-teal-light-color: #087a57;
+
+  /* ---- inline error text ------------------------------------------------
+     16 components render a failed action as `<Text c="red">{error}</Text>`.
+     A BARE colour name on the `c` prop does not resolve to the shade it
+     looks like it does: Mantine's `parseThemeColor` maps a name with no
+     `.shade` suffix to `--mantine-color-<name>-filled` (see
+     `parse-theme-color.mjs`, the `shade ? ... : ...-filled` branch), i.e.
+     red 6 in the light scheme and red 8 in the dark one. As TEXT those are
+     3.28:1 on white and 3.01:1 on a dark `Card` -- failing in BOTH schemes,
+     on the one string a user reads at the exact moment something went
+     wrong.
+
+     Overriding `--mantine-color-red-filled` is not the fix: that variable
+     is a BACKGROUND for filled buttons and badges, where `autoContrast`
+     already picks a readable label for it (see lib/theme.ts). Darkening it
+     would repaint every destructive button to fix some text.
+
+     Hence a named token the call sites point at instead. Palette tokens,
+     not hand-mixed: red 9 is 5.46:1 on white, red 4 is 6.70:1 on the
+     #242424 body and 5.86:1 on a #2e2e2e Card. Defined per scheme rather
+     than with `light-dark()` only because this file already keeps its two
+     schemes in two blocks, and splitting one token across both styles
+     would make the pair harder to read together. */
+  --ds-color-error-text: var(--mantine-color-red-9);
 
   /* Mantine's input placeholder is gray 5 (#adb5bd): 2.07:1 on white, the
      worst single ratio the full-ruleset sweep found anywhere in the app,
@@ -167,6 +225,11 @@ html:root[data-mantine-color-scheme='light'] {
 html:root[data-mantine-color-scheme='dark'] {
   --mantine-color-dimmed: var(--mantine-color-dark-1);
   --mantine-color-placeholder: var(--mantine-color-dark-1);
+  /* The dark half of the error-text token -- see the light block's comment
+     for why a bare `c="red"` needed replacing at all. Red 4 (#ff8787):
+     6.70:1 on the #242424 body, 5.86:1 on a #2e2e2e Card, against the
+     3.44:1/3.01:1 that `--mantine-color-red-filled` (red 8 here) gave. */
+  --ds-color-error-text: var(--mantine-color-red-4);
 }
 
 /* Exactly the same defect as `--mantine-color-dimmed` above, in a place

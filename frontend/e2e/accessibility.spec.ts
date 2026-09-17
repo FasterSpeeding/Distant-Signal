@@ -188,6 +188,12 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   ['/track', '/track'],
   ['/groups/new', '/groups/new'],
   ['/connect-claude', '/connect-claude'],
+  // A client-only page, and the only route here reachable without any
+  // backend state. Visited with no OAuth params on purpose: that is its
+  // error branch, which is the state a user actually lands in when the
+  // callback goes wrong, and it is one of the `<Text c="...">{error}</Text>`
+  // sites the contrast work below covers.
+  ['/chat/callback', '/chat/callback'],
   // Deliberate 404, exercising not-found.tsx + the `<main>` landmark every
   // not-found.tsx inherits from app/layout.tsx.
   ['a deliberate 404', '/lines/nonexistent-line-slug'],
@@ -378,6 +384,51 @@ test.describe('accessibility: interactive sub-states', () => {
     await expectNoViolations(page, COMBOBOX_PORTAL_WAIVERS);
   });
 
+  // `/lines`'s operator filter is not the only combobox in the app, and a
+  // dropdown that is never opened is a dropdown that is never scanned --
+  // the whole reason this describe block exists. These are the other three
+  // surfaces that mount one.
+  test('/incidents, operator and line comboboxes open', async ({ page }) => {
+    await page.goto('/incidents');
+    await page.getByRole('combobox', { name: /Operator/i }).click();
+    await expect(page.getByRole('listbox').first()).toBeVisible();
+    await expectNoViolations(page, COMBOBOX_PORTAL_WAIVERS);
+    await page.keyboard.press('Escape');
+    await page.getByRole('combobox', { name: /^Line/i }).click();
+    await expect(page.getByRole('listbox').first()).toBeVisible();
+    await expectNoViolations(page, COMBOBOX_PORTAL_WAIVERS);
+  });
+
+  test('/trains, station autocomplete open with suggestions', async ({ page }) => {
+    await page.goto('/trains');
+    await page.getByRole('combobox', { name: /Station/i }).first().fill('Lon');
+    await expect(page.getByRole('listbox').first()).toBeVisible();
+    await expectNoViolations(page, COMBOBOX_PORTAL_WAIVERS);
+  });
+
+  test('/lines/new, station autocomplete open with suggestions', async ({ page }) => {
+    await page.goto('/lines/new');
+    await page.getByRole('combobox', { name: /Add station/i }).first().fill('Lon');
+    await expect(page.getByRole('listbox').first()).toBeVisible();
+    await expectNoViolations(page, COMBOBOX_PORTAL_WAIVERS);
+  });
+
+  // A conditional banner, not an interaction: the yellow retention `Alert`
+  // only renders when the requested range reaches past the server's real
+  // `line_status_history` ceiling, so the default `/lines/[id]/history` view
+  // never shows it -- and a whole failing `variant="light"` colour hid
+  // behind exactly that. Included as the standing reminder that "every
+  // route, every sub-state" has to mean data-conditional states too.
+  test(`/lines/${REAL_LINE_ID}/history, retention shortfall banner`, async ({ page }) => {
+    await page.goto(`/lines/${REAL_LINE_ID}/history?range=30d`);
+    const banner = page.getByText(/isn't available/i);
+    test.skip(
+      (await banner.count()) === 0,
+      "this deployment's history retention covers 30 days, so the banner never renders",
+    );
+    await expectNoViolations(page);
+  });
+
   test('combobox keyboard reachability (the evidence behind COMBOBOX_PORTAL_WAIVERS)', async ({
     page,
   }) => {
@@ -468,6 +519,34 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
     await page.goto(`/groups/${GROUP_ID}`);
     await page.getByRole('button', { name: /^Rename$/ }).first().click();
     await expect(page.getByRole('dialog')).toBeVisible();
+    await expectNoViolations(page);
+  });
+
+  // The state class that got away the first time round. Sixteen components
+  // render a failed action as an inline red `<Text>`, and NONE of them is
+  // reachable by navigating or clicking -- the mutation has to actually
+  // fail. Every one of those sixteen shipped below AA in both colour
+  // schemes, and no amount of route coverage or modal-opening would have
+  // found it, because axe can only see states the page is actually in.
+  //
+  // Failing the request at the network layer, rather than pointing the app
+  // at a broken backend, keeps this a deterministic check of the ERROR
+  // RENDERING and not of the API.
+  test('a failed mutation renders its inline error text readably', async ({ page }) => {
+    await page.goto('/track/mine');
+    // Empty body on purpose: `DeleteTrainButton` renders the response body
+    // as the message when there is one, so an empty 500 takes its
+    // `Request failed: <status>` fallback -- a string this test can match
+    // without depending on whatever prose a backend happens to return.
+    await page.route('**/api/**', (route) =>
+      route.request().method() === 'GET' ? route.fallback() : route.fulfill({ status: 500, body: '' }),
+    );
+    await page.getByRole('button', { name: /^Delete$/ }).first().click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.getByRole('button', { name: /Confirm delete|^Delete$/ }).last().click();
+    // The assertion that keeps this from passing vacuously: if the error
+    // text never rendered, there is nothing here to have measured.
+    await expect(page.getByText(/Request failed/i).first()).toBeVisible();
     await expectNoViolations(page);
   });
 });

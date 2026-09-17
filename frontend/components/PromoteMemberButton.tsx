@@ -45,7 +45,7 @@ export function PromoteMemberButton({ groupId, userId }: { groupId: string; user
       <Button variant="subtle" size="xs" onClick={handlePromote} loading={promoting}>
         Promote to admin
       </Button>
-      {error && <Text c="red">{error}</Text>}
+      {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
       {needsLoginState.needsLogin && <LoginLink underline="always">Log in to promote this member</LoginLink>}
     </>
   );

@@ -95,7 +95,7 @@ function StatusMessage({ state }: { state: TrainJourneyState }) {
   if (state.resolutionStatus === 'unresolved') {
     return (
       <Stack gap="sm">
-        <Text fw={500} c="red">
+        <Text fw={500} c="var(--ds-color-error-text)">
           Couldn&apos;t be matched to a live service
         </Text>
         {pinSummary}

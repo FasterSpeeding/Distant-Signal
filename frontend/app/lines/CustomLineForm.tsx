@@ -238,7 +238,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           />
         </Stack>
       </Collapse>
-      {error && <Text c="red">{error}</Text>}
+      {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
         Log in to {existingLine ? 'edit' : 'create'} a custom line.
       </LoginPromptModal>

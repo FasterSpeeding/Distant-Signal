@@ -131,7 +131,7 @@ export function GroupInviteLinkCard({ groupId, inviteLink }: { groupId: string; 
             No active invite link.
           </Text>
         )}
-        {error && <Text c="red">{error}</Text>}
+        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
         {needsLoginState.needsLogin && (
           <LoginLink underline="always">Log in to manage this invite link</LoginLink>
         )}

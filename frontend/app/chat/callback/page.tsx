@@ -55,7 +55,7 @@ export default function ChatCallbackPage() {
   return (
     <Stack p="lg" gap="md">
       <Title order={1}>Connecting…</Title>
-      {error ? <Text c="red">{error}</Text> : <Text c="dimmed">Finishing sign-in to the rail data service.</Text>}
+      {error ? <Text c="var(--ds-color-error-text)">{error}</Text> : <Text c="dimmed">Finishing sign-in to the rail data service.</Text>}
     </Stack>
   );
 }
