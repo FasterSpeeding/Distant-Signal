@@ -622,8 +622,7 @@ nine `h2`s in the sample sit inside just three notes, all at `MAN`
 `loungesAndWaiting.waitingFacility.notes`), but that is three notes
 presenting themselves as page-level sections. Note this is a correctness
 argument, not one the test suite enforces: axe's `heading-order` flags
-*skipped* levels, and an `h2` following an `h2` is not a skip, so
-`frontend/e2e/accessibility.spec.ts` would pass either way (see §8).
+*skipped* levels, and an `h2` following an `h2` is not a skip (see §8).
 
 **(b) Strip to text.** Decode all six entities, convert `</p>` and `</li>`
 to line breaks, drop every other tag. No new dependency and no XSS surface,
@@ -884,16 +883,25 @@ one is offered as a follow-up, not a prerequisite.
   Decision 6.
 - **Sanitizer tests**: a `notes` value containing `<script>`, an
   `href="javascript:"`, and an `onerror` attribute must all render inert.
-- **The existing axe-core sweep is a weaker safety net than it sounds.**
-  `frontend/e2e/accessibility.spec.ts` does sweep
-  `/stations/${REAL_STATION_CRS}` (default `PAD`), but only with five rules
-  — `color-contrast`, `landmark-one-main`, `region`, `heading-order`,
-  `page-has-heading-one`. None of those can catch an icon-carrying-meaning
-  regression, so §4.2's text-label rule needs its own unit assertion rather
-  than relying on this sweep. Nor would `heading-order` catch §4.7's stray
-  `h2`: the page's outline is `h1` → `h2`, and an injected `h2` is a sibling,
-  not a skipped level. Both rules in §4.2 and §4.7 need their own unit
-  tests; this sweep is not the safety net for either.
+- **The existing axe-core sweep is now a strong safety net — and it already
+  covers the exact surface this design changes.** As of
+  `e90cb78f` (*"Merge: audit every route with axe, not eight of them with
+  five rules"*) `frontend/e2e/accessibility.spec.ts` runs axe's **full
+  default ruleset** with a small explicitly-evidenced `WAIVED_RULES` list,
+  where it previously ran only five named rules. Better, it now has a
+  dedicated test —
+  `` `/stations/${REAL_STATION_CRS}, every disclosure expanded` `` — which
+  calls `expandAllAccordions(page)` and then asserts no violations,
+  explicitly citing `StationAccessibilitySection`'s disclosures as the
+  surface where duplicate `role="region"` landmark names were found. Any
+  structured rendering built from this document inherits that coverage for
+  free, which is a meaningful argument for keeping §4.5's disclosure
+  mechanism rather than inventing a new one.
+- **Two rules it still cannot enforce, which therefore need unit tests.**
+  No axe rule catches §4.2's icon-carrying-meaning case, and
+  `heading-order` will not catch §4.7's stray `h2`, because the page outline
+  is `h1` → `h2` and an injected `h2` is a sibling rather than a skipped
+  level. Assert both directly.
 - No new e2e spec, consistent with the original spec's reasoning
   (`:599-603`).
 
