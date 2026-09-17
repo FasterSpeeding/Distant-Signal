@@ -127,6 +127,22 @@ const TRAIN_DATE = process.env.E2E_TRAIN_DATE;
  */
 const COMBOBOX_PORTAL_WAIVERS = ['region', 'scrollable-region-focusable'];
 
+/** The `region` half of the reasoning above, for the account menu's
+ * dropdown (`components/AccountMenu.tsx`). Identical situation --
+ * Mantine portals a `Popover` dropdown to `<div
+ * data-mantine-shared-portal-node>` under `<body>`, outside every
+ * landmark, and `region` (best-practice, not WCAG) counts that as loose
+ * page content. It is a transient popover owned by an in-landmark button
+ * via `aria-controls`, and the portal target is Mantine's own.
+ *
+ * NOT `scrollable-region-focusable`: this dropdown has no `ScrollArea`,
+ * so that rule has nothing to fire on and stays live here. The menu's
+ * other two findings were real and are fixed rather than waived -- see
+ * `withInitialFocusPlaceholder` in AccountMenu.tsx
+ * (`aria-required-children`) and `Drawer.defaultProps` in lib/theme.ts
+ * (`button-name`, on the nav drawer's close button). */
+const MENU_PORTAL_WAIVERS = ['region'];
+
 async function expectNoViolations(page: Page, waived: string[] = []) {
   const builder = new AxeBuilder({ page });
   const results = await (waived.length ? builder.disableRules(waived) : builder).analyze();
@@ -469,11 +485,38 @@ test.describe('accessibility: interactive sub-states', () => {
     for (let i = 0; i < options - 2; i++) await page.keyboard.press('ArrowDown');
     await expect.poll(() => viewport.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
   });
+
+  // The nav drawer (components/AppNavDrawer.tsx) is this app's first
+  // `Drawer`, and it exists only below `md` -- so on the desktop viewport
+  // every other case here uses, it is not merely closed, it is unmountable.
+  // Its contents are the ENTIRE navigation on a phone, which makes an
+  // unaudited opened state the single largest a11y blind spot the mobile
+  // collapse could have introduced.
+  test('the nav drawer, opened on a phone viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/lines');
+    await page.locator('nav').getByRole('button', { name: 'Navigation menu' }).click();
+    await expect(page.getByRole('dialog', { name: 'Menu' })).toBeVisible();
+    await expectNoViolations(page);
+  });
 });
 
 test.describe('accessibility: interactive sub-states, logged in', () => {
   test.skip(!SESSION_COOKIE, 'set E2E_SESSION_COOKIE to a raw distant_signal_session value');
   test.use({ storageState: SESSION_COOKIE ? sessionState(SESSION_COOKIE) : undefined });
+
+  // The account menu (components/AccountMenu.tsx) is this app's first
+  // `Menu`, it only exists for an authenticated visitor, and its dropdown
+  // is portalled -- so nothing else in this suite has ever put its DOM in
+  // front of axe. It is also the one control that now carries the display
+  // name solely as an accessible name, which is exactly the kind of thing
+  // a full-ruleset sweep is here to keep honest.
+  test('the account menu, opened', async ({ page }) => {
+    await page.goto('/lines');
+    await page.locator('nav').getByRole('button', { name: /^Account menu for/ }).click();
+    await expect(page.getByRole('menu')).toBeVisible();
+    await expectNoViolations(page, MENU_PORTAL_WAIVERS);
+  });
 
   test('/track/mine/add-ticket, .pkpass upload tab', async ({ page }) => {
     await page.goto('/track/mine/add-ticket');

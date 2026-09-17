@@ -174,8 +174,23 @@ export const theme = createTheme({
   // The standing net for a regression is the axe sweep of every opened
   // modal in e2e/accessibility.spec.ts, which is what found this in the
   // first place.
+  // `Drawer` is the same defect in a different component, found the same
+  // way: the app's first `Drawer` (components/AppNavDrawer.tsx, the
+  // mobile nav) failed axe's `button-name` as CRITICAL on its
+  // `mantine-Drawer-close` button the moment the sweep first opened one.
+  // `Modal`'s default above does not cover it -- `useProps` is keyed by
+  // component name, and `Drawer` is its own component with its own
+  // `ModalBaseCloseButton` -- so the fix has to be repeated rather than
+  // inherited. Everything in the `Modal` comment above applies verbatim,
+  // including the shallow-merge caveat: a `Drawer` that passes
+  // `closeButtonProps` at all replaces this object wholesale.
   components: {
     Modal: {
+      defaultProps: {
+        closeButtonProps: { 'aria-label': 'Close' },
+      },
+    },
+    Drawer: {
       defaultProps: {
         closeButtonProps: { 'aria-label': 'Close' },
       },

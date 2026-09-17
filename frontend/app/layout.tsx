@@ -1,13 +1,8 @@
 import '@/app/globals.css';
 import { Suspense } from 'react';
-import { ColorSchemeScript, mantineHtmlProps, Group, Text, Box, Container } from '@mantine/core';
-import Link from 'next/link';
+import { ColorSchemeScript, mantineHtmlProps, Container } from '@mantine/core';
 import type { Metadata, Viewport } from 'next';
-import { ThemeToggle } from '@/components/ThemeToggle';
-import { PrideToggle } from '@/components/PrideToggle';
-import { TextLink } from '@/components/TextLink';
-import { DataFreshnessInfo } from '@/components/DataFreshnessInfo';
-import { AuthStatus } from '@/components/AuthStatus';
+import { AppNavBar } from '@/components/AppNavBar';
 import { AutoRefresh } from '@/components/AutoRefresh';
 import { ColorSchemeMeta } from '@/components/ColorSchemeMeta';
 import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
@@ -16,7 +11,7 @@ import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { ConnectivityMonitor } from '@/components/ConnectivityMonitor';
 import { getDataFreshness, getMyGroups, getSession } from '@/lib/api';
 import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
-import type { DataFreshness } from '@/lib/types';
+import type { DataFreshness, SessionInfo } from '@/lib/types';
 
 // Site-wide fallback metadata, and still the live fallback for every route
 // that has not overridden it (`/chat`, `/connect-claude`, and the smaller
@@ -80,90 +75,57 @@ export const viewport: Viewport = {
   ],
 };
 
-// Takes `freshness` as a prop rather than fetching it itself. The fetch
-// moved up into RootLayout (below) because its *success or failure* is
-// this app's backend-reachability signal -- and a fetch inside a
-// <Suspense> boundary resolves after RootLayout has already returned its
-// JSX, so RootLayout could never read the outcome to pass to a sibling.
-// See docs/superpowers/specs/2026-09-02-frontend-disconnect-reconnect-ux-design.md
+// The nav bar takes `freshness` as a prop rather than fetching it. The
+// fetch lives in RootLayout below (awaited, not streamed) because its
+// *success or failure* is this app's backend-reachability signal -- and a
+// fetch inside a <Suspense> boundary resolves after RootLayout has
+// already returned its JSX, so RootLayout could never read the outcome to
+// pass to a sibling. See
+// docs/superpowers/specs/2026-09-02-frontend-disconnect-reconnect-ux-design.md
 // Decision 1 and its implementation plan's Correction 1.
 //
-// The cost, stated plainly: this nav-bar tooltip no longer streams in --
-// RootLayout awaits it before emitting any HTML. Acceptable because the
-// call is against the same in-cluster `api` service every page already
-// awaits for its own content, and because in the failure case (the one
-// this whole design exists for) we specifically need the outcome before
-// first paint. AuthNavItem below deliberately keeps its own <Suspense>:
-// it is not a connectivity oracle.
-export function DataFreshnessNavItem({ freshness }: { freshness: DataFreshness }) {
-  return <DataFreshnessInfo freshness={freshness} />;
-}
+// The cost, stated plainly: the nav-bar freshness tooltip no longer
+// streams in -- RootLayout awaits it before emitting any HTML. Acceptable
+// because the call is against the same in-cluster `api` service every
+// page already awaits for its own content, and because in the failure
+// case (the one this whole design exists for) we specifically need the
+// outcome before first paint.
 
-// Same rationale as `DataFreshnessNavItem` immediately above: a separate
-// async Server Component so `<Suspense>` can stream the session check in
-// without blocking the rest of the shell, and so an uncaught fetch
-// failure here (this root layout has no route-level `error.tsx`) can't
-// take down every page. Falls back to a logged-out session shape rather
-// than rethrowing — an auth-status glitch should degrade to "show the log
-// in link", not break navigation for every visitor, logged in or not.
-async function AuthNavItem() {
-  const session = await getSession().catch(() => ({
-    authenticated: false,
-    id: null,
-    email: null,
-    name: null,
-  }));
-  return <AuthStatus session={session} />;
-}
+/** The shape `getSession()` returns for a visitor with no session, and
+ * the fallback this layout degrades to when the session check fails
+ * outright. Named once because it is used twice below — as
+ * `NavBarWithSession`'s `.catch()` value and as the `<Suspense>`
+ * fallback's session — and the two must agree: both mean "render the nav
+ * as if logged out". */
+const LOGGED_OUT_SESSION: SessionInfo = {
+  authenticated: false,
+  id: null,
+  email: null,
+  name: null,
+};
 
-// Reclassified from Tier 3 (hidden entirely when logged out) to
-// always-visible, per
-// docs/superpowers/specs/2026-09-02-modal-login-prompt-design.md
-// Decision 6 -- a deliberate, named reversal of
-// docs/superpowers/specs/2026-08-31-tracked-trains-list-design.md's
-// Decision 4, which chose "hidden entirely" specifically because at the
-// time an anonymous click would have resolved to a bare inline sentence
-// with nothing else on the page. Now that `/track/mine`'s own existing
-// `getMyTrackedTrains()` null-on-401 gate (unchanged -- see
-// `app/track/mine/page.tsx`) opens a real, actionable `LoginPromptModal`
-// instead, "dead weight in the nav bar" no longer describes what a
-// logged-out click produces, so this link is worth advertising rather
-// than hiding.
+// The nav's one session fetch, in a separate async Server Component so
+// `<Suspense>` can stream the check in without blocking the rest of the
+// shell, and so an uncaught fetch failure here (this root layout has no
+// route-level `error.tsx`) can't take down every page. Falls back to a
+// logged-out session rather than rethrowing — an auth-status glitch
+// should degrade to "show the log in link", not break navigation for
+// every visitor, logged in or not.
 //
-// No `getSession()` call here any more, and no `Suspense` wrapper needed
-// at the call site below -- the real gating already lives entirely on
-// `/track/mine`'s own page, which has no id in its path to disambiguate
-// (same reasoning that page's own doc comment already gives for not
-// needing a second `getSession()` call of its own). Adding a second,
-// client-side session check here just to decide what to render would be
-// duplicate plumbing for a decision this nav item no longer needs to
-// make.
+// ONE fetch, where there used to be two: the old `AuthNavItem` and
+// `GroupsNavItem` each called `getSession()` behind their own
+// `<Suspense>`, and `getSession()` is `cache: 'no-store'` (see
+// `lib/api.ts`), so that really was two round trips to the same
+// in-cluster `api` service on every page load. The account menu put both
+// of those decisions — which control to show, and whether "Groups" is in
+// the list — in one component, so one call now answers both.
 //
-// Labelled "My Trains & Tickets," not "My Tracked Trains," now that
-// `/track/mine` is the single merged page for both (Part B of the
-// upload-first ticket-tracking plan).
-export function TrackedTrainsNavItem() {
-  return <TextLink href="/track/mine">My Trains &amp; Tickets</TextLink>;
-}
-
-// New top-level nav item, alongside "All Lines"/"Station Lookup"/"Find a
-// Train"/"My Trains & Tickets" (spec §6, decided). Visible only to
-// authenticated users -- unlike `TrackedTrainsNavItem` (reclassified to
-// always-visible, see that function's own doc comment above), a group has
-// no useful anonymous-visitor landing state at all (an anonymous "Groups"
-// click has nothing to show but a login prompt with zero context), so this
-// stays gated the same way `AuthNavItem` gates on `getSession()` -- a
-// separate async Server Component behind its own `<Suspense>` so a slow/
-// failed session check can't block the rest of the shell.
-async function GroupsNavItem() {
-  const session = await getSession().catch(() => ({
-    authenticated: false,
-    id: null,
-    email: null,
-    name: null,
-  }));
-  if (!session.authenticated) return null;
-  return <TextLink href="/groups">Groups</TextLink>;
+// Unlike the freshness fetch above, this deliberately keeps its
+// `<Suspense>`: it is not a connectivity oracle, and nothing sibling to
+// it needs to read its outcome.
+async function NavBarWithSession({ freshness }: { freshness: DataFreshness }) {
+  const session = await getSession().catch(() => LOGGED_OUT_SESSION);
+  return <AppNavBar session={session} freshness={freshness} />;
 }
 
 /** Because the call below is awaited before RootLayout emits any HTML, an
@@ -270,72 +232,30 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   from receiving a new prop value; see that component's own
                   doc comment. */}
               <ServiceWorkerRegister loadedAt={new Date().toISOString()} />
-              {/* No max-width anywhere meant a 1920px viewport put a line's
-                  name at x≈30, its status badge at x≈870 and its pin at
-                  x≈1780 — the row stopped being scannable as a row. `lg` is
-                  1140px. The border stays on a full-bleed Box so the rule still
-                  spans the window while the nav's contents line up with the
-                  page content below it. `px={0}`: every page already applies
-                  its own `p="lg"`, and Container's default `md` inline padding
-                  on top of that is 40px of gutter on a 390px screen. */}
-              <Box
-                component="nav"
-                style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}
-              >
-                <Container size="lg" px={0}>
-                  <Group justify="space-between" px="lg" py="md">
-                    {/* Plain `<Link>` wrapping Mantine's `Text`, rather than
-                        `component={Link}` on a Mantine polymorphic prop: this file
-                        is a Server Component, and passing the `Link` component
-                        reference into a Mantine `component` prop from a Server
-                        Component previously broke `next build`'s Server/Client
-                        boundary serialization check (see LineStatusCard fix).
-                        `ThemeToggle` below doesn't hit this: it's imported and
-                        rendered as a plain JSX element (a Client Component child
-                        of this Server Component), not passed as a value into a
-                        Mantine `component` prop — a different, safe pattern. */}
-                    <Link href="/" style={{ textDecoration: 'none', color: 'inherit' }}>
-                      {/* `data-site-title` is a pure CSS hook for `globals.css`'s
-                          `body[data-pride='true']` rules -- Mantine's `Text`
-                          renders no stable class of its own to key off. */}
-                      <Text fw={700} data-site-title>
-                        Distant Signal
-                      </Text>
-                    </Link>
-                    <Group gap="lg">
-                      <TextLink href="/lines">All Lines</TextLink>
-                      <TextLink href="/stations">Station Lookup</TextLink>
-                      {/* The primary train-discovery surface. `/track` is
-                          still reachable (from here via /trains' own manual
-                          fallback link, from /stations/[crs], and from
-                          TicketEntryForm) but is no longer the first thing a
-                          visitor is pointed at -- see
-                          docs/superpowers/specs/2026-09-07-train-listing-page-design.md
-                          §4. */}
-                      <TextLink href="/trains">Find a Train</TextLink>
-                      <TextLink href="/incidents">Incident Archive</TextLink>
-                      <TrackedTrainsNavItem />
-                      <Suspense fallback={null}>
-                        <GroupsNavItem />
-                      </Suspense>
-                      <DataFreshnessNavItem freshness={freshness} />
-                      <ThemeToggle />
-                      <PrideToggle />
-                      <Suspense fallback={<Text size="sm" c="dimmed">Log in</Text>}>
-                        <AuthNavItem />
-                      </Suspense>
-                    </Group>
-                  </Group>
-                </Container>
-              </Box>
+              {/* The fallback is the WHOLE bar rendered logged-out, not a
+                  placeholder: the brand, the burger and every primary link
+                  are identical either way, so a visitor sees a complete,
+                  usable nav from the first byte and only the account
+                  control (and the "Groups" entry inside the drawer) swaps
+                  when the session check lands. A `null`/skeleton fallback
+                  would instead pop the entire header in, which is the one
+                  thing a root layout must not do.
+
+                  It also means the anonymous rendering is not a special
+                  case that only real anonymous visitors exercise -- every
+                  page load renders it, so it cannot quietly rot. */}
+              <Suspense fallback={<AppNavBar session={LOGGED_OUT_SESSION} freshness={freshness} />}>
+                <NavBarWithSession freshness={freshness} />
+              </Suspense>
               {/* `component="main"`: Mantine's Container renders a plain
                   <div> by default, which left every page's actual content
                   outside any landmark -- axe's `landmark-one-main` fired on
                   every route tested, and `region` fired once per unlandmarked
                   node (487 on /lines alone). See
                   docs/superpowers/specs/2026-09-02-frontend-accessibility-audit-research.md.
-                  The nav (:144) and footer (OpenDataAttribution.tsx) were
-                  already landmarked; only the middle was not. Polymorphic
+                  The nav (now components/AppNavBar.tsx) and footer
+                  (OpenDataAttribution.tsx) were already landmarked; only
+                  the middle was not. Polymorphic
                   `component` swaps the tag only -- size/px/class output is
                   unchanged.
 
@@ -350,7 +270,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
                   `w="100%"`: without it, this Container shrink-wrapped to
                   its content's width instead of matching the nav
-                  Container's (:285) identical `size="lg" px={0}`, so a
+                  Container's (components/AppNavBar.tsx) identical
+                  `size="lg" px={0}`, so a
                   page's content edge drifted from the nav's on every route
                   whose content didn't happen to be exactly 1140px wide --
                   confirmed against the installed

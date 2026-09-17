@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { AuthStatus } from './AuthStatus';
 import type { SessionInfo } from '@/lib/types';
 
-// LogoutButton calls useRouter() from next/navigation, which throws
-// "invariant expected app router to be mounted" outside a real Next.js App
-// Router tree (as in these unit tests) — same stub PinToggle.test.tsx uses.
+// `LoginLink` calls usePathname()/useSearchParams() and `AccountMenu`
+// (via useLogout) calls useRouter(), all of which throw "invariant
+// expected app router to be mounted" outside a real Next.js App Router
+// tree (as in these unit tests) — same stub PinToggle.test.tsx uses.
 const refresh = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh }),
@@ -15,6 +16,17 @@ vi.mock('next/navigation', () => ({
 }));
 
 const loggedOut: SessionInfo = { authenticated: false, id: null, email: null, name: null };
+
+/** The account control's accessible name is where the display name lives
+ * now that it is no longer a run of visible text in the bar (see
+ * AuthStatus.tsx / AccountMenu.tsx for why it moved). Every "what label
+ * does this session resolve to" case below therefore asserts on the
+ * button's name rather than on `getByText`. */
+function accountMenuName() {
+  const buttons = screen.getAllByRole('button');
+  const target = buttons.find((button) => button.getAttribute('aria-label')?.startsWith('Account menu for '));
+  return target?.getAttribute('aria-label')?.replace('Account menu for ', '');
+}
 
 describe('AuthStatus', () => {
   beforeEach(() => {
@@ -33,62 +45,58 @@ describe('AuthStatus', () => {
     expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2F');
   });
 
-  it('does not show a log out button when logged out', () => {
+  it('shows no account menu at all when logged out', () => {
     renderWithMantine(<AuthStatus session={loggedOut} />);
-    expect(screen.queryByRole('button', { name: 'Log out' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('shows the name when logged in with a name', () => {
+  it('shows an account menu, not a log in link, when logged in', () => {
     renderWithMantine(
       <AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: 'Ada' }} />,
     );
-    expect(screen.getByText('Ada')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Log out' })).toBeInTheDocument();
+    expect(accountMenuName()).toBe('Ada');
+    expect(screen.queryByRole('link', { name: 'Log in' })).not.toBeInTheDocument();
+  });
+
+  /** The display name is deliberately no longer visible bar TEXT -- that
+   * run of text is most of the 12px that pushed the authenticated bar
+   * onto a second row at 1440px. It must still reach assistive tech,
+   * though, which is what the case above pins; this one pins the other
+   * half of that trade, so a future change that puts the name back as
+   * bar text has to be a deliberate one. */
+  it('does not render the display name as visible bar text', () => {
+    renderWithMantine(
+      <AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: 'Ada' }} />,
+    );
+    expect(screen.queryByText('Ada')).not.toBeInTheDocument();
   });
 
   it('falls back to the email when logged in with no name', () => {
     renderWithMantine(
       <AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: null }} />,
     );
-    expect(screen.getByText('a@b.com')).toBeInTheDocument();
+    expect(accountMenuName()).toBe('a@b.com');
   });
 
   /** An identity provider with no name on file for a user sends a BLANK
    * `name` claim rather than omitting it, and it reaches the session shape
-   * as `''` -- which `??` treats as a perfectly good label, leaving the nav
-   * bar with an empty gap next to "Log out". Same defect the group member
-   * list and shared-train attribution had. */
+   * as `''` -- which `??` treats as a perfectly good label, leaving the
+   * account control with an empty accessible name. Same defect the group
+   * member list and shared-train attribution had. */
   it('falls back to the email when the name is blank rather than null', () => {
     renderWithMantine(
       <AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: '   ' }} />,
     );
-    expect(screen.getByText('a@b.com')).toBeInTheDocument();
+    expect(accountMenuName()).toBe('a@b.com');
   });
 
   it('falls back to "Signed in" when both name and email are blank', () => {
     renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', email: '', name: '' }} />);
-    expect(screen.getByText('Signed in')).toBeInTheDocument();
+    expect(accountMenuName()).toBe('Signed in');
   });
 
   it('falls back to "Signed in" when both name and email are null', () => {
     renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', email: null, name: null }} />);
-    expect(screen.getByText('Signed in')).toBeInTheDocument();
-  });
-
-  it('logging out posts to /api/auth/logout and refreshes the router', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-
-    renderWithMantine(
-      <AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: 'Ada' }} />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith('/api/auth/logout', { method: 'POST' });
-    });
-    await waitFor(() => {
-      expect(refresh).toHaveBeenCalled();
-    });
+    expect(accountMenuName()).toBe('Signed in');
   });
 });

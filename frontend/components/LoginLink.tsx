@@ -15,7 +15,7 @@ import { TextLink } from './TextLink';
  * Client-Component-only hooks, and `TextLink` must stay server-renderable
  * (see its own doc comment) since most of its call sites are Server
  * Components. This mirrors the existing `AuthStatus.tsx` embeds
- * `LogoutButton.tsx` pattern -- a small interactive Client Component leaf
+ * `AccountMenu.tsx` pattern -- a small interactive Client Component leaf
  * inside a server-rendered tree.
  *
  * `prefetch={false}` is required, not decorative: this href is never a

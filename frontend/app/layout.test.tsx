@@ -1,30 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vitest';
-import { screen } from '@testing-library/react';
-import { renderWithMantine } from '@/test/render';
-import { DataFreshnessNavItem, TrackedTrainsNavItem, viewport, metadata } from './layout';
+import { viewport, metadata } from './layout';
 
 // This file imports `app/layout.tsx`, which imports `@/lib/api` -- whose
 // module scope reads `next/headers`. There is no Next request context in a
-// unit test, and none of the cases here should reach the network at all
-// (DataFreshnessNavItem is now a pure prop-taking component; that is
-// precisely what the first case below asserts).
+// unit test, and nothing here should reach the network at all.
 vi.mock('@/lib/api', () => ({
   getDataFreshness: vi.fn(),
   getSession: vi.fn(),
   getMyGroups: vi.fn(),
 }));
-
-describe('TrackedTrainsNavItem', () => {
-  it('renders "My Trains & Tickets" unconditionally, pointing at /track/mine', () => {
-    // No session check here any more (Decision 6 of
-    // docs/superpowers/specs/2026-09-02-modal-login-prompt-design.md) --
-    // the real login gate lives entirely on /track/mine's own page now,
-    // covered by app/track/mine/page.test.tsx instead.
-    renderWithMantine(<TrackedTrainsNavItem />);
-    expect(screen.getByRole('link', { name: 'My Trains & Tickets' })).toHaveAttribute('href', '/track/mine');
-  });
-});
 
 describe('viewport.themeColor', () => {
   it('pairs the light-scheme white background with the dark-scheme #242424 body colour', () => {
@@ -108,21 +93,6 @@ describe('page content landmark', () => {
   });
 });
 
-describe('DataFreshnessNavItem', () => {
-  it('renders the freshness it is given, without fetching', async () => {
-    const { getDataFreshness } = await import('@/lib/api');
-    renderWithMantine(
-      <DataFreshnessNavItem
-        freshness={{ stations: null, tocs: null, incidents: null, tfl: null, schedule_feed: null }}
-      />,
-    );
-    expect(screen.getByRole('button', { name: 'Data freshness' })).toBeInTheDocument();
-    // The whole point of Correction 1: this component no longer owns the
-    // fetch, so it must not perform one.
-    expect(getDataFreshness).not.toHaveBeenCalled();
-  });
-});
-
 describe('backend reachability threading', () => {
   // RootLayout renders <html>/<body> and cannot be mounted by
   // @testing-library/react (same constraint the <main> landmark test
@@ -135,13 +105,35 @@ describe('backend reachability threading', () => {
     expect(source).toMatch(/backendReachable = false/);
   });
 
-  it('no longer wraps the freshness nav item in a Suspense boundary', () => {
+  it('passes the freshness straight into the nav bar rather than streaming it', () => {
     // Correction 1's load-bearing structural change: a streamed freshness
     // fetch resolves after RootLayout has returned, so its outcome could
-    // never reach a sibling. AuthNavItem's own Suspense must survive.
+    // never reach a sibling. It is therefore awaited and handed to
+    // <AppNavBar> as a plain prop -- including on the Suspense fallback
+    // path, which renders the same bar logged-out.
     const source = readFileSync('app/layout.tsx', 'utf8');
-    expect(source).toMatch(/<DataFreshnessNavItem freshness=\{freshness\} \/>/);
-    expect(source).toMatch(/<Suspense fallback=\{<Text size="sm" c="dimmed">Log in<\/Text>\}>/);
+    expect(source).toMatch(/<AppNavBar session=\{LOGGED_OUT_SESSION\} freshness=\{freshness\} \/>/);
+    expect(source).toMatch(/<NavBarWithSession freshness=\{freshness\} \/>/);
+  });
+
+  it('still streams the session check behind its own Suspense boundary', () => {
+    // The session fetch must NOT join the awaited pair above: unlike
+    // freshness it is not a connectivity oracle, and blocking first paint
+    // on it would hand every route the session endpoint's latency.
+    const source = readFileSync('app/layout.tsx', 'utf8');
+    expect(source).toMatch(/<Suspense fallback=\{<AppNavBar[^>]*>\}>\s*<NavBarWithSession/);
+  });
+
+  it('makes exactly one getSession() call for the whole nav', () => {
+    // Was two -- one for the account control, one for the "Groups" link
+    // -- and `getSession()` is `cache: 'no-store'`, so that was two real
+    // round trips per page load. The account menu collapsed both
+    // decisions into one component; this pins the saving.
+    // Matches the awaited CALL specifically, not the bare identifier:
+    // the import and this file's own prose both mention `getSession()`
+    // without invoking it.
+    const source = readFileSync('app/layout.tsx', 'utf8');
+    expect(source.match(/await getSession\(\)/g)).toHaveLength(1);
   });
 });
 
@@ -174,23 +166,14 @@ describe('group summaries provider threading', () => {
   });
 });
 
-describe('the primary nav', () => {
-  // Source assertion, not a render: these links live inside RootLayout
-  // itself, which is unexported and awaits getDataFreshness() -- the same
-  // reason the `<Container component="main">` case above is written this
-  // way rather than rendered.
-  it('links to the new train-search page', () => {
-    const source = readFileSync('app/layout.tsx', 'utf8');
-    expect(source).toMatch(/<TextLink href="\/trains">Find a Train<\/TextLink>/);
-  });
-
-  // Regression guard: /trains is an ADDITION, not a replacement. The
-  // design doc's §4 is an explicit "no" on removing or hiding /track, and
-  // the two station/line entry points either side of the new link must
-  // survive it.
-  it('still links to the existing lines and stations pages', () => {
-    const source = readFileSync('app/layout.tsx', 'utf8');
-    expect(source).toMatch(/<TextLink href="\/lines">All Lines<\/TextLink>/);
-    expect(source).toMatch(/<TextLink href="\/stations">Station Lookup<\/TextLink>/);
-  });
-});
+// The nav's own link/landmark/breakpoint behaviour is no longer asserted
+// here by reading this file's source: it moved into
+// `components/AppNavBar.tsx`, which is a plain synchronous component and
+// so can be RENDERED and asserted against real DOM instead. See
+// components/AppNavBar.test.tsx (bar links, drawer contents, the account
+// menu swap), components/AppNavDrawer.test.tsx and
+// components/AccountMenu.test.tsx. What stays here is only what is
+// genuinely about the layout module itself: its metadata/viewport
+// exports and the source-level threading assertions above, both of which
+// exist because RootLayout renders <html>/<body> and awaits its fetches,
+// so @testing-library/react cannot mount it.

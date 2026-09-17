@@ -4,7 +4,8 @@ import { test, expect, type Page } from '@playwright/test';
 // `<main>` (app/layout.tsx's `<Container component="main" size="lg" px={0}
 // style={{ flex: 1 }}>`) used to shrink-wrap to its own content's width
 // instead of matching the nav's Container immediately above it (`<Container
-// size="lg" px={0}>` at layout.tsx:285 -- byte-for-byte the same `size`/
+// size="lg" px={0}>`, now in components/AppNavBar.tsx -- byte-for-byte
+// the same `size`/
 // `px`), so a page's content edge drifted away from the nav's on every
 // route whose content didn't happen to measure exactly 1140px wide (the
 // `lg` breakpoint). Confirmed against the installed
