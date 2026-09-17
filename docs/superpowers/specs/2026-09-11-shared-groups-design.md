@@ -151,6 +151,7 @@ action.
 | Invite (generate/rotate/revoke join link) | `admin` or `owner` |
 | Remove another member | `admin` or `owner` — but an `admin` can never remove the `owner` |
 | Promote a member to `admin` | `owner` only |
+| Demote an `admin` back to `member` | `owner` only (added after this design was approved -- the inverse of promotion takes the same gate, so the set of admins has exactly one author; the `owner` row itself is never demotable, by anyone, per §2.1) |
 | Leave the group (remove self) | Any member; if the sole `owner` leaves a non-empty group, ownership transfers first (§2.1) |
 | Rename the group | `admin` or `owner` |
 | Delete the group entirely | `owner` only |
@@ -191,6 +192,7 @@ internal-token gate.
 | `GET /groups/{id}/members` | List members with roles |
 | `DELETE /groups/{id}/members/{userId}` | Remove a member (`admin`/`owner`, never targeting the owner), or self-remove ("leave") |
 | `POST /groups/{id}/members/{userId}/promote` | Promote a member to `admin` (`owner` only) |
+| `POST /groups/{id}/members/{userId}/demote` | Demote an `admin` back to `member` (`owner` only; `403` against the `owner` row, `409` if the target is already a plain member) -- added after approval, see §3 |
 | `POST /groups/{id}/invite-link` | Generate/rotate the group's active join link (`admin`/`owner`) |
 | `DELETE /groups/{id}/invite-link` | Revoke the active join link with no replacement (`admin`/`owner`) |
 | `GET /groups/join/{token}` | Resolve a join token → group name/preview, for the confirm page (no membership change) |
@@ -215,7 +217,9 @@ pattern as `AuthNavItem`/`TrackedTrainsNavItem`.
   the group's first invite link.
 - `/groups/{id}` — group detail, sectioned into:
   - **Members**: list with role badges; "Remove" per row for `admin`/`owner`
-    (disabled against the `owner` row); "Promote to admin" for `owner`;
+    (disabled against the `owner` row); "Promote to admin" for `owner` on
+    a plain member's row, and (added after approval, see §3) "Demote to
+    member" for `owner` on an `admin`'s row;
     "Leave group" for the current user; the current invite link with
     copy/share affordances (reuse `ShareButton.tsx`'s copy-to-clipboard /
     Web Share pattern verbatim) plus "Regenerate" and "Revoke", visible only

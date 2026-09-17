@@ -8,9 +8,11 @@ import { LoginLink } from './LoginLink';
 
 /** `owner`-only "Promote to admin" control -- no confirm modal (unlike
  * `RemoveMemberButton`/`DeleteTrainButton`): promoting is non-destructive
- * and reversible in spirit (an owner can always remove an admin they
- * regret promoting), so a bare click is proportionate, matching this
- * app's existing "confirm only genuinely destructive actions" posture. */
+ * and literally reversible (`DemoteMemberButton` puts an admin the owner
+ * regrets promoting straight back to `member`, no removal needed), so a
+ * bare click is proportionate, matching this app's existing "confirm only
+ * genuinely destructive actions" posture. Demotion, the direction that
+ * takes privileges away, does confirm -- see that component. */
 export function PromoteMemberButton({ groupId, userId }: { groupId: string; userId: string }) {
   const router = useRouter();
   const [promoting, setPromoting] = useState(false);
