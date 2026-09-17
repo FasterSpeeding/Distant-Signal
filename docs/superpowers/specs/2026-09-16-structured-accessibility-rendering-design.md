@@ -78,9 +78,9 @@ four nations, and many operators. Every one returned `200` with
 `EXD` `GLQ` `HUL` `INV` `IPS` `KGX` `LDS` `LLE` `MAN` `NRW` `PMH` `PNZ`
 `SHF` `SKG` `SOU` `STP` `TWY` `WVH` `YRK`
 
-That deliberately includes the extremes: `MAN` (Manchester Piccadilly,
-largest payload at 29,919 bytes), `DNO` (Dunrobin Castle, a seasonal
-request stop) and `BAL` (Balham, smallest at 9,065 bytes).
+That deliberately includes the extremes: `MAN` (Manchester Piccadilly, the
+largest payload), `DNO` (Dunrobin Castle, a seasonal request stop) and `BAL`
+(Balham, the smallest). Sizes in §2.6.
 
 ### 1.3 Honest limits of this method
 
@@ -240,7 +240,7 @@ all. Verbatim, `BAL`:
 ```
 
 Three of the twelve are exceptions and need labelled rendering:
-`carParks.carParks[]` (items mix numbers, a `charges` object of eleven rate
+`carParks.carParks[]` (items mix numbers, a `charges` object of ten rate
 strings, and an `operator`), `carParks.carParks[].accessibleLocations[]`
 (carries a nested `accessibilityInfo` object) and
 `stationAccessibility.passengerAssistance[]` (carries a boolean
@@ -252,7 +252,10 @@ reading as display copy: `tactilePaving: "There are tactile warnings on all
 platforms in use"`, `lifts.statement: "There are lifts"`,
 `platformFacilities.entranceLevels: "The platforms are level with the Main
 Entrance of the station"`, `announcements: "Announcements are made both
-visually and audibly"`. The feed has already done the prose. The current
+visually and audibly"`. (`lifts.statement: "There are lifts"` is the same
+kind of thing but is deliberately *not* counted among the 340 — it is too
+short to pass the length test §4.6 discusses, which is exactly that test's
+problem.) The feed has already done the prose. The current
 renderer's `humanizeKey` puts a redundant label in front of these
 ("Tactile paving: There are tactile warnings…").
 
@@ -282,12 +285,20 @@ Today these are printed as literal markup inside a `<Code block>`. Even if
 every other pattern were rendered perfectly, leaving these as raw tag soup
 would keep the section unreadable.
 
-The complete tag inventory for the sample — eight tags, nothing else:
-`p` (2,138), `a[href]` (386, with `mailto:`, `tel:` and `https:` targets),
-`strong` (268), `li` (272), `ul` (106), `em` (74), `h2` (18), `u` (8).
-Note there is **no `br` and no `ol`**. Entities, six in total: `&#160;`
-(166), `&#39;` (60), `&quot;` (50), `&#163;` (30 — a pound sign, inside
-car-park rate text), `&amp;` (28), `&#233;` (1).
+The complete tag inventory for the sample — eight tags, nothing else,
+counted as elements: `p` (1,069), `a[href]` (193), `li` (136), `strong`
+(134), `ul` (53), `em` (37), `h2` (9), `u` (4). Note there is **no `br` and
+no `ol`**.
+
+The 193 anchors' URL schemes are `https:` (143), **`http:` (45)** and
+`mailto:` (5). There is **no `tel:` link anywhere** in the sample — phone
+numbers appear as plain text inside `note`/`notes`, or in
+`primaryTelephoneNumber`. Any `href` allowlist must therefore include
+`http:`, or it silently drops 23% of the links.
+
+Entities, six in total: `&#160;` (166), `&#39;` (60), `&quot;` (50),
+`&#163;` (30 — a pound sign, inside car-park rate text), `&amp;` (28),
+`&#233;` (1).
 
 Handling this is a first-class requirement, not a polish item — see
 Decision 4.7.
@@ -313,8 +324,10 @@ from the renderer.
 
 `2026-09-12-station-accessibility-design.md:614-618` left per-station
 payload size unmeasured. Measured over the sample, the filtered 12-key
-object is **9,065 bytes (min, `BAL`), 20,667 bytes (median), 29,919 bytes
-(max, `MAN`)**.
+object as compact JSON is **9,065 characters (min, `BAL`), 20,667 (median,
+`BSK`), 29,919 (max, `MAN`)** — UTF-8 byte counts are a handful higher
+(9,069 / 20,681 / 29,925), the difference being the `£` and accented
+characters of §2.4.
 
 That is comfortably small for a synchronously-rendered server component, so
 the risk that open question flagged does not materialise. It is *not*
@@ -392,7 +405,7 @@ order, and each omitted when null/empty:
 - `openingTimes` via Pattern B, and `openingHoursNotes` as rich text
   beneath it.
 - `operatorContactDetails` via Pattern C.
-- Any *extra* scalar siblings (`storage`, the four `toilets` booleans) as
+- Any *extra* scalar siblings (`storage`, the three extra `toilets` booleans) as
   Pattern E / boolean lines.
 - Any extra array siblings (`names`, `locations`) via Pattern F / D.
 
@@ -458,13 +471,26 @@ link, `emailAddress` as `mailto:`, `url` as an external link,
 `postalAddress` joined into one comma-separated line skipping null lines,
 `operatorName` as plain text, `note` as rich text.
 
-`name` is *usually* boilerplate restating the context ("Basingstoke Help
-Line Contact Details", "Edinburgh Car Park 1 Contact Details"), but must not
-be dropped unconditionally: of the 122 contact objects, two carry real
-information found nowhere else — `"GREGGS BAKERY"` (the
-`stationFacilities.refreshments` tenant) and `"Car Park Operator Details -
-Southern "`. Suppress `name` only when it ends in a boilerplate suffix
-(`Contact Details`, `Details`), otherwise show it.
+**Drop `name`.** The 122 contact objects carry 114 distinct names and, on
+inspection, **not one of them contains information unavailable elsewhere in
+the same object**. Almost all are boilerplate restating the context
+("Basingstoke Help Line Contact Details", "Edinburgh Car Park 1 Contact
+Details"). The one that looks like a genuine exception — `"GREGGS BAKERY"`,
+the refreshments tenant at `GLQ` — turns out to duplicate its own sibling
+verbatim:
+
+```json
+{ "emailAddress": null, "name": "GREGGS BAKERY",
+  "note": "<p>U6 Queen Street Station</p><p>North Hanover Street</p><p>G1 2AF</p>",
+  "operatorName": "GREGGS BAKERY", "primaryTelephoneNumber": null }
+```
+
+Since §4.4 already renders `operatorName`, dropping `name` outright loses
+nothing on this sample and needs no string heuristic. Two earlier drafts of
+this document proposed suffix- and containment-based rules to preserve
+"GREGGS BAKERY"; both were unnecessary, and the suffix one leaked three
+boilerplate names. If the feed later puts something unique in `name`, the
+loss is a duplicated label, not data.
 
 ### 4.5 Pattern D — Named-item collection
 
@@ -518,21 +544,26 @@ contains a space — is measured at 340/372 = 91% of depth-1 plain scalars
 (§2.3), but **testing it against the real data shows it does not do what it
 looks like it does, and it should not be adopted as stated**:
 
-- It *passes* `stepFreeCategory.category: "B1, (refer to quick reference
-  guide)"` (36 characters, capitalised, spaced), which is a code needing a
-  label — the very case a length threshold is supposed to catch.
-- The only depth-1 strings it *fails* are the 31 instances of
+- It *passes* `stationAccessibility.stepFreeCategory.category: "B1, (refer
+  to quick reference guide)"` (36 characters, capitalised, spaced), which is
+  a code needing a label — the very case a length threshold is supposed to
+  catch. (That string sits at depth 2, so it is not itself part of the 372
+  the 91% is measured over; it is the clearest example of the failure mode,
+  not a counterexample to the statistic.)
+- The only depth-1 strings it *fails* are 32: the 31 instances of
   `lifts.statement` (`"There are lifts"` / `"There are no lifts"`), which
-  are textbook self-describing sentences that should be unlabelled.
+  are textbook self-describing sentences that should be unlabelled, plus one
+  RSC extraction artifact (§1.3).
 
 So the heuristic is close to exactly inverted on the two cases that matter.
 Two honest ways forward, both of which this document leaves open:
 
-1. **Label by field, not by shape** — a small allowlist of the handful of
-   depth-1 fields that are codes rather than prose (`stepFreeCategory.
-   category` is the only one found in the sample) keeps a label; everything
-   else drops it. Narrow enough to be maintainable, and unlike the ~480-entry
-   dictionary rejected in §6 it is a *deny*-list of about one entry.
+1. **Label by field, not by shape** — a small deny-list of the fields that
+   are codes rather than prose keeps a label; everything else drops it. In
+   this sample there are **zero** code-like strings at depth 1 and exactly
+   one below it (`stationAccessibility.stepFreeCategory.category`), so the
+   list is a single entry. Unlike the ~480-entry dictionary rejected in §6,
+   that is trivially maintainable.
 2. **Keep every label** for depth-1 scalars and take the redundancy, gaining
    the benefit only inside Pattern D items (§4.5), where the sentence
    finding is unambiguous and no counterexample exists.
@@ -549,29 +580,39 @@ that function is good at, and a better use for it than labelling sentences.
 ### 4.7 Pattern G — rich text
 
 Every `location`, `notes`, `note` and `*Notes` field must be treated as
-HTML, not as text (§2.4). Two viable options:
+HTML, not as text (§2.4) — and so must **`operatorName`**, which §4.4
+otherwise renders as plain text: six of its values carry markup or entities,
+five of them a bare `<a href>` (ScotRail's lost-property contact at `ABD`,
+`DNO` and `INV`; Transport for Wales' at `CDF` and `LLE`). Those 703 + 5
+fields together account for all 708 HTML-bearing strings. Two viable options:
 
 **(a) Sanitize and render (recommended).** Strip to an allowlist covering
-exactly the eight tags §2.4 actually observed — `p`, `a` (with `href`
-restricted to `https:`, `mailto:` and `tel:`), `strong`, `em`, `ul`, `li`,
-`u`, and `h2` — then render inside Mantine's `TypographyStylesProvider`.
+exactly the eight tags §2.4 actually observed — `p`, `a`, `strong`, `em`,
+`ul`, `li`, `u`, and `h2` — with `href` restricted to `https:`, `http:` and
+`mailto:` (the three schemes that actually occur; adding `tel:` is harmless
+and future-proof, but omitting `http:` would drop 45 real links). Then
+render inside Mantine's `TypographyStylesProvider`.
 Preserves the structure and, importantly, the hyperlinks: several `notes`
 values carry an operator's assistance phone number or booking URL only as an
 `<a href>`.
 
-Two details the observed inventory dictates. `h2` must be **demoted**, not
-passed through: the section's own headings are `h2`
-(`StationAccessibilitySection.tsx:159-161`) and an `h2` emitted from inside
-a note would break document outline — the one axe-core rule in
-`frontend/e2e/accessibility.spec.ts`'s set that *would* catch a regression
-here is `heading-order`. And `br`/`ol` should still be allowlisted even
-though neither occurs today: allowlisting an absent-but-innocuous tag costs
-nothing, whereas omitting one the feed later starts using silently destroys
-formatting.
+Two details the observed inventory dictates. `h2` must be **demoted** (to a
+`strong`, or to `h4` under the section's own `h2`), not passed through: the
+page renders an `h1` (`page.tsx:242`) and this section an `h2`
+(`StationAccessibilitySection.tsx:159-161`), so a stray `h2` from inside a
+note would land in the outline as a sibling of the section heading and
+misrepresent nine notes as top-level sections. Note this is a correctness
+argument, not one the test suite enforces: axe's `heading-order` flags
+*skipped* levels, and an `h2` following an `h2` is not a skip, so
+`frontend/e2e/accessibility.spec.ts` would pass either way (see §8).
+
+And `br`/`ol` should still be allowlisted even though neither occurs today:
+allowlisting an absent-but-innocuous tag costs nothing, whereas omitting one
+the feed later starts using silently destroys formatting.
 
 **(b) Strip to text.** Decode all six entities, convert `</p>` and `</li>`
 to line breaks, drop every other tag. No new dependency and no XSS surface,
-but silently destroys every link's target — all 386 of them.
+but silently destroys every link's target — all 193 of them.
 
 Recommend (a), with two conditions: the allowlist must be enforced by a
 vetted sanitizer rather than a hand-rolled regex, and sanitization must
@@ -590,11 +631,11 @@ Every key is an object; each row lists the patterns its contents draw on.
 
 | Key | Patterns used | Evidence |
 |---|---|---|
-| `stationAccessibility` | A (`trainRamp`, `ticketBarriers`), D (`passengerAssistance`, `nearestAccessibleStations.stations`), E (`tactilePaving`), B, F (`names`), booleans, plus 2 unmatched objects (`inductionLoop`, `stepFreeCategory`) | 31/31 |
+| `stationAccessibility` | A (`trainRamp`, `ticketBarriers`), D (`passengerAssistance`, `nearestAccessibleStations.stations`), E (`tactilePaving`), B, F (`names`), booleans, plus 3 unmatched objects (`inductionLoop`, `stepFreeCategory`, `nearestAccessibleStations`) | 31/31 |
 | `staffAssistance` | A (`helpline`, `staffHelp`, `helpPoints`), B, C, E, F | 31/31 |
 | `toiletsAndChanging` | A (`toilets`, `showers`) + three booleans, D (`locations`) | 31/31 |
 | `lifts` | E (`statement`), boolean, D (`liftsInfo`) | 31/31 |
-| `loungesAndWaiting` | A ×3, B, D (`waitingRooms`, `firstClassLounges`), E | 31/31 |
+| `loungesAndWaiting` | A ×3, B, D (`waitingRooms`, `firstClassLounges`), E, boolean | 31/31 |
 | `platformFacilities` | E (`entranceLevels`, `tactileWarnings`), number, D (`platforms`) | 31/31 |
 | `stationFacilities` | A ×11, C, booleans | 31/31 |
 | `helpAndSupport` | A (`staffHelp`), E ×5, F, nested help-points object | 31/31 |
@@ -631,7 +672,7 @@ none of them:
 | Path | Instances | Shape |
 |---|---|---|
 | `carParks.carParks[].accessibleLocations[].accessibilityInfo` | 39 | 10 scalars |
-| `carParks.carParks[].charges` | 36 | 11 rate strings |
+| `carParks.carParks[].charges` | 36 | 10 rate strings |
 | `carParks.carParks[].operator` | 36 | `{contactDetails}` wrapper |
 | `cycling.spaces` | 31 | `{notes, numberOfSpaces}` |
 | `stationAccessibility.inductionLoop` | 31 | `{provision, ticketCounters}` |
@@ -658,12 +699,14 @@ So the terminal branch does real work, and the two changes to it are:
    that, unlike the stronger claim an earlier draft made, is what the data
    actually supports.
 
-The existing depth limit should be raised, not removed: the real data
-nests six containers below a key's value
-(`carParks.carParks[]` → `operator` → `contactDetails` → `postalAddress` →
-`postcode`, counting the key object and the array), so a bound of **7–8**
-preserves the "terminates by construction" guarantee with a margin while
-covering everything observed. A bound of exactly 6 would sit on the edge.
+The existing depth limit should be raised, not removed. The deepest real
+chain is **seven containers** below a key's value — `carParks` object →
+`carParks` array → element → `openingHours` array → element → `openPeriod`
+array → `{startTime, endTime}` (at `EDB` among others). The
+`operator → contactDetails → postalAddress` chain an earlier draft cited is
+only six, and picking the wrong one matters: a bound of 6 would **truncate
+car-park opening periods**. Use **8**, which clears the observed maximum by
+one while keeping the "terminates by construction" guarantee.
 
 ### 4.10 Keep everything else
 
@@ -732,9 +775,9 @@ Global Constraint 7 because neither needs a typed sub-field model:
 
 - **Recursively strip `null`s in `filter_accessibility_fields`.** Purely
   key-name-agnostic, so it stays inside Global Constraint 7. Measured over
-  the sample it saves **14.2%** — the median station drops from 20,667 to
-  17,694 bytes, about 2.9 KB off what ships to every browser through the
-  RSC flight payload. Real but modest; worth doing as a cheap follow-up, not
+  the sample it saves **14.2%** across all 31 payloads (597,158 → 512,393
+  characters), about 2.9 KB off the median station — weight that currently
+  ships to every browser through the RSC flight payload. Real but modest; worth doing as a cheap follow-up, not
   worth arguing about. The frontend already drops nulls at render time
   (`StationAccessibilitySection.tsx:73-77`), so this changes no output.
 - **Nothing else.** In particular, do not sanitize HTML server-side in
@@ -799,8 +842,10 @@ one is offered as a follow-up, not a prerequisite.
   — `color-contrast`, `landmark-one-main`, `region`, `heading-order`,
   `page-has-heading-one`. None of those can catch an icon-carrying-meaning
   regression, so §4.2's text-label rule needs its own unit assertion rather
-  than relying on this sweep. The one rule that *is* load-bearing here is
-  `heading-order`, against §4.7's demoted `h2`.
+  than relying on this sweep. Nor would `heading-order` catch §4.7's stray
+  `h2`: the page's outline is `h1` → `h2`, and an injected `h2` is a sibling,
+  not a skipped level. Both rules in §4.2 and §4.7 need their own unit
+  tests; this sweep is not the safety net for either.
 - No new e2e spec, consistent with the original spec's reasoning
   (`:599-603`).
 
