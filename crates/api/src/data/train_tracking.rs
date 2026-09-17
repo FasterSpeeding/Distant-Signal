@@ -1217,12 +1217,19 @@ pub struct TrackedTrainListItem {
 /// ago for a service that's delayed right now, which is very likely the
 /// one thing the caller actually wants to check on; see Decision 2 of the
 /// design spec), capped at `MINE_LIST_LIMIT` rows. No status-based
-/// filtering -- `train_current_state.status` can never actually reach
-/// `'completed'` in this codebase today (a separate, already-flagged gap
-/// in `crates/trust-consumer/src/journey.rs`, not fixed here), so an
-/// "active only" filter would silently do almost nothing while implying
-/// curation that isn't happening; this function intentionally does not
-/// attempt one.
+/// filtering: `train_current_state.status` CAN reach `'completed'` now
+/// (`trust_schema::journey::apply_movement`'s confirmed-terminus-ARRIVAL
+/// check), but only when `trains.destination_crs` already happened to be
+/// known as that event was ingested -- which the
+/// backlog-replay-before-schedule-match ordering in
+/// `routes::train::enrich_shared_train` often means it wasn't, and nothing
+/// re-derives it afterwards. `journey::apply_confirmed_arrival` closes that
+/// for the two single-train read routes by reading the finished journey off
+/// its own timeline, but deliberately not for this batched list (see that
+/// function's own doc comment), so a long-finished train can still show
+/// here as `'en_route'`. An "active only" filter would therefore silently
+/// do almost nothing while implying curation that isn't happening; this
+/// function intentionally does not attempt one.
 pub async fn list_tracked_trains_for_user(
     pool: &PgPool,
     user_id: &str,

@@ -148,32 +148,25 @@ fn rows_to_json(rows: Vec<queries::LineStatusRow>, detail: bool) -> Vec<Value> {
 /// [`custom_lines::readable_custom_line_ids`]; nothing that used to be
 /// filtered out on ownership grounds is now let through on any other
 /// basis.
+///
+/// The logic itself now lives in
+/// [`custom_lines::retain_readable_custom_rows`], shared with the other
+/// reader of `line_status` that needs the same gate
+/// (`routes::incidents::get_incident`'s `currentlyAffectsLines`). This
+/// function stays as the `LineStatusRow`-shaped entry point its three
+/// callers here already use; its behaviour is unchanged.
 async fn filter_private_custom_rows(
     pool: &sqlx::PgPool,
     rows: Vec<queries::LineStatusRow>,
     user: &Option<crate::auth::AuthenticatedUser>,
 ) -> anyhow::Result<Vec<queries::LineStatusRow>> {
-    let custom_ids: Vec<String> = rows
-        .iter()
-        .filter(|r| r.id.starts_with("custom-"))
-        .map(|r| r.id.clone())
-        .collect();
-    if custom_ids.is_empty() {
-        return Ok(rows);
-    }
-    let Some(caller) = user else {
-        // Anonymous: no custom-line row is ever readable, and there is no
-        // id to bind a grant lookup against.
-        return Ok(rows
-            .into_iter()
-            .filter(|row| !row.id.starts_with("custom-"))
-            .collect());
-    };
-    let readable = custom_lines::readable_custom_line_ids(pool, &custom_ids, &caller.id).await?;
-    Ok(rows
-        .into_iter()
-        .filter(|row| !row.id.starts_with("custom-") || readable.contains(&row.id))
-        .collect())
+    custom_lines::retain_readable_custom_rows(
+        pool,
+        rows,
+        user.as_ref().map(|caller| caller.id.as_str()),
+        |row| row.id.as_str(),
+    )
+    .await
 }
 
 /// Every mode this deployment has data for. `national-rail` is written by
@@ -358,31 +351,44 @@ async fn get_stop_point_disruption(
     Ok(Json(disruptions))
 }
 
+/// The single-id counterpart of [`filter_private_custom_rows`], for the
+/// routes whose `{id}` path segment IS the whole query: a catalogue/TfL id
+/// is always readable, a `custom-` id only when the caller owns it or it is
+/// granted into a group they are currently a member of (custom-line group
+/// sharing, design §3.2). An anonymous caller short-circuits with no query
+/// at all -- they own nothing and are a member of nothing.
+///
+/// Every `/Line/{id}/...` route that reads a per-line table keyed by line
+/// id must consult this before querying. That is not just the status
+/// history: `line_status_daily_stats`/`line_status_half_hourly_stats` are
+/// written for custom lines too (`crates/aggregator/src/main.rs` merges
+/// them into its `lines` before the `record_daily_stats` pass), so the six
+/// `/Line/{id}/Stats/...` routes are readers of private per-line data as
+/// surely as this one is.
+/// `Some(Json(vec![]))` when the caller may not read `id` -- the exact
+/// answer a genuinely unknown line id gets from every route here, so a
+/// refusal is indistinguishable from "no such line" and cannot be used to
+/// confirm a private line exists. `None` means "carry on and query."
+/// Callers write `if let Some(empty) = ... { return Ok(empty); }`.
+async fn empty_if_unreadable(
+    pool: &sqlx::PgPool,
+    id: &str,
+    user: &Option<crate::auth::AuthenticatedUser>,
+) -> Result<Option<Json<Vec<Value>>>, (StatusCode, String)> {
+    let readable =
+        custom_lines::caller_may_read_line_id(pool, id, user.as_ref().map(|c| c.id.as_str()))
+            .await
+            .map_err(internal_error)?;
+    Ok((!readable).then(|| Json(vec![])))
+}
+
 async fn get_line_status_history(
     State(app): State<App>,
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
-    if id.starts_with("custom-") {
-        // Readable means owned OR granted into a group the caller is
-        // currently in (custom-line group sharing, design §3.2) -- one
-        // more disjunct on the existing ownership gate, never a
-        // replacement for it. An anonymous caller short-circuits with no
-        // query at all, exactly as before.
-        let readable_by_caller = match &user {
-            Some(caller) => custom_lines::readable_custom_line_ids(
-                &app.database,
-                std::slice::from_ref(&id),
-                &caller.id,
-            )
-            .await
-            .map_err(internal_error)?
-            .contains(&id),
-            None => false,
-        };
-        if !readable_by_caller {
-            return Ok(Json(vec![])); // identical shape to a genuinely unknown id -- this route has never distinguished the two.
-        }
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
     }
 
     let history = queries::line_status_history_for_range(&app.database, &id, from, to)
@@ -442,7 +448,11 @@ fn daily_stats_to_json(row: queries::DailyStatsRow) -> Value {
 async fn get_line_daily_stats(
     State(app): State<App>,
     Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
+    }
     let rows = queries::daily_stats_for_range(&app.database, &id, from, to)
         .await
         .map_err(internal_error)?;
@@ -486,7 +496,11 @@ fn half_hourly_stats_to_json(row: queries::HalfHourlyStatsRow) -> Value {
 async fn get_line_half_hourly_stats(
     State(app): State<App>,
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
+    }
     let rows = queries::half_hourly_stats_for_range(&app.database, &id, from, to)
         .await
         .map_err(internal_error)?;
@@ -535,7 +549,11 @@ fn sub_daily_stats_to_json(row: queries::HalfHourlyStatsRow) -> Value {
 async fn get_line_hourly_stats(
     State(app): State<App>,
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
+    }
     let rows = queries::sub_daily_stats_for_range(&app.database, &id, from, to, 60)
         .await
         .map_err(internal_error)?;
@@ -547,7 +565,11 @@ async fn get_line_hourly_stats(
 async fn get_line_six_hourly_stats(
     State(app): State<App>,
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
+    }
     let rows = queries::sub_daily_stats_for_range(&app.database, &id, from, to, 360)
         .await
         .map_err(internal_error)?;
@@ -591,7 +613,11 @@ fn daily_coverage_stats_to_json(row: queries::DailyCoverageStatsRow) -> Value {
 async fn get_line_daily_coverage_stats(
     State(app): State<App>,
     Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
+    }
     let rows = queries::daily_coverage_stats_for_range(&app.database, &id, from, to)
         .await
         .map_err(internal_error)?;
@@ -635,7 +661,11 @@ fn half_hourly_coverage_stats_to_json(row: queries::HalfHourlyCoverageStatsRow) 
 async fn get_line_half_hourly_coverage_stats(
     State(app): State<App>,
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
+    }
     let rows = queries::half_hourly_coverage_stats_for_range(&app.database, &id, from, to)
         .await
         .map_err(internal_error)?;
@@ -1381,6 +1411,10 @@ mod db_tests {
         };
 
         std::sync::Arc::new(AppState {
+            // Built from the same catalogue the real `AppState::init`
+            // builds it from, so a test never gets a matcher that
+            // disagrees with its own `config.lines`.
+            line_matcher: common::matcher::LineMatcher::new(&config.lines),
             config,
             database: pool,
             // `Client::open` only parses the URL, never opens a socket --
@@ -2266,5 +2300,107 @@ mod db_tests {
         ] {
             cleanup_user(&pool, id).await;
         }
+    }
+
+    // --- /Line/{id}/Stats/... -------------------------------------------
+    //
+    // Found by the systematic audit that followed the incident-detail leak
+    // (2026-09-16 custom-line archive research §5c): the aggregator merges
+    // custom lines into its `lines` before the `record_daily_stats` pass
+    // (`crates/aggregator/src/main.rs`), so `line_status_daily_stats` and
+    // `line_status_half_hourly_stats` carry `custom-` rows -- and all six
+    // `/Line/{id}/Stats/...` routes read them with no auth extractor and no
+    // gate. Unlike `get_line_status_history`, which was gated from the
+    // start, these were never in any read-gate audit's scope.
+
+    async fn seed_daily_stats(pool: &PgPool, line_id: &str) {
+        sqlx::query(
+            "INSERT INTO line_status_daily_stats \
+                (line_id, day, sample_cycles, total, delayed, cancelled, skipped, \
+                 running_count, delay_minutes_sum) \
+             VALUES ($1, CURRENT_DATE, 1, 10, 3, 1, 0, 9, 27.0) \
+             ON CONFLICT (line_id, day) DO UPDATE SET total = EXCLUDED.total",
+        )
+        .bind(line_id)
+        .execute(pool)
+        .await
+        .expect("seed fixture daily stats row");
+    }
+
+    async fn cleanup_daily_stats(pool: &PgPool, line_id: &str) {
+        sqlx::query("DELETE FROM line_status_daily_stats WHERE line_id = $1")
+            .bind(line_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture daily stats row");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                get_line_daily_stats_gates_a_custom_line -- --ignored --test-threads=1`"]
+    async fn get_line_daily_stats_gates_a_custom_line_on_readability_but_never_a_catalogue_one() {
+        let pool = connect().await;
+
+        let owner_token = seed_session(&pool, "TEST-STATS-GATE-OWNER").await;
+        let stranger_token = seed_session(&pool, "TEST-STATS-GATE-STRANGER").await;
+        let custom = custom_lines::insert_custom_line(
+            &pool,
+            NewCustomLine {
+                name: "Test Stats Gate Line".to_string(),
+                operators: vec!["SW".to_string()],
+                stations: vec!["WOK".to_string(), "CLJ".to_string()],
+                headcode_prefixes: vec![],
+                destination_crs_filter: vec![],
+            },
+            "TEST-STATS-GATE-OWNER",
+        )
+        .await
+        .expect("insert fixture custom line");
+        seed_daily_stats(&pool, &custom.id).await;
+        seed_daily_stats(&pool, "test-stats-gate-catalogue").await;
+
+        let router = test_router(test_app(pool.clone(), vec![]));
+        let custom_uri = format!("/Line/{}/Stats/2000-01-01/to/2100-01-01", custom.id);
+
+        // Anonymous and logged-in-but-unrelated both get the same empty
+        // array a genuinely unknown line id produces -- deliberately not a
+        // 403, which would itself confirm the id exists.
+        let (status, body) = request(router.clone(), custom_uri.clone(), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, Value::Array(vec![]));
+        let (status, body) =
+            request(router.clone(), custom_uri.clone(), Some(&stranger_token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            Value::Array(vec![]),
+            "another user's custom line's delay stats are not readable just because you're \
+             logged in"
+        );
+
+        // The owner still gets their own line's real stats back.
+        let (status, body) = request(router.clone(), custom_uri, Some(&owner_token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().map(Vec::len), Some(1));
+
+        // The catalogue id is untouched by the gate, for everyone.
+        let (status, body) = request(
+            router,
+            "/Line/test-stats-gate-catalogue/Stats/2000-01-01/to/2100-01-01".to_string(),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body.as_array().map(Vec::len),
+            Some(1),
+            "a public catalogue line's stats stay public and anonymous-readable"
+        );
+
+        cleanup_daily_stats(&pool, &custom.id).await;
+        cleanup_daily_stats(&pool, "test-stats-gate-catalogue").await;
+        cleanup_user(&pool, "TEST-STATS-GATE-OWNER").await;
+        cleanup_user(&pool, "TEST-STATS-GATE-STRANGER").await;
     }
 }

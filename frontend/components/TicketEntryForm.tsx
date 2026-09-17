@@ -415,10 +415,23 @@ function UploadPanel({
 }) {
   return (
     <Stack gap="sm">
+      {/* `inputProps`: Mantine's Dropzone always renders a real
+          `<input type="file">` (visually hidden, `tabindex="-1"`, but not
+          `aria-hidden`), and gives it no label of any kind -- axe's `label`
+          rule fires on it, critical, on both upload tabs. The visible
+          "Apple Wallet .pkpass file" / "PDF e-ticket" text below is inside
+          a `pointer-events: none` Stack with no programmatic association to
+          the input, so it does not name it. Naming the input per `kind`
+          keeps the two tabs' controls distinguishable rather than both
+          announcing a generic "choose file". */}
       <Dropzone
         accept={accept}
         multiple={false}
         loading={uploading}
+        inputProps={{
+          'aria-label':
+            kind === 'pkpass' ? 'Upload an Apple Wallet .pkpass file' : 'Upload a PDF e-ticket',
+        }}
         onDrop={(files) => onFile(files[0] ?? null, kind)}
         onReject={() => {
           /* Decision 3: a mismatched file type is a client-side pre-filter,

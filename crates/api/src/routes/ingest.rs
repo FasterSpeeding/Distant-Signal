@@ -164,9 +164,10 @@ async fn post_incidents(
     State(app): State<App>,
     Json(incidents): Json<Vec<IncidentMessage>>,
 ) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = queries::upsert_incidents(&app.database, &app.redis, &incidents)
-        .await
-        .map_err(internal_error)?;
+    let upserted =
+        queries::upsert_incidents(&app.database, &app.redis, &app.line_matcher, &incidents)
+            .await
+            .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
 }
 
@@ -636,6 +637,10 @@ mod db_tests {
         };
 
         std::sync::Arc::new(AppState {
+            // Built from the same catalogue the real `AppState::init`
+            // builds it from, so a test never gets a matcher that
+            // disagrees with its own `config.lines`.
+            line_matcher: common::matcher::LineMatcher::new(&config.lines),
             config,
             database: pool,
             redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),

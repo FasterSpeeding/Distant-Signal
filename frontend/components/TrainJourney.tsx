@@ -95,7 +95,7 @@ function StatusMessage({ state }: { state: TrainJourneyState }) {
   if (state.resolutionStatus === 'unresolved') {
     return (
       <Stack gap="sm">
-        <Text fw={500} c="red">
+        <Text fw={500} c="var(--ds-color-error-text)">
           Couldn&apos;t be matched to a live service
         </Text>
         {pinSummary}
@@ -136,10 +136,17 @@ function StatusMessage({ state }: { state: TrainJourneyState }) {
     );
   }
 
-  // `'completed'` is a REAL, backend-confirmed status
-  // (`trust_schema::journey::apply_movement`'s destination-CRS check) --
-  // an ARRIVAL event Network Rail reported at this train's own known
-  // final calling point, not an inference. It gets its own distinct,
+  // `'completed'` is a REAL, backend-confirmed status -- an ARRIVAL event
+  // Network Rail reported at this train's own final calling point, not an
+  // inference. Two backend paths can set it, and they agree on that rule:
+  // `trust_schema::journey::apply_movement`'s ingest-time
+  // destination-CRS check, and (in practice the more common one, since the
+  // first only fires when `trains.destination_crs` already happened to be
+  // known as the event arrived) `api::data::journey::apply_confirmed_arrival`,
+  // which reads the same fact off the journey timeline at request time,
+  // anchored to the FINAL calling point by position -- so a circular
+  // service that terminates back at its own origin CRS resolves correctly.
+  // It gets its own distinct,
   // positive rendering below, entirely separate from the "may have
   // arrived" heuristic: that banner is deliberately worded as an
   // inference and must never be reachable for a train we actually KNOW

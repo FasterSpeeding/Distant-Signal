@@ -53,7 +53,7 @@ export function RemoveGroupTrainButton({ groupId, trainSubscriptionId }: { group
         Remove from group
       </Button>
       <Modal opened={opened} onClose={close} title="Remove this train from the group?">
-        {error && <Text c="red">{error}</Text>}
+        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
         {needsLoginState.needsLogin && <LoginLink underline="always">Log in to remove this train</LoginLink>}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={removing}>

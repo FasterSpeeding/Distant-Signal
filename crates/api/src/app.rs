@@ -55,6 +55,17 @@ pub struct AppState {
     /// same "load once, refresh only on process restart" posture as
     /// `config.lines` itself already has.
     pub schedule_crs_line_index: std::collections::HashMap<String, Vec<String>>,
+    /// The incident->lines matcher, built once here from `config.lines`
+    /// (same "load once, refresh only on process restart" posture as
+    /// `schedule_crs_line_index` above).
+    ///
+    /// `data::queries::upsert_incidents` runs it over every incoming
+    /// incident so `incidents.affected_lines` records the SAME line
+    /// attribution the aggregator computes for live status, rather than the
+    /// archive answering "which lines?" its own, different way. See
+    /// `common::matcher`'s module doc for the defect that came from the
+    /// latter.
+    pub line_matcher: common::matcher::LineMatcher,
 }
 
 /// Builds `AppState::internal_oauth_routes` from config. Factored out of
@@ -500,6 +511,8 @@ impl AppState {
         let schedule_crs_line_index =
             crate::data::schedule_matching::crs_to_line_ids(&config.lines);
 
+        let line_matcher = common::matcher::LineMatcher::new(&config.lines);
+
         Ok(Arc::new(Self {
             config,
             database: db,
@@ -508,6 +521,7 @@ impl AppState {
             internal_oauth_verifier,
             internal_oauth_routes,
             schedule_crs_line_index,
+            line_matcher,
         }))
     }
 }

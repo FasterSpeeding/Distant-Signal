@@ -42,15 +42,44 @@ export interface StationAccessibilitySectionProps {
  * axe-core. `Accordion` is this codebase's own established answer for
  * collapsed-by-default content (`IssueList.tsx`, whose comment documents
  * the same `keepMounted={false}` reasoning), renders a real
- * `aria-expanded` button, and unmounts what it hides. */
-function Disclosure({ label, children }: { label: string; children: React.ReactNode }) {
+ * `aria-expanded` button, and unmounts what it hides.
+ *
+ * `qualifier` exists because `Accordion`'s panel is a `role="region"`
+ * landmark named (via `aria-labelledby`) by its own control. A station page
+ * renders several of these, and their visible labels repeat by nature --
+ * "1 item" under Lifts and "1 item" under Car parks, "Raw data" under both
+ * of two unmodelled keys. Two landmarks with the same accessible name is an
+ * axe `landmark-unique` failure, and, more to the point, a screen reader's
+ * landmark list then offers several identical "1 item" regions with nothing
+ * to choose between them. Caught by a full-ruleset axe run against
+ * `/stations/PAD` with every disclosure expanded -- neither the previous
+ * five-rule spec nor an unexpanded page could see it.
+ *
+ * The qualifier goes on `aria-label`, not into the visible text: on screen
+ * the label sits directly under the `humanizeKey(...)` heading that already
+ * says which field it belongs to, so repeating it would be noise, while the
+ * accessible name has no such context to lean on. WCAG 2.5.3 (Label in
+ * Name) is satisfied because the accessible name still *contains* the
+ * visible label verbatim -- "Car parks: 1 item" starts a voice-control
+ * match on "1 item" just as well. */
+function Disclosure({
+  label,
+  qualifier,
+  children,
+}: {
+  label: string;
+  qualifier?: string;
+  children: React.ReactNode;
+}) {
   return (
     <Accordion chevronPosition="left" keepMounted={false}>
       <AccordionItem value="disclosure">
         {/* A bare string, not a `<Text>`: `AccordionControl` renders its
             children inside a `<button>`, and Mantine's `<Text>` is a `<p>`,
             which is not valid button content. */}
-        <AccordionControl>{label}</AccordionControl>
+        <AccordionControl aria-label={qualifier ? `${qualifier}: ${label}` : undefined}>
+          {label}
+        </AccordionControl>
         <AccordionPanel>{children}</AccordionPanel>
       </AccordionItem>
     </Accordion>
@@ -82,7 +111,7 @@ function renderableGroups(data: StationAccessibilityData) {
  * the shape-detection rules this only displays. The recursion here is
  * bounded by that function's own depth limit: an `'items'` entry's children
  * are only ever `'text'`, `'rows'` or `'raw'`, never another `'items'`. */
-function AccessibilityValue({ value }: { value: RenderableValue }) {
+function AccessibilityValue({ value, name }: { value: RenderableValue; name?: string }) {
   if (value.kind === 'text') {
     return <Text size="sm">{value.text}</Text>;
   }
@@ -114,18 +143,21 @@ function AccessibilityValue({ value }: { value: RenderableValue }) {
     // would contradict its own `aria-expanded="true"`.
     const label = visible.length === 1 ? '1 item' : `${visible.length} items`;
     return (
-      <Disclosure label={label}>
+      <Disclosure label={label} qualifier={name}>
         <Stack gap="sm">
           {visible.map((item, index) => (
+            // A nested `'raw'` child would otherwise be another bare "Raw
+            // data" region, colliding with its siblings inside this very
+            // list -- number them so each stays distinguishable.
             // eslint-disable-next-line react/no-array-index-key -- items have no stable id in this genuinely-unknown-shape data
-            <AccessibilityValue key={index} value={item} />
+            <AccessibilityValue key={index} value={item} name={name ? `${name} ${index + 1}` : undefined} />
           ))}
         </Stack>
       </Disclosure>
     );
   }
   return (
-    <Disclosure label="Raw data">
+    <Disclosure label="Raw data" qualifier={name}>
       <Code block>{value.json}</Code>
     </Disclosure>
   );
@@ -177,7 +209,11 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
               <Text size="sm" fw={500}>
                 {humanizeKey(entry.key)}
               </Text>
-              <AccessibilityValue value={entry.value} />
+              {/* The same humanized key is passed down as the disclosure's
+                  `qualifier` -- see `Disclosure`'s own doc comment for why
+                  a bare "1 item" / "Raw data" landmark name is both an axe
+                  `landmark-unique` failure and useless to navigate by. */}
+              <AccessibilityValue value={entry.value} name={humanizeKey(entry.key)} />
             </Stack>
           ))}
         </Stack>

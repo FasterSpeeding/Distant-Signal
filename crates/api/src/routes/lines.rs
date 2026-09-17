@@ -190,12 +190,41 @@ fn resolve_schedule_date(
 /// So: raw pass-through, snake_case, matching this plan's own Global
 /// Constraints (`GET /public/stanox-crs` is also snake_case, for its own,
 /// different reason -- see `routes::stanox_crs`).
+/// Thin `routes::lines` adapter over
+/// [`custom_lines::caller_may_read_line_id`], mapping its error the way
+/// this module's handlers do.
+async fn readable_line_id(
+    app: &App,
+    id: &str,
+    user: &Option<AuthenticatedUser>,
+) -> Result<bool, (StatusCode, String)> {
+    custom_lines::caller_may_read_line_id(&app.database, id, user.as_ref().map(|u| u.id.as_str()))
+        .await
+        .map_err(internal_error)
+}
+
 async fn get_line_schedule(
     State(app): State<App>,
     Path(id): Path<String>,
     Query(query): Query<ScheduleQuery>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let service_date = resolve_schedule_date(query.date, chrono::Utc::now().date_naive());
+    // No `custom-` id can reach `schedule_line_population` today: its only
+    // producer iterates the static catalogue (`crates/schedule-reference`'s
+    // `lines_to_publish`). That is a property of the producer, not of this
+    // route -- and "an ungated reader that happens to be safe because of
+    // what the writer currently writes" is exactly how
+    // `lines_currently_reporting_incident` came to disclose other users'
+    // private lines (2026-09-16 custom-line archive research §5c). Gate it
+    // here so the invariant lives where the data is read, and refuse with
+    // the same 404 an unpublished `(id, date)` already gets.
+    if !readable_line_id(&app, &id, &user).await? {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("no CIF-derived schedule population for line {id} on {service_date}"),
+        ));
+    }
     let Some(population) = queries::get_schedule_line_population(&app.database, &id, service_date)
         .await
         .map_err(internal_error)?
@@ -233,8 +262,17 @@ async fn get_line_trains(
     State(app): State<App>,
     Path(id): Path<String>,
     Query(query): Query<ScheduleQuery>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
     let service_date = resolve_schedule_date(query.date, chrono::Utc::now().date_naive());
+    // Same gate, same rationale, same 404 as `get_line_schedule` above --
+    // these two routes read the same table off the same caller-supplied id.
+    if !readable_line_id(&app, &id, &user).await? {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("no CIF-derived schedule population for line {id} on {service_date}"),
+        ));
+    }
     let Some(population) = queries::get_schedule_line_population(&app.database, &id, service_date)
         .await
         .map_err(internal_error)?
@@ -869,6 +907,10 @@ mod db_tests {
         };
 
         std::sync::Arc::new(AppState {
+            // Built from the same catalogue the real `AppState::init`
+            // builds it from, so a test never gets a matcher that
+            // disagrees with its own `config.lines`.
+            line_matcher: common::matcher::LineMatcher::new(&config.lines),
             config,
             database: pool,
             // `Client::open` only parses the URL, never opens a socket --

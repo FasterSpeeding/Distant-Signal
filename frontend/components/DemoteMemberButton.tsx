@@ -74,7 +74,7 @@ export function DemoteMemberButton({
           They&apos;ll stay in the group and keep everything they&apos;ve shared into it, but they&apos;ll no
           longer be able to manage the invite link, rename the group, or remove other members.
         </Text>
-        {error && <Text c="red">{error}</Text>}
+        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
         {needsLoginState.needsLogin && <LoginLink underline="always">Log in to demote this member</LoginLink>}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={demoting}>

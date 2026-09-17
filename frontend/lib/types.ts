@@ -65,7 +65,16 @@ export interface IncidentSummary {
   incidentId: string;
   summary: string;
   operators: string[];
+  /** Always empty in practice: RDM's Knowledgebase Incidents feed carries no
+   * station codes, only a free-text route description. Kept on the wire
+   * because the column exists and the detail page renders it; `affectedLines`
+   * is the field that actually says which railway an incident touches. */
   affectedStations: string[];
+  /** Catalogue line ids, as decided by the same matcher that drives the live
+   * status pages (`common::matcher`). This is what the Line filter matches
+   * on. Empty means "matched no catalogue line" -- which, for a row ingested
+   * before the column existed, may just mean "not backfilled yet". */
+  affectedLines: string[];
   priority: number;
   isPlanned: boolean;
   isCleared: boolean;

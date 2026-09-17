@@ -51,7 +51,7 @@ export function RemoveMemberButton({ groupId, userId, name }: { groupId: string;
         Remove
       </Button>
       <Modal opened={opened} onClose={close} title={`Remove ${name} from this group?`}>
-        {error && <Text c="red">{error}</Text>}
+        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
         {needsLoginState.needsLogin && <LoginLink underline="always">Log in to remove this member</LoginLink>}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={removing}>

@@ -76,7 +76,7 @@ export function LeaveGroupButton({
             will be removed for everyone else too.
           </Text>
         )}
-        {error && <Text c="red">{error}</Text>}
+        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
         {needsLoginState.needsLogin && <LoginLink underline="always">Log in to leave this group</LoginLink>}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={leaving}>
