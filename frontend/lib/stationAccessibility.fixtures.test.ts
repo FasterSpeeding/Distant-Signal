@@ -98,6 +98,35 @@ describe('the 31-station fixture set', () => {
       expect(keys.filter((key) => !(ALL_KEYS as string[]).includes(key)), crs).toEqual([]);
     }
   });
+
+  it('contains no RSC de-duplication reference strings', () => {
+    // Regression guard: the 22 RSC artifacts (`$2b`, `$35`, etc.) that leaked
+    // into fixtures during the 2026-09-16 capture have been replaced with real
+    // values. This test asserts none remain.
+    const rscRefPattern = /^\$[0-9a-f]{1,3}$/;
+
+    /** Walk every string value in the fixture object tree. */
+    function findAllStrings(value: unknown): string[] {
+      if (typeof value === 'string') return [value];
+      if (Array.isArray(value)) return value.flatMap(findAllStrings);
+      if (typeof value === 'object' && value !== null) {
+        return Object.values(value).flatMap(findAllStrings);
+      }
+      return [];
+    }
+
+    const offenders: { crs: string; value: string }[] = [];
+    for (const { crs, data } of loadAllAccessibilityFixtures()) {
+      const strings = findAllStrings(data);
+      for (const str of strings) {
+        if (rscRefPattern.test(str)) {
+          offenders.push({ crs, value: str });
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
 });
 
 /** The direct, checkable inverse of §2.1's central finding: the renderer

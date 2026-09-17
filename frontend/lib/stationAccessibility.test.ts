@@ -560,6 +560,24 @@ describe('Pattern G -- rich text', () => {
     expect(isEmptyNode(renderAccessibilityValue('<p>&#160;</p>'))).toBe(true);
     expect(isEmptyNode(renderAccessibilityValue('<p>Real copy</p>'))).toBe(false);
   });
+
+  it('treats punctuation-only text and N/A as empty', () => {
+    // Lone period or dash
+    expect(isEmptyNode(renderAccessibilityValue('.'))).toBe(true);
+    expect(isEmptyNode(renderAccessibilityValue('-'))).toBe(true);
+    expect(isEmptyNode(renderAccessibilityValue('...'))).toBe(true);
+    expect(isEmptyNode(renderAccessibilityValue('--'))).toBe(true);
+    // N/A (case-insensitive)
+    expect(isEmptyNode(renderAccessibilityValue('N/A'))).toBe(true);
+    expect(isEmptyNode(renderAccessibilityValue('n/a'))).toBe(true);
+    // Same tests wrapped in markup
+    expect(isEmptyNode(renderAccessibilityValue('<p>.</p>'))).toBe(true);
+    expect(isEmptyNode(renderAccessibilityValue('<p>-</p>'))).toBe(true);
+    expect(isEmptyNode(renderAccessibilityValue('<p>N/A</p>'))).toBe(true);
+    expect(isEmptyNode(renderAccessibilityValue('<p>n/a</p>'))).toBe(true);
+    // But a sentence that merely contains a period should not be empty
+    expect(isEmptyNode(renderAccessibilityValue('Not available.'))).toBe(false);
+  });
 });
 
 describe('fields that arrive as an unexpected type', () => {
