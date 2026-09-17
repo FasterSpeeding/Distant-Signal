@@ -353,6 +353,42 @@ describe('TrainSearchForm', () => {
       await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
     });
 
+    it('forgets a half-entered arrival time once Stops at removes the field', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
+
+      const arrival = screen.getByLabelText('Earliest arrival (optional)') as HTMLInputElement;
+      Object.defineProperty(arrival, 'validity', { configurable: true, get: () => ({ badInput: true }) });
+      fireEvent.blur(arrival);
+      expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+
+      // Clearing Stops at unmounts both arrival filters. The half-entered
+      // one can no longer contribute a query param -- `searchParams()`
+      // gates `arrival_from`/`arrival_to` on `stops_at` -- so it must stop
+      // blocking the search too.
+      fireEvent.change(screen.getByRole('combobox', { name: 'Stops at (optional)' }), {
+        target: { value: '' },
+      });
+      expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled();
+
+      // And the flag must be genuinely retracted, not merely ignored while
+      // Stops at is empty: putting Stops at back brings a FRESH, healthy
+      // arrival field, which reports nothing of its own (the callback only
+      // fires on a transition). A flag that merely went dormant would come
+      // back live here and wedge the form with no error text to explain it.
+      fireEvent.change(screen.getByRole('combobox', { name: 'Stops at (optional)' }), {
+        target: { value: 'RDG' },
+      });
+      expect(screen.getByLabelText('Earliest arrival (optional)')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+      await waitFor(() =>
+        expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG'),
+      );
+    });
+
     it('does not let the picker or clear button submit the form', () => {
       const fetchMock = mockFetchByUrl();
       vi.stubGlobal('fetch', fetchMock);

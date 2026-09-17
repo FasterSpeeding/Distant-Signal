@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActionIcon, CloseButton, Group } from '@mantine/core';
 import { TimeInput } from '@mantine/dates';
 
@@ -71,9 +71,9 @@ export const INCOMPLETE_TIME_MESSAGE = 'Enter a complete time, or clear this fie
  *   matching the `clearable` `DatePickerInput` these fields sit alongside.
  *   Both are `size="md"` rather than the `sm` that visually suits a
  *   36px-tall input, to clear WCAG 2.2 SC 2.5.8's 24x24 minimum target:
- *   Mantine's `sm` is 22px, under it. (Measured in a real browser at this
- *   app's own scale, `md` renders 28x28 here rather than the nominal 32 --
- *   still comfortably over the minimum.) The clear button in particular
+ *   Mantine's `sm` is 22px, under it, and its `md` is 28px (`--ai-size-md`
+ *   / `--cb-size-md` are `1.75rem`), measured at 28x28 in a real browser.
+ *   The clear button in particular
  *   exists to fix a touch-only problem, so it is the last control on this
  *   form that should be hard to hit.
  *
@@ -125,7 +125,7 @@ export function TimeFilterInput({
   description: string;
   value: string;
   onChange: (value: string) => void;
-  onIncompleteChange?: (incomplete: boolean) => void;
+  onIncompleteChange: (incomplete: boolean) => void;
   error: string | null;
 }) {
   const ref = useRef<HTMLInputElement>(null);
@@ -135,13 +135,40 @@ export function TimeFilterInput({
    * `validity` is optional-chained because a browser that degrades
    * `type="time"` to a plain text box has no `badInput` concept to report
    * -- there, an incomplete time is just text, which the caller's own
-   * format check still catches. */
+   * format check still catches.
+   *
+   * Only ever fires `onIncompleteChange` on a TRANSITION, which is what
+   * makes the unmount retraction below necessary rather than merely tidy:
+   * a remounted field starts at `incomplete = false` and so reports
+   * nothing at all, and could not talk an owner out of a `true` it was
+   * still holding from the field's previous life. */
   function syncIncomplete(input: HTMLInputElement) {
     const next = input.validity?.badInput ?? false;
     if (next === incomplete) return;
     setIncomplete(next);
-    onIncompleteChange?.(next);
+    onIncompleteChange(next);
   }
+
+  // Retract on unmount. Any caller may render this field conditionally --
+  // `TrainSearchForm` renders the two arrival filters only while Stops at
+  // is set -- and a field that vanishes mid-entry would otherwise leave
+  // its owner holding `true` forever: the owner cannot see the unmount,
+  // and the replacement field (see `syncIncomplete` above) never reports
+  // the `false` that would clear it. Left unhandled that is a form stuck
+  // refusing to submit with no error text anywhere to explain why.
+  //
+  // Through a ref, so the cleanup is bound to unmount only. Every call
+  // site passes a fresh inline closure each render, so depending on the
+  // callback itself would re-run this on every render -- retracting, and
+  // then immediately contradicting, a `true` the field is still reporting.
+  const reportIncomplete = useRef(onIncompleteChange);
+  reportIncomplete.current = onIncompleteChange;
+  useEffect(
+    () => () => {
+      reportIncomplete.current(false);
+    },
+    [],
+  );
 
   function openPicker() {
     try {

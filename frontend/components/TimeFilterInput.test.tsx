@@ -42,7 +42,7 @@ function Harness({
           onChangeSpy?.(next);
           setValue(next);
         }}
-        onIncompleteChange={onIncompleteSpy}
+        onIncompleteChange={onIncompleteSpy ?? (() => {})}
         error={error}
       />
       <output data-testid="value">{value}</output>
@@ -211,6 +211,26 @@ describe('TimeFilterInput', () => {
       expect(field()).toHaveValue('');
       expect(screen.queryByRole('button', { name: 'Clear earliest departure' })).not.toBeInTheDocument();
     });
+
+    it('is retracted when the field unmounts mid-entry', () => {
+      const onIncompleteSpy = vi.fn();
+      const { unmount } = renderWithMantine(<Harness onIncompleteSpy={onIncompleteSpy} />);
+
+      setBadInput(field() as HTMLInputElement, true);
+      fireEvent.blur(field());
+      expect(onIncompleteSpy).toHaveBeenLastCalledWith(true);
+
+      // A caller may render this field conditionally (TrainSearchForm
+      // renders the two arrival filters only while Stops at is set). The
+      // owner cannot see the unmount, and a REPLACEMENT field starts at
+      // `false` and so reports nothing -- `onIncompleteChange` only fires
+      // on a transition. Without this retraction the owner would hold
+      // `true` forever and refuse to submit with nothing on screen saying
+      // why.
+      unmount();
+
+      expect(onIncompleteSpy).toHaveBeenLastCalledWith(false);
+    });
   });
 
   it('keeps the label, description and error wired to the input for assistive tech', () => {
@@ -235,7 +255,7 @@ describe('TimeFilterInput', () => {
     renderWithMantine(<Harness initial="09:00" />);
 
     // WCAG 2.2 SC 2.5.8 wants 24x24 CSS px minimum. Mantine's `sm` is
-    // 22px and its `md` is 32px, so the size prop is load-bearing here --
+    // 22px and its `md` is 28px, so the size prop is load-bearing here --
     // and it matters most for the clear button, which exists to fix a
     // touch-only problem in the first place.
     for (const name of ['Clear earliest departure', 'Pick earliest departure']) {
