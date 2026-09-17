@@ -740,9 +740,13 @@ maximum by one while keeping the "terminates by construction" guarantee.
 **Stated in the code's own units, to remove the off-by-one this paragraph
 is warning about:** `renderAt`'s `depth` parameter is 0-based at the key's
 value (`frontend/lib/stationAccessibility.ts:161`, entered via
-`renderAt(value, 0)`), so the innermost observed container sits at `depth`
-6. The bound to implement is therefore `depth < 7`, with 8 levels of
-container permitted in total.
+`renderAt(value, 0)`), so the seven-container chain above occupies `depth`
+0 through 6 and its innermost container sits at `depth` 6. Permitting the
+one level of margin means allowing `depth` 7, so the bound to implement is
+**`depth <= 7`** (equivalently `depth < 8`). Note `depth < 7` would permit
+exactly the observed maximum with no margin at all — which is the sort of
+off-by-one that truncates a car park's opening period the first time the
+feed nests one level further.
 
 ### 4.10 Keep everything else
 
