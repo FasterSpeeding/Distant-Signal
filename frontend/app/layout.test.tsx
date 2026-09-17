@@ -141,7 +141,28 @@ describe('backend reachability threading', () => {
     // never reach a sibling. AuthNavItem's own Suspense must survive.
     const source = readFileSync('app/layout.tsx', 'utf8');
     expect(source).toMatch(/<DataFreshnessNavItem freshness=\{freshness\} \/>/);
-    expect(source).toMatch(/<Suspense fallback=\{<Text size="sm" c="dimmed">Log in<\/Text>\}>/);
+    expect(source).toMatch(
+      /<Suspense fallback=\{<Text size="sm" c="var\(--mantine-color-anchor\)">Log in<\/Text>\}>/,
+    );
+  });
+});
+
+describe('AuthNavItem Suspense fallback colour', () => {
+  // Regression guard for the review's §4.9 finding: this fallback and
+  // `AuthStatus.tsx`'s resolved `<LoginLink>Log in</LoginLink>` render the
+  // exact same string, and this boundary is identical on every route (it
+  // lives in the shared root layout) -- so a per-route colour difference
+  // between the two could only ever be a mismatch between this fallback's
+  // colour and LoginLink's, not anything route-specific. Pinning them equal
+  // here is what a live per-route screenshot comparison can't cheaply do.
+  it("uses the same colour token LoginLink/TextLink resolve to ('anchor'), not a separate grey", () => {
+    const layoutSource = readFileSync('app/layout.tsx', 'utf8');
+    const textLinkSource = readFileSync('components/TextLink.tsx', 'utf8');
+    const fallbackMatch = layoutSource.match(/<Suspense fallback=\{<Text size="sm" c="([^"]+)">Log in<\/Text>\}>/);
+    const textLinkMatch = textLinkSource.match(/<Text c="([^"]+)">\{children\}<\/Text>/);
+    expect(fallbackMatch).not.toBeNull();
+    expect(textLinkMatch).not.toBeNull();
+    expect(fallbackMatch?.[1]).toBe(textLinkMatch?.[1]);
   });
 });
 

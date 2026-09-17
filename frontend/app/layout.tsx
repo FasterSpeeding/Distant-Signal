@@ -321,7 +321,21 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                       <DataFreshnessNavItem freshness={freshness} />
                       <ThemeToggle />
                       <PrideToggle />
-                      <Suspense fallback={<Text size="sm" c="dimmed">Log in</Text>}>
+                      {/* This fallback renders while `AuthNavItem`'s
+                          `getSession()` await is still streaming in -- the
+                          same literal "Log in" string `AuthStatus.tsx`'s
+                          `LoginLink` renders once it resolves. `c="dimmed"`
+                          here (a stray grey placeholder colour) versus
+                          `LoginLink`'s `c="var(--mantine-color-anchor)"`
+                          (grape) used to be the entire cause of the
+                          route-independent "Log in" sometimes rendering
+                          grape and sometimes dark grey: this boundary is
+                          identical on every route, so which colour a given
+                          screenshot caught was purely down to streaming
+                          timing, not anything route-specific. Matching the
+                          anchor colour here removes the inconsistency
+                          regardless of which state gets captured. */}
+                      <Suspense fallback={<Text size="sm" c="var(--mantine-color-anchor)">Log in</Text>}>
                         <AuthNavItem />
                       </Suspense>
                     </Group>
