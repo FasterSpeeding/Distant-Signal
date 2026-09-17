@@ -100,6 +100,24 @@ The refusal lives in `run_backfill` itself, not just the binary, because an
 empty catalogue matches nothing and would *clear* every row rather than
 fill it.
 
+## One honest limitation
+
+The backfill matches **today's** catalogue against archived text. A row
+ingested normally records the attribution as it was *at ingest time*; a
+backfilled row records what today's `lines/*.toml` says about text written
+months ago. Where a line's `match_keywords` or `operators` have changed
+since, those two are not the same answer.
+
+This is the narrow residue of something two earlier specs rejected outright
+— `2026-09-12-incident-archive-design.md`'s non-goals and
+`2026-09-16-custom-lines-in-incident-archive-filter-research.md`'s option
+(d) both refuse to re-derive historical matches, on the grounds that doing
+it faithfully means snapshotting the catalogue as it was. Computing at
+ingest is what avoids that for everything from here on; the backfill is a
+one-off approximation for rows that predate the column, and is worth
+running precisely because the alternative for those rows is not "an exact
+answer" but "no answer at all".
+
 ## When to re-run
 
 Any time `lines/*.toml` changes in a way that affects matching —

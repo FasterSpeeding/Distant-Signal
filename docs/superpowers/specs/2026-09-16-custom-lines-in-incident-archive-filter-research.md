@@ -9,6 +9,35 @@ real tradeoffs, and stop short of committing where the evidence genuinely
 supports two different answers. A follow-up `-design.md` would be the
 deciding half; this is not it.
 
+> **Update, 2026-09-17 — Finding 2's defect is fixed; two citations moved.**
+> Everything below records the codebase as it was on 2026-09-16 and is left
+> unedited, but two things a reader acting on it now needs to know:
+>
+> - **The dead catalogue `line` filter (Finding 2) has been fixed**, along
+>   the lines of option **(e)** in "The matching-semantics question" —
+>   persist the matcher's verdict and join to it — and so the "file it as a
+>   bug" item under "Do this regardless" is closed. Two details differ from
+>   this document's sketch of (e), both deliberately: the verdict is stored
+>   as an `incidents.affected_lines TEXT[]` column rather than an
+>   `incident_line_matches` table (no `scope`, no retention policy, no
+>   cascade), and it is written by **`api` at ingest**
+>   (`queries::upsert_incidents`) rather than by the aggregator per cycle.
+>   The latter is what dissolves the backfill objection raised under
+>   Approach B: the aggregator only ever sees `WHERE NOT is_cleared`, so an
+>   incident cleared before the feature shipped could never get a row,
+>   whereas the ingest path sees every incident the poller sends, cleared
+>   included, and a one-off `backfill_incident_lines` re-matches the rest
+>   (`docs/incident-affected-lines-backfill.md`). Note this does **not**
+>   deliver the custom-line filter this document is about — `affected_lines`
+>   holds catalogue ids only, and the privacy work in Finding 5 is untouched
+>   and still outstanding.
+> - **`crates/aggregator/src/matcher.rs` is now `crates/common/src/matcher.rs`**
+>   (and `segments.rs` likewise), moved so `api` can run the same matcher.
+>   The line numbers cited throughout still point at the right code, in the
+>   new file. Finding 3's analysis of how a custom line passes through the
+>   matcher is unaffected: custom lines reach only the `OperatorOnly` tier,
+>   exactly as described.
+
 ## Question being researched
 
 Can a user filter the incident archive (`/incidents`,
