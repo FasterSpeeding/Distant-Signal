@@ -5,10 +5,13 @@ import type { SessionInfo } from '@/lib/types';
 
 /** Nav-bar auth control. Takes `session` as a prop (rather than fetching
  * it itself) so it stays a plain, server-renderable function — the actual
- * fetch lives in `app/layout.tsx`, following the same split
- * `DataFreshnessNavItem`/`DataFreshnessInfo` already use. Only the
- * interactive leaves (`LoginLink`, `AccountMenu`) need `'use client'`;
- * the branch between them is a server-side decision, so it stays here.
+ * fetch lives in `app/layout.tsx`'s `NavBarWithSession`, which is the one
+ * `getSession()` call the whole nav makes. That is the same
+ * fetch-above/render-below split `DataFreshnessInfo` uses for its own
+ * `freshness` prop, and the same one this component in turn applies to
+ * `AccountMenu` below. Only the interactive leaves (`LoginLink`,
+ * `AccountMenu`) need `'use client'`; the branch between them is a
+ * server-side decision, so it stays here.
  *
  * Logged out: a plain nav link to `/api/auth/login` — a full browser
  * navigation is enough to kick off the OIDC redirect, no client JS

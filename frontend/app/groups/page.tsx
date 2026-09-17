@@ -20,7 +20,8 @@ export const revalidate = 0;
  * makes sense here.
  *
  * Title matches the page's own `<h1>` ("Groups"), which is also this
- * route's nav label (`GroupsNavItem` in `app/layout.tsx`).
+ * route's nav label (`GROUPS_DESTINATION` in `lib/navLinks.ts`, rendered
+ * in the account menu at `md` and up and in the nav drawer below it).
  *
  * The description is written for the reader who will actually see it.
  * Every consumer of this metadata is a link-unfurler bot, and none carry a

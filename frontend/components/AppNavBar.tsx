@@ -65,14 +65,26 @@ const BAR_MIN_HEIGHT = 60;
  * it) and used for the matching `visibleFrom` here, so the two halves of
  * the swap cannot drift apart.
  *
- * `md` (992px), not the `sm` (768px) the review first suggested: at 768px
- * the inline bar measures ~709px of content in a 728px container in
- * Chromium, i.e. under 20px of slack — inside the very font-metric
- * variance between engines that caused problem 2 above, so it would be a
- * wrap waiting to happen on a different font stack. At 992px the same
- * content has ~50px of slack in the tightest (anonymous, five-link) case
- * and ~230px at 1440px. Nothing is lost between 768 and 992: that range
- * gets the drawer, which carries every destination the bar does. */
+ * `md` (992px), not the `sm` (768px) the review first suggested. That is
+ * one measurement, not a preference: with this file temporarily switched
+ * to `sm` and driven against a live backend at 768px in Chromium, the
+ * inline bar measured
+ *
+ *   logged out : 849px of content in 728px available -> WRAPPED, two rows
+ *   logged in  : 728px of content in 728px available -> ZERO px of slack
+ *
+ * i.e. `sm` does not merely cut it fine, it reproduces the exact defect
+ * this component exists to fix, one breakpoint down. At `md` the same
+ * content has the slack quoted below. Nothing is lost between 768 and
+ * 992: that range gets the drawer, which carries every destination the
+ * bar does.
+ *
+ * RE-VERIFY THIS IN FIREFOX after this plan's Task 1.14 (the
+ * font-delivery fix). Every number here is font-metric dependent -- that
+ * is the whole reason the original defect showed in one engine and not
+ * the other -- and changing how fonts are delivered can move Gecko's text
+ * metrics again. `e2e/nav.spec.ts` pins 992 and 991 from both sides in
+ * both engines, so a regression fails a test rather than shipping. */
 const NAV_BREAKPOINT = 'md';
 
 // A note on the gaps below, because they were measured rather than
@@ -98,11 +110,24 @@ const NAV_BREAKPOINT = 'md';
 // `Group`'s own `gap` is the exception, and it is the one that matters
 // here.)
 //
-// So the gaps are flat, and the SHAPE carries the responsiveness instead:
-// the icon cluster is its own tight group, so the widest arrangement
-// (anonymous at 992px, which still has the "My Trains & Tickets" link
-// inline) fits with ~45px of slack, and the phone bar with ~25px, in the
-// wider-measuring engine. The links keep the 20px they have always had.
+// So the gaps are flat, and the SHAPE carries the responsiveness
+// instead: the icon cluster is its own tight group. The links keep the
+// 20px they have always had.
+//
+// THE slack figures for this layout, measured in one pass against a live
+// backend in Chromium (the wider-measuring engine), quoted here and
+// nowhere else so there is one copy to keep true. The binding case is the
+// ANONYMOUS bar: it is the widest arrangement, because it still carries
+// "My Trains & Tickets" inline where an authenticated visitor reaches it
+// through the account menu.
+//
+//   viewport   available   used (anon)   slack (anon)   slack (logged in)
+//   390px          350px        325px           25px                43px
+//   992px          952px        910px           42px               224px
+//   1440px        1100px        910px          190px               372px
+//
+// Every row is a single row -- that is asserted, not assumed, by
+// e2e/nav.spec.ts in both engines.
 
 export function AppNavBar({
   session,

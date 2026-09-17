@@ -20,9 +20,10 @@ import { useMounted } from '@mantine/hooks';
  *
  * A registration failure (unsupported browser, a sw.js fetch failure, a
  * syntax error in a bad deploy) is caught and swallowed -- same
- * degrade-quietly shape AuthNavItem/DataFreshnessNavItem (app/layout.tsx)
- * already use for a failed fetch in a root layout with no route-level
- * error.tsx. A broken registration must never break the page it's
+ * degrade-quietly shape the root layout's own two fetches already use for
+ * a failure in a layout with no route-level error.tsx: `NavBarWithSession`
+ * falls back to a logged-out session and the freshness call falls back to
+ * `UNAVAILABLE_FRESHNESS` (both in app/layout.tsx). A broken registration must never break the page it's
  * mounted on; the app functions identically to today (no offline
  * support, no asset precaching) if this fails.
  *
