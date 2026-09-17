@@ -22,6 +22,12 @@ import type { IncidentSearchResponse, IncidentSummary, LineSummary, Suggestion }
 
 type DatePreset = '7d' | '30d' | '90d' | 'all';
 
+/** How many affected-line badges one result row shows before collapsing the
+ * rest into a "+N more". An operator-only incident on a large TOC matches
+ * every catalogue line that TOC runs -- Northern alone is 13 -- which would
+ * otherwise bury the summary under a wall of badges. */
+const MAX_LINE_BADGES = 4;
+
 function calendarDaysAgo(days: number): string {
   return dayjs().subtract(days, 'day').format('YYYY-MM-DD');
 }
@@ -350,11 +356,23 @@ export function IncidentSearchForm({
                     {code}
                   </Badge>
                 ))}
-                {row.affectedLines.map((id) => (
-                  <Badge key={id} variant="outline" color="blue">
+                {/* `?? []` is not defensive padding for its own sake: during
+                  * a rolling deploy this bundle can be served against an api
+                  * that predates `affectedLines`, and an unguarded `.map`
+                  * would take the whole results list down rather than just
+                  * omit the badges. Capped at MAX_LINE_BADGES because an
+                  * operator-wide incident on a large TOC genuinely matches a
+                  * dozen-plus catalogue lines. */}
+                {(row.affectedLines ?? []).slice(0, MAX_LINE_BADGES).map((id) => (
+                  <Badge key={id} variant="outline" color="blue" title="Affected line">
                     {lineNamesById.get(id) ?? id}
                   </Badge>
                 ))}
+                {(row.affectedLines ?? []).length > MAX_LINE_BADGES && (
+                  <Badge variant="outline" color="blue" title="Affected line">
+                    {`+${(row.affectedLines ?? []).length - MAX_LINE_BADGES} more`}
+                  </Badge>
+                )}
                 {row.affectedStations.map((crs) => (
                   <Badge key={crs} variant="outline" color="gray">
                     {crs}

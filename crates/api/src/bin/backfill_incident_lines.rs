@@ -42,14 +42,22 @@ async fn main() -> anyhow::Result<()> {
     let lines = common::config::parse_lines(&lines_dir)?;
     // A missing/empty catalogue directory parses successfully as zero lines
     // (see `common::config::parse_lines`'s own test), which would quietly
-    // blank every row's `affected_lines` instead of filling it. Refuse.
+    // blank every row's `affected_lines` instead of filling it. `run_backfill`
+    // refuses that case too; this check exists to fail before opening a
+    // database connection and to name `LINES_DIR` in the message.
     anyhow::ensure!(
         !lines.is_empty(),
         "no line definitions found in {lines_dir} -- refusing to run, since an empty catalogue \
          would clear affected_lines on every row. Set LINES_DIR to the repository's lines/ \
          directory."
     );
+    // Logged at INFO so the run's output records which catalogue produced
+    // it: a *partial* catalogue (an older checkout missing some
+    // `lines/*.toml`) passes the non-empty check above and would silently
+    // strip attribution for the missing lines, and this count is how an
+    // operator notices.
     tracing::info!(count = lines.len(), lines_dir, "loaded line catalogue");
+    println!("loaded {} line definitions from {lines_dir}", lines.len());
 
     let matcher = LineMatcher::new(&lines);
     let pool = PgPoolOptions::new().connect(&database_url).await?;
@@ -60,14 +68,19 @@ async fn main() -> anyhow::Result<()> {
         rows_examined = report.rows_examined,
         rows_updated = report.rows_updated,
         rows_matching_no_line = report.rows_matching_no_line,
+        rows_never_computed = report.rows_never_computed,
         "incident affected_lines backfill complete"
     );
     println!(
         "backfill complete:\n  \
          incidents examined:            {}\n  \
+         never computed before now:     {}\n  \
          incidents updated:             {}\n  \
          incidents matching no line:    {}",
-        report.rows_examined, report.rows_updated, report.rows_matching_no_line,
+        report.rows_examined,
+        report.rows_never_computed,
+        report.rows_updated,
+        report.rows_matching_no_line,
     );
     if report.rows_matching_no_line > 0 {
         println!(

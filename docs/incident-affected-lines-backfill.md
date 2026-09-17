@@ -12,8 +12,24 @@ they are the ones the archive exists to serve.
 writes, and `poller-incidents` re-sends the entire current feed every cycle
 — so any incident still in the feed is populated within one poll of the
 deploy. An incident that has already dropped out of the feed is never
-written again, so it keeps the migration's `'{}'` default forever and the
-Line filter will not find it.
+written again, so its `affected_lines` stays SQL `NULL` forever and the Line
+filter will not find it.
+
+`NULL` and `'{}'` mean different things in this column, deliberately:
+
+| Value | Meaning |
+|---|---|
+| `NULL` | Never computed. Every pre-existing row, until this has run. |
+| `'{}'` | Computed, and matched no catalogue line. Real and common. |
+
+So the direct answer to "is the backfill still outstanding?" is:
+
+```sql
+SELECT count(*) FROM incidents WHERE affected_lines IS NULL;
+```
+
+Both values are excluded by the Line filter, so the distinction costs
+nothing at read time — it exists purely so this question is answerable.
 
 At the time this was written the production archive held **1507 incidents,
 every one of them with an empty `affected_stations`** (the column the Line
@@ -54,25 +70,35 @@ kubectl -n distant-signal run backfill-incident-lines \
 ## Reading the output
 
 ```
+loaded 110 line definitions from ./lines
 backfill complete:
   incidents examined:            1507
-  incidents updated:             1400
+  never computed before now:     1507
+  incidents updated:             1507
   incidents matching no line:     107
 ```
 
+- **loaded N line definitions** — check this. A *partial* catalogue (an
+  older checkout missing some `lines/*.toml`) passes the empty-catalogue
+  guard and would silently strip attribution for the missing lines. This
+  count is how you notice.
 - **examined** — every row in `incidents`.
-- **updated** — rows whose `affected_lines` changed. On a first run this
-  is "rows that now match at least one line"; on a re-run after a
-  `lines/*.toml` edit it is "rows the catalogue change moved".
+- **never computed before now** — rows whose `affected_lines` was `NULL`.
+  On a first run, all of them; on any later run, zero.
+- **updated** — rows actually written. On a first run this is essentially
+  every row; on a re-run after a `lines/*.toml` edit it is "rows the
+  catalogue change moved".
 - **matching no line** — rows that genuinely match no catalogue line. This
   is expected, not an error: the Knowledgebase feed carries incidents for
   operators and routes with no `lines/*.toml` entry. Those rows stay
   reachable through the archive's Operator filter, exactly as before.
 
-A run that reports `updated: 0` on a database that has never been
-backfilled almost certainly means the catalogue was not found. The binary
-refuses to start on an empty catalogue for that reason (an empty catalogue
-would otherwise *clear* every row), so check `LINES_DIR`.
+A run that reports `updated: 0` alongside a non-zero `never computed`
+should be impossible; if you see it, the writes are being lost. A run that
+refuses to start names an empty catalogue explicitly — check `LINES_DIR`.
+The refusal lives in `run_backfill` itself, not just the binary, because an
+empty catalogue matches nothing and would *clear* every row rather than
+fill it.
 
 ## When to re-run
 

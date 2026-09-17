@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { IncidentSearchForm } from './IncidentSearchForm';
-import type { IncidentSearchResponse, LineSummary, Suggestion } from '@/lib/types';
+import type { IncidentSearchResponse, IncidentSummary, LineSummary, Suggestion } from '@/lib/types';
 
 // Same rationale as `TrainSearchForm.test.tsx`'s identical mock: `DatePickerInput`'s
 // real popover calendar has no real `<input>` `fireEvent.change` can drive.
@@ -138,6 +138,46 @@ describe('IncidentSearchForm', () => {
     const list = document.querySelector('[data-incident-results]') as HTMLElement;
     expect(list.textContent).toContain('South Western Main Line');
     expect(list.textContent).toContain('retired-line');
+  });
+
+  it('collapses a long affected-lines list into a "+N more" badge', async () => {
+    // An operator-only match on a large TOC attributes an incident to every
+    // catalogue line that TOC runs -- 13 for Northern -- which would
+    // otherwise bury the summary.
+    fetchMock.mockReturnValue(
+      okResponse({
+        results: [
+          summary({
+            incidentId: '1',
+            affectedLines: ['line-1', 'line-2', 'line-3', 'line-4', 'line-5', 'line-6'],
+          }),
+        ],
+        nextCursor: null,
+      }),
+    );
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+
+    const list = document.querySelector('[data-incident-results]') as HTMLElement;
+    expect(list.textContent).toContain('line-4');
+    expect(list.textContent).toContain('+2 more');
+    expect(list.textContent).not.toContain('line-5');
+    expect(list.textContent).not.toContain('line-6');
+  });
+
+  // A rolling deploy can serve this bundle against an api that predates
+  // `affectedLines`. Rendering must degrade to "no line badges", never throw
+  // and take the whole results list with it.
+  it('renders a result row that carries no affectedLines field at all', async () => {
+    const { affectedLines: _dropped, ...withoutLines } = summary({ incidentId: '1' });
+    fetchMock.mockReturnValue(
+      okResponse({ results: [withoutLines as IncidentSummary], nextCursor: null }),
+    );
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(await screen.findByText('Signal failure at Woking')).toBeTruthy();
   });
 
   it('sends an end-of-day UTC "to" bound so the selected day is genuinely included', async () => {

@@ -146,6 +146,15 @@ impl LineMatcher {
     pub fn knows_line(&self, line_id: &str) -> bool {
         self.lines.contains_key(line_id)
     }
+
+    /// How many lines this matcher was built from. Exists so a caller can
+    /// refuse to act on a matcher built from an empty catalogue: such a
+    /// matcher returns no lines for every incident, which is
+    /// indistinguishable from a real answer and would silently erase stored
+    /// attribution (see `api::data::incident_line_backfill`).
+    pub fn line_count(&self) -> usize {
+        self.lines.len()
+    }
 }
 
 fn match_one<'a>(
@@ -9353,6 +9362,35 @@ mod tests {
         assert!(
             ids.iter().any(|id| id.starts_with("swr-")),
             "it must still be attributed to South Western's own lines: {ids:?}"
+        );
+    }
+
+    /// The boundary of the test above, stated explicitly so nobody reads
+    /// that one as proof of more than it shows. The keyword tier's only
+    /// guard against a ticket-acceptance mention is the feed's own
+    /// structured operator list (`match_one`'s `contradicted` check), so
+    /// with an EMPTY `operators` list there is no guard and the mention
+    /// does match. That is pre-existing live-status behaviour, unchanged by
+    /// storing the answer; this test exists so the next person to look at a
+    /// surprising archive row finds the reason here rather than rediscovering
+    /// it. Fixing it means narrowing the keyword tier in `match_one`, which
+    /// would change live status too and belongs in its own change.
+    #[test]
+    fn affected_line_ids_has_no_guard_against_a_ticket_mention_when_the_feed_names_no_operator() {
+        let matcher = full_catalogue_matcher();
+        let inc = incident(
+            "TICKET-ACCEPTANCE-NO-OPERATORS",
+            "Disruption between Woking and Basingstoke",
+            "Your ticket is also valid on Elizabeth line services between Paddington and \
+             Reading.",
+            &[],
+            &[],
+        );
+
+        assert!(
+            matcher.affected_line_ids(&inc).contains(&"elizabeth-line".to_string()),
+            "documenting the known gap: with no structured operator list there is nothing to \
+             contradict a bare keyword hit, so the mention matches"
         );
     }
 

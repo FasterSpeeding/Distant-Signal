@@ -100,7 +100,18 @@ pub async fn upsert_incidents(
     let mut count = 0u64;
     let mut text_changed_ids = Vec::new();
 
-    for chunk in incidents.chunks(UPSERT_CHUNK_SIZE) {
+    // Matched up front, outside every transaction. This function's whole
+    // chunking scheme exists to bound how long a transaction holds row
+    // locks (see the doc comment above), so pure CPU work that needs no
+    // database at all has no business running inside one -- even work this
+    // cheap (a substring scan per catalogue line).
+    let affected_lines: Vec<Vec<String>> = incidents
+        .iter()
+        .map(|incident| line_matcher.affected_line_ids(incident))
+        .collect();
+
+    for (chunk_index, chunk) in incidents.chunks(UPSERT_CHUNK_SIZE).enumerate() {
+        let chunk_offset = chunk_index * UPSERT_CHUNK_SIZE;
         let mut tx = pool.begin().await?;
 
         let chunk_ids: Vec<&str> = chunk.iter().map(|i| i.incident_id.as_str()).collect();
@@ -115,7 +126,8 @@ pub async fn upsert_incidents(
             .map(|row| (row.incident_id.as_str(), row))
             .collect();
 
-        for incident in chunk {
+        for (offset_in_chunk, incident) in chunk.iter().enumerate() {
+            let affected_lines = &affected_lines[chunk_offset + offset_in_chunk];
             let validity_json = serde_json::to_value(&incident.validity)?;
             let existing = existing_by_id.get(incident.incident_id.as_str()).copied();
 
@@ -128,8 +140,6 @@ pub async fn upsert_incidents(
             if text_changed(existing, &incident.summary, &incident.description) {
                 text_changed_ids.push(incident.incident_id.clone());
             }
-
-            let affected_lines = line_matcher.affected_line_ids(incident);
 
             sqlx::query(
                 r#"
@@ -161,7 +171,7 @@ pub async fn upsert_incidents(
             .bind(&validity_json)
             .bind(incident.is_planned)
             .bind(incident.is_cleared)
-            .bind(&affected_lines)
+            .bind(affected_lines)
             .execute(&mut *tx)
             .await?;
 
@@ -2011,9 +2021,12 @@ pub struct IncidentSummaryRow {
     pub affected_stations: Vec<String>,
     /// Catalogue line ids this incident matched, per `common::matcher`.
     /// Returned alongside the row (not just filtered on) so the archive's
-    /// list can show *why* a row came back for a given Line filter -- and
-    /// so an empty array is visibly "this incident matched no catalogue
-    /// line", distinguishable from the filter being broken.
+    /// list can show *why* a row came back for a given Line filter.
+    ///
+    /// The column is nullable ("never computed" -- see the migration) but
+    /// this field is not: the query coalesces, since a *reader* has nothing
+    /// useful to do with the distinction and every consumer would otherwise
+    /// have to unwrap it. Operational checks query the column directly.
     pub affected_lines: Vec<String>,
     pub priority: i32,
     pub is_planned: bool,
@@ -2094,7 +2107,8 @@ pub async fn search_incidents(
 
     let rows: Vec<IncidentSummaryRow> = sqlx::query_as(
         r#"
-            SELECT incident_id, summary, operators, affected_stations, affected_lines,
+            SELECT incident_id, summary, operators, affected_stations,
+                   COALESCE(affected_lines, '{}') AS affected_lines,
                    priority, is_planned, is_cleared, first_seen_at, fetched_at
             FROM incidents
             WHERE ($1::text[]      IS NULL OR operators && $1)
@@ -2460,6 +2474,68 @@ mod incident_search_query_tests {
             "an Elizabeth line incident must not appear under the West Coast Main Line"
         );
 
+        // The ON CONFLICT DO UPDATE half of the write path, which the first
+        // upsert above cannot reach. The poller re-sends the whole feed
+        // every cycle and an incident's text is routinely edited in place,
+        // so a stale `affected_lines` here would mean the archive keeps
+        // filing an incident under a line it no longer describes -- the
+        // same class of wrong answer this whole change is fixing.
+        let mut edited = incident.clone();
+        edited.summary = "Delays to Avanti West Coast services between Euston and Crewe".to_string();
+        edited.description =
+            "A fault with the signalling system on the West Coast Main Line.".to_string();
+        edited.operators = vec!["VT".to_string()];
+        upsert_incidents(&pool, &redis, &matcher, std::slice::from_ref(&edited))
+            .await
+            .expect("re-upsert the edited incident");
+
+        let after_edit = search_incidents(
+            &pool,
+            None,
+            Some("elizabeth-line".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+        assert!(
+            after_edit
+                .results
+                .iter()
+                .all(|r| r.incident_id != "archive-test-elizabeth"),
+            "after the text was edited to describe a different railway, the row must no longer \
+             be filed under the Elizabeth line"
+        );
+
+        let moved = search_incidents(
+            &pool,
+            None,
+            Some("wcml".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+        assert!(
+            moved
+                .results
+                .iter()
+                .any(|r| r.incident_id == "archive-test-elizabeth"),
+            "...and must now be filed under the line its new text describes"
+        );
+
         delete_fixtures(&pool).await;
     }
 
@@ -2468,17 +2544,24 @@ mod incident_search_query_tests {
                 incident_search_query_tests -- --ignored --test-threads=1`"]
     async fn backfill_fills_affected_lines_for_a_row_written_before_the_column_existed() {
         // The other half of the fix: rows already in the table. Seeded with
-        // an empty affected_lines (the migration's default, i.e. exactly
-        // what all 1507 production rows look like), then recomputed.
+        // affected_lines left NULL -- exactly the state the migration leaves
+        // all 1507 production rows in -- then recomputed.
+        //
+        // NOTE: `run_backfill` is deliberately whole-table, so this test
+        // rewrites `affected_lines` on every row in the target database,
+        // not just its own `archive-test-%` fixtures, and `delete_fixtures`
+        // cannot undo that. Harmless against a throwaway CI database (the
+        // values it writes are the correct ones); do not point DATABASE_URL
+        // at a copy of production and expect it untouched.
         let pool = test_pool().await;
         delete_fixtures(&pool).await;
 
         sqlx::query(
             "INSERT INTO incidents \
                 (incident_id, summary, description, operators, affected_stations, \
-                 affected_lines, priority, validity_periods, is_planned, is_cleared, \
+                 priority, validity_periods, is_planned, is_cleared, \
                  first_seen_at) \
-             VALUES ($1, $2, $3, $4, '{}', '{}', 2, '[]'::jsonb, false, true, $5)",
+             VALUES ($1, $2, $3, $4, '{}', 2, '[]'::jsonb, false, true, $5)",
         )
         .bind("archive-test-backfill")
         .bind("Residual disruption to Elizabeth line services between Shenfield and Romford")
@@ -2500,6 +2583,12 @@ mod incident_search_query_tests {
         assert!(
             report.rows_updated >= 1,
             "the seeded row should have been updated: {report:?}"
+        );
+        assert!(
+            report.rows_never_computed >= 1,
+            "the seeded row had a NULL affected_lines and must be counted as never computed, \
+             which is how an operator tells an outstanding backfill from a completed one: \
+             {report:?}"
         );
 
         let page = search_incidents(
@@ -2524,7 +2613,9 @@ mod incident_search_query_tests {
             "the backfilled row must now be reachable through the Line filter"
         );
 
-        // Idempotence: a second run finds nothing to do for this row.
+        // Idempotence: a second run finds nothing to do at all, and now
+        // sees no never-computed rows, since the first run left every row
+        // with a non-NULL array.
         let second = crate::data::incident_line_backfill::run_backfill(&pool, &matcher)
             .await
             .expect("second backfill");
@@ -2532,8 +2623,32 @@ mod incident_search_query_tests {
             second.rows_updated, 0,
             "re-running the backfill must be a no-op: {second:?}"
         );
+        assert_eq!(
+            second.rows_never_computed, 0,
+            "after a completed run nothing is left uncomputed: {second:?}"
+        );
 
         delete_fixtures(&pool).await;
+    }
+
+    /// The guard that stops a mis-set `LINES_DIR` turning the backfill into
+    /// a mass-erase. It lives in `run_backfill` itself, not only in the
+    /// binary, so this can assert it without going near the binary's
+    /// argument handling.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn backfill_refuses_to_run_against_an_empty_line_catalogue() {
+        let pool = test_pool().await;
+        let empty = common::matcher::LineMatcher::new(&[]);
+
+        let err = crate::data::incident_line_backfill::run_backfill(&pool, &empty)
+            .await
+            .expect_err("an empty catalogue must be refused, not silently applied");
+        assert!(
+            err.to_string().contains("empty line catalogue"),
+            "the error must say why: {err}"
+        );
     }
 
     #[tokio::test]

@@ -29,15 +29,15 @@
 //! updates. Running it again after a `lines/*.toml` change is the supported
 //! way to propagate that change to archived incidents.
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
+use common::IncidentMessage;
 use common::matcher::LineMatcher;
-use common::{IncidentMessage, ValidityPeriod};
 use sqlx::{PgPool, Row};
 
 /// How many incidents are loaded, matched and written per round trip.
-/// Small enough that one batch's `UPDATE ... FROM (VALUES ...)` stays a
-/// modest statement, large enough that a 1500-row table finishes in a
-/// handful of round trips.
+/// Large enough that a table measured in low thousands of rows finishes in
+/// a handful of round trips, small enough that one batch's transaction
+/// stays short.
 const BATCH_SIZE: i64 = 500;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -56,12 +56,29 @@ pub struct BackfillReport {
     /// backfill did nothing" apart from "the backfill ran and these
     /// incidents really are unattributable."
     pub rows_matching_no_line: u64,
+    /// Rows found with `affected_lines IS NULL` -- never computed at all,
+    /// as opposed to computed-and-empty. On a first run this is every
+    /// pre-existing row; on any later run it should be zero, since
+    /// `upsert_incidents` always writes a (possibly empty) array.
+    pub rows_never_computed: u64,
 }
 
 /// One incident's matcher inputs, read back out of the table.
+///
+/// Only the four fields `lines_affected_by` actually reads are loaded --
+/// `summary`, `description`, `operators`, `affected_stations`. The rest of
+/// `IncidentMessage` is filled with neutral values it never consults,
+/// deliberately: reading `validity_periods` back would mean deserializing
+/// JSONB written by every version of this app that ever ran, and one
+/// unparseable archived row would abort the whole backfill over a field the
+/// matcher does not look at.
 struct StoredIncident {
     message: IncidentMessage,
-    stored_lines: Vec<String>,
+    /// `None` when the column is SQL NULL -- "never computed" (see the
+    /// migration), distinct from `Some(vec![])`, "computed, matched
+    /// nothing". The write below must fire for the former even though the
+    /// two filter identically.
+    stored_lines: Option<Vec<String>>,
 }
 
 /// Recompute and persist `affected_lines` for every row in `incidents`.
@@ -73,6 +90,16 @@ struct StoredIncident {
 /// `affected_lines`, so missing it would be harmless anyway -- the keyset
 /// is belt-and-braces.)
 pub async fn run_backfill(pool: &PgPool, matcher: &LineMatcher) -> Result<BackfillReport> {
+    // Guarded here rather than only in the binary: an empty catalogue
+    // matches nothing, so running with one would *clear* every row's
+    // attribution instead of filling it. Every caller, tests included, is
+    // protected by having the check live at this level.
+    ensure!(
+        matcher.line_count() > 0,
+        "refusing to run the incident affected_lines backfill against an empty line catalogue: \
+         it would clear every row's attribution rather than fill it"
+    );
+
     let mut report = BackfillReport::default();
     let mut after: Option<String> = None;
 
@@ -84,10 +111,14 @@ pub async fn run_backfill(pool: &PgPool, matcher: &LineMatcher) -> Result<Backfi
 
         after = Some(batch[batch.len() - 1].message.incident_id.clone());
 
-        let mut changed: Vec<(&str, Vec<String>)> = Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut changed: Vec<(&str, Vec<String>, &Option<Vec<String>>)> = Vec::new();
 
         for stored in &batch {
             report.rows_examined += 1;
+            if stored.stored_lines.is_none() {
+                report.rows_never_computed += 1;
+            }
             let recomputed = matcher.affected_line_ids(&stored.message);
             if recomputed.is_empty() {
                 report.rows_matching_no_line += 1;
@@ -95,9 +126,14 @@ pub async fn run_backfill(pool: &PgPool, matcher: &LineMatcher) -> Result<Backfi
             // `affected_line_ids` is sorted and deduped, and
             // `upsert_incidents` stores exactly what it returns, so a plain
             // equality check is a true "nothing to do" test, not an
-            // ordering artefact.
-            if recomputed != stored.stored_lines {
-                changed.push((stored.message.incident_id.as_str(), recomputed));
+            // ordering artefact. A stored NULL never compares equal, so a
+            // never-computed row is always written, even to `'{}'`.
+            if stored.stored_lines.as_ref() != Some(&recomputed) {
+                changed.push((
+                    stored.message.incident_id.as_str(),
+                    recomputed,
+                    &stored.stored_lines,
+                ));
             }
         }
 
@@ -106,16 +142,28 @@ pub async fn run_backfill(pool: &PgPool, matcher: &LineMatcher) -> Result<Backfi
         // (VALUES ...)`: this is a one-shot job over a table measured in
         // low thousands of rows, and a plainly-readable statement is worth
         // more here than shaving round trips off something that runs once.
+        //
+        // `IS NOT DISTINCT FROM` makes each write a NULL-safe
+        // compare-and-swap against the value this walk actually read. The
+        // poller can upsert a row between `load_batch` and here; without
+        // the clause that fresher attribution would be overwritten by one
+        // computed from the older text. With it the write simply does not
+        // fire and `rows_updated` does not count it -- the poller's value
+        // came from the same matcher over newer text, so it is the one to
+        // keep.
         if !changed.is_empty() {
             let mut tx = pool.begin().await?;
-            for (incident_id, lines) in &changed {
-                let updated =
-                    sqlx::query("UPDATE incidents SET affected_lines = $2 WHERE incident_id = $1")
-                        .bind(incident_id)
-                        .bind(lines)
-                        .execute(&mut *tx)
-                        .await?
-                        .rows_affected();
+            for (incident_id, lines, previous) in &changed {
+                let updated = sqlx::query(
+                    "UPDATE incidents SET affected_lines = $2 \
+                     WHERE incident_id = $1 AND affected_lines IS NOT DISTINCT FROM $3",
+                )
+                .bind(incident_id)
+                .bind(lines)
+                .bind(previous.as_ref())
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
                 report.rows_updated += updated;
             }
             tx.commit().await?;
@@ -132,7 +180,7 @@ pub async fn run_backfill(pool: &PgPool, matcher: &LineMatcher) -> Result<Backfi
 async fn load_batch(pool: &PgPool, after: Option<&str>) -> Result<Vec<StoredIncident>> {
     let rows = sqlx::query(
         "SELECT incident_id, summary, description, operators, affected_stations, \
-                affected_lines, priority, validity_periods, is_planned, is_cleared \
+                affected_lines \
          FROM incidents \
          WHERE ($1::text IS NULL OR incident_id > $1) \
          ORDER BY incident_id \
@@ -145,8 +193,6 @@ async fn load_batch(pool: &PgPool, after: Option<&str>) -> Result<Vec<StoredInci
 
     rows.into_iter()
         .map(|row| {
-            let validity_json: serde_json::Value = row.try_get("validity_periods")?;
-            let validity: Vec<ValidityPeriod> = serde_json::from_value(validity_json)?;
             Ok(StoredIncident {
                 message: IncidentMessage {
                     incident_id: row.try_get("incident_id")?,
@@ -154,10 +200,11 @@ async fn load_batch(pool: &PgPool, after: Option<&str>) -> Result<Vec<StoredInci
                     description: row.try_get("description")?,
                     operators: row.try_get("operators")?,
                     affected_stations: row.try_get("affected_stations")?,
-                    priority: row.try_get("priority")?,
-                    validity,
-                    is_planned: row.try_get("is_planned")?,
-                    is_cleared: row.try_get("is_cleared")?,
+                    // Never read by `lines_affected_by` -- see StoredIncident.
+                    priority: 0,
+                    validity: vec![],
+                    is_planned: false,
+                    is_cleared: false,
                 },
                 stored_lines: row.try_get("affected_lines")?,
             })

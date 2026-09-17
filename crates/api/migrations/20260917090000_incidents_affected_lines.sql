@@ -14,12 +14,26 @@
 -- Line filter actually wants; deriving CRS codes from prose to then map
 -- them back to lines would be a strictly lossier route to the same answer.
 --
--- Additive and defaulted, so existing rows are valid immediately (they
--- simply match no line until backfilled -- exactly today's behaviour, not a
--- regression). `crates/api/src/bin/backfill_incident_lines.rs` fills them
--- in; see docs/incident-affected-lines-backfill.md.
+-- Deliberately NULLABLE with no default, unlike every other array column on
+-- this table. NULL and '{}' are different facts and the difference is
+-- operationally load-bearing:
+--
+--   NULL -> never computed. Every pre-existing row starts here, and stays
+--           here until `backfill_incident_lines` runs. `SELECT count(*) FROM
+--           incidents WHERE affected_lines IS NULL` is therefore a direct
+--           answer to "is the backfill outstanding?", which a defaulted
+--           '{}' would have made unanswerable -- indistinguishable from a
+--           row that was processed and genuinely matched nothing.
+--   '{}'  -> computed, matched no catalogue line. Real and common: the feed
+--           carries incidents for operators and routes with no lines/*.toml
+--           entry.
+--
+-- Either way the Line filter excludes the row (`NULL @> ARRAY[...]` is NULL,
+-- which is not true), so existing rows behave exactly as they do today until
+-- backfilled -- no regression, just a column that can say which case it is.
+-- Readers that only want the list coalesce it; see `search_incidents`.
 ALTER TABLE incidents
-    ADD COLUMN affected_lines TEXT[] NOT NULL DEFAULT '{}';
+    ADD COLUMN affected_lines TEXT[];
 
 -- Mirrors incidents_operators_gin: the Line filter is an array-overlap
 -- predicate, which is exactly what GIN on a text[] serves.
