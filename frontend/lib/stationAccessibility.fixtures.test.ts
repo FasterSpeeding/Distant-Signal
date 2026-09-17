@@ -186,7 +186,10 @@ describe('the depth bound, measured from the fixtures', () => {
     let deepestOpeningTimes = -1;
     const findOpeningTimes = (value: unknown, depth: number) => {
       if (Array.isArray(value)) {
-        if (value.some((entry) => isOpeningTimesEntry(entry))) {
+        // `every`, matching `isOpeningTimes`'s own predicate: an array
+        // where only some elements look like entries is not a Pattern B
+        // array and must not be counted as one.
+        if (value.length > 0 && value.every((entry) => isOpeningTimesEntry(entry))) {
           deepestOpeningTimes = Math.max(deepestOpeningTimes, depth);
         }
         value.forEach((element) => findOpeningTimes(element, depth + 1));

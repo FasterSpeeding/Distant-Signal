@@ -592,6 +592,23 @@ describe('fields that arrive as an unexpected type', () => {
     expect(JSON.stringify(node)).toContain('Court Square, Carlisle');
   });
 
+  it('still renders an address line, or a contact name, that is not a string', () => {
+    const node = expectKind(
+      renderAccessibilityValue({
+        primaryTelephoneNumber: null,
+        name: { label: 'Depot contact' },
+        postalAddress: { addressLine1: 'Court Square', postcode: 12345 },
+      }),
+      'contact',
+    );
+    const rendered = JSON.stringify(node);
+    // The string line is joined as usual...
+    expect(rendered).toContain('Court Square');
+    // ...and neither the numeric postcode nor the object `name` disappears.
+    expect(rendered).toContain('12345');
+    expect(rendered).toContain('Depot contact');
+  });
+
   it('reads postal address lines in a fixed order, not in JSON key order', () => {
     const node = expectKind(
       renderAccessibilityValue({

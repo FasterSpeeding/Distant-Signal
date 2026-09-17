@@ -575,8 +575,15 @@ function renderContact(value: Record<string, unknown>, depth: number): Accessibi
   // rest, and the loop at the end pushes them through the ordinary labelled
   // branch, so nothing this list names can vanish by arriving as the wrong
   // type.
-  const claimed = new Set<string>(['name']);
+  //
+  // `name` is claimed -- i.e. dropped (§4.4) -- but only when it is a
+  // string, which is all the evidence for dropping it covers: "every `name`
+  // either contains the word Details or is byte-identical to its own
+  // `operatorName`" is a statement about 122 strings, and says nothing
+  // about a `name` that arrives as something else.
+  const claimed = new Set<string>();
   const claim = (key: string) => claimed.add(key);
+  if (typeof value.name === 'string') claim('name');
 
   const phone = typeof value.primaryTelephoneNumber === 'string' ? value.primaryTelephoneNumber.trim() : '';
   if (typeof value.primaryTelephoneNumber === 'string') claim('primaryTelephoneNumber');
@@ -615,12 +622,16 @@ function renderContact(value: Record<string, unknown>, depth: number): Accessibi
     const postalAddress = value.postalAddress;
     const address = formatPostalAddress(postalAddress);
     if (address !== '') fields.push({ label: 'Address', node: { kind: 'text', text: address } });
-    // A sibling `POSTAL_ADDRESS_LINES` does not name is shown on its own
-    // labelled row rather than dropped -- joining only the known lines
-    // would otherwise lose it silently, which is the same failure this
-    // function's `claimed` bookkeeping exists to prevent, one level down.
+    // A sibling `POSTAL_ADDRESS_LINES` does not name -- or one it does name
+    // that did not arrive as a string, and so was not joined into the line
+    // above -- is shown on its own labelled row rather than dropped.
+    // Joining only the known string lines would otherwise lose it
+    // silently, which is the same failure this function's `claimed`
+    // bookkeeping exists to prevent, one level down.
     for (const [key, own] of Object.entries(postalAddress)) {
-      if ((POSTAL_ADDRESS_LINES as readonly string[]).includes(key)) continue;
+      if ((POSTAL_ADDRESS_LINES as readonly string[]).includes(key) && typeof own === 'string') {
+        continue;
+      }
       pushField(fields, key, own, depth + 1);
     }
   }
