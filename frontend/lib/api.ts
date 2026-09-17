@@ -179,8 +179,11 @@ export async function getLineStatusHistory(
 /** `GET /Line/{id}/Stats/{from}/to/{to}` -- the new daily rollup route.
  * `from`/`to` are `YYYY-MM-DD` calendar days (the route's own path segments
  * are `NaiveDate`, not RFC3339 instants -- see the backend plan's Task 4).
- * Same public, no-store, no-cookie-forwarding shape as
- * `getLineStatusHistory`. */
+ * Same public, no-store, cookie-forwarding shape as
+ * `getLineStatusHistory` -- and for the same reason: the backend gates a
+ * `custom-` line id on the caller's session, so without the forward the
+ * owner of a private line would see an empty chart on their own line's
+ * history page. */
 export async function getLineDailyStats(
   id: string,
   from: string,
@@ -188,7 +191,7 @@ export async function getLineDailyStats(
 ): Promise<LineDailyStats[]> {
   return fetchJson<LineDailyStats[]>(
     `${baseUrl()}/Line/${id}/Stats/${from}/to/${to}`,
-    { cache: 'no-store' },
+    { cache: 'no-store', ...(await cookieForwardInit()) },
   );
 }
 
@@ -200,7 +203,7 @@ export async function getLineDailyStats(
  * round-trip through (Decision 6 of
  * docs/superpowers/specs/2026-09-02-trend-chart-granularity-design.md,
  * written for the original 1-hour bucket -- the reasoning is unchanged at
- * 30 minutes). Same public, no-store, no-cookie-forwarding shape as
+ * 30 minutes). Same public, no-store, cookie-forwarding shape as
  * `getLineDailyStats`/`getLineStatusHistory`. Originally
  * `getLineHourlyStats` calling `/Stats/Hourly/...`; renamed alongside the
  * backend route when the bucket size was halved -- see git history for
@@ -212,14 +215,14 @@ export async function getLineHalfHourlyStats(
 ): Promise<LineHalfHourlyStats[]> {
   return fetchJson<LineHalfHourlyStats[]>(
     `${baseUrl()}/Line/${id}/Stats/HalfHourly/${from}/to/${to}`,
-    { cache: 'no-store' },
+    { cache: 'no-store', ...(await cookieForwardInit()) },
   );
 }
 
 /** `GET /Line/{id}/Stats/Hourly/{from}/to/{to}` -- the 1-hour sub-daily
  * rollup route (Decision 2 of
  * docs/superpowers/specs/2026-09-05-configurable-trend-granularity-design.md).
- * Same RFC3339-instant/public/no-store/no-cookie-forwarding shape as
+ * Same RFC3339-instant/public/no-store/cookie-forwarding shape as
  * `getLineHalfHourlyStats`. */
 export async function getLineHourlyStats(
   id: string,
@@ -228,7 +231,7 @@ export async function getLineHourlyStats(
 ): Promise<LineHourlyStats[]> {
   return fetchJson<LineHourlyStats[]>(
     `${baseUrl()}/Line/${id}/Stats/Hourly/${from}/to/${to}`,
-    { cache: 'no-store' },
+    { cache: 'no-store', ...(await cookieForwardInit()) },
   );
 }
 
@@ -241,13 +244,13 @@ export async function getLineSixHourlyStats(
 ): Promise<LineSixHourlyStats[]> {
   return fetchJson<LineSixHourlyStats[]>(
     `${baseUrl()}/Line/${id}/Stats/SixHourly/${from}/to/${to}`,
-    { cache: 'no-store' },
+    { cache: 'no-store', ...(await cookieForwardInit()) },
   );
 }
 
 /** `GET /Line/{id}/Stats/Coverage/{from}/to/{to}` -- the full-coverage
  * sibling of `getLineDailyStats` (Decision 4). Same `YYYY-MM-DD`/no-store/
- * no-cookie-forwarding shape. Always resolves `[]` today: no full-coverage
+ * cookie-forwarding shape. Always resolves `[]` today: no full-coverage
  * producer exists yet to populate `line_status_daily_coverage_stats`. See
  * docs/superpowers/specs/2026-09-03-full-coverage-metrics-transition-design.md
  * Decision 4. */
@@ -258,7 +261,7 @@ export async function getLineDailyCoverageStats(
 ): Promise<LineDailyCoverageStats[]> {
   return fetchJson<LineDailyCoverageStats[]>(
     `${baseUrl()}/Line/${id}/Stats/Coverage/${from}/to/${to}`,
-    { cache: 'no-store' },
+    { cache: 'no-store', ...(await cookieForwardInit()) },
   );
 }
 
@@ -274,7 +277,7 @@ export async function getLineHalfHourlyCoverageStats(
 ): Promise<LineHalfHourlyCoverageStats[]> {
   return fetchJson<LineHalfHourlyCoverageStats[]>(
     `${baseUrl()}/Line/${id}/Stats/Coverage/HalfHourly/${from}/to/${to}`,
-    { cache: 'no-store' },
+    { cache: 'no-store', ...(await cookieForwardInit()) },
   );
 }
 
