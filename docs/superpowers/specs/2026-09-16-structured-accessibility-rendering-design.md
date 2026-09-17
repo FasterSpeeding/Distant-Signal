@@ -68,7 +68,7 @@ Two independent reads were used and cross-checked:
 All access was read-only HTTP GET of public, unauthenticated pages. This is
 public station facility data, not personal data.
 
-### 1.2 Sample — 31 stations
+### 1.2 Sample — 31 stations, surveyed 2026-09-16
 
 Chosen before looking at any results, to span termini and request stops, all
 four nations, and many operators. Every one returned `200` with
@@ -90,7 +90,7 @@ request stop) and `BAL` (Balham, smallest at 9,065 bytes).
   affect a handful of quoted *values*; they do not affect any *shape* claim
   in this document, since a reference stands in for a string either way.
 - 31 stations is a sample, not the ~2,600-station population. Every
-  frequency below ("31/31", "396 instances") describes this sample. §2.6
+  frequency below ("31/31", "396 instances") describes this sample. §2.5
   gives a concrete case where a 17-station sample was already misleading.
 - The survey reads what the **API returns**, so it cannot distinguish "the
   feed omitted this key" from "the key was JSON `null` and
@@ -155,11 +155,16 @@ present in **100%** of the stations where the parent key is present:
 | `lifts` | 3/3 | 31 |
 | `toiletsAndChanging` | 2/2 | 31 |
 
-There is **zero** key-set variation between a London terminus and a Highland
-request stop. The whole sample contains **46 distinct object signatures**
-and **480 distinct JSON paths** — a finite, enumerable schema, not an
-open-ended blob. Variation between stations is entirely in *values* and in
-`null`-vs-populated, never in which fields exist.
+Below the top level there is **zero** key-set variation between a London
+terminus and a Highland request stop: variation between stations is
+entirely in *values* and in `null`-vs-populated. The one exception is at
+the root, where `dropOffPickUp` is absent at 6/31 (§1.3) — which is also
+why the sample has two root key-sets rather than one.
+
+The whole sample contains **46 distinct object signatures** (44 interior
+plus those two root key-sets) and **480 distinct JSON paths**, counting
+array elements collapsed to a single `[]` path — a finite, enumerable
+schema, not an open-ended blob.
 
 This directly contradicts the premise the hedge was built on.
 
@@ -178,10 +183,13 @@ appears under `stationFacilities.*` (`atm`, `wifi`, `shops`, `refreshments`,
 `staffAssistance.{helpline,staffHelp}`, `helpAndSupport.staffHelp`, and
 `stationAccessibility.{trainRamp,ticketBarriers}`. Several sites extend it
 with extra scalars (`trainRamp` adds `storage`; `ticketBarriers` adds
-`names`; `toilets` adds four booleans and `locations`).
+`names`; `toilets` adds three booleans and `locations`).
 
-A narrower two-field variant `{available, notes}` occurs 155 times — every
-`transportLinks.*` sub-key.
+A narrower two-field variant `{available, notes}` occurs 155 times — five of
+the seven `transportLinks.*` sub-keys (`airport`, `bus`, `carHire`, `port`,
+`underground`), 31 each. The other two extend it: `replacementBus` is
+`{available, maps, notes}` (31×) and `taxi` is `{available, notes,
+taxiRanks}` (29×, null at 2).
 
 **Pattern B — Opening-times entry (304 matches).**
 `{daysOfTheWeek: string[], openPeriod: [{startTime, endTime}] | null,
@@ -206,13 +214,17 @@ three in this sample: `24 Hours`, `Specific Hours`, `Unavailable`.
 optionally extended with `url` and a `postalAddress`
 (`addressLine1`…`addressLine5`, `postcode`).
 
-**Pattern D — Named-item collection (950 objects across 18 paths).** An
-array of objects each carrying a `name` plus sibling descriptive fields.
-Instances include `platformFacilities.platforms` (259),
+**Pattern D — Named-item collection (877 objects across 12 array paths).**
+An array whose every element is an object carrying a string `name` plus
+sibling descriptive fields. The twelve paths are
+`platformFacilities.platforms` (259 items),
 `toiletsAndChanging.toilets.locations` (195), `lifts.liftsInfo` (111),
 `transportLinks.taxi.taxiRanks`, `dropOffPickUp.points`,
-`loungesAndWaiting.waitingRooms`, `stationAccessibility.passengerAssistance`
-and `carParks.carParks`.
+`loungesAndWaiting.waitingRooms`, `loungesAndWaiting.firstClassLounges`,
+`stationAccessibility.passengerAssistance`,
+`stationAccessibility.nearestAccessibleStations.stations`,
+`transportLinks.replacementBus.maps`, `carParks.carParks` and
+`carParks.carParks[].accessibleLocations`.
 
 The important sub-finding: in most of these, **every non-`name` field is
 already a complete English sentence**, so the item needs no field labels at
@@ -227,9 +239,12 @@ all. Verbatim, `BAL`:
 }
 ```
 
-`carParks.carParks[]` is the exception — its items mix numbers, a `charges`
-object of eleven rate strings, and an `operator` — and needs labelled
-rendering.
+Three of the twelve are exceptions and need labelled rendering:
+`carParks.carParks[]` (items mix numbers, a `charges` object of eleven rate
+strings, and an `operator`), `carParks.carParks[].accessibleLocations[]`
+(carries a nested `accessibilityInfo` object) and
+`stationAccessibility.passengerAssistance[]` (carries a boolean
+`available`). See §4.5.
 
 **Pattern E — Sentence-valued scalar.** Of 372 non-HTML scalar strings at
 depth 1, **340 (91%)** are full sentences beginning with a capital and
@@ -265,10 +280,17 @@ D. Real values, verbatim:
 
 Today these are printed as literal markup inside a `<Code block>`. Even if
 every other pattern were rendered perfectly, leaving these as raw tag soup
-would keep the section unreadable. Tags observed: `p`, `br`, `strong`, `em`,
-`ul`, `ol`, `li`, `a[href]` (with `mailto:`, `tel:` and `https:` targets),
-plus numeric and named entities (`&#160;`, `&#39;`, `&quot;`). Handling this
-is a first-class requirement, not a polish item — see Decision 4.7.
+would keep the section unreadable.
+
+The complete tag inventory for the sample — eight tags, nothing else:
+`p` (2,138), `a[href]` (386, with `mailto:`, `tel:` and `https:` targets),
+`strong` (268), `li` (272), `ul` (106), `em` (74), `h2` (18), `u` (8).
+Note there is **no `br` and no `ol`**. Entities, six in total: `&#160;`
+(166), `&#39;` (60), `&quot;` (50), `&#163;` (30 — a pound sign, inside
+car-park rate text), `&amp;` (28), `&#233;` (1).
+
+Handling this is a first-class requirement, not a polish item — see
+Decision 4.7.
 
 ### 2.5 `null` is pervasive, and "always null" is not a schema fact
 
@@ -338,8 +360,24 @@ useful. It also means new RDM fields that reuse an existing shape render
 correctly with no code change — the property that makes the passthrough
 worth keeping (§5).
 
+**Dispatch precedence matters, and one real case needs it.** The predicates
+are not mutually exclusive, so they must be tried in a fixed order:
+B (opening-times array) → D (named-item array) → C (contact details) →
+A (facility record) → F (token list) → E (sentence) → primitives → fallback.
+Array patterns are tested before object patterns, so an array is never
+misread as its first element.
+
+The one overlap in the real data is
+`stationAccessibility.passengerAssistance` (49 items across the sample): it
+is an array of objects carrying **both** a string `name` and a boolean
+`available`, so it satisfies D's array predicate and its items satisfy A's.
+Ordering resolves it to D — the right answer, since these are several
+distinctly-named meeting points, not one facility. Their `available` field
+is then rendered by D's structured branch (§4.5) as a normal boolean line.
+
 **Evidence status: confirmed.** Patterns A–G below are each backed by the
-counts in §2.3.
+counts in §2.3, and the overlap above was found by exhaustively testing the
+predicates against all 31 payloads rather than assumed absent.
 
 ### 4.2 Pattern A — Facility record
 
@@ -364,24 +402,46 @@ Available" plus a note.
 
 The icon must not be the only carrier of meaning: the text label
 ("Available" / "Not available") is always present, so the section stays
-legible to screen readers and in the axe-core sweep
-`e2e/accessibility.spec.ts` already runs over this page.
+legible to screen readers. Note this is a design rule, not something the
+existing axe-core sweep would enforce — see §8.
 
 ### 4.3 Pattern B — Opening times
 
 *Detect:* an array whose elements are objects with `daysOfTheWeek` and
 `openingStatus`.
 
-*Render:* one line per entry, days compacted into ranges:
+*Render:* one line per entry — the entry's own day set, compacted, then its
+hours. The day set is whatever the entry carries, never assumed to be the
+full week: `24 Hours` entries in the sample include day sets of exactly
+`["Saturday"]` (26×) and `["Sunday"]` (27×), and `Unavailable` entries
+include `["Public Holidays"]` (3×) and `["Saturday","Sunday"]` (5×).
 
-- `Specific Hours` → `Mon–Sat, 05:00–00:45` (times trimmed from
-  `HH:MM:SS.mmm` to `HH:MM`).
-- `24 Hours` → `Mon–Sun, 24 hours` (ignore `openPeriod`, which is null or
-  empty in these entries).
-- `Unavailable` → `Mon–Sun, closed`.
+- `Specific Hours` → `Mon–Sat, 05:00–00:45`, times trimmed from
+  `HH:MM:SS.mmm` to `HH:MM`. All 175 such entries carry exactly one
+  `openPeriod`.
+- `24 Hours` → `Sat, 24 hours`.
+- `Unavailable` → `Public Holidays, closed`.
 
-Day compaction runs over the seven weekday tokens only; `Public Holidays`
-(§2.3) is emitted as its own trailing token and never folded into a range.
+Two traps the real data sets:
+
+- **Sort before compacting.** `daysOfTheWeek` is *not* in canonical order.
+  Four entries arrive out of order, one of them fully reversed
+  (`Sunday,Saturday,…,Monday`) and one interleaved
+  (`Monday,Tuesday,Thursday,Friday,Saturday,Wednesday`). Range compaction
+  over array order would produce nonsense. Compact over the seven weekday
+  tokens sorted into week order; `Public Holidays` (§2.3) is emitted as its
+  own trailing token and never folded into a range.
+- **`24 Hours` does not always mean `openPeriod` is absent.** 106 such
+  entries have an empty array and 7 have `null`, but **2 carry a real
+  period** — `LLE`'s `staffHelp.openingTimes` and
+  `helpAndSupport.staffHelp.openingTimes` both say `24 Hours` with
+  `openPeriod: [{startTime: "06:10:00.000", endTime: "12:40:00.000"}]`.
+  Rendering "24 hours" over that would assert something the record itself
+  contradicts. Where both are present, show both — `Mon–Fri, 24 hours
+  (source also lists 06:10–12:40)` or similar — rather than silently
+  picking one. This is upstream data disagreeing with itself; the UI should
+  not resolve it by deletion.
+
 An entry with an unrecognised `openingStatus` falls through to printing the
 status string verbatim next to its days, which is still readable.
 
@@ -396,9 +456,15 @@ default branch — hence the fall-through above.
 *Render:* a small definition list. `primaryTelephoneNumber` as a `tel:`
 link, `emailAddress` as `mailto:`, `url` as an external link,
 `postalAddress` joined into one comma-separated line skipping null lines,
-`operatorName` as plain text, `note` as rich text. Drop `name` — every
-observed value is boilerplate that restates the context ("Basingstoke Help
-Line Contact Details").
+`operatorName` as plain text, `note` as rich text.
+
+`name` is *usually* boilerplate restating the context ("Basingstoke Help
+Line Contact Details", "Edinburgh Car Park 1 Contact Details"), but must not
+be dropped unconditionally: of the 122 contact objects, two carry real
+information found nowhere else — `"GREGGS BAKERY"` (the
+`stationFacilities.refreshments` tenant) and `"Car Park Operator Details -
+Southern "`. Suppress `name` only when it ends in a boilerplate suffix
+(`Contact Details`, `Details`), otherwise show it.
 
 ### 4.5 Pattern D — Named-item collection
 
@@ -406,16 +472,32 @@ Line Contact Details").
 
 *Render:* a list, one block per item, `name` as the block's label. Then:
 
-- **If every other own value is a string or null** (the common case —
+- **If every other own value is a string or null** (7 of the 12 paths —
   platforms, lift info, toilet locations, taxi ranks, drop-off points,
-  waiting rooms): render those values as a plain bullet list with **no field
-  labels**, because they are already complete sentences (§2.3, Pattern E).
-  "Platform 3" followed by "There is a Help Point close to this platform"
-  and "Seating is limited on this platform" needs nothing else.
-- **Otherwise** (`carParks.carParks[]`): recurse — scalars as labelled
-  rows, `charges` as a rate table skipping null rates, `operator` and
-  `openingHours` via Patterns C and B, `accessibleLocations` via Pattern D
-  again.
+  waiting rooms, first-class lounges): render those values as a plain bullet
+  list with **no field labels**, because they are already complete sentences
+  (§2.3, Pattern E). "Platform 3" followed by "There is a Help Point close
+  to this platform" and "Seating is limited on this platform" needs nothing
+  else.
+- **Otherwise** — 3 of the 12 paths, not one as an earlier draft of this
+  document claimed:
+  - `carParks.carParks[]` (61 items): scalars as labelled rows, `charges`
+    as a rate table skipping null rates, `operator` and `openingHours` via
+    Patterns C and B, `accessibleLocations` via Pattern D again.
+  - `carParks.carParks[].accessibleLocations[]` (39): carries a nested
+    `accessibilityInfo` object of ten scalars, so it cannot take the bullet
+    branch — recurse, rendering `accessibilityInfo`'s sentence-valued
+    fields as the item's bullets.
+  - `stationAccessibility.passengerAssistance[]` (49): carries a boolean
+    `available` alongside its strings (see §4.1's precedence note), so it
+    takes the structured branch and renders `available` as a normal
+    availability line.
+- **Two paths fit the bullet branch but read badly there**, and need a
+  small exception: `stationAccessibility.nearestAccessibleStations.stations[]`
+  (whose only non-`name` field is `crsCode`, e.g. a bare "SWA" bullet under
+  "Swansea" — render as "Swansea (SWA)", ideally linking to that station's
+  own page) and `transportLinks.replacementBus.maps[]` (whose only
+  non-`name` field is a PDF `url` — render the `name` as the link text).
 
 Collections stay collapsed behind the existing `Disclosure` when long — the
 sample has arrays up to 20 platforms and 18 lifts, so Decision 6's original
@@ -427,17 +509,37 @@ it does today.
 ### 4.6 Patterns E and F — sentences and token lists
 
 **Pattern E (sentence-valued scalar):** render the value as a plain sentence
-with **no humanized key label**, when the string is longer than ~20
-characters, starts with a capital and contains a space. 91% of depth-1 plain
-scalars qualify (§2.3). "Tactile paving: There are tactile warnings on all
-platforms in use" becomes "There are tactile warnings on all platforms in
-use". Strings that fail the test keep today's `humanizeKey` label — short
-codes like `stepFreeCategory.category: "B1, (refer to quick reference
-guide)"` genuinely need one.
+with **no humanized key label**. "Tactile paving: There are tactile warnings
+on all platforms in use" becomes "There are tactile warnings on all
+platforms in use".
 
-**Evidence status: the 91% is measured; the specific heuristic threshold is
-a judgement call** and should be tuned against the rendered page, not
-treated as derived.
+The obvious heuristic — longer than ~20 characters, starts with a capital,
+contains a space — is measured at 340/372 = 91% of depth-1 plain scalars
+(§2.3), but **testing it against the real data shows it does not do what it
+looks like it does, and it should not be adopted as stated**:
+
+- It *passes* `stepFreeCategory.category: "B1, (refer to quick reference
+  guide)"` (36 characters, capitalised, spaced), which is a code needing a
+  label — the very case a length threshold is supposed to catch.
+- The only depth-1 strings it *fails* are the 31 instances of
+  `lifts.statement` (`"There are lifts"` / `"There are no lifts"`), which
+  are textbook self-describing sentences that should be unlabelled.
+
+So the heuristic is close to exactly inverted on the two cases that matter.
+Two honest ways forward, both of which this document leaves open:
+
+1. **Label by field, not by shape** — a small allowlist of the handful of
+   depth-1 fields that are codes rather than prose (`stepFreeCategory.
+   category` is the only one found in the sample) keeps a label; everything
+   else drops it. Narrow enough to be maintainable, and unlike the ~480-entry
+   dictionary rejected in §6 it is a *deny*-list of about one entry.
+2. **Keep every label** for depth-1 scalars and take the redundancy, gaining
+   the benefit only inside Pattern D items (§4.5), where the sentence
+   finding is unambiguous and no counterexample exists.
+
+**Evidence status: the 91% is measured; the heuristic built on it is
+refuted** by the two cases above. Recommend option 1, decided against the
+rendered page rather than from the statistic.
 
 **Pattern F (token list):** render a `string[]` as chips rather than today's
 comma-join. Values that are camelCase tokens
@@ -449,16 +551,27 @@ that function is good at, and a better use for it than labelling sentences.
 Every `location`, `notes`, `note` and `*Notes` field must be treated as
 HTML, not as text (§2.4). Two viable options:
 
-**(a) Sanitize and render (recommended).** Strip to an allowlist —
-`p`, `br`, `ul`, `ol`, `li`, `strong`, `em`, and `a` with `href` restricted
-to `https:`, `mailto:` and `tel:` — then render inside Mantine's
-`TypographyStylesProvider`. Preserves the structure and, importantly, the
-hyperlinks: several `notes` values carry an operator's assistance phone
-number or booking URL only as an `<a href>`.
+**(a) Sanitize and render (recommended).** Strip to an allowlist covering
+exactly the eight tags §2.4 actually observed — `p`, `a` (with `href`
+restricted to `https:`, `mailto:` and `tel:`), `strong`, `em`, `ul`, `li`,
+`u`, and `h2` — then render inside Mantine's `TypographyStylesProvider`.
+Preserves the structure and, importantly, the hyperlinks: several `notes`
+values carry an operator's assistance phone number or booking URL only as an
+`<a href>`.
 
-**(b) Strip to text.** Decode entities, convert `</p>`, `<br>` and `</li>`
+Two details the observed inventory dictates. `h2` must be **demoted**, not
+passed through: the section's own headings are `h2`
+(`StationAccessibilitySection.tsx:159-161`) and an `h2` emitted from inside
+a note would break document outline — the one axe-core rule in
+`frontend/e2e/accessibility.spec.ts`'s set that *would* catch a regression
+here is `heading-order`. And `br`/`ol` should still be allowlisted even
+though neither occurs today: allowlisting an absent-but-innocuous tag costs
+nothing, whereas omitting one the feed later starts using silently destroys
+formatting.
+
+**(b) Strip to text.** Decode all six entities, convert `</p>` and `</li>`
 to line breaks, drop every other tag. No new dependency and no XSS surface,
-but silently destroys every link's target.
+but silently destroys every link's target — all 386 of them.
 
 Recommend (a), with two conditions: the allowlist must be enforced by a
 vetted sanitizer rather than a hand-rolled regex, and sanitization must
@@ -477,21 +590,31 @@ Every key is an object; each row lists the patterns its contents draw on.
 
 | Key | Patterns used | Evidence |
 |---|---|---|
-| `stationAccessibility` | A (`trainRamp`, `ticketBarriers`), D (`passengerAssistance`), E (`tactilePaving`), B, F (`names`), booleans | 31/31 |
-| `staffAssistance` | A (`helpline`, `staffHelp`), B, C, E, F | 31/31 |
-| `toiletsAndChanging` | A (`toilets`, `showers`) + four booleans, D (`locations`) | 31/31 |
+| `stationAccessibility` | A (`trainRamp`, `ticketBarriers`), D (`passengerAssistance`, `nearestAccessibleStations.stations`), E (`tactilePaving`), B, F (`names`), booleans, plus 2 unmatched objects (`inductionLoop`, `stepFreeCategory`) | 31/31 |
+| `staffAssistance` | A (`helpline`, `staffHelp`, `helpPoints`), B, C, E, F | 31/31 |
+| `toiletsAndChanging` | A (`toilets`, `showers`) + three booleans, D (`locations`) | 31/31 |
 | `lifts` | E (`statement`), boolean, D (`liftsInfo`) | 31/31 |
 | `loungesAndWaiting` | A ×3, B, D (`waitingRooms`, `firstClassLounges`), E | 31/31 |
 | `platformFacilities` | E (`entranceLevels`, `tactileWarnings`), number, D (`platforms`) | 31/31 |
 | `stationFacilities` | A ×11, C, booleans | 31/31 |
 | `helpAndSupport` | A (`staffHelp`), E ×5, F, nested help-points object | 31/31 |
-| `transportLinks` | A-narrow `{available, notes}` ×6, D (`taxiRanks`) | 31/31 |
-| `carParks` | D (structured branch), B, C, numbers, booleans | 31/31 |
+| `transportLinks` | A-narrow `{available, notes}` ×5, D (`taxiRanks`, `replacementBus.maps`) | 31/31 |
+| `carParks` | D (structured branch), B, C, numbers, booleans, plus 4 unmatched objects (`charges`, `operator`, `accessibilityInfo`, `postalAddress`) | 31/31 |
 | `dropOffPickUp` | A-ish (`available`/`location`/`notes`), D (`points`) | 25/25 |
-| `cycling` | booleans, E, F (`typesOfStorage`), `spaces` object | 31/31 |
+| `cycling` | booleans, E, F (`typesOfStorage`), 1 unmatched object (`spaces`) | 31/31 |
 
-No key requires a bespoke component. `carParks` is the only one needing
-Pattern D's structured branch.
+**This table is a reader's index of what each key contains — it is not the
+dispatch mechanism.** Rendering is driven purely by §4.1's shape predicates;
+nothing switches on these key names. Three container keys listed above
+(`lifts`, `dropOffPickUp`, and `staffAssistance.helpPoints`/
+`helpAndSupport.helpPoints`) themselves satisfy Pattern A's "object with a
+boolean `available`" predicate and are rendered by it, with their extra
+siblings handled by §4.2's extra-sibling rules — which is the intended
+behaviour, not a misclassification.
+
+No key requires a bespoke component. Three Pattern-D arrays need its
+structured branch (§4.5), and eight interior object paths match no pattern
+at all and fall to §4.9's labelled key/value branch.
 
 ### 4.9 The fallback stays — but narrower and better-dressed
 
@@ -500,23 +623,47 @@ Keep a terminal fallback. The patterns above are confirmed against 31 of
 `ACCESSIBILITY_KEYS` can gain keys. A renderer that throws or blanks on an
 unmatched shape would be a worse regression than the status quo.
 
-Two changes to it:
+**Patterns A–G do not cover everything, and this document should not
+pretend otherwise.** Exhaustively testing the predicates against all 31
+payloads leaves **226 interior object instances across 8 paths** matching
+none of them:
 
-1. **It should almost never fire.** Under this design the raw fallback is
-   reached only by a value matching none of A–G — in the sample, nothing.
-2. **It should not be raw JSON.** An unmatched object should render as a
-   labelled key/value list (today's `renderShallowObject` behaviour) with
-   each value recursed through the same dispatcher, and only a value that
-   defeats *that* — a non-plain object, or recursion past a depth bound —
-   falls back to collapsed `JSON.stringify`. Raw JSON remains the last
-   resort because for a genuinely unanticipated shape it is honest and
-   lossless, which the original Decision 6 got right.
+| Path | Instances | Shape |
+|---|---|---|
+| `carParks.carParks[].accessibleLocations[].accessibilityInfo` | 39 | 10 scalars |
+| `carParks.carParks[].charges` | 36 | 11 rate strings |
+| `carParks.carParks[].operator` | 36 | `{contactDetails}` wrapper |
+| `cycling.spaces` | 31 | `{notes, numberOfSpaces}` |
+| `stationAccessibility.inductionLoop` | 31 | `{provision, ticketCounters}` |
+| `stationAccessibility.stepFreeCategory` | 31 | `{category, levelAccess, notes}` |
+| `carParks.carParks[].operator.contactDetails.postalAddress` | 21 | address lines |
+| `stationAccessibility.nearestAccessibleStations` | 1 | `{notes, stations}` |
+
+Note `carParks[].operator` is the *parent* of a Pattern C object, not one
+itself, and `stepFreeCategory` carries core step-free content including
+HTML notes — these are not obscure corners.
+
+So the terminal branch does real work, and the two changes to it are:
+
+1. **It should not be raw JSON.** An unmatched object renders as a labelled
+   key/value list (today's `renderShallowObject` behaviour) with each value
+   recursed through the same dispatcher — which handles all 226 above
+   correctly, since every one is a plain object of scalars, a known pattern,
+   or another plain object. Only a value that defeats *that* — a non-plain
+   object, or recursion past the depth bound — falls back to collapsed
+   `JSON.stringify`. Raw JSON remains the last resort because for a
+   genuinely unanticipated shape it is honest and lossless, which the
+   original Decision 6 got right.
+2. **Raw `JSON.stringify` should then fire on nothing in the sample** — and
+   that, unlike the stronger claim an earlier draft made, is what the data
+   actually supports.
 
 The existing depth limit should be raised, not removed: the real data
-reaches five levels
-(`carParks.carParks[].operator.contactDetails.postalAddress.postcode`), so a
-bound of 6–8 preserves the "terminates by construction" guarantee while
-covering everything observed.
+nests six containers below a key's value
+(`carParks.carParks[]` → `operator` → `contactDetails` → `postalAddress` →
+`postcode`, counting the key object and the array), so a bound of **7–8**
+preserves the "terminates by construction" guarantee with a margin while
+covering everything observed. A bound of exactly 6 would sit on the edge.
 
 ### 4.10 Keep everything else
 
@@ -537,14 +684,29 @@ The tempting alternative is a typed intermediate representation: have the
 API parse the JSONB into Rust structs and return an app-owned shape, so the
 frontend stops re-parsing an opaque blob. Against it:
 
-1. **Global Constraint 7 forbids it**
-   (`docs/superpowers/plans/01-poller-microservices.md:40-42`): "Don't
-   hand-model every Stations-JSON accessibility sub-field as a typed Rust
-   struct field; store the sub-object as `serde_json::Value` / Postgres
-   `JSONB`". The station-accessibility spec reaffirmed it as still binding
-   (`2026-09-12-station-accessibility-design.md:538-539`). A backend IR
-   would need that constraint explicitly amended — a bigger decision than
-   this rendering change, and one this document does not ask for.
+1. **Global Constraint 7 points against it — though less decisively than
+   it first appears, and this document will not overstate it.** Verbatim
+   (`docs/superpowers/plans/01-poller-microservices.md:40-43`):
+
+   > 7. **JSONB passthrough for accessibility data.** Don't hand-model every
+   >    Stations-JSON accessibility sub-field as a typed Rust struct field;
+   >    store the sub-object as `serde_json::Value` / Postgres `JSONB`,
+   >    matching the existing `station_samples.departures JSONB` precedent.
+
+   Read strictly, GC7's operative verb is **store**, its precedent is a
+   storage one, and it lives in a plan about poller microservices — so on
+   its own it binds the ingest and storage layers, not necessarily a
+   read-time IR in `crates/api`. What extends it to the API is the
+   station-accessibility spec's own non-goal, "No decomposition of the JSONB
+   into typed Rust structs. Global Constraint 7 stands"
+   (`2026-09-12-station-accessibility-design.md:538-539`) — but that is a
+   non-goal in the very document this one partly supersedes, so it is
+   weaker authority than a standalone rule.
+
+   Net: GC7 makes a backend IR a decision that must be taken deliberately
+   and argued, not one that can be slipped in. It does not by itself settle
+   the question. Reasons 2–4 do, and would carry the recommendation even if
+   this one were struck entirely.
 2. **This repo has already litigated exactly this trade-off and chosen
    passthrough.** `crates/api/src/routes/lines.rs:160-192` rejects
    hand-rendering a nested JSONB structure for two reasons that transfer
@@ -569,10 +731,12 @@ Two narrower backend changes *are* worth considering, and both stay within
 Global Constraint 7 because neither needs a typed sub-field model:
 
 - **Recursively strip `null`s in `filter_accessibility_fields`.** Purely
-  key-name-agnostic, and given how pervasive nulls are (§2.5) it would
-  meaningfully cut the 20.7 KB median payload (§2.6) that currently ships to
-  every browser through the RSC flight payload. The frontend already drops
-  nulls at render time, so this changes no output.
+  key-name-agnostic, so it stays inside Global Constraint 7. Measured over
+  the sample it saves **14.2%** — the median station drops from 20,667 to
+  17,694 bytes, about 2.9 KB off what ships to every browser through the
+  RSC flight payload. Real but modest; worth doing as a cheap follow-up, not
+  worth arguing about. The frontend already drops nulls at render time
+  (`StationAccessibilitySection.tsx:73-77`), so this changes no output.
 - **Nothing else.** In particular, do not sanitize HTML server-side in
   `crates/api`: that would bake a presentation decision into the wire
   format, and the sanitizer belongs where the markup is turned into DOM.
@@ -629,9 +793,14 @@ one is offered as a follow-up, not a prerequisite.
   Decision 6.
 - **Sanitizer tests**: a `notes` value containing `<script>`, an
   `href="javascript:"`, and an `onerror` attribute must all render inert.
-- **The existing axe-core sweep** (`e2e/accessibility.spec.ts`) covers the
-  page already; the check/cross icons of §4.2 must not regress it, which the
-  always-present text label ensures.
+- **The existing axe-core sweep is a weaker safety net than it sounds.**
+  `frontend/e2e/accessibility.spec.ts` does sweep
+  `/stations/${REAL_STATION_CRS}` (default `PAD`), but only with five rules
+  — `color-contrast`, `landmark-one-main`, `region`, `heading-order`,
+  `page-has-heading-one`. None of those can catch an icon-carrying-meaning
+  regression, so §4.2's text-label rule needs its own unit assertion rather
+  than relying on this sweep. The one rule that *is* load-bearing here is
+  `heading-order`, against §4.7's demoted `h2`.
 - No new e2e spec, consistent with the original spec's reasoning
   (`:599-603`).
 
@@ -653,12 +822,15 @@ one is offered as a follow-up, not a prerequisite.
 4. **`openingStatus`'s three values and the eight `daysOfTheWeek` tokens are
    sample-derived, not documented.** §4.3's default branches are what make
    that survivable; an exhaustive `switch` would be a latent bug.
-5. **The RDM OpenAPI spec was not consulted.** `poller-stations/src/schema.rs`
-   cites a "National Rail Station API OpenAPI spec (v1.0.0)" that, if it
-   documents `components.schemas.Station` sub-objects, would upgrade much of
-   §2.3 from "observed in 31 stations" to "documented contract". Not
-   available in this sandbox; worth ten minutes from anyone with RDM
-   portal access.
+5. **The RDM OpenAPI spec was not consulted.**
+   `crates/poller-stations/src/schema.rs:3-6` already cites a "National Rail
+   Station API OpenAPI spec (v1.0.0, `paths./stations`,
+   `components.schemas.Station`)" as the source for its field names, so that
+   document demonstrably exists and describes `Station`. Whether it also
+   specifies the *sub-object* shapes in §2.3 is unknown — if it does, much
+   of this survey upgrades from "observed in 31 stations" to "documented
+   contract". Not available in this sandbox; worth ten minutes from anyone
+   with RDM portal access.
 6. **Effort is not estimated here.** Seven pattern renderers plus a
    sanitizer is materially more than the current ~190-line module, and this
    document deliberately makes no claim about whether that is the right
