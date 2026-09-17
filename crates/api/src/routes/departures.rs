@@ -201,6 +201,10 @@ mod db_tests {
         };
 
         std::sync::Arc::new(AppState {
+            // Built from the same catalogue the real `AppState::init`
+            // builds it from, so a test never gets a matcher that
+            // disagrees with its own `config.lines`.
+            line_matcher: common::matcher::LineMatcher::new(&config.lines),
             config,
             database: pool,
             redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),

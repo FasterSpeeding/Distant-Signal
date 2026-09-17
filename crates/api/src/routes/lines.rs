@@ -869,6 +869,10 @@ mod db_tests {
         };
 
         std::sync::Arc::new(AppState {
+            // Built from the same catalogue the real `AppState::init`
+            // builds it from, so a test never gets a matcher that
+            // disagrees with its own `config.lines`.
+            line_matcher: common::matcher::LineMatcher::new(&config.lines),
             config,
             database: pool,
             // `Client::open` only parses the URL, never opens a socket --

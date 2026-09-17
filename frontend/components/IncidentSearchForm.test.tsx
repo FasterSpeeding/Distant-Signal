@@ -62,7 +62,9 @@ function summary(overrides: Partial<IncidentSearchResponse['results'][number]> =
     incidentId: '1',
     summary: 'Signal failure at Woking',
     operators: ['VT'],
-    affectedStations: ['WOK'],
+    // Empty on every real row: the Knowledgebase feed has no station codes.
+    affectedStations: [],
+    affectedLines: ['south-western'],
     priority: 3,
     isPlanned: false,
     isCleared: false,
@@ -114,6 +116,28 @@ describe('IncidentSearchForm', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const requestedUrl = new URL(fetchMock.mock.calls[0][0], 'http://localhost');
     expect(requestedUrl.searchParams.get('operator')).toBe('SW,VT');
+  });
+
+  // The Line filter's whole point is answering "which railway was this?",
+  // and `affectedStations` can never answer it -- RDM's Knowledgebase feed
+  // carries no station codes, which is why the filter used to return
+  // nothing at all (see the 2026-09-16 TfL archive spec, 1c). A result row
+  // shows its `affectedLines` by catalogue NAME, falling back to the raw id
+  // for a line the catalogue no longer lists.
+  it('labels a result row with its affected lines, by name where the catalogue knows them', async () => {
+    fetchMock.mockReturnValue(
+      okResponse({
+        results: [summary({ incidentId: '1', affectedLines: ['south-western', 'retired-line'] })],
+        nextCursor: null,
+      }),
+    );
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Signal failure at Woking');
+
+    const list = document.querySelector('[data-incident-results]') as HTMLElement;
+    expect(list.textContent).toContain('South Western Main Line');
+    expect(list.textContent).toContain('retired-line');
   });
 
   it('sends an end-of-day UTC "to" bound so the selected day is genuinely included', async () => {

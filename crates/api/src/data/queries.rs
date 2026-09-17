@@ -80,9 +80,21 @@ fn text_changed(existing: Option<&ExistingIncident>, summary: &str, description:
 /// chunks that already committed -- acceptable here because the poller
 /// resends the full current feed state every cycle (see `poller-incidents`),
 /// so anything not persisted this round is retried wholesale next round.
+///
+/// `line_matcher` is run over each incoming incident to fill
+/// `incidents.affected_lines` -- see that column's migration
+/// (`20260917090000_incidents_affected_lines.sql`) and `common::matcher`'s
+/// module doc. It is a pure function of the incident's own text + operator
+/// list against the line catalogue, so recomputing it on every poll cycle
+/// is both cheap and the mechanism by which a catalogue edit (a new
+/// `match_keywords` entry, say) reaches still-live incidents: they are
+/// re-sent every cycle. Incidents that have dropped out of the feed keep
+/// whatever was computed when they were last seen, which is why the
+/// backfill binary exists.
 pub async fn upsert_incidents(
     pool: &PgPool,
     redis: &redis::Client,
+    line_matcher: &common::matcher::LineMatcher,
     incidents: &[IncidentMessage],
 ) -> Result<u64> {
     let mut count = 0u64;
@@ -117,14 +129,16 @@ pub async fn upsert_incidents(
                 text_changed_ids.push(incident.incident_id.clone());
             }
 
+            let affected_lines = line_matcher.affected_line_ids(incident);
+
             sqlx::query(
                 r#"
                 INSERT INTO incidents (
                     incident_id, summary, description, operators, affected_stations,
                     priority, validity_periods, is_planned, is_cleared, fetched_at,
-                    first_seen_at
+                    first_seen_at, affected_lines
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), $10)
                 ON CONFLICT (incident_id) DO UPDATE SET
                     summary           = EXCLUDED.summary,
                     description       = EXCLUDED.description,
@@ -134,7 +148,8 @@ pub async fn upsert_incidents(
                     validity_periods  = EXCLUDED.validity_periods,
                     is_planned        = EXCLUDED.is_planned,
                     is_cleared        = EXCLUDED.is_cleared,
-                    fetched_at        = NOW()
+                    fetched_at        = NOW(),
+                    affected_lines    = EXCLUDED.affected_lines
                 "#,
             )
             .bind(&incident.incident_id)
@@ -146,6 +161,7 @@ pub async fn upsert_incidents(
             .bind(&validity_json)
             .bind(incident.is_planned)
             .bind(incident.is_cleared)
+            .bind(&affected_lines)
             .execute(&mut *tx)
             .await?;
 
@@ -1993,6 +2009,12 @@ pub struct IncidentSummaryRow {
     pub summary: String,
     pub operators: Vec<String>,
     pub affected_stations: Vec<String>,
+    /// Catalogue line ids this incident matched, per `common::matcher`.
+    /// Returned alongside the row (not just filtered on) so the archive's
+    /// list can show *why* a row came back for a given Line filter -- and
+    /// so an empty array is visibly "this incident matched no catalogue
+    /// line", distinguishable from the filter being broken.
+    pub affected_lines: Vec<String>,
     pub priority: i32,
     pub is_planned: bool,
     pub is_cleared: bool,
@@ -2037,16 +2059,28 @@ pub struct IncidentSearchPage {
 /// matches nothing) is `Ok` with an empty `results` Vec, always a `200`
 /// with an empty array at the route layer, never a `404`.
 ///
-/// `affected_stations` is the resolved station list for the caller's
-/// `line` filter (Decision 2's approximation) when one was given, or
-/// `None` for "no line filter" -- this function has no knowledge of line
-/// catalogues at all; that resolution happens in `routes::incidents`
-/// before this is called.
+/// `line` is a catalogue line id, already validated against the catalogue
+/// by `routes::incidents` (this function has no knowledge of line
+/// catalogues), or `None` for "no line filter". It is matched against
+/// `incidents.affected_lines`, which `upsert_incidents` fills from
+/// `common::matcher` -- the same matcher that decides which lines report
+/// the incident on the live status pages.
+///
+/// It used to be a *station* list instead (the line's own CRS codes,
+/// overlap-matched against `incidents.affected_stations`). That filter
+/// returned zero rows for every line in production, because nothing ever
+/// writes `affected_stations`: RDM's Incidents XML carries no CRS field,
+/// only free-text `RoutesAffected`. See
+/// docs/superpowers/specs/2026-09-16-tfl-incident-archive-design.md 1c.
+/// Line ids are also a strictly better filter than station overlap would
+/// have been even if the column were populated, since the matcher's
+/// `KeywordOnly`/`OperatorOnly` tiers -- which station overlap could never
+/// see -- are how most real incidents are attributed to a line.
 #[allow(clippy::too_many_arguments)]
 pub async fn search_incidents(
     pool: &PgPool,
     operators: Option<Vec<String>>,
-    affected_stations: Option<Vec<String>>,
+    line: Option<String>,
     is_planned: Option<bool>,
     is_cleared: Option<bool>,
     priority_min: Option<i32>,
@@ -2060,11 +2094,11 @@ pub async fn search_incidents(
 
     let rows: Vec<IncidentSummaryRow> = sqlx::query_as(
         r#"
-            SELECT incident_id, summary, operators, affected_stations, priority,
-                   is_planned, is_cleared, first_seen_at, fetched_at
+            SELECT incident_id, summary, operators, affected_stations, affected_lines,
+                   priority, is_planned, is_cleared, first_seen_at, fetched_at
             FROM incidents
             WHERE ($1::text[]      IS NULL OR operators && $1)
-              AND ($2::text[]      IS NULL OR affected_stations && $2)
+              AND ($2::text        IS NULL OR affected_lines @> ARRAY[$2::text])
               AND ($3::boolean     IS NULL OR is_planned = $3)
               AND ($4::boolean     IS NULL OR is_cleared = $4)
               AND ($5::integer     IS NULL OR priority >= $5)
@@ -2078,7 +2112,7 @@ pub async fn search_incidents(
             "#,
     )
     .bind(operators)
-    .bind(affected_stations)
+    .bind(line)
     .bind(is_planned)
     .bind(is_cleared)
     .bind(priority_min)
@@ -2132,10 +2166,41 @@ mod incident_search_query_tests {
     }
 
     async fn delete_fixtures(pool: &PgPool) {
+        sqlx::query("DELETE FROM incident_history WHERE incident_id LIKE 'archive-test-%'")
+            .execute(pool)
+            .await
+            .expect("cleanup fixture incident_history rows");
         sqlx::query("DELETE FROM incidents WHERE incident_id LIKE 'archive-test-%'")
             .execute(pool)
             .await
             .expect("cleanup fixture incidents rows");
+    }
+
+    /// Seeds a row with an explicit `affected_lines` array, bypassing the
+    /// matcher -- for tests about the *filter*, as distinct from
+    /// `line_filter_finds_an_incident_ingested_the_way_the_poller_ingests_one`
+    /// below, which is about the filter and the write path agreeing.
+    async fn seed_incident_with_lines(
+        pool: &PgPool,
+        incident_id: &str,
+        operators: &[&str],
+        affected_lines: &[&str],
+        first_seen_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        sqlx::query(
+            "INSERT INTO incidents \
+                (incident_id, summary, description, operators, affected_stations, \
+                 affected_lines, priority, is_planned, is_cleared, first_seen_at) \
+             VALUES ($1, $2, '', $3, '{}', $4, 1, false, false, $5)",
+        )
+        .bind(incident_id)
+        .bind(format!("Fixture incident {incident_id}"))
+        .bind(operators)
+        .bind(affected_lines)
+        .bind(first_seen_at)
+        .execute(pool)
+        .await
+        .expect("seed fixture incidents row");
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2245,24 +2310,35 @@ mod incident_search_query_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 incident_search_query_tests -- --ignored --test-threads=1`"]
-    async fn search_incidents_affected_stations_filter_matches_on_overlap_and_excludes_no_overlap_incidents()
-     {
-        // This is the direct regression proving the "line" filter's
-        // approximation limitation at the primitive level: an incident with
-        // NO station overlap at all (the shape a real KeywordOnly/
-        // OperatorOnly-only matcher hit would have -- see Correction 1 of
-        // the design spec) is correctly absent from a station-overlap
-        // filter's results, even though such an incident could be
-        // perfectly real for that line via the matcher's other tiers.
+    async fn search_incidents_line_filter_matches_affected_lines_and_excludes_other_lines() {
+        // The filter primitive, in both directions. `archive-test-d` is the
+        // false-positive guard: same operator, different line, must not
+        // come back -- the operator and line filters stay independent.
         let pool = test_pool().await;
         delete_fixtures(&pool).await;
-        seed_incident(&pool, "archive-test-c", &["VT"], &["WAT", "WOK"], 1, false, false, at(9)).await;
-        seed_incident(&pool, "archive-test-d", &["VT"], &[], 1, false, false, at(9)).await;
+        seed_incident_with_lines(
+            &pool,
+            "archive-test-c",
+            &["XR"],
+            &["elizabeth-line", "elizabeth-shenfield"],
+            at(9),
+        )
+        .await;
+        seed_incident_with_lines(
+            &pool,
+            "archive-test-d",
+            &["XR"],
+            &["elizabeth-heathrow"],
+            at(9),
+        )
+        .await;
+        // The shape every production row had before this column existed.
+        seed_incident_with_lines(&pool, "archive-test-e", &["XR"], &[], at(9)).await;
 
         let page = search_incidents(
             &pool,
             None,
-            Some(vec!["WOK".to_string()]),
+            Some("elizabeth-line".to_string()),
             None,
             None,
             None,
@@ -2279,9 +2355,184 @@ mod incident_search_query_tests {
         assert_eq!(
             ids,
             vec!["archive-test-c"],
-            "an incident with no affected_stations overlap must be excluded, even though it \
-             shares an operator with the filtered line: {ids:?}"
+            "only the incident whose affected_lines contains the filtered line comes back -- \
+             not a sibling line on the same operator, and not an unattributed row: {ids:?}"
         );
+        assert_eq!(
+            page.results[0].affected_lines,
+            vec!["elizabeth-line".to_string(), "elizabeth-shenfield".to_string()],
+            "the row carries its full line list back out, not just the filtered one"
+        );
+        delete_fixtures(&pool).await;
+    }
+
+    /// **The regression test for the reported defect.** Not a filter unit
+    /// test: it drives the real write path (`upsert_incidents`, what
+    /// `poller-incidents` POSTs into) with a real Knowledgebase incident --
+    /// free-text route description, `operators = ["XR"]`, and no station
+    /// codes, because RDM's Incidents XML has no field to carry any -- and
+    /// then asks the archive's Line filter for it. Before the fix this
+    /// returned zero rows for every line on the network. See
+    /// docs/superpowers/specs/2026-09-16-tfl-incident-archive-design.md 1c.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn line_filter_finds_an_incident_ingested_the_way_the_poller_ingests_one() {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+
+        let lines_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lines");
+        let lines =
+            common::LineDefinition::from_dir(&lines_dir).expect("lines/ directory should parse");
+        let matcher = common::matcher::LineMatcher::new(&lines);
+        // Never opens a socket unless a publish is attempted, and
+        // `upsert_incidents` logs-and-continues when it cannot connect --
+        // same placeholder this crate's route tests use.
+        let redis =
+            redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url");
+
+        let incident = IncidentMessage {
+            incident_id: "archive-test-elizabeth".to_string(),
+            summary: "Residual disruption to Elizabeth line services between Shenfield and \
+                      Romford"
+                .to_string(),
+            description: "Following an earlier fault with the signalling system between \
+                          Shenfield and Romford, all lines have now reopened."
+                .to_string(),
+            operators: vec!["XR".to_string()],
+            affected_stations: vec![],
+            priority: 2,
+            validity: vec![],
+            is_planned: false,
+            is_cleared: true,
+        };
+
+        let upserted = upsert_incidents(&pool, &redis, &matcher, std::slice::from_ref(&incident))
+            .await
+            .expect("upsert the incident the way the poller does");
+        assert_eq!(upserted, 1);
+
+        let page = search_incidents(
+            &pool,
+            None,
+            Some("elizabeth-line".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+
+        let ids: Vec<&str> = page.results.iter().map(|r| r.incident_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["archive-test-elizabeth"],
+            "an Elizabeth line incident ingested through the real write path must be findable \
+             through the archive's Line filter: {ids:?}"
+        );
+
+        // And it must not leak into an unrelated line's archive.
+        let other = search_incidents(
+            &pool,
+            None,
+            Some("wcml".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+        assert!(
+            other
+                .results
+                .iter()
+                .all(|r| r.incident_id != "archive-test-elizabeth"),
+            "an Elizabeth line incident must not appear under the West Coast Main Line"
+        );
+
+        delete_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn backfill_fills_affected_lines_for_a_row_written_before_the_column_existed() {
+        // The other half of the fix: rows already in the table. Seeded with
+        // an empty affected_lines (the migration's default, i.e. exactly
+        // what all 1507 production rows look like), then recomputed.
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+
+        sqlx::query(
+            "INSERT INTO incidents \
+                (incident_id, summary, description, operators, affected_stations, \
+                 affected_lines, priority, validity_periods, is_planned, is_cleared, \
+                 first_seen_at) \
+             VALUES ($1, $2, $3, $4, '{}', '{}', 2, '[]'::jsonb, false, true, $5)",
+        )
+        .bind("archive-test-backfill")
+        .bind("Residual disruption to Elizabeth line services between Shenfield and Romford")
+        .bind("Following an earlier fault with the signalling system, all lines have reopened.")
+        .bind(vec!["XR".to_string()])
+        .bind(at(9))
+        .execute(&pool)
+        .await
+        .expect("seed a pre-column row");
+
+        let lines_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lines");
+        let lines =
+            common::LineDefinition::from_dir(&lines_dir).expect("lines/ directory should parse");
+        let matcher = common::matcher::LineMatcher::new(&lines);
+
+        let report = crate::data::incident_line_backfill::run_backfill(&pool, &matcher)
+            .await
+            .expect("backfill");
+        assert!(
+            report.rows_updated >= 1,
+            "the seeded row should have been updated: {report:?}"
+        );
+
+        let page = search_incidents(
+            &pool,
+            None,
+            Some("elizabeth-line".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+        assert!(
+            page.results
+                .iter()
+                .any(|r| r.incident_id == "archive-test-backfill"),
+            "the backfilled row must now be reachable through the Line filter"
+        );
+
+        // Idempotence: a second run finds nothing to do for this row.
+        let second = crate::data::incident_line_backfill::run_backfill(&pool, &matcher)
+            .await
+            .expect("second backfill");
+        assert_eq!(
+            second.rows_updated, 0,
+            "re-running the backfill must be a no-op: {second:?}"
+        );
+
         delete_fixtures(&pool).await;
     }
 

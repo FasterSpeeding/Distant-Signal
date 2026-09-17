@@ -88,6 +88,11 @@ export function IncidentSearchForm({
   initialTo?: string;
 }) {
   const catalogueLines = lines.filter((line) => line.source === 'catalogue');
+  /** Line id -> display name, so a result row's `affectedLines` renders as
+   * "Elizabeth line" rather than "elizabeth-line". An id with no entry (a
+   * line retired from the catalogue since the incident was ingested) falls
+   * back to the raw id rather than disappearing. */
+  const lineNamesById = new Map(catalogueLines.map((line) => [line.id, line.name]));
 
   const [operators, setOperators] = useState<string[]>(
     initialOperator ? initialOperator.split(',').filter(Boolean) : [],
@@ -345,6 +350,11 @@ export function IncidentSearchForm({
                     {code}
                   </Badge>
                 ))}
+                {row.affectedLines.map((id) => (
+                  <Badge key={id} variant="outline" color="blue">
+                    {lineNamesById.get(id) ?? id}
+                  </Badge>
+                ))}
                 {row.affectedStations.map((crs) => (
                   <Badge key={crs} variant="outline" color="gray">
                     {crs}
@@ -380,7 +390,7 @@ export function IncidentSearchForm({
       <Select
         label="Line (optional)"
         placeholder="Any line"
-        description="Incidents affecting stations on this line -- a station-overlap approximation, not a real line match. It can miss incidents that only matched a line by keyword or shared operator, with no station in common."
+        description="Incidents attributed to this line by the same matcher that drives its live status page. Incidents archived before this filter was fixed appear here only after a one-off reprocessing pass."
         data={catalogueLines.map((line) => ({ value: line.id, label: line.name }))}
         value={lineId}
         onChange={setLineId}
