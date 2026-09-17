@@ -1155,7 +1155,9 @@ mod db_tests {
         );
 
         // The ordinary filter over the same fixture is untouched: all three
-        // trains call at KNG, and all four ZRB departures must come back.
+        // trains call at KNG, so all four ZRB departures must still be
+        // returned -- "comes back" is not asked of them, KNG is a different
+        // station from the one searched.
         let (status, body) = get(&pool, "/trains/search?station=ZRB&stops_at=KNG").await;
         assert_eq!(status, StatusCode::OK);
         let mut uids: Vec<String> = results(&body)

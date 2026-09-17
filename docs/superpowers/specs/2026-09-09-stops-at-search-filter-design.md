@@ -155,12 +155,26 @@ place: **a CRS code does not identify one position in a journey.**
    Ordering by `(day_offset, scheduled)` rather than `scheduled` alone is
    required, not belt-and-braces: an overnight working crosses midnight and
    its later calls carry a SMALLER clock time (which is the whole reason
-   `day_offset` exists -- see its own migration). Conversely, ordering two
-   calls at ONE station by their booked departures is safe precisely
-   because they cannot be at the same minute, which is another reason to
-   scope the rule to same-station calls and no further: two calls at
-   DIFFERENT stations can and do share a booked minute, so the same
-   comparison would be unreliable there.
+   `day_offset` exists -- see its own migration). Two same-station calls
+   can never TIE under that comparison, and the guarantee is structural
+   rather than a claim about timetabling: the table's primary key covers
+   `(service_date, destination_crs, scheduled, train_uid, origin_crs)`,
+   `destination_crs` is constant per `(service_date, train_uid)`, and the
+   ingest is `ON CONFLICT DO NOTHING`, so two same-station calls sharing a
+   `scheduled` cannot both be rows at all. (The key does not carry
+   `day_offset`, so a revisit at the same clock minute exactly a day later
+   loses a row at ingest -- pre-existing, vanishingly rare, and named here
+   because it is the actual boundary of the invariant this rule leans on.)
+   Nothing comparable holds ACROSS stations, where two calling points
+   genuinely can share a booked minute -- the practical second reason to
+   scope the rule to same-station calls, the semantic one above being the
+   first.
+
+   This rule is also the only thing in that query that reads `day_offset`
+   at all. The `from`/`to` bounds, the `ORDER BY` and the keyset cursor
+   remain plain wall-clock comparisons on `scheduled`; widening those is a
+   separate question about how a midnight-crossing rail day should
+   paginate, deliberately not answered here.
 
    The rule is per-row, so a station called at three times still matches
    from each departure that has a later call at that station -- two out of

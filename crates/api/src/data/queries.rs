@@ -1278,7 +1278,10 @@ async fn schedule_destination_departures_published_for(
 ///
 /// * some other departure-bearing row of the same `train_uid` carries it
 ///   (a correlated `EXISTS` on `origin_crs`, the same column `station_crs`
-///   matches against); or
+///   matches against) -- departure-BEARING, so an arrival-only call that
+///   is not the terminus would fall through both branches; CIF's `LI`
+///   records carry both times, making that case theoretical rather than
+///   real; or
 /// * it is the schedule's TRUE terminating calling point
 ///   (`main.destination_crs`), which has no `booked_departure` and so
 ///   never gets a row of its own in this table at all (see the table's own
@@ -1311,10 +1314,29 @@ async fn schedule_destination_departures_published_for(
 ///
 ///    The comparison is `(day_offset, scheduled)`, not `scheduled` alone:
 ///    a real overnight schedule crosses midnight and its later calls carry
-///    a smaller clock time (see `day_offset`'s own migration). It is safe
-///    to order two calls at ONE station this way -- they are far enough
-///    apart that their booked departures cannot tie -- which is exactly
-///    why the rule is scoped to same-station calls and no further.
+///    a smaller clock time (see `day_offset`'s own migration). Two
+///    same-station calls can never TIE under it, and the guarantee is
+///    structural rather than a fact about timetabling: this table's
+///    primary key covers `(service_date, destination_crs, scheduled,
+///    train_uid, origin_crs)`, `destination_crs` is constant per
+///    `(service_date, train_uid)` (`schedule_query::resolve::
+///    departures_by_destination_crs` computes it once from the schedule's
+///    last calling point), and the ingest is `ON CONFLICT DO NOTHING`, so
+///    two same-station calls sharing a `scheduled` cannot BOTH be rows
+///    here -- they collapse to one at insert. (Note the boundary: the key
+///    does not carry `day_offset`, so a revisit at the same clock minute
+///    exactly a day later loses its row at ingest and is then correctly,
+///    but vacuously, excluded here. Pre-existing, and vanishingly rare.)
+///    Nothing of the sort holds ACROSS stations, where two calling points
+///    genuinely can share a booked minute -- a second, practical reason to
+///    scope the ordering rule to same-station calls and no further.
+///
+///    This is also the only part of this query that reads `day_offset` at
+///    all: `scheduled_from`/`to_time`, the `ORDER BY` and the keyset
+///    cursor are all still plain wall-clock comparisons on `scheduled`,
+///    exactly as they were. Deliberate -- widening them is a separate
+///    question about how a midnight-crossing rail day should paginate --
+///    but do not read this rule as evidence that they follow suit.
 ///
 /// 2. A call at a DIFFERENT station from the anchor still counts wherever
 ///    in the route it falls, INCLUDING before it. `stops_at` has always
@@ -5089,12 +5111,12 @@ mod schedule_destination_departures_query_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 search_calling_point -- --ignored --test-threads=1`"]
     async fn search_calling_point_stops_at_never_matches_on_the_searched_calling_point_itself() {
-        // The same exclusion, checked where the searched station is NOT the
-        // schedule's true origin: CLJ is an intermediate call of both
-        // L82877 and P00001 and the true origin of neither, and neither
-        // calls there twice, so `station=CLJ&stops_at=CLJ` must be empty.
-        // Pins that the exclusion is keyed on the ANCHOR calling point, not
-        // on `true_origin_crs`.
+        // The same "must come later" rule, checked where the searched
+        // station is NOT the schedule's true origin: CLJ is an intermediate
+        // call of both L82877 and P00001 and the true origin of neither,
+        // and neither calls there twice, so `station=CLJ&stops_at=CLJ` must
+        // be empty. Pins that the rule is keyed on the SEARCHED calling
+        // point, not on `true_origin_crs`.
         let pool = test_pool().await;
         let date = fixture_date_feb(5);
         seed_loop(&pool, date).await;
