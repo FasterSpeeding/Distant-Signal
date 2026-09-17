@@ -39,6 +39,80 @@ struct RawCallingPoint {
     day_offset: u8,
 }
 
+/// The single lookup key both sides of the TIPLOC->CRS join must agree on:
+/// trimmed (via [`schedule_query::normalize_tiploc`]) and uppercased.
+///
+/// Both halves are load-bearing, and getting either wrong fails silently:
+///
+/// - **Trimming.** `trains.calling_points`'s `tiploc` is the CIF schedule
+///   body's **fixed 7-character, space-padded** field, stored verbatim --
+///   `schedule_query`'s `parse_calling_point` does `line[2..9].to_string()`
+///   with no trim, `schedule_matching::ScheduleCallingPointDto` clones it
+///   unchanged, and `schedule_query::CallingPoint::tiploc`'s own doc
+///   comment says so explicitly ("Stored here exactly as decoded, still
+///   padded; see `normalize_tiploc` for trimming it at query time, not
+///   parse time"). `stanox_crs.tiploc`, by contrast, holds the **trimmed**
+///   value -- `schedule-reference`'s `parse_ti_lines` does
+///   `line[2..9].trim().to_string()`. So a TIPLOC shorter than 7
+///   characters (`"PUTNEY "`, `"WDON   "`) never equalled its own
+///   `stanox_crs` row, the stop came back with `crs: None` and therefore
+///   `name: None`, and the train detail page rendered it as "Unknown
+///   location". That is not a rare edge case: in a real CORPUS extract
+///   roughly a third of CRS-bearing station TIPLOCs are shorter than 7
+///   characters, so this silently hit about one calling point in three,
+///   nationwide. Confirmed against live production data for train `L82877`
+///   on 2026-09-14 (SWR's Kingston loop): of that journey's 30 stops, all
+///   11 whose TIPLOC is genuinely 7 characters resolved (`WATRLMN`,
+///   `RAYNSPK`, `NEWMLDN`, `NRBITON`, `HAMWICK`, `TEDNGTN`, `STRWBYH`,
+///   `TWCKNHM`, `RICHMND`, `WDWTOWN`, `QTRDBAT`) and all 8 padded ones did
+///   not (`"ERLFLD "` Earlsfield, `"WDON   "` Wimbledon, `"KGSTON "`
+///   Kingston, `"STMGTS "` St Margarets, `"NSHEEN "` North Sheen,
+///   `"MRTLKE "` Mortlake, `"BARNES "` Barnes, `"PUTNEY "` Putney) --
+///   every one of them a large, obviously-real station, which is exactly
+///   why the symptom read as missing reference data rather than as a
+///   key-format bug.
+/// - **Uppercasing.** [`queries::crs_for_tiplocs_batch`] keys its returned
+///   map on the SQL-side `UPPER(TRIM(tiploc))`, so the Rust-side `get` has
+///   to produce the identical string.
+///
+/// Every other TIPLOC comparison in this codebase already normalizes
+/// (`schedule_matching`'s own `crs_for_tiploc` call site,
+/// `schedule_query::resolve`'s call sites, `schedule-reference`'s two) --
+/// this module was the sole outlier.
+///
+/// **What this does NOT fix, and deliberately so.** Two further classes of
+/// unresolved calling point remain, both visible in the same live journey
+/// and neither one a key-format problem:
+///
+/// 1. **A real station reached via a line-group TIPLOC the crosswalk does
+///    not hold.** `stanox_crs`'s primary key is `stanox`
+///    (`migrations/20260901150000_stanox_crs.sql`), so the table stores at
+///    most ONE TIPLOC per STANOX -- whichever one `schedule-reference`'s
+///    `resolve` happened to pick as the CRS-bearing candidate. A station
+///    whose STANOX covers several TIPLOCs therefore resolves for one of
+///    them and silently misses for the rest. On `L82877` that is Vauxhall
+///    (`VAUXHLM`, "Vauxhall Main Lines", STANOX 87214, called at twice) and
+///    Clapham Junction (`CLPHMJM` main lines and `CLPHMJW` Windsor lines,
+///    STANOX 87219) -- all 7 characters, so trimming cannot help them.
+///    Closing this needs a TIPLOC-keyed crosswalk, which is an ingestion
+///    and reference-data-schema change, not a query fix, and it needs a
+///    stated policy for when a co-located TIPLOC may inherit its STANOX's
+///    station identity (a naive "inherit always" would wrongly hand
+///    Waterloo's CRS to the junction TIPLOCs in case 2).
+/// 2. **A genuine non-station timing point.** A CIF `LI` passing record
+///    carries its time in the pass field (bytes `20..24`), which
+///    `schedule_query::parse_calling_point` does not decode, so such a stop
+///    arrives here with no booked arrival AND no booked departure, and its
+///    TIPLOC has no CRS anywhere because the location is a junction, not a
+///    station. On `L82877` these are `SHCKLGJ` (Shacklegate Junction),
+///    `TWCKNMJ` (Twickenham Junction), `NINELMJ` (Nine Elms Junction),
+///    `WLNDNJW` and `WATRLWC`. These are correctly unresolvable; how (or
+///    whether) they should appear in a passenger-facing calling-point list
+///    is a product question, not a data-quality one.
+fn tiploc_key(raw_tiploc: &str) -> String {
+    schedule_query::normalize_tiploc(raw_tiploc).to_uppercase()
+}
+
 /// One calling point of a train's journey, booked schedule merged with the
 /// latest reported live data for that location -- see this module's own
 /// doc comment and the design doc §2/§3.
@@ -82,7 +156,15 @@ impl JourneyStop {
         Self {
             crs,
             name: None, // filled in by a batch station-name pass in `build_journey_stops`
-            tiploc: Some(cp.tiploc.clone()),
+            // Normalized, not the raw padded field: `JourneyStop` is a wire
+            // type (`frontend/lib/types.ts`'s `JourneyStop.tiploc`), and
+            // emitting `"PUTNEY "` where every other TIPLOC-shaped value
+            // this API serves is bare would just re-export the padding trap
+            // `tiploc_key` exists to close. The raw, padded form stays
+            // available verbatim on the separate `callingPoints` relay
+            // (`render.rs`), which is documented as a pass-through of
+            // exactly what was stored.
+            tiploc: Some(tiploc_key(&cp.tiploc)),
             kind: Some(cp.kind),
             scheduled_arrival: cp
                 .booked_arrival
@@ -99,6 +181,27 @@ impl JourneyStop {
             delay_minutes: None,
         }
     }
+}
+
+/// Resolves a deserialized `trains.calling_points` blob into the base
+/// `JourneyStop` list, given an already-fetched TIPLOC->CRS map.
+///
+/// Split out of [`build_journey_stops`] purely so the TIPLOC-key contract
+/// (see [`tiploc_key`]) is exercisable by a plain `cargo test -p api --lib`
+/// unit test rather than only by the `#[ignore]`d, live-database tests at
+/// the bottom of this module -- the padding bug this guards against shipped
+/// precisely because no DB-free test could see it.
+fn stops_from_calling_points(
+    raw: &[RawCallingPoint],
+    tiploc_to_crs: &HashMap<String, String>,
+    service_date: NaiveDate,
+) -> Vec<JourneyStop> {
+    raw.iter()
+        .map(|cp| {
+            let crs = tiploc_to_crs.get(&tiploc_key(&cp.tiploc)).cloned();
+            JourneyStop::from_calling_point(cp, crs, service_date)
+        })
+        .collect()
 }
 
 /// Builds the ordered stop list for `(train_uid, service_date)`, or `None`
@@ -124,14 +227,12 @@ pub async fn build_journey_stops(
     let mut stops: Vec<JourneyStop> = match calling_points_json {
         Some(json) => {
             let raw: Vec<RawCallingPoint> = serde_json::from_value(json.clone())?;
-            let tiplocs: Vec<String> = raw.iter().map(|cp| cp.tiploc.clone()).collect();
+            // `tiploc_key`, not the raw stored value, on BOTH sides -- see
+            // that function's own doc comment for the padding bug this
+            // closes.
+            let tiplocs: Vec<String> = raw.iter().map(|cp| tiploc_key(&cp.tiploc)).collect();
             let tiploc_to_crs = queries::crs_for_tiplocs_batch(pool, &tiplocs).await?;
-            raw.iter()
-                .map(|cp| {
-                    let crs = tiploc_to_crs.get(&cp.tiploc.to_uppercase()).cloned();
-                    JourneyStop::from_calling_point(cp, crs, service_date)
-                })
-                .collect()
+            stops_from_calling_points(&raw, &tiploc_to_crs, service_date)
         }
         None => {
             let rows =
@@ -380,6 +481,169 @@ mod tests {
         }
     }
 
+    /// Builds one `RawCallingPoint` the same way a real
+    /// `trains.calling_points` row does: `tiploc` exactly as the CIF
+    /// schedule body carried it, i.e. space-padded to 7 characters.
+    fn raw_cp(tiploc: &str) -> RawCallingPoint {
+        RawCallingPoint {
+            tiploc: tiploc.to_string(),
+            kind: schedule_query::CallingPointKind::Intermediate,
+            booked_arrival: "08:00:00".parse().ok(),
+            booked_departure: "08:01:00".parse().ok(),
+            day_offset: 0,
+        }
+    }
+
+    #[test]
+    fn tiploc_key_trims_the_fixed_seven_char_schedule_body_padding() {
+        // The real shape `schedule_query::parse_calling_point` produces and
+        // `ScheduleCallingPointDto` stores verbatim, for a TIPLOC shorter
+        // than the fixed 7-character field.
+        assert_eq!(tiploc_key("PUTNEY "), "PUTNEY");
+        assert_eq!(tiploc_key("WDON   "), "WDON");
+        assert_eq!(tiploc_key("BARNES "), "BARNES");
+    }
+
+    #[test]
+    fn tiploc_key_is_unchanged_for_an_exactly_seven_char_tiploc() {
+        // The case that masked the bug in casual testing: a TIPLOC that
+        // happens to be exactly 7 characters needs no padding, so it
+        // resolved correctly even before this fix.
+        assert_eq!(tiploc_key("WATRLMN"), "WATRLMN");
+        assert_eq!(tiploc_key("RAYNSPK"), "RAYNSPK");
+    }
+
+    #[test]
+    fn tiploc_key_uppercases_so_it_matches_the_sql_sides_upper_trim() {
+        assert_eq!(tiploc_key("putney "), "PUTNEY");
+    }
+
+    /// The actual regression test for the live journey-page bug (train
+    /// `L82877`, 2026-09-14, SWR's Kingston loop): every calling point
+    /// whose TIPLOC is shorter than the CIF schedule body's fixed
+    /// 7-character field rendered as "Unknown location", because the
+    /// padded stored value (`"PUTNEY "`) was looked up verbatim against
+    /// `stanox_crs.tiploc`'s trimmed value (`"PUTNEY"`). The 7-character
+    /// TIPLOCs on the same journey resolved fine, which is exactly why it
+    /// read as "some stations are missing from the reference data" rather
+    /// than as a key-format bug.
+    ///
+    /// The TIPLOCs, their order and their padding are taken verbatim from
+    /// that journey's own live response, not invented -- the padded entries
+    /// here are precisely the stops the live page showed as "Unknown
+    /// location" for a reason this fix addresses.
+    #[test]
+    fn every_short_padded_tiploc_on_the_real_kingston_loop_journey_resolves_to_its_crs() {
+        let service_date: NaiveDate = "2026-09-14".parse().unwrap();
+        // Keyed as `crs_for_tiplocs_batch` returns them: UPPER(TRIM(...)).
+        let tiploc_to_crs: HashMap<String, String> = [
+            ("WATRLMN", "WAT"),
+            ("ERLFLD", "EAD"),
+            ("WDON", "WIM"),
+            ("RAYNSPK", "RAY"),
+            ("KGSTON", "KNG"),
+            ("STMGTS", "SMG"),
+            ("RICHMND", "RMD"),
+            ("NSHEEN", "NSH"),
+            ("MRTLKE", "MTL"),
+            ("BARNES", "BNS"),
+            ("PUTNEY", "PUT"),
+        ]
+        .into_iter()
+        .map(|(t, c)| (t.to_string(), c.to_string()))
+        .collect();
+
+        let raw = vec![
+            raw_cp("WATRLMN"), // exactly 7 -- resolved before this fix too
+            raw_cp("ERLFLD "), // Earlsfield
+            raw_cp("WDON   "), // Wimbledon
+            raw_cp("RAYNSPK"), // exactly 7
+            raw_cp("KGSTON "), // Kingston
+            raw_cp("STMGTS "), // St Margarets
+            raw_cp("RICHMND"), // exactly 7
+            raw_cp("NSHEEN "), // North Sheen
+            raw_cp("MRTLKE "), // Mortlake
+            raw_cp("BARNES "), // Barnes
+            raw_cp("PUTNEY "), // Putney
+        ];
+
+        let stops = stops_from_calling_points(&raw, &tiploc_to_crs, service_date);
+
+        assert_eq!(
+            stops.iter().map(|s| s.crs.as_deref()).collect::<Vec<_>>(),
+            vec![
+                Some("WAT"),
+                Some("EAD"),
+                Some("WIM"),
+                Some("RAY"),
+                Some("KNG"),
+                Some("SMG"),
+                Some("RMD"),
+                Some("NSH"),
+                Some("MTL"),
+                Some("BNS"),
+                Some("PUT"),
+            ],
+            "every sub-7-character TIPLOC must resolve; before this fix only the \
+             exactly-7-character ones (WATRLMN, RAYNSPK, RICHMND) did"
+        );
+        assert!(
+            stops
+                .iter()
+                .all(|s| s.tiploc.as_deref().is_some_and(|t| t.trim() == t)),
+            "the emitted wire `tiploc` must be the bare code, never the padded field"
+        );
+    }
+
+    /// A **characterization** test, not a regression test: it records that
+    /// trimming does nothing for the first remaining gap in `tiploc_key`'s
+    /// "What this does NOT fix" note (Vauxhall's `VAUXHLM`, Clapham
+    /// Junction's `CLPHMJM`/`CLPHMJW`, each called at under a TIPLOC that
+    /// is not the one their STANOX-keyed crosswalk row retained). It passes
+    /// identically with and without this fix -- that is the point. It
+    /// exists so the gap is stated in code rather than only in prose, and
+    /// so whoever closes it has an obvious place to come and change the
+    /// expectation.
+    #[test]
+    fn a_line_group_tiploc_absent_from_the_stanox_keyed_crosswalk_is_still_unresolved() {
+        let service_date: NaiveDate = "2026-09-14".parse().unwrap();
+        // `VAUXHLW` stands in for "whichever sibling TIPLOC of STANOX 87214
+        // the crosswalk actually retained" -- which one it is was not
+        // verified, and does not matter to what this test pins: the
+        // crosswalk can hold only ONE of Vauxhall's TIPLOCs, and the
+        // schedule calls at `VAUXHLM`.
+        let tiploc_to_crs: HashMap<String, String> = [("VAUXHLW".to_string(), "VXH".to_string())]
+            .into_iter()
+            .collect();
+
+        let stops = stops_from_calling_points(&[raw_cp("VAUXHLM")], &tiploc_to_crs, service_date);
+
+        assert_eq!(
+            stops[0].crs, None,
+            "trimming cannot help a 7-character TIPLOC the crosswalk simply does not hold -- \
+             closing this needs a TIPLOC-keyed crosswalk, not a query change"
+        );
+    }
+
+    #[test]
+    fn a_tiploc_with_no_crosswalk_row_still_degrades_to_none_rather_than_guessing() {
+        // Unchanged behaviour, asserted so the normalization above can't
+        // quietly turn a genuine miss into a fabricated match. `SHCKLGJ`
+        // (Shacklegate Junction) is one of the real, correctly-unresolvable
+        // non-station timing points on the same live journey -- see
+        // `tiploc_key`'s own "What this does NOT fix" note.
+        let service_date: NaiveDate = "2026-09-14".parse().unwrap();
+        let tiploc_to_crs: HashMap<String, String> = [("PUTNEY".to_string(), "PUT".to_string())]
+            .into_iter()
+            .collect();
+
+        let stops = stops_from_calling_points(&[raw_cp("SHCKLGJ")], &tiploc_to_crs, service_date);
+
+        assert_eq!(stops.len(), 1);
+        assert_eq!(stops[0].crs, None);
+        assert_eq!(stops[0].tiploc.as_deref(), Some("SHCKLGJ"));
+    }
+
     #[test]
     fn apply_delay_estimates_propagates_the_current_delay_onto_an_unreported_stop() {
         let mut stops = vec![JourneyStop {
@@ -602,6 +866,118 @@ mod db_tests {
         assert!(stops[1].scheduled_arrival.is_some());
 
         sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// End-to-end (real Postgres) counterpart to the pure
+    /// `every_short_padded_tiploc_on_the_real_kingston_loop_journey_resolves_to_its_crs`
+    /// unit test:
+    /// proves the whole `crs_for_tiplocs_batch` round-trip -- the SQL
+    /// `UPPER(TRIM(tiploc))` on the stored side AND `tiploc_key` on the
+    /// Rust side -- resolves a real, sub-7-character, space-padded schedule
+    /// TIPLOC. The stored `stanox_crs.tiploc` is written UNPADDED here
+    /// because that is exactly what `schedule-reference`'s `parse_ti_lines`
+    /// (`line[2..9].trim()`) writes, which is the whole asymmetry the live
+    /// bug came from.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                build_journey_stops_resolves_a_space_padded_sub_seven_char_tiploc \
+                -- --ignored --test-threads=1`"]
+    async fn build_journey_stops_resolves_a_space_padded_sub_seven_char_tiploc() {
+        let pool = connect().await;
+        let service_date: chrono::NaiveDate = "2026-09-14".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-JRN-PAD", service_date)
+                .await
+                .expect("find_or_create_train");
+
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TEST-JRN-PAD-%'")
+            .execute(&pool)
+            .await
+            .ok();
+
+        crate::data::queries::upsert_stanox_crs(
+            &pool,
+            &[
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JRN-PAD-1".to_string(),
+                    crs: "WAT".to_string(),
+                    // Exactly 7 characters -- resolved even before the fix.
+                    tiploc: "WATRLMN".to_string(),
+                    station_name: "LONDON WATERLOO".to_string(),
+                    source_sequence: 1,
+                },
+                common::StanoxCrsRecord {
+                    stanox: "TEST-JRN-PAD-2".to_string(),
+                    crs: "PUT".to_string(),
+                    // 6 characters, stored trimmed exactly as
+                    // `parse_ti_lines` writes it -- the failing case.
+                    tiploc: "PUTNEY".to_string(),
+                    station_name: "PUTNEY".to_string(),
+                    source_sequence: 1,
+                },
+            ],
+        )
+        .await
+        .expect("seed stanox_crs");
+
+        // TIPLOCs exactly as the CIF schedule body carries them and as
+        // `ScheduleCallingPointDto` stores them: the fixed 7-character,
+        // space-padded field.
+        let calling_points = serde_json::json!([
+            {
+                "tiploc": "WATRLMN",
+                "kind": "Origin",
+                "bookedArrival": null,
+                "bookedDeparture": "07:27:00",
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            },
+            {
+                "tiploc": "PUTNEY ",
+                "kind": "Terminate",
+                "bookedArrival": "08:26:00",
+                "bookedDeparture": null,
+                "isHalfMinuteArrival": false,
+                "isHalfMinuteDeparture": false
+            }
+        ]);
+
+        let stops = build_journey_stops(
+            &pool,
+            trains_id,
+            "TEST-JRN-PAD",
+            service_date,
+            Some(&calling_points),
+            None,
+        )
+        .await
+        .expect("build_journey_stops")
+        .expect("Some stops from calling_points_json");
+
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[0].crs.as_deref(), Some("WAT"));
+        assert_eq!(
+            stops[1].crs.as_deref(),
+            Some("PUT"),
+            "a space-padded 6-character TIPLOC must resolve against its trimmed \
+             stanox_crs row; before this fix it came back None and the page rendered \
+             \"Unknown location\""
+        );
+        assert_eq!(
+            stops[1].tiploc.as_deref(),
+            Some("PUTNEY"),
+            "the emitted wire tiploc must be the bare code, not the padded field"
+        );
+
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TEST-JRN-PAD-%'")
             .execute(&pool)
             .await
             .ok();
