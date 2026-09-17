@@ -317,9 +317,29 @@ describe('StationDisruptionPage -- accessibility & facilities', () => {
     expect(screen.getByText('Car parks')).toBeInTheDocument();
   });
 
-  it('renders the raw-JSON fallback without throwing for a deliberately malformed shape', async () => {
+  it('renders a deeply nested shape as labelled rows, no longer as a JSON dump', async () => {
+    // This exact value used to produce a collapsed "Raw data" disclosure:
+    // the old renderer bailed the whole object to `JSON.stringify` the
+    // moment one own value was a nested object, which measured at 96.2% of
+    // real key-renders
+    // (docs/superpowers/specs/2026-09-16-structured-accessibility-rendering-design.md
+    // §2.1). Shape dispatch recurses it instead.
     vi.mocked(api.getStationAccessibility).mockResolvedValue({
       lifts: { level1: { level2: { level3: 'too deep' } } },
+    });
+
+    await expect(renderPage()).resolves.toBeDefined();
+    expect(screen.queryByRole('button', { name: /Raw data/ })).not.toBeInTheDocument();
+    expect(screen.getByText('Level3:')).toBeInTheDocument();
+    expect(screen.getByText('too deep')).toBeInTheDocument();
+  });
+
+  it('renders the raw-JSON last resort without throwing for a shape no pattern describes', async () => {
+    // The wire type is twelve `unknown`s and `renderAccessibilityValue` is
+    // a total function over `unknown`, so the terminal branch stays
+    // reachable even though no real payload reaches it any more (§4.9).
+    vi.mocked(api.getStationAccessibility).mockResolvedValue({
+      lifts: new Date('2026-09-16'),
     });
 
     await expect(renderPage()).resolves.toBeDefined();
