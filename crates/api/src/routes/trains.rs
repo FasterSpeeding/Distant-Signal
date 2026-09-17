@@ -45,16 +45,26 @@
 //! needs "true destination equals X" (as opposed to "calls at X") has no
 //! equivalent filter any more -- see that design doc's own open question.
 //!
-//! **`stops_at` names a calling point OTHER than the one `station` names.**
-//! A row is trivially a member of its own calling-point list, so
+//! **`stops_at` naming the same station as `station` asks for a LOOP.** A
+//! row is trivially a member of its own calling-point list, so
 //! `station=WAT&stops_at=WAT` used to return every train out of Waterloo
-//! -- identical to supplying no `stops_at` at all. It now asks the
-//! question a caller typing one station into both fields actually means:
-//! does this working come BACK, as a loop/circular service does. The true
-//! terminus counts as such a call (it is arrival-only and so has no row of
-//! its own in `schedule_destination_departures`), which is also what makes
-//! the Kingston-Loop shape -- out of Waterloo, round, terminating back at
-//! Waterloo -- findable at all. See
+//! -- identical to supplying no `stops_at` at all. A call at the station
+//! `station` itself named now counts only if it comes LATER in the
+//! journey, which is the question a caller typing one station into both
+//! fields actually means: does this working come BACK, as a loop/circular
+//! service does. A call at any OTHER station is unchanged -- still "calls
+//! at X somewhere on its route", including before `station`.
+//!
+//! **The schedule's TRUE terminus now satisfies `stops_at` too**, having
+//! never done so before: it is arrival-only, so it has no row of its own
+//! in `schedule_destination_departures` and was previously unreachable.
+//! That is what makes the Kingston-Loop shape -- out of Waterloo, round,
+//! terminating back at Waterloo -- findable at all, but it is NOT confined
+//! to the loop case: every `stops_at` search naming any schedule's true
+//! destination now returns trains it did not return before. Deliberate,
+//! and it partially (only partially -- the matches are still mixed in with
+//! intermediate-stop ones) answers the "true destination equals X"
+//! question the paragraph above says has no filter. See
 //! `queries::search_schedule_calling_point_departures`'s own doc comment.
 //! `date` (`"YYYY-MM-DD"`, optional) selects which `service_date` this
 //! search runs against, defaulting to today -- but only within a bounded
@@ -172,11 +182,12 @@ struct TrainSearchParams {
     /// `origin_crs`-vs-`true_origin_crs` distinction this filters on.
     origin: Option<String>,
     /// Optional. Filters to schedules that call at this station somewhere
-    /// along their route (boarding or alighting) OTHER than at the calling
-    /// point `station` itself matched -- so naming the same CRS in both
-    /// fields finds loop/circular workings rather than matching every
-    /// train out of that station by construction; the schedule's true
-    /// terminus counts as such a call. Otherwise independent of
+    /// along their route (boarding or alighting), the schedule's true
+    /// terminus included -- except that a call at the station `station`
+    /// itself named counts only if it falls LATER in the journey, so
+    /// naming the same CRS in both fields finds loop/circular workings
+    /// rather than matching every train out of that station by
+    /// construction. Otherwise independent of
     /// `station`/`origin` above. Replaces the earlier single-valued
     /// `destination` (TRUE final calling point) filter -- see this
     /// module's own doc comment and
@@ -209,8 +220,10 @@ struct TrainSearchParams {
     /// instead of being silently ignored, mirroring `MAX_SEARCH_LIMIT`'s
     /// own doc comment's reasoning for the other filters. Where `stops_at`
     /// matched the schedule's true terminus (which has no calling-point
-    /// row of its own), this bounds that terminus's own arrival instead;
-    /// see `queries::search_schedule_calling_point_departures`. See
+    /// row of its own), this bounds that terminus's own arrival instead.
+    /// Either way a schedule whose named calling point has no booked
+    /// arrival at all is dropped, not kept -- see
+    /// `queries::search_schedule_calling_point_departures`. See
     /// docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md.
     arrival_from: Option<String>,
     /// Optional, `"HH:MM"`, inclusive upper bound. Same `stops_at`-set
@@ -1060,26 +1073,34 @@ mod db_tests {
         delete_today(&pool).await;
     }
 
-    /// Two schedules out of the same station, one circular and one not:
+    /// Three schedules out of the same station, one circular, one not, and
+    /// one that passes back through and carries on. Times are `soon`
+    /// (= now + 30m) plus a multiple of five minutes.
     ///
-    /// * `T53001` -- the loop. Departs `station_crs`, calls `KNG`, and
-    ///   TERMINATES back at `station_crs` (an arrival-only calling point,
-    ///   which is why it gets no row of its own and lives solely in
+    /// * `T53001` -- the loop. Departs `station_crs` at +0, calls `KNG`,
+    ///   and TERMINATES back at `station_crs` (an arrival-only calling
+    ///   point, which is why it gets no row of its own and lives solely in
     ///   `destination_crs`). The shape of a Kingston Loop working.
-    /// * `T53002` -- the control. Departs `station_crs`, calls `KNG`, and
-    ///   terminates at `EEE`; it never comes back.
+    /// * `T53002` -- the control. Departs `station_crs` at +5, calls
+    ///   `KNG`, and terminates at `EEE`; it never comes back.
+    /// * `T53003` -- the through-loop. Departs `station_crs` at +20, calls
+    ///   `KNG`, departs `station_crs` AGAIN at +30 and terminates at
+    ///   `EEE`. Only the FIRST of its two departures comes back.
     async fn seed_loop(pool: &PgPool, station_crs: &str) {
         delete_today(pool).await;
         let today = chrono::Utc::now().date_naive();
         let (_, soon, _) = relative_times();
         let five = chrono::Duration::minutes(5);
-        for (train_uid, destination_crs, offset) in
-            [("T53001", station_crs, 0), ("T53002", "EEE", 1)]
-        {
-            for (origin_crs, scheduled) in [
-                (station_crs, soon + five * offset),
-                ("KNG", soon + five * (offset + 2)),
-            ] {
+        for (train_uid, destination_crs, calls) in [
+            ("T53001", station_crs, vec![(station_crs, 0), ("KNG", 2)]),
+            ("T53002", "EEE", vec![(station_crs, 1), ("KNG", 3)]),
+            (
+                "T53003",
+                "EEE",
+                vec![(station_crs, 4), ("KNG", 5), (station_crs, 6)],
+            ),
+        ] {
+            for (origin_crs, offset) in calls {
                 sqlx::query(
                     "INSERT INTO schedule_destination_departures \
                         (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
@@ -1087,7 +1108,7 @@ mod db_tests {
                 )
                 .bind(today)
                 .bind(destination_crs)
-                .bind(scheduled)
+                .bind(soon + five * offset)
                 .bind(train_uid)
                 .bind(origin_crs)
                 .bind(station_crs)
@@ -1118,18 +1139,23 @@ mod db_tests {
             .collect();
         assert_eq!(
             uids,
-            vec!["T53001"],
-            "only the circular working may match; T53002 departs ZRB but never returns: \
-             {rows:?}"
+            vec!["T53001", "T53003"],
+            "the circular working, and the through-loop's FIRST departure only; T53002 departs \
+             ZRB but never returns, and T53003's second departure does not either: {rows:?}"
         );
         assert_eq!(
             rows[0]["destinationCrs"], "ZRB",
             "the loop's return call IS its terminus -- matched through destination_crs, which \
              is the only place an arrival-only calling point exists in this table"
         );
+        assert_eq!(
+            rows[1]["destinationCrs"], "EEE",
+            "the through-loop matched on a later ZRB DEPARTURE instead, and still terminates \
+             somewhere else entirely"
+        );
 
-        // The ordinary filter over the same fixture is untouched: both
-        // trains call at KNG, and both must still come back.
+        // The ordinary filter over the same fixture is untouched: all three
+        // trains call at KNG, and all four ZRB departures must come back.
         let (status, body) = get(&pool, "/trains/search?station=ZRB&stops_at=KNG").await;
         assert_eq!(status, StatusCode::OK);
         let mut uids: Vec<String> = results(&body)
@@ -1137,7 +1163,17 @@ mod db_tests {
             .map(|row| row["uid"].as_str().unwrap().to_string())
             .collect();
         uids.sort();
-        assert_eq!(uids, vec!["T53001".to_string(), "T53002".to_string()]);
+        assert_eq!(
+            uids,
+            vec![
+                "T53001".to_string(),
+                "T53002".to_string(),
+                "T53003".to_string(),
+                "T53003".to_string(),
+            ],
+            "including T53003's SECOND ZRB departure, which calls KNG earlier in its route -- \
+             the later-than rule applies only to the searched station"
+        );
 
         delete_today(&pool).await;
     }

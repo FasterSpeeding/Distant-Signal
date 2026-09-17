@@ -1273,13 +1273,12 @@ async fn schedule_destination_departures_published_for(
 /// **`stops_at`: "calls at this station somewhere ELSE on its route" (a
 /// plain membership test, not relational division).** `None` means "no
 /// filter" (every row matches). `Some(crs)` means the schedule must call
-/// at that CRS on the SAME `service_date` at a calling point OTHER than
+/// at that CRS on the SAME `service_date` at a calling point that is not
 /// the one this result row is itself anchored at -- either
 ///
 /// * some other departure-bearing row of the same `train_uid` carries it
 ///   (a correlated `EXISTS` on `origin_crs`, the same column `station_crs`
-///   matches against), excluding `main`'s own row by its
-///   `(origin_crs, scheduled)` identity; or
+///   matches against); or
 /// * it is the schedule's TRUE terminating calling point
 ///   (`main.destination_crs`), which has no `booked_departure` and so
 ///   never gets a row of its own in this table at all (see the table's own
@@ -1289,34 +1288,56 @@ async fn schedule_destination_departures_published_for(
 /// reason -- a CRS does not identify one PLACE IN A JOURNEY, exactly the
 /// mistake `journey::assign_events_to_stops` was fixed for.
 ///
-/// 1. EXCLUDING `main`'s own row is what makes `stops_at == station_crs` a
-///    real question instead of a tautology. A row is a member of its own
-///    calling-point list by construction, so the old unrestricted `EXISTS`
-///    made "departing from WAT AND stopping at WAT" match every single
-///    train out of Waterloo -- byte-for-byte the same result set as
-///    supplying no `stops_at` at all (live-confirmed against a real
-///    Postgres before the fix). What a caller typing the same station
-///    twice actually means is "come BACK here": a loop/circular working
-///    such as South Western Railway's Kingston Loop (train L82877,
-///    2026-09-14 -- Waterloo 07:27 round via Kingston, terminating back at
-///    Waterloo 08:46). Excluding the anchor row asks precisely that. Note
-///    the exclusion is keyed on the ROW, not on the CRS: a schedule that
-///    calls at one station three times still matches from each of its
-///    departures there, because for each anchor row the OTHER two remain.
-///    When `stops_at != station_crs` the exclusion can never fire at all
-///    (`stop.origin_crs = $5` and `main.origin_crs = $2` are then
-///    different values), so the ordinary point-to-point search is
-///    bit-identical to before.
-/// 2. ADMITTING the true terminus closes the gap this filter shipped with
+/// 1. A call at the SAME STATION the search is anchored at counts only if
+///    it comes LATER in the journey, by `(day_offset, scheduled)`. That is
+///    what makes `stops_at == station_crs` a real question instead of a
+///    tautology: a row is a member of its own calling-point list by
+///    construction, so the old unrestricted `EXISTS` made "departing from
+///    WAT AND stopping at WAT" match every single train out of Waterloo --
+///    byte-for-byte the same result set as supplying no `stops_at` at all
+///    (live-confirmed against a real Postgres before the fix). What a
+///    caller typing the same station twice actually means is "come BACK
+///    here": a loop/circular working such as South Western Railway's
+///    Kingston Loop (train L82877, 2026-09-14 -- Waterloo 07:27 round via
+///    Clapham Junction, Kingston and Richmond, terminating back at
+///    Waterloo 08:46).
+///
+///    LATER, not merely OTHER, and the difference is not academic. A
+///    working that passes back through its own origin and carries on
+///    (`WAT -> ... -> WAT -> ... -> SOU`) offers two WAT departures, and
+///    only the FIRST of them comes back; a bare "some other row at this
+///    CRS" test would return both, half of them being trains the caller
+///    would board expecting a return that never happens.
+///
+///    The comparison is `(day_offset, scheduled)`, not `scheduled` alone:
+///    a real overnight schedule crosses midnight and its later calls carry
+///    a smaller clock time (see `day_offset`'s own migration). It is safe
+///    to order two calls at ONE station this way -- they are far enough
+///    apart that their booked departures cannot tie -- which is exactly
+///    why the rule is scoped to same-station calls and no further.
+///
+/// 2. A call at a DIFFERENT station from the anchor still counts wherever
+///    in the route it falls, INCLUDING before it. `stops_at` has always
+///    meant "calls at X somewhere on its route" and deliberately still
+///    does; it is not, and does not become, a "you can get there from the
+///    station you searched" filter. So for every search naming two
+///    different stations this function returns exactly what it returned
+///    before the loop fix -- item 1 cannot fire (`stop.origin_crs = $5`
+///    and `main.origin_crs = $2` are then different values) -- though item
+///    3 below does widen those searches.
+///
+/// 3. ADMITTING the true terminus closes the gap this filter shipped with
 ///    and its design note flagged ("a `stops_at` value naming a schedule's
 ///    true TERMINATING calling point never matches"). That gap contradicts
 ///    the filter's own stated purpose -- "does this train call at Reading,
 ///    regardless of whether Reading is where the schedule actually ends"
 ///    -- and, more sharply, it makes the loop case above unanswerable: the
 ///    Kingston Loop's second Waterloo call IS its terminus, so without
-///    this branch the corrected `EXISTS` finds nothing. It is a widening
-///    for ordinary searches too (`stops_at` naming any schedule's true
-///    destination now matches it), which is deliberate.
+///    this branch item 1's `EXISTS` finds nothing. The terminus needs no
+///    ordering test of its own: it is downstream of every departure-
+///    bearing row by construction. This branch is a widening for ordinary
+///    searches too (`stops_at` naming any schedule's true destination now
+///    matches it), which is deliberate.
 ///
 /// Deliberately single-valued: an earlier version of this filter accepted
 /// zero or more stations and matched ALL-of-N (relational division via
@@ -1328,22 +1349,31 @@ async fn schedule_destination_departures_published_for(
 /// on the arrival at the calling point `stops_at` named** -- NOT on
 /// `main`'s own `scheduled`/`origin_crs` (`station_crs` and the
 /// arrival-bound calling point are frequently two different rows of the
-/// same schedule). It follows `stops_at`'s own two-branch shape above, so
-/// that every row `stops_at` can match is a row these bounds can also
-/// filter rather than silently drop:
+/// same schedule). It mirrors `stops_at`'s own two branches above, same
+/// same-station ordering rule and all, so that these bounds are asked
+/// about the very calling point `stops_at` matched on:
 ///
-/// * against `calling_point_arrival` on the same correlated `EXISTS`
-///   (same anchor-row exclusion), for a genuine intermediate call. Not
-///   `destination_arrival`: that column is the schedule's TRUE
-///   destination's arrival, a different, schedule-level value that need
-///   not have anything to do with which calling point `stops_at` named
-///   (see `calling_point_arrival`'s own column comment); and
+/// * against `calling_point_arrival` on the correlated `EXISTS` branch,
+///   for a genuine intermediate call. Not `destination_arrival`: that
+///   column is the schedule's TRUE destination's arrival, a different,
+///   schedule-level value that need not have anything to do with which
+///   calling point `stops_at` named (see `calling_point_arrival`'s own
+///   column comment); and
 /// * against `destination_arrival` when -- and only when -- `stops_at` is
 ///   matching via the terminus branch, where it is not a schedule-level
 ///   stand-in but literally the arrival at the named calling point.
 ///
-/// Day offsets are deliberately not consulted by either comparison: these
-/// are wall-clock bounds on a `TIME` column, matching how the original
+/// A NULL arrival never satisfies a bound, on either branch. Both columns
+/// are genuinely nullable in real published data (`destination_arrival`'s
+/// own migration says as much), so setting an arrival bound drops
+/// schedules whose named calling point has no booked arrival at all --
+/// pre-existing behavior on the `calling_point_arrival` branch, and the
+/// terminus branch matches it deliberately rather than inventing a
+/// "NULL passes" rule for one branch only.
+///
+/// Day offsets are deliberately not consulted by either ARRIVAL
+/// comparison (unlike item 1's ordering test, which needs them): these are
+/// wall-clock bounds on a `TIME` column, matching how the original
 /// `calling_point_arrival` bound has always behaved.
 ///
 /// The route layer (not this function) rejects either bound being set
@@ -1401,13 +1431,15 @@ pub async fn search_schedule_calling_point_departures(
                         WHERE stop.service_date = $1
                           AND stop.train_uid = main.train_uid
                           AND stop.origin_crs = $5
-                          -- Never satisfied by the calling point this
-                          -- result row IS: (origin_crs, scheduled) is a
-                          -- row's identity within one schedule-day, and
-                          -- matching on it would make stops_at = the
-                          -- searched station true by construction.
-                          AND NOT (stop.origin_crs = main.origin_crs
-                                   AND stop.scheduled = main.scheduled)
+                          -- A call at the SAME station this result row is
+                          -- anchored at counts only if it comes LATER:
+                          -- otherwise the row satisfies itself and
+                          -- stops_at = the searched station is true by
+                          -- construction. A call at any OTHER station
+                          -- counts wherever it falls, as it always has.
+                          AND (stop.origin_crs <> main.origin_crs
+                               OR (stop.day_offset, stop.scheduled)
+                                  > (main.day_offset, main.scheduled))
                     )
               )
               AND (
@@ -1423,8 +1455,9 @@ pub async fn search_schedule_calling_point_departures(
                         WHERE stop.service_date = $1
                           AND stop.train_uid = main.train_uid
                           AND stop.origin_crs = $5
-                          AND NOT (stop.origin_crs = main.origin_crs
-                                   AND stop.scheduled = main.scheduled)
+                          AND (stop.origin_crs <> main.origin_crs
+                               OR (stop.day_offset, stop.scheduled)
+                                  > (main.day_offset, main.scheduled))
                           AND ($7::time IS NULL OR stop.calling_point_arrival >= $7)
                           AND ($8::time IS NULL OR stop.calling_point_arrival <= $8)
                     )
@@ -4769,158 +4802,120 @@ mod schedule_destination_departures_query_tests {
         delete_day(&pool, date).await;
     }
 
-    /// Four WAT-departing schedules built to pull "calls at WAT again"
+    /// Six WAT-departing schedules built to pull "calls at WAT again"
     /// apart from "departs WAT", which the unfixed `stops_at` could not
     /// tell apart at all:
     ///
     /// * `L82877` -- the loop. Waterloo 07:27 round via Clapham Junction,
-    ///   Kingston and Twickenham, TERMINATING back at Waterloo 08:46. Its
+    ///   Kingston and Richmond, TERMINATING back at Waterloo 08:46. Its
     ///   second Waterloo call is arrival-only and therefore has NO row of
     ///   its own here; `destination_crs` is the only place it exists. The
     ///   real shape of South Western Railway train L82877/2026-09-14.
     /// * `P00001` -- the ordinary point-to-point control. Waterloo 07:30
     ///   to Southampton via Clapham Junction and Woking; never returns.
-    /// * `L99999` -- calls at ONE station THREE times (Waterloo 09:00,
-    ///   09:45 and 10:30, between Surbiton and Richmond), terminating
-    ///   somewhere else entirely. Every one of those three departures is a
-    ///   separate, genuine result row.
+    /// * `L99999` -- the THROUGH-loop, and the sharpest fixture here. It
+    ///   departs Waterloo three times (09:00, 09:45, 10:30) and then
+    ///   carries on to Southampton, so its first two Waterloo departures
+    ///   come back and its LAST one does not. A rule that merely excluded
+    ///   the searched row itself would wrongly return all three.
+    /// * `O11111` -- an overnight loop: Waterloo 23:40, Surbiton 00:10 and
+    ///   back at Waterloo 00:50, the last two after midnight
+    ///   (`day_offset` 1). Its return call carries a SMALLER clock time
+    ///   than its departure, so only an ordering that reads
+    ///   `(day_offset, scheduled)` rather than `scheduled` alone finds it.
     /// * `X50000` -- a schedule with exactly ONE departure-bearing calling
     ///   point (Waterloo 06:00, terminating Southampton): the degenerate
-    ///   case where the anchor row is the schedule's whole presence in
-    ///   this table, so excluding it leaves the `EXISTS` nothing at all.
+    ///   case where the searched row is the schedule's whole presence in
+    ///   this table, so the `EXISTS` has nothing left to consider at all.
+    /// * `N00000` -- Waterloo 05:00 to Southampton via Fleet, with NO
+    ///   booked arrival at its terminus (`destination_arrival` NULL): the
+    ///   row a terminus-matched `stops_at` matches but an arrival bound
+    ///   cannot keep.
     ///
     /// Clapham Junction appears in two schedules and is the true origin of
-    /// neither -- it is what proves the anchor-row exclusion is keyed on
-    /// the calling point the SEARCH is anchored at, not on the schedule's
-    /// true origin.
+    /// neither -- it is what proves the same-station rule is keyed on the
+    /// calling point the SEARCH is anchored at, not on the schedule's true
+    /// origin.
     fn loop_fixture_rows(service_date: chrono::NaiveDate) -> Vec<ScheduleDestinationDeparturesRow> {
-        let loop_arrival = Some(time(8, 46));
-        let sou_arrival = Some(time(8, 50));
-        let cp = |destination_crs: &str,
-                  scheduled: (u32, u32),
-                  train_uid: &str,
-                  origin_crs: &str,
-                  true_origin_crs: &str,
-                  destination_arrival: Option<chrono::NaiveTime>,
-                  calling_point_arrival: Option<(u32, u32)>| {
-            row_with_calling_point_arrival(
-                service_date,
-                destination_crs,
-                time(scheduled.0, scheduled.1),
-                train_uid,
-                origin_crs,
-                Some(true_origin_crs),
-                destination_arrival,
-                calling_point_arrival.map(|(h, m)| time(h, m)),
-            )
-        };
-        vec![
-            // L82877: WAT -> CLJ -> KNG -> TWI -> WAT (terminus).
-            cp("WAT", (7, 27), "L82877", "WAT", "WAT", loop_arrival, None),
-            cp(
-                "WAT",
-                (7, 40),
+        // Each call is (crs, booked departure, day_offset, this call's own
+        // booked arrival).
+        type Call = (&'static str, (u32, u32), i16, Option<(u32, u32)>);
+        let schedules: &[(&str, &str, Option<(u32, u32)>, &[Call])] = &[
+            (
                 "L82877",
-                "CLJ",
                 "WAT",
-                loop_arrival,
-                Some((7, 38)),
+                Some((8, 46)),
+                &[
+                    ("WAT", (7, 27), 0, None),
+                    ("CLJ", (7, 40), 0, Some((7, 38))),
+                    ("KNG", (7, 58), 0, Some((7, 56))),
+                    ("RMD", (8, 20), 0, Some((8, 18))),
+                ],
             ),
-            cp(
-                "WAT",
-                (7, 58),
-                "L82877",
-                "KNG",
-                "WAT",
-                loop_arrival,
-                Some((7, 56)),
-            ),
-            cp(
-                "WAT",
-                (8, 20),
-                "L82877",
-                "TWI",
-                "WAT",
-                loop_arrival,
-                Some((8, 18)),
-            ),
-            // P00001: WAT -> CLJ -> WOK -> SOU (terminus).
-            cp("SOU", (7, 30), "P00001", "WAT", "WAT", sou_arrival, None),
-            cp(
-                "SOU",
-                (7, 55),
+            (
                 "P00001",
-                "CLJ",
-                "WAT",
-                sou_arrival,
-                Some((7, 53)),
-            ),
-            cp(
                 "SOU",
-                (8, 10),
-                "P00001",
-                "WOK",
-                "WAT",
-                sou_arrival,
-                Some((8, 8)),
+                Some((8, 50)),
+                &[
+                    ("WAT", (7, 30), 0, None),
+                    ("CLJ", (7, 55), 0, Some((7, 53))),
+                    ("WOK", (8, 10), 0, Some((8, 8))),
+                ],
             ),
-            // L99999: WAT -> SUR -> WAT -> RMD -> WAT -> SOU (terminus).
-            cp(
-                "SOU",
-                (9, 0),
+            (
                 "L99999",
-                "WAT",
-                "WAT",
-                Some(time(11, 0)),
+                "SOU",
+                Some((11, 0)),
+                &[
+                    ("WAT", (9, 0), 0, None),
+                    ("SUR", (9, 20), 0, Some((9, 18))),
+                    ("WAT", (9, 45), 0, Some((9, 43))),
+                    ("RMD", (10, 5), 0, Some((10, 3))),
+                    ("WAT", (10, 30), 0, Some((10, 28))),
+                ],
+            ),
+            (
+                "O11111",
+                "SOU",
+                Some((1, 30)),
+                &[
+                    ("WAT", (23, 40), 0, None),
+                    ("SUR", (0, 10), 1, Some((0, 8))),
+                    ("WAT", (0, 50), 1, Some((0, 48))),
+                ],
+            ),
+            ("X50000", "SOU", Some((6, 40)), &[("WAT", (6, 0), 0, None)]),
+            (
+                "N00000",
+                "SOU",
                 None,
+                &[("WAT", (5, 0), 0, None), ("FLE", (5, 30), 0, Some((5, 28)))],
             ),
-            cp(
-                "SOU",
-                (9, 20),
-                "L99999",
-                "SUR",
-                "WAT",
-                Some(time(11, 0)),
-                Some((9, 18)),
-            ),
-            cp(
-                "SOU",
-                (9, 45),
-                "L99999",
-                "WAT",
-                "WAT",
-                Some(time(11, 0)),
-                Some((9, 43)),
-            ),
-            cp(
-                "SOU",
-                (10, 5),
-                "L99999",
-                "RMD",
-                "WAT",
-                Some(time(11, 0)),
-                Some((10, 3)),
-            ),
-            cp(
-                "SOU",
-                (10, 30),
-                "L99999",
-                "WAT",
-                "WAT",
-                Some(time(11, 0)),
-                Some((10, 28)),
-            ),
-            // X50000: WAT -> SOU (terminus), one departure-bearing row.
-            cp(
-                "SOU",
-                (6, 0),
-                "X50000",
-                "WAT",
-                "WAT",
-                Some(time(6, 40)),
-                None,
-            ),
-        ]
+        ];
+
+        schedules
+            .iter()
+            .flat_map(|(train_uid, destination_crs, destination_arrival, calls)| {
+                calls.iter().map(
+                    move |(origin_crs, (hour, minute), day_offset, calling_point_arrival)| {
+                        ScheduleDestinationDeparturesRow {
+                            service_date,
+                            destination_crs: (*destination_crs).to_string(),
+                            scheduled: time(*hour, *minute),
+                            day_offset: *day_offset,
+                            train_uid: (*train_uid).to_string(),
+                            origin_crs: (*origin_crs).to_string(),
+                            destination_arrival: destination_arrival.map(|(h, m)| time(h, m)),
+                            // Every fixture schedule terminates on the rail
+                            // day it started, except the overnight one.
+                            destination_arrival_day_offset: i16::from(*train_uid == "O11111"),
+                            true_origin_crs: Some("WAT".to_string()),
+                            calling_point_arrival: calling_point_arrival.map(|(h, m)| time(h, m)),
+                        }
+                    },
+                )
+            })
+            .collect()
     }
 
     async fn seed_loop(pool: &PgPool, service_date: chrono::NaiveDate) {
@@ -4980,11 +4975,25 @@ mod schedule_destination_departures_query_tests {
         // out of Waterloo -- the searched row is a member of its own
         // calling-point list, so the `EXISTS` was true by construction and
         // the result set was byte-identical to supplying no `stops_at` at
-        // all. It must instead mean "comes back to Waterloo": the loop
-        // working L82877 (whose return call is its TERMINUS, reachable
-        // only as `destination_crs`) and each of L99999's three Waterloo
-        // departures, but neither the ordinary P00001 nor the
-        // single-calling-point X50000.
+        // all. It must instead mean "comes back to Waterloo".
+        //
+        // What must match, and why each one is here:
+        //   L82877 07:27 -- the loop, whose return call is its TERMINUS
+        //                   and so reachable only as `destination_crs`.
+        //   L99999 09:00 -- a later WAT call exists (09:45, and 10:30).
+        //   L99999 09:45 -- a later WAT call exists (10:30).
+        //   O11111 23:40 -- its later WAT call is at 00:50 the NEXT day,
+        //                   an EARLIER clock time; only a
+        //                   (day_offset, scheduled) ordering sees it.
+        // What must not, and why:
+        //   L99999 10:30 -- three WAT departures, but this last one never
+        //                   comes back. "Some OTHER WAT row exists" would
+        //                   wrongly keep it.
+        //   O11111 00:50 -- likewise the overnight loop's final WAT call.
+        //   P00001 07:30 -- the ordinary point-to-point control.
+        //   X50000 06:00 -- one calling point in total.
+        //   N00000 05:00 -- calls WAT once, terminates elsewhere.
+        // Ordered by clock time, as this query has always ordered.
         let pool = test_pool().await;
         let date = fixture_date_feb(4);
         seed_loop(&pool, date).await;
@@ -4997,10 +5006,80 @@ mod schedule_destination_departures_query_tests {
                 ("L82877".to_string(), "07:27".to_string()),
                 ("L99999".to_string(), "09:00".to_string()),
                 ("L99999".to_string(), "09:45".to_string()),
-                ("L99999".to_string(), "10:30".to_string()),
+                ("O11111".to_string(), "23:40".to_string()),
             ],
-            "only workings that call at WAT AGAIN may match, and a station called at three \
-             times matches from each of its departures"
+            "only departures the working actually comes BACK from may match"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_stops_at_pages_a_loop_match_yielding_several_rows_per_train() {
+        // The loop filter is the first thing that routinely returns several
+        // rows for ONE train_uid, so the keyset cursor is worth re-pinning
+        // under it: `(scheduled, train_uid)` stays a total order because
+        // `origin_crs` is fixed per query, and L99999's two matching
+        // departures must land on different pages without repeating or
+        // dropping either.
+        let pool = test_pool().await;
+        let date = fixture_date_feb(10);
+        seed_loop(&pool, date).await;
+
+        let first = search_schedule_calling_point_departures(
+            &pool,
+            "WAT",
+            date,
+            any_time(),
+            None,
+            Some("WAT"),
+            None,
+            None,
+            None,
+            None,
+            2,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+        assert_eq!(
+            uids_and_times(&first),
+            vec![
+                ("L82877".to_string(), "07:27".to_string()),
+                ("L99999".to_string(), "09:00".to_string()),
+            ]
+        );
+        let cursor = first.next_cursor.expect("a second page exists");
+
+        let second = search_schedule_calling_point_departures(
+            &pool,
+            "WAT",
+            date,
+            any_time(),
+            None,
+            Some("WAT"),
+            None,
+            None,
+            None,
+            Some(&cursor),
+            2,
+        )
+        .await
+        .expect("search")
+        .expect("the day is published");
+        assert_eq!(
+            uids_and_times(&second),
+            vec![
+                ("L99999".to_string(), "09:45".to_string()),
+                ("O11111".to_string(), "23:40".to_string()),
+            ],
+            "the cursor resumes mid-train without repeating L99999's first matching departure"
+        );
+        assert!(
+            second.next_cursor.is_none(),
+            "four matches over two pages of two is exactly the last page"
         );
 
         delete_day(&pool, date).await;
@@ -5050,9 +5129,8 @@ mod schedule_destination_departures_query_tests {
     async fn search_calling_point_stops_at_still_matches_a_genuine_intermediate_stop() {
         // The ordinary, unchanged case: a different station from the one
         // searched, matched on its own departure-bearing row. KNG is
-        // called at by the loop only, so this also proves the anchor-row
-        // exclusion does not leak into searches where the two CRS codes
-        // differ.
+        // called at by the loop only, so this also proves the same-station
+        // rule does not leak into searches where the two CRS codes differ.
         let pool = test_pool().await;
         let date = fixture_date_feb(6);
         seed_loop(&pool, date).await;
@@ -5066,8 +5144,10 @@ mod schedule_destination_departures_query_tests {
         );
 
         // And in the other direction along the route: WAT is EARLIER in
-        // the journey than CLJ, and still counts. The fix excludes the
-        // anchor calling point, it does not impose an ordering.
+        // the journey than CLJ, and still counts. The "must come later"
+        // rule is scoped to calls at the SEARCHED station -- `stops_at`
+        // naming a different one stays "calls at X anywhere on its route",
+        // and does not quietly become "and you can get there from here".
         let backwards = loop_search(&pool, date, "CLJ", Some("WAT"), None, None).await;
         assert_eq!(
             uids_and_times(&backwards),
@@ -5110,9 +5190,10 @@ mod schedule_destination_departures_query_tests {
                 search_calling_point -- --ignored --test-threads=1`"]
     async fn search_calling_point_stop_arrival_bounds_a_terminus_matched_stops_at() {
         // A terminus-matched `stops_at` has no `calling_point_arrival` to
-        // bound, so the arrival pair falls through to that terminus's own
-        // `destination_arrival` (08:50 for P00001) rather than silently
-        // dropping every row `stops_at` just matched.
+        // bound, so the arrival pair is asked of that terminus's own
+        // `destination_arrival` (08:50 for P00001) rather than being
+        // evaluated against a column the matched calling point does not
+        // have and dropping the row whatever the bound said.
         let pool = test_pool().await;
         let date = fixture_date_feb(8);
         seed_loop(&pool, date).await;
@@ -5181,6 +5262,83 @@ mod schedule_destination_departures_query_tests {
             ],
             "only the 10:28 revisit is in range, so the two departures that precede it match; \
              the 10:30 departure has no later WAT call to arrive at"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_stop_arrival_bounds_a_loop_whose_return_call_is_its_terminus() {
+        // The headline case with the arrival pair on top of it: the loop
+        // L82877 matched `station=WAT&stops_at=WAT` through its TERMINUS,
+        // so "when does it get back to Waterloo" is `destination_arrival`
+        // (08:46) and nothing else. Both branches are live in this query
+        // at once -- L99999's revisits go through the `EXISTS` -- and the
+        // bound must pick them apart rather than letting either rescue the
+        // other.
+        let pool = test_pool().await;
+        let date = fixture_date_feb(11);
+        seed_loop(&pool, date).await;
+
+        let page = loop_search(
+            &pool,
+            date,
+            "WAT",
+            Some("WAT"),
+            Some(time(8, 40)),
+            Some(time(8, 50)),
+        )
+        .await;
+
+        assert_eq!(
+            uids_and_times(&page),
+            vec![("L82877".to_string(), "07:27".to_string())],
+            "08:46 back at Waterloo is inside 08:40..=08:50; L99999's revisits (09:43, 10:28) \
+             and O11111's (00:48) are not"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_stop_arrival_drops_a_terminus_with_no_booked_arrival() {
+        // `destination_arrival` is genuinely nullable in published data (see
+        // its own migration), and a NULL never satisfies a bound. So a
+        // schedule `stops_at` matched ONLY through its terminus disappears
+        // the moment an arrival bound is set, however wide -- the same way
+        // a NULL `calling_point_arrival` has always behaved on the other
+        // branch. Pinned rather than left to be discovered: it is the one
+        // place the arrival pair narrows what `stops_at` matched.
+        let pool = test_pool().await;
+        let date = fixture_date_feb(12);
+        seed_loop(&pool, date).await;
+
+        let unbounded = loop_search(&pool, date, "FLE", Some("SOU"), None, None).await;
+        assert_eq!(
+            uids_and_times(&unbounded),
+            vec![("N00000".to_string(), "05:30".to_string())],
+            "with no bound the terminus match stands, NULL arrival and all"
+        );
+
+        let bounded = loop_search(
+            &pool,
+            date,
+            "FLE",
+            Some("SOU"),
+            Some(chrono::NaiveTime::MIN),
+            Some(
+                chrono::NaiveTime::from_hms_opt(23, 59, 59).expect("valid end-of-day fixture time"),
+            ),
+        )
+        .await;
+        assert_eq!(
+            uids_and_times(&bounded),
+            Vec::<(String, String)>::new(),
+            "a whole-day bound still drops it: there is no arrival to compare against"
         );
 
         delete_day(&pool, date).await;

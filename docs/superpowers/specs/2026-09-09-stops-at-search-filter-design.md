@@ -42,10 +42,10 @@ against, so (consistent with that field's own pre-existing behavior, not a
 new gap) a `stops_at` value naming a schedule's TRUE terminating calling
 point never matches: that calling point has no `booked_departure` and so
 never gets its own row in `schedule_destination_departures` at all.
-**Both halves of that paragraph were later revised** -- the membership
-test now excludes the calling point the search is anchored at, and the
-true terminus now DOES match. See the "Loop services" addendum at the foot
-of this document.
+**Both halves of that paragraph were later revised** -- a call at the
+station `station` itself named now has to come LATER in the journey, and
+the true terminus now DOES match. See the "Loop services" addendum at the
+foot of this document.
 
 **This is a genuine behavior change from `destination`, not just a
 rename.** `destination=X` meant "X IS this schedule's true final stop";
@@ -125,30 +125,46 @@ so the predicate was true by construction for every candidate.
 That is not a harmless no-op, because naming one station in both fields is
 exactly how a rider asks for a LOOP: "leaves Waterloo, comes back to
 Waterloo". South Western Railway's Kingston Loop (train L82877,
-2026-09-14: Waterloo 07:27, round via Kingston and Richmond, terminating
-back at Waterloo 08:46) is the shape in question -- the same working whose
+2026-09-14: Waterloo 07:27, round via Clapham Junction, Kingston and
+Richmond, terminating back at Waterloo 08:46) is the shape -- the working whose
 live timeline was fixed earlier the same day by
 `journey::assign_events_to_stops`, and the same root mistake in a second
 place: **a CRS code does not identify one position in a journey.**
 
 ### The fix, in two halves
 
-1. **The membership `EXISTS` excludes the calling point the result row is
-   itself anchored at**, by that row's `(origin_crs, scheduled)` identity
-   within the schedule-day -- not by CRS, and not by `true_origin_crs`.
-   Keying it on the row rather than the code is what keeps the 3+ calls
-   case right: a schedule calling at one station three times still matches
-   from each of its three departures there, because for each anchor the
-   other two remain. It also means the change is invisible to every search
-   where the two CRS codes differ: `stop.origin_crs = $stops_at` and
-   `main.origin_crs = $station` are then different values and the
-   exclusion can never fire.
+1. **A call at the station `station` itself named counts only if it comes
+   LATER in the journey**, compared as `(day_offset, scheduled)`. A call at
+   any OTHER station is untouched and still counts wherever in the route it
+   falls, including before `station` -- `stops_at` remains "calls at X
+   somewhere on its route" and deliberately does not quietly become "and
+   you can get there from where you searched". So every search naming two
+   different stations returns exactly what it returned before this half of
+   the change: `stop.origin_crs = $stops_at` and `main.origin_crs =
+   $station` are then different values and the rule cannot fire.
 
-   Deliberately NOT an ordering constraint. A calling point EARLIER in the
-   journey than the searched one still satisfies `stops_at` -- the filter
-   stays "calls at X somewhere on its route", now minus the one calling
-   point that made the question vacuous, and nothing here promises "and
-   you can get there from the station you searched".
+   **LATER, not merely OTHER**, and the distinction is not academic. The
+   first draft of this fix excluded only the searched row itself, which is
+   enough for a service that terminates back where it started but wrong for
+   one that passes back through and carries on (`WAT -> ... -> WAT -> ... ->
+   SOU`). Such a working offers two Waterloo departures and only the FIRST
+   comes back; "some other row at this CRS exists" returns both, so half the
+   results would be trains a rider boards expecting a return that never
+   happens. An independent review caught this before the change landed.
+
+   Ordering by `(day_offset, scheduled)` rather than `scheduled` alone is
+   required, not belt-and-braces: an overnight working crosses midnight and
+   its later calls carry a SMALLER clock time (which is the whole reason
+   `day_offset` exists -- see its own migration). Conversely, ordering two
+   calls at ONE station by their booked departures is safe precisely
+   because they cannot be at the same minute, which is another reason to
+   scope the rule to same-station calls and no further: two calls at
+   DIFFERENT stations can and do share a booked minute, so the same
+   comparison would be unreliable there.
+
+   The rule is per-row, so a station called at three times still matches
+   from each departure that has a later call at that station -- two out of
+   three, in that example -- rather than all-or-nothing per train.
 
 2. **The schedule's TRUE terminating calling point now matches**,
    via `main.destination_crs`, reversing the gap the section above
@@ -159,26 +175,36 @@ place: **a CRS code does not identify one position in a journey.**
    (an arrival-only calling point has no `booked_departure` and so no row)
    rather than a decision. The forcing one: a loop's return call IS its
    terminus, so without this branch the corrected `EXISTS` in (1) finds
-   nothing and the Kingston Loop stays unfindable. This widens ordinary
-   searches too -- `stops_at` naming any schedule's true destination now
-   matches it -- which is intended, and which restores (as a by-product,
-   not as a replacement filter) the "true destination equals X" answer the
+   nothing and the Kingston Loop stays unfindable. The terminus needs no
+   ordering test of its own -- it is downstream of every departure-bearing
+   row by construction. This widens ordinary searches too -- `stops_at`
+   naming any schedule's true destination now matches it -- which is
+   intended, and which restores (as a by-product, not as a replacement
+   filter) the "true destination equals X" answer the
    `destination`-to-`stops_at` change had removed, still mixed in with
    intermediate-stop matches.
 
-`arrival_from`/`arrival_to` follow the same two-branch shape, so that
-every row `stops_at` can match is a row those bounds can also filter
-instead of silently dropping: `calling_point_arrival` on the `EXISTS`
-branch as before, and the terminus's own `destination_arrival` on the new
-branch -- where it is not a schedule-level stand-in but literally the
-arrival at the calling point the caller named. Day offsets are consulted
-by neither, matching the original bound's own wall-clock behavior.
+`arrival_from`/`arrival_to` mirror the same two branches, same same-station
+ordering rule and all, so that the bounds are asked about the very calling
+point `stops_at` matched on: `calling_point_arrival` on the `EXISTS` branch
+as before, and the terminus's own `destination_arrival` on the new branch
+-- where it is not a schedule-level stand-in but literally the arrival at
+the calling point the caller named. Day offsets are consulted by neither
+ARRIVAL comparison, matching the original bound's own wall-clock behavior.
+
+**A NULL arrival never satisfies a bound, on either branch.** Both columns
+are genuinely nullable in published data, so setting an arrival bound drops
+schedules whose named calling point has no booked arrival at all. That was
+already true of `calling_point_arrival`; the terminus branch matches it
+deliberately rather than inventing a "NULL passes" rule for one branch
+only, and there is a test pinning it. It is the one place the arrival pair
+narrows what `stops_at` matched rather than merely filtering it.
 
 ### What did NOT change
 
 The wire shape, the single-valued parameter, the `normalize_crs`
 validation, the `400` for an arrival bound with no `stops_at`, and the
 `origin`/`station`/time filters. On the frontend only the "Stops at"
-field's `description` changed, to say that the named station is one the
-train calls at other than where you are departing from, and that naming
-the same station twice finds services that come back.
+field's `description` changed, to say that the named station is another
+one the train calls at, its destination included, and that naming the same
+station as "Departing from" finds loop services that come back to it.
