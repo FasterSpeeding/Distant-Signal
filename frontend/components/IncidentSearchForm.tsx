@@ -404,6 +404,14 @@ export function IncidentSearchForm({
 
   return (
     <Stack gap="md" component="form" onSubmit={handleSubmit}>
+      {/* Every `clearable` field below carries an explicit
+          `clearButtonProps` aria-label. Mantine's `clearable` renders an
+          `InputClearButton` with no accessible name at all, so axe's
+          `button-name` fires (critical) the moment a field holds a value --
+          which the two date fields do on first paint, because `applyPreset`
+          seeds them. Same fix and same wording shape as
+          `app/lines/AllLinesTable.tsx`'s own `clearButtonProps`, the one
+          place in this app that already got this right. */}
       <MultiSelect
         label="Operator (optional)"
         placeholder="Any operator"
@@ -413,6 +421,7 @@ export function IncidentSearchForm({
         onChange={setOperators}
         searchable
         clearable
+        clearButtonProps={{ 'aria-label': 'Clear operator filter' }}
       />
       <Select
         label="Line (optional)"
@@ -423,6 +432,7 @@ export function IncidentSearchForm({
         onChange={setLineId}
         searchable
         clearable
+        clearButtonProps={{ 'aria-label': 'Clear line filter' }}
       />
       <Group gap="sm">
         <Button variant={preset === '7d' ? 'filled' : 'light'} size="xs" onClick={() => applyPreset('7d')}>
@@ -447,6 +457,7 @@ export function IncidentSearchForm({
             setPreset(null);
           }}
           clearable
+          clearButtonProps={{ 'aria-label': 'Clear the from date' }}
         />
         <DatePickerInput
           label="To (optional)"
@@ -456,6 +467,7 @@ export function IncidentSearchForm({
             setPreset(null);
           }}
           clearable
+          clearButtonProps={{ 'aria-label': 'Clear the to date' }}
         />
       </Group>
       <SegmentedControl

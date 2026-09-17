@@ -54,7 +54,16 @@ function LoginButtonLink() {
  * button has no default accessible name (confirmed by reading the
  * installed `@mantine/core` source -- neither `ModalBaseCloseButton` nor
  * the underlying `CloseButton` sets one), so this is set explicitly for
- * basic accessibility, not just test convenience. */
+ * basic accessibility, not just test convenience.
+ *
+ * That gap is now ALSO closed app-wide, in `lib/theme.ts`'s
+ * `components.Modal.defaultProps` -- the other fifteen modals in this app
+ * had the same defect and an axe sweep of their opened states found all of
+ * them. This line is therefore no longer load-bearing on its own, and is
+ * kept only because it is the one place the Mantine-source reading above
+ * is written down; `useProps` merges call-site props OVER theme defaults,
+ * so the two agreeing is harmless. Delete this prop only together with
+ * that paragraph, and read `lib/theme.ts`'s shallow-merge caveat first. */
 export function LoginPromptModal({
   opened,
   onClose,

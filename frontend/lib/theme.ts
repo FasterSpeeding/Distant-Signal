@@ -141,4 +141,44 @@ export const theme = createTheme({
   luminanceThreshold: 0.179,
 
   variantColorResolver,
+
+  // Mantine's `Modal` close button ships with NO accessible name -- neither
+  // `ModalBaseCloseButton` nor the underlying `CloseButton` sets one (the
+  // same reading of the installed `@mantine/core` source that
+  // `components/LoginPromptModal.tsx`'s own comment records). axe's
+  // `button-name` fires on it, critical, in every modal.
+  //
+  // `LoginPromptModal` has passed `closeButtonProps={{ 'aria-label': 'Close' }}`
+  // by hand since it was written; the other fifteen `<Modal>`s in this app
+  // (the rename/delete/share/leave/remove confirmations) had not, and a
+  // full-ruleset axe sweep of their opened states found every one of them.
+  // Setting it here rather than adding the same line to fifteen call sites
+  // is the point: a sixteenth modal gets it for free, which is exactly the
+  // failure mode a per-call-site fix leaves open.
+  //
+  // "Close" unconditionally, with no per-modal wording: this button always
+  // dismisses without acting, the modal's own `title` already says what is
+  // being dismissed, and a screen reader announces the two together.
+  //
+  // CAVEAT, because this is the one way the guarantee above can be lost
+  // again: Mantine's `useProps` is `{...defaultProps, ...contextProps,
+  // ...filterProps(props)}` (use-props.mjs) -- a SHALLOW merge, so a call
+  // site that passes `closeButtonProps` at all replaces this object
+  // wholesale rather than merging into it. A future modal that sets, say,
+  // `closeButtonProps={{ size: 'lg' }}` and nothing else silently loses the
+  // accessible name, with no type or lint error. Today only
+  // `LoginPromptModal` passes the prop, and it spells out the same
+  // `aria-label`, so nothing is broken -- and it is deliberately left in
+  // place rather than deleted now that this default exists, because its doc
+  // comment is where the underlying Mantine-source finding is written down.
+  // The standing net for a regression is the axe sweep of every opened
+  // modal in e2e/accessibility.spec.ts, which is what found this in the
+  // first place.
+  components: {
+    Modal: {
+      defaultProps: {
+        closeButtonProps: { 'aria-label': 'Close' },
+      },
+    },
+  },
 });

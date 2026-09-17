@@ -194,7 +194,24 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           <Badge
             key={crs}
             title={nameByCode[crs]}
-            rightSection={<CloseButton size="xs" onClick={() => removeStation(crs)} />}
+            rightSection={
+              /* `aria-label` is not optional here: Mantine's `CloseButton`
+                 renders a bare `<button>` around an SVG with no text and no
+                 name of its own, so axe's `button-name` fires (critical) --
+                 once per station chip, which on a prefilled
+                 `/lines/[id]/edit` is every chip on the page. Naming the
+                 station it removes (rather than a generic "Remove") is what
+                 makes a list of these distinguishable when tabbed through
+                 or listed by a screen reader; `nameByCode` is preferred
+                 over the bare CRS for the same reason the `title` above
+                 uses it, and falls back to the code before the station
+                 lookup resolves. */
+              <CloseButton
+                size="xs"
+                aria-label={`Remove ${nameByCode[crs] ?? crs}`}
+                onClick={() => removeStation(crs)}
+              />
+            }
           >
             {crs}
           </Badge>
@@ -221,7 +238,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           />
         </Stack>
       </Collapse>
-      {error && <Text c="red">{error}</Text>}
+      {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
         Log in to {existingLine ? 'edit' : 'create'} a custom line.
       </LoginPromptModal>

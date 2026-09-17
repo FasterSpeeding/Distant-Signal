@@ -83,7 +83,7 @@ export function AttachTicketAction({ ticketId, trains }: { ticketId: number; tra
         {attaching ? 'Attaching…' : 'Attach'}
       </Button>
       {error && (
-        <Text size="xs" c="red">
+        <Text size="xs" c="var(--ds-color-error-text)">
           {error}
         </Text>
       )}

@@ -72,7 +72,7 @@ export function RemoveCustomLineGrantButton({
           Group members will no longer be able to see {lineName}. The line itself isn&apos;t
           deleted or changed.
         </Text>
-        {error && <Text c="red">{error}</Text>}
+        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
         {needsLoginState.needsLogin && (
           <LoginLink underline="always">Log in to stop sharing this line</LoginLink>
         )}

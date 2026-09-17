@@ -46,7 +46,7 @@ describe('StationAccessibilitySection', () => {
     expect(screen.getByText('Staff assistance')).toBeInTheDocument();
     expect(screen.getByText('Available 06:00-23:00')).toBeInTheDocument();
     expect(screen.getByText('Car parks')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '1 item' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Car parks: 1 item' })).toBeInTheDocument();
   });
 
   it('pluralizes the item-count control rather than saying "1 items"', () => {
@@ -55,7 +55,7 @@ describe('StationAccessibilitySection', () => {
         result={{ coverage: 'present', data: { carParks: [{ spaces: 120 }, { spaces: 40 }] } }}
       />,
     );
-    expect(screen.getByRole('button', { name: '2 items' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Car parks: 2 items' })).toBeInTheDocument();
   });
 
   it('keeps an array-of-objects list collapsed until asked, then reveals each item', async () => {
@@ -66,7 +66,7 @@ describe('StationAccessibilitySection', () => {
     );
     expect(screen.queryByText('120')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '2 items' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Car parks: 2 items' }));
 
     expect(await screen.findByText('120')).toBeInTheDocument();
     expect(screen.getByText('40')).toBeInTheDocument();
@@ -85,7 +85,7 @@ describe('StationAccessibilitySection', () => {
     // Collapsed by default, so the raw JSON itself is not in the document
     // until the control is used -- only the control is asserted here.
     expect(screen.queryByText(/too deep/)).not.toBeInTheDocument();
-    const control = screen.getByRole('button', { name: 'Raw data' });
+    const control = screen.getByRole('button', { name: 'Station facilities: Raw data' });
     expect(control).toBeInTheDocument();
 
     fireEvent.click(control);
@@ -95,6 +95,45 @@ describe('StationAccessibilitySection', () => {
   it('renders the heading "Accessibility & facilities", not bare "Accessibility"', () => {
     renderWithMantine(<StationAccessibilitySection result={{ coverage: 'empty' }} />);
     expect(screen.getByRole('heading', { name: 'Accessibility & facilities' })).toBeInTheDocument();
+  });
+
+  // Mantine's `Accordion` panel is a `role="region"` landmark named by its
+  // own control, so two disclosures whose visible labels happen to match
+  // ("1 item" under Lifts and "1 item" under Car parks; "Raw data" under
+  // each of two unmodelled keys) produced two identically-named landmarks:
+  // an axe `landmark-unique` failure, and a screen-reader landmark list
+  // offering several indistinguishable entries. Caught by running axe
+  // against /stations/[crs] with every disclosure expanded.
+  it('gives colliding disclosures distinct accessible names, qualified by their field', () => {
+    renderWithMantine(
+      <StationAccessibilitySection
+        result={{
+          coverage: 'present',
+          data: { carParks: [{ spaces: 120 }], lifts: [{ note: 'Platform 1' }] },
+        }}
+      />,
+    );
+    // Same visible text on both controls...
+    expect(screen.getAllByText('1 item')).toHaveLength(2);
+    // ...but two different accessible names, so the two landmarks differ.
+    expect(screen.getByRole('button', { name: 'Car parks: 1 item' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Lifts: 1 item' })).toBeInTheDocument();
+
+    const names = screen.getAllByRole('button').map((b) => b.getAttribute('aria-label'));
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  // WCAG 2.5.3 (Label in Name): the qualifier is a PREFIX, never a
+  // replacement, so voice control still activates the control by what is
+  // written on it.
+  it('keeps the visible label inside the accessible name', () => {
+    renderWithMantine(
+      <StationAccessibilitySection
+        result={{ coverage: 'present', data: { carParks: [{ spaces: 120 }] } }}
+      />,
+    );
+    const control = screen.getByRole('button', { name: /1 item$/ });
+    expect(control.getAttribute('aria-label')).toContain(control.textContent?.trim() ?? '');
   });
 
   // The backend forwards any non-null allowlisted value verbatim, including
@@ -123,7 +162,7 @@ describe('StationAccessibilitySection', () => {
       />,
     );
     expect(screen.queryByText('Cycling')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Raw data' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Raw data/ })).not.toBeInTheDocument();
     expect(screen.getByText('Lifts')).toBeInTheDocument();
   });
 
@@ -199,8 +238,8 @@ describe('StationAccessibilitySection', () => {
         result={{ coverage: 'present', data: { carParks: [{ spaces: 120 }, {}] } }}
       />,
     );
-    expect(screen.getByRole('button', { name: '1 item' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '2 items' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Car parks: 1 item' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /2 items/ })).not.toBeInTheDocument();
   });
 
   it('skips an array whose every item renders to nothing', () => {

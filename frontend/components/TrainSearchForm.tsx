@@ -587,6 +587,10 @@ export function TrainSearchForm({
         error={stationCrs.length > 0 && !stationValid ? 'Must be a 3-letter CRS code' : null}
         required
       />
+      {/* `clearButtonProps`: Mantine's `clearable` clear button ships with
+          no accessible name, so axe's `button-name` fires (critical) as
+          soon as a date is picked. See `components/IncidentSearchForm.tsx`'s
+          own note and `app/lines/AllLinesTable.tsx` for the same fix. */}
       <DatePickerInput
         label="Date (optional)"
         placeholder="Today"
@@ -596,6 +600,7 @@ export function TrainSearchForm({
         minDate={minDate}
         maxDate={maxDate}
         clearable
+        clearButtonProps={{ 'aria-label': 'Clear the date' }}
       />
       <Autocomplete
         label="Departing from (optional)"

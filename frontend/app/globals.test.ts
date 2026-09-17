@@ -5,6 +5,30 @@ import { theme } from '@/lib/theme';
 // Vitest runs with `frontend/` as its root (see vitest.config.ts).
 const css = readFileSync('app/globals.css', 'utf8');
 
+/** The declarations of the `html:root[data-mantine-color-scheme='<scheme>']`
+ * block, with CSS comments stripped out first.
+ *
+ * Not the `\{[^}]*\}` match the other assertions in this file use, and not
+ * a style preference: this file's house style puts long prose comments
+ * INSIDE these two blocks, and the moment one of them contained a `}` (a
+ * comment quoting `<Text c="red">{error}</Text>`) the lazy character class
+ * truncated the match mid-block and three passing assertions started
+ * failing for a reason that had nothing to do with the CSS. Stripping
+ * comments and then brace-matching means the next person writing a comment
+ * here doesn't have to know that. */
+function schemeBlock(scheme: 'light' | 'dark'): string {
+  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const start = withoutComments.indexOf(`html:root[data-mantine-color-scheme='${scheme}']`);
+  if (start === -1) return '';
+  const open = withoutComments.indexOf('{', start);
+  let depth = 0;
+  for (let i = open; i < withoutComments.length; i++) {
+    if (withoutComments[i] === '{') depth++;
+    else if (withoutComments[i] === '}' && --depth === 0) return withoutComments.slice(open, i + 1);
+  }
+  return '';
+}
+
 // Mantine's palette, read off `@mantine/core/styles.css`. Only the shades
 // these assertions actually name are listed.
 const GRAPE_4 = '#da77f2';
@@ -17,7 +41,36 @@ const GRAY_7 = '#495057';
 const GRAY_8 = '#343a40';
 const BLUE_8 = '#1971c2';
 const BLACK = '#000000';
-const DARK_2 = '#a6a7ab'; // `--mantine-color-dimmed` in the dark scheme
+const GRAY_5 = '#adb5bd'; // `--mantine-color-placeholder` in the light scheme
+const RED_6 = '#fa5252'; // `--mantine-color-red-outline` before the override
+const RED_8 = '#e03131';
+const RED_9 = '#c92a2a';
+const RED_4 = '#ff8787'; // `--ds-color-error-text` in the dark scheme
+const RED_FILLED_DARK = '#e03131'; // what a bare `c="red"` resolved to in dark
+// `variant="light"` pairings: `--mantine-color-<c>-light` (shade 1) as the
+// surface, `--mantine-color-<c>-light-color` (shade 9) as the text, and the
+// hand-mixed replacement where shade 9 does not clear AA on it.
+const LIGHT_VARIANT: Record<string, { surface: string; shade9: string; fixed?: string }> = {
+  yellow: { surface: '#fff3bf', shade9: '#e67700', fixed: '#a85700' },
+  orange: { surface: '#ffe8cc', shade9: '#d9480f', fixed: '#bb3e0d' },
+  green: { surface: '#d3f9d8', shade9: '#2b8a3e', fixed: '#267b37' },
+  teal: { surface: '#c3fae8', shade9: '#087f5b', fixed: '#087a57' },
+  red: { surface: '#ffe3e3', shade9: '#c92a2a' },
+  blue: { surface: '#d0ebff', shade9: '#1864ab' },
+  grape: { surface: '#f3d9fa', shade9: '#862e9c' },
+  gray: { surface: '#f1f3f5', shade9: '#212529' },
+};
+// Mantine's dark ramp, as shipped by the version in node_modules today.
+// DARK_2 is deliberately spelled out rather than trusted from memory: it
+// was #a6a7ab when the grape theme shipped and this file recorded a 6.46:1
+// "already clears AA" claim off that value. Mantine re-cut the ramp, and
+// the tests below now assert the regression that caused, so a future re-cut
+// has to come through here rather than silently past it.
+const DARK_0 = '#c9c9c9'; // `--mantine-color-text` in the dark scheme
+const DARK_1 = '#b8b8b8';
+const DARK_2 = '#828282'; // was #a6a7ab
+const DARK_3 = '#696969'; // `--mantine-color-placeholder` in the dark scheme
+const DARK_6 = '#2e2e2e'; // `Card`/`Paper` surface -- darker case than DARK_7
 
 // WCAG 2.1 relative luminance and contrast ratio. Colour can't usefully be
 // asserted shade by shade in a unit test, but "does this pair clear AA for
@@ -51,10 +104,17 @@ describe('link colour', () => {
     // `:root[data-mantine-color-scheme='light']` block, which the provider
     // injects into <body> — later in document order than this stylesheet,
     // so equal specificity would lose.
-    const rule = css.match(/html:root\[data-mantine-color-scheme=['"]light['"]\]\s*\{[^}]*\}/);
-    expect(rule).not.toBeNull();
-    expect(rule![0]).toContain('--mantine-color-anchor: var(--mantine-color-grape-7)');
-    expect(css).not.toContain("data-mantine-color-scheme='dark'");
+    const rule = schemeBlock('light');
+    expect(rule).toContain('--mantine-color-anchor: var(--mantine-color-grape-7)');
+    // This used to assert `css` contained no dark-scheme block AT ALL, as a
+    // proxy for "the anchor override is light-only". That proxy stopped
+    // being safe the moment the dark scheme needed overrides of its own
+    // (see `dark scheme dimmed + placeholder` below), and a blanket ban on
+    // the string would have forced that genuine fix to be written somewhere
+    // worse. Assert the actual property instead: whatever else the dark
+    // block carries, it must not carry an anchor override.
+    const darkRule = schemeBlock('dark');
+    expect(darkRule).not.toContain('--mantine-color-anchor');
   });
 
   it('leaves the dark scheme alone, where grape 4 already clears AA', () => {
@@ -135,11 +195,10 @@ describe('filled-surface contrast under autoContrast', () => {
   });
 
   it("redirects the light scheme's grape filled background and hover to grape 7/8", () => {
-    const rule = css.match(/html:root\[data-mantine-color-scheme=['"]light['"]\]\s*\{[^}]*\}/);
-    expect(rule).not.toBeNull();
-    expect(rule![0]).toContain('--mantine-color-grape-filled: var(--mantine-color-grape-7)');
-    expect(rule![0]).toContain('--mantine-color-grape-filled-hover: var(--mantine-color-grape-8)');
-    expect(rule![0]).toContain('--mantine-primary-color-contrast: var(--mantine-color-white)');
+    const rule = schemeBlock('light');
+    expect(rule).toContain('--mantine-color-grape-filled: var(--mantine-color-grape-7)');
+    expect(rule).toContain('--mantine-color-grape-filled-hover: var(--mantine-color-grape-8)');
+    expect(rule).toContain('--mantine-primary-color-contrast: var(--mantine-color-white)');
   });
 });
 
@@ -167,9 +226,8 @@ describe('scheme-blind filled colours (gray, blue)', () => {
 
 describe('dimmed body text contrast', () => {
   it('overrides --mantine-color-dimmed to gray 7 for the light scheme only', () => {
-    const rule = css.match(/html:root\[data-mantine-color-scheme=['"]light['"]\]\s*\{[^}]*\}/);
-    expect(rule).not.toBeNull();
-    expect(rule![0]).toContain('--mantine-color-dimmed: var(--mantine-color-gray-7)');
+    const rule = schemeBlock('light');
+    expect(rule).toContain('--mantine-color-dimmed: var(--mantine-color-gray-7)');
   });
 
   it('confirms the dimmed shade the light scheme was moved off actually failed AA', () => {
@@ -186,12 +244,176 @@ describe('dimmed body text contrast', () => {
     const rule = css.match(
       /\.mantine-Notification-description:where\(\[data-with-title\]\)\s*\{[^}]*\}/,
     );
-    expect(rule).not.toBeNull();
     expect(rule![0]).toContain('color: var(--mantine-color-gray-7)');
   });
 
-  it("leaves the dark scheme's dimmed colour alone, where it already clears AA", () => {
-    expect(contrast(DARK_2, DARK_7)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.46:1
+  // What this block used to say: "leaves the dark scheme's dimmed colour
+  // alone, where it already clears AA (6.46:1)". That was true of dark 2 as
+  // #a6a7ab. Mantine's dark ramp was re-cut and dark 2 is now #828282, so
+  // the app's single most widespread text style silently regressed in dark
+  // mode -- 4.04:1 on the body and 3.53:1 on the `Card`/`Paper` surface
+  // most of it actually sits on. Found by the first full-ruleset axe sweep
+  // to run in dark mode at all (e2e/accessibility.spec.ts).
+  it("confirms the dark scheme's default dimmed shade fails AA on a Card surface", () => {
+    expect(contrast(DARK_2, DARK_6)).toBeLessThan(AA_BODY_TEXT); // 3.53:1
+    expect(contrast(DARK_2, DARK_7)).toBeLessThan(AA_BODY_TEXT); // 4.04:1
+  });
+
+  it('overrides --mantine-color-dimmed to dark 1 for the dark scheme', () => {
+    const rule = schemeBlock('dark');
+    expect(rule).toContain('--mantine-color-dimmed: var(--mantine-color-dark-1)');
+  });
+
+  it('clears AA with dark 1 against the darkest surface dimmed text sits on', () => {
+    expect(contrast(DARK_1, DARK_6)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.85:1
+    expect(contrast(DARK_1, DARK_7)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 7.83:1
+  });
+
+  it('keeps dimmed text visibly dimmer than body text in the dark scheme', () => {
+    // The whole point of `dimmed` survives the lift: dark 0 (body text) is
+    // still the higher-contrast of the two on the same surface. Without
+    // this, "fix the contrast" could be satisfied by making dimmed text
+    // indistinguishable from ordinary text.
+    expect(contrast(DARK_0, DARK_6)).toBeGreaterThan(contrast(DARK_1, DARK_6));
+  });
+
+  it('also lifts a titled Notification description off dark 2 in the dark scheme', () => {
+    // Mantine hardcodes the dark half the same way it hardcodes the light
+    // half (Notification.css:109, `--mantine-color-dark-2`), so the
+    // variable override above does not reach it either.
+    const rule = css.match(
+      /:where\(\[data-mantine-color-scheme=['"]dark['"]\]\)\s*\.mantine-Notification-description:where\(\[data-with-title\]\)\s*\{[^}]*\}/,
+    );
+    expect(rule![0]).toContain('color: var(--mantine-color-dark-1)');
+  });
+});
+
+// `autoContrast` (see `filled-surface contrast under autoContrast` above)
+// only ever runs for the `filled` variant. Every other variant is handed a
+// `--mantine-color-<name>-<variant>` CSS variable verbatim, so `outline`,
+// `light` and the input placeholder were never covered by it -- and a
+// full-ruleset axe sweep of every route, in both schemes, found all three
+// failing. See app/globals.css for the per-colour derivations.
+describe('non-filled variants and placeholders', () => {
+  const lightRule = () => schemeBlock('light');
+
+  it('confirms the light scheme\'s default outline shades actually failed AA on white', () => {
+    expect(contrast(GRAY_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.32:1
+    expect(contrast(RED_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.28:1
+    expect(contrast(GRAPE_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 4.02:1
+  });
+
+  it('redirects gray/red/grape outline to shades that clear AA on white', () => {
+    expect(lightRule()).toContain('--mantine-color-gray-outline: var(--mantine-color-gray-7)');
+    expect(lightRule()).toContain('--mantine-color-red-outline: var(--mantine-color-red-9)');
+    expect(lightRule()).toContain('--mantine-color-grape-outline: var(--mantine-color-grape-7)');
+    expect(contrast(GRAY_7, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 8.18:1
+    expect(contrast(RED_9, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 5.46:1
+    expect(contrast(GRAPE_7, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 4.85:1
+  });
+
+  it('records why red 9 rather than red 8, which clears AA by 0.01', () => {
+    // Red 8 is 4.51:1 -- technically passing, but inside the rounding of
+    // any future palette tweak. This asserts the margin, not just the pass.
+    expect(contrast(RED_8, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    expect(contrast(RED_8, WHITE)).toBeLessThan(4.6);
+    expect(contrast(RED_9, WHITE)).toBeGreaterThan(5);
+  });
+
+  // The whole `variant="light"` table, not just the colours that needed
+  // changing. The first sweep fixed orange alone and called it "the one
+  // colour that cannot be fixed by shade substitution"; review caught that
+  // yellow, green and teal fail the same way, and they were missed because
+  // the routes that render them are env-gated or only appear under a data
+  // condition the default fixtures never produce. Enumerating all eight
+  // here is the fix for THAT -- a colour cannot now fail unnoticed just
+  // because no live page happened to render it during a sweep.
+  it.each(Object.entries(LIGHT_VARIANT))(
+    '%s light-variant text clears AA on its own surface',
+    (_name, { surface, shade9, fixed }) => {
+      expect(contrast(fixed ?? shade9, surface)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    },
+  );
+
+  it.each(Object.entries(LIGHT_VARIANT))(
+    '%s light-variant text also clears AA on plain white, where a light surface may be painted',
+    (_name, { surface: _s, shade9, fixed }) => {
+      expect(contrast(fixed ?? shade9, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    },
+  );
+
+  it('confirms the four replaced colours genuinely could not be fixed by shade substitution', () => {
+    // Shade 9 is the END of each ramp, so "use a darker shade" is not
+    // available -- and for yellow and orange even pure white, the lightest
+    // surface physically possible, still fails. That is why app/globals.css
+    // carries four hand-mixed hexes rather than four more `var(...)`s.
+    for (const name of ['yellow', 'orange', 'green', 'teal']) {
+      const { surface, shade9 } = LIGHT_VARIANT[name];
+      expect(contrast(shade9, surface)).toBeLessThan(AA_BODY_TEXT);
+    }
+    expect(contrast(LIGHT_VARIANT.yellow.shade9, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.00:1
+    expect(contrast(LIGHT_VARIANT.orange.shade9, WHITE)).toBeLessThan(AA_BODY_TEXT); // 4.30:1
+  });
+
+  it('leaves red on its palette token, and pins the margin that justified that', () => {
+    // Red is the near-miss: 4.51:1, passing, so it keeps `red-9` rather
+    // than gaining a fifth bespoke hex for 0.15. If a palette re-cut ever
+    // pushes it under, this fails here rather than going unnoticed.
+    expect(contrast(LIGHT_VARIANT.red.shade9, LIGHT_VARIANT.red.surface)).toBeGreaterThanOrEqual(
+      AA_BODY_TEXT,
+    );
+    expect(lightRule()).not.toContain('--mantine-color-red-light-color');
+  });
+
+  it('writes each replacement into the light scheme block', () => {
+    for (const [name, { fixed }] of Object.entries(LIGHT_VARIANT)) {
+      if (!fixed) continue;
+      expect(lightRule()).toContain(`--mantine-color-${name}-light-color: ${fixed}`);
+    }
+  });
+
+  it('lifts the input placeholder off the worst ratio in the app, in both schemes', () => {
+    expect(contrast(GRAY_5, WHITE)).toBeLessThan(3); // 2.07:1 -- the worst found
+    expect(contrast(DARK_3, DARK_6)).toBeLessThan(3); // 2.47:1
+    expect(lightRule()).toContain('--mantine-color-placeholder: var(--mantine-color-gray-7)');
+    const darkRule = schemeBlock('dark');
+    expect(darkRule).toContain('--mantine-color-placeholder: var(--mantine-color-dark-1)');
+    expect(contrast(GRAY_7, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    expect(contrast(DARK_1, DARK_6)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+  });
+});
+
+// A bare colour name on the `c` prop resolves to `--mantine-color-<c>-filled`
+// (Mantine's `parseThemeColor`: `shade ? ...-<shade> : ...-filled`), which is
+// a BACKGROUND colour being used as text -- so all 16 `<Text c="red">{error}</Text>`
+// call sites shipped below AA in both schemes. Invisible to the axe sweep
+// because they only render after a failed action, which is why this is pinned
+// deterministically here as well as exercised live in
+// e2e/accessibility.spec.ts's forced-failure test.
+describe('inline error text', () => {
+  it('confirms a bare `c="red"` failed AA in BOTH schemes', () => {
+    expect(contrast(RED_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.28:1, light
+    expect(contrast(RED_FILLED_DARK, DARK_7)).toBeLessThan(AA_BODY_TEXT); // 3.44:1, dark body
+    expect(contrast(RED_FILLED_DARK, DARK_6)).toBeLessThan(AA_BODY_TEXT); // 3.01:1, dark Card
+  });
+
+  it('defines --ds-color-error-text per scheme, from palette tokens rather than hand-mixed hexes', () => {
+    const light = schemeBlock('light');
+    const dark = schemeBlock('dark');
+    expect(light).toContain('--ds-color-error-text: var(--mantine-color-red-9)');
+    expect(dark).toContain('--ds-color-error-text: var(--mantine-color-red-4)');
+  });
+
+  it('clears AA in both schemes, on the body and on a Card', () => {
+    expect(contrast(RED_9, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 5.46:1
+    expect(contrast(RED_4, DARK_7)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.70:1
+    expect(contrast(RED_4, DARK_6)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 5.86:1
+  });
+
+  it('leaves --mantine-color-red-filled alone, because it is a background', () => {
+    // Fixing the text by darkening this variable would repaint every
+    // destructive button, whose label `autoContrast` already handles.
+    expect(css).not.toContain('--mantine-color-red-filled:');
   });
 });
 
@@ -202,13 +424,11 @@ describe('TextLink underline affordance', () => {
   // style object; `TextLink` opts in via `data-text-link`.
   it('underlines every TextLink on hover and on keyboard focus', () => {
     const rule = css.match(/a\[data-text-link\]:hover,\s*a\[data-text-link\]:focus-visible\s*\{[^}]*\}/);
-    expect(rule).not.toBeNull();
     expect(rule![0]).toContain('text-decoration: underline');
   });
 
   it('underlines always-on TextLinks unconditionally', () => {
     const rule = css.match(/a\[data-text-link=['"]always['"]\]\s*\{[^}]*\}/);
-    expect(rule).not.toBeNull();
     expect(rule![0]).toContain('text-decoration: underline');
   });
 
@@ -252,7 +472,6 @@ describe('status badge truncation opt-out', () => {
   // the date range on the line detail page.
   it('opts status badges out of overflow clipping, root and label', () => {
     const rule = css.match(/\[data-status-badge\][\s\S]*?\{[^}]*\}/);
-    expect(rule).not.toBeNull();
     expect(rule![0]).toContain('overflow: visible');
     expect(rule![0]).toContain('text-overflow: clip');
   });
@@ -271,7 +490,6 @@ describe('background theming', () => {
     // which follow immediately after in the file and have their own
     // assertions below.
     const rule = css.match(/body(?!\[)\s*\{\s*background-image:[^}]*\}/);
-    expect(rule).not.toBeNull();
     expect(rule![0]).toContain('color-mix(in srgb, var(--mantine-color-grape-6)');
     expect(rule![0]).not.toMatch(/#[0-9a-f]{3,8}/i);
     // Single-digit percentage: this is meant to be barely perceptible, not
@@ -358,7 +576,6 @@ describe('background theming', () => {
 describe('collapsed issue row layout', () => {
   it('lays the row out as a single flex line by default', () => {
     const rule = css.match(/\.issueRow\s*\{[^}]*\}/);
-    expect(rule).not.toBeNull();
     expect(rule![0]).toContain('display: flex');
     expect(rule![0]).toContain('justify-content: space-between');
   });
@@ -378,7 +595,6 @@ describe('collapsed issue row layout', () => {
 
   it('never lets the severity badge shrink out of the row', () => {
     const rule = css.match(/\.issueRow__badge\s*\{[^}]*\}/);
-    expect(rule).not.toBeNull();
     expect(rule![0]).toContain('flex-shrink: 0');
   });
 });
@@ -393,7 +609,6 @@ describe('collapsed issue row layout', () => {
 describe('journey progress diagram layout', () => {
   it('keeps every horizontal measurement in CSS custom properties the breakpoint can rescale', () => {
     const rule = css.match(/\.journeyProgressScroll\s*\{[^}]*\}/);
-    expect(rule).not.toBeNull();
     expect(rule![0]).toContain('--journey-progress-slot: 56px');
     expect(rule![0]).toContain('--journey-progress-endpoint-slot: 84px');
   });
@@ -519,14 +734,12 @@ describe('journey progress diagram layout', () => {
 
   it('gives an endpoint a wider slot so its always-visible label wraps instead of breaking mid-word', () => {
     const rule = css.match(/\.journeyProgressNode--endpoint\s*\{[^}]*\}/);
-    expect(rule).not.toBeNull();
     expect(rule![0]).toContain('flex-basis: var(--journey-progress-endpoint-slot,');
     expect(rule![0]).toContain('min-width: var(--journey-progress-endpoint-slot,');
   });
 
   it('contains an endpoint label inside its slot', () => {
     const rule = css.match(/\.journeyProgressLabel\s*\{[^}]*\}/);
-    expect(rule).not.toBeNull();
     expect(rule![0]).toMatch(/[;{]\s*max-width:\s*100%/);
     // `anywhere`, not `break-word`: only `anywhere` also reduces the
     // min-content contribution, which is the thing that would otherwise
@@ -536,7 +749,6 @@ describe('journey progress diagram layout', () => {
 
   it('clears the 24px minimum pointer target for the intermediate-node tooltip trigger', () => {
     const rule = css.match(/\.journeyProgressTrigger\s*\{[^}]*\}/);
-    expect(rule).not.toBeNull();
     expect(rule![0]).toMatch(/[;{]\s*width:\s*100%/);
     expect(rule![0]).toContain('min-height: 24px');
     // Keeps the circle pinned to the top of the enlarged trigger so the
