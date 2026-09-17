@@ -350,6 +350,34 @@ pub async fn retain_readable_custom_rows<T>(
         .collect())
 }
 
+/// Single-id counterpart of [`retain_readable_custom_rows`], for the routes
+/// whose `{id}` path segment IS the whole query rather than a filter over a
+/// set of rows: `/Line/{id}/Status/...`, the six `/Line/{id}/Stats/...`, and
+/// `/public/lines/{id}/schedule`/`/trains`. A catalogue/TfL id is always
+/// readable and costs no query; a `custom-` id is readable only by its owner
+/// or a current member of a group it is granted into; an anonymous caller
+/// short-circuits to `false` with no query at all.
+///
+/// A route that refuses on this should answer exactly as it would for a
+/// genuinely unknown line id (an empty array, or its usual 404) -- never a
+/// distinct `403`, which would itself confirm the id exists.
+pub async fn caller_may_read_line_id(
+    pool: &PgPool,
+    id: &str,
+    caller_user_id: Option<&str>,
+) -> Result<bool> {
+    if !id.starts_with(CUSTOM_LINE_ID_PREFIX) {
+        return Ok(true);
+    }
+    let Some(user_id) = caller_user_id else {
+        return Ok(false);
+    };
+    let ids = [id.to_string()];
+    Ok(readable_custom_line_ids(pool, &ids, user_id)
+        .await?
+        .contains(id))
+}
+
 /// Owners for every custom-prefixed id in `ids`, for filtering a bulk
 /// status response by ownership without an N+1 query per row (see
 /// `crate::routes::line_status`'s three affected handlers). Catalogue/TfL

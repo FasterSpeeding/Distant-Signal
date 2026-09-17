@@ -365,23 +365,21 @@ async fn get_stop_point_disruption(
 /// them into its `lines` before the `record_daily_stats` pass), so the six
 /// `/Line/{id}/Stats/...` routes are readers of private per-line data as
 /// surely as this one is.
-async fn caller_may_read_line_id(
+/// `Some(Json(vec![]))` when the caller may not read `id` -- the exact
+/// answer a genuinely unknown line id gets from every route here, so a
+/// refusal is indistinguishable from "no such line" and cannot be used to
+/// confirm a private line exists. `None` means "carry on and query."
+/// Callers write `if let Some(empty) = ... { return Ok(empty); }`.
+async fn empty_if_unreadable(
     pool: &sqlx::PgPool,
     id: &str,
     user: &Option<crate::auth::AuthenticatedUser>,
-) -> anyhow::Result<bool> {
-    if !id.starts_with(custom_lines::CUSTOM_LINE_ID_PREFIX) {
-        return Ok(true);
-    }
-    let Some(caller) = user else {
-        return Ok(false);
-    };
-    let ids = [id.to_string()];
-    Ok(
-        custom_lines::readable_custom_line_ids(pool, &ids, &caller.id)
-            .await?
-            .contains(id),
-    )
+) -> Result<Option<Json<Vec<Value>>>, (StatusCode, String)> {
+    let readable =
+        custom_lines::caller_may_read_line_id(pool, id, user.as_ref().map(|c| c.id.as_str()))
+            .await
+            .map_err(internal_error)?;
+    Ok((!readable).then(|| Json(vec![])))
 }
 
 async fn get_line_status_history(
@@ -389,11 +387,8 @@ async fn get_line_status_history(
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
-    if !caller_may_read_line_id(&app.database, &id, &user)
-        .await
-        .map_err(internal_error)?
-    {
-        return Ok(Json(vec![])); // identical shape to a genuinely unknown id -- this route has never distinguished the two.
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
     }
 
     let history = queries::line_status_history_for_range(&app.database, &id, from, to)
@@ -455,14 +450,8 @@ async fn get_line_daily_stats(
     Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
-    if !caller_may_read_line_id(&app.database, &id, &user)
-        .await
-        .map_err(internal_error)?
-    {
-        // Same empty-array answer an unknown line id gets -- these routes
-        // have never distinguished "no data" from "no such line," and a
-        // distinct 403 here would itself confirm the id exists.
-        return Ok(Json(vec![]));
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
     }
     let rows = queries::daily_stats_for_range(&app.database, &id, from, to)
         .await
@@ -509,14 +498,8 @@ async fn get_line_half_hourly_stats(
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
-    if !caller_may_read_line_id(&app.database, &id, &user)
-        .await
-        .map_err(internal_error)?
-    {
-        // Same empty-array answer an unknown line id gets -- these routes
-        // have never distinguished "no data" from "no such line," and a
-        // distinct 403 here would itself confirm the id exists.
-        return Ok(Json(vec![]));
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
     }
     let rows = queries::half_hourly_stats_for_range(&app.database, &id, from, to)
         .await
@@ -568,14 +551,8 @@ async fn get_line_hourly_stats(
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
-    if !caller_may_read_line_id(&app.database, &id, &user)
-        .await
-        .map_err(internal_error)?
-    {
-        // Same empty-array answer an unknown line id gets -- these routes
-        // have never distinguished "no data" from "no such line," and a
-        // distinct 403 here would itself confirm the id exists.
-        return Ok(Json(vec![]));
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
     }
     let rows = queries::sub_daily_stats_for_range(&app.database, &id, from, to, 60)
         .await
@@ -590,14 +567,8 @@ async fn get_line_six_hourly_stats(
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
-    if !caller_may_read_line_id(&app.database, &id, &user)
-        .await
-        .map_err(internal_error)?
-    {
-        // Same empty-array answer an unknown line id gets -- these routes
-        // have never distinguished "no data" from "no such line," and a
-        // distinct 403 here would itself confirm the id exists.
-        return Ok(Json(vec![]));
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
     }
     let rows = queries::sub_daily_stats_for_range(&app.database, &id, from, to, 360)
         .await
@@ -644,14 +615,8 @@ async fn get_line_daily_coverage_stats(
     Path((id, from, to)): Path<(String, chrono::NaiveDate, chrono::NaiveDate)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
-    if !caller_may_read_line_id(&app.database, &id, &user)
-        .await
-        .map_err(internal_error)?
-    {
-        // Same empty-array answer an unknown line id gets -- these routes
-        // have never distinguished "no data" from "no such line," and a
-        // distinct 403 here would itself confirm the id exists.
-        return Ok(Json(vec![]));
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
     }
     let rows = queries::daily_coverage_stats_for_range(&app.database, &id, from, to)
         .await
@@ -698,14 +663,8 @@ async fn get_line_half_hourly_coverage_stats(
     Path((id, from, to)): Path<(String, DateTime<Utc>, DateTime<Utc>)>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
-    if !caller_may_read_line_id(&app.database, &id, &user)
-        .await
-        .map_err(internal_error)?
-    {
-        // Same empty-array answer an unknown line id gets -- these routes
-        // have never distinguished "no data" from "no such line," and a
-        // distinct 403 here would itself confirm the id exists.
-        return Ok(Json(vec![]));
+    if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
+        return Ok(empty);
     }
     let rows = queries::half_hourly_coverage_stats_for_range(&app.database, &id, from, to)
         .await

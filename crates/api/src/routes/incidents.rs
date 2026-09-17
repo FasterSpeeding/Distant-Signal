@@ -333,7 +333,18 @@ async fn get_incident(
     // the path still looks like a plain public read. Say so explicitly
     // rather than relying on no edge rule ever caching `/public/incidents/*`
     // -- see the research doc's §5d: closing the leak in the application
-    // and re-opening it at the CDN would be the same bug again.
+    // and re-opening it at the CDN would be the same bug again. `Vary` is
+    // strictly redundant next to `no-store` for a conforming cache; it is
+    // here for the non-conforming intermediary that honours one and not
+    // the other, which is the whole scenario §5d is about.
+    //
+    // This is the only `Cache-Control` the API sets anywhere, and the
+    // asymmetry is deliberate rather than an oversight: `/Line/{ids}/Status`,
+    // `/Line/Mode/{modes}/Status` and the seven `/Line/{id}/...` routes in
+    // `routes::line_status` are equally session-dependent and equally
+    // bare-headed. §5d asked for it on this route specifically (it measured
+    // this route in production); widening it to the rest is a separate,
+    // uniform change, not something to half-do here.
     Ok((
         [
             (header::CACHE_CONTROL, "private, no-store"),
