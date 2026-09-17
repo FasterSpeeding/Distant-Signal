@@ -42,6 +42,10 @@ against, so (consistent with that field's own pre-existing behavior, not a
 new gap) a `stops_at` value naming a schedule's TRUE terminating calling
 point never matches: that calling point has no `booked_departure` and so
 never gets its own row in `schedule_destination_departures` at all.
+**Both halves of that paragraph were later revised** -- the membership
+test now excludes the calling point the search is anchored at, and the
+true terminus now DOES match. See the "Loop services" addendum at the foot
+of this document.
 
 **This is a genuine behavior change from `destination`, not just a
 rename.** `destination=X` meant "X IS this schedule's true final stop";
@@ -105,3 +109,76 @@ No change: `destinationCrs`/`destinationArrival`/
 still the schedule's true destination and its arrival, still purely
 informational display fields, unrelated to which filter parameters were
 supplied.
+
+## Addendum (2026-09-17): loop services, and what "stops at" excludes
+
+### The bug
+
+"Departing from" = `WAT`, "Stops at" = `WAT` returned every train out of
+Waterloo. Not "most of them", not "the wrong ones as well" -- the exact
+same result set, in the same order, as supplying no `stops_at` at all
+(confirmed against a real Postgres, not inferred from the SQL). The
+membership test above is a correlated `EXISTS` over the schedule's own
+rows, and the row being tested is a member of its own calling-point list,
+so the predicate was true by construction for every candidate.
+
+That is not a harmless no-op, because naming one station in both fields is
+exactly how a rider asks for a LOOP: "leaves Waterloo, comes back to
+Waterloo". South Western Railway's Kingston Loop (train L82877,
+2026-09-14: Waterloo 07:27, round via Kingston and Richmond, terminating
+back at Waterloo 08:46) is the shape in question -- the same working whose
+live timeline was fixed earlier the same day by
+`journey::assign_events_to_stops`, and the same root mistake in a second
+place: **a CRS code does not identify one position in a journey.**
+
+### The fix, in two halves
+
+1. **The membership `EXISTS` excludes the calling point the result row is
+   itself anchored at**, by that row's `(origin_crs, scheduled)` identity
+   within the schedule-day -- not by CRS, and not by `true_origin_crs`.
+   Keying it on the row rather than the code is what keeps the 3+ calls
+   case right: a schedule calling at one station three times still matches
+   from each of its three departures there, because for each anchor the
+   other two remain. It also means the change is invisible to every search
+   where the two CRS codes differ: `stop.origin_crs = $stops_at` and
+   `main.origin_crs = $station` are then different values and the
+   exclusion can never fire.
+
+   Deliberately NOT an ordering constraint. A calling point EARLIER in the
+   journey than the searched one still satisfies `stops_at` -- the filter
+   stays "calls at X somewhere on its route", now minus the one calling
+   point that made the question vacuous, and nothing here promises "and
+   you can get there from the station you searched".
+
+2. **The schedule's TRUE terminating calling point now matches**,
+   via `main.destination_crs`, reversing the gap the section above
+   flagged. Two reasons, one principled and one forcing. The principled
+   one: that gap contradicts this document's own problem statement
+   ("`does this train call at Reading`, regardless of whether Reading is
+   where the schedule actually ends") and was a data-model artifact
+   (an arrival-only calling point has no `booked_departure` and so no row)
+   rather than a decision. The forcing one: a loop's return call IS its
+   terminus, so without this branch the corrected `EXISTS` in (1) finds
+   nothing and the Kingston Loop stays unfindable. This widens ordinary
+   searches too -- `stops_at` naming any schedule's true destination now
+   matches it -- which is intended, and which restores (as a by-product,
+   not as a replacement filter) the "true destination equals X" answer the
+   `destination`-to-`stops_at` change had removed, still mixed in with
+   intermediate-stop matches.
+
+`arrival_from`/`arrival_to` follow the same two-branch shape, so that
+every row `stops_at` can match is a row those bounds can also filter
+instead of silently dropping: `calling_point_arrival` on the `EXISTS`
+branch as before, and the terminus's own `destination_arrival` on the new
+branch -- where it is not a schedule-level stand-in but literally the
+arrival at the calling point the caller named. Day offsets are consulted
+by neither, matching the original bound's own wall-clock behavior.
+
+### What did NOT change
+
+The wire shape, the single-valued parameter, the `normalize_crs`
+validation, the `400` for an arrival bound with no `stops_at`, and the
+`origin`/`station`/time filters. On the frontend only the "Stops at"
+field's `description` changed, to say that the named station is one the
+train calls at other than where you are departing from, and that naming
+the same station twice finds services that come back.
