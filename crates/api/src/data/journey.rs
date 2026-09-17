@@ -1040,6 +1040,79 @@ mod tests {
         );
     }
 
+    /// Regression test for the seed-fixture wire-shape mismatch the UX
+    /// accessibility/usability review's §4.2 describes
+    /// (docs/superpowers/specs/2026-09-17-full-service-ux-accessibility-usability-review.md):
+    /// `.devdata/seed.sql`'s `trains.calling_points` blob used
+    /// `crs`/`name`/`plannedArrival`/`plannedDeparture` with full zoned UTC
+    /// instants, which is not `RawCallingPoint`'s actual wire shape at all
+    /// (`tiploc`/`kind`/`bookedArrival`/`bookedDeparture` as **naive
+    /// London wall-clock** `NaiveTime` values, camelCase) -- so a seed row
+    /// shaped like the old fixture fails `serde_json::from_value` outright
+    /// (`could not build journey stops`, `crates/api/src/routes/train.rs:966`),
+    /// and even a corrected shape that mistakenly treated the booked times
+    /// as already-UTC would be silently an hour off for any BST service
+    /// date.
+    ///
+    /// This is a DB-free counterpart to the `#[ignore]`d live-database test
+    /// `db_tests::build_journey_stops_from_calling_points_json_resolves_tiploc_to_crs_and_kind`
+    /// below, which only asserts `scheduled_departure`/`scheduled_arrival`
+    /// are `Some` -- not that the UTC *value* is correct. This proves both
+    /// halves: (1) the real camelCase wire shape deserializes successfully
+    /// into `RawCallingPoint`, and (2) a naive `bookedDeparture`/
+    /// `bookedArrival` London wall-clock value on a BST service date
+    /// converts through `london_to_utc` to the correct UTC instant -- one
+    /// hour earlier, not equal to the naive value reinterpreted as UTC.
+    #[test]
+    fn real_wire_shape_calling_points_json_deserializes_and_converts_bst_wall_clock_to_utc() {
+        let service_date: NaiveDate = "2026-09-17".parse().unwrap(); // BST: UTC+1
+        let calling_points_json = serde_json::json!([
+            {
+                "tiploc": "KNGX",
+                "kind": "Origin",
+                "bookedArrival": null,
+                "bookedDeparture": "09:00:00",
+                "dayOffset": 0
+            },
+            {
+                "tiploc": "EDINBUR",
+                "kind": "Terminate",
+                "bookedArrival": "13:30:00",
+                "bookedDeparture": null,
+                "dayOffset": 0
+            }
+        ]);
+
+        let raw: Vec<RawCallingPoint> = serde_json::from_value(calling_points_json).expect(
+            "the real trains.calling_points wire shape must deserialize into RawCallingPoint",
+        );
+
+        let tiploc_to_crs: HashMap<String, String> = [
+            ("KNGX".to_string(), "KGX".to_string()),
+            ("EDINBUR".to_string(), "EDB".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let stops = stops_from_calling_points(&raw, &tiploc_to_crs, service_date);
+
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[0].crs.as_deref(), Some("KGX"));
+        assert_eq!(
+            stops[0].scheduled_departure,
+            Some("2026-09-17T08:00:00Z".parse().unwrap()),
+            "09:00 London wall-clock on a BST date (UTC+1) must convert to 08:00 UTC, not be \
+             reinterpreted as already-UTC 09:00 -- the exact regression a zoned-instant \
+             `plannedDeparture` fixture shape would mask"
+        );
+        assert_eq!(stops[1].crs.as_deref(), Some("EDB"));
+        assert_eq!(
+            stops[1].scheduled_arrival,
+            Some("2026-09-17T12:30:00Z".parse().unwrap()),
+            "13:30 London wall-clock on a BST date (UTC+1) must convert to 12:30 UTC"
+        );
+    }
+
     /// A **characterization** test, not a regression test: it records that
     /// trimming does nothing for the first remaining gap in `tiploc_key`'s
     /// "What this does NOT fix" note (Vauxhall's `VAUXHLM`, Clapham
