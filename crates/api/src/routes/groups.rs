@@ -960,7 +960,7 @@ mod tests {
 /// `crate::data::groups::db_tests` deliberately doesn't cover, since a
 /// data-layer test can only prove what a query does, never which callers a
 /// HANDLER lets reach it. This file is the most permission-dense route
-/// module in the crate (16 handlers, three distinct role predicates), so
+/// module in the crate (21 handlers, three distinct role predicates), so
 /// the cases picked here are the ones where the handler's own gate, not
 /// the data layer's, is the entire behavior: an admin is refused the
 /// owner's row, a non-owner is refused promotion and demotion, the owner
