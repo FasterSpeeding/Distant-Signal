@@ -7,8 +7,14 @@ import DOMPurify from 'isomorphic-dompurify';
 // ALLOWED_ATTR strips `target`/`rel` by default since they're not in the
 // allowlist below; this hook adds them back on every surviving `<a>` so
 // external links don't inherit this page's window/referrer.
+//
+// Only on an anchor that still HAS an href. An `<a>` whose href the
+// sanitizer rejected (a `javascript:` URL, or any scheme outside
+// `sanitizeRichText`'s allowlist) survives as an inert wrapper around its
+// own text, and putting `target`/`rel` on that would be link hardening
+// applied to something that is no longer a link.
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-  if (node.tagName === 'A') {
+  if (node.tagName === 'A' && node.hasAttribute('href')) {
     node.setAttribute('target', '_blank');
     node.setAttribute('rel', 'noopener');
   }

@@ -248,21 +248,36 @@ function isFacilityRecord(value: Record<string, unknown>): boolean {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-/** The last container depth that is rendered rather than dumped, counting
- * the allowlisted key's own value as 0 and incrementing at EVERY container
- * level, objects included (§4.9's stated precondition -- the old renderer
- * only counted array levels, which made the same number mean something
- * else).
+/** The last container depth this renderer will descend to, counting the
+ * allowlisted key's own value as 0 and incrementing at EVERY container
+ * level, objects included -- §4.9's stated precondition, and the thing the
+ * old renderer got wrong by counting only array levels.
  *
  * Verified against the fixtures rather than copied from the design: the
  * deepest chain in all 31 payloads is seven containers -- `carParks` object
  * -> `carParks` array -> element -> `openingHours` array -> entry ->
- * `openPeriod` array -> `{startTime, endTime}` -- which occupies depths 0
- * through 6. So 7 is the observed maximum plus exactly one level of margin,
- * and `depth < 7` (the off-by-one the design warns about) would truncate a
- * car park's opening period the first time the feed nests one deeper.
- * `frontend/lib/stationAccessibility.fixtures.test.ts` re-measures this
- * from the fixtures so the constant cannot drift away from its evidence. */
+ * `openPeriod` array -> `{startTime, endTime}` -- occupying depths 0
+ * through 6. 7 is therefore the observed maximum plus exactly one level of
+ * margin, which is what §4.9 asks for and why `depth < 7` would be the
+ * wrong bound to write.
+ *
+ * **Every level is counted, including the ones a pattern renderer swallows
+ * whole**, which needs saying because two of them do. Pattern B consumes
+ * three levels below its own array (entry, `openPeriod` array, period
+ * object) inside pure string formatters that never re-enter `renderAt`, and
+ * Pattern D consumes one (the item object) before handing the item's own
+ * fields back to the dispatcher. Both therefore check the bound for the
+ * levels they are about to consume, rather than quietly reaching past it --
+ * without that, `MAX_RENDER_DEPTH` would measure "levels the generic
+ * dispatcher happened to walk", which is a smaller and much less meaningful
+ * number than the one §4.9 reasons about. (Pattern C's `postalAddress` join
+ * consumes one further level the same way; it sits at most at depth 5 in
+ * the sample, inside the margin, and is left unchecked because a flat
+ * object of address lines cannot recurse.)
+ *
+ * Termination does not depend on any of that arithmetic being right: no
+ * pattern renderer recurses, so the only unbounded path is `renderAt`
+ * itself, which increments on every call. */
 export const MAX_RENDER_DEPTH = 7;
 
 /** Turn one allowlisted key's value into something displayable. Never
@@ -299,7 +314,7 @@ function renderString(value: string): AccessibilityNode {
 
 /** §4.1's precedence, array half: B, then D, then F. */
 function renderArray(value: unknown[], depth: number): AccessibilityNode {
-  if (isOpeningTimes(value)) return renderOpeningTimes(value);
+  if (isOpeningTimes(value)) return renderOpeningTimes(value, depth);
   if (isNamedItems(value)) return renderCollection(value, depth);
   if (isTokenList(value)) return { kind: 'tokens', tokens: value.map(humanizeToken) };
   return { kind: 'list', items: value.map((item) => renderAt(item, depth + 1)) };
@@ -334,10 +349,10 @@ function renderFacility(value: Record<string, unknown>, depth: number): Accessib
 
   // `location` and `notes` are prose about this facility, so they carry no
   // label -- the availability line above them is the subject.
-  pushUnlabelled(parts, value.location);
-  pushUnlabelled(parts, value.notes);
+  pushUnlabelled(parts, 'location', value.location, depth);
+  pushUnlabelled(parts, 'notes', value.notes, depth);
   pushLabelled(parts, 'Opening times', value.openingTimes, depth);
-  pushUnlabelled(parts, value.openingHoursNotes);
+  pushUnlabelled(parts, 'openingHoursNotes', value.openingHoursNotes, depth);
   pushLabelled(parts, 'Contact', value.operatorContactDetails, depth);
 
   for (const [key, own] of Object.entries(value)) {
@@ -349,8 +364,24 @@ function renderFacility(value: Record<string, unknown>, depth: number): Accessib
   return { kind: 'facility', available: value.available === true, parts };
 }
 
-function pushUnlabelled(parts: LabelledNode[], value: unknown): void {
-  if (typeof value !== 'string') return;
+/** The unlabelled-prose slot of a facility record. A value that is not a
+ * string is NOT dropped -- it falls through to the ordinary labelled
+ * treatment instead. The fixed field lists in this module name fields whose
+ * *usual* type has a bespoke rendering; a field arriving as some other type
+ * must still reach the page, because silently losing a field is the failure
+ * mode the design (§5, reason 2) calls the worst possible one for this
+ * feature, and the whole point of keeping a terminal fallback. */
+function pushUnlabelled(
+  parts: LabelledNode[],
+  key: string,
+  value: unknown,
+  depth: number,
+): void {
+  if (!hasRenderableValue(value)) return;
+  if (typeof value !== 'string') {
+    pushField(parts, key, value, depth);
+    return;
+  }
   const node = renderString(value);
   if (isEmptyNode(node)) return;
   parts.push({ node });
@@ -475,7 +506,12 @@ export function formatHours(entry: Record<string, unknown>): string {
   return status;
 }
 
-function renderOpeningTimes(value: unknown[]): AccessibilityNode {
+/** `depth` is the array's own. Three more levels sit below it -- the
+ * entry, its `openPeriod` array and each period object -- and the two
+ * formatters above read all of them without going back through `renderAt`,
+ * so this is where those levels are checked against the bound. */
+function renderOpeningTimes(value: unknown[], depth: number): AccessibilityNode {
+  if (depth + 3 > MAX_RENDER_DEPTH) return raw(value);
   const entries: OpeningTimesEntry[] = [];
   for (const entry of value) {
     if (!isPlainObject(entry)) continue;
@@ -491,21 +527,6 @@ function renderOpeningTimes(value: unknown[]): AccessibilityNode {
 // Pattern C -- contact details
 // ---------------------------------------------------------------------------
 
-/** The five contact fields with a bespoke rendering, in display order.
- * `name` is the sixth and is DROPPED: across all 122 contact objects in the
- * survey every `name` either contains the word "Details" or is
- * byte-identical to its own `operatorName`, which is rendered anyway, so it
- * carries nothing (§4.4). */
-const CONTACT_FIELDS = [
-  'name',
-  'primaryTelephoneNumber',
-  'emailAddress',
-  'url',
-  'postalAddress',
-  'operatorName',
-  'note',
-] as const;
-
 /** Address lines are `-` placeholders at several car parks
  * (`{addressLine1: "-", addressLine2: "-"}` at `BHM`), which joined
  * verbatim reads as "-, -". A line that is nothing but dashes, dots or
@@ -514,9 +535,23 @@ function isPlaceholderLine(value: string): boolean {
   return /^[\s\-–—.,]*$/.test(value);
 }
 
-function formatPostalAddress(value: unknown): string {
-  if (!isPlainObject(value)) return '';
-  return Object.values(value)
+/** The address lines, in the order the feed declares them -- named
+ * explicitly rather than taken from `Object.values`, so the rendered order
+ * does not depend on JSON key order and a future sibling (a country, a
+ * `what3words`) is not silently joined in as if it were an address line.
+ * Anything not on this list falls through to `renderContact`'s labelled
+ * leftovers loop. */
+const POSTAL_ADDRESS_LINES = [
+  'addressLine1',
+  'addressLine2',
+  'addressLine3',
+  'addressLine4',
+  'addressLine5',
+  'postcode',
+] as const;
+
+function formatPostalAddress(value: Record<string, unknown>): string {
+  return POSTAL_ADDRESS_LINES.map((key) => value[key])
     .filter((line): line is string => typeof line === 'string')
     .map((line) => line.trim())
     .filter((line) => line !== '' && !isPlaceholderLine(line))
@@ -535,7 +570,16 @@ function telHref(value: string): string | null {
 function renderContact(value: Record<string, unknown>, depth: number): AccessibilityNode {
   const fields: LabelledNode[] = [];
 
+  // Same rule as `pushUnlabelled`: each bespoke slot below claims a field
+  // only when that field has the type it renders. `unclaimed` collects the
+  // rest, and the loop at the end pushes them through the ordinary labelled
+  // branch, so nothing this list names can vanish by arriving as the wrong
+  // type.
+  const claimed = new Set<string>(['name']);
+  const claim = (key: string) => claimed.add(key);
+
   const phone = typeof value.primaryTelephoneNumber === 'string' ? value.primaryTelephoneNumber.trim() : '';
+  if (typeof value.primaryTelephoneNumber === 'string') claim('primaryTelephoneNumber');
   if (phone !== '') {
     const href = telHref(phone);
     fields.push({
@@ -545,6 +589,7 @@ function renderContact(value: Record<string, unknown>, depth: number): Accessibi
   }
 
   const email = typeof value.emailAddress === 'string' ? value.emailAddress.trim() : '';
+  if (typeof value.emailAddress === 'string') claim('emailAddress');
   if (email !== '') {
     fields.push({
       label: 'Email',
@@ -555,6 +600,7 @@ function renderContact(value: Record<string, unknown>, depth: number): Accessibi
   }
 
   const url = typeof value.url === 'string' ? value.url.trim() : '';
+  if (typeof value.url === 'string') claim('url');
   if (url !== '') {
     fields.push({
       label: 'Website',
@@ -564,26 +610,41 @@ function renderContact(value: Record<string, unknown>, depth: number): Accessibi
     });
   }
 
-  const address = formatPostalAddress(value.postalAddress);
-  if (address !== '') fields.push({ label: 'Address', node: { kind: 'text', text: address } });
+  if (isPlainObject(value.postalAddress)) {
+    claim('postalAddress');
+    const postalAddress = value.postalAddress;
+    const address = formatPostalAddress(postalAddress);
+    if (address !== '') fields.push({ label: 'Address', node: { kind: 'text', text: address } });
+    // A sibling `POSTAL_ADDRESS_LINES` does not name is shown on its own
+    // labelled row rather than dropped -- joining only the known lines
+    // would otherwise lose it silently, which is the same failure this
+    // function's `claimed` bookkeeping exists to prevent, one level down.
+    for (const [key, own] of Object.entries(postalAddress)) {
+      if ((POSTAL_ADDRESS_LINES as readonly string[]).includes(key)) continue;
+      pushField(fields, key, own, depth + 1);
+    }
+  }
 
   // Rich text, not plain: five `operatorName`s in the sample are a bare
   // `<a href>` (ScotRail's lost-property contact at ABD/DNO/INV, Transport
   // for Wales' at CDF/LLE) and one carries a literal `&` (§4.7).
   if (typeof value.operatorName === 'string') {
+    claim('operatorName');
     const node = renderString(value.operatorName);
     if (!isEmptyNode(node)) fields.push({ label: 'Operator', node });
   }
 
   if (typeof value.note === 'string') {
+    claim('note');
     const node = renderString(value.note);
     if (!isEmptyNode(node)) fields.push({ label: 'Note', node });
   }
 
-  // Anything the feed adds to a contact record later still shows up, rather
-  // than being silently dropped by a fixed field list.
+  // Anything the feed adds to a contact record later -- and anything above
+  // that arrived as an unexpected type -- still shows up, rather than being
+  // silently dropped by a fixed field list.
   for (const [key, own] of Object.entries(value)) {
-    if ((CONTACT_FIELDS as readonly string[]).includes(key)) continue;
+    if (claimed.has(key)) continue;
     pushField(fields, key, own, depth);
   }
 
@@ -595,6 +656,9 @@ function renderContact(value: Record<string, unknown>, depth: number): Accessibi
 // ---------------------------------------------------------------------------
 
 function renderCollection(value: unknown[], depth: number): AccessibilityNode {
+  // The item objects are one level below the array and are read here rather
+  // than through `renderAt`, so their level is checked here.
+  if (depth + 1 > MAX_RENDER_DEPTH) return raw(value);
   const items: CollectionItem[] = [];
   for (const element of value) {
     if (!isPlainObject(element)) continue;
@@ -770,8 +834,9 @@ export function isEmptyNode(node: AccessibilityNode): boolean {
   }
 }
 
-/** `<p></p>` and `<p>&#160;</p>` really do occur in the feed (`BHM`'s
- * `dropOffPickUp.notes` ends with one) and put nothing on the page. Markup
+/** `<p></p>` and `<p>&#160;</p>` really do occur in the feed (`BRI`'s and
+ * `LDS`'s `dropOffPickUp.notes` both end with one) and put nothing on the
+ * page. Markup
  * that carries a link is never empty even with no text, since the link
  * itself is the content.
  *

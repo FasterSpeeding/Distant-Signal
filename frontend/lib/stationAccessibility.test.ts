@@ -234,6 +234,49 @@ describe('Pattern B -- opening times', () => {
     expect(formatHours({ openingStatus: 'Specific Hours', openPeriod: [] })).toBe(
       'hours not published',
     );
+    // No status at all and no period: nothing to say, and nothing invented.
+    expect(formatHours({})).toBe('');
+  });
+
+  // §9.4 again: the eight day tokens are sample-derived too, so an
+  // unrecognised one must survive rather than vanish from the line.
+  it('passes an unrecognised day token through instead of dropping it', () => {
+    expect(formatDays(['Monday', 'Christmas Day'])).toBe('Mon, Christmas Day');
+    expect(formatDays(['Christmas Day', 'Christmas Day'])).toBe('Christmas Day');
+    expect(formatDays('Monday')).toBe('');
+    expect(formatDays(null)).toBe('');
+  });
+
+  it('passes a time through unchanged when it is not HH:MM:SS.mmm', () => {
+    expect(
+      formatHours({
+        openingStatus: 'Specific Hours',
+        openPeriod: [{ startTime: 'dawn', endTime: 'dusk' }],
+      }),
+    ).toBe('dawn–dusk');
+  });
+
+  it('renders a one-sided period rather than discarding the half it has', () => {
+    expect(
+      formatHours({ openingStatus: 'Specific Hours', openPeriod: [{ startTime: '09:00:00.000' }] }),
+    ).toBe('from 09:00');
+    expect(
+      formatHours({ openingStatus: 'Specific Hours', openPeriod: [{ endTime: '17:00:00.000' }] }),
+    ).toBe('until 17:00');
+  });
+
+  it('dumps an opening-times array that sits deeper than the bound allows', () => {
+    // Pattern B reads three levels below its own array without going back
+    // through the dispatcher, so it has to check the bound for them itself.
+    const entry = [{ daysOfTheWeek: ['Monday'], openPeriod: [], openingStatus: '24 Hours' }];
+    // Array at depth 4 -> its period objects at 7, the last allowed level.
+    expect(
+      JSON.stringify(renderAccessibilityValue({ a: { b: { c: { d: entry } } } })),
+    ).not.toContain('"raw"');
+    // One level deeper and the period objects would fall outside it.
+    expect(
+      JSON.stringify(renderAccessibilityValue({ a: { b: { c: { d: { e: entry } } } } })),
+    ).toContain('"raw"');
   });
 });
 
@@ -433,6 +476,14 @@ describe('Pattern D -- named-item collection', () => {
     });
   });
 
+  it('falls back to a plain text row when a phone number has no digits at all', () => {
+    const node = expectKind(
+      renderAccessibilityValue({ primaryTelephoneNumber: 'see website' }),
+      'contact',
+    );
+    expectKind(node.fields[0].node, 'text');
+  });
+
   it('is not matched by an array whose elements lack a string name', () => {
     // `openPeriod`, reached outside Pattern B, must not be read as a
     // collection.
@@ -508,6 +559,58 @@ describe('Pattern G -- rich text', () => {
     expect(isEmptyNode(renderAccessibilityValue('<p></p>'))).toBe(true);
     expect(isEmptyNode(renderAccessibilityValue('<p>&#160;</p>'))).toBe(true);
     expect(isEmptyNode(renderAccessibilityValue('<p>Real copy</p>'))).toBe(false);
+  });
+});
+
+describe('fields that arrive as an unexpected type', () => {
+  // Design §5 reason 2 names silently dropping a field the worst possible
+  // failure mode for accessibility data. A fixed field list that renders
+  // `notes` only when it is a string would do exactly that the day the feed
+  // sends an array -- no label, no raw block, no trace.
+  it('still renders a facility field whose type the bespoke slot does not handle', () => {
+    const node = expectKind(
+      renderAccessibilityValue({ available: true, notes: ['One note', 'Another'] }),
+      'facility',
+    );
+    expect(node.parts[0].label).toBe('Notes');
+    expect(expectKind(node.parts[0].node, 'tokens').tokens).toEqual(['One note', 'Another']);
+  });
+
+  it('still renders a contact field whose type the bespoke slot does not handle', () => {
+    const node = expectKind(
+      renderAccessibilityValue({
+        primaryTelephoneNumber: null,
+        postalAddress: 'Court Square, Carlisle',
+        emailAddress: 42,
+      }),
+      'contact',
+    );
+    expect(node.fields.map((field) => field.label)).toContain('Email address');
+    // A string `postalAddress` reads as prose, so Pattern E drops its label
+    // -- but the value itself is on the page, which is the property that
+    // matters.
+    expect(JSON.stringify(node)).toContain('Court Square, Carlisle');
+  });
+
+  it('reads postal address lines in a fixed order, not in JSON key order', () => {
+    const node = expectKind(
+      renderAccessibilityValue({
+        primaryTelephoneNumber: null,
+        postalAddress: {
+          postcode: 'CA1 1QZ',
+          addressLine2: 'Carlisle',
+          addressLine1: 'Court Square',
+          // Not an address line -- must not be joined in as one.
+          country: 'United Kingdom',
+        },
+      }),
+      'contact',
+    );
+    expect(expectKind(node.fields[0].node, 'text').text).toBe('Court Square, Carlisle, CA1 1QZ');
+    // `country` is not an address line this renderer knows, so it is not
+    // joined into the line -- but it is still shown, on its own row.
+    expect(node.fields).toHaveLength(2);
+    expect(JSON.stringify(node.fields[1])).toContain('United Kingdom');
   });
 });
 

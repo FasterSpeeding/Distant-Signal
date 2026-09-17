@@ -80,7 +80,16 @@ Details the real data forces:
   (`carParks` → `carParks[]` → item → `openingHours[]` → entry →
   `openPeriod[]` → `{startTime,endTime}`), occupying 0-based depths 0-6, so
   7 is exactly one level of margin. Every container level increments
-  `depth`, object levels included — §4.9's precondition.
+  `depth`, object levels included — §4.9's precondition. That has to include
+  the levels a pattern renderer swallows whole rather than recursing into:
+  Pattern B reads three levels out of its array in pure string formatters
+  and Pattern D reads the item object, so both check the bound for the
+  levels they consume. Without that the constant would quietly be measuring
+  "levels the generic dispatcher happened to walk", a smaller number than
+  the one §4.9 reasons about — the fixtures render identically at a bound of
+  5. Termination does not rest on the arithmetic: no pattern renderer
+  recurses, so the only unbounded path is `renderAt`, which increments on
+  every call.
 - **Pattern E deny-list**: `category`, `crsCode`, `postcode`. §4.6 shows the
   bare length heuristic is inverted on `stepFreeCategory.category` (a code
   that passes) and `lifts.statement` (prose that fails); a 12-character

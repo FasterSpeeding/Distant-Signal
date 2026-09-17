@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import {
   Accordion,
   AccordionControl,
@@ -8,8 +9,6 @@ import {
   Badge,
   Code,
   Group,
-  List,
-  ListItem,
   Stack,
   Text,
   Title,
@@ -277,7 +276,12 @@ function AccessibilityNodeView({
           {node.entries.map((entry, index) => (
             // eslint-disable-next-line react/no-array-index-key -- entries have no id
             <Text key={index} size="sm">
-              {entry.days === '' ? entry.hours : `${entry.days}, ${entry.hours}`}
+              {/* Joined from whichever halves exist, not with a fixed
+                  comma: an entry whose `openingStatus` the feed left blank
+                  and which carries no period has no hours to print, and
+                  "Mon-Fri, " would be a dangling comma. Every one of the
+                  sample's 304 entries has both. */}
+              {[entry.days, entry.hours].filter((part) => part !== '').join(', ')}
             </Text>
           ))}
         </Stack>
@@ -289,14 +293,27 @@ function AccessibilityNodeView({
 
     case 'bullets':
       return (
-        <List size="sm" spacing={2}>
+        // A real `<ul>`, so the item's sentences are a list to a screen
+        // reader rather than a run of paragraphs. Deliberately NOT Mantine's
+        // `List`/`ListItem`: `ListItem` wraps its children in a `<span>`
+        // (see `@mantine/core`'s ListItem.cjs), and every child this branch
+        // can produce -- `Text` is a `<p>`, rich text is a `<div>` -- is
+        // flow content, which is not valid inside phrasing content. The two
+        // declarations below are what Mantine's own List root sets.
+        <ul
+          style={{
+            margin: 0,
+            paddingInlineStart: 'var(--mantine-spacing-lg)',
+            listStylePosition: 'outside',
+          }}
+        >
           {node.items.map((item, index) => (
             // eslint-disable-next-line react/no-array-index-key -- bullets have no id
-            <ListItem key={index}>
+            <li key={index}>
               <AccessibilityNodeView node={item} path={path} />
-            </ListItem>
+            </li>
           ))}
-        </List>
+        </ul>
       );
 
     case 'collection': {
@@ -436,7 +453,15 @@ function renderableGroups(data: StationAccessibilityData) {
  * allowlisted keys) are two genuinely different facts and get two
  * different sentences -- never collapsed into one "no data" message. */
 export function StationAccessibilitySection({ result }: StationAccessibilitySectionProps) {
-  const groups = result.coverage === 'present' ? renderableGroups(result.data) : [];
+  // Memoized because it is not free: classifying a whole payload runs the
+  // sanitizer over every markup-bearing string (693 of them across the 31
+  // surveyed stations), which measures at 12-36 ms per station. That is
+  // paid once on the server and once more on hydration; it must not also be
+  // paid on every unrelated re-render of this client component.
+  const groups = useMemo(
+    () => (result.coverage === 'present' ? renderableGroups(result.data) : []),
+    [result],
+  );
   // A `200` whose every allowlisted value turned out to be `{}`/`[]` is the
   // same fact as a `200 {}` from the reader's point of view -- the station
   // has published nothing -- so it gets the same sentence rather than an

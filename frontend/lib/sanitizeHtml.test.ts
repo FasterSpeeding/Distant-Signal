@@ -99,9 +99,21 @@ describe('sanitizeRichText', () => {
     expect(sanitizeRichText('<p>Fares & tickets</p>')).toContain('Fares &amp; tickets');
   });
 
-  it('keeps the incident allowlist separate: no lists or headings leak into it', () => {
+  it('leaves an anchor whose scheme was rejected as inert text, not a hardened non-link', () => {
+    const result = sanitizeRichText('<a href="javascript:alert(1)">Tap</a>');
+    expect(result).not.toContain('href');
+    expect(result).not.toContain('target=');
+    expect(result).not.toContain('rel=');
+    expect(result).toContain('Tap');
+  });
+
+  it('keeps the two allowlists separate: the incident one still rejects headings', () => {
+    // `ul`/`li` have always been on `sanitizeDescription`'s list; headings
+    // never were, and widening that one to suit this feature is exactly
+    // what a second function avoids.
     const result = sanitizeDescription('<h2>Heading</h2><ul><li>One</li></ul>');
     expect(result).not.toMatch(/<h[1-6]/i);
+    expect(result).toContain('Heading');
     expect(result).toContain('<ul><li>One</li></ul>');
   });
 });

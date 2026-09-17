@@ -166,15 +166,57 @@ describe('the depth bound, measured from the fixtures', () => {
     expect(MAX_RENDER_DEPTH).toBe(observed + 1);
   });
 
-  it('renders the deepest chain in full rather than truncating a car park opening period', () => {
-    // A `depth < 7` bound would still pass the sweep above; this is the
-    // assertion that catches the off-by-one the design warns about, because
-    // it names the innermost value that bound would lose.
+  it('reaches the innermost value of that chain -- a car park opening period', () => {
     const edb = loadAccessibilityFixture('EDB');
     const rendered = JSON.stringify(walk(renderAccessibilityValue(edb.carParks)));
     expect(rendered).toMatch(/\d\d:\d\d–\d\d:\d\d/);
   });
+
+  it('asks the bound about the levels its pattern renderers consume, not just the ones it walks', () => {
+    // Worth stating plainly, because it is the thing that makes the number
+    // above mean what the design says it means. Pattern B is handed the
+    // `openingHours` array and reads three more levels out of it without
+    // re-entering the dispatcher, so if it did not check the bound itself,
+    // `MAX_RENDER_DEPTH` would silently be measuring a shallower quantity
+    // -- and this fixture set would render identically with a bound of 5.
+    //
+    // The off-by-one itself is caught by the synthetic 8-vs-9-container
+    // case in `stationAccessibility.test.ts`; no real payload can catch it,
+    // precisely because none of them comes near the bound.
+    let deepestOpeningTimes = -1;
+    const findOpeningTimes = (value: unknown, depth: number) => {
+      if (Array.isArray(value)) {
+        if (value.some((entry) => isOpeningTimesEntry(entry))) {
+          deepestOpeningTimes = Math.max(deepestOpeningTimes, depth);
+        }
+        value.forEach((element) => findOpeningTimes(element, depth + 1));
+      } else if (typeof value === 'object' && value !== null) {
+        Object.values(value).forEach((child) => findOpeningTimes(child, depth + 1));
+      }
+    };
+    for (const { data } of loadAllAccessibilityFixtures()) {
+      for (const key of ALL_KEYS) {
+        if (hasRenderableValue(data[key])) findOpeningTimes(data[key], 0);
+      }
+    }
+    // `carParks` -> `carParks[]` -> item -> `openingHours`.
+    expect(deepestOpeningTimes).toBe(3);
+    // Plus the entry, the `openPeriod` array and the period object it
+    // consumes = container depth 6, the observed maximum, inside the bound
+    // with one level to spare.
+    expect(deepestOpeningTimes + 3).toBeLessThan(MAX_RENDER_DEPTH);
+  });
 });
+
+function isOpeningTimesEntry(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    'daysOfTheWeek' in value &&
+    'openingStatus' in value
+  );
+}
 
 describe('real payloads land on the pattern the survey says they do', () => {
   /** The kinds a path's values render to, skipping the ones that render to

@@ -408,6 +408,92 @@ describe('StationAccessibilitySection, pattern rendering', () => {
     expect(link).toHaveAttribute('href', '/stations/SWA');
   });
 
+  it('renders a contact record as tel:, mailto: and external links', async () => {
+    renderWithMantine(
+      <StationAccessibilitySection
+        result={{
+          coverage: 'present',
+          data: {
+            stationFacilities: {
+              lostProperty: {
+                available: true,
+                operatorContactDetails: {
+                  name: 'Lost Property Contact Details',
+                  primaryTelephoneNumber: '0345 077 4224',
+                  emailAddress: 'lost.property@example.com',
+                  url: 'http://www.example.com',
+                  operatorName: 'Example Rail',
+                  note: null,
+                  postalAddress: null,
+                },
+              },
+            },
+          },
+        }}
+      />,
+    );
+    expect(screen.getByRole('link', { name: '0345 077 4224' })).toHaveAttribute(
+      'href',
+      'tel:03450774224',
+    );
+    expect(screen.getByRole('link', { name: 'lost.property@example.com' })).toHaveAttribute(
+      'href',
+      'mailto:lost.property@example.com',
+    );
+    const website = screen.getByRole('link', { name: 'http://www.example.com' });
+    expect(website).toHaveAttribute('href', 'http://www.example.com');
+    expect(website).toHaveAttribute('target', '_blank');
+    // §4.4: `name` is boilerplate restating the context, and is dropped.
+    expect(screen.queryByText(/Lost Property Contact Details/)).not.toBeInTheDocument();
+  });
+
+  it('puts Pattern D bullets in a real <ul>, with no block element inside an inline one', async () => {
+    const { container } = renderWithMantine(
+      <StationAccessibilitySection
+        result={{
+          coverage: 'present',
+          data: {
+            lifts: {
+              liftsInfo: [
+                {
+                  name: 'Lift, Concourse to Overbridge',
+                  liftControls: 'Lift controls should be accessible to most people',
+                },
+              ],
+            },
+          },
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Lifts info: 1 item/ }));
+    await screen.findByText('Lift, Concourse to Overbridge');
+    const list = container.querySelector('ul');
+    expect(list).not.toBeNull();
+    // Mantine's own `ListItem` wraps children in a `<span>`, and every node
+    // this branch can render (`Text` is a `<p>`, rich text a `<div>`) is
+    // flow content -- invalid inside phrasing content. A plain `<li>` takes
+    // either.
+    expect(list!.querySelectorAll('span p, span div')).toHaveLength(0);
+    expect(list!.querySelectorAll('li')).toHaveLength(1);
+  });
+
+  it('numbers the fallback list\'s items so nested disclosures stay distinguishable', async () => {
+    // An array of objects with no `name` matches none of B/D/F. Nothing in
+    // the 31 real payloads reaches it, but the wire type is `unknown` and
+    // this branch is what stops such a value disappearing.
+    renderWithMantine(
+      <StationAccessibilitySection
+        result={{
+          coverage: 'present',
+          data: { carParks: [new Date('2026-09-16'), new Date('2026-09-17')] },
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Car parks: 2 items' }));
+    expect(await screen.findByRole('button', { name: 'Car parks 1: Raw data' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Car parks 2: Raw data' })).toBeInTheDocument();
+  });
+
   it('renders opening times as compacted day ranges and HH:MM times', () => {
     renderWithMantine(
       <StationAccessibilitySection
