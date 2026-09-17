@@ -3,7 +3,8 @@
 //! No I/O here -- the caller already read the file (or a fixture) into a
 //! `&str`. A single malformed/too-short/non-ASCII line is skipped (though
 //! a `BS`/`LT` one still closes whatever block it follows, exactly as a
-//! well-formed one would -- see [`is_fixed_width_decodable`]), never a
+//! well-formed one would -- see `is_fixed_width_decodable`, private, for
+//! what counts as decodable here), never a
 //! hard parse failure for the whole extraction -- mirroring
 //! `crates/schedule-reference/src/parser.rs::parse_ti_lines`'s own
 //! documented "a single malformed line must not abort the whole
@@ -57,7 +58,18 @@ const MIN_LI_LEN: usize = 20;
 /// in. That is a real widening of "malformed", accepted on purpose: CIF is
 /// ASCII by specification, so a line carrying non-ASCII bytes anywhere has
 /// already failed the format, and a per-field check would be both slower
-/// and easier to leave a hole in.
+/// and easier to leave a hole in. Rejecting a `BS` line this way discards
+/// its whole `LO`/`LI`/`LT` body too, since no block opens for the body to
+/// attach to -- silently, like every other skip in this log-free module.
+///
+/// It is also not a content check in the other direction: `is_ascii()` is
+/// true of the C0 controls, so a `NUL`-filled or otherwise control-byte
+/// corrupted line passes and decodes into a plausible-looking record (a
+/// TIPLOC of seven `NUL`s, say). That asymmetry is inherent to using an
+/// encoding check as a corruption check, and is left as-is deliberately:
+/// the job here is the char-boundary panic class, and tightening what
+/// counts as a valid field VALUE is a separate decode-correctness
+/// question this crate has no real-data evidence to settle.
 ///
 /// This is deliberately NOT applied to the record-type dispatch in
 /// [`parse_schedule_records`], which reads the two identity bytes through
@@ -437,16 +449,29 @@ mod tests {
     // `line[21..28]` in `parse_basic_schedule`; `line[2..9]`,
     // `line[10..14]`, `line[15..19]` in `parse_calling_point`.
     //
-    // Only the three `..._non_ascii_...` tests below are true regression
-    // guards for that -- they fail if the fix is reverted. The rest are
-    // characterization tests for malformed-input behaviour this parser
-    // already had (truncation, bad dates, bad times, orphaned body lines,
-    // unknown record types), pinned here because the audit that produced
-    // the fix had to reason about each of them to be sure none was a
-    // NINTH panic site, and pinning is what stops that reasoning from
-    // having to be redone. The block-termination pair is a regression
-    // guard for a defect introduced by an earlier draft of the fix
-    // itself -- see its own comment.
+    // Six of the tests below are true regression guards -- they were
+    // each measured failing against the unfixed parser, not assumed to:
+    //
+    // - `non_ascii_lines_do_not_panic` and
+    //   `a_long_run_of_unknown_and_malformed_record_types_is_inert` guard
+    //   the record-type DISPATCH (they still pass if only the decoders'
+    //   `is_ascii()` half is reverted);
+    // - the two `a_non_ascii_byte_at_every_fixed_field_boundary_of_*`
+    //   tests guard the decoders' own guard as well;
+    // - `an_undecodable_bs_line_still_terminates_the_previous_block` and
+    //   `an_undecodable_lt_line_still_terminates_its_own_block` guard
+    //   against a defect an earlier DRAFT of this fix introduced -- see
+    //   their own comments -- and are the only two that fail against that
+    //   draft specifically.
+    //
+    // The remaining seven are characterization tests for malformed-input
+    // behaviour this parser already had (truncation, bad dates, bad
+    // times, blank UID, unknown STP indicator, orphaned body lines, empty
+    // input), pinned here because the audit that produced the fix had to
+    // reason about each of them to be sure none was a NINTH panic site,
+    // and pinning is what stops that reasoning from having to be redone.
+    // They pass with the fix fully reverted, so they guard behaviour, not
+    // this fix.
     //
     // A `#[test]` that merely RETURNS is already proof of no panic, but
     // each one also asserts the honest outcome (the bad line is skipped,
@@ -483,8 +508,11 @@ mod tests {
     fn a_non_ascii_byte_at_every_fixed_field_boundary_of_a_bs_line_is_skipped() {
         // Walks a multi-byte character across a real BS line so that it
         // straddles each of `parse_basic_schedule`'s four fixed-offset
-        // slice boundaries (3, 9, 15, 21, 28) in turn -- one insertion
-        // point per formerly-panicking site.
+        // slice boundaries (3, 9, 15, 21, 28) in turn, plus the offsets
+        // just inside each field. Offsets 0 and 2 are in the list for
+        // completeness, not because they reach `parse_basic_schedule`:
+        // they corrupt the record identity itself, so the dispatch
+        // handles them.
         for at in [0, 2, 3, 8, 9, 14, 15, 20, 21, 27, 28] {
             let mut line = BS_C00573_PERMANENT.to_string();
             line.replace_range(at..at + 1, "\u{20AC}");
@@ -535,9 +563,26 @@ mod tests {
                 "BS line truncated to {len} bytes must be skipped"
             );
         }
-        // And one byte past the minimum it decodes again, proving the guard
-        // is a real boundary and not a blanket reject.
+        // The untruncated line still decodes, so the guard is a real
+        // boundary and not a blanket reject.
         assert_eq!(parse_schedule_records(BS_C00573_PERMANENT).len(), 1);
+
+        // Deliberately NOT asserted: that `MIN_BS_LEN + 1` bytes decode.
+        // Past the minimum, whether a truncation decodes depends on the
+        // one field `parse_basic_schedule` does not read at a fixed offset
+        // -- the STP indicator, which is "the last significant character
+        // of the line" (see `StpIndicator`'s own doc comment for the real
+        // evidence behind that rule). Truncating a `BS` line therefore
+        // does not just drop the tail; it MOVES that field, and a
+        // truncation whose new last character happens to be `C`/`N`/`O`/
+        // `P` decodes into a complete, plausible, WRONG record -- e.g.
+        // `&BS_C00573_PERMANENT[..30]` decodes as a real Permanent
+        // schedule with no calling points, picking its `P` out of the
+        // Train Status column. That is a pre-existing decode-correctness
+        // hazard, unrelated to the panic class this block is about, and
+        // not something to bless by pinning it either way here; it is
+        // written up for a separate pass rather than silently widened or
+        // narrowed in a panic-safety change.
     }
 
     #[test]

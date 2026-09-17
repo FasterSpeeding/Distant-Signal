@@ -39,10 +39,10 @@
 //! to exactly `parse.rs` `54:20`, `113:19`, `117:52`, `118:50`, `121:23`,
 //! `155:22`, `156:44`, `164:57`, every one of them `"byte index N is not a
 //! char boundary"`. Against the fixed parser: 11.5M executions across 6
-//! workers, 0 crashes, 0 artifacts, at higher coverage than the pre-fix
-//! run reached (cov 493 / ft 3059) -- the fix makes more of the parser
-//! reachable rather than less, since a non-ASCII line now flows through
-//! the record-type dispatch instead of aborting the process.
+//! workers, 0 crashes, 0 artifacts, at cov 493 / ft 3059 -- higher than
+//! the cov 462 / ft 2890 an earlier draft of the fix reached, because
+//! that draft rejected every non-ASCII line before the record-type
+//! dispatch and so made less of the parser reachable, not more.
 //!
 //! Requires a nightly toolchain (`-Zsanitizer=address`), which the rest of
 //! this workspace does not -- see this crate's `fuzz/Cargo.toml` for why
