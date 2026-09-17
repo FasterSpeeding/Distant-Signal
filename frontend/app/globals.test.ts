@@ -17,7 +17,24 @@ const GRAY_7 = '#495057';
 const GRAY_8 = '#343a40';
 const BLUE_8 = '#1971c2';
 const BLACK = '#000000';
-const DARK_2 = '#a6a7ab'; // `--mantine-color-dimmed` in the dark scheme
+const GRAY_5 = '#adb5bd'; // `--mantine-color-placeholder` in the light scheme
+const RED_6 = '#fa5252'; // `--mantine-color-red-outline` before the override
+const RED_8 = '#e03131';
+const RED_9 = '#c92a2a';
+const ORANGE_1 = '#ffe8cc'; // `--mantine-color-orange-light`, the badge surface
+const ORANGE_9 = '#d9480f'; // `--mantine-color-orange-light-color` before the override
+const ORANGE_LIGHT_COLOR = '#b83e08'; // ...and after; see app/globals.css
+// Mantine's dark ramp, as shipped by the version in node_modules today.
+// DARK_2 is deliberately spelled out rather than trusted from memory: it
+// was #a6a7ab when the grape theme shipped and this file recorded a 6.46:1
+// "already clears AA" claim off that value. Mantine re-cut the ramp, and
+// the tests below now assert the regression that caused, so a future re-cut
+// has to come through here rather than silently past it.
+const DARK_0 = '#c9c9c9'; // `--mantine-color-text` in the dark scheme
+const DARK_1 = '#b8b8b8';
+const DARK_2 = '#828282'; // was #a6a7ab
+const DARK_3 = '#696969'; // `--mantine-color-placeholder` in the dark scheme
+const DARK_6 = '#2e2e2e'; // `Card`/`Paper` surface -- darker case than DARK_7
 
 // WCAG 2.1 relative luminance and contrast ratio. Colour can't usefully be
 // asserted shade by shade in a unit test, but "does this pair clear AA for
@@ -54,7 +71,15 @@ describe('link colour', () => {
     const rule = css.match(/html:root\[data-mantine-color-scheme=['"]light['"]\]\s*\{[^}]*\}/);
     expect(rule).not.toBeNull();
     expect(rule![0]).toContain('--mantine-color-anchor: var(--mantine-color-grape-7)');
-    expect(css).not.toContain("data-mantine-color-scheme='dark'");
+    // This used to assert `css` contained no dark-scheme block AT ALL, as a
+    // proxy for "the anchor override is light-only". That proxy stopped
+    // being safe the moment the dark scheme needed overrides of its own
+    // (see `dark scheme dimmed + placeholder` below), and a blanket ban on
+    // the string would have forced that genuine fix to be written somewhere
+    // worse. Assert the actual property instead: whatever else the dark
+    // block carries, it must not carry an anchor override.
+    const darkRule = css.match(/html:root\[data-mantine-color-scheme=['"]dark['"]\]\s*\{[^}]*\}/);
+    expect(darkRule?.[0] ?? '').not.toContain('--mantine-color-anchor');
   });
 
   it('leaves the dark scheme alone, where grape 4 already clears AA', () => {
@@ -190,8 +215,111 @@ describe('dimmed body text contrast', () => {
     expect(rule![0]).toContain('color: var(--mantine-color-gray-7)');
   });
 
-  it("leaves the dark scheme's dimmed colour alone, where it already clears AA", () => {
-    expect(contrast(DARK_2, DARK_7)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.46:1
+  // What this block used to say: "leaves the dark scheme's dimmed colour
+  // alone, where it already clears AA (6.46:1)". That was true of dark 2 as
+  // #a6a7ab. Mantine's dark ramp was re-cut and dark 2 is now #828282, so
+  // the app's single most widespread text style silently regressed in dark
+  // mode -- 4.04:1 on the body and 3.53:1 on the `Card`/`Paper` surface
+  // most of it actually sits on. Found by the first full-ruleset axe sweep
+  // to run in dark mode at all (e2e/accessibility.spec.ts).
+  it("confirms the dark scheme's default dimmed shade fails AA on a Card surface", () => {
+    expect(contrast(DARK_2, DARK_6)).toBeLessThan(AA_BODY_TEXT); // 3.53:1
+    expect(contrast(DARK_2, DARK_7)).toBeLessThan(AA_BODY_TEXT); // 4.04:1
+  });
+
+  it('overrides --mantine-color-dimmed to dark 1 for the dark scheme', () => {
+    const rule = css.match(/html:root\[data-mantine-color-scheme=['"]dark['"]\]\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('--mantine-color-dimmed: var(--mantine-color-dark-1)');
+  });
+
+  it('clears AA with dark 1 against the darkest surface dimmed text sits on', () => {
+    expect(contrast(DARK_1, DARK_6)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.85:1
+    expect(contrast(DARK_1, DARK_7)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 7.83:1
+  });
+
+  it('keeps dimmed text visibly dimmer than body text in the dark scheme', () => {
+    // The whole point of `dimmed` survives the lift: dark 0 (body text) is
+    // still the higher-contrast of the two on the same surface. Without
+    // this, "fix the contrast" could be satisfied by making dimmed text
+    // indistinguishable from ordinary text.
+    expect(contrast(DARK_0, DARK_6)).toBeGreaterThan(contrast(DARK_1, DARK_6));
+  });
+
+  it('also lifts a titled Notification description off dark 2 in the dark scheme', () => {
+    // Mantine hardcodes the dark half the same way it hardcodes the light
+    // half (Notification.css:109, `--mantine-color-dark-2`), so the
+    // variable override above does not reach it either.
+    const rule = css.match(
+      /:where\(\[data-mantine-color-scheme=['"]dark['"]\]\)\s*\.mantine-Notification-description:where\(\[data-with-title\]\)\s*\{[^}]*\}/,
+    );
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('color: var(--mantine-color-dark-1)');
+  });
+});
+
+// `autoContrast` (see `filled-surface contrast under autoContrast` above)
+// only ever runs for the `filled` variant. Every other variant is handed a
+// `--mantine-color-<name>-<variant>` CSS variable verbatim, so `outline`,
+// `light` and the input placeholder were never covered by it -- and a
+// full-ruleset axe sweep of every route, in both schemes, found all three
+// failing. See app/globals.css for the per-colour derivations.
+describe('non-filled variants and placeholders', () => {
+  const lightRule = () => {
+    const rule = css.match(/html:root\[data-mantine-color-scheme=['"]light['"]\]\s*\{[^}]*\}/);
+    expect(rule).not.toBeNull();
+    return rule![0];
+  };
+
+  it('confirms the light scheme\'s default outline shades actually failed AA on white', () => {
+    expect(contrast(GRAY_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.32:1
+    expect(contrast(RED_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.28:1
+    expect(contrast(GRAPE_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 4.02:1
+  });
+
+  it('redirects gray/red/grape outline to shades that clear AA on white', () => {
+    expect(lightRule()).toContain('--mantine-color-gray-outline: var(--mantine-color-gray-7)');
+    expect(lightRule()).toContain('--mantine-color-red-outline: var(--mantine-color-red-9)');
+    expect(lightRule()).toContain('--mantine-color-grape-outline: var(--mantine-color-grape-7)');
+    expect(contrast(GRAY_7, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 8.18:1
+    expect(contrast(RED_9, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 5.46:1
+    expect(contrast(GRAPE_7, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 4.85:1
+  });
+
+  it('records why red 9 rather than red 8, which clears AA by 0.01', () => {
+    // Red 8 is 4.51:1 -- technically passing, but inside the rounding of
+    // any future palette tweak. This asserts the margin, not just the pass.
+    expect(contrast(RED_8, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    expect(contrast(RED_8, WHITE)).toBeLessThan(4.6);
+    expect(contrast(RED_9, WHITE)).toBeGreaterThan(5);
+  });
+
+  it('confirms orange light-variant text cannot be fixed by shade substitution', () => {
+    // Orange 9 is the END of Mantine's orange ramp, and this is the one
+    // place in the palette where that matters: even against pure white --
+    // the lightest background physically possible, and lighter than the
+    // orange-1 tint the light variant actually paints -- orange 9 still
+    // falls short. So the fix HAS to leave the ramp, which is why
+    // app/globals.css carries exactly one hand-mixed hex.
+    expect(contrast(ORANGE_9, ORANGE_1)).toBeLessThan(AA_BODY_TEXT); // 3.62:1
+    expect(contrast(ORANGE_9, WHITE)).toBeLessThan(AA_BODY_TEXT); // 4.30:1
+  });
+
+  it('clears AA for the orange light-variant badge on both its surface and white', () => {
+    expect(lightRule()).toContain(`--mantine-color-orange-light-color: ${ORANGE_LIGHT_COLOR}`);
+    expect(contrast(ORANGE_LIGHT_COLOR, ORANGE_1)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 4.74:1
+    expect(contrast(ORANGE_LIGHT_COLOR, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 5.63:1
+  });
+
+  it('lifts the input placeholder off the worst ratio in the app, in both schemes', () => {
+    expect(contrast(GRAY_5, WHITE)).toBeLessThan(3); // 2.07:1 -- the worst found
+    expect(contrast(DARK_3, DARK_6)).toBeLessThan(3); // 2.47:1
+    expect(lightRule()).toContain('--mantine-color-placeholder: var(--mantine-color-gray-7)');
+    const darkRule = css.match(/html:root\[data-mantine-color-scheme=['"]dark['"]\]\s*\{[^}]*\}/);
+    expect(darkRule).not.toBeNull();
+    expect(darkRule![0]).toContain('--mantine-color-placeholder: var(--mantine-color-dark-1)');
+    expect(contrast(GRAY_7, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    expect(contrast(DARK_1, DARK_6)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
   });
 });
 

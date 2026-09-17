@@ -656,9 +656,20 @@ export function TrackTrainForm({
                       }
                     : undefined
                 }
-                style={{ cursor: clickable ? 'pointer' : 'default', opacity: clickable ? 1 : 0.6 }}
+                style={{ cursor: clickable ? 'pointer' : 'default' }}
               >
-                <Text size="sm">
+                {/* The `opacity: 0.6` that used to sit on this whole Group
+                    now sits on the text alone. Composited against the row's
+                    white background it took the `Cancelled` badge --
+                    `filled` red, whose black label `autoContrast` had
+                    already made AA-safe at full strength -- down to 2.73:1
+                    (axe measured #666666 on #fc9797), and that badge is the
+                    one thing on the row a reader most needs: it is the
+                    entire reason the row is not selectable. The de-emphasis
+                    itself is kept, just moved off the element carrying the
+                    status. Black at 0.6 over white is #666666, 5.74:1, so
+                    the text stays over AA where it is. */}
+                <Text size="sm" style={{ opacity: clickable ? 1 : 0.6 }}>
                   {row.scheduled} · {row.destinationCrs} · {row.operator}
                 </Text>
                 {badge}

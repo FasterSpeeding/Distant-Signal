@@ -50,8 +50,123 @@ html:root[data-mantine-color-scheme='light'] {
      reads as dimmed because body text here is black (21:1), so the
      hierarchy survives -- but it IS visibly darker than before; see this
      plan's Task 6. Dark is untouched: `--mantine-color-dimmed` resolves to
-     dark 2 (#a6a7ab) there, already 6.46:1 on the #242424 body. */
+     dark 2 there -- but see the dark-scheme block below, which is where
+     that claim stopped being true. */
   --mantine-color-dimmed: var(--mantine-color-gray-7);
+
+  /* ---- `variant="outline"`, the half `autoContrast` cannot reach -------
+     `lib/theme.ts`'s `autoContrast`/`luminanceThreshold` pair fixes FILLED
+     surfaces only: Mantine's `defaultVariantColorsResolver` runs
+     `autoContrast` for `filled` (and `white`), and for every other variant
+     just hands back a `--mantine-color-<name>-<variant>` CSS variable
+     verbatim. So `outline` -- which paints BOTH the label and the border
+     from `--mantine-color-<name>-outline`, shade 6 in the light scheme --
+     was never covered, and shade 6 on white is exactly the pairing the
+     2026-09-02 audit already condemned everywhere else.
+
+     Measured live against this app's own DOM (axe-core `color-contrast`,
+     full-ruleset sweep, light scheme), then re-derived with the WCAG 2.1
+     relative-luminance formula:
+       gray  6 #868e96  3.32:1  ->  gray  7 #495057  8.18:1
+       red   6 #fa5252  3.28:1  ->  red   9 #c92a2a  5.46:1
+       grape 6 #be4bdb  4.02:1  ->  grape 7 #ae3ec9  4.85:1
+     Those are the only three colours this app renders `outline` with
+     (`grep 'variant="outline"'`: IssueList / DisruptionDetail /
+     IncidentSearchForm / TicketSummary use gray, IncidentSearchForm uses
+     grape, the Delete/Revoke/Leave buttons use red, and ShareButton's
+     ActionIcon uses gray) -- the rest of the palette is deliberately left
+     alone rather than pre-emptively darkened, and the full-ruleset
+     `e2e/accessibility.spec.ts` sweep is what will catch a fourth if one
+     is ever added.
+
+     Shade choices, stated plainly rather than picked by eye:
+     - gray 7 is the same shade `--mantine-color-dimmed` above already
+       moved to, so outline-gray badges and dimmed prose now agree.
+     - red 9 rather than red 8 (#e03131, 4.51:1): red 8 clears AA by
+       0.01, which is inside the rounding of any future palette tweak.
+       Red 9 is also exactly what Mantine itself already resolves
+       `--mantine-color-red-light-color` to in this scheme, so the
+       `subtle`/`light` red buttons this app also renders (e.g.
+       RemoveGroupTrainButton) and the `outline` ones now match.
+     - grape 7 is the same substitution the anchor and filled rules above
+       already make, for the same measured reason.
+     The dark scheme is untouched: `-outline` resolves to shade 4 there
+     (red #ff8787, gray #ced4da, grape #da77f2), all light-on-dark and
+     already clear. */
+  --mantine-color-gray-outline: var(--mantine-color-gray-7);
+  --mantine-color-red-outline: var(--mantine-color-red-9);
+  --mantine-color-grape-outline: var(--mantine-color-grape-7);
+
+  /* ---- `variant="light"` orange, the one colour off the palette ramp ---
+     Mantine's light variant pairs `--mantine-color-<name>-light` (shade 1
+     as a 10%-alpha tint) with `--mantine-color-<name>-light-color` (shade
+     9). For every colour this app uses that lands comfortably over AA --
+     except orange, the "delayed" hue: orange 9 (#d9480f) on orange 1
+     (#ffe8cc) is 3.62:1. That is the pairing behind the `7m late` badge on
+     `/`, `/track/mine` and `/train/[uid]/[date]`, the amber badge in
+     `DisruptionDetail`/`IssueList`, and `JourneyTimeline`'s late marker --
+     i.e. delay information, at 11px bold, which is NOT WCAG "large text"
+     (that needs 18.66px bold), so 4.5:1 applies.
+
+     This one cannot be fixed by shade substitution, and that is worth
+     stating because every other rule in this block is one: orange 9 is the
+     END of open-color's orange ramp, and even lightening the background
+     all the way to pure white only reaches 4.30:1 with orange-9 text. The
+     text has to go darker than any orange token Mantine ships.
+
+     #b83e08 is the same hue continued one notional step past orange 9
+     (4.74:1 on the #ffe8cc light surface, 5.63:1 on plain white, so it is
+     safe wherever this variable lands). It is the single hand-mixed colour
+     in this file, deliberately confined to ONE variable rather than added
+     to `theme.colors` as a tuple -- the grape spec's "no custom colour
+     tuples" Non-goal still holds for the palette itself. `app/globals.test.ts`
+     asserts both ratios so the value cannot drift unmeasured.
+
+     Dark is untouched: there the pairing inverts to #fff4e6 on #6d2408. */
+  --mantine-color-orange-light-color: #b83e08;
+
+  /* Mantine's input placeholder is gray 5 (#adb5bd): 2.07:1 on white, the
+     worst single ratio the full-ruleset sweep found anywhere in the app,
+     across all 30 `placeholder=` call sites. Surfaced on `/trains`, whose
+     date field's placeholder ("Today") is not decorative hint text at all
+     -- it states the default the search will actually use.
+
+     Gray 7 (8.18:1) rather than a hand-mixed ~#767676 (the lightest gray
+     that clears AA on white, 4.54:1): same reasoning as `--mantine-color-dimmed`
+     above, which this now matches. Placeholders do read heavier as a
+     result; they stay distinguishable from entered values because every
+     input in this app also carries a visible `label`, so the placeholder
+     is never the only thing naming the field. */
+  --mantine-color-placeholder: var(--mantine-color-gray-7);
+}
+
+/* The dark scheme is NOT the "already fine" case the light-scheme comments
+   above assumed. Two of its defaults fail AA, and one of them used to pass:
+
+   1. `--mantine-color-dimmed` resolves to dark 2, and Mantine's dark
+      palette was re-cut between the version this app shipped the grape
+      theme on and the one it runs now -- dark 2 went from #a6a7ab to
+      #828282. The comment on `--mantine-color-dimmed` above (which said
+      dark was "already 6.46:1 on the #242424 body") was written against
+      the old value and is stale: #828282 is 4.04:1 on the #242424 body and
+      3.53:1 on the #2e2e2e `Card`/`Paper` surface most dimmed text in this
+      app actually sits on. That is a silent regression in the app's single
+      most widespread text style, on the 72 `c="dimmed"` call sites, caught
+      only because this sweep is the first to run axe in dark mode at all.
+   2. `--mantine-color-placeholder` resolves to dark 3 (#696969): 2.47:1 on
+      that same #2e2e2e surface. Never passed; never measured before.
+
+   Dark 1 (#b8b8b8) for both: 6.85:1 on #2e2e2e and 7.83:1 on the #242424
+   body. It is the next real token up the ramp (there is nothing between
+   dark 2 and dark 1), and dimmed text stays visibly dimmer than body text,
+   which is dark 0 #c9c9c9 at 8.20:1 on the same surface. `app/globals.test.ts`
+   pins all of these numbers.
+
+   Same `html:root[...]` specificity trick as the light block -- see its
+   comment for why. */
+html:root[data-mantine-color-scheme='dark'] {
+  --mantine-color-dimmed: var(--mantine-color-dark-1);
+  --mantine-color-placeholder: var(--mantine-color-dark-1);
 }
 
 /* Exactly the same defect as `--mantine-color-dimmed` above, in a place
@@ -63,9 +178,21 @@ html:root[data-mantine-color-scheme='light'] {
    banner-visible state (this feature's Task 6 Step 2), which the route-level
    sweep in e2e/accessibility.spec.ts can't see, since the banner only exists
    while the backend is unreachable. Same gray 7 (8.18:1) and same reasoning
-   as above; dark mode is left alone, where it resolves to dark 2. */
+   as above.
+
+   The dark half is no longer "left alone, where it resolves to dark 2", as
+   this comment used to say: Mantine's sibling rule
+   (`:where([data-mantine-color-scheme='dark']) .m_3d733a3a:where([data-with-title])`,
+   Notification.css:109) hardcodes dark 2 the same way, and dark 2 is now
+   #828282 -- 3.53:1, the same re-cut-palette regression documented on
+   `--mantine-color-dimmed` in the dark block above. Same dark 1 fix, same
+   6.85:1. */
 :where([data-mantine-color-scheme='light']) .mantine-Notification-description:where([data-with-title]) {
   color: var(--mantine-color-gray-7);
+}
+
+:where([data-mantine-color-scheme='dark']) .mantine-Notification-description:where([data-with-title]) {
+  color: var(--mantine-color-dark-1);
 }
 
 /* `components/TextLink.tsx` opts in via `data-text-link`. The colour above

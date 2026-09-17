@@ -112,7 +112,14 @@ export function GroupInviteLinkCard({ groupId, inviteLink }: { groupId: string; 
         <Text fw={500}>Invite link</Text>
         {url ? (
           <Group gap="xs" wrap="nowrap">
-            <TextInput value={url} readOnly style={{ flexGrow: 1 }} />
+            {/* `aria-label` rather than a visible `label`: the "Invite
+                link" heading above already names this field for a sighted
+                reader, and repeating it as a Mantine `label` would put the
+                same words on screen twice. Without it the field has no
+                accessible name at all (axe `label`, critical) -- a screen
+                reader reaching it announces only the URL's characters, with
+                nothing saying what the URL is. */}
+            <TextInput value={url} readOnly aria-label="Invite link" style={{ flexGrow: 1 }} />
             <Tooltip label={copied ? COPIED_LABEL : 'Share this link'}>
               <ActionIcon variant="outline" color="gray" onClick={share} aria-label="Share invite link">
                 {copied ? '✓' : '⇪'}

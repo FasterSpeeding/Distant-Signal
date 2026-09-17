@@ -141,4 +141,33 @@ export const theme = createTheme({
   luminanceThreshold: 0.179,
 
   variantColorResolver,
+
+  // Mantine's `Modal` close button ships with NO accessible name -- neither
+  // `ModalBaseCloseButton` nor the underlying `CloseButton` sets one (the
+  // same reading of the installed `@mantine/core` source that
+  // `components/LoginPromptModal.tsx`'s own comment records). axe's
+  // `button-name` fires on it, critical, in every modal.
+  //
+  // `LoginPromptModal` has passed `closeButtonProps={{ 'aria-label': 'Close' }}`
+  // by hand since it was written; the other sixteen `<Modal>`s in this app
+  // (the rename/delete/share/leave/remove confirmations) had not, and a
+  // full-ruleset axe sweep of their opened states found every one of them.
+  // Setting it here rather than adding the same line to sixteen call sites
+  // is the point: a seventeenth modal gets it for free, which is exactly
+  // the failure mode a per-call-site fix leaves open.
+  //
+  // "Close" unconditionally, with no per-modal wording: this button always
+  // dismisses without acting, the modal's own `title` already says what is
+  // being dismissed, and a screen reader announces the two together.
+  // A call site that passes its own `closeButtonProps` still wins --
+  // `defaultProps` is merged under, not over -- so `LoginPromptModal`'s
+  // explicit copy stays harmless (and is deliberately left in place: its
+  // doc comment is where the Mantine-source finding is written down).
+  components: {
+    Modal: {
+      defaultProps: {
+        closeButtonProps: { 'aria-label': 'Close' },
+      },
+    },
+  },
 });

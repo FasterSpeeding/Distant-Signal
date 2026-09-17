@@ -323,7 +323,11 @@ describe('StationDisruptionPage -- accessibility & facilities', () => {
     });
 
     await expect(renderPage()).resolves.toBeDefined();
-    expect(screen.getByRole('button', { name: 'Raw data' })).toBeInTheDocument();
+    // "Lifts: " prefix: the disclosure control's accessible name is
+    // qualified by the field it belongs to, so that several "Raw data"
+    // disclosures on one page stay distinguishable as landmarks -- see
+    // `components/StationAccessibilitySection.tsx`'s `Disclosure`.
+    expect(screen.getByRole('button', { name: 'Lifts: Raw data' })).toBeInTheDocument();
   });
 
   // Same stale-serving posture as every other section on this page: a
