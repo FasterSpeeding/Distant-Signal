@@ -47,6 +47,19 @@ pub struct Match<'a> {
 }
 
 /// Return all lines the incident could plausibly affect, classified.
+///
+/// # Reads exactly four fields of `IncidentMessage`
+///
+/// `summary`, `description`, `operators`, `affected_stations` -- and
+/// nothing else, through `match_one` and `is_excluded` alike.
+/// `api::data::incident_line_backfill` relies on that: it loads only those
+/// four columns and fabricates the rest of the struct, precisely so that
+/// one unparseable archived `validity_periods` cannot abort a backfill over
+/// a field this function never consults. **If you make this function (or
+/// anything it calls) read a fifth field -- `is_planned` is the plausible
+/// one -- update `load_batch` there in the same change, or backfilled rows
+/// will silently get answers computed from fabricated values, with no
+/// compile error to warn you.**
 pub fn lines_affected_by<'a>(
     incident: &IncidentMessage,
     lines: &'a HashMap<String, LineDefinition>,

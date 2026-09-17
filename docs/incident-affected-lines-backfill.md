@@ -93,8 +93,12 @@ backfill complete:
   operators and routes with no `lines/*.toml` entry. Those rows stay
   reachable through the archive's Operator filter, exactly as before.
 
-A run that reports `updated: 0` alongside a non-zero `never computed`
-should be impossible; if you see it, the writes are being lost. A run that
+`updated` can legitimately come out *lower* than `never computed`: each
+write is a compare-and-swap against the value the walk read, so a row the
+poller re-ingested mid-walk is left alone (its attribution came from the
+same matcher over newer text, so it is the one to keep). Only an
+all-zero `updated` on a database with a non-zero `never computed` is a real
+alarm — that means the writes are being lost. A run that
 refuses to start names an empty catalogue explicitly — check `LINES_DIR`.
 The refusal lives in `run_backfill` itself, not just the binary, because an
 empty catalogue matches nothing and would *clear* every row rather than

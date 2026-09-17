@@ -81,6 +81,17 @@ struct StoredIncident {
     stored_lines: Option<Vec<String>>,
 }
 
+/// One row the walk decided needs writing, with the value it read so the
+/// write can be a compare-and-swap against exactly that.
+struct PendingWrite<'a> {
+    incident_id: &'a str,
+    recomputed: Vec<String>,
+    /// What the walk read -- `None` for a never-computed row. Matched with
+    /// `IS NOT DISTINCT FROM`, so a concurrent poller upsert makes the
+    /// write decline rather than clobber.
+    previous: &'a Option<Vec<String>>,
+}
+
 /// Recompute and persist `affected_lines` for every row in `incidents`.
 ///
 /// Walks the table in `incident_id` order using a keyset cursor rather
@@ -111,8 +122,7 @@ pub async fn run_backfill(pool: &PgPool, matcher: &LineMatcher) -> Result<Backfi
 
         after = Some(batch[batch.len() - 1].message.incident_id.clone());
 
-        #[allow(clippy::type_complexity)]
-        let mut changed: Vec<(&str, Vec<String>, &Option<Vec<String>>)> = Vec::new();
+        let mut changed: Vec<PendingWrite<'_>> = Vec::new();
 
         for stored in &batch {
             report.rows_examined += 1;
@@ -129,11 +139,11 @@ pub async fn run_backfill(pool: &PgPool, matcher: &LineMatcher) -> Result<Backfi
             // ordering artefact. A stored NULL never compares equal, so a
             // never-computed row is always written, even to `'{}'`.
             if stored.stored_lines.as_ref() != Some(&recomputed) {
-                changed.push((
-                    stored.message.incident_id.as_str(),
+                changed.push(PendingWrite {
+                    incident_id: stored.message.incident_id.as_str(),
                     recomputed,
-                    &stored.stored_lines,
-                ));
+                    previous: &stored.stored_lines,
+                });
             }
         }
 
@@ -153,14 +163,14 @@ pub async fn run_backfill(pool: &PgPool, matcher: &LineMatcher) -> Result<Backfi
         // keep.
         if !changed.is_empty() {
             let mut tx = pool.begin().await?;
-            for (incident_id, lines, previous) in &changed {
+            for write in &changed {
                 let updated = sqlx::query(
                     "UPDATE incidents SET affected_lines = $2 \
                      WHERE incident_id = $1 AND affected_lines IS NOT DISTINCT FROM $3",
                 )
-                .bind(incident_id)
-                .bind(lines)
-                .bind(previous.as_ref())
+                .bind(write.incident_id)
+                .bind(&write.recomputed)
+                .bind(write.previous.as_ref())
                 .execute(&mut *tx)
                 .await?
                 .rows_affected();

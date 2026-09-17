@@ -2658,11 +2658,20 @@ mod incident_search_query_tests {
     /// a mass-erase. It lives in `run_backfill` itself, not only in the
     /// binary, so this can assert it without going near the binary's
     /// argument handling.
+    ///
+    /// Deliberately NOT `#[ignore]`d, unlike every other test in this
+    /// module: the guard returns before the pool is ever touched, so
+    /// `connect_lazy` (which opens no socket -- the same trick `auth.rs`'s
+    /// tests use) is enough, and a guard against erasing a column is worth
+    /// having run on every `cargo test`, not only on the rare live-database
+    /// pass. If this ever starts needing a real connection, that means the
+    /// guard has moved after the first query and the test has caught a
+    /// regression.
     #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                incident_search_query_tests -- --ignored --test-threads=1`"]
     async fn backfill_refuses_to_run_against_an_empty_line_catalogue() {
-        let pool = test_pool().await;
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://placeholder@127.0.0.1:0/placeholder")
+            .expect("parse placeholder database url");
         let empty = common::matcher::LineMatcher::new(&[]);
 
         let err = crate::data::incident_line_backfill::run_backfill(&pool, &empty)

@@ -369,7 +369,16 @@ export function IncidentSearchForm({
                   </Badge>
                 ))}
                 {(row.affectedLines ?? []).length > MAX_LINE_BADGES && (
-                  <Badge variant="outline" color="blue" title="Affected line">
+                  <Badge
+                    variant="outline"
+                    color="blue"
+                    /* The names themselves, not a generic label: collapsing
+                     * must hide them from the layout, not lose them. */
+                    title={(row.affectedLines ?? [])
+                      .slice(MAX_LINE_BADGES)
+                      .map((id) => lineNamesById.get(id) ?? id)
+                      .join(', ')}
+                  >
                     {`+${(row.affectedLines ?? []).length - MAX_LINE_BADGES} more`}
                   </Badge>
                 )}
