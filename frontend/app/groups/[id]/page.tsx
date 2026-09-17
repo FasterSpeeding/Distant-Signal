@@ -12,6 +12,7 @@ import {
 } from '@/lib/api';
 import { RemoveMemberButton } from '@/components/RemoveMemberButton';
 import { PromoteMemberButton } from '@/components/PromoteMemberButton';
+import { DemoteMemberButton } from '@/components/DemoteMemberButton';
 import { LeaveGroupButton } from '@/components/LeaveGroupButton';
 import { RenameGroupButton } from '@/components/RenameGroupButton';
 import { DeleteGroupButton } from '@/components/DeleteGroupButton';
@@ -37,7 +38,8 @@ export const revalidate = 0;
  * predicate the corresponding backend handler uses
  * (`crates/api/src/routes/groups.rs`), not a coarser one -- `canManage`
  * (`admin`/`owner`) for rename, member removal, and the invite-link card;
- * `viewerIsOwner` for promotion and group deletion; sharer-or-manager for
+ * `viewerIsOwner` for promotion, demotion and group deletion;
+ * sharer-or-manager for
  * un-sharing a train. This is presentational only -- the backend is still
  * the authority and refuses any of these regardless -- but showing a user
  * a button whose only possible outcome is a 403/404 is its own bug. */
@@ -104,10 +106,10 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
   const reportByLineId = new Map(customLineReports.map((r) => [r.id, r]));
   const currentUserId = session.authenticated ? session.id : null;
   const canManage = group.role === 'owner' || group.role === 'admin';
-  // Distinct from `canManage`: the backend gates promotion and group
-  // deletion on `GroupRole::is_owner`, NOT `can_manage`
-  // (`crates/api/src/routes/groups.rs`), so showing either control to an
-  // admin would be offering a button whose only outcome is a 403.
+  // Distinct from `canManage`: the backend gates promotion, demotion and
+  // group deletion on `GroupRole::is_owner`, NOT `can_manage`
+  // (`crates/api/src/routes/groups.rs`), so showing any of those controls
+  // to an admin would be offering a button whose only outcome is a 403.
   const viewerIsOwner = group.role === 'owner';
 
   return (
@@ -228,10 +230,18 @@ function MemberRow({
         <Badge variant="outline">{member.role}</Badge>
       </Group>
       <Group gap="xs">
-        {/* `viewerIsOwner`, not `canManage`: `promote_member` is gated on
-            `GroupRole::is_owner` server-side, so an admin who clicked this
-            would only ever get a 403. */}
+        {/* `viewerIsOwner`, not `canManage`: `promote_member` and
+            `demote_member` are both gated on `GroupRole::is_owner`
+            server-side, so an admin who clicked either would only ever get
+            a 403. The role check picks the one control that can actually
+            do something for this row: a plain member can only be promoted,
+            an admin can only be demoted, and the owner's own row gets
+            neither (they're a permanent owner -- the backend refuses both
+            directions against it). */}
         {viewerIsOwner && member.role === 'member' && <PromoteMemberButton groupId={groupId} userId={member.userId} />}
+        {viewerIsOwner && member.role === 'admin' && (
+          <DemoteMemberButton groupId={groupId} userId={member.userId} name={label} />
+        )}
         {canManage && !isOwner && <RemoveMemberButton groupId={groupId} userId={member.userId} name={label} />}
       </Group>
     </Group>
