@@ -609,6 +609,30 @@ mod db_tests {
             .expect("cleanup fixture incidents rows");
     }
 
+    /// Seeds a row with an explicit `affected_lines` array -- the column
+    /// the Line filter matches on, normally written by the matcher inside
+    /// `upsert_incidents`.
+    async fn seed_incident_with_lines(
+        pool: &PgPool,
+        incident_id: &str,
+        operators: &[&str],
+        affected_lines: &[&str],
+    ) {
+        sqlx::query(
+            "INSERT INTO incidents \
+                (incident_id, summary, description, operators, affected_stations, \
+                 affected_lines, priority, is_planned, is_cleared) \
+             VALUES ($1, $2, '', $3, '{}', $4, 1, false, false)",
+        )
+        .bind(incident_id)
+        .bind(format!("Fixture incident {incident_id}"))
+        .bind(operators)
+        .bind(affected_lines)
+        .execute(pool)
+        .await
+        .expect("seed fixture incidents row");
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn seed_incident(
         pool: &PgPool,
@@ -742,17 +766,19 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 incident_search -- --ignored --test-threads=1`"]
-    async fn incident_search_known_line_resolves_to_station_overlap_and_excludes_a_no_overlap_incident()
-     {
+    async fn incident_search_known_line_returns_rows_the_matcher_attributed_to_it() {
         let pool = connect().await;
         delete_fixtures(&pool).await;
-        // Matches test-line via WOK (one of the line's own stations).
-        seed_incident(&pool, "route-test-4", &["VT"], &["WOK"], 1, false, false).await;
-        // Same operator as the line, but NO shared station -- the shape a
-        // real OperatorOnly-only matcher hit would have. Must be excluded:
-        // this is the concrete proof the line filter's approximation
-        // misses that tier, per Correction 1 of the design spec.
-        seed_incident(&pool, "route-test-5", &["VT"], &["ZZZ"], 1, false, false).await;
+        // Attributed to test-line by the matcher at ingest.
+        seed_incident_with_lines(&pool, "route-test-4", &["VT"], &["test-line"]).await;
+        // Same operator, attributed to a different line. Must be excluded:
+        // the Line filter is a line filter, not an operator filter in
+        // disguise.
+        seed_incident_with_lines(&pool, "route-test-5", &["VT"], &["other-line"]).await;
+        // The shape every pre-existing production row has until the
+        // backfill runs. Also must be excluded -- an unattributed row is
+        // not silently attributed to whatever line was asked for.
+        seed_incident_with_lines(&pool, "route-test-6", &["VT"], &[]).await;
 
         let (status, body) = get(&pool, vec![fixture_line()], "/incidents?line=test-line").await;
         assert_eq!(status, StatusCode::OK);
@@ -761,7 +787,11 @@ mod db_tests {
         assert_eq!(
             ids,
             vec!["route-test-4"],
-            "only the station-overlap match must be returned: {ids:?}"
+            "only the incident attributed to this line must be returned: {ids:?}"
+        );
+        assert_eq!(
+            rows[0]["affectedLines"][0], "test-line",
+            "the row carries its line attribution onto the wire: {body}"
         );
         delete_fixtures(&pool).await;
     }
