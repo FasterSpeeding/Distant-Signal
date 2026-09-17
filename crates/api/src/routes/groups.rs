@@ -50,6 +50,10 @@ pub fn router() -> Router {
             axum::routing::post(promote_member),
         )
         .route(
+            "/groups/{id}/members/{user_id}/demote",
+            axum::routing::post(demote_member),
+        )
+        .route(
             "/groups/{id}/invite-link",
             axum::routing::post(create_invite_link).delete(revoke_invite_link),
         )
@@ -378,9 +382,14 @@ async fn remove_member(
     }
 }
 
+/// The body both role-changing routes return: the member whose role
+/// changed, and the role they now hold. One struct rather than one per
+/// direction -- `promote` and `demote` are exact inverses and their
+/// responses were byte-identical in shape, so a second copy would only be
+/// a thing to keep in sync.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PromoteResponse {
+struct RoleChangeResponse {
     user_id: String,
     role: GroupRole,
 }
@@ -389,7 +398,7 @@ async fn promote_member(
     State(app): State<App>,
     user: AuthenticatedUser,
     Path((group_id, target_user_id)): Path<(String, String)>,
-) -> Result<Json<PromoteResponse>, (StatusCode, String)> {
+) -> Result<Json<RoleChangeResponse>, (StatusCode, String)> {
     require_role(&app, &group_id, &user.id, GroupRole::is_owner).await?;
 
     let target_role = groups::get_member_role(&app.database, &group_id, &target_user_id)
@@ -409,9 +418,95 @@ async fn promote_member(
     if !promoted {
         return Err((StatusCode::NOT_FOUND, "no member with that id".to_string()));
     }
-    Ok(Json(PromoteResponse {
+    Ok(Json(RoleChangeResponse {
         user_id: target_user_id,
         role: GroupRole::Admin,
+    }))
+}
+
+/// Why a demote target that isn't an `admin` is rejected, as a pure
+/// function of the target's current role, so the decision is unit-testable
+/// without a live database (every route test in this file's `db_tests`
+/// needs one and is `#[ignore]`d). `None` means "go ahead".
+///
+/// The three rejections are deliberately three different statuses:
+/// - not a member at all -> `404`, the same body `promote_member` and
+///   `remove_member` use for an unknown member id;
+/// - the `owner` -> `403`, mirroring `remove_member`'s "the group owner
+///   can't be removed" guard. Spec §2.1 makes the creator a PERMANENT
+///   owner; since only the owner may demote at all, this case is the owner
+///   aiming at their OWN row, and self-demotion would leave a group whose
+///   remaining admins could never be demoted by anyone and whose ownership
+///   could never be transferred back -- exactly the lock-out §2.1 exists to
+///   prevent. `remove_member` already covers the legitimate "I want out"
+///   path (it transfers ownership first, §2.1).
+/// - already a plain `member` -> `409`, matching `promote_member`'s own
+///   "already an admin or the owner" conflict: nothing is wrong with the
+///   request, the caller's view of the group is just stale.
+fn demote_rejection(target_role: Option<GroupRole>) -> Option<(StatusCode, String)> {
+    match target_role {
+        None => Some((StatusCode::NOT_FOUND, "no member with that id".to_string())),
+        Some(GroupRole::Owner) => Some((
+            StatusCode::FORBIDDEN,
+            "the group owner can't be demoted".to_string(),
+        )),
+        Some(GroupRole::Member) => Some((
+            StatusCode::CONFLICT,
+            "that member isn't an admin".to_string(),
+        )),
+        Some(GroupRole::Admin) => None,
+    }
+}
+
+/// `POST /groups/{id}/members/{userId}/demote` -- the inverse of
+/// `promote_member`, returning an `admin` to a plain `member` while
+/// leaving their membership (and anything they've shared into the group)
+/// untouched.
+///
+/// `GroupRole::is_owner`, not `can_manage`, for the same reason
+/// `promote_member` uses it: spec §3 reserves promotion to the `owner`
+/// alone, and the power to UNDO a role change belongs with whoever holds
+/// the power to make it. The spec's §3 table has no demote row (the
+/// capability didn't exist when it was written); matching promote exactly
+/// is the reading that keeps the `owner` the single source of truth for
+/// who holds admin, so the set of admins can only ever be changed by one
+/// person.
+///
+/// Note this is NOT a claim that admins are powerless against their peers:
+/// spec §3 lets any `admin` REMOVE a peer admin from the group outright
+/// (`remove_member` gates on `can_manage` and protects only the `owner`
+/// row), which is a blunter power than demotion. The argument here is
+/// consistency with promotion, not a new protection -- widening demote to
+/// `can_manage` would only add a quieter, in-place way to do a thing the
+/// spec already thought about, and it would split the authority over the
+/// admin list across everyone on it.
+async fn demote_member(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path((group_id, target_user_id)): Path<(String, String)>,
+) -> Result<Json<RoleChangeResponse>, (StatusCode, String)> {
+    require_role(&app, &group_id, &user.id, GroupRole::is_owner).await?;
+
+    let target_role = groups::get_member_role(&app.database, &group_id, &target_user_id)
+        .await
+        .map_err(internal_error("check target membership"))?;
+    if let Some(rejection) = demote_rejection(target_role) {
+        return Err(rejection);
+    }
+
+    let demoted = groups::demote_to_member(&app.database, &group_id, &target_user_id)
+        .await
+        .map_err(internal_error("demote member"))?;
+    if !demoted {
+        // Only reachable if the target's role changed between the check
+        // above and this write (another owner session, a concurrent
+        // removal) -- the same "it isn't there any more" answer
+        // `promote_member` gives for its own version of that race.
+        return Err((StatusCode::NOT_FOUND, "no member with that id".to_string()));
+    }
+    Ok(Json(RoleChangeResponse {
+        user_id: target_user_id,
+        role: GroupRole::Member,
     }))
 }
 
@@ -724,6 +819,41 @@ mod tests {
         let _ = router();
     }
 
+    /// `demote_member`'s target-role decision, exercised without a
+    /// database -- the route-level `db_tests` below that cover the same
+    /// ground end-to-end are all `#[ignore]`d, so these are the only
+    /// assertions about it that run in a plain `cargo test -p api --lib`.
+    #[test]
+    fn demote_rejection_refuses_the_owner_a_non_member_and_a_plain_member() {
+        // The owner row is never demotable, by anyone, for any reason
+        // (spec §2.1's permanent owner) -- and since `demote_member` is
+        // already gated to `owner`-only, this is specifically the owner
+        // being refused their OWN row.
+        let (status, body) = demote_rejection(Some(GroupRole::Owner)).expect("owner is refused");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body, "the group owner can't be demoted");
+
+        let (status, _) = demote_rejection(None).expect("a non-member is refused");
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "an id that isn't in this group at all is a 404, not a role conflict"
+        );
+
+        let (status, body) =
+            demote_rejection(Some(GroupRole::Member)).expect("a plain member is refused");
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body, "that member isn't an admin");
+    }
+
+    #[test]
+    fn demote_rejection_allows_an_admin() {
+        assert!(
+            demote_rejection(Some(GroupRole::Admin)).is_none(),
+            "an admin is the one and only demotable target"
+        );
+    }
+
     #[tokio::test]
     async fn join_literal_route_wins_over_same_position_dynamic_id_route() {
         use axum::body::Body;
@@ -830,11 +960,12 @@ mod tests {
 /// `crate::data::groups::db_tests` deliberately doesn't cover, since a
 /// data-layer test can only prove what a query does, never which callers a
 /// HANDLER lets reach it. This file is the most permission-dense route
-/// module in the crate (15 handlers, three distinct role predicates), so
-/// the three cases picked here are the ones where the handler's own gate,
-/// not the data layer's, is the entire behavior: an admin is refused the
-/// owner's row, a non-owner is refused promotion, and the invite link is
-/// withheld from a plain member.
+/// module in the crate (21 handlers, three distinct role predicates), so
+/// the cases picked here are the ones where the handler's own gate, not
+/// the data layer's, is the entire behavior: an admin is refused the
+/// owner's row, a non-owner is refused promotion and demotion, the owner
+/// is refused their own demotion, and the invite link is withheld from a
+/// plain member.
 ///
 /// The `test_app`/`test_router`/`seed_session`/`connect`/`request`/
 /// `post_json`/`delete_request` helpers below are this file's OWN copy of
@@ -1048,8 +1179,8 @@ mod db_tests {
 
     /// Issues a `POST` with a JSON body -- the write-path counterpart to
     /// `request`. `body: None` sends an empty body, which is what the
-    /// bodyless `POST` routes in this file (`promote`, `invite-link`,
-    /// `join`) expect.
+    /// bodyless `POST` routes in this file (`promote`, `demote`,
+    /// `invite-link`, `join`) expect.
     async fn post_json(
         router: axum::Router,
         uri: String,
@@ -1211,6 +1342,223 @@ mod db_tests {
                 "TEST-ROUTE-GROUPS-PROMO-OWNER",
                 "TEST-ROUTE-GROUPS-PROMO-ADMIN",
                 "TEST-ROUTE-GROUPS-PROMO-MEMBER",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                demote_member_the_owner_demotes_an_admin -- --ignored --test-threads=1`"]
+    async fn demote_member_the_owner_demotes_an_admin() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO-OWNER").await;
+        seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO-ADMIN").await;
+
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Route Test Demote",
+            "TEST-ROUTE-GROUPS-DEMO-OWNER",
+        )
+        .await
+        .expect("create fixture group");
+        seed_membership(&pool, &group_id, "TEST-ROUTE-GROUPS-DEMO-ADMIN", "admin").await;
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = post_json(
+            router,
+            format!("/groups/{group_id}/members/TEST-ROUTE-GROUPS-DEMO-ADMIN/demote"),
+            Some(&owner_token),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["userId"], "TEST-ROUTE-GROUPS-DEMO-ADMIN");
+        assert_eq!(body["role"], "member");
+
+        let target_role =
+            crate::data::groups::get_member_role(&pool, &group_id, "TEST-ROUTE-GROUPS-DEMO-ADMIN")
+                .await
+                .expect("read target role");
+        assert_eq!(
+            target_role,
+            Some(crate::data::groups::GroupRole::Member),
+            "the demoted admin stays in the group as a plain member"
+        );
+
+        cleanup(
+            &pool,
+            &group_id,
+            &[
+                "TEST-ROUTE-GROUPS-DEMO-OWNER",
+                "TEST-ROUTE-GROUPS-DEMO-ADMIN",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                demote_member_a_non_owner_caller_is_403 -- --ignored --test-threads=1`"]
+    async fn demote_member_a_non_owner_caller_is_403() {
+        let pool = connect().await;
+        seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO2-OWNER").await;
+        let admin_token = seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO2-ADMIN").await;
+        let member_token = seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO2-MEMBER").await;
+        seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO2-TARGET").await;
+        // Deliberately never added to the group below.
+        let outsider_token = seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO2-OUTSIDER").await;
+
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Route Test Demote Perms",
+            "TEST-ROUTE-GROUPS-DEMO2-OWNER",
+        )
+        .await
+        .expect("create fixture group");
+        seed_membership(&pool, &group_id, "TEST-ROUTE-GROUPS-DEMO2-ADMIN", "admin").await;
+        seed_membership(&pool, &group_id, "TEST-ROUTE-GROUPS-DEMO2-MEMBER", "member").await;
+        seed_membership(&pool, &group_id, "TEST-ROUTE-GROUPS-DEMO2-TARGET", "admin").await;
+
+        // An `admin` -- i.e. `can_manage()`, which is enough for renaming,
+        // invite links and member removal -- must NOT be able to demote a
+        // peer admin. This is the whole reason the handler gates on
+        // `is_owner`: a `can_manage` gate here would let any admin strip
+        // every other admin.
+        let (status, _body) = post_json(
+            test_router(test_app(pool.clone())),
+            format!("/groups/{group_id}/members/TEST-ROUTE-GROUPS-DEMO2-TARGET/demote"),
+            Some(&admin_token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // ...and neither can a plain member.
+        let (status, _body) = post_json(
+            test_router(test_app(pool.clone())),
+            format!("/groups/{group_id}/members/TEST-ROUTE-GROUPS-DEMO2-TARGET/demote"),
+            Some(&member_token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // ...and someone who isn't in the group at all gets this file's
+        // 404, not a 403: a non-member has no legitimate claim to learn
+        // whether the group even exists (`require_role`, and the module
+        // doc's own 403-vs-404 policy).
+        let (status, _body) = post_json(
+            test_router(test_app(pool.clone())),
+            format!("/groups/{group_id}/members/TEST-ROUTE-GROUPS-DEMO2-TARGET/demote"),
+            Some(&outsider_token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let target_role = crate::data::groups::get_member_role(
+            &pool,
+            &group_id,
+            "TEST-ROUTE-GROUPS-DEMO2-TARGET",
+        )
+        .await
+        .expect("read target role");
+        assert_eq!(
+            target_role,
+            Some(crate::data::groups::GroupRole::Admin),
+            "none of the three refused demotions may have taken effect"
+        );
+
+        cleanup(
+            &pool,
+            &group_id,
+            &[
+                "TEST-ROUTE-GROUPS-DEMO2-OWNER",
+                "TEST-ROUTE-GROUPS-DEMO2-ADMIN",
+                "TEST-ROUTE-GROUPS-DEMO2-MEMBER",
+                "TEST-ROUTE-GROUPS-DEMO2-TARGET",
+                "TEST-ROUTE-GROUPS-DEMO2-OUTSIDER",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                demote_member_refuses_the_owner_row_and_a_plain_member -- --ignored \
+                --test-threads=1`"]
+    async fn demote_member_refuses_the_owner_row_and_a_plain_member() {
+        let pool = connect().await;
+        let owner_token = seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO3-OWNER").await;
+        seed_session(&pool, "TEST-ROUTE-GROUPS-DEMO3-MEMBER").await;
+
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Route Test Demote Targets",
+            "TEST-ROUTE-GROUPS-DEMO3-OWNER",
+        )
+        .await
+        .expect("create fixture group");
+        seed_membership(&pool, &group_id, "TEST-ROUTE-GROUPS-DEMO3-MEMBER", "member").await;
+
+        // The owner aiming at their own row: refused, so a group can never
+        // end up ownerless (spec §2.1's permanent owner). Leaving is the
+        // supported exit, and it transfers ownership first.
+        let (status, body) = post_json(
+            test_router(test_app(pool.clone())),
+            format!("/groups/{group_id}/members/TEST-ROUTE-GROUPS-DEMO3-OWNER/demote"),
+            Some(&owner_token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            body,
+            Value::String("the group owner can't be demoted".to_string())
+        );
+        let owner_role =
+            crate::data::groups::get_member_role(&pool, &group_id, "TEST-ROUTE-GROUPS-DEMO3-OWNER")
+                .await
+                .expect("read owner role");
+        assert_eq!(owner_role, Some(crate::data::groups::GroupRole::Owner));
+
+        // Demoting someone who is already a plain member: a conflict, not
+        // a silent success -- the mirror of `promote_member`'s own 409.
+        let (status, body) = post_json(
+            test_router(test_app(pool.clone())),
+            format!("/groups/{group_id}/members/TEST-ROUTE-GROUPS-DEMO3-MEMBER/demote"),
+            Some(&owner_token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            body,
+            Value::String("that member isn't an admin".to_string())
+        );
+
+        // An id that isn't in this group at all: 404, the same answer
+        // `promote_member`/`remove_member` give.
+        let (status, _body) = post_json(
+            test_router(test_app(pool.clone())),
+            format!("/groups/{group_id}/members/TEST-ROUTE-GROUPS-DEMO3-NOBODY/demote"),
+            Some(&owner_token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        cleanup(
+            &pool,
+            &group_id,
+            &[
+                "TEST-ROUTE-GROUPS-DEMO3-OWNER",
+                "TEST-ROUTE-GROUPS-DEMO3-MEMBER",
             ],
         )
         .await;

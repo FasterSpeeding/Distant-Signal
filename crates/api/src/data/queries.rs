@@ -785,21 +785,43 @@ pub async fn list_stanox_crs_for_crs(
 /// constraint on `stanox_crs.tiploc` -- multiple STANOX rows can share a
 /// TIPLOC, e.g. different platforms/areas of one physical location), so
 /// this is "a plausible one," not "the guaranteed only one."
+///
+/// Both sides of the comparison are `TRIM`med as well as case-folded. A CIF
+/// schedule-body TIPLOC is a fixed 7-character, space-padded field (see
+/// `schedule_query::normalize_tiploc`) while `stanox_crs.tiploc` holds the
+/// trimmed form, so a caller that forgets to normalize otherwise gets a
+/// silent miss for every TIPLOC shorter than 7 characters -- roughly a
+/// third of all real station TIPLOCs, and the cause of the 2026-09-16
+/// "Unknown location" journey-page bug (see `journey::tiploc_key`).
+/// Callers should still normalize, and all of them do, but correctness
+/// must not depend on their remembering to.
+///
+/// The input is trimmed in Rust rather than in SQL, matching
+/// `crs_for_tiplocs_batch`'s own `t.trim()` -- deliberately, so the two
+/// siblings cannot diverge *on trimming*: Rust's `str::trim` strips all
+/// Unicode whitespace while Postgres `TRIM()` strips spaces only, which is
+/// indistinguishable for real space-padded ASCII CIF data but would make
+/// the pair disagree on anything exotic. (Case folding is still done
+/// SQL-side here and Rust-side in the batch; both are ASCII-identical for
+/// a TIPLOC, so that asymmetry is cosmetic rather than a second trap.)
 pub async fn crs_for_tiploc(pool: &PgPool, tiploc: &str) -> Result<Option<String>> {
     let row: Option<(String,)> =
-        sqlx::query_as("SELECT crs FROM stanox_crs WHERE UPPER(tiploc) = UPPER($1) LIMIT 1")
-            .bind(tiploc)
+        sqlx::query_as("SELECT crs FROM stanox_crs WHERE UPPER(TRIM(tiploc)) = UPPER($1) LIMIT 1")
+            .bind(tiploc.trim())
             .fetch_optional(pool)
             .await?;
     Ok(row.map(|(crs,)| crs))
 }
 
-/// Batched sibling of `crs_for_tiploc` -- one `WHERE UPPER(tiploc) =
+/// Batched sibling of `crs_for_tiploc` -- one `WHERE UPPER(TRIM(tiploc)) =
 /// ANY($1)` query resolving every distinct TIPLOC in a calling-point list,
 /// instead of one query per TIPLOC. Mirrors the existing single/batch
 /// pairing convention `trains::find_or_create_train`/
 /// `find_or_create_trains_batch` already establishes. Keys are
-/// `UPPER(tiploc)`; a TIPLOC with no `stanox_crs` row is simply absent from
+/// `UPPER(TRIM(tiploc))` -- see `crs_for_tiploc`'s own doc comment for why
+/// the `TRIM` is load-bearing rather than cosmetic, and
+/// `journey::tiploc_key` for the matching Rust-side key a caller's `get`
+/// has to build. A TIPLOC with no `stanox_crs` row is simply absent from
 /// the map (degrade, don't fabricate -- same posture `crs_for_tiploc`
 /// already has for a single lookup).
 pub async fn crs_for_tiplocs_batch(
@@ -809,9 +831,10 @@ pub async fn crs_for_tiplocs_batch(
     if tiplocs.is_empty() {
         return Ok(HashMap::new());
     }
-    let upper: Vec<String> = tiplocs.iter().map(|t| t.to_uppercase()).collect();
+    let upper: Vec<String> = tiplocs.iter().map(|t| t.trim().to_uppercase()).collect();
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT DISTINCT UPPER(tiploc), UPPER(crs) FROM stanox_crs WHERE UPPER(tiploc) = ANY($1)",
+        "SELECT DISTINCT UPPER(TRIM(tiploc)), UPPER(crs) FROM stanox_crs \
+         WHERE UPPER(TRIM(tiploc)) = ANY($1)",
     )
     .bind(&upper)
     .fetch_all(pool)

@@ -35,12 +35,21 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
-// See TrackTrainForm.test.tsx's identical mock (lines 62-97) for why a
-// thin stand-in is used instead of driving the real popover calendar:
-// fireEvent.change needs a real <input>, and DatePickerInput's real
-// control isn't one. Keeps the same onChange(string | null) contract
-// TrainSearchForm actually depends on.
-vi.mock('@mantine/dates', () => ({
+// A PARTIAL mock: only `DatePickerInput` is stubbed out, and everything
+// else `@mantine/dates` exports -- notably `TimeInput`, which backs this
+// form's four time filters -- comes through as the real component. See
+// TrackTrainForm.test.tsx's identical `DatePickerInput` mock (lines 62-97)
+// for why that one specifically needs a thin stand-in: fireEvent.change
+// needs a real <input>, and DatePickerInput's real control isn't one. Keeps
+// the same onChange(string | null) contract TrainSearchForm depends on.
+//
+// `TimeInput` deliberately is NOT stubbed: it is a thin wrapper over a real
+// native `<input type="time">`, so it already IS a real input that
+// fireEvent.change drives, and stubbing it would leave these tests
+// asserting against a hand-written stand-in rather than the control the
+// page actually renders.
+vi.mock('@mantine/dates', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@mantine/dates')>()),
   DatePickerInput: ({
     label,
     value,
@@ -194,6 +203,223 @@ describe('TrainSearchForm', () => {
         '/api/trains/search?station=MAN&origin=EUS&stops_at=OXF&from=09%3A00&to=12%3A00',
       ),
     );
+  });
+
+  /** The four time filters are `TimeFilterInput` -- a native
+   * `<input type="time">` with an explicit picker button and clear button
+   * -- not the free-text `TextInput` they used to be. `TimeFilterInput`'s
+   * own tests cover the control in isolation; these are the integration
+   * facts only this form can prove: that all four are wired up, that their
+   * affordances are distinguishable from each other, and that the swap
+   * left the wire values and validation exactly as they were. */
+  describe('time filters use a real time picker', () => {
+    const TIME_FIELDS = [
+      { label: 'Earliest departure (optional)', name: 'earliest departure' },
+      { label: 'Latest departure (optional)', name: 'latest departure' },
+      { label: 'Earliest arrival (optional)', name: 'earliest arrival' },
+      { label: 'Latest arrival (optional)', name: 'latest arrival' },
+    ];
+
+    it('renders every time filter as a native time input with its own picker button', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      // `initialStopsAt` so the arrival pair (which only renders once Stops
+      // at is filled in) is on screen alongside the departure pair -- all
+      // four at once is the case where their button names have to differ.
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
+
+      for (const { label, name } of TIME_FIELDS) {
+        const input = screen.getByLabelText(label);
+        expect(input).toHaveAttribute('type', 'time');
+        // `step=60` is what keeps a native time input's value at "HH:MM" --
+        // the exact shape `from`/`to`/`arrival_from`/`arrival_to` are parsed
+        // as server-side. A seconds segment would put "HH:MM:SS" on the wire.
+        expect(input).toHaveAttribute('step', '60');
+        // `getByRole` throws on more than one match, so this doubles as the
+        // assertion that the four buttons are uniquely named.
+        expect(screen.getByRole('button', { name: `Pick ${name}` })).toBeInTheDocument();
+      }
+    });
+
+    it('keeps each time filter optional and individually clearable', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+        target: { value: '09:00' },
+      });
+      fireEvent.change(screen.getByLabelText('Latest departure (optional)'), {
+        target: { value: '12:00' },
+      });
+      // Driven through the field's real clear button rather than a
+      // synthetic empty-string change event, because that button is the
+      // only way back to empty on a touch device (a native time input
+      // opens a wheel picker with no keyboard to Backspace with, and
+      // Mantine's own stylesheet hides the native clear control).
+      fireEvent.click(screen.getByRole('button', { name: 'Clear earliest departure' }));
+
+      // Only the cleared field's param is dropped; the other survives.
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+      await waitFor(() =>
+        expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&to=12%3A00'),
+      );
+    });
+
+    it('offers a clear button only on the time filters that have a value', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      expect(screen.queryByRole('button', { name: 'Clear earliest departure' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Clear latest departure' })).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+        target: { value: '09:00' },
+      });
+
+      expect(screen.getByRole('button', { name: 'Clear earliest departure' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Clear latest departure' })).not.toBeInTheDocument();
+    });
+
+    it('still flags a time the wire format does not accept', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      // `"09:00:30"` is a VALID HTML time string, so a `type="time"`
+      // input's own value sanitization lets it straight through to
+      // `onChange` (jsdom does too -- verified, unlike outright garbage
+      // such as `"25:99"`, which sanitizes to `""` below). It is still not
+      // a value this API accepts: `from`/`to`/`arrival_from`/`arrival_to`
+      // are parsed as bare `"HH:MM"`. So the component's own
+      // `TIME_PATTERN` check is not dead weight after the swap to a picker
+      // -- this is the case it still catches.
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+        target: { value: '09:00:30' },
+      });
+
+      expect(screen.getByText('Must be a time like 09:00')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+    });
+
+    it('refuses a nonsense time outright instead of putting it on the wire', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      // The upgrade from a free-text box: `"25:99"` is not a valid HTML
+      // time string, so the control never adopts it at all (it sanitizes
+      // to `""`). The old `TextInput` accepted the keystrokes and only
+      // *then* showed an error; now there is nothing to error about,
+      // and `from` is simply absent -- never sent as a malformed value.
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+        target: { value: '25:99' },
+      });
+      expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+    });
+
+    it('refuses to search on a half-entered time rather than quietly dropping the filter', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      const input = screen.getByLabelText('Earliest departure (optional)') as HTMLInputElement;
+      // A real browser reports a half-entered time ("09:--") as `''` with
+      // `validity.badInput` set; jsdom models neither, so the flag is
+      // forced. Without the wiring this test covers, `''` is
+      // indistinguishable from an untouched field and the search would run
+      // with no `from` at all.
+      Object.defineProperty(input, 'validity', { configurable: true, get: () => ({ badInput: true }) });
+      fireEvent.blur(input);
+
+      expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+    });
+
+    it('stops refusing once a half-entered time is cleared away', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      const input = screen.getByLabelText('Earliest departure (optional)') as HTMLInputElement;
+      Object.defineProperty(input, 'validity', { configurable: true, get: () => ({ badInput: true }) });
+      fireEvent.blur(input);
+
+      Object.defineProperty(input, 'validity', { configurable: true, get: () => ({ badInput: false }) });
+      fireEvent.click(screen.getByRole('button', { name: 'Clear earliest departure' }));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+    });
+
+    it('forgets a half-entered arrival time once Stops at removes the field', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
+
+      const arrival = screen.getByLabelText('Earliest arrival (optional)') as HTMLInputElement;
+      Object.defineProperty(arrival, 'validity', { configurable: true, get: () => ({ badInput: true }) });
+      fireEvent.blur(arrival);
+      expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+
+      // Clearing Stops at unmounts both arrival filters. The half-entered
+      // one can no longer contribute a query param -- `searchParams()`
+      // gates `arrival_from`/`arrival_to` on `stops_at` -- so it must stop
+      // blocking the search too.
+      fireEvent.change(screen.getByRole('combobox', { name: 'Stops at (optional)' }), {
+        target: { value: '' },
+      });
+      expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled();
+
+      // And the flag must be genuinely retracted, not merely ignored while
+      // Stops at is empty: putting Stops at back brings a FRESH, healthy
+      // arrival field, which reports nothing of its own (the callback only
+      // fires on a transition). A flag that merely went dormant would come
+      // back live here and wedge the form with no error text to explain it.
+      fireEvent.change(screen.getByRole('combobox', { name: 'Stops at (optional)' }), {
+        target: { value: 'RDG' },
+      });
+      expect(screen.getByLabelText('Earliest arrival (optional)')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+      await waitFor(() =>
+        expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG'),
+      );
+    });
+
+    it('does not let the picker or clear button submit the form', () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      // Every field sits inside `<Stack component="form">`, so a
+      // right-section button defaulting to `type="submit"` would fire a
+      // whole search on each click.
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+        target: { value: '09:00' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Pick earliest departure' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Clear earliest departure' }));
+
+      expect(searchCallUrls(fetchMock)).toHaveLength(0);
+    });
+
+    it('blocks the search on an unacceptable ARRIVAL time too, not just a departure one', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
+
+      // The arrival pair is conditionally rendered, so its contribution to
+      // `canSearch` is easy to lose without noticing -- pinned separately
+      // from the departure pair's for that reason.
+      fireEvent.change(screen.getByLabelText('Latest arrival (optional)'), {
+        target: { value: '09:30:15' },
+      });
+
+      expect(screen.getByText('Must be a time like 09:00')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+    });
   });
 
   it('renders one row per result, with time, origin and destination', async () => {
