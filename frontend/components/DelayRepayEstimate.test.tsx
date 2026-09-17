@@ -40,6 +40,12 @@ describe('DelayRepayEstimate', () => {
     expect(screen.getByText(/rules vary and this estimate can be wrong/)).toBeInTheDocument();
   });
 
+  it('renders a space between the delayMinutes interpolation and "minutes)" (review §4.4: explicit {\' \'} guard against dropped whitespace)', () => {
+    renderWithMantine(<DelayRepayEstimate response={response({ delayMinutes: 10 })} />);
+    expect(screen.getByText(/\(10 minutes\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/10minutes/)).not.toBeInTheDocument();
+  });
+
   it('estimate and delayMinutes both null: says no delay data recorded yet', () => {
     renderWithMantine(<DelayRepayEstimate response={response()} />);
     expect(screen.getByText(/No delay data recorded yet/)).toBeInTheDocument();

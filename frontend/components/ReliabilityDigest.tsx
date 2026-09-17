@@ -155,7 +155,8 @@ function DelayRepaySection({ rollup }: { rollup: DelayRepayRollup }) {
           would overstate how many distinct trips were involved. */}
       <Alert color="blue" title="Possible Delay Repay eligibility, across your attached tickets" variant="light">
         Of the {rollup.attachedTicketsWithOperator} ticket{rollup.attachedTicketsWithOperator === 1 ? '' : 's'}{' '}
-        attached to a tracked train with a known operator, {rollup.eligibleCount} may have qualified for a partial
+        attached to a tracked train with a known operator, {rollup.eligibleCount}{' '}
+        may have qualified for a partial
         or full refund of that ticket&apos;s fare under the operator&apos;s Delay Repay scheme.
       </Alert>
       {bandEntries.length > 0 && (
