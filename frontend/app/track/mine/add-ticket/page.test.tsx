@@ -34,6 +34,14 @@ describe('AddTicketPage', () => {
     expect(screen.queryByLabelText('Operator')).not.toBeInTheDocument();
   });
 
+  it('not logged in: also renders a server-rendered LoginLink, not just the client-only modal', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(session(false));
+    renderWithMantine(await AddTicketPage());
+
+    const link = screen.getByRole('link', { name: 'Log in to add a ticket' });
+    expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrack%2Fmine%2Fadd-ticket');
+  });
+
   it('logged in: shows the heading, a Back link, and TicketEntryForm expanded with no click needed', async () => {
     vi.mocked(api.getSession).mockResolvedValue(session(true));
     renderWithMantine(await AddTicketPage());

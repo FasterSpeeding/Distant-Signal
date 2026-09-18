@@ -2,6 +2,7 @@ import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import Link from 'next/link';
 import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
+import { LoginLink } from '@/components/LoginLink';
 import { TextLink } from '@/components/TextLink';
 import { TicketSummary } from '@/components/TicketSummary';
 import { ReliabilityDigest } from '@/components/ReliabilityDigest';
@@ -80,6 +81,15 @@ export default async function MyTrackedTrainsPage() {
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>My Trains &amp; Tickets</Title>
+        {/* Server-rendered, same pattern as
+            app/train/by-id/[trackingId]/page.tsx's own
+            ApiUnauthorizedError branch: a link-unfurler bot or a
+            pre-hydration visitor sees this sentence even though it can
+            never run the client-only AutoOpenLoginPrompt modal below,
+            which stays as progressive enhancement on top of it. */}
+        <LoginLink underline="always">
+          Log in to see the trains and tickets you&apos;re tracking
+        </LoginLink>
         <AutoOpenLoginPrompt>
           Log in to see the trains and tickets you&apos;re tracking.
         </AutoOpenLoginPrompt>

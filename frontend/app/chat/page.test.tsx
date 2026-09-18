@@ -20,7 +20,19 @@ describe('ChatPage', () => {
   it('renders a login prompt for an unauthenticated visitor', async () => {
     vi.mocked(api.getChatbotAccess).mockResolvedValue('unauthenticated');
     renderWithMantine(await ChatPage());
-    expect(screen.getByText(/Sign in to ask about live departures/)).toBeInTheDocument();
+    // Two matches now: the server-rendered LoginLink sentence and the
+    // AutoOpenLoginPrompt modal's own copy of it -- see the dedicated
+    // LoginLink assertion below for the inline one specifically.
+    expect(screen.getAllByText(/Sign in to ask about live departures/).length).toBeGreaterThan(0);
+  });
+
+  it('unauthenticated: also renders a server-rendered LoginLink, not just the client-only modal', async () => {
+    vi.mocked(api.getChatbotAccess).mockResolvedValue('unauthenticated');
+    renderWithMantine(await ChatPage());
+    const link = screen.getByRole('link', {
+      name: 'Sign in to ask about live departures, disruptions and journeys',
+    });
+    expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2Fchat');
   });
 
   it('renders a "not available" message for a logged-in, non-allowlisted user -- not a 404', async () => {

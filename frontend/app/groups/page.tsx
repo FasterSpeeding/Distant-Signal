@@ -3,6 +3,7 @@ import Link from 'next/link';
 import type { Metadata } from 'next';
 import { getMyGroups } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
+import { LoginLink } from '@/components/LoginLink';
 import { TextLink } from '@/components/TextLink';
 import type { GroupSummary } from '@/lib/types';
 
@@ -59,6 +60,13 @@ export default async function GroupsPage() {
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>Groups</Title>
+        {/* Server-rendered, same as the two already-correct routes
+            (app/train/by-id/[trackingId]/page.tsx,
+            app/groups/[id]/page.tsx): a link-unfurler bot or a
+            pre-hydration visitor sees this sentence even though it can
+            never run the client-only AutoOpenLoginPrompt modal below,
+            which stays as progressive enhancement on top of it. */}
+        <LoginLink underline="always">Log in to see your groups</LoginLink>
         <AutoOpenLoginPrompt>Log in to see your groups.</AutoOpenLoginPrompt>
       </Stack>
     );

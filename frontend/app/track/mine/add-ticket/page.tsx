@@ -1,6 +1,7 @@
 import { Stack, Title } from '@mantine/core';
 import { getSession } from '@/lib/api';
 import { AutoOpenLoginPrompt } from '../AutoOpenLoginPrompt';
+import { LoginLink } from '@/components/LoginLink';
 import { TextLink } from '@/components/TextLink';
 import { TicketEntryForm } from '@/components/TicketEntryForm';
 
@@ -41,6 +42,13 @@ export default async function AddTicketPage() {
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>Add a ticket</Title>
+        {/* Server-rendered, same pattern as
+            app/train/by-id/[trackingId]/page.tsx's own
+            ApiUnauthorizedError branch: a link-unfurler bot or a
+            pre-hydration visitor sees this sentence even though it can
+            never run the client-only AutoOpenLoginPrompt modal below,
+            which stays as progressive enhancement on top of it. */}
+        <LoginLink underline="always">Log in to add a ticket</LoginLink>
         <AutoOpenLoginPrompt>Log in to add a ticket.</AutoOpenLoginPrompt>
       </Stack>
     );

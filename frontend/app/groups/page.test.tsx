@@ -20,6 +20,13 @@ describe('GroupsPage', () => {
     expect(await screen.findByText('Log in to see your groups.')).toBeInTheDocument();
   });
 
+  it('renders a server-rendered LoginLink alongside the modal, not just the client-only prompt', async () => {
+    vi.mocked(getMyGroups).mockResolvedValue(null);
+    renderWithMantine(await GroupsPage());
+    const link = screen.getByRole('link', { name: 'Log in to see your groups' });
+    expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2Fgroups');
+  });
+
   it('shows an empty-state message with no groups', async () => {
     vi.mocked(getMyGroups).mockResolvedValue([]);
     renderWithMantine(await GroupsPage());

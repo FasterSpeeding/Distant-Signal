@@ -114,6 +114,14 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     );
   });
 
+  it('null (not logged in): also renders a server-rendered LoginLink, not just the client-only modal', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
+    vi.mocked(api.getMyTickets).mockResolvedValue(null);
+    renderWithMantine(await MyTrackedTrainsPage());
+    const link = screen.getByRole('link', { name: "Log in to see the trains and tickets you're tracking" });
+    expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrack%2Fmine');
+  });
+
   it('no trains and no tickets: shows the empty state with a working link to /track', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);

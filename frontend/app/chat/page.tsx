@@ -1,6 +1,7 @@
 import { Stack, Text, Title } from '@mantine/core';
 import { getChatbotAccess } from '@/lib/api';
 import { AutoOpenLoginPrompt } from '@/app/track/mine/AutoOpenLoginPrompt';
+import { LoginLink } from '@/components/LoginLink';
 import { ChatPanel } from '@/components/ChatPanel';
 
 // Same reasoning as app/page.tsx's own `revalidate = 0` (and
@@ -27,6 +28,18 @@ export default async function ChatPage() {
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>Chat</Title>
+        {/* Server-rendered, same pattern as
+            app/train/by-id/[trackingId]/page.tsx's own
+            ApiUnauthorizedError branch: a link-unfurler bot or a
+            pre-hydration visitor sees this sentence even though it can
+            never run the client-only AutoOpenLoginPrompt modal below,
+            which stays as progressive enhancement on top of it. Only this
+            branch needs it -- the `forbidden` branch below already has
+            real server-rendered content of its own, and the success
+            branch is real content too. */}
+        <LoginLink underline="always">
+          Sign in to ask about live departures, disruptions and journeys
+        </LoginLink>
         <AutoOpenLoginPrompt>
           Sign in to ask about live departures, disruptions and journeys.
         </AutoOpenLoginPrompt>
