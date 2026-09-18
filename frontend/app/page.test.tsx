@@ -740,6 +740,37 @@ describe('DashboardPage -- Lines shared with you section', () => {
     expect(screen.getByRole('heading', { name: 'Your Lines' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Lines shared with you' })).not.toBeInTheDocument();
   });
+
+  // Task 1.5 (WCAG 2.5.3): `SharedCustomLineSummaryRow` pairs its title
+  // with a status badge in a `Group wrap="nowrap"` (`StatusRow`) -- the
+  // badge must not be crushable, even with a very long line name.
+  it('gives the status badge a shrink guard, even with a very long line name', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({
+        id: 'custom-my-commute',
+        name: 'My Commute',
+        lineStatuses: [
+          {
+            statusSeverity: 6,
+            statusSeverityDescription: 'Severe Delays',
+            reason: 'signalling',
+            sampleAvailability: { state: 'no-coverage' },
+          } as never,
+        ],
+      }),
+    ]);
+    vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue([
+      sharedLine({ lineName: 'An Implausibly Long Custom Line Name Chosen To Threaten This Row’s Layout' }),
+    ]);
+    const { container } = renderWithMantine(await DashboardPage());
+
+    const row = screen
+      .getByText('An Implausibly Long Custom Line Name Chosen To Threaten This Row’s Layout')
+      .closest('.mantine-Card-root') as HTMLElement;
+    expect(within(row).getByText('Severe Delays')).toBeInTheDocument();
+    expectNoUnguardedNowrapBadges(container);
+  });
 });
 
 // The home page's own copy of the /track/mine fix: a train another member
@@ -777,6 +808,25 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     expect(screen.getByRole('heading', { name: 'Your Tracked Trains' })).toBeInTheDocument();
     expect(screen.getByText('PAD → RDG')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
+  });
+
+  // Task 1.5 (WCAG 2.5.3): `SharedTrainSummaryRow` pairs its title with
+  // `TrackedTrainStatusBadge` in a `Group wrap="nowrap"` (`StatusRow`) --
+  // the badge(s) must not be crushable, even with very long station names.
+  it('gives the shared row’s status badges a shrink guard, even with very long station names', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+      sharedTrain({
+        delayMinutes: 9,
+        pinOriginName: 'A Station With An Implausibly Long Name For Testing',
+        pinDestinationName: 'Another Equally Verbose Destination Station Name',
+      }),
+    ]);
+
+    const { container } = renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText('9m late')).toBeInTheDocument();
+    expectNoUnguardedNowrapBadges(container);
   });
 
   it('nothing own and nothing shared: the section stays hidden entirely (Decision 4)', async () => {

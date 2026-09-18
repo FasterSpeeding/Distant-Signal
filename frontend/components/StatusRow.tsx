@@ -3,13 +3,21 @@ import { Box, Group, Stack, Text, type MantineSize } from '@mantine/core';
 
 export type StatusRowProps = {
   /** The row's heading. A plain string (or number) is wrapped in a `Text`
-   * that carries this component's own `fw`/`lineClamp`/`minWidth: 0` —
-   * the exact styling `LineStatusCard.tsx` already hand-rolls. Pass a
-   * pre-built node instead (e.g. a `Link`-wrapped `Text`, as
+   * that carries this component's own `fw={500}`/`lineClamp`/
+   * `minWidth: 0` — `fw={500}` matches every one of this row's current
+   * plain-string title call sites (`TrackedTrainSummaryRow`,
+   * `SharedTrainSummaryRow`, `SharedCustomLineSummaryRow`, `SharedTrainRow`,
+   * `TrackedTrainListRow`'s inner row), NOT `LineStatusCard.tsx`'s own
+   * `fw={600}` — that card isn't built on `StatusRow` and this task
+   * doesn't touch it, so there's no live caller that wants 600 here. Pass
+   * a pre-built node instead (e.g. a `Link`-wrapped `Text`, as
    * `SharedCustomLineRow` needs) when the title itself has to be
    * interactive or otherwise isn't a bare string; in that case this
    * component only supplies the shrinkable, `minWidth: 0` container
-   * around it, and the caller is responsible for its own clamping. */
+   * around it, and the caller is responsible for its own weight/clamping
+   * (both current composite-title call sites use `fw={500}` too, so the
+   * row title's weight reads the same regardless of which path a given
+   * row takes). */
   title: ReactNode;
   /** Optional second line under the title (e.g. "Shared by ..."). When
    * given, title+subtitle are stacked with `gap={4}`, matching every one
@@ -76,7 +84,7 @@ export function StatusRow({
 }: StatusRowProps) {
   const titleNode =
     typeof title === 'string' || typeof title === 'number' ? (
-      <Text fw={600} lineClamp={titleLineClamp} style={{ minWidth: 0 }} data-status-row-title>
+      <Text fw={500} lineClamp={titleLineClamp} style={{ minWidth: 0 }} data-status-row-title>
         {title}
       </Text>
     ) : (
