@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { expectShrinkGuarded } from '@/test/shrinkGuard';
 import GroupDetailPage from './page';
 import {
   getGroup,
@@ -375,6 +376,14 @@ describe('GroupDetailPage', () => {
       expect(screen.getByRole('button', { name: 'Remove from group' })).toBeInTheDocument();
     });
 
+    // Task 1.5 (WCAG 2.5.3): the row's `Group wrap="nowrap"` (`StatusRow`)
+    // pairs the train's display name with this button -- it must not be
+    // crushable by a long name/subtitle.
+    it('gives "Remove from group" a shrink guard', async () => {
+      await renderAs(ADMIN, 'admin', [sharedTrain(PLAIN.userId, 44)]);
+      expectShrinkGuarded(screen.getByRole('button', { name: 'Remove from group' }));
+    });
+
     it('only an owner sees "Delete group"; an admin and a plain member see "Rename" / neither', async () => {
       await renderAs(OWNER, 'owner');
       expect(screen.getByRole('button', { name: 'Rename' })).toBeInTheDocument();
@@ -537,6 +546,21 @@ describe('GroupDetailPage', () => {
       await renderAsViewer('user-admin', 'admin');
 
       expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeInTheDocument();
+    });
+
+    // Task 1.5 (WCAG 2.5.3): the row pairs a (potentially long) line name
+    // with this status badge and "Stop sharing" button in a `Group
+    // wrap="nowrap"` (`StatusRow`) -- without a shrink guard on both,
+    // either could be crushed to nothing instead of the title truncating.
+    it('gives the status badge and the "Stop sharing" button a shrink guard against a long line name', async () => {
+      vi.mocked(getGroupCustomLines).mockResolvedValue([
+        line({ lineName: 'An Implausibly Long Custom Line Name Chosen To Threaten The Row Layout' }),
+      ]);
+      vi.mocked(getLineStatus).mockResolvedValue([report()]);
+      await renderAsViewer(SHARER, 'member');
+
+      expectShrinkGuarded(screen.getByText('Severe Delays'));
+      expectShrinkGuarded(screen.getByRole('button', { name: 'Stop sharing' }));
     });
 
     it('never offers an Edit or Delete control for a line the viewer does not own', async () => {

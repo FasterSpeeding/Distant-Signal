@@ -11,6 +11,7 @@ import { AttachTicketAction } from '@/components/AttachTicketAction';
 import { DeleteTicketButton } from '@/components/DeleteTicketButton';
 import { RenameTrainButton } from '@/components/RenameTrainButton';
 import { RenameTicketButton } from '@/components/RenameTicketButton';
+import { StatusRow } from '@/components/StatusRow';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
@@ -236,20 +237,22 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
             (wrapping the whole card, as the trains-only predecessor page
             did) is invalid HTML once that's a real possibility.
             RenameTrainButton sits outside the <Link> for the same reason. */}
-        <Group justify="space-between" wrap="nowrap" align="flex-start">
-          <Link href={href} style={{ textDecoration: 'none', color: 'inherit', flex: 1 }}>
-            <Stack gap={4}>
-              <Group justify="space-between" wrap="nowrap">
-                <Text fw={500}>{displayName}</Text>
-                <RowStatusBadge train={train} />
-              </Group>
-              <Text size="sm" c="dimmed">
-                {when}
-              </Text>
-            </Stack>
-          </Link>
-          <RenameTrainButton trackingId={train.id} customName={train.customName} defaultName={defaultName} />
-        </Group>
+        <StatusRow
+          align="flex-start"
+          title={
+            <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
+              <Stack gap={4}>
+                <StatusRow title={displayName} trailing={<RowStatusBadge train={train} />} />
+                <Text size="sm" c="dimmed">
+                  {when}
+                </Text>
+              </Stack>
+            </Link>
+          }
+          trailing={
+            <RenameTrainButton trackingId={train.id} customName={train.customName} defaultName={defaultName} />
+          }
+        />
         {tickets.length > 0 && (
           <Stack
             gap="md"
@@ -329,21 +332,28 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
     ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
     : formatDate(train.serviceDate);
   const href = train.trainUid ? `/train/${train.trainUid}/${train.serviceDate}` : null;
-  const heading = <Text fw={500}>{displayName}</Text>;
+  const heading = (
+    <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
+      {displayName}
+    </Text>
+  );
 
   return (
     <Card withBorder>
       <Stack gap={4}>
-        <Group justify="space-between" wrap="nowrap" align="flex-start">
-          {href ? (
-            <Link href={href} style={{ textDecoration: 'none', color: 'inherit', flex: 1 }}>
-              {heading}
-            </Link>
-          ) : (
-            heading
-          )}
-          <RowStatusBadge train={train} />
-        </Group>
+        <StatusRow
+          align="flex-start"
+          title={
+            href ? (
+              <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
+                {heading}
+              </Link>
+            ) : (
+              heading
+            )
+          }
+          trailing={<RowStatusBadge train={train} />}
+        />
         <Text size="sm" c="dimmed">
           {when}
         </Text>

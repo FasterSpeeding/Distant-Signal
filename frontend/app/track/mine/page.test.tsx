@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { expectShrinkGuarded, expectNoUnguardedNowrapBadges } from '@/test/shrinkGuard';
 import MyTrackedTrainsPage from './page';
 import * as api from '@/lib/api';
 import type { TrackedTrainListItem, TicketListItem, SharedGroupTrain } from '@/lib/types';
@@ -287,6 +288,25 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     expect(screen.getByText('12m late')).toBeInTheDocument();
   });
 
+  // Task 1.5 (WCAG 2.5.3): the row nests a `StatusRow` (title + status
+  // badge) inside an outer `StatusRow` (that inner row + `RenameTrainButton`)
+  // -- both `Group wrap="nowrap"`s. Neither the badge nor the rename
+  // button may be crushable, even with a very long custom name.
+  it('gives the status badge and Rename button a shrink guard, even with a very long train name', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      train({
+        delayMinutes: 12,
+        customName: 'An implausibly long custom train name chosen to threaten this row’s layout',
+      }),
+    ]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
+    const { container } = renderWithMantine(await MyTrackedTrainsPage());
+
+    expectShrinkGuarded(screen.getByText('12m late'));
+    expectShrinkGuarded(screen.getByRole('button', { name: 'Rename' }));
+    expectNoUnguardedNowrapBadges(container);
+  });
+
   it('renders station names when the backend resolved them, not just bare codes', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
       train({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' }),
@@ -447,6 +467,20 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       expect(screen.getByText('En route')).toBeInTheDocument();
       expect(screen.getByText('9m late')).toBeInTheDocument();
+    });
+
+    // Task 1.5 (WCAG 2.5.3): `SharedTrainListRow` pairs its heading with
+    // `RowStatusBadge` in its own `Group wrap="nowrap"` (`StatusRow`),
+    // separate from the own-row one covered above.
+    it('gives the shared row’s status badges a shrink guard', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain({ delayMinutes: 9 })]);
+
+      const { container } = renderWithMantine(await MyTrackedTrainsPage());
+
+      expectShrinkGuarded(screen.getByText('9m late'));
+      expectNoUnguardedNowrapBadges(container);
     });
 
     it('a sharer with no name or username is credited as "a member", never a raw user id', async () => {

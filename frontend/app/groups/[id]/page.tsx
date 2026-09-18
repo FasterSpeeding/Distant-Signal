@@ -22,6 +22,7 @@ import { AddTrainToGroupButton } from '@/components/AddTrainToGroupButton';
 import { AddCustomLineToGroupButton } from '@/components/AddCustomLineToGroupButton';
 import { RemoveCustomLineGrantButton } from '@/components/RemoveCustomLineGrantButton';
 import { StatusBadge } from '@/components/StatusBadge';
+import { StatusRow } from '@/components/StatusRow';
 import { LoginLink } from '@/components/LoginLink';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { worstStatus } from '@/lib/severity';
@@ -275,9 +276,9 @@ function SharedTrainRow({
   });
   return (
     <Card withBorder>
-      <Group justify="space-between" wrap="nowrap">
-        <Stack gap={4}>
-          <Text fw={500}>{displayName}</Text>
+      <StatusRow
+        title={displayName}
+        subtitle={
           <Text size="sm" c="dimmed">
             {/* Same helper as `MemberRow`'s own `label` above, so the
                 credit on this card and the row in the member list above
@@ -288,11 +289,13 @@ function SharedTrainRow({
             {train.status && ` · ${train.status}`}
             {train.delayMinutes !== null && train.delayMinutes > 0 && ` · ${train.delayMinutes}m late`}
           </Text>
-        </Stack>
-        {canRemove && (
-          <RemoveGroupTrainButton groupId={groupId} trainSubscriptionId={train.trainSubscriptionId} />
-        )}
-      </Group>
+        }
+        trailing={
+          canRemove && (
+            <RemoveGroupTrainButton groupId={groupId} trainSubscriptionId={train.trainSubscriptionId} />
+          )
+        }
+      />
     </Card>
   );
 }
@@ -325,11 +328,16 @@ function SharedCustomLineRow({
   const canRemove = canManage || (currentUserId !== null && line.grantedBy === currentUserId);
   return (
     <Card withBorder>
-      <Group justify="space-between" wrap="nowrap" align="flex-start">
-        <Stack gap={4}>
+      <StatusRow
+        align="flex-start"
+        title={
           <Link href={`/lines/${line.lineId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-            <Text fw={500}>{line.lineName}</Text>
+            <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
+              {line.lineName}
+            </Text>
           </Link>
+        }
+        subtitle={
           <Text size="sm" c="dimmed">
             {/* `memberLabel`, not a hand-rolled fallback -- same helper
                 the member rows and the shared-train row above use, so all
@@ -337,18 +345,20 @@ function SharedCustomLineRow({
                 member is told apart (an opaque tag, never an email). */}
             Shared by {memberLabel(line.grantedByName, line.grantedByTag, MEMBER_PLACEHOLDER_INLINE)}
           </Text>
-        </Stack>
-        <Group gap="xs" wrap="nowrap">
-          {report && <StatusBadge severity={worstStatus(report).statusSeverity} />}
-          {canRemove && (
-            <RemoveCustomLineGrantButton
-              groupId={groupId}
-              lineId={line.lineId}
-              lineName={line.lineName}
-            />
-          )}
-        </Group>
-      </Group>
+        }
+        trailing={
+          <Group gap="xs" wrap="nowrap">
+            {report && <StatusBadge severity={worstStatus(report).statusSeverity} />}
+            {canRemove && (
+              <RemoveCustomLineGrantButton
+                groupId={groupId}
+                lineId={line.lineId}
+                lineName={line.lineName}
+              />
+            )}
+          </Group>
+        }
+      />
     </Card>
   );
 }

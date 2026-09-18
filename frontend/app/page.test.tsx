@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { expectNoUnguardedNowrapBadges } from '@/test/shrinkGuard';
 import DashboardPage, { metadata } from './page';
 import * as api from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
@@ -443,6 +444,25 @@ describe('DashboardPage -- Your Tracked Trains section', () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ delayMinutes: 12 })]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByText('12m late')).toBeInTheDocument();
+  });
+
+  // Task 1.5 (WCAG 2.5.3): the tracked-train row pairs a route title with
+  // this delay badge in a `Group wrap="nowrap"` (`StatusRow`) -- without a
+  // shrink guard on the badge, a long enough route/station name can crush
+  // it instead of the title truncating. `expectNoUnguardedNowrapBadges`
+  // sweeps every `data-wrap="nowrap"` row this page renders, not just this
+  // one train's.
+  it('gives every wrap="nowrap" row\'s badge a shrink guard, even with a long route name', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      item({
+        delayMinutes: 12,
+        pinOriginName: 'A Station With An Implausibly Long Name For Testing',
+        pinDestinationName: 'Another Equally Verbose Destination Station Name',
+      }),
+    ]);
+    const { container } = renderWithMantine(await DashboardPage());
+    expect(screen.getByText('12m late')).toBeInTheDocument();
+    expectNoUnguardedNowrapBadges(container);
   });
 
   it('resolved train with a trainUid: links to the canonical /train/{uid}/{date} URL', async () => {

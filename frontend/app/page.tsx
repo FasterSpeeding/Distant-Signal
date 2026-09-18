@@ -19,6 +19,7 @@ import { LoginLink } from '@/components/LoginLink';
 import { NotificationsToggle } from '@/components/NotificationsToggle';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
+import { StatusRow } from '@/components/StatusRow';
 import { severityRank, worstStatus } from '@/lib/severity';
 import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { formatDate, formatTime } from '@/lib/dateFormat';
@@ -608,10 +609,10 @@ function SharedCustomLineSummaryRow({
     <Link href={`/lines/${line.lineId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
       <Card withBorder>
         <Stack gap={4}>
-          <Group justify="space-between" wrap="nowrap">
-            <Text fw={500}>{line.lineName}</Text>
-            {report && <StatusBadge severity={worstStatus(report).statusSeverity} />}
-          </Group>
+          <StatusRow
+            title={line.lineName}
+            trailing={report && <StatusBadge severity={worstStatus(report).statusSeverity} />}
+          />
           <Group gap="xs" wrap="wrap">
             {groupNames.map((groupName) => (
               <Badge key={groupName} variant="light" color="grape">
@@ -692,10 +693,7 @@ function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
   const card = (
     <Card withBorder>
       <Stack gap={4}>
-        <Group justify="space-between" wrap="nowrap">
-          <Text fw={500}>{route}</Text>
-          <TrackedTrainStatusBadge train={train} />
-        </Group>
+        <StatusRow title={route} trailing={<TrackedTrainStatusBadge train={train} />} />
         <Text size="sm" c="dimmed">
           {when}
         </Text>
@@ -767,10 +765,7 @@ function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem }) {
     <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
       <Card withBorder>
         <Stack gap={4}>
-          <Group justify="space-between" wrap="nowrap">
-            <Text fw={500}>{route}</Text>
-            <TrackedTrainStatusBadge train={train} />
-          </Group>
+          <StatusRow title={route} trailing={<TrackedTrainStatusBadge train={train} />} />
           <Text size="sm" c="dimmed">
             {/* `pinScheduledDeparture` is `null` for an NR-primary
                 subscription whose train has no schedule data yet -- same
