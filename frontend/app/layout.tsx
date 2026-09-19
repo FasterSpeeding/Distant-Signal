@@ -9,7 +9,7 @@ import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
 import { OpenDataAttribution } from '@/components/OpenDataAttribution';
 import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { ConnectivityMonitor } from '@/components/ConnectivityMonitor';
-import { getDataFreshness, getMyGroups, getSession } from '@/lib/api';
+import { getChatbotAccess, getDataFreshness, getMyGroups, getSession } from '@/lib/api';
 import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
 import type { DataFreshness, SessionInfo } from '@/lib/types';
 
@@ -123,9 +123,22 @@ const LOGGED_OUT_SESSION: SessionInfo = {
 // Unlike the freshness fetch above, this deliberately keeps its
 // `<Suspense>`: it is not a connectivity oracle, and nothing sibling to
 // it needs to read its outcome.
+// Review §3.1.3: `/chat` was reachable only by typing the URL directly --
+// nothing in the nav pointed an allow-listed user at it. Fetched
+// concurrently with `session` (both are independent reads of the same
+// in-cluster `api` service) rather than as a second sequential round trip,
+// and inside the SAME `<Suspense>` boundary as the session check below, so
+// this doesn't add a third wait of its own on top of the one the nav
+// already streams past first paint. `getChatbotAccess()` never throws (it
+// already fails closed to `'forbidden'` on any ambiguous or failed
+// response -- see `lib/api.ts`), so unlike `session` this needs no
+// `.catch()` of its own.
 async function NavBarWithSession({ freshness }: { freshness: DataFreshness }) {
-  const session = await getSession().catch(() => LOGGED_OUT_SESSION);
-  return <AppNavBar session={session} freshness={freshness} />;
+  const [session, chatAccess] = await Promise.all([
+    getSession().catch(() => LOGGED_OUT_SESSION),
+    getChatbotAccess(),
+  ]);
+  return <AppNavBar session={session} freshness={freshness} chatAllowed={chatAccess === 'allowed'} />;
 }
 
 /** Because the call below is awaited before RootLayout emits any HTML, an

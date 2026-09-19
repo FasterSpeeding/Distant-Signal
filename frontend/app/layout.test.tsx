@@ -9,6 +9,7 @@ vi.mock('@/lib/api', () => ({
   getDataFreshness: vi.fn(),
   getSession: vi.fn(),
   getMyGroups: vi.fn(),
+  getChatbotAccess: vi.fn(),
 }));
 
 describe('viewport.themeColor', () => {
@@ -129,11 +130,30 @@ describe('backend reachability threading', () => {
     // -- and `getSession()` is `cache: 'no-store'`, so that was two real
     // round trips per page load. The account menu collapsed both
     // decisions into one component; this pins the saving.
-    // Matches the awaited CALL specifically, not the bare identifier:
-    // the import and this file's own prose both mention `getSession()`
-    // without invoking it.
+    // Matches the invoking CALL specifically (its trailing `.catch(`,
+    // unique to the real call site), not the bare identifier: the import
+    // and this file's own prose both mention `getSession()` without
+    // invoking it. No longer `await getSession()` verbatim -- review
+    // §3.1.3 made this one of two concurrent `Promise.all` legs (alongside
+    // `getChatbotAccess()`), so the call itself is no longer directly
+    // preceded by `await`, only the `Promise.all(...)` as a whole is.
     const source = readFileSync('app/layout.tsx', 'utf8');
-    expect(source.match(/await getSession\(\)/g)).toHaveLength(1);
+    expect(source.match(/getSession\(\)\.catch\(/g)).toHaveLength(1);
+  });
+
+  // Review §3.1.3: /chat was undiscoverable -- getChatbotAccess() now rides
+  // alongside getSession() in the same fetch/Suspense boundary, rather than
+  // adding a third sequential wait of its own.
+  it('fetches getChatbotAccess() concurrently with getSession(), inside the same Suspense boundary', () => {
+    const source = readFileSync('app/layout.tsx', 'utf8');
+    // Both calls sit inside the SAME `Promise.all([...])` -- not a second,
+    // separately-awaited call outside it, which would be a sequential wait
+    // stacked on top of the session fetch rather than a concurrent one.
+    const promiseAllMatch = source.match(/Promise\.all\(\[([\s\S]*?)\]\)/);
+    expect(promiseAllMatch).not.toBeNull();
+    const body = promiseAllMatch![1];
+    expect(body).toMatch(/getSession\(\)\.catch\(/);
+    expect(body).toMatch(/getChatbotAccess\(\)/);
   });
 });
 

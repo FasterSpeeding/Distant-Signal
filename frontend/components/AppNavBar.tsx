@@ -132,9 +132,19 @@ const NAV_BREAKPOINT = 'md';
 export function AppNavBar({
   session,
   freshness,
+  chatAllowed = false,
 }: {
   session: SessionInfo;
   freshness: DataFreshness;
+  /** Whether `getChatbotAccess()` resolved to `'allowed'` for this
+   * visitor (review §3.1.3) -- fetched alongside `session` in
+   * `app/layout.tsx`'s `NavBarWithSession`, inside the same `<Suspense>`
+   * boundary, so it costs no extra round trip on top of the one this bar
+   * already waits on. Defaults to `false` (no Chat nav item) so the
+   * `<Suspense>` fallback in `app/layout.tsx` -- which renders this bar
+   * with only `session`/`freshness` supplied -- degrades to "not shown
+   * yet" rather than needing a third prop threaded through it too. */
+  chatAllowed?: boolean;
 }) {
   return (
     // No max-width anywhere meant a 1920px viewport put a line's name at
@@ -166,7 +176,7 @@ export function AppNavBar({
                 right-hand controls, where it would sit behind three
                 icons a thumb has to skip past. */}
             <AppNavDrawer
-              destinations={navDrawerDestinations(session.authenticated)}
+              destinations={navDrawerDestinations(session.authenticated, chatAllowed)}
               hiddenFrom={NAV_BREAKPOINT}
             />
             {/* Plain `<Link>` wrapping Mantine's `Text`, rather than
@@ -238,7 +248,7 @@ export function AppNavBar({
                 the containment has to live here, where both paths pass
                 through it. */}
             <Suspense fallback={<Text size="sm" c="dimmed">Log in</Text>}>
-              <AuthStatus session={session} />
+              <AuthStatus session={session} chatAllowed={chatAllowed} />
             </Suspense>
           </Group>
         </Group>
