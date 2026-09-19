@@ -499,6 +499,41 @@ test.describe('accessibility: interactive sub-states', () => {
     await expect(page.getByRole('dialog', { name: 'Menu' })).toBeVisible();
     await expectNoViolations(page);
   });
+
+  test('skip link: first focusable element, visible on focus, targets main content', async ({
+    page,
+  }) => {
+    // WCAG 2.4.1 (Bypass Blocks): skip link must be the first focusable
+    // element, must be visible on keyboard focus, and must target the main
+    // content area. This test verifies all three requirements.
+    await page.goto('/lines');
+
+    // Get the skip link
+    const skipLink = page.getByRole('link', { name: 'Skip to content' });
+
+    // Verify it exists
+    await expect(skipLink).toBeAttached();
+
+    // Verify it's a real anchor with the correct href
+    const href = await skipLink.getAttribute('href');
+    expect(href).toBe('#main-content');
+
+    // Verify the target main element exists and has the id
+    const mainElement = page.locator('#main-content');
+    await expect(mainElement).toBeAttached();
+
+    // Tab once from page load to focus the skip link (it should be first)
+    await page.keyboard.press('Tab');
+    await expect(skipLink).toBeFocused();
+
+    // Verify it becomes visible on focus (check computed style)
+    const skipLinkBox = await skipLink.boundingBox();
+    expect(skipLinkBox).not.toBeNull();
+    // After focus, the link should be in a reasonable position on screen
+    // (not off at -9999px anymore)
+    expect(skipLinkBox?.x).toBeGreaterThanOrEqual(0);
+    expect(skipLinkBox?.y).toBeGreaterThanOrEqual(0);
+  });
 });
 
 test.describe('accessibility: interactive sub-states, logged in', () => {

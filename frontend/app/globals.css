@@ -1454,3 +1454,27 @@ a[data-text-link='always'] {
     --journey-progress-endpoint-slot: 76px;
   }
 }
+
+/* Skip link: WCAG 2.4.1 (Bypass Blocks). Absolutely positioned off-screen
+   by default, visible on keyboard focus. This is the standard pattern for
+   skip links: positioned outside the viewport initially, brought into view
+   with :focus-visible to enable keyboard users to jump directly to main
+   content on page load. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: -9999px;
+  z-index: 9999;
+  padding: var(--mantine-spacing-sm);
+  background-color: var(--mantine-color-blue-6);
+  color: white;
+  text-decoration: none;
+  border-radius: var(--mantine-radius-sm);
+}
+
+.skip-link:focus-visible {
+  left: var(--mantine-spacing-md);
+  top: var(--mantine-spacing-md);
+  outline: 2px solid var(--mantine-color-blue-9);
+  outline-offset: 2px;
+}

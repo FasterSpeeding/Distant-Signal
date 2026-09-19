@@ -207,6 +207,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <ColorSchemeScript defaultColorScheme="auto" />
       </head>
       <body>
+        <a href="#main-content" className="skip-link">
+          Skip to content
+        </a>
         <AppMantineProvider>
           {/* Outside ConnectivityMonitor, not inside: the two contexts are
               independent of one another, and this ordering just keeps the
@@ -294,7 +297,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   `max-width: 1140px` then clamps exactly like the nav's,
                   with `margin-inline: auto` centering the clamped box --
                   matching the nav Container's box on every route. */}
-              <Container component="main" size="lg" px={0} w="100%" style={{ flex: 1 }}>
+              <Container id="main-content" component="main" size="lg" px={0} w="100%" style={{ flex: 1 }}>
                 {children}
               </Container>
               <OpenDataAttribution />
