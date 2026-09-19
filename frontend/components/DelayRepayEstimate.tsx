@@ -7,25 +7,29 @@ import type { DelayRepayEstimateResponse } from '@/lib/types';
  * Decision 3. Pure presentational -- takes an already-fetched response, no
  * fetch of its own (the per-ticket fetch lives in `TicketPanel`).
  *
- * SAFETY-CRITICAL, carried forward verbatim from the backend, not
- * paraphrased: `response.disclaimer` (the TOP-LEVEL field, always
- * populated regardless of `estimate`) is rendered exactly as received, in
- * full, every time this component renders -- never shortened, never
- * hardcoded as an equivalent-sounding sentence, so a future backend
- * wording change is picked up automatically just by rendering the field.
- * `estimate.disclaimer` (present only when `estimate` is non-null, a
- * textually DIFFERENT string from the top-level one) is deliberately never
- * rendered here -- two near-duplicate-but-not-identical caveats on screen
- * at once would read as inconsistent, not doubly cautious (Decision 3's
- * own reasoning; flagged there as revisitable if the two strings ever
- * drift further apart). `claimUrl` is always rendered as a real outbound
- * link, labelled to describe leaving this app -- never phrasing that could
- * read as this app performing a claim itself. */
+ * Deliberately does NOT render `response.disclaimer` (the TOP-LEVEL field,
+ * always populated regardless of `estimate`) verbatim any more -- Task
+ * 3.6.11 found the same ~120-word disclaimer repeated up to three times
+ * across `/track/mine` (once per attached ticket, via this component,
+ * PLUS the aggregate rollup) and one more time on the train detail page,
+ * which reads as noise rather than caution. The one FULL disclaimer now
+ * lives once, at the card level, in `ReliabilityDigest.tsx`'s
+ * `DelayRepaySection` (`CARRIED_FORWARD_DISCLAIMER`); every per-ticket
+ * instance -- this component -- keeps only the short anti-CTA reminder
+ * ("this app never submits a claim on your behalf") next to its own claim
+ * link, since that specific caveat is the one fact that varies per link
+ * and must stay attached to it. `estimate.disclaimer` (present only when
+ * `estimate` is non-null, a textually DIFFERENT string from the top-level
+ * one) is still deliberately never rendered here -- two near-duplicate
+ * caveats at once would read as inconsistent, not doubly cautious.
+ * `claimUrl` is always rendered as a real outbound link, labelled to
+ * describe leaving this app -- never phrasing that could read as this app
+ * performing a claim itself. */
 export function DelayRepayEstimate({ response }: { response: DelayRepayEstimateResponse }) {
   return (
     <Stack gap={4}>
       <EstimateSummary response={response} />
-      <Text size="sm">{response.disclaimer}</Text>
+      <Text size="sm">This app never submits a claim on your behalf.</Text>
       {/* The only place in this feature that opens a new tab -- every
           other action stays same-page. */}
       <TextLink href={response.claimUrl} underline="always" target="_blank" rel="noopener noreferrer">

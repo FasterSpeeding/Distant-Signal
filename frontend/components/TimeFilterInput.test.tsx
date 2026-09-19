@@ -66,6 +66,16 @@ describe('TimeFilterInput', () => {
     expect(field()).toHaveAttribute('step', '60');
   });
 
+  // Task 3.6.13: a native time input's displayed segments (12h + AM/PM vs
+  // 24h) follow its own effective `lang`, not the page's -- an en-US
+  // browser language rendered a 12-hour "--:-- --" skeleton on this
+  // otherwise all-24h UK site. `lang="en-GB"` pins it to a 24h-clock
+  // locale regardless of the visitor's own browser language.
+  it('pins the native input to a 24h-clock locale, independent of the browser\'s own language', () => {
+    renderWithMantine(<Harness />);
+    expect(field()).toHaveAttribute('lang', 'en-GB');
+  });
+
   it('reports typed input straight through as the raw value', () => {
     const onChangeSpy = vi.fn();
     renderWithMantine(<Harness onChangeSpy={onChangeSpy} />);

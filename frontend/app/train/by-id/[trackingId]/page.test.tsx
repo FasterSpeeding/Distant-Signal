@@ -98,6 +98,13 @@ describe('TrackedTrainByIdPage error handling', () => {
     // No canonical uid/date URL exists for this outcome -- nothing to
     // redirect to.
     expect(redirectMock).not.toHaveBeenCalled();
+    // Task 3.6.10: never the raw internal `trackingId` as a "train name"
+    // pre-auth -- this route can't disclose anything more than "someone
+    // tracks a train here" before the visitor logs in as its owner.
+    expect(
+      screen.getByRole('heading', { name: "Someone's tracked train — log in to see it" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Tracking Train 42/)).not.toBeInTheDocument();
   });
 
   it('still calls notFound() on ApiNotFoundError, unswallowed by the new branch', async () => {
@@ -123,7 +130,7 @@ describe('TrackedTrainByIdPage success path', () => {
   it('renders a Delete button once the tracked train state loads', async () => {
     vi.mocked(api.getTrackedTrainById).mockResolvedValue(trackedTrainState());
     await renderPage('42');
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop tracking' })).toBeInTheDocument();
   });
 
   // Unresolved (no trainUid yet): there's no canonical uid/date URL to send
@@ -133,7 +140,7 @@ describe('TrackedTrainByIdPage success path', () => {
       trackedTrainState({ resolutionStatus: 'pending', trainUid: null }),
     );
     await renderPage('42');
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop tracking' })).toBeInTheDocument();
     expect(redirectMock).not.toHaveBeenCalled();
   });
 

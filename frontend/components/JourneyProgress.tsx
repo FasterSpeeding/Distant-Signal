@@ -34,13 +34,22 @@ const NODE_CIRCLE_SLOT = ENDPOINT_DIAMETER;
  * IDENTICAL `stops`/`lastReachedIndex` shapes but need different caption
  * text, and only `resolutionStatus` distinguishes them. See
  * docs/superpowers/plans/2026-09-12-journey-progress-visualization.md's
- * Global Constraints for the full reasoning. */
+ * Global Constraints for the full reasoning.
+ *
+ * `lastReportedLocation` is the SAME field `TrainJourney.tsx`'s
+ * `JourneyDetails` already prints as "Last reported: X" -- passed through
+ * here (Task 3.6.1) so a `status === 'en_route'` train whose last movement
+ * report didn't match any timetabled stop (`lastReachedIndex` still `-1`)
+ * can say where it actually was last confirmed, instead of reusing the
+ * "waiting for its first movement report" copy that belongs to a train
+ * with nothing confirmed at all. */
 interface JourneyProgressProps {
   stops: JourneyStop[];
   resolutionStatus: ResolutionStatus;
   status: JourneyStatus | null;
   trainUid: string | null;
   mayHaveArrived: boolean;
+  lastReportedLocation: string | null;
 }
 
 /** The last scheduled calling point with a confirmed reported event -- an
@@ -173,6 +182,7 @@ function progressCopy(
   status: JourneyStatus | null,
   trainUid: string | null,
   mayHaveArrived: boolean,
+  lastReportedLocation: string | null,
 ): ProgressCopy {
   if (stops.length === 0) {
     return { caption: 'Not yet started.', ariaLabel: 'Journey progress: not yet started' };
@@ -210,9 +220,32 @@ function progressCopy(
         ariaLabel: 'Journey progress: scheduled route shown, live tracking not yet started',
       };
     }
-    // resolved + awaiting_activation, or resolved + en_route with no
-    // confirmed movement yet -- both mean "a real train_uid is matched,
-    // nothing has been confirmed", the same copy StatusMessage uses for
+    // `status === 'en_route'` here means Network Rail HAS confirmed this
+    // train is running -- something was reported -- but that report never
+    // matched a timetabled calling point (a passing point, junction, or
+    // schedule mismatch), so `lastReachedIndex` still came back `-1`. That
+    // is a materially different fact from "nothing has been confirmed yet"
+    // (the `awaiting_activation` branch below) and must not reuse its
+    // caption -- see Task 3.6.1: reusing it here directly contradicted a
+    // summary above that already shows a confirmed delay/ETA for the same
+    // train. The marker rule itself is untouched: `lastIndex === -1` still
+    // means no marker is drawn (`nodeState`) -- only this caption differs.
+    if (status === 'en_route') {
+      if (lastReportedLocation) {
+        return {
+          caption: `Last reported at ${lastReportedLocation} — that report couldn't be matched to a timetabled stop, so no position is shown on the line.`,
+          ariaLabel: `Journey progress: last reported at ${lastReportedLocation}, not matched to a timetabled stop, no position shown`,
+        };
+      }
+      return {
+        caption:
+          "Confirmed en route, but its last movement report couldn't be matched to a timetabled stop, so no position is shown on the line.",
+        ariaLabel: 'Journey progress: confirmed en route, not matched to a timetabled stop, no position shown',
+      };
+    }
+
+    // resolved + awaiting_activation: a real train_uid is matched, nothing
+    // has been confirmed at all -- the same copy StatusMessage uses for
     // awaiting_activation.
     return {
       caption: `Matched to train ${trainUid} — waiting for its first movement report.`,
@@ -234,7 +267,14 @@ function progressCopy(
  * docs/superpowers/specs/2026-09-12-journey-progress-visualization-design.md.
  * Rendered directly above `JourneyTimeline` in `TrainJourney.tsx`, behind
  * the identical `{state.journeyStops && ...}` guard. */
-export function JourneyProgress({ stops, resolutionStatus, status, trainUid, mayHaveArrived }: JourneyProgressProps) {
+export function JourneyProgress({
+  stops,
+  resolutionStatus,
+  status,
+  trainUid,
+  mayHaveArrived,
+  lastReportedLocation,
+}: JourneyProgressProps) {
   const lastIndex = lastReachedIndex(stops);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const nodeRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -254,7 +294,15 @@ export function JourneyProgress({ stops, resolutionStatus, status, trainUid, may
     }
     return setter;
   }
-  const { caption, ariaLabel } = progressCopy(stops, lastIndex, resolutionStatus, status, trainUid, mayHaveArrived);
+  const { caption, ariaLabel } = progressCopy(
+    stops,
+    lastIndex,
+    resolutionStatus,
+    status,
+    trainUid,
+    mayHaveArrived,
+    lastReportedLocation,
+  );
 
   // Scrolls THIS diagram's own horizontal scroll box, and only it --
   // deliberately not `node.scrollIntoView(...)`, which was the original

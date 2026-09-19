@@ -5,9 +5,9 @@ import { DelayRepayEstimate } from './DelayRepayEstimate';
 import type { DelayRepayEstimateResponse } from '@/lib/types';
 
 const TOP_LEVEL_DISCLAIMER =
-  'This is a rough, community-sourced estimate, not a guarantee of compensation and not proof you travelled. This app never submits a claim on your behalf -- verify eligibility and claim directly from the operator using the link above.';
+  'This is a rough, community-sourced estimate, not a guarantee of compensation and not proof you travelled. This app never submits a claim on your behalf — verify eligibility and claim directly from the operator using the link above.';
 const ESTIMATE_DISCLAIMER =
-  'This is a rough, community-sourced estimate, not a guarantee of compensation and not proof you travelled. Always verify eligibility and submit any claim directly with the operator -- this app never submits a claim on your behalf.';
+  'This is a rough, community-sourced estimate, not a guarantee of compensation and not proof you travelled. Always verify eligibility and submit any claim directly with the operator — this app never submits a claim on your behalf.';
 
 function response(overrides: Partial<DelayRepayEstimateResponse> = {}): DelayRepayEstimateResponse {
   return {
@@ -51,7 +51,12 @@ describe('DelayRepayEstimate', () => {
     expect(screen.getByText(/No delay data recorded yet/)).toBeInTheDocument();
   });
 
-  it('always renders the top-level disclaimer verbatim, in every branch', () => {
+  // Task 3.6.11: the full ~120-word `response.disclaimer` used to render
+  // verbatim here, repeated on every ticket -- it now renders once, in
+  // full, at the `/track/mine` card level (`ReliabilityDigest.tsx`'s
+  // `DelayRepaySection`). This component keeps only the short anti-CTA
+  // reminder next to its own claim link, in every branch.
+  it('always renders the short "never submits a claim" reminder, in every branch, never the full backend disclaimer', () => {
     const cases = [
       response(),
       response({ delayMinutes: 10 }),
@@ -59,7 +64,8 @@ describe('DelayRepayEstimate', () => {
     ];
     for (const r of cases) {
       const { unmount } = renderWithMantine(<DelayRepayEstimate response={r} />);
-      expect(screen.getByText(TOP_LEVEL_DISCLAIMER)).toBeInTheDocument();
+      expect(screen.getByText('This app never submits a claim on your behalf.')).toBeInTheDocument();
+      expect(screen.queryByText(TOP_LEVEL_DISCLAIMER)).not.toBeInTheDocument();
       unmount();
     }
   });

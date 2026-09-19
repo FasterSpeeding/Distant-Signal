@@ -288,22 +288,54 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     expect(screen.getByText('12m late')).toBeInTheDocument();
   });
 
+  // Task 3.6.8: `trackedTrainDisplayName` already falls back to
+  // `${route}, ${when}` when no custom name is set, so the row's own
+  // heading ALREADY contains "31 Aug 2026" in that case -- a second,
+  // separate dimmed line repeating just the date/time would print it
+  // twice on screen.
+  it('no custom name: the date/time is not printed a second time under the heading', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ customName: null })]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    // Scoped to this row's own Card -- the reliability digest above it can
+    // independently print the same calendar date in its own "most delayed
+    // journeys" list, which isn't what this assertion is about.
+    const card = screen.getByRole('link', { name: /WAT → WOK/ }).closest('.mantine-Card-root') as HTMLElement;
+    // Once, inside the default "route, when" heading -- not a second time
+    // as its own dimmed line.
+    expect(within(card).getAllByText(/31 Aug 2026/)).toHaveLength(1);
+  });
+
+  // The opposite case: once a custom name has replaced the default
+  // "route, when" heading, the dimmed date/time line is the ONLY place
+  // that information appears, so it must still render.
+  it('with a custom name: the dimmed date/time line still renders, since the heading no longer shows it', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ customName: 'My trip to York' })]);
+    vi.mocked(api.getMyTickets).mockResolvedValue([]);
+    renderWithMantine(await MyTrackedTrainsPage());
+    expect(screen.getByText('My trip to York')).toBeInTheDocument();
+    const card = screen.getByText('My trip to York').closest('.mantine-Card-root') as HTMLElement;
+    expect(within(card).getAllByText(/31 Aug 2026/)).toHaveLength(1);
+  });
+
   // Task 1.5 (WCAG 2.5.3): the row nests a `StatusRow` (title + status
-  // badge) inside an outer `StatusRow` (that inner row + `RenameTrainButton`)
-  // -- both `Group wrap="nowrap"`s. Neither the badge nor the rename
-  // button may be crushable, even with a very long custom name.
-  it('gives the status badge and Rename button a shrink guard, even with a very long train name', async () => {
+  // badge) inside an outer `StatusRow` (that inner row + the Task 3.6.7
+  // overflow-kebab menu) -- both `Group wrap="nowrap"`s. Neither the badge
+  // nor the kebab trigger may be crushable, even with a very long custom
+  // name.
+  it('gives the status badge and the overflow-kebab trigger a shrink guard, even with a very long train name', async () => {
+    const customName = 'An implausibly long custom train name chosen to threaten this row’s layout';
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
       train({
         delayMinutes: 12,
-        customName: 'An implausibly long custom train name chosen to threaten this row’s layout',
+        customName,
       }),
     ]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     const { container } = renderWithMantine(await MyTrackedTrainsPage());
 
     expectShrinkGuarded(screen.getByText('12m late'));
-    expectShrinkGuarded(screen.getByRole('button', { name: 'Rename' }));
+    expectShrinkGuarded(screen.getByRole('button', { name: `More actions for ${customName}` }));
     expectNoUnguardedNowrapBadges(container);
   });
 
@@ -555,8 +587,11 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      // Exactly one Rename button on the page: the caller's own row's.
-      expect(screen.getAllByRole('button', { name: 'Rename' })).toHaveLength(1);
+      // Exactly one overflow-kebab (Rename/Stop tracking) trigger on the
+      // page: the caller's own row's -- `SharedTrainListRow` never renders
+      // one at all (see its own doc comment: none of its controls apply to
+      // a train the caller doesn't own).
+      expect(screen.getAllByRole('button', { name: /^More actions for/ })).toHaveLength(1);
     });
 
     it('never shows a ticket under a shared train, even when the caller has one for the same id', async () => {

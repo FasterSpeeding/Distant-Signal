@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Modal, Text, TextInput, Group } from '@mantine/core';
@@ -32,15 +33,21 @@ import { LoginLink } from './LoginLink';
  * accidentally emptying the field and hitting Save would silently clear a
  * name the user meant to just edit. Disabling Save on empty input means
  * clearing only ever happens through the explicit `Clear` button (visible
- * only when a custom name is currently set), which needs no typing at all. */
+ * only when a custom name is currently set), which needs no typing at all.
+ *
+ * `trigger`, when given, replaces the default `Button` -- see
+ * `DeleteTrainButton.tsx`'s own doc comment on its matching `trigger` prop
+ * for why (Task 3.6.7's `/track/mine` list-row overflow-kebab fix). */
 export function RenameTrainButton({
   trackingId,
   customName,
   defaultName,
+  trigger,
 }: {
   trackingId: number;
   customName: string | null;
   defaultName: string;
+  trigger?: (onClick: () => void) => ReactNode;
 }) {
   const router = useRouter();
   const [opened, { open, close }] = useDisclosure(false);
@@ -87,9 +94,13 @@ export function RenameTrainButton({
 
   return (
     <>
-      <Button variant="subtle" size="xs" onClick={handleOpen}>
-        Rename
-      </Button>
+      {trigger ? (
+        trigger(handleOpen)
+      ) : (
+        <Button variant="subtle" size="xs" onClick={handleOpen}>
+          Rename
+        </Button>
+      )}
       <Modal opened={opened} onClose={close} title="Rename this tracked train">
         <TextInput
           label="Custom name"

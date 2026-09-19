@@ -31,6 +31,18 @@ function ShareIcon() {
 }
 
 const DEFAULT_LABEL = 'Share this page';
+// Task 3.6.10: the visible Tooltip text only -- reassures a visitor on a
+// canonical-URL page (e.g. `/train/[uid]/[date]`, one of this button's
+// four callers alongside stations/lines/incidents) that sharing from here
+// really does hand out that page's own stable, permanent link, not some
+// page-internal id. Deliberately NOT folded into `DEFAULT_LABEL` itself:
+// that string is also this button's `aria-label` (its one accessible
+// name), and every existing caller/test keys off that exact short string
+// -- lengthening it would be a breaking rename for no accessibility
+// benefit, since the extra context belongs in the tooltip's on-hover
+// description, not the name. Kept generic (not train-specific) since the
+// same button/wording is shared by all four page kinds.
+const DEFAULT_TOOLTIP = 'Share this page — copies its permanent link';
 const COPIED_LABEL = 'Copied!';
 // Long enough to read, short enough that the button doesn't feel stuck.
 const COPIED_TIMEOUT_MS = 2000;
@@ -92,9 +104,15 @@ export function ShareButton() {
   }
 
   const label = copied ? COPIED_LABEL : DEFAULT_LABEL;
+  // The visible tooltip text and the accessible name deliberately diverge
+  // while idle -- see `DEFAULT_TOOLTIP`'s own comment. Once copied, both
+  // read "Copied!" again: at that point the extra context is no longer
+  // useful (the action already happened), and a lingering "copies its
+  // permanent link" under a checkmark-style confirmation would read oddly.
+  const tooltipText = copied ? COPIED_LABEL : DEFAULT_TOOLTIP;
 
   return (
-    <Tooltip label={label}>
+    <Tooltip label={tooltipText}>
       {/* 44px, not Mantine's default `md` (28px) -- review §2.10 names this
           as one of "the two actions a returning user taps most" (with
           `PinToggle`'s star), so it gets the 44px primary-action floor

@@ -15,11 +15,20 @@ import type { TrainJourneyState } from '@/lib/types';
  * and `app/train/by-id/[trackingId]/page.test.tsx`'s "consolidation gap"
  * comment. Both pages now render this ONE component instead of the two
  * calls separately, so a future addition alongside `TrainJourney` (or a
- * future change to this pairing) only has to happen once. */
-export function TrainJourneyPanel({ state }: { state: TrainJourneyState }) {
+ * future change to this pairing) only has to happen once.
+ *
+ * `suppressTrainUidHeading` passes straight through to `TrainJourney` --
+ * see that component's own doc comment (Task 3.6.9). */
+export function TrainJourneyPanel({
+  state,
+  suppressTrainUidHeading,
+}: {
+  state: TrainJourneyState;
+  suppressTrainUidHeading?: boolean;
+}) {
   return (
     <>
-      <TrainJourney state={state} />
+      <TrainJourney state={state} suppressTrainUidHeading={suppressTrainUidHeading} />
       <RealTimeTrainsLink trainUid={state.trainUid} serviceDate={state.serviceDate} />
     </>
   );

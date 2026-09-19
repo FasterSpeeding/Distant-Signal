@@ -500,10 +500,35 @@ export function TrackTrainForm({
   /** The form's own `onSubmit` -- zero groups calls `submitTrack` directly
    * (today's exact behavior, unchanged); one or more groups opens
    * `TrackDestinationModal` instead and defers the real submit to its
-   * `onConfirm`. See this component's own doc comment. */
+   * `onConfirm`. See this component's own doc comment.
+   *
+   * Task 3.6.14: the submit `Button` below used to stay `disabled` the
+   * whole time `!canSubmit` held (i.e. before a valid origin/departure was
+   * entered at all), which Mantine renders as light-grey-on-slightly
+   * -lighter-grey in dark mode -- under 2:1, and unfixable by a `variant`
+   * change alone, since Mantine's own disabled style
+   * (`@mantine/core/styles.css`'s `[data-disabled]` rule) unconditionally
+   * overrides EVERY variant's background/text/border with that same pair
+   * of tokens. Rather than hand-patching `--mantine-color-disabled(-color)`
+   * app-wide for one button, this takes the plan's other sanctioned
+   * fix: the button now only disables while a submit is actually in
+   * flight (`submitting`, a brief, self-explanatory state with its own
+   * "Tracking…" label) -- an invalid press instead falls through to here
+   * and surfaces the same `fieldError` `Alert` a failed backend
+   * validation already renders, so a click always gets a visible result
+   * instead of silently doing nothing behind an near-invisible control. */
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!canSubmit || scheduledDeparture === null) return;
+    if (submitting) return;
+    if (!originValid || scheduledDeparture === null) {
+      setFieldError(
+        !originValid
+          ? 'Enter a valid origin station before tracking — pick one from the suggestions, or a 3-letter CRS code.'
+          : 'Pick a scheduled departure before tracking.',
+      );
+      return;
+    }
+    setFieldError(null);
     if (groups.length > 0) {
       setDestinationPromptOpened(true);
       return;
@@ -782,7 +807,15 @@ export function TrackTrainForm({
           return match ? `${match.code} — ${match.name}` : option.value;
         }}
         error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
-        required
+        // NOT the native `required` attribute (Task 3.6.14): an empty
+        // origin is now validated by `handleSubmit` itself, which sets
+        // `fieldError` and returns before ever calling `submitTrack` --
+        // see that function's own doc comment. A native `required` field
+        // would make the browser's own constraint validation intercept
+        // the submit event before `handleSubmit` ever runs, silently
+        // replacing that explanatory message with (at best) a native
+        // validation bubble the button's near-invisible disabled state
+        // was already standing in for.
       />
       <Group align="flex-end" gap="xs">
         <DateTimePicker
@@ -795,7 +828,9 @@ export function TrackTrainForm({
           // this hint is here so a rejection is rare rather than the
           // user's first encounter with the rule, per Decision 1.
           description="Must be within the last 6 hours, or any time in the future"
-          required
+          // Same reasoning as the Origin field just above -- a cleared
+          // departure is validated by `handleSubmit` itself now, not by
+          // native `required` constraint validation.
           style={{ flexGrow: 1 }}
         />
         {/* `@mantine/dates`' own `presets` prop (9.5.2) only ever assigns a
@@ -854,7 +889,11 @@ export function TrackTrainForm({
         </Alert>
       )}
       <Group>
-        <Button type="submit" disabled={!canSubmit}>
+        {/* Disabled only while a submit is in flight -- see
+            `handleSubmit`'s own doc comment (Task 3.6.14) for why an
+            invalid-but-not-yet-submitted form no longer disables this
+            button at all. */}
+        <Button type="submit" disabled={submitting}>
           {submitting ? 'Tracking…' : 'Track this train'}
         </Button>
       </Group>

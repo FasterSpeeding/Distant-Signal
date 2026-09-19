@@ -1,4 +1,4 @@
-import { Stack, Title } from '@mantine/core';
+import { Stack, Text, Title } from '@mantine/core';
 import { getSession } from '@/lib/api';
 import { AutoOpenLoginPrompt } from '../AutoOpenLoginPrompt';
 import { LoginLink } from '@/components/LoginLink';
@@ -57,6 +57,15 @@ export default async function AddTicketPage() {
   return (
     <Stack p="lg" gap="md">
       <Title order={1}>Add a ticket</Title>
+      {/* Task 3.6.5: this page never said which train the ticket attaches
+          to -- because, per `TicketEntryForm.tsx`'s own doc comment, it
+          doesn't attach to one yet at all (a STANDALONE ticket, no
+          `trackingId`). One dimmed sentence states that up front instead
+          of leaving it implicit until the post-save "find or track the
+          train" next step. */}
+      <Text size="sm" c="dimmed">
+        Save the ticket now; you can attach it to a tracked train afterwards, or we&apos;ll try to match it for you.
+      </Text>
       <TextLink href="/track/mine">Back to My Trains &amp; Tickets</TextLink>
       {/* defaultOpen: this page's entire reason for existing is already
           stated by the Title above, so there's no reason to make a

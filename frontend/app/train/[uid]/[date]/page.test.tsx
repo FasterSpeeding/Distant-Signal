@@ -135,7 +135,7 @@ describe('TrackedTrainByUidPage success path', () => {
   it('renders no owner actions -- there is no subscription id in a public response', async () => {
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
     await renderPage();
-    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Stop tracking' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /rename/i })).not.toBeInTheDocument();
   });
 
@@ -145,6 +145,10 @@ describe('TrackedTrainByUidPage success path', () => {
     expect(screen.getByRole('heading', { name: 'Train W12345' })).toBeInTheDocument();
     expect(screen.getByText(/Last reported: Woking/)).toBeInTheDocument();
     expect(screen.getByText(/Next calling point: Basingstoke/)).toBeInTheDocument();
+    // Task 3.6.9: `TrainJourney`'s own "Train W12345" status line, which
+    // would otherwise repeat the `<h1>` above verbatim, must not also
+    // render as a second, separate text node.
+    expect(screen.getAllByText('Train W12345')).toHaveLength(1);
   });
 
   // The shared `trains` row has no `resolution_status` column -- that is
@@ -302,7 +306,7 @@ describe('TrackedTrainByUidPage tracking overlay', () => {
     await renderPage();
     expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Rename/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Stop tracking' })).not.toBeInTheDocument();
     expect(api.getTrackedTrainById).not.toHaveBeenCalled();
   });
 
@@ -326,7 +330,7 @@ describe('TrackedTrainByUidPage tracking overlay', () => {
     await renderPage();
     expect(screen.queryByRole('button', { name: 'Track this train' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Rename/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop tracking' })).toBeInTheDocument();
     // ShareButton stays regardless of ownership.
     expect(screen.getByRole('button', { name: /share/i })).toBeInTheDocument();
     // Finding 4: `TrackedTrainListItem` (the `GET /Train/mine` match)
@@ -358,7 +362,7 @@ describe('TrackedTrainByUidPage tracking overlay', () => {
     await renderPage();
     expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Rename/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Stop tracking' })).not.toBeInTheDocument();
   });
 
   // This page's whole reason for passing `afterDelete="refresh"` to
@@ -375,9 +379,9 @@ describe('TrackedTrainByUidPage tracking overlay', () => {
     vi.stubGlobal('fetch', fetchMock);
     await renderPage();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm stop tracking' }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/Train/7', { method: 'DELETE' });
@@ -398,8 +402,8 @@ describe('TrackedTrainByUidPage tracking overlay', () => {
     ]);
     await renderPage();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
     expect(
       screen.getByText('This train is shared in 2 groups — deleting it will remove it from those groups too.'),
     ).toBeInTheDocument();
