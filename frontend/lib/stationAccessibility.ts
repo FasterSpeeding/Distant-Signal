@@ -801,6 +801,19 @@ function raw(value: unknown): AccessibilityNode {
 // Emptiness
 // ---------------------------------------------------------------------------
 
+/** Checks whether trimmed text is empty, punctuation-only (`.` or `-`), or
+ * the literal string "N/A" (case-insensitive). Used to hide sub-values that
+ * are junk or genuinely unhelpful to a reader (e.g. `<p>.</p>` in the feed
+ * or an N/A placeholder). */
+function isPunctuationOnlyText(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    trimmed === '' ||
+    /^[.\-]+$/.test(trimmed) ||
+    /^n\/a$/i.test(trimmed)
+  );
+}
+
 /** True when a node would put nothing at all on the page. The section
  * component skips such a key rather than printing a label with blank space
  * under it, and treats a whole response of them as "nothing published" --
@@ -815,7 +828,7 @@ export function isEmptyNode(node: AccessibilityNode): boolean {
   switch (node.kind) {
     case 'text':
     case 'sentence':
-      return node.text.trim() === '';
+      return isPunctuationOnlyText(node.text);
     case 'richText':
       return isEmptyMarkup(node.html);
     case 'tokens':
@@ -854,13 +867,14 @@ export function isEmptyNode(node: AccessibilityNode): boolean {
  * The three things stripped alongside the tags are the feed's own
  * invisible filler: the `&nbsp;`/`&#160;` entity (166 instances, §4.7's
  * inventory), a real U+00A0, and the stray U+200B zero-width space the
- * survey counted seven of (§2.6). */
+ * survey counted seven of (§2.6). Also treats punctuation-only stripped
+ * text (`.`, `-`, or "N/A") as empty, since those are junk values the
+ * feed occasionally returns. */
 function isEmptyMarkup(html: string): boolean {
   if (/<a\b/i.test(html)) return false;
-  return (
-    html
-      .replace(/<[^>]*>/g, '')
-      .replace(/&nbsp;|&#160;|&#xa0;/gi, '')
-      .replace(/[\s ​]/g, '') === ''
-  );
+  const stripped = html
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;|&#160;|&#xa0;/gi, '')
+    .replace(/[\s ​]/g, '');
+  return isPunctuationOnlyText(stripped);
 }

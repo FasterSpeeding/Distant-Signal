@@ -22,11 +22,11 @@ const FIXTURE_DIR = path.join(__dirname, 'accessibility');
  * the extremes: `MAN` (largest payload), `BAL` (smallest) and `DNO`
  * (a seasonal request stop whose `trainRamp.available` is `false`).
  *
- * Known artifact (§1.3): 22 of the 6,996 strings came back as RSC
- * de-duplication references (`"$2b"`, `"$35"`, ...) rather than their
- * literal text. Those are an artifact of reading the flight payload, not
- * feed values -- they stand in for a string either way, so no shape claim
- * these fixtures support depends on them. Committed here for the same
+ * Known artifact (§1.3): 22 of the 6,996 strings originally came back as RSC
+ * de-duplication references (`"$2b"`, `"$35"`, ...) during the initial 2026-09-16
+ * capture from a rendered page. These were corrected on 2026-09-17 to their real
+ * values by fetching from the production API (`GET /public/stations/{crs}/accessibility`)
+ * which returns de-referenced JSON directly. Committed here for the same
  * reason `crates/poller-tfl/tests/fixtures/` holds real API captures: a
  * test asserting "the real feed renders through Pattern B" is only worth
  * anything if the real feed is what it is given. */
