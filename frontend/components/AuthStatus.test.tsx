@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { AuthStatus } from './AuthStatus';
 import type { SessionInfo } from '@/lib/types';
@@ -107,5 +107,31 @@ describe('AuthStatus', () => {
   it('falls back to "Signed in" when both name and email are null', () => {
     renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', email: null, name: null }} />);
     expect(accountMenuName()).toBe('Signed in');
+  });
+
+  // Review §3.1.3: /chat was undiscoverable -- this is the account menu's
+  // half of the fix (the drawer's own is in AppNavBar.test.tsx).
+  it('adds a Chat entry to the account menu only when chatAllowed is true', async () => {
+    renderWithMantine(
+      <AuthStatus
+        session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: 'Ada' }}
+        chatAllowed
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Account menu for Ada' }));
+    // `hidden: true` -- same as AccountMenu.test.tsx's own `menuItem`
+    // helper: Mantine's dropdown content can be aria-hidden mid-transition.
+    expect(await screen.findByRole('menuitem', { name: 'Chat', hidden: true })).toHaveAttribute(
+      'href',
+      '/chat',
+    );
+  });
+
+  it('omits Chat from the account menu by default', () => {
+    renderWithMantine(
+      <AuthStatus session={{ authenticated: true, id: 'u1', email: 'a@b.com', name: 'Ada' }} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Account menu for Ada' }));
+    expect(screen.queryByRole('menuitem', { name: 'Chat' })).not.toBeInTheDocument();
   });
 });

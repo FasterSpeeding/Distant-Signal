@@ -226,7 +226,21 @@ export default async function DashboardPage() {
       <Stack p="lg" gap="xl">
         <Stack gap="xs">
           <Group justify="space-between" align="flex-start">
-            <Title order={1}>Distant Signal</Title>
+            {/* Review §3.1.7: on mobile this used to repeat "Distant
+                Signal" -- once as the nav brand, again as this page's own
+                `<h1>` a little further down -- reading as duplicated
+                branding above the fold. Re-measured after Task 1.2's nav
+                collapse (which is what this task was sequenced after): the
+                nav no longer wraps to a multi-row header on a phone, so
+                the gap between the two is smaller than it once was, but
+                the duplication itself is unchanged -- the nav still says
+                "Distant Signal" and this heading did too, both still
+                visible without scrolling. The `<h1>` stays, for the
+                document outline and for a link-unfurler bot with no nav to
+                read a name from; only its TEXT changes, to something the
+                nav doesn't already say -- the tagline immediately below
+                keeps the rest of the pitch. */}
+            <Title order={1}>Live UK rail status</Title>
             {/* Single global toggle (Decision 6), not per-line -- renders
                 for every visitor (Tier 2) regardless of pinned lines, so it
                 lives beside the page's own header rather than nested inside
@@ -375,15 +389,33 @@ export default async function DashboardPage() {
   );
   const reportByLineId = new Map(allReports.map((report) => [report.id, report]));
 
+  // Review §3.1.4: both empty states below used to pair a "Browse all
+  // lines"/"Look up a station" link beside their section heading with an
+  // IDENTICAL link ~40px below it, inside the "you haven't pinned
+  // anything" sentence -- a dashboard that reads as a stack of duplicated
+  // prompts rather than one useful action per section. The heading-level
+  // link now only renders once its section actually has something to
+  // browse PAST (pinned rows already on screen); an empty section keeps
+  // just the one link, inline in its own sentence.
+  const bothPinnedSectionsEmpty = pinnedLineReports.length === 0 && pinnedStationEntries.length === 0;
+
   return (
     <Stack p="lg" gap="xl">
       <Group justify="flex-end">
         <NotificationsToggle />
       </Group>
+
+      {/* When BOTH pinned sections are empty, the live "Right now" module
+          is the only thing on this page with real content -- it leads,
+          ahead of two back-to-back empty prompts, rather than being buried
+          below them (its usual spot, further down, still applies whenever
+          only Lines is empty but Stations has something pinned). */}
+      {bothPinnedSectionsEmpty && <RightNowModule summary={rightNow} />}
+
       <Stack gap="md">
         <Group justify="space-between">
           <Title order={1}>Your Lines</Title>
-          <TextLink href="/lines">Browse all lines</TextLink>
+          {pinnedLineReports.length > 0 && <TextLink href="/lines">Browse all lines</TextLink>}
         </Group>
         {pinnedLineReports.length === 0 ? (
           <Text c="dimmed">
@@ -416,7 +448,7 @@ export default async function DashboardPage() {
       <Stack gap="md">
         <Group justify="space-between">
           <Title order={2}>Your Stations</Title>
-          <TextLink href="/stations">Look up a station</TextLink>
+          {pinnedStationEntries.length > 0 && <TextLink href="/stations">Look up a station</TextLink>}
         </Group>
         {pinnedStationEntries.length === 0 ? (
           <Text c="dimmed">
@@ -472,8 +504,15 @@ export default async function DashboardPage() {
           Gated on pinned LINES only, not on pins of any kind: a user with
           pinned stations but no pinned lines still has a line-shaped hole here,
           and this is a lines module. Costs nothing -- `allReports` is fetched
-          unconditionally above and `notGoodServiceSummary` is pure. */}
-      {pinnedLineReports.length === 0 && <RightNowModule summary={rightNow} />}
+          unconditionally above and `notGoodServiceSummary` is pure.
+
+          `!bothPinnedSectionsEmpty`: when Stations also has nothing pinned,
+          this module already rendered once, at the very top of the page
+          (review §3.1.4) -- this is its ordinary spot for the narrower
+          case where Lines is empty but Stations is not. */}
+      {!bothPinnedSectionsEmpty && pinnedLineReports.length === 0 && (
+        <RightNowModule summary={rightNow} />
+      )}
 
       {trackedTrainRows.length > 0 && (
         <Stack gap="md">

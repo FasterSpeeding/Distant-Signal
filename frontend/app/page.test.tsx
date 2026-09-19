@@ -111,6 +111,20 @@ beforeEach(() => {
 });
 
 describe('DashboardPage', () => {
+  // Review §3.1.7: the nav bar already says "Distant Signal" -- this
+  // page's own <h1> used to repeat it, reading as duplicated branding
+  // above the fold on mobile. It keeps the <h1> (for the outline, and for
+  // a link-unfurler bot reading past a nav it never sees) but no longer
+  // duplicates the brand name in its text.
+  it('titles the anonymous h1 something other than the brand name the nav already carries', async () => {
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByRole('heading', { name: 'Live UK rail status', level: 1 })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Distant Signal' })).not.toBeInTheDocument();
+  });
+
   it('anonymous, all lines good: shows the no-disruption message, not a raw empty state', async () => {
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
@@ -207,14 +221,98 @@ describe('DashboardPage', () => {
   });
 
   it('renders the module at heading level 2 in the authenticated branch, no skip', async () => {
-    // h1 "Your Lines" -> h2 "Your Stations" -> h2 "Right now" -> h2 "Your
-    // Tracked Trains".
+    // Both pinned sections are empty here, so review §3.1.4 puts "Right
+    // now" first: h2 "Right now" -> h1 "Your Lines" -> h2 "Your Stations"
+    // -> ... . Its own level-2 heading never skips to h3 regardless of
+    // where in the page it renders.
     vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByRole('heading', { name: 'Your Lines', level: 1 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Right now', level: 2 })).toBeInTheDocument();
+  });
+
+  // Review §3.1.4: the authenticated dashboard used to double a "Browse
+  // all lines"/"Look up a station" link beside its section heading with an
+  // identical link ~40px below it, inside the empty-state sentence.
+  describe('empty-state link deduplication (review §3.1.4)', () => {
+    it('keeps only the inline "Browse all lines" link when Your Lines is empty, not a second one beside the heading', async () => {
+      vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'] });
+      vi.mocked(api.getStationName).mockResolvedValue('Waterloo');
+      renderWithMantine(await DashboardPage());
+      const heading = screen.getByRole('heading', { name: 'Your Lines', level: 1 });
+      // Scope to everything from the heading's own row up to (but not
+      // including) the next section, so this can't accidentally pass by
+      // matching the "Your Stations" section's own link instead.
+      const section = heading.closest('div')?.parentElement as HTMLElement;
+      expect(within(section).getAllByRole('link', { name: 'Browse all lines' })).toHaveLength(1);
+    });
+
+    it('keeps only the inline "Look up a station" link when Your Stations is empty, not a second one beside the heading', async () => {
+      vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: ['central'], pinnedStations: [] });
+      vi.mocked(api.getLineStatusForMode).mockResolvedValue([report({ id: 'central', name: 'Central' })]);
+      renderWithMantine(await DashboardPage());
+      const heading = screen.getByRole('heading', { name: 'Your Stations', level: 2 });
+      const section = heading.closest('div')?.parentElement as HTMLElement;
+      expect(within(section).getAllByRole('link', { name: 'Look up a station' })).toHaveLength(1);
+    });
+
+    it('still shows the heading-level "Browse all lines" link once Your Lines has pinned rows', async () => {
+      vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: ['central'], pinnedStations: [] });
+      vi.mocked(api.getLineStatusForMode).mockResolvedValue([report({ id: 'central', name: 'Central' })]);
+      renderWithMantine(await DashboardPage());
+      const heading = screen.getByRole('heading', { name: 'Your Lines', level: 1 });
+      expect(within(heading.parentElement as HTMLElement).getByRole('link', { name: 'Browse all lines' })).toHaveAttribute(
+        'href',
+        '/lines',
+      );
+    });
+
+    it('still shows the heading-level "Look up a station" link once Your Stations has pinned rows', async () => {
+      vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'] });
+      vi.mocked(api.getStationName).mockResolvedValue('Waterloo');
+      renderWithMantine(await DashboardPage());
+      const heading = screen.getByRole('heading', { name: 'Your Stations', level: 2 });
+      expect(
+        within(heading.parentElement as HTMLElement).getByRole('link', { name: 'Look up a station' }),
+      ).toHaveAttribute('href', '/stations');
+    });
+  });
+
+  // Review §3.1.4: "order 'Right now' first when both pinned sections are
+  // empty" -- otherwise the module's usual position (after Your Stations,
+  // only when Lines specifically is empty) is unchanged.
+  describe('"Right now" ordering when both pinned sections are empty (review §3.1.4)', () => {
+    function headingNames() {
+      return screen.getAllByRole('heading').map((h) => h.textContent);
+    }
+
+    it('puts "Right now" before "Your Lines" when both sections are empty', async () => {
+      vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [] });
+      vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
+      renderWithMantine(await DashboardPage());
+      const names = headingNames();
+      expect(names.indexOf('Right now')).toBeLessThan(names.indexOf('Your Lines'));
+      // Rendered exactly once, not doubled up at both its old and new spot.
+      expect(names.filter((n) => n === 'Right now')).toHaveLength(1);
+    });
+
+    it('keeps "Right now" after "Your Stations" (its ordinary spot) when only Lines is empty', async () => {
+      vi.mocked(api.getSession).mockResolvedValue({ authenticated: true, id: 'u1', email: 'a@b.com', name: 'A' });
+      vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: ['WAT'] });
+      vi.mocked(api.getStationName).mockResolvedValue('Waterloo');
+      vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
+      renderWithMantine(await DashboardPage());
+      const names = headingNames();
+      expect(names.indexOf('Your Stations')).toBeLessThan(names.indexOf('Right now'));
+      expect(names.filter((n) => n === 'Right now')).toHaveLength(1);
+    });
   });
 
   it('anonymous branch still renders "Right now" identically after the RightNowModule extraction', async () => {
@@ -509,7 +607,7 @@ describe('DashboardPage -- outage behaviour', () => {
     renderWithMantine(await DashboardPage());
 
     // Still the real page, not a throw up to app/error.tsx.
-    expect(screen.getByRole('heading', { name: 'Distant Signal', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Live UK rail status', level: 1 })).toBeInTheDocument();
   });
 
   it('renders with nothing pinned rather than throwing when getPreferences fails', async () => {

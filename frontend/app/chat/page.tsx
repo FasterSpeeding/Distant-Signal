@@ -3,6 +3,7 @@ import { getChatbotAccess } from '@/lib/api';
 import { AutoOpenLoginPrompt } from '@/app/track/mine/AutoOpenLoginPrompt';
 import { LoginLink } from '@/components/LoginLink';
 import { ChatPanel } from '@/components/ChatPanel';
+import { TextLink } from '@/components/TextLink';
 
 // Same reasoning as app/page.tsx's own `revalidate = 0` (and
 // track/mine/page.tsx's identical comment): no dynamic segment, so without
@@ -52,6 +53,20 @@ export default async function ChatPage() {
       <Stack p="lg" gap="md">
         <Title order={1}>Chat</Title>
         <Text c="dimmed">Not available for your account yet.</Text>
+        {/* Review §3.1.2: this used to be a dead end for every logged-in,
+            non-allowlisted visitor -- true today, but with no next step
+            and no explanation of what the feature even is. `/connect-claude`
+            (Claude's own MCP connector, Task 6/9 of the dual-mode design)
+            works for every logged-in user regardless of this allowlist, so
+            it's a real next step, not a placeholder link. */}
+        <Text>
+          This embedded chat is only available to a limited allowlist right now. You can still ask
+          Claude about live departures, disruptions and journeys today by{' '}
+          <TextLink href="/connect-claude" underline="always" inline>
+            connecting Claude to Distant Signal
+          </TextLink>{' '}
+          from your own Claude.ai or Claude Desktop account.
+        </Text>
       </Stack>
     );
   }

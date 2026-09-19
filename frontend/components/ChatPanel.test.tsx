@@ -45,6 +45,19 @@ describe('ChatPanel', () => {
     expect(mockRunChatTurn).not.toHaveBeenCalled();
   });
 
+  // Review §3.1.6: the grape-theme spec reserves blue for `planned`
+  // severity (lib/severity.ts's GROUP_COLOR), so the user bubble's
+  // highlight moved off Mantine's default blue.
+  it('gives the user\'s own message bubble a grape background, not blue', () => {
+    seedMcpTokens();
+    setAnthropicApiKey('sk-ant-test');
+    renderWithMantine(<ChatPanel />);
+    fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    const bubble = screen.getByText('when is the next train').closest('.mantine-Card-root');
+    expect(bubble).toHaveStyle({ background: 'var(--mantine-color-grape-0)' });
+  });
+
   it('renders streamed text-delta events as the assistant reply', async () => {
     setAnthropicApiKey('sk-ant-test');
     seedMcpTokens();

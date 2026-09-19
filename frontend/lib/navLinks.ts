@@ -69,23 +69,36 @@ export const TRACKED_TRAINS_DESTINATION: NavDestination = {
  * everyone. */
 export const GROUPS_DESTINATION: NavDestination = { href: '/groups', label: 'Groups' };
 
-/** What the mobile drawer lists: every primary destination, plus the two
+/** Review §3.1.3: `/chat` was undiscoverable -- reachable only by typing
+ * the URL directly, with no nav entry pointing an allow-listed user at it.
+ * Visible only when `getChatbotAccess()` (fetched alongside the session in
+ * `app/layout.tsx`'s own `NavBarWithSession`, in the same `<Suspense>`
+ * boundary) actually resolves to `'allowed'` -- a non-allow-listed logged-in
+ * visitor gets the explained dead-end at `/chat` itself (Task 3.1.2), not a
+ * nav item pointing at it. */
+export const CHAT_DESTINATION: NavDestination = { href: '/chat', label: 'Chat' };
+
+/** What the mobile drawer lists: every primary destination, plus the
  * per-account ones the bar hands to the account menu on desktop. The
  * drawer is the ONLY nav surface below `md`, so it has to carry the union
  * — a destination missing here is unreachable from the nav on a phone. */
-export function navDrawerDestinations(authenticated: boolean): NavDestination[] {
+export function navDrawerDestinations(authenticated: boolean, chatAllowed: boolean): NavDestination[] {
   return [
     ...PRIMARY_NAV_DESTINATIONS,
     TRACKED_TRAINS_DESTINATION,
     ...(authenticated ? [GROUPS_DESTINATION] : []),
+    ...(chatAllowed ? [CHAT_DESTINATION] : []),
   ];
 }
 
 /** What the avatar-keyed account menu lists (above "Log out", which the
  * menu adds itself because it is an action, not a destination). Only ever
- * rendered for an authenticated visitor, so both entries are
- * unconditional. */
-export const ACCOUNT_MENU_DESTINATIONS: readonly NavDestination[] = [
-  TRACKED_TRAINS_DESTINATION,
-  GROUPS_DESTINATION,
-];
+ * rendered for an authenticated visitor, so the always-on entries are
+ * unconditional; `CHAT_DESTINATION` is appended only for an allow-listed
+ * caller (`chatAllowed`) -- `getChatbotAccess()` already implies
+ * authentication (it fails closed to `'forbidden'`, never `'allowed'`, for
+ * an anonymous caller), so this never renders Chat for a logged-out
+ * visitor. */
+export function accountMenuDestinations(chatAllowed: boolean): NavDestination[] {
+  return [TRACKED_TRAINS_DESTINATION, GROUPS_DESTINATION, ...(chatAllowed ? [CHAT_DESTINATION] : [])];
+}
