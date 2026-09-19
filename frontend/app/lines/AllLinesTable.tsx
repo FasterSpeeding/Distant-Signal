@@ -3,6 +3,7 @@
 import { useId, useMemo, useState } from 'react';
 import {
   Badge,
+  Box,
   Chip,
   ChipGroup,
   Group,
@@ -109,6 +110,24 @@ const COUNTRY_LABELS: Record<Country, string> = {
  * comment names. */
 function countryChipLabel(selected: number): string {
   return selected === 0 ? 'Country — showing all' : `Country — ${selected} selected`;
+}
+
+/** Same gap, same fix, as `components/IncidentSearchForm.tsx`'s own
+ * `noOptionsFound` (see that file's comment for the underlying Mantine
+ * behaviour): a `searchable` combobox's own `Combobox.Empty` is an
+ * unstyled `<Box>` with no ARIA role, and Mantine hides the whole
+ * `role="listbox"` outright when there are zero options and no
+ * `nothingFoundMessage` -- reachable here whenever a typed operator
+ * search matches none of `operatorOptions`, not just in a fixture with an
+ * empty catalogue. Duplicated locally rather than imported, matching this
+ * file's own `countryChipLabel`/`expandOperatorForFiltering` precedent for
+ * a small, component-local concern. */
+function noOptionsFound(label: string) {
+  return (
+    <Box role="option" aria-disabled="true">
+      {label}
+    </Box>
+  );
 }
 
 export function AllLinesTable({
@@ -286,6 +305,7 @@ export function AllLinesTable({
             searchable
             clearable
             clearButtonProps={{ 'aria-label': 'Clear operator filter' }}
+            nothingFoundMessage={noOptionsFound('No matching operators')}
             style={{ flex: '1 1 220px' }}
           />
         </Group>

@@ -201,6 +201,26 @@ describe('AllLinesTable', () => {
     expect(optionText).toEqual(['SW - South Western Railway']);
   });
 
+  it('shows an accessible "no matches" option instead of hiding the listbox when a search matches nothing', () => {
+    // Mantine's MultiSelect hides its whole `role="listbox"` dropdown
+    // outright when a search narrows the visible options to zero and no
+    // `nothingFoundMessage` is set (`hiddenWhenEmpty`,
+    // `OptionsDropdown.tsx`) -- leaving an open combobox
+    // (`aria-expanded="true"`) whose listbox has no `option`/`group`
+    // child at all, which fails axe's `aria-required-children`. This
+    // field's own `nothingFoundMessage` renders an explicit
+    // `role="option"` node instead of Mantine's default unstyled
+    // `Combobox.Empty`, so the listbox stays structurally valid even
+    // once a search comes back empty.
+    renderTable();
+    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    fireEvent.click(input);
+    fireEvent.change(input, { target: { value: 'zzz-no-such-operator' } });
+
+    const option = screen.getByRole('option', { name: 'No matching operators' });
+    expect(option).toHaveAttribute('aria-disabled', 'true');
+  });
+
   it('clearing the filter shows all lines again', async () => {
     renderTable();
     const input = screen.getByRole('combobox', { name: 'Filter by operator' });
