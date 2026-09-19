@@ -57,22 +57,47 @@ export async function HalfHourlyCoverageTrendsResults({ id, from, to }: { id: st
   // page. Deliberately NOT stale-served: this is a secondary, decorative
   // panel, and a wrong-but-plausible trend chart is worse than an honest
   // absence.
+  // Task 3.4.5: the "Full coverage" heading below used to render ONLY on
+  // the populated branch at the foot of this function -- the review's own
+  // spec called for it unconditionally, and the two failure/empty branches
+  // above rendered a bare `Paper` with no heading at all, indistinguishable
+  // in shape from HalfHourlyTrendsResults' own empty-state box immediately
+  // above it on `/lines/[id]` ("GOOD SERVICE Good Service"-style
+  // redundancy, but for two whole boxes: "Not enough sampled data yet for
+  // this line." directly followed by "Not enough full-coverage data yet
+  // for this line.", with nothing between them saying the second box is
+  // about a different, full-coverage series). Hoisted out to a local
+  // `heading` so all three branches below share the exact same element --
+  // confirmed missing by reading this function as it stood before this
+  // fix, not assumed from the design doc alone.
+  const heading = (
+    <Title order={3} size="h6">
+      Full coverage
+    </Title>
+  );
+
   let stats: LineHalfHourlyCoverageStats[];
   try {
     stats = await getLineHalfHourlyCoverageStats(id, from, to);
   } catch {
     return (
-      <Paper withBorder p="md">
-        <Text c="dimmed">Coverage trend data isn&apos;t available right now.</Text>
-      </Paper>
+      <Stack gap="xs">
+        {heading}
+        <Paper withBorder p="md">
+          <Text c="dimmed">Coverage trend data isn&apos;t available right now.</Text>
+        </Paper>
+      </Stack>
     );
   }
 
   if (stats.length === 0) {
     return (
-      <Paper withBorder p="md">
-        <Text c="dimmed">Not enough full-coverage data yet for this line.</Text>
-      </Paper>
+      <Stack gap="xs">
+        {heading}
+        <Paper withBorder p="md">
+          <Text c="dimmed">Not enough full-coverage data yet for this line.</Text>
+        </Paper>
+      </Stack>
     );
   }
 
@@ -95,9 +120,7 @@ export async function HalfHourlyCoverageTrendsResults({ id, from, to }: { id: st
           "Recent trends (last 24 hours)" -> HalfHourlyTrendsResults' own
           two h3 chart titles -- this section's own h3 keeps the same
           level, no skip. */}
-      <Title order={3} size="h6">
-        Full coverage
-      </Title>
+      {heading}
       <TrendsCharts points={points} granularity="halfHour" order={4} />
     </Stack>
   );

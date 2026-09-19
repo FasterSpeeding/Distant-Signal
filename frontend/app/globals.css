@@ -1494,6 +1494,25 @@ a[data-text-link='always'] {
   }
 }
 
+/* Task 3.4.2 (`app/lines/AllLinesTable.tsx`): on a phone, 125 rows is a
+   long scroll, and the "Find a line"/operator filters scrolling off the
+   top meant scrolling all the way back up just to change either one.
+   Sticky only below `sm` -- above it the whole table is short enough
+   relative to the viewport that pinning the filters buys nothing and
+   would just eat vertical space permanently. `--mantine-color-body`
+   (not transparent) so table rows scrolling underneath don't show through
+   the sticky bar, and a `z-index` above ordinary content but below the
+   skip link/modals. */
+@media (max-width: $mantine-breakpoint-sm) {
+  .linesFilterBar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background-color: var(--mantine-color-body);
+    padding-block: var(--mantine-spacing-xs);
+  }
+}
+
 /* Skip link: WCAG 2.4.1 (Bypass Blocks). Absolutely positioned off-screen
    by default, visible on keyboard focus. This is the standard pattern for
    skip links: positioned outside the viewport initially, brought into view

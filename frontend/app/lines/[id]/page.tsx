@@ -369,10 +369,15 @@ export default async function LineDetailPage({
   return (
     <Stack p="lg" gap="md">
       <Group justify="space-between">
-        <Group gap="xs">
-          <Title order={1}>{name}</Title>
-          {definition && <LineDefinitionTooltip stations={definition.stations} operators={definition.operators} />}
-        </Group>
+        <Title order={1}>{name}</Title>
+        {/* Task 3.4.6: the ⓘ tooltip used to sit next to the title in its
+            own `Group`, which on mobile wraps independently of this outer
+            `Group` -- a long line name alone could already fill the row,
+            leaving the small ⓘ button to wrap onto its own orphaned line
+            underneath. Moved in with Edit/Delete/Share/the status badge
+            instead: that cluster is already right-aligned and already
+            wraps as one unit, so ⓘ now wraps down together with it rather
+            than alone. */}
         <Group gap="sm">
           {/* Gated on the response's own `isOwner`, NOT on `isCustom`.
               Those were the same thing until custom-line group sharing
@@ -397,6 +402,7 @@ export default async function LineDetailPage({
               <DeleteLineButton id={id} />
             </>
           )}
+          {definition && <LineDefinitionTooltip stations={definition.stations} operators={definition.operators} />}
           <ShareButton />
           {/* `StatusBadge` only ever renders a real, computed severity.
               With no `line_status` row there is no severity to show, and

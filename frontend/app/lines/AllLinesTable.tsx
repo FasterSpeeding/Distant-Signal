@@ -2,6 +2,7 @@
 
 import { useId, useMemo, useState } from 'react';
 import {
+  Badge,
   Chip,
   ChipGroup,
   Group,
@@ -13,6 +14,7 @@ import {
   TableTh,
   TableTd,
   Text,
+  TextInput,
   MultiSelect,
   UnstyledButton,
   Tooltip,
@@ -23,7 +25,7 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { worstStatus, severityRank } from '@/lib/severity';
 import { cancelledPercent, formatSampleSummary, representativeStatus, sampleUnavailableReason } from '@/lib/sampleStats';
 import { countryForReport, type Country } from '@/lib/modes';
-import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
+import type { LineStatus, LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
 type SortField = 'name' | 'status' | 'avgDelay' | 'cancelled';
 type SortState = { field: SortField; direction: 'asc' | 'desc' };
@@ -45,6 +47,32 @@ function SortGlyph({ field, sort }: { field: SortField; sort: SortState | null }
 function ariaSort(field: SortField, sort: SortState | null): 'ascending' | 'descending' | 'none' {
   if (sort?.field !== field) return 'none';
   return sort.direction === 'asc' ? 'ascending' : 'descending';
+}
+
+/** Task 3.4.1: sort-by-status gets a defined rank for "no data" rows,
+ * rather than falling into the generic "missing value always sorts last"
+ * handling `rankFor` gives the two numeric columns -- a rank participates
+ * in ascending/descending order like any real severity, instead of being
+ * pinned to one end regardless of direction. Placed below every real
+ * severity (`severityRank`'s range is 0-4): "no data" is not a claim about
+ * how good or bad service is, but ranking it below "good" keeps ascending
+ * order reading as "best-known state first", worst last, missing last of
+ * all -- the most natural fit for a table whose primary job is surfacing
+ * problems. */
+const NO_DATA_STATUS_RANK = -1;
+
+/** The "NO DATA" badge's tooltip reason (Task 3.4.1). Mirrors the numeric
+ * columns' own `representative ? sampleUnavailableReason(representative) :
+ * <plain dash>` shape immediately below for the same reason -- `worst` and
+ * `representative` are both derived from the same possibly-absent
+ * `report` (see `rows` above), so today `representative` is always
+ * `undefined` whenever `worst` is. Kept conditional anyway so this stays
+ * correct if that ever changes, rather than silently going stale. */
+function noStatusReason(representative: LineStatus | undefined): string {
+  if (representative) {
+    return sampleUnavailableReason(representative) ?? 'No status has been computed for this line yet.';
+  }
+  return 'No status has been computed for this line yet.';
 }
 
 /** Real NR-side operator codes for TfL-branded railways that a `line`'s own
@@ -88,15 +116,25 @@ export function AllLinesTable({
   reports,
   pinnedLineIds,
   tocs,
+  viewerIsAnonymous = false,
 }: {
   lines: LineSummary[];
   reports: LineStatusReport[];
   pinnedLineIds: string[];
   tocs: Suggestion[];
+  // Task 3.4.13: hints the pin star that pinning needs an account, for a
+  // visitor who has none yet. Optional, defaulting to `false`, so every
+  // existing caller/test that doesn't pass it keeps today's behaviour.
+  viewerIsAnonymous?: boolean;
 }) {
   const [selectedOperators, setSelectedOperators] = useState<string[]>([]);
   const [selectedCountries, setSelectedCountries] = useState<Country[]>([]);
-  const [sort, setSort] = useState<SortState | null>(null);
+  const [nameQuery, setNameQuery] = useState('');
+  // Task 3.4.2: defaults to name order rather than the catalogue's own
+  // (arbitrary-looking) ordering, so a first-time visitor to a 125-row
+  // table lands somewhere navigable instead of needing to discover sorting
+  // exists first.
+  const [sort, setSort] = useState<SortState | null>({ field: 'name', direction: 'asc' });
   const countryLabelId = useId();
 
   const reportsById = useMemo(() => new Map(reports.map((report) => [report.id, report])), [reports]);
@@ -154,6 +192,15 @@ export function AllLinesTable({
 
   const filteredRows = useMemo(() => {
     let result = rows;
+    // Task 3.4.2: a plain case-insensitive substring match against the
+    // line's own name -- unlike the operator filter's server-sourced
+    // `Suggestion` list, every line is already loaded client-side here, so
+    // there is nothing to fetch suggestions for. AND-combined with the
+    // other two filters below, same posture as country/operator.
+    const trimmedQuery = nameQuery.trim().toLowerCase();
+    if (trimmedQuery.length > 0) {
+      result = result.filter((row) => row.line.name.toLowerCase().includes(trimmedQuery));
+    }
     if (selectedOperators.length > 0) {
       // Expand the selection (e.g. "TfL" -> "TfL"/"LO"/"XR"), not each row's
       // own `operators` -- the option list and a line's own displayed code
@@ -168,11 +215,13 @@ export function AllLinesTable({
       result = result.filter((row) => selectedCountries.includes(row.country));
     }
     return result;
-  }, [rows, selectedOperators, selectedCountries]);
+  }, [rows, selectedOperators, selectedCountries, nameQuery]);
 
-  // Missing values (no report, no sample stats) always sort to the end,
-  // regardless of direction -- flipping direction shouldn't make "unknown"
-  // rows jump to the top.
+  // Missing avgDelay/cancelled values (no sample stats) always sort to the
+  // end, regardless of direction -- flipping direction shouldn't make
+  // "unknown" rows jump to the top. Status is the one exception: it has its
+  // own defined `NO_DATA_STATUS_RANK` bucket instead (Task 3.4.1), so it
+  // sorts like any other rank rather than through this null-to-the-end path.
   const sortedRows = useMemo(() => {
     if (!sort) return filteredRows;
     const { field, direction } = sort;
@@ -181,7 +230,7 @@ export function AllLinesTable({
     function rankFor(row: (typeof filteredRows)[number]): number | null {
       switch (field) {
         case 'status':
-          return row.worst ? severityRank(row.worst.statusSeverity) : null;
+          return row.worst ? severityRank(row.worst.statusSeverity) : NO_DATA_STATUS_RANK;
         case 'avgDelay':
           return row.stats ? row.stats.avgDelayMinutes : null;
         case 'cancelled':
@@ -213,42 +262,60 @@ export function AllLinesTable({
 
   return (
     <Stack gap="md">
-      <MultiSelect
-        label="Filter by operator"
-        placeholder="All operators"
-        data={operatorOptions}
-        value={selectedOperators}
-        onChange={setSelectedOperators}
-        searchable
-        clearable
-        clearButtonProps={{ 'aria-label': 'Clear operator filter' }}
-      />
-      {/* Self-hiding per Decision 4/5: with fewer than two countries present
-          (today, always exactly ['Gb']) there is nothing meaningful to
-          filter by, and a one-option control is worse than no control at
-          all -- see
-          docs/superpowers/specs/2026-09-05-country-filtering-design.md §5. */}
-      {countryOptions.length > 1 && (
-        <Stack gap={4}>
-          <Text id={countryLabelId} size="xs" fw={600} c="dimmed">
-            {countryChipLabel(selectedCountries.length)}
-          </Text>
-          <ChipGroup multiple value={selectedCountries} onChange={(value) => setSelectedCountries(value as Country[])}>
-            <Group gap="xs" role="group" aria-labelledby={countryLabelId}>
-              {countryOptions.map((country) => (
-                <Chip
-                  key={country}
-                  value={country}
-                  size="xs"
-                  variant={selectedCountries.includes(country) ? 'filled' : 'outline'}
-                >
-                  {COUNTRY_LABELS[country]}
-                </Chip>
-              ))}
-            </Group>
-          </ChipGroup>
-        </Stack>
-      )}
+      {/* Task 3.4.2: `linesFilterBar` (app/globals.css) makes this whole
+          block sticky below the `sm` breakpoint only -- 125 rows is a long
+          scroll on a phone, and losing the filters/search off the top of
+          the screen meant scrolling all the way back up to change either.
+          Left as ordinary flow above `sm`, where the table is short enough
+          relative to the viewport that stickiness buys nothing. */}
+      <Stack gap="md" className="linesFilterBar">
+        <Group gap="md" align="flex-start" wrap="wrap">
+          <TextInput
+            label="Find a line"
+            placeholder="e.g. West Coast Main Line"
+            value={nameQuery}
+            onChange={(event) => setNameQuery(event.currentTarget.value)}
+            style={{ flex: '1 1 220px' }}
+          />
+          <MultiSelect
+            label="Filter by operator"
+            placeholder="All operators"
+            data={operatorOptions}
+            value={selectedOperators}
+            onChange={setSelectedOperators}
+            searchable
+            clearable
+            clearButtonProps={{ 'aria-label': 'Clear operator filter' }}
+            style={{ flex: '1 1 220px' }}
+          />
+        </Group>
+        {/* Self-hiding per Decision 4/5: with fewer than two countries present
+            (today, always exactly ['Gb']) there is nothing meaningful to
+            filter by, and a one-option control is worse than no control at
+            all -- see
+            docs/superpowers/specs/2026-09-05-country-filtering-design.md §5. */}
+        {countryOptions.length > 1 && (
+          <Stack gap={4}>
+            <Text id={countryLabelId} size="xs" fw={600} c="dimmed">
+              {countryChipLabel(selectedCountries.length)}
+            </Text>
+            <ChipGroup multiple value={selectedCountries} onChange={(value) => setSelectedCountries(value as Country[])}>
+              <Group gap="xs" role="group" aria-labelledby={countryLabelId}>
+                {countryOptions.map((country) => (
+                  <Chip
+                    key={country}
+                    value={country}
+                    size="xs"
+                    variant={selectedCountries.includes(country) ? 'filled' : 'outline'}
+                  >
+                    {COUNTRY_LABELS[country]}
+                  </Chip>
+                ))}
+              </Group>
+            </ChipGroup>
+          </Stack>
+        )}
+      </Stack>
       <Table>
         {/* Flat `TableThead`/`TableTr`/... named exports, not the
             `Table.Thead` dot-notation compound API -- kept consistent with
@@ -261,25 +328,29 @@ export function AllLinesTable({
                 the `<th>` itself: a bare cell with a click handler is not
                 focusable and cannot be triggered from the keyboard, which
                 made the whole sorting feature mouse-only. */}
-            <TableTh aria-sort={ariaSort('name', sort)}>
+            {/* Task 3.4.7: `white-space: nowrap` so "Avg Delay ↕" (the
+                longest of the four labels) can't wrap its own sort glyph
+                onto a second line, orphaning it away from the label it
+                belongs to. */}
+            <TableTh aria-sort={ariaSort('name', sort)} style={{ whiteSpace: 'nowrap' }}>
               <UnstyledButton onClick={() => toggleSort('name')} style={{ fontWeight: 'inherit' }}>
                 Name
                 <SortGlyph field="name" sort={sort} />
               </UnstyledButton>
             </TableTh>
-            <TableTh aria-sort={ariaSort('status', sort)}>
+            <TableTh aria-sort={ariaSort('status', sort)} style={{ whiteSpace: 'nowrap' }}>
               <UnstyledButton onClick={() => toggleSort('status')} style={{ fontWeight: 'inherit' }}>
                 Status
                 <SortGlyph field="status" sort={sort} />
               </UnstyledButton>
             </TableTh>
-            <TableTh aria-sort={ariaSort('avgDelay', sort)} visibleFrom="sm">
+            <TableTh aria-sort={ariaSort('avgDelay', sort)} visibleFrom="sm" style={{ whiteSpace: 'nowrap' }}>
               <UnstyledButton onClick={() => toggleSort('avgDelay')} style={{ fontWeight: 'inherit' }}>
                 Avg Delay
                 <SortGlyph field="avgDelay" sort={sort} />
               </UnstyledButton>
             </TableTh>
-            <TableTh aria-sort={ariaSort('cancelled', sort)} visibleFrom="sm">
+            <TableTh aria-sort={ariaSort('cancelled', sort)} visibleFrom="sm" style={{ whiteSpace: 'nowrap' }}>
               <UnstyledButton onClick={() => toggleSort('cancelled')} style={{ fontWeight: 'inherit' }}>
                 Cancelled
                 <SortGlyph field="cancelled" sort={sort} />
@@ -303,7 +374,13 @@ export function AllLinesTable({
           {sortedRows.map(({ line, worst, stats, cancelledPct, representative }) => (
             <TableTr key={line.id}>
               <TableTd>
-                <TextLink href={`/lines/${line.id}`}>{line.name}</TextLink>
+                {/* Task 3.4.8: at narrow widths a wrapped two-line name read
+                    as two separate stacked list items rather than one
+                    wrapped link, at Mantine `Text`'s default (looser)
+                    line-height. */}
+                <TextLink href={`/lines/${line.id}`} lh={1.3}>
+                  {line.name}
+                </TextLink>
                 {/* At 390px five columns cannot all fit, and the one that
                     was losing was Status — the page's whole point — while
                     two numeric columns kept their width. Below `sm` the
@@ -315,7 +392,31 @@ export function AllLinesTable({
                   {formatSampleSummary(representative)}
                 </Text>
               </TableTd>
-              <TableTd>{worst ? <StatusBadge severity={worst.statusSeverity} /> : null}</TableTd>
+              <TableTd>
+                {worst ? (
+                  <StatusBadge severity={worst.statusSeverity} />
+                ) : (
+                  // Task 3.4.1: previously rendered nothing at all -- ~120
+                  // of ~125 rows had no `line_status` row yet (see `rows`
+                  // above), so the Status column was blank for almost every
+                  // line, with no way to tell "good service" from "no data"
+                  // from "not computed yet". Grey/outline, not one of
+                  // StatusBadge's severity colours (a stated Non-goal is
+                  // leaving `severity.ts`'s hue map untouched) -- this is
+                  // the absence of a status, not one more severity.
+                  // `data-status-badge` opts out of Mantine Badge's default
+                  // ellipsis truncation, the same fix `/lines/[id]`'s own
+                  // "No status yet" badge and `StatusBadge` itself already
+                  // rely on (see app/globals.css's `[data-status-badge]`
+                  // rule) -- otherwise "NO DATA" clips to "N…" in this same
+                  // table at narrow widths.
+                  <Tooltip label={noStatusReason(representative)}>
+                    <Badge color="gray" variant="outline" data-status-badge>
+                      NO DATA
+                    </Badge>
+                  </Tooltip>
+                )}
+              </TableTd>
               <TableTd visibleFrom="sm">
                 {stats ? (
                   <Text size="sm">{stats.avgDelayMinutes.toFixed(1)} min</Text>
@@ -347,7 +448,12 @@ export function AllLinesTable({
                 )}
               </TableTd>
               <TableTd>
-                <PinToggle kind="line" id={line.id} initiallyPinned={pinnedSet.has(line.id)} />
+                <PinToggle
+                  kind="line"
+                  id={line.id}
+                  initiallyPinned={pinnedSet.has(line.id)}
+                  needsAccountHint={viewerIsAnonymous}
+                />
               </TableTd>
             </TableTr>
           ))}

@@ -36,6 +36,7 @@ export function TextLink({
   underline = 'hover',
   inline = false,
   size,
+  lh,
   target,
   rel,
   prefetch,
@@ -60,6 +61,12 @@ export function TextLink({
   // new convention invented here, it is the one the rest of the chrome
   // already landed on.
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+  // Task 3.4.8 (AllLinesTable's Name column): a wrapped two-line link at
+  // Mantine `Text`'s default line-height read as two separate stacked
+  // items rather than one wrapped name at narrow widths. Optional --
+  // `undefined` keeps every existing call site at Mantine's own default,
+  // unchanged.
+  lh?: number | string;
   target?: string;
   rel?: string;
   // Passed straight through to `next/link`'s own `prefetch` prop.
@@ -96,7 +103,7 @@ export function TextLink({
       onClick={onClick}
       onKeyDown={onKeyDown}
     >
-      <Text c="var(--mantine-color-anchor)" component={inline ? 'span' : undefined} size={size}>
+      <Text c="var(--mantine-color-anchor)" component={inline ? 'span' : undefined} size={size} lh={lh}>
         {children}
       </Text>
     </Link>

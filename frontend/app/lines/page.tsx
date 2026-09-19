@@ -1,6 +1,6 @@
 import { Group, Stack, Title } from '@mantine/core';
 import type { Metadata } from 'next';
-import { getAllLines, getAllTocs, getLineStatusForMode, getPreferences } from '@/lib/api';
+import { getAllLines, getAllTocs, getLineStatusForMode, getPreferences, getSession } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { DISPLAYED_MODES_PARAM } from '@/lib/modes';
 import type { Preferences } from '@/lib/types';
@@ -74,7 +74,7 @@ export const metadata: Metadata = {
 const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [] };
 
 export default async function AllLinesPage() {
-  const [lines, preferences, reports, tocs] = await Promise.all([
+  const [lines, preferences, reports, tocs, viewerIsAnonymous] = await Promise.all([
     withStaleFallback('allLines', () => getAllLines()),
     // Per-user, so it fails closed to "nothing pinned" (the shape a 401
     // already returns) rather than being stale-served -- design spec
@@ -88,6 +88,14 @@ export default async function AllLinesPage() {
     // Hour-cached reference data used only to label rows; an empty list
     // degrades the table's operator column rather than the whole page.
     getAllTocs().catch(() => []),
+    // Task 3.4.13: only used to hint the pin star that pinning needs an
+    // account. A failed session check degrades to "treat as anonymous" --
+    // an extra hint shown to someone who is in fact logged in is harmless,
+    // where hiding a real hint from an anonymous visitor is the failure
+    // this feature exists to fix.
+    getSession()
+      .then((session) => !session.authenticated)
+      .catch(() => true),
   ]);
 
   return (
@@ -100,7 +108,13 @@ export default async function AllLinesPage() {
             <TextLink href="/lines/new">New custom line</TextLink>
           </Group>
         </Group>
-        <AllLinesTable lines={lines} reports={reports} pinnedLineIds={preferences.pinnedLines} tocs={tocs} />
+        <AllLinesTable
+          lines={lines}
+          reports={reports}
+          pinnedLineIds={preferences.pinnedLines}
+          tocs={tocs}
+          viewerIsAnonymous={viewerIsAnonymous}
+        />
       </Stack>
     </Stack>
   );

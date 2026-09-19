@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button, Modal, Text, Group } from '@mantine/core';
+import { Anchor, Button, Modal, Text, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
@@ -23,8 +23,16 @@ import { LoginLink } from './LoginLink';
  * docs/superpowers/specs/2026-08-29-journey-ticket-tracking-frontend-design.md).
  * Matches `PinToggle`'s established `needsLogin` pattern: catch the `401`
  * specifically and show a login prompt, never the raw backend rejection
- * text this used to fall through to. */
-export function DeleteLineButton({ id }: { id: string }) {
+ * text this used to fall through to.
+ *
+ * `trigger` (Task 3.4.11): `'button'` (default) is the existing red
+ * outline `Button` this always rendered, used on the line detail page's
+ * heading row. `'link'` is a plain, less prominent text link for
+ * `CustomLineForm.tsx`'s edit mode, which had no way to delete a line at
+ * all short of navigating back to the detail page -- same modal, same
+ * `handleDelete`, just a quieter trigger appropriate to a form's footer
+ * rather than a page heading. */
+export function DeleteLineButton({ id, trigger = 'button' }: { id: string; trigger?: 'button' | 'link' }) {
   const router = useRouter();
   const [opened, { open, close }] = useDisclosure(false);
   const [deleting, setDeleting] = useState(false);
@@ -60,9 +68,15 @@ export function DeleteLineButton({ id }: { id: string }) {
 
   return (
     <>
-      <Button variant="outline" color="red" size="xs" onClick={open}>
-        Delete
-      </Button>
+      {trigger === 'link' ? (
+        <Anchor component="button" type="button" c="red" onClick={open}>
+          Delete line…
+        </Anchor>
+      ) : (
+        <Button variant="outline" color="red" size="xs" onClick={open}>
+          Delete
+        </Button>
+      )}
       <Modal opened={opened} onClose={close} title="Delete this line?">
         <Text>This cannot be undone.</Text>
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}

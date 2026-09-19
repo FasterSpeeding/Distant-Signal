@@ -10,8 +10,10 @@ import {
   resolveGranularity,
   resolveRange,
   retentionShortfallDays,
+  type HistorySpan,
 } from '@/lib/history';
 import { formatDate, formatTime, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
+import { severityLabel } from '@/lib/severity';
 import { GranularityControl } from './GranularityControl';
 import { HistoryRangePicker } from './HistoryRangePicker';
 import { TrendsResults } from './TrendsResults';
@@ -248,6 +250,19 @@ export default async function LineHistoryPage({
 // test in this file asserts on HistoryResults' resolved content). Awaiting
 // this function directly, the same way TrendsResults.test.tsx does for its
 // sibling, sidesteps the Suspense boundary entirely.
+/** Task 3.4.9: some upstream statuses set `reason` to literally the same
+ * words as their own severity label (e.g. `reason: "Good Service"` on a
+ * severity-10 status) -- redundant right next to the row's own
+ * `StatusBadge`, which already renders that exact label: "GOOD SERVICE
+ * Good Service 21:34". A genuinely empty `reason` is a different fact (no
+ * reason was supplied at all, not that the one supplied just echoes the
+ * badge) and keeps its own, pre-existing "No reason given" copy. */
+function timelineReasonText(span: HistorySpan): string {
+  if (!span.reason) return 'No reason given';
+  if (span.reason === severityLabel(span.severity)) return 'No incidents reported';
+  return span.reason;
+}
+
 export async function HistoryResults({ id, from, to }: { id: string; from: string; to: string }) {
   const entries = await getLineStatusHistory(id, from, to);
   const days = groupHistoryByDay(entries);
@@ -292,7 +307,7 @@ export async function HistoryResults({ id, from, to }: { id: string; from: strin
                   <StatusBadge severity={span.severity} />
                 </div>
                 <Text size="sm" className="issueRow__reason">
-                  {span.reason || 'No reason given'}
+                  {timelineReasonText(span)}
                   {span.flips.length > 1 && (
                     <Text span size="xs" c="dimmed">
                       {' '}

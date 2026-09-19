@@ -3,11 +3,12 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse, Pill } from '@mantine/core';
+import { Alert, Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse, Pill } from '@mantine/core';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { useNeedsLogin } from '@/components/useNeedsLogin';
 import { LoginPromptModal } from '@/components/LoginPromptModal';
+import { DeleteLineButton } from '@/components/DeleteLineButton';
 import type { CustomLineDetail } from '@/lib/types';
 
 /** Posts to the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
@@ -140,7 +141,34 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
 
   return (
     <Stack gap="sm" maw={480}>
-      <TextInput label="Name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
+      {/* Task 3.4.3: neither the create nor the edit page said what a
+          custom line actually is -- rendered here, once, rather than
+          duplicated across `app/lines/new/page.tsx` and
+          `app/lines/[id]/edit/page.tsx`, since both mount this form
+          immediately below their own `<h1>` with nothing in between. */}
+      <Text size="sm" c="dimmed">
+        A custom line groups any stations and operators you choose into one line you can track status for — it&apos;s
+        private to you, and appears in your own All Lines table.
+      </Text>
+      {/* Task 3.4.13: create-only -- an owner reaching the edit form is
+          already signed in (the route 404s a non-owner before this ever
+          renders), so the hint would be both pointless and misleading
+          there. Deliberately does NOT promise the in-progress entry
+          survives the trip through the OIDC login redirect: verified
+          against this component (no sessionStorage/localStorage anywhere
+          in it) that it does not, the same finding Task 1.15 made for its
+          own page -- an honest "you'll be sent to log in" beats a false
+          "your entries are kept". This also replaces the near-identical
+          plain `Text` `app/lines/new/page.tsx` used to render itself,
+          upgraded to an `Alert` for more visual weight per the review, not
+          duplicated alongside it. */}
+      {!existingLine && (
+        <Alert color="blue" variant="light">
+          Creating a line needs a Distant Signal account — you&apos;ll be sent to log in when you save if you
+          aren&apos;t already signed in.
+        </Alert>
+      )}
+      <TextInput label="Name" withAsterisk value={name} onChange={(event) => setName(event.currentTarget.value)} />
       <TagsInput
         label="Operators"
         placeholder="e.g. SW"
@@ -189,12 +217,26 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           Add
         </Button>
       </Group>
-      <Group gap="xs">
-        {stations.map((crs) => (
-          <Badge
-            key={crs}
-            title={nameByCode[crs]}
-            rightSection={
+      {/* Task 3.4.4: this list had neither an empty state nor any
+          indication that order matters (it's travel order, per
+          DESIGN.md §5.1's ordered-list domain model) -- an empty
+          `Group` gave no feedback at all before the first station was
+          added, and once a couple were added there was nothing to show
+          they were sequential rather than an unordered set. Numbering the
+          chips inline (rather than a full drag-reorderable vertical list)
+          is the smaller of the two fixes the review names; reordering
+          stays out of scope here. */}
+      {stations.length === 0 ? (
+        <Text size="sm" c="dimmed">
+          No stations yet — add at least two, in travel order.
+        </Text>
+      ) : (
+        <Group gap="xs">
+          {stations.map((crs, index) => (
+            <Badge
+              key={crs}
+              title={nameByCode[crs]}
+              rightSection={
               /* `aria-label` is not optional here: Mantine's `CloseButton`
                  renders a bare `<button>` around an SVG with no text and no
                  name of its own, so axe's `button-name` fires (critical) --
@@ -212,13 +254,28 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
                 aria-label={`Remove ${nameByCode[crs] ?? crs}`}
                 onClick={() => removeStation(crs)}
               />
-            }
-          >
-            {crs}
-          </Badge>
-        ))}
-      </Group>
-      <Button variant="subtle" onClick={() => setAdvancedOpen((open) => !open)}>
+              }
+            >
+              {index + 1} {crs}
+            </Badge>
+          ))}
+        </Group>
+      )}
+      <Button
+        variant="subtle"
+        // Task 3.4.12: Mantine `Button variant="subtle"`'s default text
+        // colour measured near-white on this app's near-white dark
+        // background -- effectively invisible as a link. Pinned to the
+        // same `--mantine-color-anchor` token every ordinary text link in
+        // this app already uses (grape 7 / 4.85:1 in light, grape 4 /
+        // 5.70:1 in dark -- see app/globals.css's own anchor-contrast
+        // comment), so both the "Show" and "Hide" states of this one
+        // `Button` -- there is only ever one, never two differently
+        // coloured elements -- read as the same, correctly-contrasted
+        // affordance in both colour schemes.
+        c="var(--mantine-color-anchor)"
+        onClick={() => setAdvancedOpen((open) => !open)}
+      >
         {advancedOpen ? 'Hide' : 'Show'} advanced options
       </Button>
       <Collapse expanded={advancedOpen}>
@@ -266,6 +323,19 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         <Button onClick={handleSubmit} loading={submitting}>
           {existingLine ? 'Save changes' : 'Create line'}
         </Button>
+      )}
+      {/* Task 3.4.11: the edit page had no way to delete a line at all --
+          only the detail page's own heading-row `Button` did. Reuses that
+          same component/modal/`handleDelete` (rather than a second,
+          separately-implemented delete flow), rendered as a quieter text
+          link appropriate to a form's footer. `existingLine` gates it
+          precisely because there is nothing to delete yet while creating,
+          and `CustomLineForm` is otherwise the one file both `/lines/new`
+          and `/lines/[id]/edit` share. */}
+      {existingLine && (
+        <Group justify="center">
+          <DeleteLineButton id={existingLine.id} trigger="link" />
+        </Group>
       )}
     </Stack>
   );
