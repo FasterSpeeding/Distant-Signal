@@ -2,15 +2,30 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, Group, Stack, Tabs, TextInput, Text } from '@mantine/core';
+import { Alert, Autocomplete, Button, Group, Stack, Tabs, TextInput, Text } from '@mantine/core';
 import { Dropzone, PDF_MIME_TYPE } from '@mantine/dropzone';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import { TextLink } from './TextLink';
+import { searchStations, searchTocs } from '@/lib/suggestions';
+import { useSuggestions } from '@/lib/useSuggestions';
 import type { PartialTicket, TicketCreatedResponse, TicketEntryRequest, TicketSource } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 type Tab = 'manual' | 'pkpass' | 'pdf';
+
+/** Tells a file dropped on the Task 3.6.6 combined dropzone apart from its
+ * name, since `.pkpass` isn't a real MIME type (the browser reports it as
+ * `application/octet-stream` or leaves `file.type` empty entirely -- the
+ * dedicated pkpass tab's own `UploadPanel` already accepts by `['.pkpass']`
+ * extension for exactly this reason). Only ever called on a file the
+ * combined dropzone's own `accept` list has already let through (PDF MIME
+ * types or a `.pkpass` extension), so "not a `.pkpass` name" safely means
+ * "PDF" here -- this is a router between two already-known-good kinds, not
+ * a third validation pass. */
+function pickKindFor(file: File): 'pkpass' | 'pdf' {
+  return file.name.toLowerCase().endsWith('.pkpass') ? 'pkpass' : 'pdf';
+}
 
 /** The upload/manual-entry flow for one journey, per
  * docs/superpowers/specs/2026-08-29-journey-ticket-tracking-frontend-design.md
@@ -90,6 +105,16 @@ export function TicketEntryForm({
 
   const originValid = originCrs.trim() === '' || CRS_PATTERN.test(originCrs.trim());
   const destinationValid = destinationCrs.trim() === '' || CRS_PATTERN.test(destinationCrs.trim());
+
+  // Same station/operator `Autocomplete` pattern `TrackTrainForm.tsx` uses
+  // (Task 3.6.4) -- one shared suggestion source (`searchStations`/
+  // `searchTocs`) and the same "CODE — Name" `renderOption`, instead of
+  // this form's own bare CRS-code `TextInput`s, which never told a user
+  // typing a station or operator name (rather than its code) that a match
+  // existed.
+  const { suggestions: originSuggestions } = useSuggestions(originCrs, searchStations);
+  const { suggestions: destinationSuggestions } = useSuggestions(destinationCrs, searchStations);
+  const { suggestions: operatorSuggestions } = useSuggestions(operator, searchTocs);
 
   // The flat `Train/tickets...` family when there's no tracked train yet
   // (a STANDALONE ticket), the existing `Train/{trackingId}/tickets...`
@@ -300,6 +325,47 @@ export function TicketEntryForm({
 
   return (
     <Stack gap="md">
+      {/* Task 3.6.6 (design decision, direction (b) from the plan): the
+          upload paths -- the whole point of the drag-and-drop dropzone
+          spec -- used to be hidden one tab away behind "Manual entry," the
+          default tab. This compact combined dropzone sits above the tabs
+          so both upload paths are visible without a tab switch, without
+          having to decide which entry method is "primary" (manual stays
+          the default/active tab underneath, unchanged). Accepts either
+          file type in one drop target; `pickKindFor` below tells them
+          apart so the SAME `handleUpload` this file already has (used by
+          each tab's own dedicated `UploadPanel`) can be reused unmodified.
+          Switches to the matching tab on drop so the resulting
+          preview/error -- rendered by that tab's own `UploadPanel`, from
+          this component's existing shared `uploading`/`uploadError` state
+          -- is immediately visible rather than landing on a hidden panel. */}
+      <Dropzone
+        accept={[...PDF_MIME_TYPE, '.pkpass']}
+        multiple={false}
+        loading={uploading}
+        inputProps={{ 'aria-label': 'Upload a ticket file (.pkpass or PDF)' }}
+        onDrop={(files) => {
+          const file = files[0];
+          if (!file) return;
+          const kind = pickKindFor(file);
+          setTab(kind);
+          void handleUpload(file, kind);
+        }}
+        onReject={() => {
+          /* Same client-side pre-filter posture as `UploadPanel`'s own
+           * `onReject` -- no request reaches `handleUpload`, so there is
+           * nothing to report through the existing error path. */
+        }}
+      >
+        <Group gap="xs" justify="center" style={{ pointerEvents: 'none' }}>
+          <Text size="sm" fw={500}>
+            Drop a ticket file here
+          </Text>
+          <Text size="xs" c="dimmed">
+            .pkpass or PDF e-ticket — or use the tabs below
+          </Text>
+        </Group>
+      </Dropzone>
       <Tabs
         value={tab}
         onChange={(value) => {
@@ -312,24 +378,48 @@ export function TicketEntryForm({
         }}
       >
         <Tabs.List>
-          <Tabs.Tab value="manual">Manual entry</Tabs.Tab>
-          <Tabs.Tab value="pkpass">Upload .pkpass</Tabs.Tab>
-          <Tabs.Tab value="pdf">Upload PDF e-ticket</Tabs.Tab>
+          {/* Task 3.6.15: shortened from "Manual entry" / "Upload .pkpass" /
+              "Upload PDF e-ticket" -- that full-length trio wrapped onto a
+              second row at 390px (an ordinary phone width), the tab strip
+              reading as two unrelated rows of controls rather than one.
+              The combined dropzone directly above already spells out
+              "Drop a ticket file here — .pkpass or PDF e-ticket" (Task
+              3.6.6), so these three tab labels don't have to carry that
+              same explanation twice. */}
+          <Tabs.Tab value="manual">Manual</Tabs.Tab>
+          <Tabs.Tab value="pkpass">.pkpass</Tabs.Tab>
+          <Tabs.Tab value="pdf">PDF</Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="manual" pt="md">
+          {/* Every field here is genuinely optional -- `handleSubmit` only
+              ever includes a field in the request body when it's
+              non-empty, and the Save button below is never disabled for a
+              blank field, only for a syntactically invalid CRS code. So
+              every label carries "(optional)" rather than a `withAsterisk`
+              required mark, matching `TrackTrainForm.tsx`'s own convention
+              for its (also optional) Destination/Operator fields (Task
+              3.6.4). */}
           <Stack gap="sm">
-            <TextInput
-              label="Operator"
+            <Autocomplete
+              label="Operator (optional)"
+              placeholder="e.g. South Western Railway or SW"
               value={operator}
-              onChange={(event) => {
-                setOperator(event.currentTarget.value);
+              onChange={(value) => {
+                setOperator(value);
                 clearAutoFilled('operator');
+              }}
+              data={operatorSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+              filter={({ options }) => options}
+              renderOption={({ option }) => {
+                const match = operatorSuggestions.find((s) => s.code === option.value);
+                return match ? `${match.code} — ${match.name}` : option.value;
               }}
               description={autoFilled.has('operator') ? 'Auto-filled — please check this value' : undefined}
             />
             <TextInput
-              label="Ticket type"
+              label="Ticket type (optional)"
+              placeholder="e.g. Off-Peak Day Single"
               value={ticketType}
               onChange={(event) => {
                 setTicketType(event.currentTarget.value);
@@ -337,24 +427,38 @@ export function TicketEntryForm({
               }}
               description={autoFilled.has('ticketType') ? 'Auto-filled — please check this value' : undefined}
             />
-            <TextInput
-              label="Origin CRS code"
+            <Autocomplete
+              label="Origin station (optional)"
+              placeholder="e.g. Woking or WOK"
               value={originCrs}
-              onChange={(event) => {
-                setOriginCrs(event.currentTarget.value);
+              onChange={(value) => {
+                setOriginCrs(value);
                 clearAutoFilled('originCrs');
+              }}
+              data={originSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+              filter={({ options }) => options}
+              renderOption={({ option }) => {
+                const match = originSuggestions.find((s) => s.code === option.value);
+                return match ? `${match.code} — ${match.name}` : option.value;
               }}
               error={!originValid ? 'Must be a 3-letter CRS code' : null}
               description={
                 autoFilled.has('originCrs') ? 'Auto-filled — please check this is a real 3-letter CRS code' : undefined
               }
             />
-            <TextInput
-              label="Destination CRS code"
+            <Autocomplete
+              label="Destination station (optional)"
+              placeholder="e.g. Woking or WOK"
               value={destinationCrs}
-              onChange={(event) => {
-                setDestinationCrs(event.currentTarget.value);
+              onChange={(value) => {
+                setDestinationCrs(value);
                 clearAutoFilled('destinationCrs');
+              }}
+              data={destinationSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+              filter={({ options }) => options}
+              renderOption={({ option }) => {
+                const match = destinationSuggestions.find((s) => s.code === option.value);
+                return match ? `${match.code} — ${match.name}` : option.value;
               }}
               error={!destinationValid ? 'Must be a 3-letter CRS code' : null}
               description={

@@ -202,6 +202,23 @@ export function TimeFilterInput({
   return (
     <TimeInput
       ref={ref}
+      // Task 3.6.13: a native `<input type="time">`'s displayed segments
+      // (12h + AM/PM vs 24h) follow the INPUT's own effective locale, not
+      // this app's UI copy or `<html lang>` -- Chromium and Firefox both
+      // resolve it from the nearest `lang` attribute, defaulting to the
+      // browser's own UI language when none is set. A visitor running an
+      // en-US-language browser (common even on a UK device/OS) got a
+      // 12-hour "--:-- --" skeleton on this one control, on an otherwise
+      // all-24h site (`lib/dateFormat.ts`'s `formatTime`, every other
+      // displayed time). `lang="en-GB"` pins this field's OWN rendering to
+      // a 24h-clock locale unconditionally, independent of whatever the
+      // browser's UI language is -- it does not affect the surrounding
+      // page's language for assistive tech, only this one native control's
+      // internal segment rendering (the same override technique this input
+      // type has no dedicated 12h/24h prop for -- confirmed against
+      // `@mantine/dates`' own `TimeInputProps`, which exposes no such
+      // option, only forwards ordinary `<input>` props like this one).
+      lang="en-GB"
       label={label}
       description={description}
       value={value}

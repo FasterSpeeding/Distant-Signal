@@ -416,8 +416,14 @@ describe('TrainJourney', () => {
         })}
       />,
     );
-    // JourneyDetails' live summary must still render (Finding 1 regression coverage).
-    expect(screen.getByText(/Clapham Junction/)).toBeInTheDocument();
+    // JourneyDetails' live summary must still render (Finding 1 regression
+    // coverage). Matched specifically to the "Last reported:" line, not a
+    // bare `/Clapham Junction/` -- this fixture's one `journeyStops` entry
+    // has no confirmed `actualArrival`/`actualDeparture`, so Task 3.6.1's
+    // JourneyProgress caption ALSO names "Clapham Junction" (the
+    // `lastReportedLocation`) below the diagram, and a bare substring match
+    // would ambiguously match both.
+    expect(screen.getByText(/Last reported: Clapham Junction/)).toBeInTheDocument();
     expect(screen.getByText('4m late')).toBeInTheDocument();
     expect(screen.getByText('Next calling point: Woking')).toBeInTheDocument();
     expect(screen.getByText(/ETA/)).toBeInTheDocument();
@@ -569,5 +575,56 @@ describe('TrainJourney', () => {
       />,
     );
     expect(screen.getByText('Cancelled — last confirmed at Surbiton.')).toBeInTheDocument();
+  });
+});
+
+// Task 3.6.9: `app/train/[uid]/[date]/page.tsx`'s own `<h1>` already reads
+// "Train {uid}" -- these three branches (cancelled/completed/en_route) are
+// the ones that otherwise print that exact same line again immediately
+// below it.
+describe('TrainJourney suppressTrainUidHeading', () => {
+  it('cancelled: omits the "Train X" line when suppressTrainUidHeading is set, but keeps the rest of the banner', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({ resolutionStatus: 'resolved', trainUid: 'C21373', status: 'cancelled' })}
+        suppressTrainUidHeading
+      />,
+    );
+    expect(screen.getByText('This service was cancelled.')).toBeInTheDocument();
+    expect(screen.queryByText('Train C21373')).not.toBeInTheDocument();
+  });
+
+  it('completed: omits the "Train X" line when suppressTrainUidHeading is set, but keeps the "Arrived" banner', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'completed',
+          scheduleDestinationCrs: 'WOK',
+        })}
+        suppressTrainUidHeading
+      />,
+    );
+    expect(screen.getByText(/has arrived at WOK/)).toBeInTheDocument();
+    expect(screen.queryByText('Train C21373')).not.toBeInTheDocument();
+  });
+
+  it('en_route: omits the "Train X" line when suppressTrainUidHeading is set, but keeps the pin summary', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({ resolutionStatus: 'resolved', trainUid: 'C21373', status: 'en_route' })}
+        suppressTrainUidHeading
+      />,
+    );
+    expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+    expect(screen.queryByText('Train C21373')).not.toBeInTheDocument();
+  });
+
+  it('defaults to showing the line when the prop is omitted (by-id page behavior unchanged)', () => {
+    renderWithMantine(
+      <TrainJourney state={baseState({ resolutionStatus: 'resolved', trainUid: 'C21373', status: 'en_route' })} />,
+    );
+    expect(screen.getByText('Train C21373')).toBeInTheDocument();
   });
 });

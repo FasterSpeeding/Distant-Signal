@@ -31,7 +31,7 @@ describe('AddTicketPage', () => {
       'href',
       '/api/auth/login?return_to=%2Ftrack%2Fmine%2Fadd-ticket',
     );
-    expect(screen.queryByLabelText('Operator')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Operator (optional)' })).not.toBeInTheDocument();
   });
 
   it('not logged in: also renders a server-rendered LoginLink, not just the client-only modal', async () => {
@@ -42,27 +42,47 @@ describe('AddTicketPage', () => {
     expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrack%2Fmine%2Fadd-ticket');
   });
 
-  it('logged in: shows the heading, a Back link, and TicketEntryForm expanded with no click needed', async () => {
+  it('logged in: shows the heading, the standalone-ticket explainer sentence, a Back link, and TicketEntryForm expanded with no click needed', async () => {
     vi.mocked(api.getSession).mockResolvedValue(session(true));
     renderWithMantine(await AddTicketPage());
 
     expect(screen.getByRole('heading', { name: 'Add a ticket', level: 1 })).toBeInTheDocument();
+    // Task 3.6.5: this page never said which train the ticket attaches to,
+    // or that it doesn't need one yet.
+    expect(
+      screen.getByText(
+        "Save the ticket now; you can attach it to a tracked train afterwards, or we'll try to match it for you.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Back to My Trains & Tickets' })).toHaveAttribute(
       'href',
       '/track/mine',
     );
     // defaultOpen: the manual-entry fields are visible immediately, no
     // collapsed-button click required.
-    expect(screen.getByLabelText('Operator')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Operator (optional)' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add a ticket' })).not.toBeInTheDocument();
   });
 
   it('the rendered TicketEntryForm has no trackingId: a save posts to the flat /api/Train/tickets route', async () => {
     vi.mocked(api.getSession).mockResolvedValue(session(true));
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ticketId: 1 }), { status: 200 })));
+    // Routes the Operator field's own debounced `/api/tocs?q=` suggestion
+    // fetch (`TicketEntryForm.tsx`'s Task 3.6.4 Autocomplete) away from the
+    // single mocked ticket-save response -- same hazard, same fix, as
+    // `TicketEntryForm.test.tsx`'s own `mockDefaultResponse` helper.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith('/api/stations?') || url.startsWith('/api/tocs?')) {
+          return Promise.resolve(new Response('[]', { status: 200 }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({ ticketId: 1 }), { status: 200 }));
+      }),
+    );
     renderWithMantine(await AddTicketPage());
 
-    fireEvent.change(screen.getByLabelText('Operator'), { target: { value: 'LNER' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), { target: { value: 'LNER' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save ticket' }));
 
     await waitFor(() => {

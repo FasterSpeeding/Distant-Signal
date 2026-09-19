@@ -25,7 +25,7 @@ describe('DeleteTrainButton', () => {
   it('does not call DELETE until the confirmation modal is confirmed', () => {
     const fetchMock = vi.mocked(fetch);
     renderWithMantine(<DeleteTrainButton trackingId={42} sharedGroupCount={0} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -36,9 +36,9 @@ describe('DeleteTrainButton', () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
     renderWithMantine(<DeleteTrainButton trackingId={42} sharedGroupCount={0} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm stop tracking' }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/Train/42', { method: 'DELETE' });
@@ -54,9 +54,9 @@ describe('DeleteTrainButton', () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
     renderWithMantine(<DeleteTrainButton trackingId={42} sharedGroupCount={0} afterDelete="refresh" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm stop tracking' }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/Train/42', { method: 'DELETE' });
@@ -70,9 +70,9 @@ describe('DeleteTrainButton', () => {
     fetchMock.mockResolvedValue(new Response('no tracked train with that id', { status: 404 }));
 
     renderWithMantine(<DeleteTrainButton trackingId={42} sharedGroupCount={0} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm stop tracking' }));
 
     await waitFor(() => {
       expect(screen.getByText('no tracked train with that id')).toBeInTheDocument();
@@ -90,11 +90,11 @@ describe('DeleteTrainButton', () => {
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
 
     renderWithMantine(<DeleteTrainButton trackingId={42} sharedGroupCount={0} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm stop tracking' }));
 
-    const loginLink = await screen.findByRole('link', { name: 'Log in to delete this tracked train' });
+    const loginLink = await screen.findByRole('link', { name: 'Log in to stop tracking this train' });
     expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrain%2Fby-id%2F42');
     expect(screen.queryByText('no session')).not.toBeInTheDocument();
     expect(pushMock).not.toHaveBeenCalled();
@@ -103,8 +103,8 @@ describe('DeleteTrainButton', () => {
   // sharedGroupCount === 0: today's exact modal copy, no extra warning line.
   it('shows no group-sharing warning when the train is not shared into any group', async () => {
     renderWithMantine(<DeleteTrainButton trackingId={42} sharedGroupCount={0} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
     expect(screen.getByText('This cannot be undone.')).toBeInTheDocument();
     expect(screen.queryByText(/shared in/)).not.toBeInTheDocument();
   });
@@ -112,8 +112,8 @@ describe('DeleteTrainButton', () => {
   // sharedGroupCount === 1: singular wording.
   it('warns about a single shared group, singular', async () => {
     renderWithMantine(<DeleteTrainButton trackingId={42} sharedGroupCount={1} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
     expect(
       screen.getByText('This train is shared in 1 group — deleting it will remove it from that group too.'),
     ).toBeInTheDocument();
@@ -122,8 +122,8 @@ describe('DeleteTrainButton', () => {
   // sharedGroupCount > 1: plural wording.
   it('warns about multiple shared groups, plural', async () => {
     renderWithMantine(<DeleteTrainButton trackingId={42} sharedGroupCount={3} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
     expect(
       screen.getByText('This train is shared in 3 groups — deleting it will remove it from those groups too.'),
     ).toBeInTheDocument();

@@ -38,6 +38,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(container.querySelectorAll('[data-journey-node]')).toHaveLength(3);
@@ -55,6 +56,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const nodes = container.querySelectorAll('[data-journey-node]');
@@ -71,6 +73,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(container.querySelectorAll('[data-journey-node]')).toHaveLength(0);
@@ -85,6 +88,7 @@ describe('JourneyProgress', () => {
         status="awaiting_activation"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(
@@ -109,6 +113,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const nodes = container.querySelectorAll('[data-journey-node]');
@@ -154,6 +159,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="L82877"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const nodes = container.querySelectorAll('[data-journey-node]');
@@ -174,6 +180,7 @@ describe('JourneyProgress', () => {
         status="completed"
         trainUid="L82877"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const nodes = container.querySelectorAll('[data-journey-node]');
@@ -196,6 +203,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="L82877"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const nodes = container.querySelectorAll('[data-journey-node]');
@@ -214,6 +222,7 @@ describe('JourneyProgress', () => {
         status="awaiting_activation"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const nodes = container.querySelectorAll('[data-journey-node]');
@@ -233,6 +242,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const nodes = container.querySelectorAll('[data-journey-node]');
@@ -260,6 +270,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const nodes = container.querySelectorAll('[data-journey-node]');
@@ -278,6 +289,7 @@ describe('JourneyProgress', () => {
         status="cancelled"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const nodes = container.querySelectorAll('[data-journey-node]');
@@ -294,6 +306,7 @@ describe('JourneyProgress', () => {
         status="cancelled"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const nodes = container.querySelectorAll('[data-journey-node]');
@@ -311,6 +324,7 @@ describe('JourneyProgress', () => {
         status="completed"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const nodes = container.querySelectorAll('[data-journey-node]');
@@ -328,6 +342,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="C1"
         mayHaveArrived={true}
+        lastReportedLocation={null}
       />,
     );
     expect(container.querySelector('[data-may-have-arrived="true"]')).toBeInTheDocument();
@@ -346,6 +361,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(container.querySelector('[data-may-have-arrived]')).not.toBeInTheDocument();
@@ -363,6 +379,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const circles = container.querySelectorAll('[data-journey-node]');
@@ -417,6 +434,7 @@ describe('JourneyProgress', () => {
           status="en_route"
           trainUid="C1"
           mayHaveArrived
+          lastReportedLocation={null}
         />,
       );
     }
@@ -433,6 +451,7 @@ describe('JourneyProgress', () => {
           status="en_route"
           trainUid="C1"
           mayHaveArrived={false}
+          lastReportedLocation={null}
         />,
       );
     }
@@ -511,6 +530,7 @@ describe('JourneyProgress', () => {
           status="en_route"
           trainUid="C21373"
           mayHaveArrived={false}
+          lastReportedLocation={null}
         />,
       );
       const trigger = screen.getByRole('button', { name: 'Clapham Junction' });
@@ -532,6 +552,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(screen.getByText('London Waterloo')).toBeInTheDocument();
@@ -556,6 +577,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const trigger = screen.getByLabelText(/Clapham Junction/);
@@ -577,6 +599,7 @@ describe('JourneyProgress', () => {
         status="en_route"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const trigger = screen.getByLabelText('Clapham Junction');
@@ -602,6 +625,7 @@ describe('JourneyProgress auto-scroll', () => {
         status="en_route"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const scroller = container.querySelector('[data-journey-progress-scroll]');
@@ -630,6 +654,7 @@ describe('JourneyProgress auto-scroll', () => {
         status="en_route"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
 
@@ -656,6 +681,7 @@ describe('JourneyProgress auto-scroll', () => {
           status="en_route"
           trainUid="C1"
           mayHaveArrived={false}
+          lastReportedLocation={null}
         />
       </MantineProvider>,
     );
@@ -678,6 +704,7 @@ describe('JourneyProgress auto-scroll', () => {
         status="en_route"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const marker = container.querySelector('[data-node-state="marker"]');
@@ -700,6 +727,7 @@ describe('JourneyProgress auto-scroll', () => {
         status="en_route"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(window.HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
@@ -713,6 +741,7 @@ describe('JourneyProgress auto-scroll', () => {
         status="awaiting_activation"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(window.Element.prototype.scrollTo).not.toHaveBeenCalled();
@@ -744,6 +773,7 @@ describe('JourneyProgress auto-scroll', () => {
         status="en_route"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(window.Element.prototype.scrollTo).toHaveBeenCalledWith(
@@ -763,6 +793,7 @@ describe('JourneyProgress auto-scroll', () => {
         status="en_route"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     (window.Element.prototype.scrollTo as ReturnType<typeof vi.fn>).mockClear();
@@ -779,6 +810,7 @@ describe('JourneyProgress auto-scroll', () => {
           status="en_route"
           trainUid="C1"
           mayHaveArrived={false}
+          lastReportedLocation={null}
         />
       </MantineProvider>,
     );
@@ -807,6 +839,7 @@ describe('JourneyProgress responsive layout contract', () => {
         status="en_route"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
   }
@@ -827,6 +860,7 @@ describe('JourneyProgress responsive layout contract', () => {
         status="en_route"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     const scroller = container.querySelector<HTMLElement>('[data-journey-progress-scroll]');
@@ -889,6 +923,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
         status={null}
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(screen.getByText("Scheduled route shown — live tracking hasn't started yet.")).toBeInTheDocument();
@@ -905,6 +940,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
         status="awaiting_activation"
         trainUid="C21373"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(
@@ -913,6 +949,59 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
     expect(
       screen.getByRole('group', {
         name: 'Journey progress: matched to train C21373, waiting for first movement report',
+      }),
+    ).toBeInTheDocument();
+  });
+
+  // Task 3.6.1: `status === 'en_route'` with `lastIndex === -1` is a
+  // CONFIRMED en-route train whose last movement report didn't match a
+  // timetabled stop -- a materially different fact from
+  // `awaiting_activation` above (nothing confirmed at all), and it must
+  // not reuse that branch's "waiting for its first movement report"
+  // caption.
+  it('resolved + en_route with no confirmed timetable match: names the last reported location, not "waiting for first movement report"', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[stop({ crs: 'A', kind: 'Origin' }), stop({ crs: 'B', kind: 'Terminate' })]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+        lastReportedLocation="York"
+      />,
+    );
+    expect(
+      screen.getByText(
+        "Last reported at York — that report couldn't be matched to a timetabled stop, so no position is shown on the line.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('group', {
+        name: 'Journey progress: last reported at York, not matched to a timetabled stop, no position shown',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/waiting for its first movement report/)).not.toBeInTheDocument();
+  });
+
+  it('resolved + en_route with no confirmed timetable match and no lastReportedLocation: a generic but still honest caption', () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[stop({ crs: 'A', kind: 'Origin' }), stop({ crs: 'B', kind: 'Terminate' })]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+        lastReportedLocation={null}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "Confirmed en route, but its last movement report couldn't be matched to a timetabled stop, so no position is shown on the line.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('group', {
+        name: 'Journey progress: confirmed en route, not matched to a timetabled stop, no position shown',
       }),
     ).toBeInTheDocument();
   });
@@ -928,6 +1017,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
         status="en_route"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(screen.getByText('Currently at Alpha.')).toBeInTheDocument();
@@ -947,6 +1037,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
         status="en_route"
         trainUid="C1"
         mayHaveArrived={true}
+        lastReportedLocation={null}
       />,
     );
     expect(screen.getByText('Currently at Bravo.')).toBeInTheDocument();
@@ -966,6 +1057,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
         status="cancelled"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(screen.getByText('Cancelled — last confirmed at Alpha.')).toBeInTheDocument();
@@ -982,6 +1074,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
         status="cancelled"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(screen.getByText('Cancelled — no movement was ever confirmed.')).toBeInTheDocument();
@@ -1001,6 +1094,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
         status="completed"
         trainUid="C1"
         mayHaveArrived={false}
+        lastReportedLocation={null}
       />,
     );
     expect(screen.getByText('Arrived at Bravo.')).toBeInTheDocument();
@@ -1009,7 +1103,14 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
 
   it('empty stops array: "Not yet started" caption/aria-label, defensively (not reachable via the real TrainJourney guard, but must not crash)', () => {
     renderWithMantine(
-      <JourneyProgress stops={[]} resolutionStatus="resolved" status="en_route" trainUid="C1" mayHaveArrived={false} />,
+      <JourneyProgress
+        stops={[]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C1"
+        mayHaveArrived={false}
+        lastReportedLocation={null}
+      />,
     );
     expect(screen.getByText('Not yet started.')).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Journey progress: not yet started' })).toBeInTheDocument();

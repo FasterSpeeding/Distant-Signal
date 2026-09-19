@@ -569,8 +569,14 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
     // Mantine's `Modal` close button has no accessible name of its own;
     // `lib/theme.ts` supplies one for every modal in the app through
     // `components.Modal.defaultProps`. This is the live check on that.
+    //
+    // Task 3.6.7: the row's Rename/Stop-tracking controls now live behind
+    // one overflow-kebab menu (`More actions for ...`) instead of a
+    // free-standing "Delete" button -- open that first, then its "Stop
+    // tracking" menu item.
     await page.goto('/track/mine');
-    await page.getByRole('button', { name: /^Delete$/ }).first().click();
+    await page.getByRole('button', { name: /^More actions for/ }).first().click();
+    await page.getByRole('menuitem', { name: 'Stop tracking' }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Close' })).toBeVisible();
     await expectNoViolations(page);
@@ -619,9 +625,12 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
     await page.route('**/api/**', (route) =>
       route.request().method() === 'GET' ? route.fallback() : route.fulfill({ status: 500, body: '' }),
     );
-    await page.getByRole('button', { name: /^Delete$/ }).first().click();
+    // Task 3.6.7: open the row's overflow-kebab menu first, same as the
+    // confirmation-modal test above.
+    await page.getByRole('button', { name: /^More actions for/ }).first().click();
+    await page.getByRole('menuitem', { name: 'Stop tracking' }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
-    await page.getByRole('button', { name: /Confirm delete|^Delete$/ }).last().click();
+    await page.getByRole('button', { name: 'Confirm stop tracking' }).click();
     // The assertion that keeps this from passing vacuously: if the error
     // text never rendered, there is nothing here to have measured.
     await expect(page.getByText(/Request failed/i).first()).toBeVisible();

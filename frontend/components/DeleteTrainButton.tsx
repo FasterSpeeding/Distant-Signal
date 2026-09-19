@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Modal, Text, Group } from '@mantine/core';
@@ -54,15 +55,32 @@ import { LoginLink } from './LoginLink';
  * and this click -- the same narrow race `DeleteLineButton` already
  * reasoned about. Matches `PinToggle`'s established `needsLogin` pattern:
  * catch the `401` specifically and show a login prompt, never the raw
- * backend rejection text. */
+ * backend rejection text.
+ *
+ * Task 3.6.7: relabelled "Delete" -> "Stop tracking" throughout (the
+ * trigger, the modal's own confirm button, and its `aria-label`) -- users
+ * don't delete a train from Network Rail, they stop tracking it; the
+ * modal's own title ("Stop tracking this train?") already said so, only
+ * the buttons hadn't caught up. The red outline + confirm-modal shape is
+ * otherwise unchanged.
+ *
+ * `trigger`, when given, replaces the default `Button` -- a render prop
+ * rather than a `children` override, since it needs the `onClick` that
+ * opens this component's own confirm modal, not a static node. Added for
+ * `/track/mine`'s list row (Task 3.6.7's own "overflow kebab" fix), which
+ * renders this control as a `Menu.Item` instead of a second free-standing
+ * button competing for space on an already-tight row; every other caller
+ * omits it and keeps today's exact `Button`. */
 export function DeleteTrainButton({
   trackingId,
   sharedGroupCount,
   afterDelete = 'redirect',
+  trigger,
 }: {
   trackingId: number;
   sharedGroupCount: number;
   afterDelete?: 'redirect' | 'refresh';
+  trigger?: (onClick: () => void) => ReactNode;
 }) {
   const router = useRouter();
   const [opened, { open, close }] = useDisclosure(false);
@@ -103,9 +121,13 @@ export function DeleteTrainButton({
 
   return (
     <>
-      <Button variant="outline" color="red" size="xs" onClick={open}>
-        Delete
-      </Button>
+      {trigger ? (
+        trigger(open)
+      ) : (
+        <Button variant="outline" color="red" size="xs" onClick={open}>
+          Stop tracking
+        </Button>
+      )}
       <Modal opened={opened} onClose={close} title="Stop tracking this train?">
         <Text>This cannot be undone.</Text>
         {sharedGroupCount > 0 && (
@@ -117,15 +139,15 @@ export function DeleteTrainButton({
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
         {needsLoginState.needsLogin && (
           <LoginLink underline="always">
-            Log in to delete this tracked train
+            Log in to stop tracking this train
           </LoginLink>
         )}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={deleting}>
             Cancel
           </Button>
-          <Button color="red" onClick={handleDelete} loading={deleting} aria-label="Confirm delete">
-            Delete
+          <Button color="red" onClick={handleDelete} loading={deleting} aria-label="Confirm stop tracking">
+            Stop tracking
           </Button>
         </Group>
       </Modal>

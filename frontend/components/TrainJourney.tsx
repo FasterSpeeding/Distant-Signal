@@ -25,11 +25,27 @@ import type { TrainJourneyState } from '@/lib/types';
  * top-level `EtaBadge`/"Last reported" summary stay visible even for the
  * common case of a resolved, en_route train that also has `journeyStops`.
  * `JourneyTimeline` renders additionally whenever `journeyStops` is
- * non-null, independent of `JourneyDetails`. */
-export function TrainJourney({ state }: { state: TrainJourneyState }) {
+ * non-null, independent of `JourneyDetails`.
+ *
+ * `suppressTrainUidHeading` (Task 3.6.9): `app/train/[uid]/[date]/page.tsx`'s
+ * own `<h1>` already reads "Train {uid}" verbatim, and several
+ * `StatusMessage` branches below print that exact same "Train {trainUid}"
+ * line immediately under it -- a real duplicate, not just visually
+ * similar text, since `state.trainUid` IS that page's own `uid`. Default
+ * `false` keeps every other caller (`app/train/by-id/[trackingId]`, whose
+ * own `<h1>` reads "Tracking Train {trackingId}" -- a DIFFERENT
+ * identifier, so its "Train {trainUid}" line is new information, not a
+ * repeat) rendering exactly as before. */
+export function TrainJourney({
+  state,
+  suppressTrainUidHeading = false,
+}: {
+  state: TrainJourneyState;
+  suppressTrainUidHeading?: boolean;
+}) {
   return (
     <Stack gap="sm">
-      <StatusMessage state={state} />
+      <StatusMessage state={state} suppressTrainUidHeading={suppressTrainUidHeading} />
       {state.resolutionStatus === 'resolved' && <JourneyDetails state={state} />}
       {state.journeyStops && (
         <JourneyProgress
@@ -38,6 +54,7 @@ export function TrainJourney({ state }: { state: TrainJourneyState }) {
           status={state.status}
           trainUid={state.trainUid}
           mayHaveArrived={state.mayHaveArrived}
+          lastReportedLocation={state.lastReportedLocation}
         />
       )}
       {state.journeyStops && <JourneyTimeline stops={state.journeyStops} />}
@@ -45,7 +62,19 @@ export function TrainJourney({ state }: { state: TrainJourneyState }) {
   );
 }
 
-function StatusMessage({ state }: { state: TrainJourneyState }) {
+function StatusMessage({
+  state,
+  suppressTrainUidHeading,
+}: {
+  state: TrainJourneyState;
+  suppressTrainUidHeading: boolean;
+}) {
+  // See `TrainJourney`'s own doc comment on `suppressTrainUidHeading`.
+  // `null` renders nothing either way (`{trainUidLine}` below), so this
+  // never hides a genuinely different fact -- it only ever removes an
+  // exact repeat of the page's own `<h1>`.
+  const trainUidLine = suppressTrainUidHeading ? null : <Text fw={500}>Train {state.trainUid}</Text>;
+
   const pinSummary = (
     <Text size="sm" c="dimmed">
       {trackedTrainDisplayName(state)}
@@ -130,7 +159,7 @@ function StatusMessage({ state }: { state: TrainJourneyState }) {
         <Alert color="red" title="Cancelled">
           This service was cancelled.
         </Alert>
-        <Text fw={500}>Train {state.trainUid}</Text>
+        {trainUidLine}
         {pinSummary}
       </Stack>
     );
@@ -162,7 +191,7 @@ function StatusMessage({ state }: { state: TrainJourneyState }) {
             ? `This train has arrived at ${destination}${arrivalTime ? `, at ${formatTime(arrivalTime)}` : ''}.`
             : 'This train has arrived at its final destination.'}
         </Alert>
-        <Text fw={500}>Train {state.trainUid}</Text>
+        {trainUidLine}
         {pinSummary}
       </Stack>
     );
@@ -182,9 +211,28 @@ function StatusMessage({ state }: { state: TrainJourneyState }) {
 
   return (
     <Stack gap="sm">
-      <Text fw={500}>Train {state.trainUid}</Text>
+      {trainUidLine}
       {pinSummary}
       {mayHaveArrived && (
+        // Task 3.6.12 asked this Alert to read `--mantine-color-yellow-light`/
+        // `-light-color` explicitly so `variant="light"` "survives into
+        // dark" -- it already does, unmodified: `color="yellow"
+        // variant="light"` is exactly what makes Mantine's own
+        // `defaultVariantColorsResolver` resolve to those two custom
+        // properties (verified against
+        // node_modules/@mantine/core's own resolver, not assumed), in
+        // both schemes. Checked the dark scheme's own stock values by
+        // hand (`@mantine/core/styles.css`): background
+        // `rgba(115,60,0,1)` against text `--mantine-color-yellow-0`
+        // (`#fff9db`) is ~8.3:1 by the WCAG relative-luminance formula --
+        // comfortably above AA, not the "washed out" case this task
+        // otherwise fixes for the four LIGHT-scheme badge/alert pairings
+        // in `app/globals.css` (whose own `-light-color` overrides are
+        // deliberately scoped to `[data-mantine-color-scheme='light']`
+        // only, because dark already inverts to a safe pairing there
+        // too). No override added here: doing so without a live
+        // re-measurement risked replacing an already-good pairing with a
+        // guessed one.
         <Alert color="yellow" title="May have arrived" variant="light">
           This journey may have arrived at its destination, but this is an inference, not a confirmed
           status from Network Rail.
@@ -232,7 +280,17 @@ function JourneyDetails({ state }: { state: TrainJourneyState }) {
       {state.delayMinutes !== null && (
         <Group gap={6}>
           <Text size="sm">Delay:</Text>
-          <Badge color={state.delayMinutes > 0 ? 'orange' : 'green'} variant="light">
+          {/* `tt="none"` (Task 3.6.12): Mantine's default Badge text is
+              uppercase at 11px -- review §5.12 measured this specific
+              badge's contrast as borderline (~3.5:1) at that size, and
+              WCAG's relaxed "large text" 3:1 threshold only applies at
+              18.66px bold or larger, nowhere near this badge. Dropping
+              the transform doesn't change the underlying hex contrast
+              ratio, but it's the cheaper of the two review-sanctioned
+              fixes (the other being a size bump) and removes uppercase's
+              own separate legibility cost (thinner apparent stroke
+              contrast from losing ascenders/descenders) on top of it. */}
+          <Badge color={state.delayMinutes > 0 ? 'orange' : 'green'} variant="light" tt="none">
             {state.delayMinutes > 0 ? `${state.delayMinutes}m late` : 'On time'}
           </Badge>
         </Group>

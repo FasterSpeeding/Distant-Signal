@@ -1,4 +1,4 @@
-import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
+import { ActionIcon, Badge, Card, Divider, Group, Menu, Stack, Text, Title } from '@mantine/core';
 import Link from 'next/link';
 import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
@@ -9,6 +9,8 @@ import { ReliabilityDigest } from '@/components/ReliabilityDigest';
 import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
 import { AttachTicketAction } from '@/components/AttachTicketAction';
 import { DeleteTicketButton } from '@/components/DeleteTicketButton';
+import { DeleteTrainButton } from '@/components/DeleteTrainButton';
+import { KebabIcon } from '@/components/KebabIcon';
 import { RenameTrainButton } from '@/components/RenameTrainButton';
 import { RenameTicketButton } from '@/components/RenameTicketButton';
 import { StatusRow } from '@/components/StatusRow';
@@ -244,14 +246,59 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
             <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
               <Stack gap={4}>
                 <StatusRow title={displayName} trailing={<TrackedTrainStatusBadge train={train} />} />
-                <Text size="sm" c="dimmed">
-                  {when}
-                </Text>
+                {/* Task 3.6.8: `displayName` (`trackedTrainDisplayName`)
+                    already falls back to `${route}, ${when}` -- the exact
+                    same `when` string -- whenever no custom name is set,
+                    so printing this dimmed line unconditionally repeated
+                    the date/time on screen twice for every train without
+                    one. It's only new information once a custom name has
+                    replaced the default title above. */}
+                {train.customName && (
+                  <Text size="sm" c="dimmed">
+                    {when}
+                  </Text>
+                )}
               </Stack>
             </Link>
           }
           trailing={
-            <RenameTrainButton trackingId={train.id} customName={train.customName} defaultName={defaultName} />
+            // Task 3.6.7: one overflow kebab instead of a standalone
+            // "Rename" button with no "stop tracking" affordance at all on
+            // this row (that action previously only existed on the detail
+            // page) -- also relieves Task 1.5's space contest on this same
+            // trailing slot, which otherwise stacks the status badge
+            // alongside an ever-growing set of per-row controls.
+            <Menu position="bottom-end" withinPortal>
+              <Menu.Target>
+                <ActionIcon variant="subtle" color="gray" aria-label={`More actions for ${displayName}`}>
+                  <KebabIcon />
+                </ActionIcon>
+              </Menu.Target>
+              <Menu.Dropdown>
+                <RenameTrainButton
+                  trackingId={train.id}
+                  customName={train.customName}
+                  defaultName={defaultName}
+                  trigger={(onClick) => <Menu.Item onClick={onClick}>Rename</Menu.Item>}
+                />
+                {/* `afterDelete="refresh"`, not the component's own
+                    'redirect' default: this row's own page IS
+                    `/track/mine` already, so a stopped-tracking train
+                    should just drop out of this same list on
+                    `router.refresh()`, not navigate to the page it's
+                    already on. */}
+                <DeleteTrainButton
+                  trackingId={train.id}
+                  sharedGroupCount={train.sharedGroupCount}
+                  afterDelete="refresh"
+                  trigger={(onClick) => (
+                    <Menu.Item color="red" onClick={onClick}>
+                      Stop tracking
+                    </Menu.Item>
+                  )}
+                />
+              </Menu.Dropdown>
+            </Menu>
           }
         />
         {tickets.length > 0 && (
@@ -355,9 +402,15 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
           }
           trailing={<TrackedTrainStatusBadge train={train} />}
         />
-        <Text size="sm" c="dimmed">
-          {when}
-        </Text>
+        {/* Task 3.6.8: same fix as the caller's own row above -- `heading`
+            already falls back to `${route}, ${when}` whenever this
+            sharer never set a custom name, so print the dimmed line only
+            when a custom name replaced it in the heading. */}
+        {train.customName && (
+          <Text size="sm" c="dimmed">
+            {when}
+          </Text>
+        )}
         <Group gap="xs" wrap="wrap">
           {/* One badge per group this train reached the caller through --
               a train shared into two of their groups is two tags, not an

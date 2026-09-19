@@ -39,7 +39,14 @@ export default async function TrackedTrainByIdPage({
     if (err instanceof ApiUnauthorizedError) {
       return (
         <Stack p="lg" gap="md">
-          <Title order={1}>Tracking Train {trackingId}</Title>
+          {/* Task 3.6.10: this route can't disclose anything more than
+              "someone tracks a train here" before authenticating -- the
+              old title ("Tracking Train {trackingId}") printed the
+              internal `train_subscriptions.id` this URL is keyed on
+              verbatim, meaningless (and mildly confusing, reading like a
+              train's own identifier) to a visitor who isn't logged in as
+              its owner. */}
+          <Title order={1}>Someone&apos;s tracked train — log in to see it</Title>
           <LoginLink underline="always">
             Log in to view this tracked train
           </LoginLink>

@@ -159,9 +159,22 @@ describe('TrackTrainForm', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalled());
   });
 
-  it('disables submit until the origin is a valid 3-letter code and a departure is picked', () => {
+  // Task 3.6.14: this button used to stay `disabled` for as long as the
+  // origin/departure weren't valid yet, which Mantine renders as
+  // near-invisible light-grey-on-slightly-lighter-grey in dark mode. It's
+  // no longer disabled for that reason at all (only while a submit is
+  // actually in flight) -- an invalid press instead surfaces an inline
+  // field error and does not call the API, so a click always gets a
+  // visible result.
+  it('is never disabled merely for an incomplete origin -- an invalid submit shows a field error instead', () => {
     renderWithMantine(<TrackTrainForm />);
-    expect(screen.getByRole('button', { name: /Track this train/ })).toBeDisabled();
+    const button = screen.getByRole('button', { name: /Track this train/ });
+    expect(button).not.toBeDisabled();
+    fireEvent.click(button);
+    expect(
+      screen.getByText('Enter a valid origin station before tracking — pick one from the suggestions, or a 3-letter CRS code.'),
+    ).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith('/api/Train/track', expect.anything());
   });
 
   it('defaults the scheduled-departure field to the current time on mount, not null', () => {

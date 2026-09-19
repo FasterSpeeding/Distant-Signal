@@ -328,8 +328,13 @@ export default async function TrackedTrainByUidPage({
           shows) -- both are driven by the same `journeyState` and gated
           identically on `trainUid` being known. Shared with
           `app/train/by-id/[trackingId]` so the two pages can't drift on
-          this pairing again -- see that component's own doc comment. */}
-      <TrainJourneyPanel state={journeyState} />
+          this pairing again -- see that component's own doc comment.
+          `suppressTrainUidHeading`: this page's own `<h1>` above already
+          reads "Train {uid}" -- see `TrainJourney.tsx`'s own doc comment
+          on that prop (Task 3.6.9). `by-id`'s own `<h1>` reads "Tracking
+          Train {trackingId}" instead (a different identifier), so it
+          omits this prop and keeps its own "Train {trainUid}" line. */}
+      <TrainJourneyPanel state={journeyState} suppressTrainUidHeading />
       <Group gap={4}>
         <LastUpdated timestamp={renderedAt} />
         <Text size="xs" c="dimmed">
