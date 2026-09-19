@@ -10,6 +10,7 @@ import { TimeFilterInput } from './TimeFilterInput';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
+import { noMatchOptionContent, withNoMatchPlaceholder } from '@/lib/autocompleteNoMatch';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 /** The exact `"HH:MM"` shape the four time filters put on the wire
@@ -583,9 +584,17 @@ export function TrainSearchForm({
         description="Any station this train calls at along its route."
         value={stationCrs}
         onChange={setStationCrs}
-        data={stationSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+        // `withNoMatchPlaceholder`: `Autocomplete` has no
+        // `nothingFoundMessage` prop in this Mantine version -- see
+        // `lib/autocompleteNoMatch.ts`.
+        data={withNoMatchPlaceholder(
+          stationSuggestions.map((s) => ({ value: s.code, label: s.code })),
+          'No matching stations',
+        )}
         filter={({ options }) => options}
         renderOption={({ option }) => {
+          const placeholder = noMatchOptionContent(option.value, 'No matching stations');
+          if (placeholder) return placeholder;
           const match = stationSuggestions.find((s) => s.code === option.value);
           return match ? `${match.code} — ${match.name}` : option.value;
         }}
@@ -613,9 +622,14 @@ export function TrainSearchForm({
         description="Where the journey actually begins."
         value={originCrs}
         onChange={setOriginCrs}
-        data={originSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+        data={withNoMatchPlaceholder(
+          originSuggestions.map((s) => ({ value: s.code, label: s.code })),
+          'No matching stations',
+        )}
         filter={({ options }) => options}
         renderOption={({ option }) => {
+          const placeholder = noMatchOptionContent(option.value, 'No matching stations');
+          if (placeholder) return placeholder;
           const match = originSuggestions.find((s) => s.code === option.value);
           return match ? `${match.code} — ${match.name}` : option.value;
         }}
@@ -627,9 +641,14 @@ export function TrainSearchForm({
         description="Another station this train calls at, its destination included. Enter the same station as Departing from to find loop services that come back to it."
         value={stopsAt}
         onChange={setStopsAt}
-        data={stopsAtSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+        data={withNoMatchPlaceholder(
+          stopsAtSuggestions.map((s) => ({ value: s.code, label: s.code })),
+          'No matching stations',
+        )}
         filter={({ options }) => options}
         renderOption={({ option }) => {
+          const placeholder = noMatchOptionContent(option.value, 'No matching stations');
+          if (placeholder) return placeholder;
           const match = stopsAtSuggestions.find((s) => s.code === option.value);
           return match ? `${match.code} — ${match.name}` : option.value;
         }}

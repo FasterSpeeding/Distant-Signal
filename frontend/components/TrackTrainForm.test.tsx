@@ -215,6 +215,27 @@ describe('TrackTrainForm', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalled());
   });
 
+  it('shows an accessible "no matches" option instead of hiding the listbox when a search matches nothing', async () => {
+    // Mantine's `Autocomplete` has no `nothingFoundMessage` prop at all
+    // (unlike Select/MultiSelect) -- it hides its whole `role="listbox"`
+    // dropdown outright whenever `data` is empty, leaving an open combobox
+    // (`aria-expanded="true"`) with no `option`/`group` child, which fails
+    // axe's `aria-required-children`. `withNoMatchPlaceholder`
+    // (`lib/autocompleteNoMatch.ts`) works around the missing prop by
+    // swapping in a single inert `role="option"` placeholder whenever the
+    // real suggestions list is empty -- `mockFetchByUrl`'s own default
+    // `/api/stations?`/`/api/tocs?` handler already returns `[]`.
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithMantine(<TrackTrainForm />);
+    const input = screen.getByRole('combobox', { name: /Origin station/ });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'zzzzzz' } });
+
+    expect(await screen.findByRole('option', { name: 'No matching stations' })).toBeInTheDocument();
+  });
+
   it('selecting an origin suggestion (via onChange) still submits the resolved origin_crs', async () => {
     // `mockFetchByUrl`, not a blanket `mockImplementation`: this picker's
     // own departures effect (fired once Origin resolves to 'WOK' below)

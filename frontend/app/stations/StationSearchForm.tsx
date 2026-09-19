@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Autocomplete, Button, Group, Skeleton, Stack } from '@mantine/core';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
+import { noMatchOptionContent, withNoMatchPlaceholder } from '@/lib/autocompleteNoMatch';
 
 export function StationSearchForm() {
   const router = useRouter();
@@ -52,7 +53,16 @@ export function StationSearchForm() {
           // itself here, and the friendlier "code — name" text is rendered
           // dropdown-only via `renderOption`, which doesn't affect what
           // gets written into the field.
-          data={suggestions.map((s) => ({ value: s.code, label: s.code }))}
+          // `withNoMatchPlaceholder`: `Autocomplete` has no
+          // `nothingFoundMessage` prop in this Mantine version -- see
+          // `lib/autocompleteNoMatch.ts` for why a single inert
+          // placeholder option, not an empty array, is this component's
+          // own available fix for the same "open combobox, zero-child
+          // listbox" gap `components/IncidentSearchForm.tsx` first found.
+          data={withNoMatchPlaceholder(
+            suggestions.map((s) => ({ value: s.code, label: s.code })),
+            'No matching stations',
+          )}
           // `suggestions` is already server-side filtered (the API matches
           // the search term against both CRS code and station name), so
           // Mantine's default client-side re-filtering -- which only checks
@@ -61,6 +71,8 @@ export function StationSearchForm() {
           // whatever `suggestions` already contains, unfiltered further.
           filter={({ options }) => options}
           renderOption={({ option }) => {
+            const placeholder = noMatchOptionContent(option.value, 'No matching stations');
+            if (placeholder) return placeholder;
             const match = suggestions.find((s) => s.code === option.value);
             return match ? `${match.code} — ${match.name}` : option.value;
           }}

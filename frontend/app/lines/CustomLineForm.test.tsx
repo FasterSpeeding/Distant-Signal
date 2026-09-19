@@ -91,6 +91,28 @@ describe('CustomLineForm', () => {
     expect(input).toHaveValue('');
   });
 
+  it('shows an accessible "no matches" option instead of hiding the listbox when a search matches nothing', async () => {
+    // Mantine's `Autocomplete` has no `nothingFoundMessage` prop at all
+    // (unlike Select/MultiSelect) -- it hides its whole `role="listbox"`
+    // dropdown outright whenever `data` is empty, leaving an open combobox
+    // (`aria-expanded="true"`) with no `option`/`group` child, which fails
+    // axe's `aria-required-children`. `withNoMatchPlaceholder`
+    // (`lib/autocompleteNoMatch.ts`) works around the missing prop by
+    // swapping in a single inert `role="option"` placeholder whenever the
+    // real suggestions list is empty.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })));
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'zzzzzz' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    expect(await screen.findByRole('option', { name: 'No matching stations', hidden: true })).toBeInTheDocument();
+  });
+
   // Review §2.10 / WCAG 1.4.11 (Non-text Contrast): the chip's `CloseButton`
   // used to keep Mantine's default grey icon colour on the filled grape
   // `Badge` background, measuring 1.69:1 -- short of the 3:1 non-text
