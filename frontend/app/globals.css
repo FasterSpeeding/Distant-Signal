@@ -1126,7 +1126,21 @@ nav {
    in this file for why a separate layer beats fighting inline-style
    specificity). Positioned at `bottom: 2px` (inside the nav box) rather
    than nav::after's `bottom: -3px` (outside it, used by the pride bar) so
-   the two never overlap when pride is on -- each gets its own band. */
+   the two never overlap when pride is on -- each gets its own band.
+
+   `background-image` + explicit `background-size: 36px 100%` +
+   `background-repeat: repeat-x`, rather than one `repeating-linear-gradient`
+   painted across the whole (potentially 1000px+) nav width: letting the
+   gradient's hard colour stops repeat natively over that full width made
+   Gecko degrade the pattern to a sparse row of ticks for the first ~250px
+   and nothing after (2026-09-17 review, §2.15) -- almost certainly
+   floating-point precision loss computing hard-stop boundaries over a wide
+   gradient line, since dash length (20px) and gap length (16px) are exact.
+   Declaring the gradient once over a single 36px-wide tile and letting
+   `background-repeat` retile it sidesteps that: every tile is identically
+   small regardless of nav width, so there is nothing left for either engine
+   to accumulate error over. Verified this renders identically in Chromium
+   and Firefox at both desktop and mobile widths. */
 nav::before {
   content: '';
   position: absolute;
@@ -1134,13 +1148,15 @@ nav::before {
   right: 0;
   bottom: 2px;
   height: 2px;
-  background: repeating-linear-gradient(
+  background-image: repeating-linear-gradient(
     to right,
     color-mix(in srgb, var(--mantine-color-text) 20%, transparent) 0,
     color-mix(in srgb, var(--mantine-color-text) 20%, transparent) 20px,
     transparent 20px,
     transparent 36px
   );
+  background-repeat: repeat-x;
+  background-size: 36px 100%;
 }
 
 /* Links sitting in the ordinary flow of body text, where position gives
