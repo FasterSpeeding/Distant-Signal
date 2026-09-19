@@ -41,6 +41,18 @@ describe('ChatPage', () => {
     expect(screen.getByText(/Not available for your account yet/)).toBeInTheDocument();
   });
 
+  // Review §3.1.2 (F8): this dead end used to have no explanation and no
+  // next step -- /connect-claude works for every logged-in user regardless
+  // of the chatbot allowlist, so it's a real next step.
+  it('offers /connect-claude as a next step for a forbidden (non-allowlisted) user', async () => {
+    vi.mocked(api.getChatbotAccess).mockResolvedValue('forbidden');
+    renderWithMantine(await ChatPage());
+    expect(screen.getByRole('link', { name: 'connecting Claude to Distant Signal' })).toHaveAttribute(
+      'href',
+      '/connect-claude',
+    );
+  });
+
   it('renders the ChatPanel for an allowed user', async () => {
     vi.mocked(api.getChatbotAccess).mockResolvedValue('allowed');
     renderWithMantine(await ChatPage());
