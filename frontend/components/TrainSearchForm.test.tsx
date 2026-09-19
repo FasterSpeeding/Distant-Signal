@@ -189,6 +189,25 @@ describe('TrainSearchForm', () => {
     await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
   });
 
+  it('shows an accessible "no matches" option instead of hiding the listbox when a search matches nothing', () => {
+    // Mantine's `Autocomplete` has no `nothingFoundMessage` prop at all
+    // (unlike Select/MultiSelect) -- it hides its whole `role="listbox"`
+    // dropdown outright whenever `data` is empty, leaving an open combobox
+    // (`aria-expanded="true"`) with no `option`/`group` child, which fails
+    // axe's `aria-required-children`. `withNoMatchPlaceholder`
+    // (`lib/autocompleteNoMatch.ts`) works around the missing prop by
+    // swapping in a single inert `role="option"` placeholder whenever the
+    // real suggestions list is empty -- here, whenever the mocked
+    // `useSuggestions` finds nothing in `TEST_STATIONS`.
+    renderWithMantine(<TrainSearchForm />);
+    const input = screen.getByRole('combobox', { name: 'Station' });
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'zzzzzz' } });
+
+    expect(screen.getByRole('option', { name: 'No matching stations' })).toBeInTheDocument();
+  });
+
   it('sends every optional filter it has, uppercased', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);

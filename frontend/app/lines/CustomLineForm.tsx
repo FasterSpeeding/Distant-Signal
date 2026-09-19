@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Alert, Autocomplete, TextInput, TagsInput, Button, Stack, Group, Badge, CloseButton, Text, Collapse, Pill } from '@mantine/core';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
+import { noMatchOptionContent, withNoMatchPlaceholder } from '@/lib/autocompleteNoMatch';
 import { useNeedsLogin } from '@/components/useNeedsLogin';
 import { LoginPromptModal } from '@/components/LoginPromptModal';
 import { DeleteLineButton } from '@/components/DeleteLineButton';
@@ -195,7 +196,19 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           // itself here, and the friendlier "code — name" text is rendered
           // dropdown-only via `renderOption`, which doesn't affect what
           // gets written into the field.
-          data={stationSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+          // `withNoMatchPlaceholder`: `Autocomplete` (unlike Select/
+          // MultiSelect) has no `nothingFoundMessage` prop at all in this
+          // Mantine version -- it hides its whole dropdown outright
+          // whenever `data` is empty, which is exactly the gap this form's
+          // own Operator/Line fields hit before this app's very first fix
+          // for it (`components/IncidentSearchForm.tsx`). See
+          // `lib/autocompleteNoMatch.ts` for why swapping in a single
+          // inert placeholder option, rather than an empty array, is the
+          // available workaround here.
+          data={withNoMatchPlaceholder(
+            stationSuggestions.map((s) => ({ value: s.code, label: s.code })),
+            'No matching stations',
+          )}
           // `stationSuggestions` is already server-side filtered (the API
           // matches the search term against both CRS code and station
           // name), so Mantine's default client-side re-filtering -- which
@@ -205,6 +218,8 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           // contains, unfiltered further. Same fix as `StationSearchForm`.
           filter={({ options }) => options}
           renderOption={({ option }) => {
+            const placeholder = noMatchOptionContent(option.value, 'No matching stations');
+            if (placeholder) return placeholder;
             const match = stationSuggestions.find((s) => s.code === option.value);
             return match ? `${match.code} — ${match.name}` : option.value;
           }}

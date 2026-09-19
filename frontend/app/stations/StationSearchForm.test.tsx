@@ -88,6 +88,28 @@ describe('StationSearchForm', () => {
     expect(await screen.findByRole('option', { name: 'WOK — Woking', hidden: true })).toBeInTheDocument();
   });
 
+  it('shows an accessible "no matches" option instead of hiding the listbox when a search matches nothing', async () => {
+    // Mantine's `Autocomplete` has no `nothingFoundMessage` prop at all
+    // (unlike Select/MultiSelect) -- it hides its whole `role="listbox"`
+    // dropdown outright whenever `data` is empty, leaving an open combobox
+    // (`aria-expanded="true"`) with no `option`/`group` child, which fails
+    // axe's `aria-required-children`. `withNoMatchPlaceholder`
+    // (`lib/autocompleteNoMatch.ts`) works around the missing prop by
+    // swapping in a single inert `role="option"` placeholder whenever the
+    // real suggestions list is empty.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })));
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'zzzzzz' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    expect(await screen.findByRole('option', { name: 'No matching stations', hidden: true })).toBeInTheDocument();
+  });
+
   it('clicking Look up after typing a station name (without picking the dropdown option) resolves to its CRS code', async () => {
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });

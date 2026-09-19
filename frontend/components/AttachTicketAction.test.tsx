@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { AttachTicketAction } from './AttachTicketAction';
 import type { TrackedTrainListItem } from '@/lib/types';
@@ -60,6 +60,25 @@ describe('AttachTicketAction', () => {
     );
     fireEvent.mouseDown(screen.getAllByLabelText('Attach to one of your tracked trains')[0]);
     expect(screen.getByText(/London Waterloo \(WAT\) → Woking \(WOK\)/)).toBeInTheDocument();
+  });
+
+  it('shows an accessible "no matches" option instead of hiding the listbox when a search matches nothing', () => {
+    // Same gap as `app/lines/AllLinesTable.tsx`'s own operator filter:
+    // this field is `searchable`, so a search narrowing its visible
+    // options to zero hits Mantine's `hiddenWhenEmpty` gap too, even
+    // though it's only ever rendered once `trains` is non-empty. The
+    // `nothingFoundMessage` fix renders an explicit `role="option"` node,
+    // keeping the listbox structurally valid (axe's
+    // `aria-required-children`) once the search comes back empty.
+    renderWithMantine(
+      <AttachTicketAction ticketId={5} trains={[train({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' })]} />,
+    );
+    const input = screen.getByRole('combobox', { name: 'Attach to one of your tracked trains' });
+    act(() => input.focus());
+    fireEvent.change(input, { target: { value: 'zzz-no-such-train' } });
+
+    const option = screen.getByRole('option', { name: 'No matching tracked trains' });
+    expect(option).toHaveAttribute('aria-disabled', 'true');
   });
 
   it('on success, POSTs to the attach route and refreshes the page', async () => {

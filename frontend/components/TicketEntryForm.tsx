@@ -9,6 +9,7 @@ import { LoginPromptModal } from './LoginPromptModal';
 import { TextLink } from './TextLink';
 import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
+import { noMatchOptionContent, withNoMatchPlaceholder } from '@/lib/autocompleteNoMatch';
 import type { PartialTicket, TicketCreatedResponse, TicketEntryRequest, TicketSource } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
@@ -409,9 +410,17 @@ export function TicketEntryForm({
                 setOperator(value);
                 clearAutoFilled('operator');
               }}
-              data={operatorSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+              // `withNoMatchPlaceholder`: `Autocomplete` has no
+              // `nothingFoundMessage` prop in this Mantine version -- see
+              // `lib/autocompleteNoMatch.ts`.
+              data={withNoMatchPlaceholder(
+                operatorSuggestions.map((s) => ({ value: s.code, label: s.code })),
+                'No matching operators',
+              )}
               filter={({ options }) => options}
               renderOption={({ option }) => {
+                const placeholder = noMatchOptionContent(option.value, 'No matching operators');
+                if (placeholder) return placeholder;
                 const match = operatorSuggestions.find((s) => s.code === option.value);
                 return match ? `${match.code} — ${match.name}` : option.value;
               }}
@@ -435,9 +444,14 @@ export function TicketEntryForm({
                 setOriginCrs(value);
                 clearAutoFilled('originCrs');
               }}
-              data={originSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+              data={withNoMatchPlaceholder(
+                originSuggestions.map((s) => ({ value: s.code, label: s.code })),
+                'No matching stations',
+              )}
               filter={({ options }) => options}
               renderOption={({ option }) => {
+                const placeholder = noMatchOptionContent(option.value, 'No matching stations');
+                if (placeholder) return placeholder;
                 const match = originSuggestions.find((s) => s.code === option.value);
                 return match ? `${match.code} — ${match.name}` : option.value;
               }}
@@ -454,9 +468,14 @@ export function TicketEntryForm({
                 setDestinationCrs(value);
                 clearAutoFilled('destinationCrs');
               }}
-              data={destinationSuggestions.map((s) => ({ value: s.code, label: s.code }))}
+              data={withNoMatchPlaceholder(
+                destinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
+                'No matching stations',
+              )}
               filter={({ options }) => options}
               renderOption={({ option }) => {
+                const placeholder = noMatchOptionContent(option.value, 'No matching stations');
+                if (placeholder) return placeholder;
                 const match = destinationSuggestions.find((s) => s.code === option.value);
                 return match ? `${match.code} — ${match.name}` : option.value;
               }}

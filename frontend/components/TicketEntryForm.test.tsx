@@ -154,6 +154,23 @@ describe('TicketEntryForm', () => {
     expect(screen.getByRole('tab', { name: 'Manual', selected: true })).toBeInTheDocument();
   });
 
+  it('shows an accessible "no matches" option instead of hiding the listbox when a search matches nothing', async () => {
+    // Mantine's `Autocomplete` has no `nothingFoundMessage` prop at all
+    // (unlike Select/MultiSelect) -- it hides its whole `role="listbox"`
+    // dropdown outright whenever `data` is empty, leaving an open combobox
+    // (`aria-expanded="true"`) with no `option`/`group` child, which fails
+    // axe's `aria-required-children`. `withNoMatchPlaceholder`
+    // (`lib/autocompleteNoMatch.ts`) works around the missing prop by
+    // swapping in a single inert `role="option"` placeholder whenever the
+    // real suggestions list is empty -- `mockDefaultResponse` already
+    // routes `/api/stations?`/`/api/tocs?` to `[]`.
+    mockDefaultResponse(new Response('[]', { status: 200 }));
+    openForm();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), { target: { value: 'zzzzzz' } });
+
+    expect(await screen.findByRole('option', { name: 'No matching operators' })).toBeInTheDocument();
+  });
+
   it('manual submit: on success, saves, collapses, and refreshes the page', async () => {
     mockDefaultResponse(new Response(JSON.stringify({ ticketId: 1 }), { status: 200 }));
     openForm();
