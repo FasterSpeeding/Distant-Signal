@@ -208,6 +208,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
                  lookup resolves. */
               <CloseButton
                 size="xs"
+                c="white"
                 aria-label={`Remove ${nameByCode[crs] ?? crs}`}
                 onClick={() => removeStation(crs)}
               />

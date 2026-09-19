@@ -1478,3 +1478,35 @@ a[data-text-link='always'] {
   outline: 2px solid var(--mantine-color-blue-9);
   outline-offset: 2px;
 }
+
+/* Shared touch-target-padding utility -- review §2.10 ("Interactive
+   targets below the 24px minimum"). For a small icon-only control whose
+   VISIBLE glyph must stay the same size (this is a hit-area fix, not a
+   redesign), an invisible `::before` centred on the element is the only
+   way to grow the pointer/touch target without growing anything a sighted
+   user sees. `top`/`left` 50% + `translate(-50%, -50%)` keeps it centred
+   regardless of the host's own box size; `max()` only grows the box when
+   the host is already smaller than 24px CSS px in that dimension, so this
+   is a floor, not a fixed size.
+   Requires the host to (a) establish a positioning context, which this
+   rule provides via `position: relative`, and (b) NOT clip overflowing
+   content -- `CloseButton` (used for the incident date-clear "×" this was
+   introduced for) satisfies both, unlike `ActionIcon`, whose root sets
+   `overflow: hidden` and so cannot use this: those controls are instead
+   grown directly via their own `size` prop (see `PinToggle.tsx`/
+   `ShareButton.tsx`/`GroupInviteLinkCard.tsx`), which is safe there
+   because their glyphs are fixed-pixel SVGs (or, for `GroupInviteLinkCard`,
+   plain text) that do not scale with the button box. */
+.iconHitArea24 {
+  position: relative;
+}
+
+.iconHitArea24::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max(100%, 24px);
+  height: max(100%, 24px);
+  transform: translate(-50%, -50%);
+}

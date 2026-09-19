@@ -89,6 +89,23 @@ describe('CustomLineForm', () => {
     expect(input).toHaveValue('');
   });
 
+  // Review §2.10 / WCAG 1.4.11 (Non-text Contrast): the chip's `CloseButton`
+  // used to keep Mantine's default grey icon colour on the filled grape
+  // `Badge` background, measuring 1.69:1 -- short of the 3:1 non-text
+  // contrast minimum, and the only hard numeric WCAG failure in the whole
+  // accessibility review. `c="white"` matches the badge's own label colour
+  // (4.85:1 on grape-7). Asserted via the rendered inline style rather than
+  // a computed-contrast check: jsdom doesn't paint or resolve CSS custom
+  // properties, so the `color: var(--mantine-color-white)` style Mantine's
+  // `c` prop emits is the only observable trace of the fix in this
+  // environment.
+  it('the station chip close button is explicitly white, not the default grey, for WCAG 1.4.11 contrast', async () => {
+    renderWithProvider({ existingLine });
+
+    const closeButton = screen.getByRole('button', { name: 'Remove WOK' });
+    expect(closeButton).toHaveStyle({ color: 'var(--mantine-color-white)' });
+  });
+
   it('the committed station chip carries the resolved name as a title tooltip', async () => {
     // The chip keeps its bare code (space is at a premium in this compact
     // list) but gains a `title=` tooltip carrying the full name -- the

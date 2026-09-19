@@ -46,6 +46,19 @@ describe('ShareButton', () => {
     expect(screen.getByLabelText('Share this page')).toBeInTheDocument();
   });
 
+  // Review §2.10: named alongside `PinToggle`'s star as "the two actions a
+  // returning user taps most", so it gets the 44px primary-action
+  // touch-target floor rather than Mantine's default `md` ActionIcon size
+  // (28px). See `PinToggle.test.tsx`'s identical assertion for why the
+  // expected value is this `calc()` expression rather than a plain
+  // `'44px'`.
+  it('sizes the button to the 44px primary-action touch target, not the 28px default', () => {
+    renderWithMantine(<ShareButton />);
+    expect(screen.getByLabelText('Share this page')).toHaveStyle({
+      '--ai-size': 'calc(2.75rem * var(--mantine-scale))',
+    });
+  });
+
   it('calls navigator.share with the current URL when available', async () => {
     const shareMock = vi.fn().mockResolvedValue(undefined);
     stubShare(shareMock);

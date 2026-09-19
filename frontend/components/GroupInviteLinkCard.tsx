@@ -121,7 +121,17 @@ export function GroupInviteLinkCard({ groupId, inviteLink }: { groupId: string; 
                 nothing saying what the URL is. */}
             <TextInput value={url} readOnly aria-label="Invite link" style={{ flexGrow: 1 }} />
             <Tooltip label={copied ? COPIED_LABEL : 'Share this link'}>
-              <ActionIcon variant="outline" color="gray" onClick={share} aria-label="Share invite link">
+              {/* Mantine's default `md` ActionIcon (28px) is a hair under
+                  the review's §2.10 recommendation. Sized to 36px here
+                  (rather than 44px, like `ShareButton`/`PinToggle`'s
+                  primary-action floor) to match the adjacent `TextInput`'s
+                  own default height, since this sits flush against it in a
+                  `nowrap` `Group` -- still comfortably above the 24px
+                  minimum. The children are plain text glyphs, not a
+                  fixed-size SVG, but `ActionIcon`'s font-size isn't tied to
+                  its `--ai-size` box (`ActionIcon.css`), so they don't grow
+                  with it. */}
+              <ActionIcon variant="outline" color="gray" onClick={share} aria-label="Share invite link" size={36}>
                 {copied ? '✓' : '⇪'}
               </ActionIcon>
             </Tooltip>

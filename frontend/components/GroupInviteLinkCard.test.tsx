@@ -50,6 +50,22 @@ describe('GroupInviteLinkCard', () => {
     );
   });
 
+  // Review §2.10: Mantine's default `md` `ActionIcon` (28px) is under the
+  // review's recommended sizing for this icon-button set. Sized to 36px to
+  // match the adjacent `TextInput`'s own height rather than the 44px
+  // primary-action floor `PinToggle`/`ShareButton` get -- see this
+  // component's own comment for the rationale. See `PinToggle.test.tsx`'s
+  // identical assertion shape for why the expected value is a `calc()`
+  // expression rather than a plain pixel string.
+  it('sizes the share button to 36px, above the 24px touch-target floor', () => {
+    renderWithMantine(
+      <GroupInviteLinkCard groupId="grp-1" inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }} />,
+    );
+    expect(screen.getByRole('button', { name: 'Share invite link' })).toHaveStyle({
+      '--ai-size': 'calc(2.25rem * var(--mantine-scale))',
+    });
+  });
+
   it('Regenerate POSTs and refreshes', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ token: 'new', expiresAt: '2026-09-19T00:00:00Z' }), { status: 200 }));

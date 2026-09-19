@@ -47,6 +47,21 @@ describe('PinToggle', () => {
     expect(await screen.findByText('Pin (currently not pinned)', { selector: '[role="tooltip"]' })).toBeInTheDocument();
   });
 
+  // Review §2.10: named alongside `ShareButton` as "the two actions a
+  // returning user taps most" on the station page, so it gets the 44px
+  // primary-action touch-target floor rather than Mantine's default `md`
+  // ActionIcon size (28px). `--ai-size` is the CSS variable `ActionIcon`
+  // actually reads its box dimensions from (`ActionIcon.css`); a bare
+  // `size={44}` prop resolves to this exact `calc()` (`getSize`'s numeric
+  // branch), which is why the assertion matches the whole expression
+  // rather than a plain `'44px'`.
+  it('sizes the star to the 44px primary-action touch target, not the 28px default', () => {
+    renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
+    expect(screen.getByLabelText('Pin (currently not pinned)')).toHaveStyle({
+      '--ai-size': 'calc(2.75rem * var(--mantine-scale))',
+    });
+  });
+
   it('distinguishes pinned from unpinned by more than icon fill alone (color also differs)', () => {
     renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
     const unpinnedButton = screen.getByLabelText('Pin (currently not pinned)');

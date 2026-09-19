@@ -119,6 +119,15 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
           onClick={toggle}
           disabled={busy}
           aria-label={label}
+          // 44px, not Mantine's default `md` (28px): review §2.10 calls this
+          // out by name as one of "the two actions a returning user taps
+          // most" (alongside `ShareButton`), so it gets the 44px
+          // primary-action floor rather than the general 24px one. A bare
+          // number sets `--ai-size` directly rather than picking a named
+          // preset (`ActionIcon.css`), which only resizes the button box --
+          // `StarIcon` below stays a fixed 16x16 SVG regardless, so the
+          // glyph itself is unchanged.
+          size={44}
         >
           <StarIcon filled={pinned} />
         </ActionIcon>
