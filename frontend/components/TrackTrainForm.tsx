@@ -280,9 +280,18 @@ export function TrackTrainForm({
   const { groups } = useGroupSummaries();
   const [destinationPromptOpened, setDestinationPromptOpened] = useState(false);
 
-  const { suggestions: originSuggestions } = useSuggestions(originCrs, searchStations);
-  const { suggestions: destinationSuggestions } = useSuggestions(destinationCrs, searchStations);
-  const { suggestions: operatorSuggestions } = useSuggestions(operator, searchTocs);
+  const { suggestions: originSuggestions, loading: originSuggestionsLoading } = useSuggestions(
+    originCrs,
+    searchStations,
+  );
+  const { suggestions: destinationSuggestions, loading: destinationSuggestionsLoading } = useSuggestions(
+    destinationCrs,
+    searchStations,
+  );
+  const { suggestions: operatorSuggestions, loading: operatorSuggestionsLoading } = useSuggestions(
+    operator,
+    searchTocs,
+  );
   const [originTouched, setOriginTouched] = useState(false);
   const [picker, setPicker] = useState<Picker>(null);
   // Initialized from `initialOrigin` (not `false`) so a form mounted with
@@ -807,6 +816,7 @@ export function TrackTrainForm({
         data={withNoMatchPlaceholder(
           originSuggestions.map((s) => ({ value: s.code, label: s.code })),
           'No matching stations',
+          { active: originCrs.trim().length > 0 && !originSuggestionsLoading },
         )}
         filter={({ options }) => options}
         renderOption={({ option }) => {
@@ -865,6 +875,7 @@ export function TrackTrainForm({
         data={withNoMatchPlaceholder(
           destinationSuggestions.map((s) => ({ value: s.code, label: s.code })),
           'No matching stations',
+          { active: destinationCrs.trim().length > 0 && !destinationSuggestionsLoading },
         )}
         filter={({ options }) => options}
         renderOption={({ option }) => {
@@ -882,6 +893,7 @@ export function TrackTrainForm({
         data={withNoMatchPlaceholder(
           operatorSuggestions.map((s) => ({ value: s.code, label: s.code })),
           'No matching operators',
+          { active: operator.trim().length > 0 && !operatorSuggestionsLoading },
         )}
         filter={({ options }) => options}
         renderOption={({ option }) => {

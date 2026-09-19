@@ -257,9 +257,18 @@ export function TrainSearchForm({
   // `searching` branch does, and must not re-disable the Search button.
   const [loadingMore, setLoadingMore] = useState(false);
 
-  const { suggestions: stationSuggestions } = useSuggestions(stationCrs, searchStations);
-  const { suggestions: originSuggestions } = useSuggestions(originCrs, searchStations);
-  const { suggestions: stopsAtSuggestions } = useSuggestions(stopsAt, searchStations);
+  const { suggestions: stationSuggestions, loading: stationSuggestionsLoading } = useSuggestions(
+    stationCrs,
+    searchStations,
+  );
+  const { suggestions: originSuggestions, loading: originSuggestionsLoading } = useSuggestions(
+    originCrs,
+    searchStations,
+  );
+  const { suggestions: stopsAtSuggestions, loading: stopsAtSuggestionsLoading } = useSuggestions(
+    stopsAt,
+    searchStations,
+  );
 
   const stationValid = CRS_PATTERN.test(stationCrs.trim());
   const originValid = originCrs.trim() === '' || CRS_PATTERN.test(originCrs.trim());
@@ -590,6 +599,7 @@ export function TrainSearchForm({
         data={withNoMatchPlaceholder(
           stationSuggestions.map((s) => ({ value: s.code, label: s.code })),
           'No matching stations',
+          { active: stationCrs.trim().length > 0 && !stationSuggestionsLoading },
         )}
         filter={({ options }) => options}
         renderOption={({ option }) => {
@@ -625,6 +635,7 @@ export function TrainSearchForm({
         data={withNoMatchPlaceholder(
           originSuggestions.map((s) => ({ value: s.code, label: s.code })),
           'No matching stations',
+          { active: originCrs.trim().length > 0 && !originSuggestionsLoading },
         )}
         filter={({ options }) => options}
         renderOption={({ option }) => {
@@ -644,6 +655,7 @@ export function TrainSearchForm({
         data={withNoMatchPlaceholder(
           stopsAtSuggestions.map((s) => ({ value: s.code, label: s.code })),
           'No matching stations',
+          { active: stopsAt.trim().length > 0 && !stopsAtSuggestionsLoading },
         )}
         filter={({ options }) => options}
         renderOption={({ option }) => {

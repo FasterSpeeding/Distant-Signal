@@ -110,6 +110,37 @@ describe('StationSearchForm', () => {
     expect(await screen.findByRole('option', { name: 'No matching stations', hidden: true })).toBeInTheDocument();
   });
 
+  // I2 (2026-09-17 whole-branch review): `withNoMatchPlaceholder` used to
+  // apply unconditionally, so `Autocomplete`'s default `openOnFocus`
+  // popped a dropdown falsely reading "No matching stations" before the
+  // user had typed anything at all.
+  it('does not show the "no matches" placeholder on focus of a blank, untouched field', async () => {
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
+
+    fireEvent.focus(input);
+
+    expect(screen.queryByRole('option', { name: 'No matching stations', hidden: true })).not.toBeInTheDocument();
+  });
+
+  // I2: the same placeholder used to flash during every in-flight search,
+  // since `useSuggestions` holds `suggestions` at its previous (often
+  // empty) value throughout the debounce and the fetch.
+  it('does not show the "no matches" placeholder while a search is still in flight', async () => {
+    renderWithProvider();
+    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'zzzzzz' } });
+    // Deliberately NOT advancing past the 250ms debounce -- the search
+    // hasn't settled yet, so the placeholder must not appear.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    expect(screen.queryByRole('option', { name: 'No matching stations', hidden: true })).not.toBeInTheDocument();
+  });
+
   it('clicking Look up after typing a station name (without picking the dropdown option) resolves to its CRS code', async () => {
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });

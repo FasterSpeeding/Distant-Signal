@@ -22,10 +22,13 @@
  * the listbox non-empty from Mantine's own point of view, and
  * `ComboboxOption` always renders `role="option"` regardless of
  * `disabled` (`ComboboxOption.mjs`), satisfying `aria-required-children`
- * the same way a real option would. `disabled: true` keeps
- * `ComboboxOption`'s own click handler a no-op
- * (`if (!disabled) { onOptionSubmit } else preventDefault()`), so the
- * placeholder can't actually be picked.
+ * the same way a real option would. `disabled: true` on the returned
+ * placeholder object is load-bearing, not decorative: `OptionsDropdown.mjs`
+ * forwards `disabled: data.disabled` straight through to `Combobox.Option`,
+ * and `ComboboxOption.mjs`'s own click handler is only a no-op
+ * `if (!disabled)` -- omit the field (as this function used to) and
+ * clicking, or arrow-down-then-Enter on, the placeholder fires
+ * `onOptionSubmit` and writes the literal message text into the field.
  *
  * One real gap remains, noted rather than silently accepted: this
  * `Autocomplete`/`OptionsDropdown` version doesn't forward a custom
@@ -42,21 +45,36 @@ export const NO_MATCH_OPTION_VALUE = '__no-match__';
 export interface AutocompleteOptionLike {
   value: string;
   label: string;
+  disabled?: boolean;
 }
 
-/** `realOptions` unchanged whenever it has anything in it; a single inert
- * placeholder standing in for "nothing found" otherwise. Pass the result
- * straight through as `Autocomplete`'s `data` -- it's already shaped as
- * `{ value, label }[]`, no group support needed here since none of this
- * app's CRS/operator-code fields ever group their options. */
+/** `realOptions` unchanged whenever it has anything in it, OR whenever
+ * `active` is `false`; a single inert, `disabled` placeholder standing in
+ * for "nothing found" otherwise. Pass the result straight through as
+ * `Autocomplete`'s `data` -- it's already shaped as `{ value, label,
+ * disabled }[]`, no group support needed here since none of this app's
+ * CRS/operator-code fields ever group their options.
+ *
+ * `active` gates the placeholder on the field actually having something to
+ * say "no matches" about. Without it, this function used to apply
+ * unconditionally to `suggestions`, which `useSuggestions` holds at `[]`
+ * for an untouched or still-loading field -- and since `Autocomplete`
+ * defaults `openOnFocus` to `true`, simply focusing a blank field (or
+ * typing a character and waiting out the debounce) popped a dropdown
+ * falsely reading "No matching stations" before the user had finished
+ * searching. Callers pass `active: query.trim().length > 0 && !loading`
+ * (`loading` from this field's own `useSuggestions` call) so the
+ * placeholder only ever appears once a real, settled search has come back
+ * empty. */
 export function withNoMatchPlaceholder(
   realOptions: AutocompleteOptionLike[],
   message: string,
+  { active }: { active: boolean },
 ): AutocompleteOptionLike[] {
-  if (realOptions.length > 0) {
+  if (!active || realOptions.length > 0) {
     return realOptions;
   }
-  return [{ value: NO_MATCH_OPTION_VALUE, label: message }];
+  return [{ value: NO_MATCH_OPTION_VALUE, label: message, disabled: true }];
 }
 
 /** For a call site's own `renderOption`, which otherwise runs its normal

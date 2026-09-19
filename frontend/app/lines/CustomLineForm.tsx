@@ -45,7 +45,10 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
   const [operatorsQuery, setOperatorsQuery] = useState('');
   const { suggestions: operatorSuggestions } = useSuggestions(operatorsQuery, searchTocs);
 
-  const { suggestions: stationSuggestions } = useSuggestions(stationInput, searchStations);
+  const { suggestions: stationSuggestions, loading: stationSuggestionsLoading } = useSuggestions(
+    stationInput,
+    searchStations,
+  );
 
   const [destinationQuery, setDestinationQuery] = useState('');
   const { suggestions: destinationSuggestions } = useSuggestions(destinationQuery, searchStations);
@@ -208,6 +211,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           data={withNoMatchPlaceholder(
             stationSuggestions.map((s) => ({ value: s.code, label: s.code })),
             'No matching stations',
+            { active: stationInput.trim().length > 0 && !stationSuggestionsLoading },
           )}
           // `stationSuggestions` is already server-side filtered (the API
           // matches the search term against both CRS code and station

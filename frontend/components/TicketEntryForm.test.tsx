@@ -168,7 +168,13 @@ describe('TicketEntryForm', () => {
     openForm();
     fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), { target: { value: 'zzzzzz' } });
 
-    expect(await screen.findByRole('option', { name: 'No matching operators' })).toBeInTheDocument();
+    // The dropdown's content briefly empties while the placeholder is
+    // gated off during the loading window (I2, the 2026-09-17 whole-branch
+    // review), then repopulates with the placeholder -- under jsdom,
+    // floating-ui doesn't recompute real layout for that re-render, so the
+    // option must be queried past Testing Library's default visibility
+    // filter, same as `StationSearchForm.test.tsx`'s own analogous test.
+    expect(await screen.findByRole('option', { name: 'No matching operators', hidden: true })).toBeInTheDocument();
   });
 
   it('manual submit: on success, saves, collapses, and refreshes the page', async () => {

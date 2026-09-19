@@ -10,7 +10,7 @@ import { noMatchOptionContent, withNoMatchPlaceholder } from '@/lib/autocomplete
 export function StationSearchForm() {
   const router = useRouter();
   const [crs, setCrs] = useState('');
-  const { suggestions } = useSuggestions(crs, searchStations);
+  const { suggestions, loading } = useSuggestions(crs, searchStations);
   const [isPending, startTransition] = useTransition();
 
   function handleSearch() {
@@ -59,9 +59,13 @@ export function StationSearchForm() {
           // placeholder option, not an empty array, is this component's
           // own available fix for the same "open combobox, zero-child
           // listbox" gap `components/IncidentSearchForm.tsx` first found.
+          // `active` gates the placeholder on a real, settled search --
+          // otherwise it falsely reads "No matching stations" on focus of
+          // a blank field, or while a search is still in flight.
           data={withNoMatchPlaceholder(
             suggestions.map((s) => ({ value: s.code, label: s.code })),
             'No matching stations',
+            { active: crs.trim().length > 0 && !loading },
           )}
           // `suggestions` is already server-side filtered (the API matches
           // the search term against both CRS code and station name), so

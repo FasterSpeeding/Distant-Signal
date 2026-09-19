@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ReactElement } from 'react';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, act } from '@testing-library/react';
 import dayjs from 'dayjs';
 import { renderWithMantine } from '@/test/render';
 import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
@@ -232,8 +232,21 @@ describe('TrackTrainForm', () => {
     const input = screen.getByRole('combobox', { name: /Origin station/ });
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'zzzzzz' } });
+    // The placeholder is gated on a settled (non-loading) search (I2, the
+    // 2026-09-17 whole-branch review) -- it must not appear until
+    // `useSuggestions`'s 250ms debounce has actually elapsed.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
 
-    expect(await screen.findByRole('option', { name: 'No matching stations' })).toBeInTheDocument();
+    // Mantine's dropdown re-renders (its content briefly empties while
+    // `active` is gated off during the loading window, then repopulates
+    // with the placeholder) is present in the DOM but `display: none`
+    // under jsdom (floating-ui's positioning never gets real layout info
+    // here after that re-render) -- same as `StationSearchForm.test.tsx`'s
+    // own analogous test, so the option is queried past Testing Library's
+    // default visibility filter.
+    expect(await screen.findByRole('option', { name: 'No matching stations', hidden: true })).toBeInTheDocument();
   });
 
   it('selecting an origin suggestion (via onChange) still submits the resolved origin_crs', async () => {
