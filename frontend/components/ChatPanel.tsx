@@ -267,7 +267,12 @@ function ChatMessageRow({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   return (
     <Stack gap={4} align={isUser ? 'flex-end' : 'flex-start'}>
-      <Card withBorder padding="sm" radius="md" maw="80%" bg={isUser ? 'blue.0' : undefined}>
+      {/* `grape.0`, not Mantine's default `blue.0` -- review §3.1.6: the
+          grape-theme spec reserves blue for `planned` severity
+          (`lib/severity.ts`'s `GROUP_COLOR`), the same reason
+          `app/connect-claude/page.tsx`'s own informational `Alert` moved
+          off blue. */}
+      <Card withBorder padding="sm" radius="md" maw="80%" bg={isUser ? 'grape.0' : undefined}>
         <Text style={{ whiteSpace: 'pre-wrap' }}>{message.content || (isUser ? '' : '…')}</Text>
       </Card>
       {message.legs.map((leg, index) => (
