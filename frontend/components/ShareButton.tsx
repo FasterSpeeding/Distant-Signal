@@ -95,7 +95,13 @@ export function ShareButton() {
 
   return (
     <Tooltip label={label}>
-      <ActionIcon variant="outline" color="gray" onClick={share} aria-label={label}>
+      {/* 44px, not Mantine's default `md` (28px) -- review §2.10 names this
+          as one of "the two actions a returning user taps most" (with
+          `PinToggle`'s star), so it gets the 44px primary-action floor
+          rather than the general 24px one. A bare number sets `--ai-size`
+          directly (`ActionIcon.css`), resizing only the button box;
+          `ShareIcon` stays a fixed 16x16 SVG either way. */}
+      <ActionIcon variant="outline" color="gray" onClick={share} aria-label={label} size={44}>
         <ShareIcon />
       </ActionIcon>
     </Tooltip>

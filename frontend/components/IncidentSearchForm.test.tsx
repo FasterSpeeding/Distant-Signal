@@ -457,4 +457,38 @@ describe('IncidentSearchForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     await screen.findByText('Search failed');
   });
+
+  // Review §2.10: an `InputClearButton` (what `clearable` renders) is a
+  // `CloseButton` at its default `size="sm"` (22px) -- a hair under the
+  // WCAG 2.5.8 24px target-size floor. `globals.css`'s `.iconHitArea24`
+  // pads the invisible hit area up to 24px without growing the visible ×
+  // glyph; this only checks the class lands on the rendered button, since
+  // jsdom doesn't compute the `::before` pseudo-element's actual painted
+  // size. `initialOperator`/`initialLine` seed a value so `clearable`
+  // renders the button at all -- it's absent for an empty field.
+  // `getByLabelText`, not `getByRole('button', { name: ... })`: Mantine
+  // renders this combined clear/chevron section with `aria-hidden="true"`
+  // (an existing Mantine behaviour, unrelated to and unchanged by this
+  // fix), and `dom-accessibility-api` computes an aria-hidden element's
+  // accessible NAME as empty regardless of `getByRole`'s `hidden: true`
+  // option (which only un-excludes the *role* match, confirmed against
+  // this exact element: `getAllByRole('button', { hidden: true })` lists it
+  // by position but its computed name comes back empty) -- `getByLabelText`
+  // reads the `aria-label` attribute directly instead. (The date fields'
+  // identical fix isn't exercised here: this suite mocks `@mantine/dates`'
+  // `DatePickerInput` wholesale, so it never renders a real `CloseButton`
+  // to inspect -- see the file-level mock's own comment.)
+  it('pads the operator and line filter clear buttons to the 24px touch-target floor', () => {
+    renderWithMantine(
+      <IncidentSearchForm
+        lines={TEST_LINES}
+        tocs={TEST_TOCS}
+        initialOperator="SW"
+        initialLine="south-western"
+      />,
+    );
+
+    expect(screen.getByLabelText('Clear operator filter').className).toContain('iconHitArea24');
+    expect(screen.getByLabelText('Clear line filter').className).toContain('iconHitArea24');
+  });
 });

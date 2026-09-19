@@ -411,7 +411,15 @@ export function IncidentSearchForm({
           which the two date fields do on first paint, because `applyPreset`
           seeds them. Same fix and same wording shape as
           `app/lines/AllLinesTable.tsx`'s own `clearButtonProps`, the one
-          place in this app that already got this right. */}
+          place in this app that already got this right.
+
+          `className: 'iconHitArea24'` (globals.css) on all four: an
+          `InputClearButton` is a `CloseButton` at its default `size="sm"`
+          (22px), a hair under the 24px WCAG target-size floor -- review
+          §2.10 measured the date-clear "×" at ~20px. Padded uniformly
+          across all four clearable fields on this form rather than only
+          the two the review named, so the row doesn't read as some clear
+          buttons fixed and others not. */}
       <MultiSelect
         label="Operator (optional)"
         placeholder="Any operator"
@@ -421,7 +429,7 @@ export function IncidentSearchForm({
         onChange={setOperators}
         searchable
         clearable
-        clearButtonProps={{ 'aria-label': 'Clear operator filter' }}
+        clearButtonProps={{ 'aria-label': 'Clear operator filter', className: 'iconHitArea24' }}
       />
       <Select
         label="Line (optional)"
@@ -432,7 +440,7 @@ export function IncidentSearchForm({
         onChange={setLineId}
         searchable
         clearable
-        clearButtonProps={{ 'aria-label': 'Clear line filter' }}
+        clearButtonProps={{ 'aria-label': 'Clear line filter', className: 'iconHitArea24' }}
       />
       <Group gap="sm">
         <Button variant={preset === '7d' ? 'filled' : 'light'} size="xs" onClick={() => applyPreset('7d')}>
@@ -457,7 +465,7 @@ export function IncidentSearchForm({
             setPreset(null);
           }}
           clearable
-          clearButtonProps={{ 'aria-label': 'Clear the from date' }}
+          clearButtonProps={{ 'aria-label': 'Clear the from date', className: 'iconHitArea24' }}
         />
         <DatePickerInput
           label="To (optional)"
@@ -467,7 +475,7 @@ export function IncidentSearchForm({
             setPreset(null);
           }}
           clearable
-          clearButtonProps={{ 'aria-label': 'Clear the to date' }}
+          clearButtonProps={{ 'aria-label': 'Clear the to date', className: 'iconHitArea24' }}
         />
       </Group>
       <SegmentedControl

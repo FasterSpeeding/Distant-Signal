@@ -46,7 +46,11 @@ export function DataFreshnessInfo({ freshness }: { freshness: DataFreshness }) {
       position="bottom-end"
       zIndex={400}
     >
-      <ActionIcon variant="subtle" aria-label="Data freshness">
+      {/* Explicit `size="md"` (28px): matches Mantine's own `ActionIcon`
+          default already in effect, spelled out so this control's
+          conformance with review §2.10's 24px touch-target floor doesn't
+          silently depend on that default never changing. */}
+      <ActionIcon variant="subtle" aria-label="Data freshness" size="md">
         <InfoIcon />
       </ActionIcon>
     </Tooltip>
