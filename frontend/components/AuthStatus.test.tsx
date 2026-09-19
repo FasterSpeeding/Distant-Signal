@@ -45,6 +45,15 @@ describe('AuthStatus', () => {
     expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2F');
   });
 
+  // Review §2.16 "auth controls are inconsistently sized" (a 16px "Log in"
+  // beside a ~12px "Log out"): the nav's "Log in" now renders at 14px
+  // (`sm`), the size the chrome's other text-link-styled controls converge
+  // on -- see TextLink.tsx's own `size` doc comment for the full reasoning.
+  it('renders "Log in" at the chrome\'s converged text-link size (sm), not Text\'s own 16px default', () => {
+    renderWithMantine(<AuthStatus session={loggedOut} />);
+    expect(screen.getByText('Log in')).toHaveStyle({ '--text-fz': 'var(--mantine-font-size-sm)' });
+  });
+
   it('shows no account menu at all when logged out', () => {
     renderWithMantine(<AuthStatus session={loggedOut} />);
     expect(screen.queryByRole('button')).not.toBeInTheDocument();

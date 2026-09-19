@@ -3,7 +3,7 @@ import Link from 'next/link';
 import type { Metadata } from 'next';
 import { getMyGroups } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginButton } from '@/components/LoginButton';
 import { TextLink } from '@/components/TextLink';
 import type { GroupSummary } from '@/lib/types';
 
@@ -65,8 +65,14 @@ export default async function GroupsPage() {
             app/groups/[id]/page.tsx): a link-unfurler bot or a
             pre-hydration visitor sees this sentence even though it can
             never run the client-only AutoOpenLoginPrompt modal below,
-            which stays as progressive enhancement on top of it. */}
-        <LoginLink underline="always">Log in to see your groups</LoginLink>
+            which stays as progressive enhancement on top of it.
+
+            A filled `LoginButton`, not the underlined `LoginLink` text this
+            used to be (review §2.16) -- the only action an anonymous
+            visitor can take on this route had markedly less visual weight
+            than the "Create group" `TextLink` an authenticated visitor sees
+            in its place. */}
+        <LoginButton title="Log in — needs a Distant Signal account">Log in to see your groups</LoginButton>
         <AutoOpenLoginPrompt>Log in to see your groups.</AutoOpenLoginPrompt>
       </Stack>
     );

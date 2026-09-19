@@ -35,6 +35,7 @@ export function TextLink({
   children,
   underline = 'hover',
   inline = false,
+  size,
   target,
   rel,
   prefetch,
@@ -45,6 +46,20 @@ export function TextLink({
   children: React.ReactNode;
   underline?: 'hover' | 'always';
   inline?: boolean;
+  // Left `undefined` by default -- Mantine's own `Text` default (`md`,
+  // 16px) is what every existing call site was already implicitly getting,
+  // so adding this prop must not change any of them. `AuthStatus`'s
+  // `LoginLink` is the one call site that now sets this explicitly, to
+  // `'sm'` (14px) -- the size the shared chrome's other text-link-styled
+  // controls converge on (review §2.16 "auth controls are inconsistently
+  // sized"): `sm` is Mantine's own font-size floor before `xs` (12px, which
+  // review §2.16 also flags as too small on the footer's own NationalRail
+  // link), and it is already the size Mantine's `Menu.Item` renders "Log
+  // out" at by default (`node_modules/@mantine/core/styles/Menu.css`'s
+  // `--mantine-font-size-sm` on `.mantine-Menu-item`) -- so `sm` is not a
+  // new convention invented here, it is the one the rest of the chrome
+  // already landed on.
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
   target?: string;
   rel?: string;
   // Passed straight through to `next/link`'s own `prefetch` prop.
@@ -81,7 +96,7 @@ export function TextLink({
       onClick={onClick}
       onKeyDown={onKeyDown}
     >
-      <Text c="var(--mantine-color-anchor)" component={inline ? 'span' : undefined}>
+      <Text c="var(--mantine-color-anchor)" component={inline ? 'span' : undefined} size={size}>
         {children}
       </Text>
     </Link>

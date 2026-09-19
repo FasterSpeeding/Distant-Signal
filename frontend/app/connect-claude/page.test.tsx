@@ -37,6 +37,15 @@ describe('/connect-claude', () => {
     expect(screen.getAllByText(/log in/i).length).toBeGreaterThan(0);
   });
 
+  // Review §2.16: this used to be an underlined text link -- promoted to a
+  // filled button so the page's one anonymous action doesn't read as the
+  // weakest thing on it.
+  it('renders the login prompt as a filled button, not a plain text link', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedOut());
+    renderWithMantine(await ConnectClaudePage());
+    expect(screen.getByRole('button', { name: 'Log in' })).toBeInTheDocument();
+  });
+
   it('does not show the connector URL when not authenticated', async () => {
     vi.mocked(api.getSession).mockResolvedValue(loggedOut());
     renderWithMantine(await ConnectClaudePage());

@@ -1,9 +1,41 @@
 'use client';
 
 import { createContext, useContext, useEffect, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { Notification } from '@mantine/core';
 import { useMounted, useNetwork } from '@mantine/hooks';
 import { formatDateTime } from '@/lib/dateFormat';
+
+/** Routes whose whole content is a form with nothing live to "show the last
+ * update" of -- review §2.16: the default offline copy ("showing the
+ * update from {time}") is honest on a data page, where `lastGoodAt` really
+ * does name the last render that reflected live data, and simply untrue
+ * here, where there was never any live data being shown in the first
+ * place. What a visitor on one of these routes actually needs to know is
+ * whether losing the connection mid-form is going to cost them their
+ * entries -- and since nothing on these routes has been submitted yet, the
+ * honest answer is that nothing has been sent anywhere to be lost: the
+ * entries are just React state sitting in the browser tab, same as they
+ * were with a perfect connection. (This is a narrower, more honest claim
+ * than promising the draft survives a *login* redirect -- it doesn't; see
+ * `app/track/page.tsx` and `app/lines/new/page.tsx`'s own review §2.16
+ * comments on that separate, unresolved gap.)
+ *
+ * A plain `Set` of exact pathnames plus one dynamic-segment pattern, not a
+ * prop threaded down from `app/layout.tsx`: `ConnectivityMonitor` already
+ * runs as a Client Component wrapping the whole shell, and `usePathname()`
+ * is exactly the "how does it currently know what page it's rendering on"
+ * mechanism the plan's own task description points at -- no new prop, and
+ * no risk of a route's own `page.tsx` forgetting to pass one. */
+const FORM_ROUTES = new Set(['/track', '/trains', '/track/mine/add-ticket', '/lines/new']);
+
+/** `/lines/[id]/edit` -- the one form route with a dynamic segment, so it
+ * can't be a literal entry in `FORM_ROUTES`. */
+const LINE_EDIT_ROUTE = /^\/lines\/[^/]+\/edit$/;
+
+function isFormRoute(pathname: string): boolean {
+  return FORM_ROUTES.has(pathname) || LINE_EDIT_ROUTE.test(pathname);
+}
 
 /** Two consecutive failed `getDataFreshness()` calls (i.e. two AutoRefresh
  * cycles, ~60s) before the banner appears, one success to clear it. The
@@ -66,6 +98,7 @@ export function ConnectivityMonitor({
   // Design spec Decision 9.
   const mounted = useMounted();
   const { online } = useNetwork();
+  const pathname = usePathname();
   const [failures, setFailures] = useState(0);
   // The most recent `observedAt` for which the backend was actually
   // reachable -- i.e. the last time RootLayout's own server render (and
@@ -110,15 +143,33 @@ export function ConnectivityMonitor({
             left: '50%',
             transform: 'translateX(-50%)',
             zIndex: 300,
+            // Review §2.16: the fixed-width-less `Notification` below
+            // shrinks with the viewport with nothing stopping it, down to
+            // ~200px on a 390px phone -- narrow enough that the body text
+            // wraps onto four lines. Capped at 480px (matching the app's
+            // other narrow-form `maw`, e.g. `CustomLineForm`'s), floored at
+            // the viewport width minus a 16px gutter on each side so it
+            // never touches the screen edges.
+            width: 'min(calc(100vw - 32px), 480px)',
           }}
         >
-          {/* Copy is connectivity-neutral on purpose: it is true whether
-              the visitor's own device is offline or the backend is
-              unreachable, so there is one message and no branching.
-              `lastGoodAt` names an actual time rather than leaving "the
-              last update" an unverifiable claim (review §2.12/§5) --
-              `null` only in the edge case where this render has never once
-              observed a reachable backend, which has no real time to name. */}
+          {/* Copy is otherwise connectivity-neutral on purpose: it is true
+              whether the visitor's own device is offline or the backend is
+              unreachable, so there is one message and no branching on
+              `online` vs `backendDown`. `lastGoodAt` names an actual time
+              rather than leaving "the last update" an unverifiable claim
+              (review §2.12/§5) -- `null` only in the edge case where this
+              render has never once observed a reachable backend, which has
+              no real time to name.
+
+              The one branch that DOES exist is route-based (review §2.16):
+              on a form route (`isFormRoute`), "showing the update from
+              {time}" is a claim about live data this route never had in the
+              first place -- there is nothing to have last updated. What a
+              visitor filling in a form actually needs reassurance about is
+              their own unsent entries, which this branch answers honestly
+              (see `isFormRoute`'s own comment on exactly how honest that
+              claim is, and isn't). */}
           <Notification
             loading
             withCloseButton={false}
@@ -126,7 +177,9 @@ export function ConnectivityMonitor({
             role="status"
             aria-live="polite"
           >
-            {lastGoodAt ? (
+            {isFormRoute(pathname) ? (
+              <>Can&apos;t reach the server right now — your entries are safe until you submit.</>
+            ) : lastGoodAt ? (
               <>Can&apos;t reach live data right now — showing the update from {formatDateTime(lastGoodAt)}.</>
             ) : (
               <>Can&apos;t reach live data right now — showing the last update.</>

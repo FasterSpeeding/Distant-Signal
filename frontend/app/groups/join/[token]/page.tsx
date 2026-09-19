@@ -2,7 +2,7 @@ import { Alert, Stack, Text, Title } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { getGroupJoinPreview, getSession, ApiNotFoundError } from '@/lib/api';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginButton } from '@/components/LoginButton';
 import { JoinGroupButton } from '@/components/JoinGroupButton';
 
 export const revalidate = 0;
@@ -59,13 +59,17 @@ export async function generateMetadata({
  * token to a group preview (works whether or not the visitor is logged in
  * -- `getGroupJoinPreview` hits the backend's unauthenticated preview
  * route), then either shows the explicit Join button (already
- * authenticated) or a login link. `LoginLink` needs no extra plumbing to
- * preserve this token through the OIDC redirect: it captures the CURRENT
- * page's own path via `usePathname()` (`useLoginHref.ts`), and that path
- * already IS `/groups/join/{token}` -- logging in and landing back here
- * re-renders this exact page, now authenticated, ready for the same
- * explicit Join click (mirroring `validate_return_to`'s existing
- * return-to-any-same-origin-path mechanism, `crates/api/src/auth.rs`). */
+ * authenticated) or a login button. `LoginButton` (review §2.16 -- this
+ * used to be `LoginLink`, an underlined text link with far less visual
+ * weight than the filled `JoinGroupButton` the authenticated branch below
+ * renders, on the one page an invitee reaches *by definition* anonymous)
+ * needs no extra plumbing to preserve this token through the OIDC redirect:
+ * it captures the CURRENT page's own path via `usePathname()`
+ * (`useLoginHref.ts`), and that path already IS `/groups/join/{token}` --
+ * logging in and landing back here re-renders this exact page, now
+ * authenticated, ready for the same explicit Join click (mirroring
+ * `validate_return_to`'s existing return-to-any-same-origin-path
+ * mechanism, `crates/api/src/auth.rs`). */
 export default async function JoinGroupPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
 
@@ -102,7 +106,9 @@ export default async function JoinGroupPage({ params }: { params: Promise<{ toke
       {session.authenticated ? (
         <JoinGroupButton token={token} groupId={preview.groupId} />
       ) : (
-        <LoginLink underline="always">Log in to join {preview.groupName}</LoginLink>
+        <LoginButton title="Log in — needs a Distant Signal account">
+          Log in to join {preview.groupName}
+        </LoginButton>
       )}
     </Stack>
   );
