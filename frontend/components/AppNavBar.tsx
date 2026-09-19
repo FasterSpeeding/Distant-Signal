@@ -247,7 +247,15 @@ export function AppNavBar({
                 too, and a fallback is not itself inside a boundary. So
                 the containment has to live here, where both paths pass
                 through it. */}
-            <Suspense fallback={<Text size="sm" c="dimmed">Log in</Text>}>
+            {/* `c="var(--mantine-color-anchor)"`, matching the resolved
+                `<LoginLink>`'s own colour (via `TextLink`) -- not
+                `c="dimmed"`. Both render the exact same "Log in" string,
+                and this boundary is identical on every route, so a
+                mismatch here reads as the same text flipping colour
+                purely by streaming timing, not anything route-specific
+                (review §4.9). See `AppNavBar.test.tsx`'s own regression
+                test, which pins the two equal. */}
+            <Suspense fallback={<Text size="sm" c="var(--mantine-color-anchor)">Log in</Text>}>
               <AuthStatus session={session} chatAllowed={chatAllowed} />
             </Suspense>
           </Group>

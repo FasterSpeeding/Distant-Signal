@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vitest';
 import { screen, fireEvent, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
@@ -159,5 +160,33 @@ describe('AppNavBar', () => {
       openDrawer();
       expect(within(await screen.findByRole('dialog')).queryByRole('link', { name: 'Chat' })).toBeNull();
     });
+  });
+});
+
+// I4 regression guard (2026-09-17 whole-branch review): commit 5fcc5686
+// fixed the auth Suspense fallback's colour to match the resolved
+// `<LoginLink>`'s (both render the literal string "Log in", and the
+// boundary is identical on every route, so a mismatch here is purely a
+// function of streaming timing, not anything route-specific) and added a
+// regression test pinning the two equal -- that test lived in
+// `app/layout.test.tsx` and was lost, without an equivalent replacement,
+// when the nav bar was extracted into this file. The fallback itself also
+// silently reverted to `c="dimmed"` in the same rewrite.
+describe('auth Suspense fallback colour', () => {
+  it("uses the same colour token LoginLink/TextLink resolve to ('anchor'), not a separate grey", () => {
+    // Source-text comparison, not a rendered-DOM one: `AuthStatus` never
+    // actually suspends in a test (it takes an already-resolved `session`
+    // prop), so the only way to observe this Suspense boundary's fallback
+    // at all is to read its literal JSX. Deliberately reads BOTH values
+    // from source rather than hardcoding either as a literal in this test,
+    // so the two call sites are compared to each other, not to a copy that
+    // could quietly drift from one of them.
+    const navBarSource = readFileSync('components/AppNavBar.tsx', 'utf8');
+    const textLinkSource = readFileSync('components/TextLink.tsx', 'utf8');
+    const fallbackMatch = navBarSource.match(/<Suspense fallback=\{<Text size="sm" c="([^"]+)">Log in<\/Text>\}>/);
+    const textLinkMatch = textLinkSource.match(/<Text c="([^"]+)"/);
+    expect(fallbackMatch).not.toBeNull();
+    expect(textLinkMatch).not.toBeNull();
+    expect(fallbackMatch?.[1]).toBe(textLinkMatch?.[1]);
   });
 });
