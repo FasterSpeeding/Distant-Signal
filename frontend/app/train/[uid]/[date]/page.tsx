@@ -318,21 +318,29 @@ export default async function TrackedTrainByUidPage({
           this pairing again -- see that component's own doc comment. */}
       <TrainJourneyPanel state={journeyState} />
       {match && <TicketPanel trackingId={match.id} />}
-      {/* `component="div"`, not the default `<p>`: `TextLink` renders its
-          own Mantine `<Text>` (a `<p>` by default), so wrapping it in an
-          ordinary `<Text>` here would nest a `<p>` inside a `<p>` --
-          invalid HTML and a React hydration warning. Same fix, same
-          reasoning, as `TrainSearchForm.tsx`'s manual-fallback line. */}
-      <Text size="sm" c="dimmed" component="div">
+      {/* `inline`/`underline="always"` on both `TextLink`s: this link sits
+          mid-sentence in body text rather than in a nav or beside a
+          heading, so (a) colour alone can't be what marks it (WCAG 1.4.1)
+          and (b) it must render as a `<span>`, not `TextLink`'s default
+          `<p>`, or the rest of the sentence gets forced onto its own line
+          -- same fix, same reasoning, as `TrainSearchForm.tsx`'s
+          manual-fallback line. See `TextLink`'s own doc comment. */}
+      <Text size="sm" c="dimmed">
         {match ? (
           <>
             You&apos;re already tracking this service.{' '}
-            <TextLink href="/trains">Find a train</TextLink> going somewhere else.
+            <TextLink href="/trains" inline underline="always">
+              Find a train
+            </TextLink>{' '}
+            going somewhere else.
           </>
         ) : (
           <>
             This is the public view of this service. Track it above to get updates, or{' '}
-            <TextLink href="/trains">Find a train</TextLink> going somewhere else.
+            <TextLink href="/trains" inline underline="always">
+              Find a train
+            </TextLink>{' '}
+            going somewhere else.
           </>
         )}
       </Text>

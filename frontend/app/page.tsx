@@ -564,19 +564,19 @@ function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodService
             // ("Browse all lines", beside the anonymous intro and the "Your
             // Lines" heading) rather than inventing a second name for the
             // same destination on the same page.
-            <Group gap="xs" wrap="wrap">
-              <Text size="sm" c="dimmed">
-                Showing the first {worst.length} — {hidden} more{' '}
-                {hidden === 1 ? 'line is' : 'lines are'} not at Good Service.
-              </Text>
-              {/* `underline="always"`: this sits in the flow of a sentence
-                  rather than in a nav or beside a heading, so colour must
-                  not be the only thing marking it (see TextLink's own doc
-                  comment, WCAG 1.4.1). */}
-              <TextLink href="/lines" underline="always">
+            // `inline`/`underline="always"`: this link sits in the flow of
+            // a sentence rather than in a nav or beside a heading, so (a)
+            // colour must not be the only thing marking it (WCAG 1.4.1) and
+            // (b) it must render as a `<span>`, not `TextLink`'s default
+            // `<p>`, or the rest of the sentence gets forced onto its own
+            // line. See TextLink's own doc comment.
+            <Text size="sm" c="dimmed">
+              Showing the first {worst.length} — {hidden} more{' '}
+              {hidden === 1 ? 'line is' : 'lines are'} not at Good Service.{' '}
+              <TextLink href="/lines" underline="always" inline>
                 Browse all lines
               </TextLink>
-            </Group>
+            </Text>
           )}
         </>
       )}

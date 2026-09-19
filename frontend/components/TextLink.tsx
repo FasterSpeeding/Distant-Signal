@@ -18,11 +18,23 @@ import { Text } from '@mantine/core';
  * of body text, where colour would otherwise be the only thing marking it
  * (WCAG 1.4.1). Both underline on `:focus-visible`, so keyboard users get
  * the cue either way. The rules themselves are in `app/globals.css`;
- * `:hover`/`:focus-visible` can't be expressed as a style object. */
+ * `:hover`/`:focus-visible` can't be expressed as a style object.
+ *
+ * `inline` renders the wrapped `Text` as a `<span>` instead of Mantine's
+ * default `<p>`. Leave it `false` (the default) for a positional link --
+ * a nav item, an action beside a heading, a name in a table column --
+ * where the surrounding layout already expects a block-ish element. Set
+ * it `true` for a link sitting mid-sentence in a paragraph: a `<p>` there
+ * forces everything after it onto its own line, breaking the sentence
+ * across three lines instead of one. Pair `inline` with
+ * `underline="always"` at those call sites -- the two problems (missing
+ * non-colour cue, broken sentence flow) share the same "this link sits in
+ * body text" root cause. */
 export function TextLink({
   href,
   children,
   underline = 'hover',
+  inline = false,
   target,
   rel,
   prefetch,
@@ -32,6 +44,7 @@ export function TextLink({
   href: string;
   children: React.ReactNode;
   underline?: 'hover' | 'always';
+  inline?: boolean;
   target?: string;
   rel?: string;
   // Passed straight through to `next/link`'s own `prefetch` prop.
@@ -68,7 +81,9 @@ export function TextLink({
       onClick={onClick}
       onKeyDown={onKeyDown}
     >
-      <Text c="var(--mantine-color-anchor)">{children}</Text>
+      <Text c="var(--mantine-color-anchor)" component={inline ? 'span' : undefined}>
+        {children}
+      </Text>
     </Link>
   );
 }

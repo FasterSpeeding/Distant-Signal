@@ -724,9 +724,18 @@ export function TrainSearchForm({
       <Stack gap="xs" mih={72}>
         {resultsContent()}
       </Stack>
-      <Text size="sm" c="dimmed" component="div">
-        Can&apos;t find your train? <TextLink href={manualHref}>Track it manually</TextLink> by
-        entering its origin station and departure time.
+      {/* `inline`/`underline="always"`: this link sits mid-sentence in body
+          text rather than in a nav or beside a heading, so (a) colour alone
+          can't be what marks it (WCAG 1.4.1) and (b) it must render as a
+          `<span>`, not `TextLink`'s default `<p>`, or the rest of the
+          sentence gets forced onto its own line. See `TextLink`'s own doc
+          comment. */}
+      <Text size="sm" c="dimmed">
+        Can&apos;t find your train?{' '}
+        <TextLink href={manualHref} inline underline="always">
+          Track it manually
+        </TextLink>{' '}
+        by entering its origin station and departure time.
       </Text>
     </Stack>
   );
