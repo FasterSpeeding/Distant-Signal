@@ -1,10 +1,11 @@
 'use client';
 
-import { useId, useState, type FormEvent } from 'react';
+import { useEffect, useId, useState, type FormEvent } from 'react';
 import {
   Alert,
   Badge,
   Button,
+  Grid,
   Group,
   InputWrapper,
   MultiSelect,
@@ -186,18 +187,19 @@ export function IncidentSearchForm({
     return params;
   }
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    if (!priorityValid || searching) return;
+  /** The actual `GET /public/incidents` call, shared by the explicit Search
+   * button (`handleSubmit`) and the auto-run-on-mount effect below, so a
+   * search fired either way behaves identically -- same loading state, same
+   * error handling, same `Results` shape installed on success. `query` is
+   * captured by the CALLER, not rebuilt here -- mirroring `TrainSearchForm
+   * .tsx`'s own capture of `date` inside its `Results` success variant.
+   * `handleLoadMore` below reuses this same captured string for every
+   * subsequent page of a result set rather than rebuilding it from live
+   * filter state, so a filter changed after searching (but before "Load
+   * more" is pressed) cannot silently mix into a page fetched with the
+   * original cursor. */
+  async function runSearch(query: string) {
     setSearching(true);
-    // Captured synchronously as the exact query string that was submitted --
-    // mirroring `TrainSearchForm.tsx`'s own capture of `date` inside its
-    // `Results` success variant. `handleLoadMore` below reuses this SAME
-    // string for every subsequent page of this result set rather than
-    // rebuilding it from live filter state, so a filter changed after
-    // searching (but before "Load more" is pressed) cannot silently mix into
-    // a page fetched with the original cursor.
-    const query = searchParamsFor().toString();
     try {
       const response = await fetch(`/api/incidents?${query}`);
       if (!response.ok) {
@@ -212,6 +214,32 @@ export function IncidentSearchForm({
       setSearching(false);
     }
   }
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!priorityValid || searching) return;
+    await runSearch(searchParamsFor().toString());
+  }
+
+  /** Review §3.3: the archive used to land on an empty "Press Search to
+   * browse incidents" placeholder despite a default filter already being
+   * applied -- the 30-day `fromDate` floor this component seeds on first
+   * render (see the `useState` above) makes the initial filter set
+   * non-empty on every load, so a first-time visitor's very first view was
+   * a dead form, not a useful one. Runs exactly once, against whatever
+   * filter set the component mounted with -- an empty dependency array,
+   * deliberately NOT re-run on every later filter edit, which stays the
+   * Search button's own job (`handleSubmit`). The `query` guard is mostly
+   * defensive: today it is always non-empty because of the 30-day floor,
+   * but a future change removing that default must not turn this into an
+   * unasked-for "search everything" on every page load. */
+  useEffect(() => {
+    const query = searchParamsFor().toString();
+    if (query) void runSearch(query);
+    // Intentionally empty: this is a mount-only effect, not one that
+    // tracks the filter state it reads -- see the comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleLoadMore() {
     if (results === null || results === 'error') return;
@@ -425,150 +453,173 @@ export function IncidentSearchForm({
   }
 
   return (
-    <Stack gap="md" component="form" onSubmit={handleSubmit}>
-      {/* Every `clearable` field below carries an explicit
-          `clearButtonProps` aria-label. Mantine's `clearable` renders an
-          `InputClearButton` with no accessible name at all, so axe's
-          `button-name` fires (critical) the moment a field holds a value --
-          which the two date fields do on first paint, because `applyPreset`
-          seeds them. Same fix and same wording shape as
-          `app/lines/AllLinesTable.tsx`'s own `clearButtonProps`, the one
-          place in this app that already got this right.
+    // Review §3.3: at 1440 the filter fields used to stretch across the
+    // whole ~1100px `<main>` container, reading as a table's worth of
+    // controls rather than a form -- and the archive's own ~700px-tall
+    // form sat above every result, so a first-time visitor scrolled past
+    // all of it before seeing a single incident. A two-column `Grid`
+    // fixes both at once: filters keep to a `maw`-capped left column (so
+    // they read as a form at any container width, not just once this grid
+    // narrows them), and results run beside them rather than below a full
+    // page of controls. Deliberately NOT reordered with `Grid.Col`'s own
+    // `order` prop -- DOM order (filters, then results) stays the reading
+    // order for keyboard/screen-reader users at every width, and on a
+    // narrow viewport both columns collapse to `span=12` and stack in
+    // that same order anyway, which is the existing, unchanged mobile
+    // shape.
+    <Grid gap="xl" component="form" onSubmit={handleSubmit}>
+      <Grid.Col span={{ base: 12, md: 5 }}>
+        <Stack gap="md" maw={720}>
+          {/* Every `clearable` field below carries an explicit
+              `clearButtonProps` aria-label. Mantine's `clearable` renders an
+              `InputClearButton` with no accessible name at all, so axe's
+              `button-name` fires (critical) the moment a field holds a value --
+              which the two date fields do on first paint, because `applyPreset`
+              seeds them. Same fix and same wording shape as
+              `app/lines/AllLinesTable.tsx`'s own `clearButtonProps`, the one
+              place in this app that already got this right.
 
-          `className: 'iconHitArea24'` (globals.css) on all four: an
-          `InputClearButton` is a `CloseButton` at its default `size="sm"`
-          (22px), a hair under the 24px WCAG target-size floor -- review
-          §2.10 measured the date-clear "×" at ~20px. Padded uniformly
-          across all four clearable fields on this form rather than only
-          the two the review named, so the row doesn't read as some clear
-          buttons fixed and others not. */}
-      <MultiSelect
-        label="Operator (optional)"
-        placeholder="Any operator"
-        description="Matches an incident whose operators overlap any of these -- not 'scoped to exactly this operator.'"
-        data={tocs.map((toc) => ({ value: toc.code, label: `${toc.code} — ${toc.name}` }))}
-        value={operators}
-        onChange={setOperators}
-        searchable
-        clearable
-        clearButtonProps={{ 'aria-label': 'Clear operator filter', className: 'iconHitArea24' }}
-      />
-      <Select
-        label="Line (optional)"
-        placeholder="Any line"
-        description="Incidents attributed to this line, using the same rules as its live status page. Incidents archived before this filter existed were only linked up to their line once, in a one-off catch-up run."
-        data={catalogueLines.map((line) => ({ value: line.id, label: line.name }))}
-        value={lineId}
-        onChange={setLineId}
-        searchable
-        clearable
-        clearButtonProps={{ 'aria-label': 'Clear line filter', className: 'iconHitArea24' }}
-      />
-      <Stack gap={4}>
-        <Text id={periodLabelId} size="xs" fw={600} c="dimmed">
-          Period
-        </Text>
-        <SegmentedControl
-          aria-labelledby={periodLabelId}
-          color="grape"
-          value={preset ?? 'custom'}
-          onChange={handlePeriodChange}
-          data={[
-            { label: '7 days', value: '7d' },
-            { label: '30 days', value: '30d' },
-            { label: '90 days', value: '90d' },
-            { label: 'All time', value: 'all' },
-            { label: 'Custom…', value: 'custom' },
-          ]}
-        />
-      </Stack>
-      {preset === null && (
-        <Group align="end">
-          <DatePickerInput
-            label="From (optional)"
-            value={fromDate}
-            onChange={setFromDate}
+              `className: 'iconHitArea24'` (globals.css) on all four: an
+              `InputClearButton` is a `CloseButton` at its default `size="sm"`
+              (22px), a hair under the 24px WCAG target-size floor -- review
+              §2.10 measured the date-clear "×" at ~20px. Padded uniformly
+              across all four clearable fields on this form rather than only
+              the two the review named, so the row doesn't read as some clear
+              buttons fixed and others not. */}
+          <MultiSelect
+            label="Operator (optional)"
+            placeholder="Any operator"
+            description="Matches an incident whose operators overlap any of these -- not 'scoped to exactly this operator.'"
+            data={tocs.map((toc) => ({ value: toc.code, label: `${toc.code} — ${toc.name}` }))}
+            value={operators}
+            onChange={setOperators}
+            searchable
             clearable
-            clearButtonProps={{ 'aria-label': 'Clear the from date', className: 'iconHitArea24' }}
+            clearButtonProps={{ 'aria-label': 'Clear operator filter', className: 'iconHitArea24' }}
           />
-          <DatePickerInput
-            label="To (optional)"
-            value={toDate}
-            onChange={setToDate}
+          <Select
+            label="Line (optional)"
+            placeholder="Any line"
+            description="Incidents attributed to this line, using the same rules as its live status page. Incidents archived before this filter existed were only linked up to their line once, in a one-off catch-up run."
+            data={catalogueLines.map((line) => ({ value: line.id, label: line.name }))}
+            value={lineId}
+            onChange={setLineId}
+            searchable
             clearable
-            clearButtonProps={{ 'aria-label': 'Clear the to date', className: 'iconHitArea24' }}
+            clearButtonProps={{ 'aria-label': 'Clear line filter', className: 'iconHitArea24' }}
           />
-        </Group>
-      )}
-      <Stack gap={4}>
-        <Text id={typeLabelId} size="xs" fw={600} c="dimmed">
-          Type
-        </Text>
-        <SegmentedControl
-          aria-labelledby={typeLabelId}
-          color="grape"
-          value={plannedFilter}
-          onChange={(value) => setPlannedFilter(value as 'all' | 'planned' | 'realtime')}
-          data={[
-            { label: 'All', value: 'all' },
-            { label: 'Planned work', value: 'planned' },
-            { label: 'Real-time', value: 'realtime' },
-          ]}
-        />
-      </Stack>
-      <Stack gap={4}>
-        <Text id={statusLabelId} size="xs" fw={600} c="dimmed">
-          Status
-        </Text>
-        <SegmentedControl
-          aria-labelledby={statusLabelId}
-          color="grape"
-          value={clearedFilter}
-          onChange={(value) => setClearedFilter(value as 'all' | 'active' | 'cleared')}
-          data={[
-            { label: 'All', value: 'all' },
-            { label: 'Active', value: 'active' },
-            { label: 'Cleared', value: 'cleared' },
-          ]}
-        />
-      </Stack>
-      {/* Review §2.14: the raw-feed caveat used to repeat three times --
-          once in each NumberInput's own label, plus a third standalone
-          footnote paragraph below both. Keeping priority visibly
-          unprocessed and honestly labelled is still the right call (the
-          feed genuinely has no documented "major"/"minor" meaning) -- this
-          only says so once, as this `Input.Wrapper`'s own description. */}
-      <InputWrapper
-        label="Priority range"
-        description={
-          <>
-            Raw feed value from National Rail&apos;s own incident data with no documented
-            &quot;major&quot;/&quot;minor&quot; meaning — shown as-is, not a severity scale.
-          </>
-        }
-        error={!priorityValid ? 'Minimum must not exceed maximum' : null}
-      >
-        <Group grow align="flex-start">
-          <NumberInput
-            label="Minimum"
-            value={priorityMin}
-            onChange={(value) => setPriorityMin(typeof value === 'number' ? value : '')}
-          />
-          <NumberInput
-            label="Maximum"
-            value={priorityMax}
-            onChange={(value) => setPriorityMax(typeof value === 'number' ? value : '')}
-          />
-        </Group>
-      </InputWrapper>
-      <Group>
-        <Button type="submit" disabled={!priorityValid || searching}>
-          {searching ? 'Searching…' : 'Search'}
-        </Button>
-      </Group>
-      <Stack gap="xs" mih={72}>
-        {resultsContent()}
-      </Stack>
-    </Stack>
+          <Stack gap={4}>
+            <Text id={periodLabelId} size="xs" fw={600} c="dimmed">
+              Period
+            </Text>
+            <SegmentedControl
+              aria-labelledby={periodLabelId}
+              color="grape"
+              value={preset ?? 'custom'}
+              onChange={handlePeriodChange}
+              data={[
+                { label: '7 days', value: '7d' },
+                { label: '30 days', value: '30d' },
+                { label: '90 days', value: '90d' },
+                { label: 'All time', value: 'all' },
+                { label: 'Custom…', value: 'custom' },
+              ]}
+            />
+          </Stack>
+          {preset === null && (
+            <Group align="end">
+              <DatePickerInput
+                label="From (optional)"
+                placeholder="Any"
+                value={fromDate}
+                onChange={setFromDate}
+                clearable
+                clearButtonProps={{ 'aria-label': 'Clear the from date', className: 'iconHitArea24' }}
+              />
+              <DatePickerInput
+                label="To (optional)"
+                placeholder="Any"
+                value={toDate}
+                onChange={setToDate}
+                clearable
+                clearButtonProps={{ 'aria-label': 'Clear the to date', className: 'iconHitArea24' }}
+              />
+            </Group>
+          )}
+          <Stack gap={4}>
+            <Text id={typeLabelId} size="xs" fw={600} c="dimmed">
+              Type
+            </Text>
+            <SegmentedControl
+              aria-labelledby={typeLabelId}
+              color="grape"
+              value={plannedFilter}
+              onChange={(value) => setPlannedFilter(value as 'all' | 'planned' | 'realtime')}
+              data={[
+                { label: 'All', value: 'all' },
+                { label: 'Planned work', value: 'planned' },
+                { label: 'Real-time', value: 'realtime' },
+              ]}
+            />
+          </Stack>
+          <Stack gap={4}>
+            <Text id={statusLabelId} size="xs" fw={600} c="dimmed">
+              Status
+            </Text>
+            <SegmentedControl
+              aria-labelledby={statusLabelId}
+              color="grape"
+              value={clearedFilter}
+              onChange={(value) => setClearedFilter(value as 'all' | 'active' | 'cleared')}
+              data={[
+                { label: 'All', value: 'all' },
+                { label: 'Active', value: 'active' },
+                { label: 'Cleared', value: 'cleared' },
+              ]}
+            />
+          </Stack>
+          {/* Review §2.14: the raw-feed caveat used to repeat three times --
+              once in each NumberInput's own label, plus a third standalone
+              footnote paragraph below both. Keeping priority visibly
+              unprocessed and honestly labelled is still the right call (the
+              feed genuinely has no documented "major"/"minor" meaning) --
+              this only says so once, as this `Input.Wrapper`'s own
+              description. */}
+          <InputWrapper
+            label="Priority range"
+            description={
+              <>
+                Raw feed value from National Rail&apos;s own incident data with no documented
+                &quot;major&quot;/&quot;minor&quot; meaning — shown as-is, not a severity scale.
+              </>
+            }
+            error={!priorityValid ? 'Minimum must not exceed maximum' : null}
+          >
+            <Group grow align="flex-start">
+              <NumberInput
+                label="Minimum"
+                value={priorityMin}
+                onChange={(value) => setPriorityMin(typeof value === 'number' ? value : '')}
+              />
+              <NumberInput
+                label="Maximum"
+                value={priorityMax}
+                onChange={(value) => setPriorityMax(typeof value === 'number' ? value : '')}
+              />
+            </Group>
+          </InputWrapper>
+          <Group>
+            <Button type="submit" disabled={!priorityValid || searching}>
+              {searching ? 'Searching…' : 'Search'}
+            </Button>
+          </Group>
+        </Stack>
+      </Grid.Col>
+      <Grid.Col span={{ base: 12, md: 7 }}>
+        <Stack gap="xs" mih={72}>
+          {resultsContent()}
+        </Stack>
+      </Grid.Col>
+    </Grid>
   );
 }
