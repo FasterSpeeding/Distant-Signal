@@ -64,7 +64,7 @@ describe('metadata', () => {
 
   it('describes the cross-network archive search rather than inheriting the generic site description', () => {
     expect(metadata.description).toBe(
-      'Search National Rail Knowledgebase incidents across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
+      'Search National Rail incident messages across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
     );
   });
 
@@ -80,14 +80,14 @@ describe('metadata', () => {
     expect(metadata.openGraph).toMatchObject({
       title: 'Incident Archive — Distant Signal',
       description:
-        'Search National Rail Knowledgebase incidents across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
+        'Search National Rail incident messages across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
       title: 'Incident Archive — Distant Signal',
       description:
-        'Search National Rail Knowledgebase incidents across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
+        'Search National Rail incident messages across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
     });
   });
 });

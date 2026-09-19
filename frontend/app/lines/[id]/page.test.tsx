@@ -21,6 +21,13 @@ vi.mock('@/lib/api', async () => {
     getCustomLine: vi.fn(),
     getLineDefinition: vi.fn(),
     getAllLines: vi.fn(),
+    // Defaulted here (rather than in every describe's own `beforeEach`,
+    // the way `getAllLines` etc. are) since most tests in this file don't
+    // care about operator-name resolution at all -- an empty list keeps
+    // `operatorLabel` on its bare-code fallback, matching this page's
+    // pre-existing "Operators: SW" behaviour. The one test that DOES care
+    // (`categoryLabel`/`operatorLabel` below) overrides it locally.
+    getAllTocs: vi.fn().mockResolvedValue([]),
     getLineHalfHourlyStats: vi.fn(),
     getLineHalfHourlyCoverageStats: vi.fn(),
   };
@@ -359,9 +366,14 @@ describe('LineDetailPage -- a line with no status row yet', () => {
 
     expect(notFound).not.toHaveBeenCalled();
     expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
-    // The definition-derived parts all still render.
+    // The definition-derived parts all still render. `getAllTocs()`
+    // defaults to `[]` for this whole file, so "SW" has no name to
+    // resolve to and stays bare -- a separate test below covers the
+    // resolved-name case.
     expect(screen.getByText('Operators: SW')).toBeInTheDocument();
-    expect(screen.getByText('Category: custom')).toBeInTheDocument();
+    // Review §2.9: the raw TOML-enum token ("custom") must not reach the
+    // page -- `categoryLabel()` maps it to a human label.
+    expect(screen.getByText('Category: Custom line')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Edit' })).toHaveAttribute('href', '/lines/custom-my-commute/edit');
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View history' })).toHaveAttribute(
@@ -379,6 +391,17 @@ describe('LineDetailPage -- a line with no status row yet', () => {
     // the page -- `HalfHourlyTrendsResults.test.tsx` covers their real
     // behaviour directly.
     expect(screen.getByRole('heading', { name: 'Recent trends (last 24 hours)' })).toBeInTheDocument();
+  });
+
+  // Review §2.9: an ATOC code like "SW" is meaningless to a passenger who
+  // knows "South Western Railway" -- this resolves it the same way
+  // `app/lines/page.tsx` and `app/stations/[crs]/page.tsx` already do.
+  it('resolves an operator code to its name via getAllTocs()', async () => {
+    vi.mocked(api.getAllTocs).mockResolvedValueOnce([{ code: 'SW', name: 'South Western Railway' }]);
+
+    await renderPage();
+
+    expect(screen.getByText('Operators: South Western Railway (SW)')).toBeInTheDocument();
   });
 
   it('says so honestly rather than claiming Good Service', async () => {

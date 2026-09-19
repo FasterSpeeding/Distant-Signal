@@ -34,12 +34,17 @@ describe('routeLabel', () => {
     expect(routeLabel('KGX', null, 'EDB', null)).toBe('KGX → EDB');
   });
 
-  it('falls back to a bare origin code with a named destination', () => {
-    expect(routeLabel('KGX', null, 'EDB', 'Edinburgh Waverley')).toBe('KGX → Edinburgh Waverley (EDB)');
+  // Both of the next two used to mix forms -- one end got "Name (CODE)",
+  // the other a bare code -- which read as a data error rather than a
+  // degraded lookup (review §2.9). Now that only one end's name is
+  // unresolved forces BOTH ends to bare codes, so the string is never
+  // internally inconsistent.
+  it('falls back to bare codes on both ends when only the origin name is unresolved', () => {
+    expect(routeLabel('KGX', null, 'EDB', 'Edinburgh Waverley')).toBe('KGX → EDB');
   });
 
-  it('falls back to a bare destination code with a named origin', () => {
-    expect(routeLabel('KGX', 'London Kings Cross', 'EDB', null)).toBe('London Kings Cross (KGX) → EDB');
+  it('falls back to bare codes on both ends when only the destination name is unresolved', () => {
+    expect(routeLabel('KGX', 'London Kings Cross', 'EDB', null)).toBe('KGX → EDB');
   });
 
   // Fix 2 (review finding C2): an NR-primary subscription whose shared

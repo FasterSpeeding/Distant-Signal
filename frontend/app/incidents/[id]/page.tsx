@@ -109,13 +109,23 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
       <div data-rich-text dangerouslySetInnerHTML={{ __html: sanitizeDescription(incident.description) }} />
 
       {incident.affectedStations.length > 0 && (
-        <Group gap="xs">
-          {incident.affectedStations.map((crs) => (
-            <Badge key={crs} variant="outline" color="gray">
-              {crs}
-            </Badge>
-          ))}
-        </Group>
+        <Stack gap={4}>
+          {/* A visible label, not just a `title` tooltip: these are bare
+              3-letter CRS codes with nothing else on the page to say what
+              they are (review §2.9's "unlabelled CRS pills ... floating in
+              the page"). Matches the "Currently affects"/"Validity"
+              sections below in shape (a `Text fw={500}` heading over its
+              content) so this reads as one more labelled section rather
+              than a stray row of chips. */}
+          <Text fw={500}>Affected stations</Text>
+          <Group gap="xs">
+            {incident.affectedStations.map((crs) => (
+              <Badge key={crs} variant="outline" color="gray" title={`Station code: ${crs}`}>
+                {crs}
+              </Badge>
+            ))}
+          </Group>
+        </Stack>
       )}
 
       <Stack gap={4}>
@@ -167,7 +177,7 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
           First seen: {formatDateTime(incident.firstSeenAt)}
         </Text>
         <Text size="xs" c="dimmed">
-          Last fetched: {formatDateTime(incident.fetchedAt)}
+          Last updated from National Rail: {formatDateTime(incident.fetchedAt)}
         </Text>
         <Text size="xs" c="dimmed">
           {TIMES_IN_UK_LOCAL_TIME}

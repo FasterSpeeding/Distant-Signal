@@ -97,6 +97,13 @@ describe('GroupDetailPage', () => {
     expect(screen.getByText('Alex')).toBeInTheDocument();
     expect(screen.getByText('Sam')).toBeInTheDocument();
     expect(screen.getByText(/Shared by Sam/)).toBeInTheDocument();
+    // Review §2.9: this card used to print the raw `status` enum token
+    // ("en_route") verbatim in the subtitle. It now renders through the
+    // same `TrackedTrainStatusBadge` `/` and `/track/mine` use, so the
+    // word here must match theirs -- and the raw token must never appear.
+    expect(screen.getByText('En route')).toBeInTheDocument();
+    expect(screen.getByText('5m late')).toBeInTheDocument();
+    expect(screen.queryByText('en_route')).not.toBeInTheDocument();
   });
 
   /** A member whose identity provider has no name on file for them used to

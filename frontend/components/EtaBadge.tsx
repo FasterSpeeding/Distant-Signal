@@ -1,4 +1,4 @@
-import { Badge, Group, Text, Tooltip } from '@mantine/core';
+import { Badge, Group, Text, Tooltip, VisuallyHidden } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import type { EtaSource } from '@/lib/types';
 
@@ -10,11 +10,22 @@ import type { EtaSource } from '@/lib/types';
  * provenance-surfacing philosophy (`StatusBadge`/`LineStatus.dataQuality`)
  * to ETAs, per
  * docs/superpowers/specs/2026-08-29-train-tracking-frontend-design.md
- * Decision 3. */
+ * Decision 3.
+ *
+ * The non-Darwin badge used to read "NETWORK RAIL PROPAGATED" -- jargon
+ * ("propagated") on the most-read line of both train pages (review §2.9).
+ * The short label now says what it means in plain terms; the precise
+ * technical description survives in two places for anyone who wants it:
+ * the `Tooltip` (sighted, on hover/focus) and a `VisuallyHidden` span
+ * (screen readers, unconditionally -- a `Tooltip`'s content isn't reliably
+ * exposed to assistive tech without an explicit hover/focus, so this
+ * doesn't depend on that). The hidden span is a sibling of the `Badge`,
+ * not nested inside it, so the badge's own visible text stays a single
+ * plain string rather than a string interleaved with hidden content. */
 export function EtaBadge({ etaNext, etaSource }: { etaNext: string | null; etaSource: EtaSource | null }) {
   if (!etaNext || !etaSource) return null;
 
-  const label = etaSource === 'darwin-estimated' ? 'Live departure board' : 'Network Rail propagated';
+  const label = etaSource === 'darwin-estimated' ? 'Live departure board' : 'Estimate (Network Rail)';
   const tooltip =
     etaSource === 'darwin-estimated'
       ? 'Estimated from a live Darwin/National Rail Enquiries departure board sample at the origin station'
@@ -28,6 +39,7 @@ export function EtaBadge({ etaNext, etaSource }: { etaNext: string | null; etaSo
           {label}
         </Badge>
       </Tooltip>
+      <VisuallyHidden>{tooltip}</VisuallyHidden>
     </Group>
   );
 }
