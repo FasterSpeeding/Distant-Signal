@@ -61,6 +61,14 @@ const plannedRange: LineStatus = {
 
 const all = [minorNow, severePlanned, inferredNow];
 
+/** `all` above is exactly `FILTER_DISCLOSURE_MAX_ISSUES` (3) issues, so
+ * every test that exercises the Severity/Source chips against it needs the
+ * "Filter" disclosure opened first -- see IssueList.tsx's own comment on
+ * why a short report starts with the chips tucked away. */
+function openFilters() {
+  fireEvent.click(screen.getByRole('button', { name: /^Filter/ }));
+}
+
 describe('IssueList', () => {
   it('renders one row per status, collapsed by default', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
@@ -114,6 +122,7 @@ describe('IssueList', () => {
   it('filters by severity', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     fireEvent.click(screen.getByText(/^All/));
+    openFilters();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
     expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
@@ -123,6 +132,7 @@ describe('IssueList', () => {
   it('filters by source type', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     fireEvent.click(screen.getByText(/^All/));
+    openFilters();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
     expect(screen.getByText('Engineering works')).toBeInTheDocument();
     expect(screen.queryByText('Signal failure')).not.toBeInTheDocument();
@@ -161,6 +171,7 @@ describe('IssueList', () => {
     // implementation computes them from the chip-filtered-only pool, so
     // Active should read 0 while Upcoming still reads 1.
     fireEvent.click(screen.getByText('Active (2)'));
+    openFilters();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned Closure' }));
     expect(screen.getByText('All (1)')).toBeInTheDocument();
     expect(screen.getByText('Active (0)')).toBeInTheDocument();
@@ -207,6 +218,7 @@ describe('IssueList', () => {
 
   it('shows a message when no issues match the filters', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+    openFilters();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
     // The whole pool is filtered away regardless of tab — there's no
@@ -243,6 +255,7 @@ describe('IssueList', () => {
     // so the tab is empty *because of* the chip — filters are fair to blame,
     // unlike the structurally-empty case above which points at the same
     // sibling tab but must not mention filters.
+    openFilters();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
     const message = screen.getByText(/listed under Upcoming/i);
     expect(message.textContent).toMatch(/filter/i);
@@ -312,6 +325,7 @@ describe('IssueList', () => {
 
   it('does not move the user off the Active tab when a chip filter empties it', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+    openFilters();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
     // Active is now (0), but the landing tab is chosen once on mount, not
     // re-derived: re-deriving would yank the user to All mid-interaction
@@ -321,12 +335,14 @@ describe('IssueList', () => {
   });
   it('labels what each chip row filters, and says so when nothing is narrowed', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+    openFilters();
     expect(screen.getByText('Severity — showing all')).toBeInTheDocument();
     expect(screen.getByText('Source — showing all')).toBeInTheDocument();
   });
 
   it('reports how many chips are selected in each row label', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+    openFilters();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Severe Delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
@@ -336,6 +352,7 @@ describe('IssueList', () => {
 
   it('renders selected chips in a visually distinct variant from unselected ones', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+    openFilters();
     const minor = screen.getByRole('checkbox', { name: 'Minor Delays' });
     const planned = screen.getByRole('checkbox', { name: 'Planned' });
     expect(minor.closest('[data-variant]')).toHaveAttribute('data-variant', 'outline');
@@ -347,6 +364,7 @@ describe('IssueList', () => {
 
   it('associates each chip row with its label for screen readers', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+    openFilters();
     expect(screen.getByRole('group', { name: 'Severity — showing all' })).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Source — showing all' })).toBeInTheDocument();
   });
@@ -729,5 +747,75 @@ describe('IssueList', () => {
     );
     expect(screen.getByText('Good service — no issues reported on this line.')).toBeInTheDocument();
     expect(screen.queryByText(/^All \(/)).not.toBeInTheDocument();
+  });
+
+  // Review §2.14: filter chrome vs. content imbalance. `all` is exactly
+  // `FILTER_DISCLOSURE_MAX_ISSUES` (3) issues.
+  describe('the "Filter" disclosure', () => {
+    it('collapses the Severity/Source chips behind a "Filter" toggle on a short report', () => {
+      renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+      expect(screen.getByRole('button', { name: 'Filter' })).toBeInTheDocument();
+      expect(screen.queryByText(/Severity —/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Source —/)).not.toBeInTheDocument();
+    });
+
+    it('reveals the chips once "Filter" is toggled open', () => {
+      renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+      openFilters();
+      expect(screen.getByText('Severity — showing all')).toBeInTheDocument();
+      expect(screen.getByText('Source — showing all')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Hide filters' })).toBeInTheDocument();
+    });
+
+    it('shows the chips with no disclosure toggle at all once the report exceeds the threshold', () => {
+      const fourth: LineStatus = { ...minorNow, reason: 'A fourth issue' };
+      renderWithMantine(<IssueList items={toItems([...all, fourth])} now={NOW} />);
+      expect(screen.queryByRole('button', { name: /^Filter/ })).not.toBeInTheDocument();
+      expect(screen.getByText(/Severity —/)).toBeInTheDocument();
+      expect(screen.getByText(/Source —/)).toBeInTheDocument();
+    });
+
+    it('keeps the All/Active/Upcoming control visible even while the chip filters are collapsed', () => {
+      // The All/Active/Upcoming control carries live counts and is useful
+      // standalone -- unlike the chips, it must not hide behind the
+      // disclosure just because the chips do.
+      renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+      expect(screen.getByText('All (3)')).toBeInTheDocument();
+      expect(screen.getByText('Active (2)')).toBeInTheDocument();
+    });
+
+    it('shows how many chip filters are active on the closed toggle', () => {
+      renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+      openFilters();
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Hide filters' }));
+      expect(screen.getByRole('button', { name: 'Filter (1 active)' })).toBeInTheDocument();
+    });
+  });
+
+  // Review §2.14: a two-source report showing all five possible Source
+  // chips implied narrowing that was never actually on offer.
+  describe('Source chips reflect only sources present in the report', () => {
+    it('offers exactly the distinct sources present, not every possible source', () => {
+      // `all` carries knowledgebase (minorNow), planned (severePlanned) and
+      // ldbws-inferred (inferredNow) -- three of the five possible sources.
+      renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+      openFilters();
+      const sourceGroup = screen.getByRole('group', { name: /^Source/ });
+      expect(within(sourceGroup).getAllByRole('checkbox')).toHaveLength(3);
+      expect(within(sourceGroup).getByRole('checkbox', { name: 'Knowledgebase' })).toBeInTheDocument();
+      expect(within(sourceGroup).getByRole('checkbox', { name: 'Planned' })).toBeInTheDocument();
+      expect(within(sourceGroup).getByRole('checkbox', { name: 'LDBWS-inferred' })).toBeInTheDocument();
+      expect(within(sourceGroup).queryByRole('checkbox', { name: 'Trust-inferred' })).not.toBeInTheDocument();
+      expect(within(sourceGroup).queryByRole('checkbox', { name: 'TfL' })).not.toBeInTheDocument();
+    });
+
+    it('still offers all five source chips once the report genuinely contains every source', () => {
+      const trust: LineStatus = { ...minorNow, dataQuality: 'trust-inferred', reason: 'Trust reason' };
+      const tfl: LineStatus = { ...minorNow, dataQuality: 'tfl', reason: 'TfL reason' };
+      renderWithMantine(<IssueList items={toItems([...all, trust, tfl])} now={NOW} />);
+      const sourceGroup = screen.getByRole('group', { name: /^Source/ });
+      expect(within(sourceGroup).getAllByRole('checkbox')).toHaveLength(5);
+    });
   });
 });
