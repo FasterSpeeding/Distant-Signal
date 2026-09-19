@@ -10,6 +10,14 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
+// Fixed rather than reading `window.location.origin`: the whole point of
+// review §2.11's fix is that this component no longer reads `window` at
+// all -- `origin` is now an ordinary prop the caller (a Server Component)
+// resolves via `lib/siteOrigin.ts`. Using a value that could never equal
+// jsdom's own default origin also makes it obvious, in every assertion
+// below, that the rendered URL came from the prop.
+const ORIGIN = 'https://distant-signal.example';
+
 describe('GroupInviteLinkCard', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
@@ -18,36 +26,70 @@ describe('GroupInviteLinkCard', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    // @ts-expect-error -- undo the share test's navigator.clipboard stub,
+    // the same cleanup ShareButton.test.tsx does for the same property.
+    delete navigator.clipboard;
   });
 
   it('shows "No active invite link" when there is none', () => {
-    renderWithMantine(<GroupInviteLinkCard groupId="grp-1" inviteLink={null} />);
+    renderWithMantine(<GroupInviteLinkCard groupId="grp-1" inviteLink={null} origin={ORIGIN} />);
     expect(screen.getByText('No active invite link.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Revoke' })).not.toBeInTheDocument();
   });
 
   it('renders the full join URL built from the token', () => {
     renderWithMantine(
-      <GroupInviteLinkCard groupId="grp-1" inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }} />,
+      <GroupInviteLinkCard
+        groupId="grp-1"
+        inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }}
+        origin={ORIGIN}
+      />,
     );
-    expect(screen.getByDisplayValue(/\/groups\/join\/tok123$/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue(`${ORIGIN}/groups/join/tok123`)).toBeInTheDocument();
   });
 
-  /** The origin is read in a mount effect, never in the render body --
-   * this component is rendered by an async Server Component, so a
-   * render-body `window.location.origin` threw a `ReferenceError` during
-   * SSR for every admin/owner. jsdom always provides `window`, so this
-   * suite structurally cannot reproduce the SSR crash itself (the real
-   * guard for that is `npm run build` exercising the `/groups/[id]`
-   * route); what it CAN pin down is that the effect actually runs and
-   * produces the absolute URL, i.e. the deferred read still works. */
-  it('builds an absolute URL from the origin once mounted', async () => {
+  /** Review §2.11: `origin` is a plain prop, resolved server-side before
+   * this component ever renders -- so the absolute URL is present and
+   * copyable/shareable on the FIRST render, with no mount-effect window
+   * where it reads as a bare, uncopyable path (or Share silently no-ops
+   * against `origin === ''`). Asserting with a synchronous `getBy*`
+   * (rather than `findBy*`/`waitFor`) is the actual proof: this would fail
+   * immediately, not just eventually, if the URL were still built from a
+   * `useEffect`. */
+  it('renders the absolute join URL synchronously, with no effect to wait for', () => {
     renderWithMantine(
-      <GroupInviteLinkCard groupId="grp-1" inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }} />,
+      <GroupInviteLinkCard
+        groupId="grp-1"
+        inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }}
+        origin={ORIGIN}
+      />,
     );
-    await waitFor(() =>
-      expect(screen.getByDisplayValue(`${window.location.origin}/groups/join/tok123`)).toBeInTheDocument(),
+    const input = screen.getByDisplayValue(`${ORIGIN}/groups/join/tok123`);
+    expect(input).toBeInTheDocument();
+  });
+
+  it('shares (or copies) the absolute URL immediately, with no origin-readiness gate', async () => {
+    // jsdom implements neither `navigator.share` nor `navigator.clipboard`
+    // -- same `Object.defineProperty` stubbing shape ShareButton.test.tsx
+    // uses for the same reason (these live on `navigator`, not
+    // `globalThis`, so `vi.stubGlobal` doesn't reach them).
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      writable: true,
+      configurable: true,
+    });
+
+    renderWithMantine(
+      <GroupInviteLinkCard
+        groupId="grp-1"
+        inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }}
+        origin={ORIGIN}
+      />,
     );
+    fireEvent.click(screen.getByRole('button', { name: 'Share invite link' }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(`${ORIGIN}/groups/join/tok123`));
   });
 
   // Review §2.10: Mantine's default `md` `ActionIcon` (28px) is under the
@@ -59,7 +101,11 @@ describe('GroupInviteLinkCard', () => {
   // expression rather than a plain pixel string.
   it('sizes the share button to 36px, above the 24px touch-target floor', () => {
     renderWithMantine(
-      <GroupInviteLinkCard groupId="grp-1" inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }} />,
+      <GroupInviteLinkCard
+        groupId="grp-1"
+        inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }}
+        origin={ORIGIN}
+      />,
     );
     expect(screen.getByRole('button', { name: 'Share invite link' })).toHaveStyle({
       '--ai-size': 'calc(2.25rem * var(--mantine-scale))',
@@ -70,7 +116,13 @@ describe('GroupInviteLinkCard', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ token: 'new', expiresAt: '2026-09-19T00:00:00Z' }), { status: 200 }));
 
-    renderWithMantine(<GroupInviteLinkCard groupId="grp-1" inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }} />);
+    renderWithMantine(
+      <GroupInviteLinkCard
+        groupId="grp-1"
+        inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }}
+        origin={ORIGIN}
+      />,
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
 
     await waitFor(() => {
@@ -83,7 +135,13 @@ describe('GroupInviteLinkCard', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
-    renderWithMantine(<GroupInviteLinkCard groupId="grp-1" inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }} />);
+    renderWithMantine(
+      <GroupInviteLinkCard
+        groupId="grp-1"
+        inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }}
+        origin={ORIGIN}
+      />,
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
 
     await waitFor(() => {
@@ -96,7 +154,7 @@ describe('GroupInviteLinkCard', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
 
-    renderWithMantine(<GroupInviteLinkCard groupId="grp-1" inviteLink={null} />);
+    renderWithMantine(<GroupInviteLinkCard groupId="grp-1" inviteLink={null} origin={ORIGIN} />);
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
 
     expect(await screen.findByRole('link', { name: 'Log in to manage this invite link' })).toBeInTheDocument();
@@ -109,7 +167,11 @@ describe('GroupInviteLinkCard', () => {
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
 
     renderWithMantine(
-      <GroupInviteLinkCard groupId="grp-1" inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }} />,
+      <GroupInviteLinkCard
+        groupId="grp-1"
+        inviteLink={{ token: 'tok123', expiresAt: '2026-09-18T00:00:00Z' }}
+        origin={ORIGIN}
+      />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
 
@@ -122,7 +184,7 @@ describe('GroupInviteLinkCard', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('boom', { status: 500 }));
 
-    renderWithMantine(<GroupInviteLinkCard groupId="grp-1" inviteLink={null} />);
+    renderWithMantine(<GroupInviteLinkCard groupId="grp-1" inviteLink={null} origin={ORIGIN} />);
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
 
     expect(await screen.findByText('Could not create a new invite link.')).toBeInTheDocument();

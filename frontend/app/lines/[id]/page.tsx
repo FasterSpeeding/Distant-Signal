@@ -1,6 +1,6 @@
 import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
-import { Badge, Stack, Title, Text, Group, Button, Skeleton } from '@mantine/core';
+import { Badge, Stack, Title, Text, Group, Button, Paper } from '@mantine/core';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition, getAllLines } from '@/lib/api';
@@ -23,6 +23,23 @@ import type {
 } from '@/lib/types';
 import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
+
+/** `Suspense` fallback for both "Recent trends" boundaries below (review
+ * §2.11). Sized to the *empty* state both `HalfHourlyTrendsResults` and
+ * `HalfHourlyCoverageTrendsResults` actually resolve to on a line with no
+ * sampled data yet -- a `Paper withBorder p="md"` around one line of
+ * `Text c="dimmed"` -- rather than to a chart's height, so a line with no
+ * data yet doesn't jump from a tall placeholder down to a short message.
+ * `role="status"`/`aria-busy` gives assistive tech something to announce
+ * while a slower line's real chart is still loading, where the old bare
+ * `Skeleton` gave a screen reader nothing at all. */
+function TrendsLoadingFallback() {
+  return (
+    <Paper withBorder p="md" role="status" aria-busy="true">
+      <Text c="dimmed">Loading trends…</Text>
+    </Paper>
+  );
+}
 
 // Same `revalidate = 0` rationale as `/lines/[id]/history` -- this page now
 // also computes a range off `Date.now()` (`resolveRange` below), so it must
@@ -474,7 +491,7 @@ export default async function LineDetailPage({
             half-hourly-stats rows yet still resolves fast:
             `HalfHourlyTrendsResults` renders its own "Not enough sampled
             data yet" text rather than leaving this section hanging. */}
-        <Suspense fallback={<Skeleton height={280} />}>
+        <Suspense fallback={<TrendsLoadingFallback />}>
           <HalfHourlyTrendsResults id={id} from={trendsRange.from} to={trendsRange.to} />
         </Suspense>
         {/* The half-hourly full-coverage series (Decision 1 of
@@ -484,7 +501,7 @@ export default async function LineDetailPage({
             own "now" a few milliseconds later. Its own, separate Suspense
             boundary (Decision 4 of that design doc), so a slow coverage
             fetch never blocks the sample chart above it, and vice versa. */}
-        <Suspense fallback={<Skeleton height={280} />}>
+        <Suspense fallback={<TrendsLoadingFallback />}>
           <HalfHourlyCoverageTrendsResults id={id} from={trendsRange.from} to={trendsRange.to} />
         </Suspense>
       </Stack>

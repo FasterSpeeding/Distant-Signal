@@ -27,6 +27,7 @@ import { LoginLink } from '@/components/LoginLink';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { worstStatus } from '@/lib/severity';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
+import { getSiteOrigin } from '@/lib/siteOrigin';
 import type { GroupCustomLine, GroupMember, GroupTrain, LineStatusReport } from '@/lib/types';
 
 export const revalidate = 0;
@@ -112,6 +113,12 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
   // (`crates/api/src/routes/groups.rs`), so showing any of those controls
   // to an admin would be offering a button whose only outcome is a 403.
   const viewerIsOwner = group.role === 'owner';
+  // Only actually used by GroupInviteLinkCard below (canManage-gated), but
+  // resolved unconditionally rather than behind an `if (canManage)` --
+  // it's a cheap header/env read, and keeping it unconditional means this
+  // call site can't silently start passing a stale/undefined origin if a
+  // future edit reorders things around the `canManage` check.
+  const origin = await getSiteOrigin();
 
   return (
     <Stack p="lg" gap="lg">
@@ -141,7 +148,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
             viewerIsOwner={viewerIsOwner}
           />
         ))}
-        {canManage && <GroupInviteLinkCard groupId={id} inviteLink={group.inviteLink} />}
+        {canManage && <GroupInviteLinkCard groupId={id} inviteLink={group.inviteLink} origin={origin} />}
       </Stack>
 
       <Divider />

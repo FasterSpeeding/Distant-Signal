@@ -42,6 +42,18 @@ export function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuf
  * from a click that first does browser-side `PushManager.subscribe()` work
  * instead of a straight fetch. */
 export function NotificationsToggle() {
+  // `checked` and `supported` are deliberately separate: `supported`
+  // starts `false` (the same value it would settle on in an unsupported
+  // browser), so collapsing them into one flag would make the pre-check
+  // and "genuinely unsupported" states indistinguishable, and this
+  // component render nothing for both -- which is exactly the review
+  // §2.11 bug (button pops in after hydration, splitting the mobile hero
+  // between the `<h1>` and tagline on the most-visited page in the app).
+  // Reserving the slot instead means the button is in the DOM from the
+  // very first (server) render, `disabled` until the capability check
+  // resolves on mount; a supported browser's button then just becomes
+  // clickable in place, with nothing inserted or removed around it.
+  const [checked, setChecked] = useState(false);
   const [supported, setSupported] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -49,6 +61,7 @@ export function NotificationsToggle() {
 
   useEffect(() => {
     setSupported('serviceWorker' in navigator && 'PushManager' in window);
+    setChecked(true);
   }, []);
 
   async function enable() {
@@ -93,13 +106,16 @@ export function NotificationsToggle() {
     }
   }
 
-  if (!supported) {
-    return null;
-  }
-
+  // No `if (!supported) return null` branch any more: that's the reserved
+  // slot above. A genuinely unsupported browser (rare -- effectively every
+  // current mainstream browser has both `serviceWorker` and `PushManager`)
+  // now keeps a permanently `disabled` "Enable notifications" button rather
+  // than the button vanishing again post-mount, which would just move the
+  // layout-shift problem from "pops in" to "pops out" for that same
+  // Tier-2-anonymous, most-visited page.
   return (
     <>
-      <Button onClick={enable} disabled={busy || enabled} variant={enabled ? 'light' : 'filled'}>
+      <Button onClick={enable} disabled={!checked || !supported || busy || enabled} variant={enabled ? 'light' : 'filled'}>
         {enabled ? 'Notifications enabled' : 'Enable notifications'}
       </Button>
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>

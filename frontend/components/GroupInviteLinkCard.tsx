@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ActionIcon, Button, Card, Group, Stack, Text, TextInput, Tooltip } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -18,33 +18,36 @@ import type { GroupInviteLink } from '@/lib/types';
 const COPIED_LABEL = 'Copied!';
 const COPIED_TIMEOUT_MS = 2000;
 
-export function GroupInviteLinkCard({ groupId, inviteLink }: { groupId: string; inviteLink: GroupInviteLink | null }) {
+export function GroupInviteLinkCard({
+  groupId,
+  inviteLink,
+  origin,
+}: {
+  groupId: string;
+  inviteLink: GroupInviteLink | null;
+  // Resolved server-side by the caller (`app/groups/[id]/page.tsx`, via
+  // `lib/siteOrigin.ts`'s `getSiteOrigin()`) rather than read here from
+  // `window.location.origin` in a mount effect (review §2.11). That
+  // effect-based version had `origin` read as `''` for this component's
+  // first render -- this is a `'use client'` component rendered by an
+  // async Server Component, so its FIRST render happens on the SERVER,
+  // where `window` is undefined -- which made `url` a bare, uncopyable
+  // path (`/groups/join/{token}`) and left `share()` silently inert until
+  // the effect flushed. A prop resolved before this component ever
+  // renders has no such window: `url` is the real absolute link on every
+  // render, server and client alike, so it's usable immediately.
+  origin: string;
+}) {
   const router = useRouter();
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
 
-  // `window` is read in an effect, never in the render body: this is a
-  // `'use client'` component rendered by an async Server Component
-  // (`app/groups/[id]/page.tsx`), so its FIRST render happens on the
-  // SERVER, where `window` is undefined -- touching it during render threw
-  // a `ReferenceError` for every admin/owner of every group, including
-  // straight after `CreateGroupForm` mints the first link and navigates
-  // here. `origin` is `''` for that first render, so `url` reads as the
-  // relative `/groups/join/{token}` for exactly one render and
-  // self-corrects on the effect flush; `share()` is gated on `origin`
-  // separately below so a relative link can never be copied or shared.
-  const [origin, setOrigin] = useState('');
-  useEffect(() => setOrigin(window.location.origin), []);
-
   const url = inviteLink ? `${origin}/groups/join/${inviteLink.token}` : null;
 
   async function share() {
-    // `origin === ''` only before the mount effect has run, i.e. never by
-    // the time a real user can click -- the guard just makes it impossible
-    // to share the one-render relative form of `url`.
-    if (!url || origin === '') return;
+    if (!url) return;
     if (typeof navigator.share === 'function') {
       try {
         await navigator.share({ url, title: 'Join my group on Distant Signal' });

@@ -96,6 +96,21 @@ describe('LineHistoryPage', () => {
     expect(screen.getByRole('link', { name: 'Back to line' })).toHaveAttribute('href', '/lines/c2c');
   });
 
+  // Review §2.11: the Timeline panel's Suspense fallback used to be a
+  // bare, unlabelled `Skeleton` -- no accessible name, nothing for a
+  // screen reader to announce while `getLineStatusHistory` was still in
+  // flight. A call that never resolves keeps the boundary suspended for
+  // the life of the test, so the fallback content can be asserted on
+  // directly.
+  it('shows a labelled, announced loading state while the Timeline fetch is pending', async () => {
+    vi.mocked(api.getLineStatusHistory).mockReturnValue(new Promise(() => {}));
+    await renderPage();
+
+    const fallback = await screen.findByText('Loading history…');
+    expect(fallback).toHaveAttribute('role', 'status');
+    expect(fallback).toHaveAttribute('aria-busy', 'true');
+  });
+
   it('switching to the Trends tab renders the daily-stats charts without crashing', async () => {
     vi.mocked(api.getLineDailyStats).mockResolvedValue([dailyStatsRow({ day: '2026-08-30' }), dailyStatsRow({ day: '2026-08-31' })]);
     await renderPage();

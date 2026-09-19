@@ -248,6 +248,26 @@ describe('LineDetailPage embedded trends', () => {
     expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
   });
 
+  // Review §2.11: both "Recent trends" Suspense boundaries used to fall
+  // back to a bare, unlabelled `Skeleton` -- no accessible name, nothing
+  // for a screen reader to announce while the fetch was still in flight.
+  // A `getLineHalfHourlyStats`/`getLineHalfHourlyCoverageStats` call that
+  // never resolves keeps both boundaries suspended for the life of the
+  // test, so their fallback content can be asserted on directly.
+  it('shows a labelled, announced loading state while the half-hourly fetches are pending', async () => {
+    vi.mocked(api.getLineHalfHourlyStats).mockReturnValue(new Promise(() => {}));
+    vi.mocked(api.getLineHalfHourlyCoverageStats).mockReturnValue(new Promise(() => {}));
+    await renderPage();
+
+    const fallbacks = await screen.findAllByText('Loading trends…');
+    expect(fallbacks).toHaveLength(2);
+    for (const fallback of fallbacks) {
+      const region = fallback.closest('[role="status"]');
+      expect(region).not.toBeNull();
+      expect(region).toHaveAttribute('aria-busy', 'true');
+    }
+  });
+
   // Regression guard for Task 2 of
   // docs/superpowers/plans/2026-09-03-half-hourly-coverage-trends-plan.md --
   // asserts the wiring actually landed on this page, not just that

@@ -48,6 +48,16 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
+// `getSiteOrigin()` (lib/siteOrigin.ts), called unconditionally by this
+// page to build GroupInviteLinkCard's `origin` prop, reads `next/headers`
+// when `NEXT_PUBLIC_SITE_URL` isn't set -- there is no Next request
+// context in a unit test. Same stub shape lib/api.test.ts's own
+// `next/headers` mock uses, extended with the `.get()` `getSiteOrigin`
+// needs.
+vi.mock('next/headers', () => ({
+  headers: async () => ({ get: () => null }),
+}));
+
 describe('GroupDetailPage', () => {
   it('shows a not-found message on ApiNotFoundError', async () => {
     vi.mocked(getGroup).mockRejectedValue(new ApiNotFoundError('404'));

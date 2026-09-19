@@ -164,7 +164,22 @@ export default async function LineHistoryPage({
                 not the instant it happened to be computed at. A genuine custom
                 range has no preset (`range.preset` is `null`), so it still falls
                 back to the from/to-based key and resets exactly as before. */}
-            <Suspense key={range.preset ?? `${range.from}-${range.to}`} fallback={<Skeleton height={240} />}>
+            {/* Fallback sized to the *empty* state `HistoryResults` itself
+                renders ("No history entries in that range.", a single
+                `Text` with no wrapper) rather than to a populated result's
+                height (review §2.11) -- a quiet range resolving from a
+                240px grey box down to one line was a large, jarring shift.
+                `role="status"`/`aria-busy` gives assistive tech something
+                to announce while a slower, longer range is still loading;
+                the old bare `Skeleton` announced nothing. */}
+            <Suspense
+              key={range.preset ?? `${range.from}-${range.to}`}
+              fallback={
+                <Text c="dimmed" role="status" aria-busy="true">
+                  Loading history…
+                </Text>
+              }
+            >
               <HistoryResults id={id} from={range.from} to={range.to} />
             </Suspense>
           </Stack>

@@ -49,10 +49,16 @@ describe('NotificationsToggle', () => {
     delete global.Notification;
   });
 
-  it('renders nothing when the browser has no PushManager/serviceWorker support', () => {
+  it('renders a permanently disabled button when the browser has no PushManager/serviceWorker support', async () => {
     // jsdom has neither by default -- this is the real, unmocked baseline.
+    // Review §2.11: the button is reserved in the DOM either way (never
+    // `null`), so an unsupported browser still shows it, just disabled,
+    // rather than the old "renders nothing" -- which was itself half of
+    // the bug, since a *supported* browser also rendered nothing until its
+    // mount effect resolved, popping the button in afterwards.
     renderWithMantine(<NotificationsToggle />);
-    expect(screen.queryByRole('button', { name: /enable notifications/i })).not.toBeInTheDocument();
+    const button = await screen.findByRole('button', { name: /enable notifications/i });
+    expect(button).toBeDisabled();
   });
 
   function stubPushApiSupport() {
@@ -71,6 +77,19 @@ describe('NotificationsToggle', () => {
     // @ts-expect-error
     global.Notification = { requestPermission: vi.fn().mockResolvedValue('granted') };
   }
+
+  it('reserves the button slot and enables it once support is confirmed', async () => {
+    stubPushApiSupport();
+    renderWithMantine(<NotificationsToggle />);
+    // `getByRole`, not `findByRole`: the button must already be in the DOM
+    // on the very first render (server-rendered slot reserved, before the
+    // mount effect that confirms `supported` has even run) -- that's the
+    // whole point of the fix. It starts disabled, per the surrounding
+    // `!checked` guard.
+    const button = screen.getByRole('button', { name: /enable notifications/i });
+    expect(button).toBeInTheDocument();
+    await waitFor(() => expect(button).not.toBeDisabled());
+  });
 
   it('subscribes and shows LoginPromptModal on a 401 from the subscribe POST', async () => {
     stubPushApiSupport();
