@@ -184,6 +184,9 @@ describe('IncidentSearchForm', () => {
     fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
 
+    // The date fields only render once "Custom…" is selected -- see the
+    // Period `SegmentedControl` tests below for the collapse itself.
+    fireEvent.click(screen.getByRole('radio', { name: 'Custom…' }));
     fireEvent.change(screen.getByLabelText('To (optional)'), { target: { value: '2026-09-15' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 
@@ -198,7 +201,7 @@ describe('IncidentSearchForm', () => {
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '2' })], nextCursor: null }));
 
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    const [priorityMinInput] = screen.getAllByLabelText('Priority (raw feed value — meaning undocumented)');
+    const priorityMinInput = screen.getByLabelText('Minimum');
     fireEvent.change(priorityMinInput, { target: { value: '2' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     await screen.findByText('Signal failure at Woking');
@@ -490,5 +493,81 @@ describe('IncidentSearchForm', () => {
 
     expect(screen.getByLabelText('Clear operator filter').className).toContain('iconHitArea24');
     expect(screen.getByLabelText('Clear line filter').className).toContain('iconHitArea24');
+  });
+
+  // Review §2.13: one idiom for "pick exactly one". The date-range presets
+  // used to be a row of filled/light buttons, visually and semantically
+  // distinct from the Type/Status `SegmentedControl`s further down the same
+  // form -- and none of the three carried a visible caption or an
+  // accessible name at all.
+  describe('the Period control (review §2.13)', () => {
+    it('defaults to the 30-day preset, with the date pickers hidden', () => {
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      expect(screen.getByRole('radiogroup', { name: 'Period' })).toBeInTheDocument();
+      expect(screen.getByRole('radio', { name: '30 days' })).toBeChecked();
+      expect(screen.queryByLabelText('From (optional)')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('To (optional)')).not.toBeInTheDocument();
+    });
+
+    it('reveals the From/To date pickers only once Custom… is selected', () => {
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      fireEvent.click(screen.getByRole('radio', { name: 'Custom…' }));
+      expect(screen.getByLabelText('From (optional)')).toBeInTheDocument();
+      expect(screen.getByLabelText('To (optional)')).toBeInTheDocument();
+    });
+
+    it('shows Custom… as selected (not an undefined state) when initial filters supply an explicit from date', () => {
+      renderWithMantine(
+        <IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialFrom="2026-08-01T00:00:00Z" />,
+      );
+      expect(screen.getByRole('radio', { name: 'Custom…' })).toBeChecked();
+      expect(screen.getByLabelText('From (optional)')).toBeInTheDocument();
+    });
+  });
+
+  // Also Task 1.13's a11y finding for these same two controls: neither
+  // carried a visible caption nor an accessible name (no associated
+  // `<label>`/`aria-label`/`Input.Wrapper`) before this fix.
+  describe('the Type and Status controls (review §2.13/§2.14)', () => {
+    it('labels the Type control and gives it an accessible name', () => {
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      expect(screen.getByText('Type')).toBeInTheDocument();
+      expect(screen.getByRole('radiogroup', { name: 'Type' })).toBeInTheDocument();
+    });
+
+    it('labels the Status control and gives it an accessible name', () => {
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      expect(screen.getByText('Status')).toBeInTheDocument();
+      expect(screen.getByRole('radiogroup', { name: 'Status' })).toBeInTheDocument();
+    });
+  });
+
+  // Review §2.14: the "raw feed value -- meaning undocumented" caveat used
+  // to repeat three times (once per NumberInput label, plus a standalone
+  // footnote). Priority stays raw and honestly labelled -- that's still the
+  // right call -- but the caveat is said once now, as the wrapper's own
+  // description.
+  describe('the Priority range control (review §2.14)', () => {
+    it('states the raw-feed caveat exactly once', () => {
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      expect(screen.getByText('Priority range')).toBeInTheDocument();
+      expect(
+        screen.getAllByText(/raw feed value from the Knowledgebase incident data/i),
+      ).toHaveLength(1);
+    });
+
+    it('exposes accessible Minimum/Maximum fields instead of two identically-labelled inputs', () => {
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      expect(screen.getByLabelText('Minimum')).toBeInTheDocument();
+      expect(screen.getByLabelText('Maximum')).toBeInTheDocument();
+    });
+
+    it('still surfaces the min/max validation error once', () => {
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      fireEvent.change(screen.getByLabelText('Minimum'), { target: { value: '10' } });
+      fireEvent.change(screen.getByLabelText('Maximum'), { target: { value: '5' } });
+      expect(screen.getByText('Minimum must not exceed maximum')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+    });
   });
 });

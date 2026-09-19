@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useId, useState, type FormEvent } from 'react';
 import {
   Alert,
   Badge,
   Button,
   Group,
+  InputWrapper,
   MultiSelect,
   NumberInput,
   SegmentedControl,
@@ -93,6 +94,9 @@ export function IncidentSearchForm({
   initialFrom?: string;
   initialTo?: string;
 }) {
+  const periodLabelId = useId();
+  const typeLabelId = useId();
+  const statusLabelId = useId();
   const catalogueLines = lines.filter((line) => line.source === 'catalogue');
   /** Line id -> display name, so a result row's `affectedLines` renders as
    * "Elizabeth line" rather than "elizabeth-line". An id with no entry (a
@@ -129,6 +133,24 @@ export function IncidentSearchForm({
     const days = next === '7d' ? 7 : next === '30d' ? 30 : 90;
     setFromDate(calendarDaysAgo(days));
     setToDate(null);
+  }
+
+  /** Review §2.13: this used to be a row of filled/light preset buttons that
+   * applied immediately, sitting above a pair of always-visible From/To date
+   * pickers that a hand-edit could silently disagree with (no preset stayed
+   * highlighted once either field was touched). One `SegmentedControl`
+   * fixes both: "Custom…" is always the correct, real answer once a date has
+   * been hand-edited or is being edited at all, and the two picker fields
+   * below only render while it's selected. */
+  function handlePeriodChange(next: string) {
+    if (next === 'custom') {
+      // No date reset -- this only reveals the picker fields for whatever
+      // from/to they already held (e.g. seeded by an initial `?from=`, or
+      // left over from a previous preset).
+      setPreset(null);
+      return;
+    }
+    applyPreset(next as DatePreset);
   }
 
   /** `toDate` is a date-only (`YYYY-MM-DD`) value from `DatePickerInput`, and
@@ -442,79 +464,103 @@ export function IncidentSearchForm({
         clearable
         clearButtonProps={{ 'aria-label': 'Clear line filter', className: 'iconHitArea24' }}
       />
-      <Group gap="sm">
-        <Button variant={preset === '7d' ? 'filled' : 'light'} size="xs" onClick={() => applyPreset('7d')}>
-          7 days
-        </Button>
-        <Button variant={preset === '30d' ? 'filled' : 'light'} size="xs" onClick={() => applyPreset('30d')}>
-          30 days
-        </Button>
-        <Button variant={preset === '90d' ? 'filled' : 'light'} size="xs" onClick={() => applyPreset('90d')}>
-          90 days
-        </Button>
-        <Button variant={preset === 'all' ? 'filled' : 'light'} size="xs" onClick={() => applyPreset('all')}>
-          All time
-        </Button>
-      </Group>
-      <Group align="end">
-        <DatePickerInput
-          label="From (optional)"
-          value={fromDate}
-          onChange={(value) => {
-            setFromDate(value);
-            setPreset(null);
-          }}
-          clearable
-          clearButtonProps={{ 'aria-label': 'Clear the from date', className: 'iconHitArea24' }}
+      <Stack gap={4}>
+        <Text id={periodLabelId} size="xs" fw={600} c="dimmed">
+          Period
+        </Text>
+        <SegmentedControl
+          aria-labelledby={periodLabelId}
+          color="grape"
+          value={preset ?? 'custom'}
+          onChange={handlePeriodChange}
+          data={[
+            { label: '7 days', value: '7d' },
+            { label: '30 days', value: '30d' },
+            { label: '90 days', value: '90d' },
+            { label: 'All time', value: 'all' },
+            { label: 'Custom…', value: 'custom' },
+          ]}
         />
-        <DatePickerInput
-          label="To (optional)"
-          value={toDate}
-          onChange={(value) => {
-            setToDate(value);
-            setPreset(null);
-          }}
-          clearable
-          clearButtonProps={{ 'aria-label': 'Clear the to date', className: 'iconHitArea24' }}
+      </Stack>
+      {preset === null && (
+        <Group align="end">
+          <DatePickerInput
+            label="From (optional)"
+            value={fromDate}
+            onChange={setFromDate}
+            clearable
+            clearButtonProps={{ 'aria-label': 'Clear the from date', className: 'iconHitArea24' }}
+          />
+          <DatePickerInput
+            label="To (optional)"
+            value={toDate}
+            onChange={setToDate}
+            clearable
+            clearButtonProps={{ 'aria-label': 'Clear the to date', className: 'iconHitArea24' }}
+          />
+        </Group>
+      )}
+      <Stack gap={4}>
+        <Text id={typeLabelId} size="xs" fw={600} c="dimmed">
+          Type
+        </Text>
+        <SegmentedControl
+          aria-labelledby={typeLabelId}
+          color="grape"
+          value={plannedFilter}
+          onChange={(value) => setPlannedFilter(value as 'all' | 'planned' | 'realtime')}
+          data={[
+            { label: 'All', value: 'all' },
+            { label: 'Planned work', value: 'planned' },
+            { label: 'Real-time', value: 'realtime' },
+          ]}
         />
-      </Group>
-      <SegmentedControl
-        value={plannedFilter}
-        onChange={(value) => setPlannedFilter(value as 'all' | 'planned' | 'realtime')}
-        data={[
-          { label: 'All', value: 'all' },
-          { label: 'Planned work', value: 'planned' },
-          { label: 'Real-time', value: 'realtime' },
-        ]}
-      />
-      <SegmentedControl
-        value={clearedFilter}
-        onChange={(value) => setClearedFilter(value as 'all' | 'active' | 'cleared')}
-        data={[
-          { label: 'All', value: 'all' },
-          { label: 'Active', value: 'active' },
-          { label: 'Cleared', value: 'cleared' },
-        ]}
-      />
-      <Group grow align="flex-start">
-        <NumberInput
-          label="Priority (raw feed value — meaning undocumented)"
-          description="Minimum, inclusive."
-          value={priorityMin}
-          onChange={(value) => setPriorityMin(typeof value === 'number' ? value : '')}
+      </Stack>
+      <Stack gap={4}>
+        <Text id={statusLabelId} size="xs" fw={600} c="dimmed">
+          Status
+        </Text>
+        <SegmentedControl
+          aria-labelledby={statusLabelId}
+          color="grape"
+          value={clearedFilter}
+          onChange={(value) => setClearedFilter(value as 'all' | 'active' | 'cleared')}
+          data={[
+            { label: 'All', value: 'all' },
+            { label: 'Active', value: 'active' },
+            { label: 'Cleared', value: 'cleared' },
+          ]}
         />
-        <NumberInput
-          label="Priority (raw feed value — meaning undocumented)"
-          description="Maximum, inclusive."
-          value={priorityMax}
-          onChange={(value) => setPriorityMax(typeof value === 'number' ? value : '')}
-          error={!priorityValid ? 'Minimum must not exceed maximum' : null}
-        />
-      </Group>
-      <Text size="xs" c="dimmed">
-        Priority is a raw feed value from the Knowledgebase incident data with no documented
-        &quot;major&quot;/&quot;minor&quot; meaning — shown as-is, not a severity scale.
-      </Text>
+      </Stack>
+      {/* Review §2.14: the raw-feed caveat used to repeat three times --
+          once in each NumberInput's own label, plus a third standalone
+          footnote paragraph below both. Keeping priority visibly
+          unprocessed and honestly labelled is still the right call (the
+          feed genuinely has no documented "major"/"minor" meaning) -- this
+          only says so once, as this `Input.Wrapper`'s own description. */}
+      <InputWrapper
+        label="Priority range"
+        description={
+          <>
+            Raw feed value from the Knowledgebase incident data with no documented
+            &quot;major&quot;/&quot;minor&quot; meaning — shown as-is, not a severity scale.
+          </>
+        }
+        error={!priorityValid ? 'Minimum must not exceed maximum' : null}
+      >
+        <Group grow align="flex-start">
+          <NumberInput
+            label="Minimum"
+            value={priorityMin}
+            onChange={(value) => setPriorityMin(typeof value === 'number' ? value : '')}
+          />
+          <NumberInput
+            label="Maximum"
+            value={priorityMax}
+            onChange={(value) => setPriorityMax(typeof value === 'number' ? value : '')}
+          />
+        </Group>
+      </InputWrapper>
       <Group>
         <Button type="submit" disabled={!priorityValid || searching}>
           {searching ? 'Searching…' : 'Search'}

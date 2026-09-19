@@ -7,14 +7,17 @@ import {
   AccordionItem,
   AccordionPanel,
   Badge,
+  Button,
   Chip,
   ChipGroup,
+  Collapse,
   Group,
   SegmentedControl,
   Stack,
   Text,
   Tooltip,
 } from '@mantine/core';
+import { useDisclosure } from '@mantine/hooks';
 import { StatusBadge } from './StatusBadge';
 import { DisruptionDetail } from './DisruptionDetail';
 import type { LineStatus } from '@/lib/types';
@@ -36,6 +39,16 @@ type ActiveFilter = 'all' | IssueBucket;
 export type IssueListSubject = 'line' | 'station';
 
 const BUCKET_SORT_RANK: Record<IssueBucket, number> = { active: 0, upcoming: 1, ended: 2 };
+
+/** Review §2.14: chip-filter chrome (two rows of pills) competing for
+ * attention with a report that's short enough to just read outright is the
+ * imbalance the review names. A short report is exactly the case where
+ * "narrow the list" isn't a real need yet, so at or below this many issues
+ * the chips are tucked behind a "Filter" disclosure instead of always
+ * shown. The All/Active/Upcoming `SegmentedControl` is NOT part of this --
+ * it carries live counts and is useful standalone even on a one-issue
+ * report. */
+const FILTER_DISCLOSURE_MAX_ISSUES = 3;
 
 const DATA_QUALITY_LABELS: Record<LineStatus['dataQuality'], string> = {
   knowledgebase: 'Knowledgebase',
@@ -149,8 +162,25 @@ export function IssueList({
     [items],
   );
   const severityOptions = Array.from(new Set(statuses.map((status) => status.statusSeverityDescription)));
+  // Review §2.14: only offer a Source chip for a source actually present in
+  // THIS loaded report, rather than every source `DATA_QUALITY_LABELS`
+  // knows about network-wide -- a two-source report showing all five
+  // possible chips implied narrowing that was never actually available.
+  // `DATA_QUALITY_LABELS`' own key order is preserved (filtering, not
+  // rebuilding, its entries) so this doesn't reshuffle the row.
+  const presentSources = new Set(statuses.map((status) => status.dataQuality));
+  const sourceOptions = Object.entries(DATA_QUALITY_LABELS).filter(([value]) =>
+    presentSources.has(value as LineStatus['dataQuality']),
+  );
   const [severityFilter, setSeverityFilter] = useState<string[]>([]);
   const [sourceFilter, setSourceFilter] = useState<string[]>([]);
+  // Review §2.14: collapsed behind a disclosure on a short report -- see
+  // `FILTER_DISCLOSURE_MAX_ISSUES`'s own comment. Always called (never
+  // conditionally) for the same Rules-of-Hooks reason every other hook in
+  // this component sits above the `allGood` early return below: the report
+  // length that decides whether the disclosure is even offered can itself
+  // change between renders of the same mounted instance.
+  const [filtersOpened, { toggle: toggleFilters }] = useDisclosure(false);
 
   // `now` is stamped once by the Server Component page and passed in,
   // rather than read from `Date.now()` here. That keeps the server-rendered
@@ -246,50 +276,94 @@ export function IssueList({
     .filter((status) => activeFilter === 'all' || buckets.get(status) === activeFilter)
     .sort(compareByUrgency);
 
+  // Extracted so it can render either always-visible (a report large enough
+  // that narrowing it is plausibly useful on first paint) or tucked behind
+  // the "Filter" disclosure below (a short report, where it's dead chrome
+  // until asked for) -- same chip rows, same handlers, either way.
+  const chipRows = (
+    <Stack gap="xs">
+      <Stack gap={4}>
+        <Text id={severityLabelId} size="xs" fw={600} c="dimmed">
+          {chipRowLabel('Severity', severityFilter.length)}
+        </Text>
+        <ChipGroup multiple value={severityFilter} onChange={setSeverityFilter}>
+          <Group gap="xs" role="group" aria-labelledby={severityLabelId}>
+            {severityOptions.map((option) => (
+              // `filled` vs `outline` is the whole point: an unselected chip
+              // reads as an empty control you can press, a selected one as a
+              // solid, obviously-on state — indistinguishable before.
+              <Chip
+                key={option}
+                value={option}
+                size="xs"
+                variant={severityFilter.includes(option) ? 'filled' : 'outline'}
+              >
+                {option}
+              </Chip>
+            ))}
+          </Group>
+        </ChipGroup>
+      </Stack>
+      <Stack gap={4}>
+        <Text id={sourceLabelId} size="xs" fw={600} c="dimmed">
+          {chipRowLabel('Source', sourceFilter.length)}
+        </Text>
+        <ChipGroup multiple value={sourceFilter} onChange={setSourceFilter}>
+          <Group gap="xs" role="group" aria-labelledby={sourceLabelId}>
+            {sourceOptions.map(([value, label]) => (
+              <Chip
+                key={value}
+                value={value}
+                size="xs"
+                variant={sourceFilter.includes(value) ? 'filled' : 'outline'}
+              >
+                {label}
+              </Chip>
+            ))}
+          </Group>
+        </ChipGroup>
+      </Stack>
+    </Stack>
+  );
+  const showFilterDisclosure = statuses.length <= FILTER_DISCLOSURE_MAX_ISSUES;
+  const filterSelectionCount = severityFilter.length + sourceFilter.length;
+
   return (
     <Stack gap="md">
       <Stack gap="xs">
-        <Stack gap={4}>
-          <Text id={severityLabelId} size="xs" fw={600} c="dimmed">
-            {chipRowLabel('Severity', severityFilter.length)}
-          </Text>
-          <ChipGroup multiple value={severityFilter} onChange={setSeverityFilter}>
-            <Group gap="xs" role="group" aria-labelledby={severityLabelId}>
-              {severityOptions.map((option) => (
-                // `filled` vs `outline` is the whole point: an unselected chip
-                // reads as an empty control you can press, a selected one as a
-                // solid, obviously-on state — indistinguishable before.
-                <Chip
-                  key={option}
-                  value={option}
-                  size="xs"
-                  variant={severityFilter.includes(option) ? 'filled' : 'outline'}
-                >
-                  {option}
-                </Chip>
-              ))}
-            </Group>
-          </ChipGroup>
-        </Stack>
-        <Stack gap={4}>
-          <Text id={sourceLabelId} size="xs" fw={600} c="dimmed">
-            {chipRowLabel('Source', sourceFilter.length)}
-          </Text>
-          <ChipGroup multiple value={sourceFilter} onChange={setSourceFilter}>
-            <Group gap="xs" role="group" aria-labelledby={sourceLabelId}>
-              {Object.entries(DATA_QUALITY_LABELS).map(([value, label]) => (
-                <Chip
-                  key={value}
-                  value={value}
-                  size="xs"
-                  variant={sourceFilter.includes(value) ? 'filled' : 'outline'}
-                >
-                  {label}
-                </Chip>
-              ))}
-            </Group>
-          </ChipGroup>
-        </Stack>
+        {showFilterDisclosure ? (
+          <Stack gap={4}>
+            <Button
+              variant="subtle"
+              size="compact-xs"
+              onClick={toggleFilters}
+              aria-expanded={filtersOpened}
+            >
+              {filtersOpened
+                ? 'Hide filters'
+                : filterSelectionCount > 0
+                  ? `Filter (${filterSelectionCount} active)`
+                  : 'Filter'}
+            </Button>
+            {/* `keepMounted={false}`: same rationale as the `Accordion`
+                below -- Mantine's default keeps collapsed content in the
+                DOM (via React's Activity API), merely `inert`/hidden from
+                view, which `screen.queryByText` still finds. Unmounting
+                outright means "collapsed" also means the chip filters
+                genuinely aren't reachable, not just invisible.
+                `transitionDuration={0}`: a two-chip-row toggle doesn't need
+                a slide animation, and it keeps `keepMounted={false}`'s
+                mount/unmount synchronous with the click that drives it
+                (Mantine's `useCollapse` otherwise defers the mount across a
+                `requestAnimationFrame` pair plus a real `transitionend`
+                event -- neither of which jsdom ever fires on its own). */}
+            <Collapse expanded={filtersOpened} keepMounted={false} transitionDuration={0}>
+              {chipRows}
+            </Collapse>
+          </Stack>
+        ) : (
+          chipRows
+        )}
         <SegmentedControl
           value={activeFilter}
           onChange={(value) => setActiveFilter(value as ActiveFilter)}
