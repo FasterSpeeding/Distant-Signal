@@ -1564,14 +1564,28 @@ a[data-text-link='always'] {
    by default, visible on keyboard focus. This is the standard pattern for
    skip links: positioned outside the viewport initially, brought into view
    with :focus-visible to enable keyboard users to jump directly to main
-   content on page load. */
+   content on page load.
+
+   Background is `--mantine-color-grape-filled` (grape 7 in the light
+   scheme, per this file's own rule above), not blue: white on blue 6 is
+   3.56:1 -- below WCAG 1.4.3's 4.5:1 AA threshold for normal-size text,
+   the same failure `lib/theme.ts`'s own doc comment already measures for
+   this exact pairing -- and blue is reserved for `planned`-severity UI
+   elsewhere in this app, not general chrome. White on grape 7 is 4.85:1,
+   the same measured pairing this file's filled-grape buttons and anchors
+   already use. Reading the shade through `--mantine-color-grape-filled`
+   (rather than hardcoding grape-7) keeps this in step with the dark
+   scheme too, where filled grape is left at its Mantine default (grape 8,
+   white text 5.82:1 -- already compliant, see the comment above). The
+   focus outline reuses `--mantine-color-anchor`, the same focus-ring
+   colour `a[data-group-card-link]:focus-visible` already uses. */
 .skip-link {
   position: absolute;
   left: -9999px;
   top: -9999px;
   z-index: 9999;
   padding: var(--mantine-spacing-sm);
-  background-color: var(--mantine-color-blue-6);
+  background-color: var(--mantine-color-grape-filled);
   color: white;
   text-decoration: none;
   border-radius: var(--mantine-radius-sm);
@@ -1580,7 +1594,7 @@ a[data-text-link='always'] {
 .skip-link:focus-visible {
   left: var(--mantine-spacing-md);
   top: var(--mantine-spacing-md);
-  outline: 2px solid var(--mantine-color-blue-9);
+  outline: 2px solid var(--mantine-color-anchor);
   outline-offset: 2px;
 }
 

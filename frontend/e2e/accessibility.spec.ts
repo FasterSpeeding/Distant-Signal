@@ -533,6 +533,15 @@ test.describe('accessibility: interactive sub-states', () => {
     // (not off at -9999px anymore)
     expect(skipLinkBox?.x).toBeGreaterThanOrEqual(0);
     expect(skipLinkBox?.y).toBeGreaterThanOrEqual(0);
+
+    // I3 (2026-09-17 whole-branch review): the link's own filled-blue
+    // background used to be 3.56:1 against its white text -- below WCAG
+    // 1.4.3's 4.5:1 AA threshold, and axe's own `color-contrast` rule
+    // catches it. Running the full sweep here, WHILE the link is focused
+    // (its only visible state), is what actually exercises that pairing --
+    // every other sweep in this file never focuses it, so this is the one
+    // place a regression here would be caught.
+    await expectNoViolations(page);
   });
 });
 
