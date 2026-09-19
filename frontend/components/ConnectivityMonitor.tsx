@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { Notification } from '@mantine/core';
 import { useMounted, useNetwork } from '@mantine/hooks';
+import { formatDateTime } from '@/lib/dateFormat';
 
 /** Two consecutive failed `getDataFreshness()` calls (i.e. two AutoRefresh
  * cycles, ~60s) before the banner appears, one success to clear it. The
@@ -66,12 +67,30 @@ export function ConnectivityMonitor({
   const mounted = useMounted();
   const { online } = useNetwork();
   const [failures, setFailures] = useState(0);
+  // The most recent `observedAt` for which the backend was actually
+  // reachable -- i.e. the last time RootLayout's own server render (and
+  // therefore everything on screen) reflected live data. Not the same
+  // thing as "now": while disconnected, `observedAt` keeps ticking forward
+  // every `AutoRefresh` cycle (RootLayout still re-renders, just with
+  // `backendReachable={false}`), but `lastGoodAt` freezes at the last
+  // success -- which is exactly the timestamp the offline notification
+  // below needs to make "showing the last update" name an actual time
+  // instead of an unverifiable claim (review §2.12/§5). Seeded from props
+  // at mount, not `null`, so a visitor who is offline from the very first
+  // paint still sees a real time rather than "unknown" if this render
+  // happened to be the reachable one.
+  const [lastGoodAt, setLastGoodAt] = useState<string | null>(backendReachable ? observedAt : null);
 
   useEffect(() => {
     setFailures((current) => (backendReachable ? 0 : current + 1));
+    if (backendReachable) {
+      setLastGoodAt(observedAt);
+    }
     // Keyed on `observedAt`, not `backendReachable` -- see that prop's
-    // doc comment. `backendReachable` is read inside the updater rather
-    // than depended on, so a repeated identical value still counts.
+    // doc comment. `backendReachable` is read directly (not through the
+    // `setFailures` updater) only to decide whether to also record
+    // `lastGoodAt`; it does not need the previous-state indirection
+    // `failures` does, since it doesn't depend on any prior local state.
   }, [observedAt]);
 
   const backendDown = failures >= CONSECUTIVE_FAILURES_TO_TRIP;
@@ -95,7 +114,11 @@ export function ConnectivityMonitor({
         >
           {/* Copy is connectivity-neutral on purpose: it is true whether
               the visitor's own device is offline or the backend is
-              unreachable, so there is one message and no branching. */}
+              unreachable, so there is one message and no branching.
+              `lastGoodAt` names an actual time rather than leaving "the
+              last update" an unverifiable claim (review §2.12/§5) --
+              `null` only in the edge case where this render has never once
+              observed a reachable backend, which has no real time to name. */}
           <Notification
             loading
             withCloseButton={false}
@@ -103,7 +126,11 @@ export function ConnectivityMonitor({
             role="status"
             aria-live="polite"
           >
-            Can&apos;t reach live data right now — showing the last update.
+            {lastGoodAt ? (
+              <>Can&apos;t reach live data right now — showing the update from {formatDateTime(lastGoodAt)}.</>
+            ) : (
+              <>Can&apos;t reach live data right now — showing the last update.</>
+            )}
           </Notification>
         </div>
       )}

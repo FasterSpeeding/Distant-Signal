@@ -1,10 +1,13 @@
-import { Stack, Title, Group } from '@mantine/core';
+import { Stack, Title, Text, Group } from '@mantine/core';
 import { notFound, redirect } from 'next/navigation';
 import { getTrackedTrainById, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { TrainJourneyPanel } from '@/components/TrainJourneyPanel';
 import { TicketPanel } from '@/components/TicketPanel';
 import { LoginLink } from '@/components/LoginLink';
 import { TrackedTrainOwnerControls } from '@/components/TrackedTrainOwnerControls';
+import { LastUpdated } from '@/components/LastUpdated';
+import { REFRESH_INTERVAL_MS } from '@/lib/refresh';
+import { TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 
 export default async function TrackedTrainByIdPage({
   params,
@@ -63,6 +66,14 @@ export default async function TrackedTrainByIdPage({
     redirect(`/train/${encodeURIComponent(state.trainUid)}/${encodeURIComponent(state.serviceDate)}`);
   }
 
+  // `getTrackedTrainById` is `cache: 'no-store'` (`lib/api.ts`) and this
+  // page re-renders from scratch on every `AutoRefresh` cycle (`router.
+  // refresh()`, `components/AutoRefresh.tsx`), so "now, at render time" IS
+  // "when this data was last fetched" -- same reasoning as the sibling
+  // `/train/[uid]/[date]` page's own `renderedAt`. There is no separate
+  // "fetched at" field on `TrackedTrainState` to read instead.
+  const renderedAt = new Date().toISOString();
+
   return (
     <Stack p="lg" gap="md">
       <Group justify="space-between">
@@ -72,6 +83,12 @@ export default async function TrackedTrainByIdPage({
         </Group>
       </Group>
       <TrainJourneyPanel state={state} />
+      <Group gap={4}>
+        <LastUpdated timestamp={renderedAt} />
+        <Text size="xs" c="dimmed">
+          · refreshes every {REFRESH_INTERVAL_MS / 1000}s · {TIMES_IN_UK_LOCAL_TIME}
+        </Text>
+      </Group>
       <TicketPanel trackingId={state.id} />
     </Stack>
   );

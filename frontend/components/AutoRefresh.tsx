@@ -3,8 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useDocumentVisibility, useInterval } from '@mantine/hooks';
-
-const REFRESH_INTERVAL_MS = 30_000;
+import { REFRESH_INTERVAL_MS } from '@/lib/refresh';
 
 /** Side-effect-only component (renders nothing) mounted once in the root
  * layout so every page keeps its data live while left open, rather than

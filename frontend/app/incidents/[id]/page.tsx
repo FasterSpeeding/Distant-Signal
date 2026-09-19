@@ -5,7 +5,7 @@ import { ApiNotFoundError, getIncident } from '@/lib/api';
 import { sanitizeDescription } from '@/lib/sanitizeHtml';
 import { ShareButton } from '@/components/ShareButton';
 import { TextLink } from '@/components/TextLink';
-import { formatDateTime } from '@/lib/dateFormat';
+import { formatDateTime, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 import type { IncidentDetail, IncidentHistoryEntry, ValidityPeriod } from '@/lib/types';
 
 // Same rationale as every dynamic `[param]` route in this app: without
@@ -168,6 +168,9 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
         </Text>
         <Text size="xs" c="dimmed">
           Last fetched: {formatDateTime(incident.fetchedAt)}
+        </Text>
+        <Text size="xs" c="dimmed">
+          {TIMES_IN_UK_LOCAL_TIME}
         </Text>
       </Stack>
     </Stack>

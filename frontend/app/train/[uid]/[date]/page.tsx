@@ -8,6 +8,9 @@ import { TrackThisTrainButton } from '@/components/TrackThisTrainButton';
 import { TrackedTrainOwnerControls } from '@/components/TrackedTrainOwnerControls';
 import { TicketPanel } from '@/components/TicketPanel';
 import { TextLink } from '@/components/TextLink';
+import { LastUpdated } from '@/components/LastUpdated';
+import { REFRESH_INTERVAL_MS } from '@/lib/refresh';
+import { TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 import type { PublicTrainState, TrainJourneyState, TrackedTrainListItem } from '@/lib/types';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -257,6 +260,16 @@ export default async function TrackedTrainByUidPage({
     throw err;
   }
 
+  // Both fetches above are `cache: 'no-store'` (`lib/api.ts`), and this
+  // page re-renders from scratch on every `AutoRefresh` cycle (`router.
+  // refresh()`, `components/AutoRefresh.tsx`) -- so "now, at render time"
+  // IS "when this data was last fetched", the same reasoning
+  // `ServiceWorkerRegister`'s `loadedAt` and `RootLayout`'s
+  // `ConnectivityMonitor observedAt` props already document for their own
+  // fresh-per-render ISO timestamps. There is no separate "fetched at"
+  // field on `PublicTrainState` to read instead.
+  const renderedAt = new Date().toISOString();
+
   // `myTrackedTrains` is `null` for an anonymous visitor, or when the
   // fetch above failed and was caught -- `myTrackedTrains?.find(...)`
   // below covers "not logged in", "logged in, nothing matches", and "the
@@ -317,6 +330,12 @@ export default async function TrackedTrainByUidPage({
           `app/train/by-id/[trackingId]` so the two pages can't drift on
           this pairing again -- see that component's own doc comment. */}
       <TrainJourneyPanel state={journeyState} />
+      <Group gap={4}>
+        <LastUpdated timestamp={renderedAt} />
+        <Text size="xs" c="dimmed">
+          · refreshes every {REFRESH_INTERVAL_MS / 1000}s · {TIMES_IN_UK_LOCAL_TIME}
+        </Text>
+      </Group>
       {match && <TicketPanel trackingId={match.id} />}
       {/* `component="div"`, not the default `<p>`: `TextLink` renders its
           own Mantine `<Text>` (a `<p>` by default), so wrapping it in an
