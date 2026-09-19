@@ -47,27 +47,40 @@ describe('StationAccessibilitySection', () => {
     expect(screen.getByText('Staff assistance')).toBeInTheDocument();
     expect(screen.getByText('Available 06:00-23:00')).toBeInTheDocument();
     expect(screen.getByText('Car parks')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Car parks: 1 item' })).toBeInTheDocument();
+    // review §3.5.5: a collection this short (one item) is shown directly,
+    // not hidden behind a disclosure.
+    expect(screen.getByText('120')).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('pluralizes the item-count control rather than saying "1 items"', () => {
+  // review §3.5.5: once a collection is large enough to collapse, its
+  // control names what there are several of, not just how many.
+  it('names what the items are, not just how many, once a collection is large enough to collapse', () => {
     renderWithMantine(
       <StationAccessibilitySection
-        result={{ coverage: 'present', data: { carParks: [{ spaces: 120 }, { spaces: 40 }] } }}
+        result={{
+          coverage: 'present',
+          data: {
+            carParks: [{ spaces: 1 }, { spaces: 2 }, { spaces: 3 }, { spaces: 4 }],
+          },
+        }}
       />,
     );
-    expect(screen.getByRole('button', { name: 'Car parks: 2 items' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Car parks: 4 car parks' })).toBeInTheDocument();
   });
 
   it('keeps an item list collapsed until asked, then reveals each item', async () => {
     renderWithMantine(
       <StationAccessibilitySection
-        result={{ coverage: 'present', data: { carParks: [{ spaces: 120 }, { spaces: 40 }] } }}
+        result={{
+          coverage: 'present',
+          data: { carParks: [{ spaces: 120 }, { spaces: 40 }, { spaces: 80 }, { spaces: 60 }] },
+        }}
       />,
     );
     expect(screen.queryByText('120')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Car parks: 2 items' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Car parks: 4 car parks' }));
 
     expect(await screen.findByText('120')).toBeInTheDocument();
     expect(screen.getByText('40')).toBeInTheDocument();
@@ -76,6 +89,43 @@ describe('StationAccessibilitySection', () => {
   it('renders the heading "Accessibility & facilities", not bare "Accessibility"', () => {
     renderWithMantine(<StationAccessibilitySection result={{ coverage: 'empty' }} />);
     expect(screen.getByRole('heading', { name: 'Accessibility & facilities' })).toBeInTheDocument();
+  });
+
+  // review §3.5.2: the section's four group titles and per-key labels were
+  // bold `<p>`s -- a 4,500px section with exactly one heading (the
+  // section's own h2). Promoted to real `h3`/`h4` headings, holding visual
+  // size via `size` so this is a semantic-only change. Regression coverage
+  // this task explicitly calls for: `getByRole('heading', { level: 3 })`
+  // assertions, and a check that the section's own h1 -> h2 -> h3 -> h4
+  // chain never skips a level (axe's `heading-order`, which this test
+  // stands in for at the component level -- `e2e/accessibility.spec.ts`
+  // covers the same page end to end).
+  it('promotes group titles to h3 and key labels to h4, with no skipped level', () => {
+    renderWithMantine(
+      <StationAccessibilitySection
+        result={{
+          coverage: 'present',
+          data: { lifts: { available: true }, cycling: 'Racks on the forecourt' },
+        }}
+      />,
+    );
+    // The section's own h2.
+    expect(screen.getByRole('heading', { level: 2, name: 'Accessibility & facilities' })).toBeInTheDocument();
+    // One h3 per rendered group -- "Facilities" (lifts) and "Getting here"
+    // (cycling), in that fixed spec order.
+    const h3s = screen.getAllByRole('heading', { level: 3 });
+    expect(h3s.map((h) => h.textContent)).toEqual(['Facilities', 'Getting here']);
+    // One h4 per rendered key -- "Lifts" is a Pattern A facility and states
+    // its own name on the availability line instead (no separate label, so
+    // no h4 for it); "Cycling" is a plain sentence and gets one.
+    expect(screen.getByRole('heading', { level: 4, name: 'Cycling' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 4, name: 'Lifts' })).not.toBeInTheDocument();
+    expect(screen.getByText('Lifts — Available')).toBeInTheDocument();
+    // No h5/h6 anywhere -- nothing in this component emits one -- and no
+    // level is skipped: h2 has an h3 child, and every h3 present has at
+    // least the section's own content beneath it (h4 or plain text).
+    expect(screen.queryByRole('heading', { level: 5 })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 6 })).not.toBeInTheDocument();
   });
 
   // Mantine's `Accordion` panel is a `role="region"` landmark named by its
@@ -90,15 +140,19 @@ describe('StationAccessibilitySection', () => {
       <StationAccessibilitySection
         result={{
           coverage: 'present',
-          data: { carParks: [{ spaces: 120 }], lifts: [{ note: 'Platform 1' }] },
+          data: {
+            carParks: [{ spaces: 1 }, { spaces: 2 }, { spaces: 3 }, { spaces: 4 }],
+            lifts: [{ note: 'A' }, { note: 'B' }, { note: 'C' }, { note: 'D' }],
+          },
         }}
       />,
     );
-    // Same visible text on both controls...
-    expect(screen.getAllByText('1 item')).toHaveLength(2);
-    // ...but two different accessible names, so the two landmarks differ.
-    expect(screen.getByRole('button', { name: 'Car parks: 1 item' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Lifts: 1 item' })).toBeInTheDocument();
+    // Same visible NOUN on both controls, since both fields happen to share
+    // one after lowercasing ("Car parks"/"Lifts" -- different words here,
+    // but the two-different-accessible-names guarantee below is what
+    // matters regardless of whether the words happen to collide).
+    expect(screen.getByRole('button', { name: 'Car parks: 4 car parks' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Lifts: 4 lifts' })).toBeInTheDocument();
 
     const names = screen.getAllByRole('button').map((b) => b.getAttribute('aria-label'));
     expect(new Set(names).size).toBe(names.length);
@@ -110,10 +164,13 @@ describe('StationAccessibilitySection', () => {
   it('keeps the visible label inside the accessible name', () => {
     renderWithMantine(
       <StationAccessibilitySection
-        result={{ coverage: 'present', data: { carParks: [{ spaces: 120 }] } }}
+        result={{
+          coverage: 'present',
+          data: { carParks: [{ spaces: 1 }, { spaces: 2 }, { spaces: 3 }, { spaces: 4 }] },
+        }}
       />,
     );
-    const control = screen.getByRole('button', { name: /1 item$/ });
+    const control = screen.getByRole('button', { name: /car parks$/ });
     expect(control.getAttribute('aria-label')).toContain(control.textContent?.trim() ?? '');
   });
 
@@ -155,7 +212,7 @@ describe('StationAccessibilitySection', () => {
             cycling: 'Racks on the forecourt',
             lifts: { count: 2 },
             stationAccessibility: { stepFree: true },
-            helpAndSupport: '0800 123 4567',
+            stationFacilities: 'Ticket office open 06:00-22:00',
           },
         }}
       />,
@@ -215,11 +272,14 @@ describe('StationAccessibilitySection', () => {
   it('counts only the items it will actually show, so the control never over-promises', () => {
     renderWithMantine(
       <StationAccessibilitySection
-        result={{ coverage: 'present', data: { carParks: [{ spaces: 120 }, {}] } }}
+        result={{
+          coverage: 'present',
+          data: { carParks: [{ spaces: 1 }, { spaces: 2 }, { spaces: 3 }, { spaces: 4 }, {}] },
+        }}
       />,
     );
-    expect(screen.getByRole('button', { name: 'Car parks: 1 item' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /2 items/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Car parks: 4 car parks' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /5 car parks/ })).not.toBeInTheDocument();
   });
 
   it('skips an array whose every item renders to nothing', () => {
@@ -335,11 +395,16 @@ describe('StationAccessibilitySection, pattern rendering', () => {
         }}
       />,
     );
-    // The section's own h2 and nothing else -- axe's `heading-order` cannot
-    // see this, because an h2 following an h2 is not a skipped level (§8).
+    // The section's own h2, the one group heading this data reaches
+    // (§3.5.2 promoted group titles to real `h3`s) -- and nothing from the
+    // feed copy itself. axe's `heading-order` cannot see the feed-copy
+    // half of this, because an h2 following an h2 is not a skipped level
+    // (§8); it can and does check that the h3 doesn't skip a level, which
+    // this test's own heading-role query is a stand-in for.
     const headings = screen.getAllByRole('heading');
-    expect(headings).toHaveLength(1);
+    expect(headings).toHaveLength(2);
     expect(headings[0]).toHaveTextContent('Accessibility & facilities');
+    expect(headings[1]).toHaveTextContent('Step-free access & assistance');
     // Demoted, not discarded: the emphasis survives as bold text.
     expect(screen.getByText('Help points').tagName).toBe('STRONG');
   });
@@ -358,7 +423,7 @@ describe('StationAccessibilitySection, pattern rendering', () => {
     expect(screen.queryByText('DepartureScreens, Announcements')).not.toBeInTheDocument();
   });
 
-  it('renders Pattern D bullets as a real list under each item name', async () => {
+  it('renders Pattern D bullets as a real list under each item name', () => {
     renderWithMantine(
       <StationAccessibilitySection
         result={{
@@ -378,8 +443,8 @@ describe('StationAccessibilitySection, pattern rendering', () => {
         }}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /Platforms: 1 item/ }));
-    expect(await screen.findByText('Platform 3')).toBeInTheDocument();
+    // review §3.5.5: a single item is shown directly, no click required.
+    expect(screen.getByText('Platform 3')).toBeInTheDocument();
     const items = screen.getAllByRole('listitem');
     expect(items.map((item) => item.textContent)).toEqual([
       'There is a Help Point close to this platform',
@@ -387,7 +452,7 @@ describe('StationAccessibilitySection, pattern rendering', () => {
     ]);
   });
 
-  it('links a nearest accessible station to its own page', async () => {
+  it('links a nearest accessible station to its own page', () => {
     renderWithMantine(
       <StationAccessibilitySection
         result={{
@@ -403,8 +468,7 @@ describe('StationAccessibilitySection, pattern rendering', () => {
         }}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /Stations: 1 item/ }));
-    const link = await screen.findByRole('link', { name: 'Swansea (SWA)' });
+    const link = screen.getByRole('link', { name: 'Swansea (SWA)' });
     expect(link).toHaveAttribute('href', '/stations/SWA');
   });
 
@@ -440,14 +504,18 @@ describe('StationAccessibilitySection, pattern rendering', () => {
       'href',
       'mailto:lost.property@example.com',
     );
-    const website = screen.getByRole('link', { name: 'http://www.example.com' });
+    // review §3.5.9: the link text is the raw URL itself, so it is
+    // rewritten to the host name -- the full URL survives in `href` and
+    // `title`, just not repeated as the visible text.
+    const website = screen.getByRole('link', { name: 'example.com ↗' });
     expect(website).toHaveAttribute('href', 'http://www.example.com');
+    expect(website).toHaveAttribute('title', 'http://www.example.com');
     expect(website).toHaveAttribute('target', '_blank');
     // §4.4: `name` is boilerplate restating the context, and is dropped.
     expect(screen.queryByText(/Lost Property Contact Details/)).not.toBeInTheDocument();
   });
 
-  it('puts Pattern D bullets in a real <ul>, with no block element inside an inline one', async () => {
+  it('puts Pattern D bullets in a real <ul>, with no block element inside an inline one', () => {
     const { container } = renderWithMantine(
       <StationAccessibilitySection
         result={{
@@ -465,8 +533,8 @@ describe('StationAccessibilitySection, pattern rendering', () => {
         }}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /Lifts info: 1 item/ }));
-    await screen.findByText('Lift, Concourse to Overbridge');
+    // review §3.5.5: a single item is shown directly, no click required.
+    expect(screen.getByText('Lift, Concourse to Overbridge')).toBeInTheDocument();
     const list = container.querySelector('ul');
     expect(list).not.toBeNull();
     // Mantine's own `ListItem` wraps children in a `<span>`, and every node
@@ -477,10 +545,12 @@ describe('StationAccessibilitySection, pattern rendering', () => {
     expect(list!.querySelectorAll('li')).toHaveLength(1);
   });
 
-  it('numbers the fallback list\'s items so nested disclosures stay distinguishable', async () => {
+  it('numbers the fallback list\'s items so nested disclosures stay distinguishable', () => {
     // An array of objects with no `name` matches none of B/D/F. Nothing in
     // the 31 real payloads reaches it, but the wire type is `unknown` and
-    // this branch is what stops such a value disappearing.
+    // this branch is what stops such a value disappearing. Only two items,
+    // so the outer list itself is shown directly (review §3.5.5) -- each
+    // item's own "Raw data" disclosure is what this test is really about.
     renderWithMantine(
       <StationAccessibilitySection
         result={{
@@ -489,8 +559,7 @@ describe('StationAccessibilitySection, pattern rendering', () => {
         }}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Car parks: 2 items' }));
-    expect(await screen.findByRole('button', { name: 'Car parks 1: Raw data' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Car parks 1: Raw data' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Car parks 2: Raw data' })).toBeInTheDocument();
   });
 

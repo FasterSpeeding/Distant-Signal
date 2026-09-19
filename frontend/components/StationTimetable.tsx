@@ -247,28 +247,37 @@ export function StationTimetable({ crs }: { crs: string }) {
   }
 
   return (
+    // review §3.5.12: this link used to sit as a bare sibling below the
+    // accordion, always visible "regardless of expand state" (by design --
+    // see this component's own test of that name) but visually floating
+    // outside it with nothing connecting the two. Anchored to the control's
+    // own row instead -- right-aligned beside it -- rather than moved
+    // inside the panel, which would make it disappear whenever the
+    // accordion is collapsed and break that same guarantee.
     <Stack gap="xs">
-      <Accordion keepMounted={false} onChange={handleChange}>
-        <AccordionItem value="scheduled-departures">
-          <AccordionControl>Scheduled departures</AccordionControl>
-          <AccordionPanel>
-            <Stack gap="xs">
-              <Text size="sm" c="dimmed">
-                These are from the scheduled timetable, not live running information, and may be up to 30
-                minutes out of date. Open a train to see its live status.
-              </Text>
-              <Text size="sm" c="dimmed">
-                This list shows only departures from this station -- trains that terminate here won&apos;t
-                be listed, and neither headcode nor operator is available for scheduled-timetable rows.
-              </Text>
-              {resultsContent()}
-            </Stack>
-          </AccordionPanel>
-        </AccordionItem>
-      </Accordion>
-      <TextLink href={`/trains?station=${crs.toUpperCase()}`}>
-        Search a different day or filter →
-      </TextLink>
+      <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm">
+        <Accordion keepMounted={false} onChange={handleChange} style={{ flexGrow: 1, minWidth: 0 }}>
+          <AccordionItem value="scheduled-departures">
+            <AccordionControl>Scheduled departures</AccordionControl>
+            <AccordionPanel>
+              <Stack gap="xs">
+                <Text size="sm" c="dimmed">
+                  These are from the scheduled timetable, not live running information, and may be up to 30
+                  minutes out of date. Open a train to see its live status.
+                </Text>
+                <Text size="sm" c="dimmed">
+                  This list shows only departures from this station -- trains that terminate here won&apos;t
+                  be listed, and neither headcode nor operator is available for scheduled-timetable rows.
+                </Text>
+                {resultsContent()}
+              </Stack>
+            </AccordionPanel>
+          </AccordionItem>
+        </Accordion>
+        <TextLink href={`/trains?station=${crs.toUpperCase()}`} inline underline="always">
+          Search a different day or filter →
+        </TextLink>
+      </Group>
     </Stack>
   );
 }

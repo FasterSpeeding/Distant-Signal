@@ -196,6 +196,20 @@ html:root[data-mantine-color-scheme='light'] {
      input in this app also carries a visible `label`, so the placeholder
      is never the only thing naming the field. */
   --mantine-color-placeholder: var(--mantine-color-gray-7);
+
+  /* `StationAccessibilitySection`'s tick/cross glyph (`AvailabilityIcon`) --
+     colour is decorative reinforcement of the adjacent "Available"/"Not
+     available" text (design §4.2), never the fact's only carrier, so it
+     only needs to clear the UI-component contrast floor (3:1) rather than
+     text's 4.5:1. Green 7 / red 7 in light, green 4 / red 4 in dark --
+     review §3.5.6's own numbers. The dark half is the same red 4
+     `--ds-color-error-text` already uses in the dark block below, so the
+     glyph's dark resolution matches an established pattern rather than
+     inventing a new one; the light half is one shade lighter than that
+     token's red 9, since 7 already clears the lower 3:1 bar this glyph
+     needs and the review named it explicitly. */
+  --ds-color-good-icon: var(--mantine-color-green-7);
+  --ds-color-bad-icon: var(--mantine-color-red-7);
 }
 
 /* The dark scheme is NOT the "already fine" case the light-scheme comments
@@ -230,6 +244,11 @@ html:root[data-mantine-color-scheme='dark'] {
      6.70:1 on the #242424 body, 5.86:1 on a #2e2e2e Card, against the
      3.44:1/3.01:1 that `--mantine-color-red-filled` (red 8 here) gave. */
   --ds-color-error-text: var(--mantine-color-red-4);
+  /* The dark half of `AvailabilityIcon`'s glyph colour -- see the light
+     block's comment above. Red 4 here doubles as `--ds-color-error-text`'s
+     own dark value, already measured at 6.70:1 on the #242424 body. */
+  --ds-color-good-icon: var(--mantine-color-green-4);
+  --ds-color-bad-icon: var(--mantine-color-red-4);
 }
 
 /* Exactly the same defect as `--mantine-color-dimmed` above, in a place
@@ -1207,6 +1226,34 @@ a[data-text-link='always'] {
    sufficient distinguisher from surrounding body text (WCAG 1.4.1). */
 [data-rich-text] a {
   color: var(--mantine-color-anchor);
+  /* review §3.5.9: a long unrewritten URL (a malformed href `hostLabel`
+     rejected, or an anchor whose text genuinely isn't its own href) could
+     otherwise force the whole `[data-rich-text]` column wider than its
+     container instead of wrapping -- the 70ch column `StationAccessibility
+     Section.tsx` now sets (§3.5.10) makes this more likely to bite, not
+     less. `anywhere` breaks inside a word only as a last resort, after
+     ordinary word-break opportunities are exhausted. */
+  overflow-wrap: anywhere;
+}
+
+/* review §3.5.7: rich-text paragraphs (station-accessibility notes, mostly)
+   had no vertical rhythm of their own -- Mantine's `Typography` doesn't set
+   a `p` margin, so two- and three-paragraph notes ran together as one
+   block while sitting next to plain `Stack`-spaced label/value rows that
+   very visibly did have rhythm. `xs` matches this section's own between-row
+   spacing (`FieldsView`'s `Stack gap={4}` reads close in absolute terms;
+   `xs` -- Mantine's next step up -- is deliberately a little more generous,
+   since a paragraph break is a bigger pause than a label/value row change).
+   The `:last-child` rule then cancels that trailing margin so a note's last
+   paragraph doesn't add a gap the surrounding `Stack`'s own `gap` already
+   provides -- without it, notes would carry visibly more space below them
+   than plain rows do. */
+[data-rich-text] p {
+  margin-bottom: var(--mantine-spacing-xs);
+}
+
+[data-rich-text] :last-child {
+  margin-bottom: 0;
 }
 
 /* Mantine's Badge root sets `overflow: hidden` + `text-overflow: ellipsis`

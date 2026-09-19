@@ -16,12 +16,18 @@ export const ACCESSIBILITY_CATEGORIES: {
   heading: string;
   keys: (keyof StationAccessibilityData)[];
 }[] = [
-  { heading: 'Step-free access & assistance', keys: ['stationAccessibility', 'staffAssistance'] },
+  // `helpAndSupport` moved here from "Platform & station facilities"
+  // (review §3.5.4): its own fields (`helpPoints`, `staffHelp`, customer
+  // information tokens, induction loop) are near-duplicates of
+  // `staffAssistance`'s -- the same fact captured twice by two independent
+  // Darwin/Knowledgebase feeds -- so the two keys now render adjacently in
+  // one group instead of ~2,000px apart under two different headings.
+  // `dedupeAcrossSection` (below) then strips the byte-identical overlap
+  // between them; being in the same group is what lets that happen without
+  // threading state across the whole page.
+  { heading: 'Step-free access & assistance', keys: ['stationAccessibility', 'staffAssistance', 'helpAndSupport'] },
   { heading: 'Facilities', keys: ['toiletsAndChanging', 'lifts', 'loungesAndWaiting'] },
-  {
-    heading: 'Platform & station facilities',
-    keys: ['platformFacilities', 'stationFacilities', 'helpAndSupport'],
-  },
+  { heading: 'Platform & station facilities', keys: ['platformFacilities', 'stationFacilities'] },
   { heading: 'Getting here', keys: ['transportLinks', 'carParks', 'dropOffPickUp', 'cycling'] },
 ];
 
@@ -36,7 +42,34 @@ export const ACCESSIBILITY_CATEGORIES: {
  * What is left for this function is the two jobs it is actually good at:
  * labelling the fallback branch's key/value rows, and expanding the
  * camelCase tokens Pattern F carries (`DepartureScreens`). */
+/** Whole-key overrides for the handful of feed field names that survive
+ * `humanizeKey`'s mechanical splitting as words no traveller would
+ * recognise -- "Names" (which of what?) and "Lifts info" (a1990s-CMS-ism)
+ * -- checked before the generic camelCase splitter runs. Small and
+ * deliberately not a general dictionary (§4.6's own reasoning for why this
+ * module has no per-field label table): these are the two the 09-17 review
+ * named, not an invitation to grow this into one. */
+const KEY_LABEL_OVERRIDES: Record<string, string> = {
+  names: 'Named locations',
+  liftsInfo: 'Lift details',
+};
+
+/** Acronyms `humanizeKey`'s lowercase-then-capitalize-first pass would
+ * otherwise mangle into "Cctv"/"Atm"/"Wifi" -- real output for
+ * `stationFacilities.cctvAvailable`, `.atm` and `.wifi` (review §3.5.11).
+ * Matched per word, case-insensitively, against the already-split camelCase
+ * tokens, so `cctvAvailable` -> `['cctv', 'available']` -> `CCTV available`
+ * without a separate table entry for every field the word can appear in. */
+const ACRONYM_WORDS: Record<string, string> = {
+  atm: 'ATM',
+  cctv: 'CCTV',
+  wifi: 'Wi-Fi',
+};
+
 export function humanizeKey(key: string): string {
+  if (Object.prototype.hasOwnProperty.call(KEY_LABEL_OVERRIDES, key)) {
+    return KEY_LABEL_OVERRIDES[key];
+  }
   const words = key
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
@@ -44,7 +77,28 @@ export function humanizeKey(key: string): string {
     .split(' ')
     .filter(Boolean);
   if (words.length === 0) return key;
-  return [words[0].charAt(0).toUpperCase() + words[0].slice(1), ...words.slice(1)].join(' ');
+  const [firstWord, ...restWords] = words;
+  const first = ACRONYM_WORDS[firstWord] ?? firstWord.charAt(0).toUpperCase() + firstWord.slice(1);
+  const rest = restWords.map((word) => ACRONYM_WORDS[word] ?? word);
+  return [first, ...rest].join(' ');
+}
+
+/** Pattern G/link-text's "the anchor says its own URL" defect (review
+ * §3.5.9): `nationalrail.co.uk ↗` reads as a destination, `https://www.
+ * nationalrail.co.uk/stations_destinations/...` reads as noise, and both
+ * this module's own `link` nodes (`renderContact`'s Website field always
+ * sets `text` to the raw URL) and the rich-text sanitizer's raw `<a>`s hit
+ * this. `www.` is stripped because it names the same host as its bare form
+ * and adds nothing a reader needs. Returns `null` on anything `new URL`
+ * rejects, so a malformed href is left as plain text rather than crashing
+ * or silently losing the link. */
+export function hostLabel(url: string): string | null {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./i, '');
+    return host === '' ? null : `${host} ↗`;
+  } catch {
+    return null;
+  }
 }
 
 /** Decision 6's "`null`/`undefined` -> the key is skipped entirely" rule,
@@ -283,12 +337,21 @@ export const MAX_RENDER_DEPTH = 7;
 /** Turn one allowlisted key's value into something displayable. Never
  * throws, for any input at all -- the guarantee most worth keeping from the
  * original Decision 6 (§8). Every branch either produces a node or falls
- * through to `raw`. */
-export function renderAccessibilityValue(value: unknown): AccessibilityNode {
-  return renderAt(value, 0);
+ * through to `raw`.
+ *
+ * `topKey` is the allowlisted key this value was fetched under (e.g.
+ * `'carParks'`), threaded exactly one level deep so `renderFields` can
+ * recognise the review's "Car parks" printed twice in a row (§3.5.11):
+ * `data.carParks` is itself an object with its OWN nested `carParks` array,
+ * so the generic fallback used to label that nested field "Car parks"
+ * again, immediately under a group entry already headed "Car parks". Only
+ * meaningful at depth 0 -- a key repeating its own *grandparent's* name
+ * four levels down is a coincidence worth showing, not this same bug. */
+export function renderAccessibilityValue(value: unknown, topKey?: string): AccessibilityNode {
+  return renderAt(value, 0, topKey);
 }
 
-function renderAt(value: unknown, depth: number): AccessibilityNode {
+function renderAt(value: unknown, depth: number, topKey?: string): AccessibilityNode {
   if (typeof value === 'string') return renderString(value);
   if (isPrimitive(value)) return { kind: 'text', text: primitiveText(value) };
 
@@ -299,7 +362,7 @@ function renderAt(value: unknown, depth: number): AccessibilityNode {
   if (depth > MAX_RENDER_DEPTH) return raw(value);
 
   if (Array.isArray(value)) return renderArray(value, depth);
-  if (isPlainObject(value)) return renderObject(value, depth);
+  if (isPlainObject(value)) return renderObject(value, depth, topKey);
   return raw(value);
 }
 
@@ -321,10 +384,10 @@ function renderArray(value: unknown[], depth: number): AccessibilityNode {
 }
 
 /** §4.1's precedence, object half: C, then A, then the labelled fallback. */
-function renderObject(value: Record<string, unknown>, depth: number): AccessibilityNode {
+function renderObject(value: Record<string, unknown>, depth: number, topKey?: string): AccessibilityNode {
   if (isContactDetails(value)) return renderContact(value, depth);
   if (isFacilityRecord(value)) return renderFacility(value, depth);
-  return renderFields(value, depth);
+  return renderFields(value, depth, depth === 0 ? topKey : undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -344,15 +407,49 @@ const FACILITY_FIELDS = [
   'operatorContactDetails',
 ] as const;
 
+/** Digits and a leading `+` only -- the same normalisation `telHref` (below,
+ * Pattern C) applies before dialling, reused here so "0345 077 4224" in one
+ * field and "03450774224" in another still compare equal regardless of how
+ * each was formatted. */
+function digitsOnly(value: string): string {
+  return value.replace(/[^\d+]/g, '');
+}
+
 function renderFacility(value: Record<string, unknown>, depth: number): AccessibilityNode {
   const parts: LabelledNode[] = [];
 
+  // A facility's own free-text `location`/`notes` occasionally just repeats
+  // its `operatorContactDetails.primaryTelephoneNumber` verbatim -- the
+  // same number once as inert prose here and once, a few lines below, as
+  // the tappable `tel:` link `Contact` renders (review §3.5.8). Compared as
+  // digits only so formatting differences between the two copies don't
+  // hide a real duplicate.
+  const contactPhone =
+    isPlainObject(value.operatorContactDetails) &&
+    typeof value.operatorContactDetails.primaryTelephoneNumber === 'string'
+      ? digitsOnly(value.operatorContactDetails.primaryTelephoneNumber)
+      : '';
+  // "Exactly equals", not "contains": a note that mentions the phone
+  // number alongside other prose ("Call reception, not the main helpline
+  // 0345 077 4224") is NOT a duplicate to drop -- the surrounding words are
+  // real information. Requiring the whole trimmed string to be nothing but
+  // digits and phone punctuation (spaces, hyphens, parens, dots, a leading
+  // +) before comparing digits is what keeps `digitsOnly`'s "strip
+  // everything that isn't a digit" from silently discarding real prose and
+  // false-matching on the number alone.
+  const isPhoneDuplicate = (text: string): boolean => {
+    if (contactPhone === '') return false;
+    const trimmed = text.trim();
+    if (!/^[\d\s\-().+]+$/.test(trimmed)) return false;
+    return digitsOnly(trimmed) === contactPhone;
+  };
+
   // `location` and `notes` are prose about this facility, so they carry no
   // label -- the availability line above them is the subject.
-  pushUnlabelled(parts, 'location', value.location, depth);
-  pushUnlabelled(parts, 'notes', value.notes, depth);
+  pushUnlabelled(parts, 'location', value.location, depth, isPhoneDuplicate);
+  pushUnlabelled(parts, 'notes', value.notes, depth, isPhoneDuplicate);
   pushLabelled(parts, 'Opening times', value.openingTimes, depth);
-  pushUnlabelled(parts, 'openingHoursNotes', value.openingHoursNotes, depth);
+  pushUnlabelled(parts, 'openingHoursNotes', value.openingHoursNotes, depth, isPhoneDuplicate);
   pushLabelled(parts, 'Contact', value.operatorContactDetails, depth);
 
   for (const [key, own] of Object.entries(value)) {
@@ -370,18 +467,24 @@ function renderFacility(value: Record<string, unknown>, depth: number): Accessib
  * *usual* type has a bespoke rendering; a field arriving as some other type
  * must still reach the page, because silently losing a field is the failure
  * mode the design (§5, reason 2) calls the worst possible one for this
- * feature, and the whole point of keeping a terminal fallback. */
+ * feature, and the whole point of keeping a terminal fallback.
+ *
+ * `isDuplicate` is `renderFacility`'s phone-number check (§3.5.8) --
+ * optional because most callers of this generic slot have nothing to
+ * compare against. */
 function pushUnlabelled(
   parts: LabelledNode[],
   key: string,
   value: unknown,
   depth: number,
+  isDuplicate?: (text: string) => boolean,
 ): void {
   if (!hasRenderableValue(value)) return;
   if (typeof value !== 'string') {
     pushField(parts, key, value, depth);
     return;
   }
+  if (isDuplicate?.(value)) return;
   const node = renderString(value);
   if (isEmptyNode(node)) return;
   parts.push({ node });
@@ -761,12 +864,45 @@ function humanizeToken(value: unknown): string {
  * (§4.6); everything else keeps one. A field that renders to nothing at all
  * is dropped, for the same reason a `null` one is: a label over blank space
  * is worse than no row (§2.5, §4.10). */
-function renderFields(value: Record<string, unknown>, depth: number): AccessibilityNode {
+function renderFields(value: Record<string, unknown>, depth: number, topKey?: string): AccessibilityNode {
   const fields: LabelledNode[] = [];
   for (const [key, own] of Object.entries(value)) {
+    // The review's "Car parks" printed twice in a row: `data.carParks` is
+    // an object whose own `carParks` array carries the real content, and
+    // the generic path below would otherwise relabel it with the exact
+    // same word the group entry already used one line above. Only compared
+    // at depth 0 -- see `renderAccessibilityValue`'s doc comment.
+    if (depth === 0 && topKey !== undefined && key.toLowerCase() === topKey.toLowerCase()) {
+      pushWithoutLabel(fields, own, depth);
+      continue;
+    }
     pushField(fields, key, own, depth);
   }
   return { kind: 'fields', fields };
+}
+
+/** Same admission rules as `pushField` (renderable, not empty), but never
+ * labels the result -- for the one case above where a nested field's own
+ * name would just repeat context the reader already has. */
+function pushWithoutLabel(fields: LabelledNode[], own: unknown, depth: number): void {
+  if (!hasRenderableValue(own)) return;
+  const node = renderAt(own, depth + 1);
+  if (isEmptyNode(node)) return;
+  fields.push({ node });
+}
+
+/** Fields named `category`/`crsCode`/`postcode` whose CONTAINING key's own
+ * humanized label already ends in that same word -- `stepFreeCategory` ->
+ * "Step free category" holding a `category` field that would otherwise add
+ * its own "Category:" line directly underneath, saying the word twice
+ * (review §3.5.11). Generalised to the whole `CODE_LIKE_FIELDS` set rather
+ * than hard-coded to `stepFreeCategory.category` alone, since the same
+ * shape (an object named after the thing its one code-like field also
+ * names) is what produced this case and could produce another. */
+function redundantCodeLikeLabel(parentKey: string, ownKey: string): boolean {
+  if (!CODE_LIKE_FIELDS.has(ownKey)) return false;
+  const parentWords = humanizeKey(parentKey).toLowerCase().split(' ');
+  return parentWords[parentWords.length - 1] === ownKey.toLowerCase();
 }
 
 function pushField(fields: LabelledNode[], key: string, own: unknown, depth: number): void {
@@ -781,7 +917,43 @@ function pushField(fields: LabelledNode[], key: string, own: unknown, depth: num
     fields.push({ node });
     return;
   }
+  // "Location" reads the same everywhere it appears -- prose about the
+  // surrounding subject, not a distinct fact needing "Location:" in front
+  // of it. `renderFacility`'s `location`/`notes` slot already treats a
+  // facility's own location this way; this generalises the same rule to a
+  // Pattern D item's sibling `location` field (review §3.5.11's "Location:
+  // Next to Waitrose" inconsistency), the only place still labelling it.
+  // (A `sentence`-kind location already lost its label in the branch
+  // above -- this only has `text`-kind ones left to catch.)
+  if (key.toLowerCase() === 'location' && node.kind === 'text') {
+    fields.push({ node });
+    return;
+  }
+  if (node.kind === 'fields') {
+    const soleCodeKey = findSoleCodeLikeKey(node);
+    if (soleCodeKey && redundantCodeLikeLabel(key, soleCodeKey)) {
+      const soleLabel = humanizeKey(soleCodeKey);
+      fields.push({
+        label: humanizeKey(key),
+        node: { ...node, fields: node.fields.map((f) => (f.label === soleLabel ? { node: f.node } : f)) },
+      });
+      return;
+    }
+  }
   fields.push({ label: humanizeKey(key), node });
+}
+
+/** The single `CODE_LIKE_FIELDS` name a `fields` node's own source object
+ * carries, if it has exactly one -- used only to decide whether
+ * `redundantCodeLikeLabel` applies, never to change which fields render.
+ * Deliberately reads the ALREADY-RENDERED node's labels rather than the raw
+ * object, since by this point sentence-shaped `CODE_LIKE_FIELDS` values
+ * (§4.6) are the only ones still guaranteed to carry their own label. */
+function findSoleCodeLikeKey(node: AccessibilityNode): string | undefined {
+  if (node.kind !== 'fields') return undefined;
+  const codeLabels = [...CODE_LIKE_FIELDS].map((k) => humanizeKey(k));
+  const matches = node.fields.filter((f) => f.label !== undefined && codeLabels.includes(f.label));
+  return matches.length === 1 ? [...CODE_LIKE_FIELDS].find((k) => humanizeKey(k) === matches[0].label) : undefined;
 }
 
 /** §4.9's last resort. `JSON.stringify` itself can throw (a cycle, a
@@ -877,4 +1049,192 @@ function isEmptyMarkup(html: string): boolean {
     .replace(/&nbsp;|&#160;|&#xa0;/gi, '')
     .replace(/[\s ​]/g, '');
   return isPunctuationOnlyText(stripped);
+}
+
+// ---------------------------------------------------------------------------
+// Cross-section de-duplication (review §3.5.4)
+// ---------------------------------------------------------------------------
+
+/** A cheap, order-independent fingerprint of a node's own content -- used
+ * only to recognise "this exact fact was already shown", never to change
+ * what a node contains. `JSON.stringify` is stable enough here because
+ * every `AccessibilityNode` is built by this module's own object literals,
+ * whose key order never varies between two structurally-equal nodes. */
+function nodeSignature(node: AccessibilityNode): string {
+  try {
+    return JSON.stringify(node);
+  } catch {
+    return '';
+  }
+}
+
+/** Strips a node of any labelled child that repeats, byte-for-byte, one
+ * already rendered earlier in the section -- the fix for "Help
+ * points"/"Staff help"/tactile-warning sentences appearing twice, once
+ * under `staffAssistance` and once under `helpAndSupport` (or, for tactile
+ * paving, once under `stationAccessibility` and once under
+ * `platformFacilities`): two independent Darwin/Knowledgebase fields
+ * publishing the same fact (review §3.5.4).
+ *
+ * Deliberately shallow in what it recurses into: only `fields`/`contact`'s
+ * field lists and a `facility`'s `parts` are walked, one labelled child at a
+ * time. `collection`/`list`/`bullets` item arrays are left untouched on
+ * purpose -- the survey's other big source of repeated text is many
+ * DISTINCT named items (platforms, lifts, toilets) that legitimately share
+ * a standard sentence ("Lift controls should be accessible to most
+ * people"), and deduping across those would silently blank out real,
+ * item-specific facts rather than remove a copy-paste duplicate. A
+ * `facility` node's own top-level signature is never checked either, for
+ * the same reason `isEmptyNode` never empties one: two unrelated facilities
+ * that both happen to be a bare "not available" (`{available:false,
+ * parts:[]}`) are two different real facts, not a duplicate.
+ *
+ * `seen` is one `Set` shared across every group and entry, walked in the
+ * section's own fixed top-to-bottom order (`ACCESSIBILITY_CATEGORIES`,
+ * then each category's key list) -- so whichever copy renders first (the
+ * more prominent placement) is the one that survives, and a later repeat
+ * is what gets dropped. */
+export function dedupeAcrossSection(node: AccessibilityNode, seen: Set<string>): AccessibilityNode {
+  if (node.kind === 'fields' || node.kind === 'contact') {
+    const fields = dedupeFieldList(node.fields, seen);
+    return { ...node, fields };
+  }
+  if (node.kind === 'facility') {
+    const parts = dedupeFieldList(node.parts, seen);
+    return { ...node, parts };
+  }
+  const sig = nodeSignature(node);
+  if (sig !== '' && seen.has(sig)) return { kind: 'text', text: '' };
+  if (sig !== '') seen.add(sig);
+  return node;
+}
+
+function dedupeFieldList(fields: LabelledNode[], seen: Set<string>): LabelledNode[] {
+  const result: LabelledNode[] = [];
+  for (const field of fields) {
+    const deduped = dedupeAcrossSection(field.node, seen);
+    if (isEmptyNode(deduped)) continue;
+    result.push({ ...field, node: deduped });
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Kind-ordering within a group (review §3.5.3)
+// ---------------------------------------------------------------------------
+
+/** Where a node kind sits in the stable sort every group's entries go
+ * through before rendering: the single most-asked-about fact (a step-free
+ * category is a `text`/`sentence`) no longer sits below a lift count buried
+ * three collections down. Boolean-shaped facts (`text`/`sentence`,
+ * `facility`) lead; short glanceable facility summaries and token chips
+ * come next; times/contacts (a phone number, an opening-hours table) are
+ * usually a next step rather than a headline fact; large collections and
+ * the last-resort shapes sink to the bottom, where their disclosure
+ * controls already live. Ties keep their original (feed) order --
+ * `Array.prototype.sort` is a stable sort in every engine this app targets,
+ * which is what makes that guarantee meaningful. */
+const KIND_SORT_RANK: Record<AccessibilityNode['kind'], number> = {
+  text: 0,
+  sentence: 0,
+  facility: 1,
+  tokens: 2,
+  richText: 2,
+  openingTimes: 3,
+  contact: 3,
+  link: 3,
+  collection: 4,
+  list: 4,
+  bullets: 4,
+  fields: 4,
+  raw: 5,
+};
+
+/** Sorts one group's already-deduplicated entries by `KIND_SORT_RANK`. Kept
+ * as a named export so `StationAccessibilitySection.test.tsx` can assert
+ * the ordering directly against a group of mixed-kind entries, rather than
+ * only indirectly through rendered DOM order. */
+export function sortEntriesByKind<T extends { node: AccessibilityNode }>(entries: T[]): T[] {
+  return [...entries].sort((a, b) => KIND_SORT_RANK[a.node.kind] - KIND_SORT_RANK[b.node.kind]);
+}
+
+// ---------------------------------------------------------------------------
+// At-a-glance strip (review §3.5.3)
+// ---------------------------------------------------------------------------
+
+export interface AtAGlanceFact {
+  label: string;
+  value: string;
+}
+
+/** Shallow, defensive search for a string field named `key` up to `depth`
+ * plain-object/array levels below `value` -- used only to surface a
+ * best-effort fact for the at-a-glance strip. Never throws and never
+ * assumes a shape: a payload that doesn't have the field simply yields no
+ * fact, which is this strip's only failure mode (§3.5.3's items are a
+ * bonus summary, not a replacement for the full section below it). */
+function findString(value: unknown, key: string, depth: number): string | null {
+  if (depth < 0 || value === null || value === undefined) return null;
+  if (isPlainObject(value)) {
+    const own = value[key];
+    if (typeof own === 'string' && own.trim() !== '') return own.trim();
+    for (const child of Object.values(value)) {
+      const found = findString(child, key, depth - 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findString(item, key, depth - 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function sumNumberField(value: unknown, key: string): number {
+  if (!Array.isArray(value)) return 0;
+  return value.reduce((total: number, item) => {
+    if (isPlainObject(item) && typeof item[key] === 'number') return total + item[key];
+    return total;
+  }, 0);
+}
+
+/** A handful of the facts a station-page reader most often scrolls the
+ * whole 4,500px section to find, surfaced as a strip above it (review
+ * §3.5.3). Each fact is read directly off `data` through a narrow,
+ * well-known path rather than by scanning the rendered node tree, so this
+ * stays a small, auditable list rather than a second general-purpose
+ * renderer: a payload shaped differently from the 31 surveyed stations
+ * simply omits that one fact instead of guessing at it. */
+export function computeAtAGlance(data: StationAccessibilityData): AtAGlanceFact[] {
+  const facts: AtAGlanceFact[] = [];
+
+  const category = findString(data.stationAccessibility, 'category', 1);
+  if (category) facts.push({ label: 'Step-free category', value: category });
+
+  const phone = findString(data.staffAssistance, 'primaryTelephoneNumber', 3);
+  if (phone) facts.push({ label: 'Assistance phone', value: phone });
+
+  const toilets = isPlainObject(data.toiletsAndChanging) ? data.toiletsAndChanging.toilets : undefined;
+  if (isPlainObject(toilets)) {
+    if (toilets.accessibleToiletsAvailable === true) {
+      facts.push({ label: 'Accessible toilet', value: 'Yes' });
+    }
+    if (toilets.changingPlacesToiletsAvailable === true) {
+      facts.push({ label: 'Changing Places', value: 'Yes' });
+    }
+  }
+
+  if (isPlainObject(data.lifts) && Array.isArray(data.lifts.liftsInfo)) {
+    facts.push({ label: 'Lifts', value: String(data.lifts.liftsInfo.length) });
+  }
+
+  if (isPlainObject(data.carParks) && Array.isArray(data.carParks.carParks)) {
+    const bays = sumNumberField(data.carParks.carParks, 'numberOfAccessibleSpaces');
+    if (bays > 0) facts.push({ label: 'Blue Badge bays', value: String(bays) });
+  }
+
+  return facts;
 }

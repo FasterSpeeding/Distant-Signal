@@ -239,7 +239,18 @@ export default async function StationDisruptionPage({
   return (
     <Stack p="lg" gap="md">
       <Group justify="space-between">
-        <Title order={1}>Disruptions at {heading}</Title>
+        {/* review §3.5.1: this page is 85% accessibility & facilities
+            content with no way to jump to it, and an `<h1>` reading
+            "Disruptions at X" for a page that is mostly NOT disruptions
+            was itself part of the problem. The heading now matches
+            `generateMetadata`'s own title form; the "On this page" row
+            immediately below restores the page's own framing (what the
+            page is FOR) that the old title carried, as navigation rather
+            than as prose. Deliberately not a tabs rewrite -- Decision 8's
+            placement (accessibility last) is unchanged, only the page's
+            framing changes, which the 09-17 review itself recommends as
+            the cheaper option that gets most of the benefit. */}
+        <Title order={1}>{heading}</Title>
         <Group gap="md">
           <TextLink href={`/track?origin=${crs}`}>Track a train from here</TextLink>
           <PinToggle kind="station" id={crs} initiallyPinned={preferences.pinnedStations.includes(crs)} />
@@ -247,44 +258,78 @@ export default async function StationDisruptionPage({
         </Group>
       </Group>
 
+      <Group
+        component="nav"
+        aria-label="On this page"
+        gap="sm"
+        c="dimmed"
+        style={{ fontSize: 'var(--mantine-font-size-sm)' }}
+      >
+        <TextLink href="#disruptions" underline="always" inline>
+          Disruptions
+        </TextLink>
+        <Text span c="dimmed">
+          ·
+        </Text>
+        <TextLink href="#stats" underline="always" inline>
+          Stats
+        </TextLink>
+        <Text span c="dimmed">
+          ·
+        </Text>
+        <TextLink href="#departures" underline="always" inline>
+          Departures
+        </TextLink>
+        <Text span c="dimmed">
+          ·
+        </Text>
+        <TextLink href="#accessibility" underline="always" inline>
+          Accessibility &amp; facilities
+        </TextLink>
+      </Group>
+
       {/* Two different absences, said honestly rather than collapsed into
           one cheerful "no disruptions" that would just as easily describe a
           station we've never modelled at all -- the bug this task exists to
-          fix (see fetchStationDisruptions's doc comment above). */}
-      {coverage === 'none' && (
-        <Text c="dimmed">This station isn&apos;t covered by our line-status tracking yet.</Text>
-      )}
-      {coverage === 'covered' && reports.length === 0 && (
-        <Text c="dimmed">No disruptions affecting this station.</Text>
-      )}
+          fix (see fetchStationDisruptions's doc comment above). Wrapped with
+          the reports list below in one `id="disruptions"` container -- the
+          "On this page" row's own jump target (review §3.5.1). */}
+      <Stack gap="md" id="disruptions">
+        {coverage === 'none' && (
+          <Text c="dimmed">This station isn&apos;t covered by our line-status tracking yet.</Text>
+        )}
+        {coverage === 'covered' && reports.length === 0 && (
+          <Text c="dimmed">No disruptions affecting this station.</Text>
+        )}
 
-      {orderedReports.length > 0 && (
-        <>
-          <Divider />
-          {/* Per-line attribution, once — replacing three full copies of
-              the same filter block, tab bar and issue list. The headings
-              are links now, which the review asked for and the previous
-              plain `Text` headings weren't. */}
-          <Stack gap="xs">
-            {orderedReports.map((report) => {
-              const representative = representativeStatus(report.lineStatuses);
-              return (
-                <Group key={report.id} justify="space-between" wrap="nowrap" gap="sm">
-                  <Stack gap={0} style={{ minWidth: 0 }}>
-                    <TextLink href={`/lines/${report.id}`}>{report.name}</TextLink>
-                    <Text size="xs" c="dimmed">
-                      {formatSampleSummary(representative)}
-                    </Text>
-                  </Stack>
-                  <StatusBadge severity={worstStatus(report).statusSeverity} />
-                </Group>
-              );
-            })}
-          </Stack>
-          <Divider />
-          <IssueList items={items} now={now} subject="station" />
-        </>
-      )}
+        {orderedReports.length > 0 && (
+          <>
+            <Divider />
+            {/* Per-line attribution, once — replacing three full copies of
+                the same filter block, tab bar and issue list. The headings
+                are links now, which the review asked for and the previous
+                plain `Text` headings weren't. */}
+            <Stack gap="xs">
+              {orderedReports.map((report) => {
+                const representative = representativeStatus(report.lineStatuses);
+                return (
+                  <Group key={report.id} justify="space-between" wrap="nowrap" gap="sm">
+                    <Stack gap={0} style={{ minWidth: 0 }}>
+                      <TextLink href={`/lines/${report.id}`}>{report.name}</TextLink>
+                      <Text size="xs" c="dimmed">
+                        {formatSampleSummary(representative)}
+                      </Text>
+                    </Stack>
+                    <StatusBadge severity={worstStatus(report).statusSeverity} />
+                  </Group>
+                );
+              })}
+            </Stack>
+            <Divider />
+            <IssueList items={items} now={now} subject="station" />
+          </>
+        )}
+      </Stack>
 
       {/* Sample stats by operator -- an independent block from the
           disruption section above, keyed by LDBWS live-sampling coverage
@@ -292,7 +337,7 @@ export default async function StationDisruptionPage({
           honest states, mirroring the disruption section's own
           coverage-vs-empty split immediately above. */}
       <Divider />
-      <Stack gap="xs">
+      <Stack gap="xs" id="stats">
         <Title order={2} size="h4">
           Sample stats by operator
         </Title>
@@ -314,7 +359,9 @@ export default async function StationDisruptionPage({
       </Stack>
 
       <Divider />
-      <StationTimetable crs={crs} />
+      <div id="departures">
+        <StationTimetable crs={crs} />
+      </div>
 
       {/* Accessibility & facilities -- a fourth independent block, keyed by
           a third, orthogonal coverage question again: whether this app has
@@ -323,7 +370,9 @@ export default async function StationDisruptionPage({
           "Accessibility", which in this codebase means WCAG (design spec
           Correction 4 / Decision 8). */}
       <Divider />
-      <StationAccessibilitySection result={accessibilityResult} />
+      <div id="accessibility">
+        <StationAccessibilitySection result={accessibilityResult} />
+      </div>
     </Stack>
   );
 }

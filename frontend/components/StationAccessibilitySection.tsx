@@ -16,11 +16,16 @@ import {
 } from '@mantine/core';
 import {
   ACCESSIBILITY_CATEGORIES,
+  computeAtAGlance,
+  dedupeAcrossSection,
   hasRenderableValue,
+  hostLabel,
   humanizeKey,
   isEmptyNode,
   renderAccessibilityValue,
+  sortEntriesByKind,
   type AccessibilityNode,
+  type AtAGlanceFact,
   type LabelledNode,
 } from '@/lib/stationAccessibility';
 import type { StationAccessibilityData } from '@/lib/types';
@@ -68,6 +73,18 @@ export interface StationAccessibilitySectionProps {
  * because the accessible name still *contains* the visible label verbatim
  * -- "Car parks: 1 item" starts a voice-control match on "1 item" just as
  * well. */
+/** Review §3.5.5's chrome-stripping direction: no border, no background, no
+ * extra horizontal padding, so the control sits flush in the text column at
+ * its label's own indent rather than reading as a divider/card. The
+ * `landmark-unique` reasoning in this component's own doc comment (below)
+ * is unaffected -- these overrides are visual only. */
+const DISCLOSURE_STYLES = {
+  item: { border: 'none', backgroundColor: 'transparent' },
+  control: { padding: 0, paddingBlock: 'var(--mantine-spacing-xs)' },
+  chevron: { marginInlineEnd: 'var(--mantine-spacing-xs)' },
+  panel: { paddingInlineStart: 'var(--mantine-spacing-md)' },
+} as const;
+
 function Disclosure({
   label,
   qualifier,
@@ -78,7 +95,7 @@ function Disclosure({
   children: React.ReactNode;
 }) {
   return (
-    <Accordion chevronPosition="left" keepMounted={false}>
+    <Accordion chevronPosition="left" keepMounted={false} styles={DISCLOSURE_STYLES}>
       <AccordionItem value="disclosure">
         {/* A bare string, not a `<Text>`: `AccordionControl` renders its
             children inside a `<button>`, and Mantine's `<Text>` is a `<p>`,
@@ -92,6 +109,29 @@ function Disclosure({
   );
 }
 
+/** review §3.5.5: the on-screen control text names WHAT there are several
+ * of ("13 toilet locations"), not just how many ("13 items") -- the
+ * question a reader actually has before deciding whether to open it.
+ * `noun`, when given, is the field's own humanized label; lowercased so it
+ * reads as a plural noun phrase rather than a re-capitalised heading. Falls
+ * back to bare "item(s)" when no more specific noun is available (the
+ * fallback list branch's numbered "Car parks 1", "Car parks 2" children,
+ * for instance, have no singular English noun of their own to lend). */
+function describeCount(count: number, noun?: string): string {
+  return `${count} ${noun ? noun.toLowerCase() : count === 1 ? 'item' : 'items'}`;
+}
+
+/** review §3.5.5: a collection this short is not worth hiding behind a
+ * disclosure at all -- "which lift serves platform 8" is exactly the
+ * question a reader has, and making them click through unlabelled chrome to
+ * find out is the itself the defect. Six of the section's nine disclosures
+ * are three items or fewer. Never true for the pluralised "N items" wording
+ * `describeCount` produces (this fires on the count itself, before that
+ * wording exists) -- and a single item never reaches an accordion either,
+ * satisfying the plan's separate "never render '1 item' as an accordion"
+ * requirement as a consequence of the same threshold. */
+const INLINE_ITEM_THRESHOLD = 3;
+
 /** The tick/cross in front of a Pattern A availability line.
  *
  * `aria-hidden`, and never the only carrier of the fact: the words
@@ -103,31 +143,48 @@ function Disclosure({
  * Inline SVG rather than a glyph or an icon package, matching
  * `InfoIcon.tsx`'s reasoning: `@tabler/icons-react` is not a dependency,
  * and "✓"/"✗" render as broken-looking emoji fallbacks in some font
- * stacks. */
+ * stacks.
+ *
+ * `stroke="currentColor"` picks up `--ds-color-good-icon`/
+ * `--ds-color-bad-icon` (`app/globals.css`) from the wrapping `<span>`'s
+ * inline `color` -- review §3.5.6's "colour the glyph", matching
+ * `StatusBadge`'s own green/red resolution. Colour is applied ONLY here,
+ * never to the adjacent text: the icon is decorative reinforcement, and
+ * this component's own test (`states availability in words, with the icon
+ * purely decorative`) already asserts the fact survives with every
+ * `aria-hidden` node stripped, so the text itself must keep the ordinary
+ * body-text contrast guarantee rather than inherit an unaudited colour. */
 function AvailabilityIcon({ available }: { available: boolean }) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="3"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      style={{ flexShrink: 0 }}
+    <span
+      style={{
+        display: 'inline-flex',
+        color: available ? 'var(--ds-color-good-icon)' : 'var(--ds-color-bad-icon)',
+      }}
     >
-      {available ? (
-        <polyline points="20 6 9 17 4 12" />
-      ) : (
-        <>
-          <line x1="18" y1="6" x2="6" y2="18" />
-          <line x1="6" y1="6" x2="18" y2="18" />
-        </>
-      )}
-    </svg>
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+        style={{ flexShrink: 0 }}
+      >
+        {available ? (
+          <polyline points="20 6 9 17 4 12" />
+        ) : (
+          <>
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </>
+        )}
+      </svg>
+    </span>
   );
 }
 
@@ -162,12 +219,12 @@ function LabelledNodeView({ field, path }: { field: LabelledNode; path?: string 
     );
   }
   return (
-    <Stack gap={2}>
+    <Stack gap={4}>
       <Text size="sm" fw={500}>
         {field.label}
       </Text>
-      <Stack gap={2} pl="sm">
-        <AccessibilityNodeView node={field.node} path={childPath} />
+      <Stack gap={4} pl="sm">
+        <AccessibilityNodeView node={field.node} label={field.label} path={childPath} />
       </Stack>
     </Stack>
   );
@@ -175,7 +232,7 @@ function LabelledNodeView({ field, path }: { field: LabelledNode; path?: string 
 
 function FieldsView({ fields, path }: { fields: LabelledNode[]; path?: string }) {
   return (
-    <Stack gap={2}>
+    <Stack gap={4}>
       {fields.map((field, index) => (
         // Two different source keys can humanize to the same label, and an
         // unlabelled sentence has no key at all, so neither is a safe React
@@ -213,8 +270,29 @@ function AccessibilityNodeView({
 }) {
   switch (node.kind) {
     case 'text':
-    case 'sentence':
+    case 'sentence': {
+      // review §3.5.6: a plain boolean field (`wheelchairsAvailable: true`)
+      // used to print as a bare "Yes"/"No" word -- one visual language for
+      // a fact that, everywhere else in this section, gets the tick/cross
+      // + colour treatment a `facility`'s own availability line uses.
+      // `primitiveText` (`stationAccessibility.ts`) is the only producer of
+      // these two exact strings on a `text`-kind node, so matching on them
+      // here unifies the two renderings without a new node kind, and
+      // without touching the existing lib-level tests that assert
+      // `renderAccessibilityValue(true)` stays `{kind:'text', text:'Yes'}`.
+      if (node.kind === 'text' && (node.text === 'Yes' || node.text === 'No')) {
+        const available = node.text === 'Yes';
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <AvailabilityIcon available={available} />
+            <Text size="sm" span>
+              {node.text}
+            </Text>
+          </span>
+        );
+      }
       return <Text size="sm">{node.text}</Text>;
+    }
 
     case 'richText':
       // Already sanitized in the lib, by `sanitizeRichText`, before this
@@ -252,7 +330,7 @@ function AccessibilityNodeView({
 
     case 'facility':
       return (
-        <Stack gap={2}>
+        <Stack gap={4}>
           <Group gap={6} wrap="nowrap" align="center">
             <AvailabilityIcon available={node.available} />
             {/* The words, always -- the icon is decorative and carries none
@@ -263,7 +341,7 @@ function AccessibilityNodeView({
             </Text>
           </Group>
           {node.parts.length > 0 && (
-            <Stack gap={2} pl="sm">
+            <Stack gap={4} pl="sm">
               <FieldsView fields={node.parts} path={path} />
             </Stack>
           )}
@@ -323,80 +401,94 @@ function AccessibilityNodeView({
       const visible = node.items.filter(
         (item) => item.label.trim() !== '' || item.link || !isEmptyNode(item.body),
       );
-      // No "Show" verb: the control keeps one static accessible name in
-      // both states, and the chevron plus `aria-expanded` carry
-      // open/closed. A button still reading "Show 2 items" while the items
-      // are on screen would contradict its own `aria-expanded="true"`.
-      const count = visible.length === 1 ? '1 item' : `${visible.length} items`;
+      const items = (
+        <Stack gap="sm">
+          {visible.map((item, index) => (
+            // eslint-disable-next-line react/no-array-index-key -- feed items have no stable id
+            <Stack key={index} gap={4}>
+              {item.link ? (
+                <TextLink
+                  href={item.link.href}
+                  underline="always"
+                  target={item.link.external ? '_blank' : undefined}
+                  rel={item.link.external ? 'noopener noreferrer' : undefined}
+                >
+                  {item.label}
+                </TextLink>
+              ) : (
+                <Text size="sm" fw={600}>
+                  {item.label}
+                </Text>
+              )}
+              {!isEmptyNode(item.body) && (
+                <Stack gap={4} pl="sm">
+                  <AccessibilityNodeView
+                    node={item.body}
+                    path={path ? `${path} ${item.label}` : item.label}
+                  />
+                </Stack>
+              )}
+            </Stack>
+          ))}
+        </Stack>
+      );
+      // review §3.5.5: a handful of items is shown directly, not hidden
+      // behind a disclosure -- see `INLINE_ITEM_THRESHOLD`'s own comment.
+      if (visible.length <= INLINE_ITEM_THRESHOLD) return items;
       return (
-        <Disclosure label={count} qualifier={path}>
-          <Stack gap="sm">
-            {visible.map((item, index) => (
-              // eslint-disable-next-line react/no-array-index-key -- feed items have no stable id
-              <Stack key={index} gap={2}>
-                {item.link ? (
-                  <TextLink
-                    href={item.link.href}
-                    underline="always"
-                    target={item.link.external ? '_blank' : undefined}
-                    rel={item.link.external ? 'noopener noreferrer' : undefined}
-                  >
-                    {item.label}
-                  </TextLink>
-                ) : (
-                  <Text size="sm" fw={600}>
-                    {item.label}
-                  </Text>
-                )}
-                {!isEmptyNode(item.body) && (
-                  <Stack gap={2} pl="sm">
-                    <AccessibilityNodeView
-                      node={item.body}
-                      path={path ? `${path} ${item.label}` : item.label}
-                    />
-                  </Stack>
-                )}
-              </Stack>
-            ))}
-          </Stack>
+        <Disclosure label={describeCount(visible.length, label)} qualifier={path}>
+          {items}
         </Disclosure>
       );
     }
 
     case 'list': {
       const visible = node.items.filter((item) => !isEmptyNode(item));
-      const count = visible.length === 1 ? '1 item' : `${visible.length} items`;
+      const items = (
+        <Stack gap="sm">
+          {visible.map((item, index) => (
+            <AccessibilityNodeView
+              // eslint-disable-next-line react/no-array-index-key -- feed items have no stable id
+              key={index}
+              node={item}
+              // A nested `'raw'` child would otherwise be another bare
+              // "Raw data" region, colliding with its siblings inside
+              // this very list -- number them so each stays
+              // distinguishable.
+              path={path ? `${path} ${index + 1}` : undefined}
+            />
+          ))}
+        </Stack>
+      );
+      if (visible.length <= INLINE_ITEM_THRESHOLD) return items;
       return (
-        <Disclosure label={count} qualifier={path}>
-          <Stack gap="sm">
-            {visible.map((item, index) => (
-              <AccessibilityNodeView
-                // eslint-disable-next-line react/no-array-index-key -- feed items have no stable id
-                key={index}
-                node={item}
-                // A nested `'raw'` child would otherwise be another bare
-                // "Raw data" region, colliding with its siblings inside
-                // this very list -- number them so each stays
-                // distinguishable.
-                path={path ? `${path} ${index + 1}` : undefined}
-              />
-            ))}
-          </Stack>
+        <Disclosure label={describeCount(visible.length, label)} qualifier={path}>
+          {items}
         </Disclosure>
       );
     }
 
-    case 'link':
+    case 'link': {
+      // review §3.5.9: an anchor whose visible text is just its own href
+      // ("https://www.nationalrail.co.uk/...") reads as noise, not a
+      // destination -- swap in the host, keep the full URL reachable via
+      // `title`. Only when the two are exactly identical, so an
+      // intentionally different link text (a station name, "click here")
+      // is left alone.
+      const raw = node.text.trim() === node.href.trim();
+      const host = raw ? hostLabel(node.href) : null;
       return (
         <TextLink
           href={node.href}
           underline="always"
+          title={host ? node.href : undefined}
           target={node.external ? '_blank' : undefined}
           rel={node.external ? 'noopener noreferrer' : undefined}
         >
-          {node.text}
+          {host ?? node.text}
         </TextLink>
       );
+    }
 
     case 'raw':
       return (
@@ -407,25 +499,70 @@ function AccessibilityNodeView({
   }
 }
 
-/** Every category group that has at least one key rendering to something.
- * Computed before any JSX so the section can tell "present, and here it
- * is" from "present, but every value the feed published was empty" -- the
- * latter reads as the same fact as a `200 {}` and gets the same sentence,
- * rather than a heading with nothing under it. */
-function renderableGroups(data: StationAccessibilityData) {
-  return ACCESSIBILITY_CATEGORIES.map((category) => ({
-    heading: category.heading,
+/** A facility record that is simply "not available" and has nothing
+ * further to say about it -- no location, no notes, no contact, no
+ * opening hours. `isEmptyNode` never treats a facility as empty (the
+ * availability line is content in itself), so this is a separate,
+ * narrower check: only these trivial negatives are candidates for
+ * §3.5.6's fold. */
+function isTrivialNegativeFacility(node: AccessibilityNode): boolean {
+  return node.kind === 'facility' && !node.available && node.parts.length === 0;
+}
+
+interface RenderableEntry {
+  key: keyof StationAccessibilityData;
+  node: AccessibilityNode;
+}
+
+interface RenderableGroup {
+  heading: string;
+  entries: RenderableEntry[];
+  // Trivially-unavailable facility keys, humanized, folded into one
+  // dimmed line instead of each claiming a full icon+bold-label row
+  // (review §3.5.6).
+  notAvailable: string[];
+}
+
+/** Every category group that has at least one key rendering to something,
+ * or at least one folded "not available" fact. Computed before any JSX so
+ * the section can tell "present, and here it is" from "present, but every
+ * value the feed published was empty" -- the latter reads as the same fact
+ * as a `200 {}` and gets the same sentence, rather than a heading with
+ * nothing under it. */
+function renderableGroups(data: StationAccessibilityData): RenderableGroup[] {
+  // Shared across every group and key, in this fixed top-to-bottom order --
+  // see `dedupeAcrossSection`'s own doc comment for why order determines
+  // which copy of a repeated fact survives.
+  const seen = new Set<string>();
+
+  return ACCESSIBILITY_CATEGORIES.map((category) => {
     // A key whose value renders to nothing at all (an empty object, an
     // empty array, an object whose every own value was null) is skipped
     // outright rather than printing a label with blank space under it --
     // Decision 7's "don't invent a row for data that isn't there", one
     // level below the group it applies to. Load-bearing: `null` is
     // pervasive in this feed (design §2.5).
-    entries: category.keys
+    const rawEntries: RenderableEntry[] = category.keys
       .filter((key) => hasRenderableValue(data[key]))
-      .map((key) => ({ key, node: renderAccessibilityValue(data[key]) }))
-      .filter((entry) => !isEmptyNode(entry.node)),
-  })).filter((group) => group.entries.length > 0);
+      .map((key) => ({ key, node: renderAccessibilityValue(data[key], key) }))
+      .map((entry) => ({ key: entry.key, node: dedupeAcrossSection(entry.node, seen) }))
+      .filter((entry) => !isEmptyNode(entry.node));
+
+    // Folding only kicks in for two or more -- a single "not available"
+    // facility reads better with its own icon and word than as a
+    // one-item dimmed list.
+    const trivialNegative = rawEntries.filter((entry) => isTrivialNegativeFacility(entry.node));
+    const fold = trivialNegative.length >= 2;
+    const entries = fold
+      ? rawEntries.filter((entry) => !isTrivialNegativeFacility(entry.node))
+      : rawEntries;
+
+    return {
+      heading: category.heading,
+      entries: sortEntriesByKind(entries),
+      notAvailable: fold ? trivialNegative.map((entry) => humanizeKey(entry.key)) : [],
+    };
+  }).filter((group) => group.entries.length > 0 || group.notAvailable.length > 0);
 }
 
 /** Fourth, independent section on `/stations/[crs]`.
@@ -452,6 +589,24 @@ function renderableGroups(data: StationAccessibilityData) {
  * and `'empty'` (`200 {}`: the row exists but published none of the twelve
  * allowlisted keys) are two genuinely different facts and get two
  * different sentences -- never collapsed into one "no data" message. */
+/** review §3.5.3's at-a-glance strip, rendered as a row of chips above the
+ * full section: the handful of facts a reader most often scrolls all
+ * 4,500px to find, surfaced without asking them to. Purely additive -- the
+ * full section below still carries every fact in full, this is a shortcut
+ * to the ones most worth one. */
+function AtAGlanceStrip({ facts }: { facts: AtAGlanceFact[] }) {
+  if (facts.length === 0) return null;
+  return (
+    <Group gap="xs" wrap="wrap" role="list" aria-label="At a glance">
+      {facts.map((fact) => (
+        <Badge key={fact.label} variant="light" color="gray" tt="none" fw={500} size="lg" role="listitem">
+          {fact.label}: {fact.value}
+        </Badge>
+      ))}
+    </Group>
+  );
+}
+
 export function StationAccessibilitySection({ result }: StationAccessibilitySectionProps) {
   // Memoized because it is not free: classifying a whole payload runs the
   // sanitizer over every markup-bearing string (693 of them across the 31
@@ -462,6 +617,10 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
     () => (result.coverage === 'present' ? renderableGroups(result.data) : []),
     [result],
   );
+  const atAGlance = useMemo(
+    () => (result.coverage === 'present' ? computeAtAGlance(result.data) : []),
+    [result],
+  );
   // A `200` whose every allowlisted value turned out to be `{}`/`[]` is the
   // same fact as a `200 {}` from the reader's point of view -- the station
   // has published nothing -- so it gets the same sentence rather than an
@@ -470,7 +629,14 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
     result.coverage === 'empty' || (result.coverage === 'present' && groups.length === 0);
 
   return (
-    <Stack gap="xs">
+    // review §3.5.10: this section's prose (rich-text notes, opening-hours
+    // lists) previously ran the whole ~1,100px page container, well past
+    // the ~50-75 characters a line reads comfortably at. 70ch applies to
+    // the section as a whole rather than per text node -- every child here
+    // is a single text column already, so one wrapper does the job the
+    // design asks for without touching every `Text`/`Typography` site
+    // individually.
+    <Stack gap="xs" style={{ maxWidth: '70ch' }}>
       <Title order={2} size="h4">
         Accessibility &amp; facilities
       </Title>
@@ -482,20 +648,29 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
           No accessibility or facilities details have been published for this station.
         </Text>
       )}
+      <AtAGlanceStrip facts={atAGlance} />
       {groups.map((group) => (
         <Stack key={group.heading} gap={4}>
-          <Text size="sm" fw={700}>
+          {/* review §3.5.2: promoted from a bold `<p>` to a real heading --
+              four of these under the section's own `h2`, twelve (well,
+              fewer now several keys are grouped rather than each claiming
+              its own line -- see the `entry.node.kind !== 'facility'`
+              guard below) `h4` key labels under each. `size="sm"` holds the
+              same visual weight the bold paragraph had; only the semantics
+              change, which is the whole point of an `h2`->`h3` step
+              existing for axe's `heading-order` to reward. */}
+          <Title order={3} size="sm" fw={700}>
             {group.heading}
-          </Text>
+          </Title>
           {group.entries.map((entry) => (
-            <Stack key={entry.key} gap={2} pl="sm">
+            <Stack key={entry.key} gap={4} pl="sm">
               {/* A Pattern A key says its own name on its availability line
                   ("Lifts — Available"), so a separate label above it would
                   print the name twice. */}
               {entry.node.kind !== 'facility' && (
-                <Text size="sm" fw={500}>
+                <Title order={4} size="sm" fw={500}>
                   {humanizeKey(entry.key)}
-                </Text>
+                </Title>
               )}
               {/* The humanized key is passed down as the disclosure
                   `qualifier` -- see `Disclosure`'s own doc comment for why a
@@ -508,6 +683,14 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
               />
             </Stack>
           ))}
+          {/* review §3.5.6: several simply-unavailable facilities folded
+              into one dimmed line instead of each claiming a full
+              icon+bold-label row of its own. */}
+          {group.notAvailable.length > 0 && (
+            <Text size="sm" c="dimmed" pl="sm">
+              Not available: {group.notAvailable.join(', ')}
+            </Text>
+          )}
         </Stack>
       ))}
     </Stack>
