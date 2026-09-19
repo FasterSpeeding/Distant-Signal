@@ -438,6 +438,14 @@ describe('TextLink underline affordance', () => {
     // colour, so without this the underline would come out body-black.
     expect(css).toContain('text-decoration-color: var(--mantine-color-anchor)');
   });
+
+  it('draws a continuous underline rather than skipping ink at word boundaries', () => {
+    // Review §2.8: the browser default of lifting the line over each
+    // word's ascenders/descenders reads as a gapped, dashed-looking
+    // underline on a multi-word link.
+    const rule = css.match(/a\[data-text-link\]\s*\{[^}]*\}/);
+    expect(rule![0]).toContain('text-decoration-skip-ink: none');
+  });
 });
 
 describe('links inside sanitized incident HTML', () => {

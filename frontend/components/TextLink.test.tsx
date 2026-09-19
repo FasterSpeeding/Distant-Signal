@@ -97,6 +97,20 @@ describe('TextLink', () => {
     expect(onKeyDown).toHaveBeenCalledTimes(1);
   });
 
+  it('renders the wrapped text as a <p> by default (positional call sites keep the block-ish render)', () => {
+    renderWithMantine(<TextLink href="/lines">All Lines</TextLink>);
+    expect(screen.getByText('All Lines').tagName).toBe('P');
+  });
+
+  it('renders the wrapped text as a <span> when inline (mid-sentence call sites)', () => {
+    renderWithMantine(
+      <TextLink href="/trains" inline underline="always">
+        Find a train
+      </TextLink>,
+    );
+    expect(screen.getByText('Find a train').tagName).toBe('SPAN');
+  });
+
   it('can opt into target/rel for an external link', () => {
     renderWithMantine(
       <TextLink href="https://example.com" target="_blank" rel="noopener noreferrer">

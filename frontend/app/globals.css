@@ -266,11 +266,17 @@ html:root[data-mantine-color-scheme='dark'] {
    `text-decoration-color` is set explicitly because a decoration is
    painted in the *decorating* element's colour: the `<a>` here has no
    colour of its own (the `Text` inside it carries it), so the underline
-   would otherwise come out in the inherited body colour. */
+   would otherwise come out in the inherited body colour.
+
+   `text-decoration-skip-ink: none` turns off the browser default of
+   lifting the line over each letter's descenders/ascenders at word
+   boundaries, which on a multi-word link reads as a gapped, dashed-looking
+   underline rather than one continuous line (review §2.8). */
 a[data-text-link] {
   text-decoration: none;
   text-decoration-color: var(--mantine-color-anchor);
   text-underline-offset: 0.2em;
+  text-decoration-skip-ink: none;
 }
 
 /* Hover *and* `:focus-visible`, so keyboard users get the same cue a
