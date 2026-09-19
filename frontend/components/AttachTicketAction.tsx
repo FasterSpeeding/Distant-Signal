@@ -2,10 +2,28 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button, Group, Select, Text } from '@mantine/core';
+import { Box, Button, Group, Select, Text } from '@mantine/core';
 import { formatDate } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
 import type { TrackedTrainListItem } from '@/lib/types';
+
+/** Same gap, same fix, as `components/IncidentSearchForm.tsx`'s own
+ * `noOptionsFound` (see that file's comment): Mantine's `Combobox.Empty` --
+ * what `nothingFoundMessage` renders into -- is an unstyled `<Box>` with no
+ * ARIA role, so a plain string leaves an open listbox with a child that is
+ * neither an `option` nor a `group`, failing axe's `aria-required-children`.
+ * This `Select` is only ever rendered once `trains` is non-empty (see the
+ * early return below), but it is `searchable` -- a typed search narrowing
+ * the visible options to zero hits the exact same gap, not just an
+ * empty-catalogue fixture. Duplicated locally rather than imported -- same
+ * precedent as every other call site that needed this fix. */
+function noOptionsFound(label: string) {
+  return (
+    <Box role="option" aria-disabled="true">
+      {label}
+    </Box>
+  );
+}
 
 /** Attaches a standalone ticket (Part A of the upload-first plan --
  * `trackedTrainId: null`) to one of the caller's own already-tracked
@@ -78,6 +96,7 @@ export function AttachTicketAction({ ticketId, trains }: { ticketId: number; tra
         size="xs"
         style={{ minWidth: 240 }}
         searchable
+        nothingFoundMessage={noOptionsFound('No matching tracked trains')}
       />
       <Button size="xs" onClick={handleAttach} disabled={!selected || attaching}>
         {attaching ? 'Attaching…' : 'Attach'}
