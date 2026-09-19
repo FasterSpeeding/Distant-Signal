@@ -83,22 +83,30 @@ describe('toHalfHourlyCoverageChartPoints', () => {
 });
 
 describe('HalfHourlyCoverageTrendsResults', () => {
-  it('renders the empty state when there are no rows, inside a bounded container', async () => {
+  // Task 3.4.5: the "Full coverage" heading used to render only once real
+  // chart data existed, so the empty state (every line, today, since no
+  // full-coverage producer exists yet) read as an unlabelled box
+  // indistinguishable from HalfHourlyTrendsResults' own empty state above
+  // it on /lines/[id]. It must render here too, not just in the populated
+  // case covered further down.
+  it('renders the empty state alongside its own "Full coverage" heading, when there are no rows', async () => {
     vi.mocked(api.getLineHalfHourlyCoverageStats).mockResolvedValue([]);
     renderWithMantine(
       await HalfHourlyCoverageTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
     );
+    expect(screen.getByRole('heading', { name: 'Full coverage', level: 3 })).toBeInTheDocument();
     const text = screen.getByText('Not enough full-coverage data yet for this line.');
     expect(text).toBeInTheDocument();
     expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
     expect(text.closest('.mantine-Paper-root')).not.toBeNull();
   });
 
-  it('renders the unreachable-backend fallback when the fetch rejects', async () => {
+  it('renders the unreachable-backend fallback alongside its own "Full coverage" heading, when the fetch rejects', async () => {
     vi.mocked(api.getLineHalfHourlyCoverageStats).mockRejectedValue(new Error('connect ECONNREFUSED'));
     renderWithMantine(
       await HalfHourlyCoverageTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
     );
+    expect(screen.getByRole('heading', { name: 'Full coverage', level: 3 })).toBeInTheDocument();
     expect(await screen.findByText("Coverage trend data isn't available right now.")).toBeInTheDocument();
     expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
   });

@@ -38,6 +38,25 @@ describe('PinToggle', () => {
     expect(screen.getByLabelText('Unpin (currently pinned)')).toBeInTheDocument();
   });
 
+  // Task 3.4.13: an anonymous visitor got no hint that pinning needs an
+  // account until they clicked and hit the 401 prompt.
+  it('hints that pinning needs an account when needsAccountHint is set and the line is unpinned', () => {
+    renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} needsAccountHint />);
+    expect(screen.getByLabelText('Pin — needs an account')).toBeInTheDocument();
+  });
+
+  // A pinned line implies an account already exists -- the hint must not
+  // leak into the (already-pinned) unpin wording.
+  it('does not apply the account hint to an already-pinned line', () => {
+    renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={true} needsAccountHint />);
+    expect(screen.getByLabelText('Unpin (currently pinned)')).toBeInTheDocument();
+  });
+
+  it('defaults to the plain unpinned wording when needsAccountHint is omitted', () => {
+    renderWithMantine(<PinToggle kind="station" id="wok" initiallyPinned={false} />);
+    expect(screen.getByLabelText('Pin (currently not pinned)')).toBeInTheDocument();
+  });
+
   it('renders a tooltip for sighted users with the same text as the accessible name', async () => {
     renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} />);
     fireEvent.mouseEnter(screen.getByLabelText('Pin (currently not pinned)'));

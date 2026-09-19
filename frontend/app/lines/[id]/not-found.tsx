@@ -1,7 +1,26 @@
 import { Group, Stack, Title, Text } from '@mantine/core';
 import { TextLink } from '@/components/TextLink';
+import { LoginLink } from '@/components/LoginLink';
+import { getSession } from '@/lib/api';
 
-export default function LineNotFound() {
+// Task 3.4.10: an async Server Component, same as any other route file --
+// Next.js's special `not-found.tsx` supports this the same way `page.tsx`
+// does, it just receives no route params. `getSession()`'s use of
+// `next/headers` `cookies()` opts this segment into dynamic rendering the
+// same way it already does for every other page here that calls it.
+export default async function LineNotFound() {
+  // Anonymous vs. signed-in changes what this page offers: a session that
+  // lapsed while looking at an owner-only route (e.g. `/lines/[id]/edit`)
+  // collapses to this same 404 -- see `[id]/page.tsx`'s own "never confirm
+  // or deny a private line's existence" rationale -- so an anonymous
+  // visitor specifically gets a way back to log in, without this page
+  // claiming the line does or doesn't exist. A failed session check
+  // degrades to showing the link: an extra "Log in" offered to someone
+  // already signed in is harmless, where hiding it from someone genuinely
+  // logged out strands them.
+  const session = await getSession().catch(() => null);
+  const isAnonymous = !session?.authenticated;
+
   return (
     <Stack p="lg" gap="md">
       {/* order={1}, size="h2": see app/error.tsx's fuller comment on this
@@ -14,9 +33,12 @@ export default function LineNotFound() {
         <TextLink href="/lines" underline="always">
           Browse all lines
         </TextLink>
+        {/* Was "Back to your dashboard" -- meaningless to an anonymous
+            visitor, who has none. Neutral wording works for both. */}
         <TextLink href="/" underline="always">
-          Back to your dashboard
+          Go to the home page
         </TextLink>
+        {isAnonymous && <LoginLink underline="always">Log in</LoginLink>}
       </Group>
     </Stack>
   );

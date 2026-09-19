@@ -24,7 +24,9 @@ describe('NewCustomLinePage', () => {
     // Create mode, not edit: the Name field is present and the submit
     // button reads "Create line" (CustomLineForm's own create-vs-edit
     // label, unchanged).
-    expect(screen.getByLabelText('Name')).toBeInTheDocument();
+    // `exact: false`: Task 3.4.4's `withAsterisk` makes the label's own
+    // text "Name *", not a bare "Name".
+    expect(screen.getByLabelText('Name', { exact: false })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create line' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Cancel' })).toHaveAttribute('href', '/lines');
   });

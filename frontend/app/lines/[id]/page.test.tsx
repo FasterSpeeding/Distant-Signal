@@ -294,11 +294,16 @@ describe('LineDetailPage embedded trends', () => {
     expect(await screen.findAllByTestId('line-chart')).toHaveLength(2);
   });
 
+  // Task 3.4.5: the two "Not enough ... data" boxes used to read almost
+  // identically with nothing between them -- this pins that the "Full
+  // coverage" heading now precedes its own box even when empty, so the two
+  // sections are told apart.
   it('shows the "Full coverage" empty-state fallback for a line with no full-coverage data yet -- e.g. every line today, since no producer exists', async () => {
     vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
     vi.mocked(api.getLineHalfHourlyCoverageStats).mockResolvedValue([]);
     await renderPage();
 
+    expect(await screen.findByRole('heading', { name: 'Full coverage' })).toBeInTheDocument();
     expect(await screen.findByText('Not enough full-coverage data yet for this line.')).toBeInTheDocument();
   });
 });

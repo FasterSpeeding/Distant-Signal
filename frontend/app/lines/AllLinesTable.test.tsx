@@ -220,24 +220,29 @@ describe('AllLinesTable', () => {
     expect(screen.getByText('South Western')).toBeInTheDocument();
   });
 
-  it('sorts ascending by name on first click, descending on second click', async () => {
+  // Task 3.4.2: defaults to ascending by name, rather than the fixture's
+  // own insertion order (wcml, gwr, swr) -- 125 uncatalogued-looking rows
+  // with no sort applied was one of the review's own complaints.
+  it('defaults to ascending by name, and toggles on each click of the Name header', async () => {
     renderTable();
     const { fireEvent } = await import('@testing-library/react');
+    expect(rowNames()).toEqual(['Great Western Railway', 'South Western', 'West Coast Main Line']);
+
     const header = screen.getByText('Name');
+    fireEvent.click(header);
+    expect(rowNames()).toEqual(['West Coast Main Line', 'South Western', 'Great Western Railway']);
 
     fireEvent.click(header);
     expect(rowNames()).toEqual(['Great Western Railway', 'South Western', 'West Coast Main Line']);
-
-    fireEvent.click(header);
-    expect(rowNames()).toEqual(['West Coast Main Line', 'South Western', 'Great Western Railway']);
   });
 
   it('resets to ascending when switching to a different column', async () => {
     renderTable();
     const { fireEvent } = await import('@testing-library/react');
 
+    // Already ascending by name by default (Task 3.4.2) -- one click gets
+    // to descending by name.
     const nameHeader = screen.getByText(/^Name/);
-    fireEvent.click(nameHeader);
     fireEvent.click(nameHeader); // now descending by name
 
     const delayHeader = screen.getByText(/^Avg Delay/);
@@ -245,6 +250,32 @@ describe('AllLinesTable', () => {
 
     // Ascending by avg delay: wcml (5) < gwr (20) < swr (no stats, sorts last).
     expect(rowNames()).toEqual(['West Coast Main Line', 'Great Western Railway', 'South Western']);
+  });
+
+  // Task 3.4.2: a plain, case-insensitive substring filter over the
+  // already-client-side-loaded line names -- there is nothing to fetch
+  // suggestions for, unlike the operator filter's server-sourced options.
+  it('narrows rows by typing into "Find a line"', () => {
+    renderTable();
+    const input = screen.getByRole('textbox', { name: 'Find a line' });
+    fireEvent.change(input, { target: { value: 'western' } });
+
+    expect(screen.getByText('South Western')).toBeInTheDocument();
+    expect(screen.getByText('Great Western Railway')).toBeInTheDocument();
+    expect(screen.queryByText('West Coast Main Line')).not.toBeInTheDocument();
+  });
+
+  it('AND-combines the name filter with the operator filter', async () => {
+    renderTable();
+    const nameInput = screen.getByRole('textbox', { name: 'Find a line' });
+    fireEvent.change(nameInput, { target: { value: 'western' } });
+
+    const operatorInput = screen.getByRole('combobox', { name: 'Filter by operator' });
+    fireEvent.click(operatorInput);
+    fireEvent.click(await screen.findByRole('option', { name: 'SW - South Western Railway' }));
+
+    expect(screen.getByText('South Western')).toBeInTheDocument();
+    expect(screen.queryByText('Great Western Railway')).not.toBeInTheDocument();
   });
 
   it('sorts rows with no data to the end regardless of direction', async () => {
@@ -256,6 +287,47 @@ describe('AllLinesTable', () => {
     expect(rowNames()[2]).toBe('South Western');
 
     fireEvent.click(delayHeader); // desc
+    expect(rowNames()[2]).toBe('South Western');
+  });
+});
+
+// Task 3.4.1: `swr` in the top-of-file fixture has no entry in `reports`
+// at all -- the real-world shape behind "the Status column is blank for
+// ~120 of ~125 rows" (a line with no `line_status` row yet, not a line
+// whose report just has an empty `lineStatuses`; see `worstStatus`, which
+// never itself returns undefined for a real report).
+describe('AllLinesTable "NO DATA" status badge', () => {
+  it('renders a grey "NO DATA" badge, with a reason tooltip, for a line with no report at all', async () => {
+    renderTable();
+    const row = screen.getByText('South Western').closest('tr')!;
+    expect(within(row).getByText('NO DATA')).toBeInTheDocument();
+
+    // Mantine `Tooltip` binds its hover listeners to the wrapped child's
+    // own root node -- `Badge` renders its visible text in a nested
+    // `<span class="mantine-Badge-label">`, so a `mouseEnter` fired on
+    // that inner span (rather than the `Badge` root itself) never reaches
+    // the Tooltip at all (confirmed directly against a minimal
+    // `Tooltip`+`Badge` repro; every other Tooltip+`Text` pair elsewhere in
+    // this file doesn't hit this because `Text` itself is the wrapped
+    // root, with no further nesting).
+    const badgeRoot = within(row).getByText('NO DATA').closest('.mantine-Badge-root')!;
+    fireEvent.mouseEnter(badgeRoot);
+    expect(await screen.findByText('No status has been computed for this line yet.')).toBeInTheDocument();
+  });
+
+  it('gives a defined sort position to "NO DATA" rows -- below every real severity -- rather than pinning them to one end regardless of direction', () => {
+    renderTable();
+    const statusHeader = screen.getByText('Status');
+
+    // Ascending: swr (no data, rank -1) sorts before wcml (Minor Delays)
+    // and gwr (Suspended, the worse of the two real statuses).
+    fireEvent.click(statusHeader);
+    expect(rowNames()[0]).toBe('South Western');
+
+    // Descending: "no data" now sorts last, the opposite end from
+    // ascending -- unlike the numeric columns' null-always-last handling,
+    // this rank participates in direction like any real severity.
+    fireEvent.click(statusHeader);
     expect(rowNames()[2]).toBe('South Western');
   });
 });
@@ -574,14 +646,14 @@ describe('AllLinesTable sorting affordance', () => {
     expect(nameHeader).toBeInTheDocument();
   });
 
-  it('announces sort state via aria-sort', () => {
+  it('announces sort state via aria-sort, defaulting to ascending by name (Task 3.4.2)', () => {
     renderTable();
     const header = screen.getByRole('columnheader', { name: /Name/ });
-    expect(header).toHaveAttribute('aria-sort', 'none');
-    fireEvent.click(screen.getByRole('button', { name: /Name/ }));
     expect(header).toHaveAttribute('aria-sort', 'ascending');
     fireEvent.click(screen.getByRole('button', { name: /Name/ }));
     expect(header).toHaveAttribute('aria-sort', 'descending');
+    fireEvent.click(screen.getByRole('button', { name: /Name/ }));
+    expect(header).toHaveAttribute('aria-sort', 'ascending');
   });
 });
 

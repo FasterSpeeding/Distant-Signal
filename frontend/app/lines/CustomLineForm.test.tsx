@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, act } from '@testing-library/react';
+import { screen, fireEvent, act, cleanup } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { CustomLineForm } from './CustomLineForm';
 import type { CustomLineDetail } from '@/lib/types';
@@ -85,7 +85,9 @@ describe('CustomLineForm', () => {
     fireEvent.click(option);
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(screen.getByText('WOK')).toBeInTheDocument();
+    // Task 3.4.4: the chip is now numbered by travel order -- the first
+    // station added is "1 WOK", not a bare "WOK".
+    expect(screen.getByText('1 WOK')).toBeInTheDocument();
     expect(input).toHaveValue('');
   });
 
@@ -125,7 +127,7 @@ describe('CustomLineForm', () => {
     fireEvent.click(option);
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    const chip = screen.getByText('WOK').closest('[title]');
+    const chip = screen.getByText('1 WOK').closest('[title]');
     expect(chip).toHaveAttribute('title', 'Woking');
   });
 
@@ -146,7 +148,7 @@ describe('CustomLineForm', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(screen.getByText('WOK')).toBeInTheDocument();
+    expect(screen.getByText('1 WOK')).toBeInTheDocument();
     expect(input).toHaveValue('');
   });
 
@@ -157,7 +159,7 @@ describe('CustomLineForm', () => {
     fireEvent.change(input, { target: { value: 'wok' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(screen.getByText('WOK')).toBeInTheDocument();
+    expect(screen.getByText('1 WOK')).toBeInTheDocument();
     expect(input).toHaveValue('');
   });
 
@@ -179,7 +181,7 @@ describe('CustomLineForm', () => {
 
     // `existingLine.stations` already contains 'WOK' -- still exactly one
     // WOK badge, not two.
-    expect(screen.getAllByText('WOK')).toHaveLength(1);
+    expect(screen.getAllByText('1 WOK')).toHaveLength(1);
   });
 
   // Typed text that resolves (via the raw-text fallback) to something
@@ -294,7 +296,9 @@ describe('CustomLineForm', () => {
 
     mockUsePathname.mockReturnValue('/lines/new');
     renderWithProvider();
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My Commute' } });
+    // `exact: false`: Task 3.4.4's `withAsterisk` makes the label's own
+    // text "Name *", not a bare "Name".
+    fireEvent.change(screen.getByLabelText('Name', { exact: false }), { target: { value: 'My Commute' } });
     const stationInput = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
     fireEvent.change(stationInput, { target: { value: 'WOK' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
@@ -320,5 +324,69 @@ describe('CustomLineForm', () => {
 
     expect(await screen.findByText('a line needs at least 2 stations')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Log in' })).not.toBeInTheDocument();
+  });
+
+  // Task 3.4.3: neither `/lines/new` nor `/lines/[id]/edit` said what a
+  // custom line even is -- this now renders once, from the shared form,
+  // for both create and edit.
+  it('explains what a custom line is, for both create and edit', () => {
+    renderWithProvider();
+    expect(screen.getByText(/A custom line groups any stations and operators you choose/)).toBeInTheDocument();
+
+    cleanup();
+    renderWithProvider({ existingLine });
+    expect(screen.getByText(/A custom line groups any stations and operators you choose/)).toBeInTheDocument();
+  });
+
+  // Task 3.4.13: the account-needed hint only makes sense while creating --
+  // reaching the edit form at all already means the viewer is signed in
+  // (the route 404s a non-owner before this form ever renders).
+  it('shows the account-needed hint only when creating, not editing', () => {
+    renderWithProvider();
+    expect(screen.getByText(/Creating a line needs a Distant Signal account/)).toBeInTheDocument();
+
+    cleanup();
+    renderWithProvider({ existingLine });
+    expect(screen.queryByText(/Creating a line needs a Distant Signal account/)).not.toBeInTheDocument();
+  });
+
+  // Task 3.4.4: the station list had no empty state at all before the
+  // first station was added.
+  it('shows an empty-state hint before any station is added, and hides it once one is', () => {
+    renderWithProvider();
+    expect(screen.getByText('No stations yet — add at least two, in travel order.')).toBeInTheDocument();
+
+    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    fireEvent.change(input, { target: { value: 'wok' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(screen.queryByText('No stations yet — add at least two, in travel order.')).not.toBeInTheDocument();
+  });
+
+  // Task 3.4.4: Name is validated as required with no visual mark.
+  it('marks the Name field as required with an asterisk', () => {
+    renderWithProvider();
+    // Mantine's `withAsterisk` renders the `*` as its own `aria-hidden`
+    // node next to the label text, not appended to the label string
+    // itself -- `getByText` still finds it (only `getByRole` excludes
+    // `aria-hidden` content by default).
+    expect(screen.getByText('*')).toBeInTheDocument();
+  });
+
+  // Task 3.4.11: the edit page had no way to delete a line at all -- only
+  // the (separate) detail page did.
+  it('offers a "Delete line…" link only when editing an existing line', () => {
+    renderWithProvider();
+    expect(screen.queryByRole('button', { name: 'Delete line…' })).not.toBeInTheDocument();
+
+    cleanup();
+    renderWithProvider({ existingLine });
+    expect(screen.getByRole('button', { name: 'Delete line…' })).toBeInTheDocument();
+  });
+
+  it('opens the delete confirmation modal from the "Delete line…" link', async () => {
+    renderWithProvider({ existingLine });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line…' }));
+    expect(await screen.findByText('Delete this line?')).toBeInTheDocument();
   });
 });

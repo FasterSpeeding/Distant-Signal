@@ -37,7 +37,24 @@ function StarIcon({ filled }: { filled: boolean }) {
 /** Calls the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * rather than `lib/api.ts` — this is a Client Component, which cannot read
  * the server-only `API_BASE_URL` env var `lib/api.ts`'s functions rely on. */
-export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: string; initiallyPinned: boolean }) {
+export function PinToggle({
+  kind,
+  id,
+  initiallyPinned,
+  needsAccountHint = false,
+}: {
+  kind: PinKind;
+  id: string;
+  initiallyPinned: boolean;
+  // Review §3.4 (Task 3.4.13): an anonymous visitor gets no hint that
+  // pinning needs an account until they click and hit the `401` prompt
+  // below -- this folds "needs an account" into the star's own tooltip/
+  // aria-label up front instead, for a visitor known to have no session.
+  // Optional and defaulted to `false` so the one other call site
+  // (`app/stations/[crs]/page.tsx`, which doesn't yet thread a viewer's
+  // anonymous/signed-in state down to this component) is unaffected.
+  needsAccountHint?: boolean;
+}) {
   const router = useRouter();
   const [pinned, setPinned] = useState(initiallyPinned);
   const [busy, setBusy] = useState(false);
@@ -105,8 +122,14 @@ export function PinToggle({ kind, id, initiallyPinned }: { kind: PinKind; id: st
 
   // States both the action and the current state, per accessibility
   // review, so a screen reader user can tell pinned from unpinned without
-  // relying on the icon fill (which they can't see).
-  const label = pinned ? 'Unpin (currently pinned)' : 'Pin (currently not pinned)';
+  // relying on the icon fill (which they can't see). A pinned line implies
+  // an account already exists, so the account hint only ever applies to
+  // the unpinned wording.
+  const label = pinned
+    ? 'Unpin (currently pinned)'
+    : needsAccountHint
+      ? 'Pin — needs an account'
+      : 'Pin (currently not pinned)';
 
   return (
     <Group gap={4} wrap="nowrap">

@@ -203,4 +203,46 @@ describe('LineHistoryPage', () => {
     expect(screen.getByText(/2 status changes across/)).toBeInTheDocument();
     expect(screen.queryByText(/recompute/)).not.toBeInTheDocument();
   });
+
+  // Task 3.4.9: a status whose own `reason` is literally its severity
+  // label reads as redundant right next to the row's StatusBadge, which
+  // already shows that same label -- "GOOD SERVICE Good Service 21:34".
+  it('does not echo the severity label back as the reason text', async () => {
+    vi.mocked(api.getLineStatusHistory).mockResolvedValue([
+      {
+        ...report('c2c', 'c2c (London, Tilbury & Southend line)'),
+        lineStatuses: [
+          {
+            statusSeverity: 10,
+            statusSeverityDescription: 'Good Service',
+            reason: 'Good Service',
+            dataQuality: 'knowledgebase',
+            validityPeriods: [],
+            sampleAvailability: { state: 'no-coverage' },
+            fullCoverageAvailability: { state: 'not-enabled' },
+          },
+        ],
+      },
+    ]);
+    renderWithMantine(
+      await HistoryResults({ id: 'c2c', from: '2026-08-26T00:00:00Z', to: '2026-09-02T00:00:00Z' }),
+    );
+
+    expect(screen.getByText('No incidents reported')).toBeInTheDocument();
+    expect(screen.queryByText('Good Service', { selector: '.issueRow__reason' })).not.toBeInTheDocument();
+  });
+
+  // A genuinely empty reason is a different fact (none was supplied at
+  // all) and must keep its own, distinct copy rather than collapsing into
+  // the redundancy-only "No incidents reported" text above.
+  it('still says "No reason given" for a genuinely empty reason', async () => {
+    vi.mocked(api.getLineStatusHistory).mockResolvedValue([
+      report('c2c', 'c2c (London, Tilbury & Southend line)'),
+    ]);
+    renderWithMantine(
+      await HistoryResults({ id: 'c2c', from: '2026-08-26T00:00:00Z', to: '2026-09-02T00:00:00Z' }),
+    );
+
+    expect(screen.getByText('No reason given')).toBeInTheDocument();
+  });
 });
