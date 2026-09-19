@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   ACCESSIBILITY_CATEGORIES,
+  dedupeAcrossSection,
   hasRenderableValue,
   isEmptyNode,
   MAX_RENDER_DEPTH,
@@ -407,5 +408,109 @@ describe('sanitization, over every real string', () => {
       (node) => node.kind === 'richText' && node.html.includes('<p><strong>'),
     );
     expect(demoted.length).toBeGreaterThan(0);
+  });
+});
+
+/** C1 regression guard (2026-09-17 whole-branch review): `dedupeAcrossSection`
+ * used to fingerprint a node's bare rendered content only, with no label and
+ * no key. Every boolean field renders as the identical `{kind:'text',
+ * text:'Yes'}` (or `'No'`) leaf, so every boolean after the first `true`/
+ * `false` in a station's data collided on that fingerprint and was silently
+ * dropped by `dedupeFieldList`'s `isEmptyNode` check -- real, independent,
+ * differently-labelled facts (accessible toilets, accessible parking,
+ * changing places, CCTV, ...) vanishing from a page whose whole audience is
+ * disabled travellers. The fix folds a field's own label into its
+ * signature, so only a field that repeats someone else's label *and*
+ * content -- the actual cross-feed overlap this function exists for
+ * (review §3.5.4: `staffAssistance`/`helpAndSupport`'s "Help points"/"Staff
+ * help" sentences, which lose their label under Pattern E and so still
+ * collide on content alone, on purpose) -- is ever removed.
+ *
+ * Scoped to boolean-rendered facts specifically (a leaf `text` node whose
+ * text is exactly `Yes` or `No` -- see the `typeof value === 'boolean'`
+ * branch this module's string renderer takes), matching C1's own required
+ * test. A *labelled* non-boolean fact (e.g. a generic "Number of spaces"
+ * sub-field reused under two unrelated top-level keys that both happen to
+ * be `0`) can still coincidentally collide on label+content; that narrower,
+ * pre-existing edge case is not what C1 reported and is left alone here to
+ * avoid a much larger, riskier change (per-node ancestor-path signatures)
+ * that isn't what the review asked for. */
+describe('dedupeAcrossSection does not drop distinctly-labelled boolean facts (review C1)', () => {
+  interface BooleanFact {
+    label: string;
+    text: 'Yes' | 'No';
+  }
+
+  /** Every labelled boolean-rendered leaf fact under one category-group's
+   * keys, in the same fixed order `renderableGroups` walks them in. Passing
+   * `dedupe`'s `seen` Set (or omitting it, for the pre-dedup pass) makes
+   * this double as both halves of the before/after comparison. */
+  function booleanFactsIn(
+    data: StationAccessibilityData,
+    keys: (keyof StationAccessibilityData)[],
+    seen?: Set<string>,
+  ): BooleanFact[] {
+    const facts: BooleanFact[] = [];
+    const visit = (node: AccessibilityNode, label: string | undefined): void => {
+      if (seen && isEmptyNode(node)) return;
+      if (label !== undefined && node.kind === 'text' && (node.text === 'Yes' || node.text === 'No')) {
+        facts.push({ label, text: node.text });
+      }
+      if (node.kind === 'facility') {
+        node.parts.forEach((part) => visit(part.node, part.label));
+      } else if (node.kind === 'contact' || node.kind === 'fields') {
+        node.fields.forEach((field) => visit(field.node, field.label));
+      }
+    };
+    for (const key of keys) {
+      if (!hasRenderableValue(data[key])) continue;
+      const rendered = renderAccessibilityValue(data[key], key);
+      visit(seen ? dedupeAcrossSection(rendered, seen) : rendered, undefined);
+    }
+    return facts;
+  }
+
+  it('keeps every distinctly-labelled boolean fact a group\'s fixture data carries, across all 31 stations', () => {
+    const offenders: string[] = [];
+    for (const { crs, data } of loadAllAccessibilityFixtures()) {
+      for (const category of ACCESSIBILITY_CATEGORIES) {
+        const before = booleanFactsIn(data, category.keys);
+        const seen = new Set<string>();
+        const after = new Set(booleanFactsIn(data, category.keys, seen).map((f) => f.label));
+        for (const fact of before) {
+          if (!after.has(fact.label)) {
+            offenders.push(`${crs}/${category.heading}: lost boolean fact "${fact.label}" (${fact.text})`);
+          }
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('never silently drops two independently-true boolean facts that share content but not a label', () => {
+    // The exact BSK shape the review's runtime probe found: two different
+    // boolean facts (different keys, different labels) both rendering to
+    // the identical bare `{kind:'text', text:'Yes'}` leaf. Neither may
+    // disappear just because the other rendered first.
+    const bsk = loadAccessibilityFixture('BSK');
+    const seen = new Set<string>();
+    for (const category of ACCESSIBILITY_CATEGORIES) {
+      const before = booleanFactsIn(bsk, category.keys);
+      const after = new Set(booleanFactsIn(bsk, category.keys, seen).map((f) => f.label));
+      for (const fact of new Set(before.map((f) => f.label))) {
+        expect(after.has(fact), `${category.heading}: "${fact}"`).toBe(true);
+      }
+    }
+    // Sanity check that this fixture actually exercises the collision --
+    // otherwise the assertions above would pass vacuously.
+    const allBefore = ACCESSIBILITY_CATEGORIES.flatMap((c) => booleanFactsIn(bsk, c.keys));
+    const byContent = new Map<string, Set<string>>();
+    for (const fact of allBefore) {
+      const labels = byContent.get(fact.text) ?? new Set<string>();
+      labels.add(fact.label);
+      byContent.set(fact.text, labels);
+    }
+    const distinctLabelsSharingContent = [...byContent.values()].filter((labels) => labels.size > 1);
+    expect(distinctLabelsSharingContent.length).toBeGreaterThan(0);
   });
 });

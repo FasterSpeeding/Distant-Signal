@@ -1059,10 +1059,23 @@ function isEmptyMarkup(html: string): boolean {
  * only to recognise "this exact fact was already shown", never to change
  * what a node contains. `JSON.stringify` is stable enough here because
  * every `AccessibilityNode` is built by this module's own object literals,
- * whose key order never varies between two structurally-equal nodes. */
-function nodeSignature(node: AccessibilityNode): string {
+ * whose key order never varies between two structurally-equal nodes.
+ *
+ * `label` folds a field's own label into the fingerprint when it has one.
+ * This is what stops two independently-true, differently-labelled boolean
+ * facts (`{kind:'text', text:'Yes'}` under "Accessible toilets" AND under
+ * "Accessible parking") from colliding on identical JSON and one of them
+ * getting silently dropped -- a real bug the bare-content signature used to
+ * have, since a boolean's rendered node carries no trace of which field it
+ * came from. A field with NO label (`label === undefined`) -- chiefly a
+ * Pattern E sentence, which loses its label by design (§4.6) -- still signs
+ * on content alone, which is exactly what lets the intended cross-feed
+ * duplicate ("Help points"/"Staff help" sentences appearing under both
+ * `staffAssistance` and `helpAndSupport`) keep deduplicating. */
+function nodeSignature(node: AccessibilityNode, label?: string): string {
   try {
-    return JSON.stringify(node);
+    const json = JSON.stringify(node);
+    return label !== undefined ? `${label} ${json}` : json;
   } catch {
     return '';
   }
@@ -1093,8 +1106,21 @@ function nodeSignature(node: AccessibilityNode): string {
  * section's own fixed top-to-bottom order (`ACCESSIBILITY_CATEGORIES`,
  * then each category's key list) -- so whichever copy renders first (the
  * more prominent placement) is the one that survives, and a later repeat
- * is what gets dropped. */
-export function dedupeAcrossSection(node: AccessibilityNode, seen: Set<string>): AccessibilityNode {
+ * is what gets dropped.
+ *
+ * `label` is the field's own label, if it has one -- always supplied by
+ * `dedupeFieldList` for a field it is about to sign, and left `undefined`
+ * for the top-level, whole-category call in `StationAccessibilitySection`
+ * (that call has no label to give, and must not invent a fake one: it is
+ * exactly the site where the intended cross-key "Help points"/"Staff help"
+ * dedup has to keep working on content alone). See `nodeSignature`'s doc
+ * comment for why folding the label in only for labelled fields is what
+ * fixes the bug without breaking that intended case. */
+export function dedupeAcrossSection(
+  node: AccessibilityNode,
+  seen: Set<string>,
+  label?: string,
+): AccessibilityNode {
   if (node.kind === 'fields' || node.kind === 'contact') {
     const fields = dedupeFieldList(node.fields, seen);
     return { ...node, fields };
@@ -1103,7 +1129,7 @@ export function dedupeAcrossSection(node: AccessibilityNode, seen: Set<string>):
     const parts = dedupeFieldList(node.parts, seen);
     return { ...node, parts };
   }
-  const sig = nodeSignature(node);
+  const sig = nodeSignature(node, label);
   if (sig !== '' && seen.has(sig)) return { kind: 'text', text: '' };
   if (sig !== '') seen.add(sig);
   return node;
@@ -1112,7 +1138,7 @@ export function dedupeAcrossSection(node: AccessibilityNode, seen: Set<string>):
 function dedupeFieldList(fields: LabelledNode[], seen: Set<string>): LabelledNode[] {
   const result: LabelledNode[] = [];
   for (const field of fields) {
-    const deduped = dedupeAcrossSection(field.node, seen);
+    const deduped = dedupeAcrossSection(field.node, seen, field.label);
     if (isEmptyNode(deduped)) continue;
     result.push({ ...field, node: deduped });
   }
