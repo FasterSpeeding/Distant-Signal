@@ -57,6 +57,27 @@ function errorResponse() {
   return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) } as Response);
 }
 
+/** Clicks the Search button once it reads "Search" again, rather than
+ * "Searching…" -- review §3.3's "run the search once on mount" fix means
+ * an auto-search is already in flight the instant this form renders, so
+ * the button can still show that in-flight label for the one microtask
+ * tick between render and this click. `findByRole` (not `getByRole`)
+ * waits it out instead of racing it. */
+async function clickSearch() {
+  fireEvent.click(await screen.findByRole('button', { name: 'Search' }));
+}
+
+/** Waits out the same mount-triggered auto-search, for a test that never
+ * otherwise interacts with the network. Without this, a test that makes
+ * its assertions synchronously (no `await` at all) finishes -- and React
+ * Testing Library tears down -- before that request's `.then()` settles
+ * and flips `searching` back to `false`, so the resulting state update
+ * lands outside any `act()` scope and prints a spurious "not wrapped in
+ * act(...)" warning. */
+async function awaitMountSettled() {
+  await screen.findByRole('button', { name: 'Search' });
+}
+
 function summary(overrides: Partial<IncidentSearchResponse['results'][number]> = {}) {
   return {
     incidentId: '1',
@@ -75,18 +96,24 @@ function summary(overrides: Partial<IncidentSearchResponse['results'][number]> =
 }
 
 describe('IncidentSearchForm', () => {
-  it('excludes a custom line from the Line dropdown, offering only catalogue lines', () => {
+  it('excludes a custom line from the Line dropdown, offering only catalogue lines', async () => {
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    // Synchronously, with no `await`/`findBy*` in between -- same rationale
+    // as the operator `MultiSelect` tests below: an intervening await lets
+    // Mantine's floating-ui positioning collapse the just-opened dropdown
+    // to `display: none` under jsdom's synthetic layout before the query
+    // below ever runs.
     const input = screen.getByRole('combobox', { name: /Line \(optional\)/ });
     fireEvent.click(input);
     const optionText = screen.getAllByRole('option').map((o) => o.textContent);
     expect(optionText).toEqual(['South Western Main Line']);
+    await awaitMountSettled();
   });
 
   it('applies a 30-day default "from" floor when no initial filters are given', async () => {
     fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const requestedUrl = new URL(fetchMock.mock.calls[0][0], 'http://localhost');
@@ -112,9 +139,12 @@ describe('IncidentSearchForm', () => {
     fireEvent.click(screen.getByRole('option', { name: /SW/ }));
     fireEvent.click(screen.getByRole('option', { name: /VT/ }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const requestedUrl = new URL(fetchMock.mock.calls[0][0], 'http://localhost');
+    // The LAST call, not the first: mount already fired its own auto-search
+    // (review §3.3) with the default (no-operator) filter set before this
+    // click ever happened.
+    const requestedUrl = new URL(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][0], 'http://localhost');
     expect(requestedUrl.searchParams.get('operator')).toBe('SW,VT');
   });
 
@@ -132,7 +162,7 @@ describe('IncidentSearchForm', () => {
       }),
     );
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await screen.findByText('Signal failure at Woking');
 
     const list = document.querySelector('[data-incident-results]') as HTMLElement;
@@ -156,7 +186,7 @@ describe('IncidentSearchForm', () => {
       }),
     );
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await screen.findByText('Signal failure at Woking');
 
     const list = document.querySelector('[data-incident-results]') as HTMLElement;
@@ -175,7 +205,7 @@ describe('IncidentSearchForm', () => {
       okResponse({ results: [withoutLines as IncidentSummary], nextCursor: null }),
     );
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
 
     expect(await screen.findByText('Signal failure at Woking')).toBeTruthy();
   });
@@ -188,22 +218,27 @@ describe('IncidentSearchForm', () => {
     // Period `SegmentedControl` tests below for the collapse itself.
     fireEvent.click(screen.getByRole('radio', { name: 'Custom…' }));
     fireEvent.change(screen.getByLabelText('To (optional)'), { target: { value: '2026-09-15' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const requestedUrl = new URL(fetchMock.mock.calls[0][0], 'http://localhost');
+    // The LAST call: mount's own auto-search (review §3.3) fired first,
+    // against the default period (no "to" bound at all).
+    const requestedUrl = new URL(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][0], 'http://localhost');
     expect(requestedUrl.searchParams.get('to')).toBe('2026-09-15T23:59:59.999Z');
   });
 
   it('keeps the original filters on a "Load more" request, ignoring a filter change made afterward', async () => {
     fetchMock
+      // Mount's own auto-search (review §3.3) consumes this first slot,
+      // against the default (no priority filter) set.
+      .mockReturnValueOnce(okResponse({ results: [], nextCursor: null }))
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '2' })], nextCursor: null }));
 
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
     const priorityMinInput = screen.getByLabelText('Minimum');
     fireEvent.change(priorityMinInput, { target: { value: '2' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await screen.findByText('Signal failure at Woking');
 
     // Change a filter AFTER searching but BEFORE "Load more" -- page 2 must
@@ -212,19 +247,21 @@ describe('IncidentSearchForm', () => {
     fireEvent.change(priorityMinInput, { target: { value: '4' } });
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    const secondRequestUrl = new URL(fetchMock.mock.calls[1][0], 'http://localhost');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const secondRequestUrl = new URL(fetchMock.mock.calls[2][0], 'http://localhost');
     expect(secondRequestUrl.searchParams.get('priority_min')).toBe('2');
     expect(secondRequestUrl.searchParams.get('after')).toBe('cursor-a');
   });
 
   it('"Load more" appends rows rather than replacing them, and disappears once nextCursor is null', async () => {
     fetchMock
+      // Mount's own auto-search (review §3.3) consumes this first slot.
+      .mockReturnValueOnce(okResponse({ results: [], nextCursor: null }))
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '2' })], nextCursor: null }));
 
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await screen.findByText('Signal failure at Woking');
     expect(screen.getAllByText('Signal failure at Woking')).toHaveLength(1);
 
@@ -258,7 +295,7 @@ describe('IncidentSearchForm', () => {
   it('renders the results list in the page flow, with no fixed-height or scroll-container ancestor', async () => {
     fetchMock.mockReturnValue(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await screen.findByText('Signal failure at Woking');
 
     const list = document.querySelector('[data-incident-results]');
@@ -305,11 +342,13 @@ describe('IncidentSearchForm', () => {
 
   it('says the end has been reached once the last page is in, rather than just dropping the button', async () => {
     fetchMock
+      // Mount's own auto-search (review §3.3) consumes this first slot.
+      .mockReturnValueOnce(okResponse({ results: [], nextCursor: null }))
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '2' })], nextCursor: null }));
 
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await screen.findByText('Signal failure at Woking');
     // While more pages remain the end-of-results copy must NOT be claimed.
     expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
@@ -325,7 +364,7 @@ describe('IncidentSearchForm', () => {
     fetchMock.mockReturnValue(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: null }));
 
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
 
     expect(
       await screen.findByText("You've reached the end — no more incidents match these filters."),
@@ -335,11 +374,13 @@ describe('IncidentSearchForm', () => {
 
   it('does not claim the end of results when a "Load more" page fails -- it reports the failure and keeps the retry', async () => {
     fetchMock
+      // Mount's own auto-search (review §3.3) consumes this first slot.
+      .mockReturnValueOnce(okResponse({ results: [], nextCursor: null }))
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
       .mockReturnValueOnce(errorResponse());
 
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await screen.findByText('Signal failure at Woking');
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
@@ -354,7 +395,9 @@ describe('IncidentSearchForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
 
     await waitFor(() => expect(screen.getAllByText('Signal failure at Woking')).toHaveLength(2));
-    expect(new URL(fetchMock.mock.calls[2][0], 'http://localhost').searchParams.get('after')).toBe('cursor-a');
+    // Call 0 is mount's own auto-search, call 1 the explicit Search click,
+    // call 2 the failed "Load more", call 3 this retry.
+    expect(new URL(fetchMock.mock.calls[3][0], 'http://localhost').searchParams.get('after')).toBe('cursor-a');
     expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
     expect(
       screen.getByText("You've reached the end — no more incidents match these filters."),
@@ -363,13 +406,15 @@ describe('IncidentSearchForm', () => {
 
   it('reports a "Load more" whose fetch throws the same way it reports a non-2xx', async () => {
     fetchMock
+      // Mount's own auto-search (review §3.3) consumes this first slot.
+      .mockReturnValueOnce(okResponse({ results: [], nextCursor: null }))
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
       // Lazily, via mockImplementationOnce: a `Promise.reject` built eagerly
-      // at mock-setup time is unhandled until the second call consumes it.
+      // at mock-setup time is unhandled until the third call consumes it.
       .mockImplementationOnce(() => Promise.reject(new Error('network down')));
 
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await screen.findByText('Signal failure at Woking');
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
@@ -380,17 +425,19 @@ describe('IncidentSearchForm', () => {
 
   it('clears a previous "Load more" failure when a fresh search is run', async () => {
     fetchMock
+      // Mount's own auto-search (review §3.3) consumes this first slot.
+      .mockReturnValueOnce(okResponse({ results: [], nextCursor: null }))
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
       .mockReturnValueOnce(errorResponse())
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '3' })], nextCursor: null }));
 
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await screen.findByText('Signal failure at Woking');
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     await screen.findByText("Couldn't load more results. Try again.");
 
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
 
     expect(
       await screen.findByText("You've reached the end — no more incidents match these filters."),
@@ -408,6 +455,8 @@ describe('IncidentSearchForm', () => {
       resolvePageTwo = resolve;
     });
     fetchMock
+      // Mount's own auto-search (review §3.3) consumes this first slot.
+      .mockReturnValueOnce(okResponse({ results: [], nextCursor: null }))
       .mockReturnValueOnce(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: 'cursor-a' }))
       .mockReturnValueOnce(pageTwo)
       .mockReturnValueOnce(
@@ -418,7 +467,7 @@ describe('IncidentSearchForm', () => {
       );
 
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await screen.findByText('Signal failure at Woking');
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more' })); // page 2 of search 1
@@ -447,7 +496,7 @@ describe('IncidentSearchForm', () => {
   it('renders the empty-results message, not a blank screen', async () => {
     fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await screen.findByText('No incidents match these filters.');
     // "Nothing matched" already says everything; it must not be doubled up
     // with the end-of-pagination line.
@@ -457,8 +506,14 @@ describe('IncidentSearchForm', () => {
   it('renders an error message on a failed search, not a thrown error', async () => {
     fetchMock.mockReturnValue(errorResponse());
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await clickSearch();
     await screen.findByText('Search failed');
+    // The click's own (second) request already shows the same text as
+    // mount's own auto-search error, so `findByText` above can resolve
+    // before this one's response has actually settled -- wait for it too,
+    // so its state update lands before the test (and RTL's unmount)
+    // finishes, rather than racing cleanup.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 
   // Review §2.10: an `InputClearButton` (what `clearable` renders) is a
@@ -481,7 +536,7 @@ describe('IncidentSearchForm', () => {
   // identical fix isn't exercised here: this suite mocks `@mantine/dates`'
   // `DatePickerInput` wholesale, so it never renders a real `CloseButton`
   // to inspect -- see the file-level mock's own comment.)
-  it('pads the operator and line filter clear buttons to the 24px touch-target floor', () => {
+  it('pads the operator and line filter clear buttons to the 24px touch-target floor', async () => {
     renderWithMantine(
       <IncidentSearchForm
         lines={TEST_LINES}
@@ -490,6 +545,7 @@ describe('IncidentSearchForm', () => {
         initialLine="south-western"
       />,
     );
+    await awaitMountSettled();
 
     expect(screen.getByLabelText('Clear operator filter').className).toContain('iconHitArea24');
     expect(screen.getByLabelText('Clear line filter').className).toContain('iconHitArea24');
@@ -501,25 +557,28 @@ describe('IncidentSearchForm', () => {
   // form -- and none of the three carried a visible caption or an
   // accessible name at all.
   describe('the Period control (review §2.13)', () => {
-    it('defaults to the 30-day preset, with the date pickers hidden', () => {
+    it('defaults to the 30-day preset, with the date pickers hidden', async () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      await awaitMountSettled();
       expect(screen.getByRole('radiogroup', { name: 'Period' })).toBeInTheDocument();
       expect(screen.getByRole('radio', { name: '30 days' })).toBeChecked();
       expect(screen.queryByLabelText('From (optional)')).not.toBeInTheDocument();
       expect(screen.queryByLabelText('To (optional)')).not.toBeInTheDocument();
     });
 
-    it('reveals the From/To date pickers only once Custom… is selected', () => {
+    it('reveals the From/To date pickers only once Custom… is selected', async () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      await awaitMountSettled();
       fireEvent.click(screen.getByRole('radio', { name: 'Custom…' }));
       expect(screen.getByLabelText('From (optional)')).toBeInTheDocument();
       expect(screen.getByLabelText('To (optional)')).toBeInTheDocument();
     });
 
-    it('shows Custom… as selected (not an undefined state) when initial filters supply an explicit from date', () => {
+    it('shows Custom… as selected (not an undefined state) when initial filters supply an explicit from date', async () => {
       renderWithMantine(
         <IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialFrom="2026-08-01T00:00:00Z" />,
       );
+      await awaitMountSettled();
       expect(screen.getByRole('radio', { name: 'Custom…' })).toBeChecked();
       expect(screen.getByLabelText('From (optional)')).toBeInTheDocument();
     });
@@ -529,14 +588,16 @@ describe('IncidentSearchForm', () => {
   // carried a visible caption nor an accessible name (no associated
   // `<label>`/`aria-label`/`Input.Wrapper`) before this fix.
   describe('the Type and Status controls (review §2.13/§2.14)', () => {
-    it('labels the Type control and gives it an accessible name', () => {
+    it('labels the Type control and gives it an accessible name', async () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      await awaitMountSettled();
       expect(screen.getByText('Type')).toBeInTheDocument();
       expect(screen.getByRole('radiogroup', { name: 'Type' })).toBeInTheDocument();
     });
 
-    it('labels the Status control and gives it an accessible name', () => {
+    it('labels the Status control and gives it an accessible name', async () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      await awaitMountSettled();
       expect(screen.getByText('Status')).toBeInTheDocument();
       expect(screen.getByRole('radiogroup', { name: 'Status' })).toBeInTheDocument();
     });
@@ -548,22 +609,25 @@ describe('IncidentSearchForm', () => {
   // right call -- but the caveat is said once now, as the wrapper's own
   // description.
   describe('the Priority range control (review §2.14)', () => {
-    it('states the raw-feed caveat exactly once', () => {
+    it('states the raw-feed caveat exactly once', async () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      await awaitMountSettled();
       expect(screen.getByText('Priority range')).toBeInTheDocument();
       expect(
         screen.getAllByText(/raw feed value from national rail's own incident data/i),
       ).toHaveLength(1);
     });
 
-    it('exposes accessible Minimum/Maximum fields instead of two identically-labelled inputs', () => {
+    it('exposes accessible Minimum/Maximum fields instead of two identically-labelled inputs', async () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      await awaitMountSettled();
       expect(screen.getByLabelText('Minimum')).toBeInTheDocument();
       expect(screen.getByLabelText('Maximum')).toBeInTheDocument();
     });
 
-    it('still surfaces the min/max validation error once', () => {
+    it('still surfaces the min/max validation error once', async () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+      await awaitMountSettled();
       fireEvent.change(screen.getByLabelText('Minimum'), { target: { value: '10' } });
       fireEvent.change(screen.getByLabelText('Maximum'), { target: { value: '5' } });
       expect(screen.getByText('Minimum must not exceed maximum')).toBeInTheDocument();

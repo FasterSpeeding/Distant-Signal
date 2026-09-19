@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import IncidentsPage, { metadata } from './page';
@@ -8,6 +8,26 @@ import type { LineSummary, Suggestion } from '@/lib/types';
 vi.mock('@/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api')>();
   return { ...actual, getAllLines: vi.fn(), getAllTocs: vi.fn() };
+});
+
+// `IncidentSearchForm` (review §3.3) now runs its own search on mount, so
+// rendering this page always fires a `fetch` -- stubbed here the same way
+// `IncidentSearchForm.test.tsx` stubs it, rather than letting the real
+// global `fetch` reject on a relative URL every time this page renders.
+const fetchMock = vi.fn();
+
+beforeEach(() => {
+  vi.stubGlobal('fetch', fetchMock);
+  fetchMock.mockReset();
+  fetchMock.mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve({ results: [], nextCursor: null }),
+  } as Response);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 const TEST_LINES: LineSummary[] = [
@@ -23,7 +43,10 @@ describe('IncidentsPage', () => {
     renderWithMantine(await IncidentsPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByText('Incident Archive')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Search' })).toBeInTheDocument();
+    // Waits out `IncidentSearchForm`'s own mount-triggered auto-search
+    // (review §3.3) so its state update lands before this test (and RTL's
+    // unmount) finishes, rather than racing cleanup.
+    expect(await screen.findByRole('button', { name: 'Search' })).toBeInTheDocument();
   });
 
   it('degrades to empty reference-data lists if either fetch fails, rather than crashing the page', async () => {
@@ -33,6 +56,7 @@ describe('IncidentsPage', () => {
     renderWithMantine(await IncidentsPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByText('Incident Archive')).toBeInTheDocument();
+    await screen.findByRole('button', { name: 'Search' });
   });
 
   it('passes searchParams through as initial filter values', async () => {
@@ -54,6 +78,7 @@ describe('IncidentsPage', () => {
     expect(
       screen.getByText('SW — South Western Railway', { selector: '.mantine-Pill-label' }),
     ).toBeInTheDocument();
+    await screen.findByRole('button', { name: 'Search' });
   });
 });
 
