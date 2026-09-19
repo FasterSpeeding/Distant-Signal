@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { ActionIcon, Button, Card, Group, Stack, Text, TextInput, Tooltip } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { formatDate } from '@/lib/dateFormat';
 import type { GroupInviteLink } from '@/lib/types';
 
 /** Copy-to-clipboard / Web Share affordance for a group's invite link,
@@ -144,6 +145,17 @@ export function GroupInviteLinkCard({
             No active invite link.
           </Text>
         )}
+        {/* Review §3.2.2: nothing here told a viewer this link ever
+            expires (spec §2.3 gives every link a 7-day life) -- an owner
+            who bookmarked or pinned an old link would only discover it had
+            gone stale when a new joiner's click 404'd. `inviteLink` (not a
+            derived `url`) is the source, so this renders even though
+            `url` already folds the token into an absolute path above. */}
+        {inviteLink && (
+          <Text size="xs" c="dimmed">
+            Expires {formatDate(inviteLink.expiresAt)}.
+          </Text>
+        )}
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
         {needsLoginState.needsLogin && (
           <LoginLink underline="always">Log in to manage this invite link</LoginLink>
@@ -158,6 +170,20 @@ export function GroupInviteLinkCard({
             </Button>
           )}
         </Group>
+        {/* Same review note as the expiry line above: "Regenerate" doesn't
+            just extend the current link's life, it swaps the token
+            entirely (`rotate_invite_link`, `crates/api/src/data/groups.rs`)
+            -- anyone still holding the old URL gets a 404 the moment this
+            fires. Placed under the buttons rather than beside them so it
+            reads as an explanation of what the row above just did, not as
+            a third button. Gated on `url` -- with no active link there is
+            no "old one" for Regenerate to invalidate; it's just creating
+            the first one. */}
+        {url && (
+          <Text size="xs" c="dimmed">
+            Regenerating creates a new link — the old one stops working immediately.
+          </Text>
+        )}
       </Stack>
     </Card>
   );

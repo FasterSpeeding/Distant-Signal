@@ -286,6 +286,23 @@ a[data-text-link]:focus-visible {
   text-decoration: underline;
 }
 
+/* `/groups`'s `GroupRow` (review §3.2.5) -- a bare `<Link>` wrapping a
+   `Card`, with nothing besides the cursor to say it was clickable. Same
+   data-attribute pattern as `a[data-text-link]` above: `data-group-card`
+   sits on the `Card` so its own `withBorder` border colour can transition,
+   and `data-group-card-link` on the wrapping `<a>` carries the
+   `:hover`/`:focus-visible` state down to it (an `<a>` has no border of its
+   own to change here). */
+a[data-group-card-link]:hover [data-group-card],
+a[data-group-card-link]:focus-visible [data-group-card] {
+  border-color: var(--mantine-color-anchor);
+}
+
+a[data-group-card-link]:focus-visible [data-group-card] {
+  outline: 2px solid var(--mantine-color-anchor);
+  outline-offset: 2px;
+}
+
 /* `components/PrideToggle.tsx` sets `document.body.dataset.pride` from a
    client-only localStorage preference -- one of `'off'` (the default, so
    SSR and the pre-mount client render never need any of these rules to
@@ -1531,4 +1548,55 @@ a[data-text-link='always'] {
   width: max(100%, 24px);
   height: max(100%, 24px);
   transform: translate(-50%, -50%);
+}
+
+/* `/groups/{id}`'s header actions (review §3.2.1) -- "Rename"/"Leave group"
+   sat 12px apart in a `nowrap` `Group` next to the group name, which on a
+   narrow phone left both squeezed against the `<h1>` with no room to grow.
+   Above `$mantine-breakpoint-xs` the actions stay a normal inline `Group`
+   (Mantine's own `gap="xs"` on the element still applies); below it they
+   stack full-width with more breathing room between them, matching the
+   `gap="sm"` this rule sets explicitly (Mantine's inline `gap` prop is
+   overridden here, same "class beats a hard-coded prop" reasoning
+   `TextLink`'s own doc comment gives for its underline rule). Same
+   `max-width: $mantine-breakpoint-xs` shape as `.issueRow`'s own
+   `$mantine-breakpoint-sm` rule above, one breakpoint down, since this is a
+   pair of buttons rather than a whole content row. */
+@media (max-width: $mantine-breakpoint-xs) {
+  .groupHeaderActions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--mantine-spacing-sm);
+  }
+
+  .groupHeaderActions > * {
+    width: 100%;
+  }
+}
+
+/* `/groups/{id}`'s member rows (review §3.2.4) -- name, role badge and the
+   row's action button(s) used to sit in one `nowrap` `Group`, which on a
+   narrow phone left the action buttons wrapping directly on top of each
+   other hard against the name instead of getting their own line. Above
+   `$mantine-breakpoint-xs` this is an ordinary space-between row; below it
+   the identity half (name + badge) and the actions half each keep their own
+   internal `nowrap` layout but the two halves stack, with the actions
+   getting the full row width to lay out left-to-right instead of wrapping
+   vertically. */
+.groupMemberRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+}
+
+@media (max-width: $mantine-breakpoint-xs) {
+  .groupMemberRow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .groupMemberRow__actions {
+    justify-content: flex-end;
+  }
 }

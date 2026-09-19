@@ -1,7 +1,8 @@
-import { Alert, Stack, Text, Title } from '@mantine/core';
+import { Alert, Button, Stack, Text, Title } from '@mantine/core';
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
-import { getGroupJoinPreview, getSession, ApiNotFoundError } from '@/lib/api';
+import { getGroup, getGroupJoinPreview, getSession, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { LoginButton } from '@/components/LoginButton';
 import { JoinGroupButton } from '@/components/JoinGroupButton';
 
@@ -69,7 +70,21 @@ export async function generateMetadata({
  * logging in and landing back here re-renders this exact page, now
  * authenticated, ready for the same explicit Join click (mirroring
  * `validate_return_to`'s existing return-to-any-same-origin-path
- * mechanism, `crates/api/src/auth.rs`). */
+ * mechanism, `crates/api/src/auth.rs`).
+ *
+ * Review §4.6 / §3.2.3: an already-authenticated visitor who's already a
+ * member -- most often the group's own owner, testing their own invite
+ * link -- used to be offered "Join group" regardless, because this page
+ * only ever called the unauthenticated preview above, which has no
+ * concept of the CALLER's own membership. `consume_invite_link`
+ * (`crates/api/src/data/groups.rs`) is idempotent (`ON CONFLICT DO
+ * NOTHING`), so clicking it wouldn't have corrupted anything -- but
+ * offering to "join" a group you're already in reads as broken, not
+ * idempotent. `getGroup(preview.groupId)` is the probe: it 404s for a
+ * non-member (`get_group_detail`'s own doc comment) and succeeds for one,
+ * so its outcome is exactly the membership check needed. Only run when
+ * `session.authenticated` -- an anonymous visitor can't be a member of
+ * anything, and the call would just throw its own `401`. */
 export default async function JoinGroupPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
 
@@ -94,6 +109,48 @@ export default async function JoinGroupPage({ params }: { params: Promise<{ toke
     email: null,
     name: null,
   }));
+
+  let alreadyMember = false;
+  if (session.authenticated) {
+    try {
+      await getGroup(preview.groupId);
+      alreadyMember = true;
+    } catch (err) {
+      // Neither is treated as "must be a member" -- a `404` is the
+      // ordinary non-member case this probe exists to detect, and an
+      // `ApiUnauthorizedError` here is the same narrow lapsed-session race
+      // `DeleteTrainButton`'s own doc comment names: `getSession()` above
+      // and this call aren't atomic. Either way, falling through to the
+      // normal `JoinGroupButton` branch is safe -- it re-checks auth on
+      // its own click and every other unexpected error still propagates.
+      if (!(err instanceof ApiNotFoundError) && !(err instanceof ApiUnauthorizedError)) {
+        throw err;
+      }
+    }
+  }
+
+  // The already-member branch gets its own heading/body rather than
+  // reusing "Join {name}?" with an "Open group" action bolted underneath
+  // it -- that combination read as contradictory (a "Join" question
+  // immediately followed by "you're already in"), not just redundant, and
+  // the "Joining lets everyone..." explanation has nothing to explain to
+  // someone who already has that access.
+  if (alreadyMember) {
+    return (
+      <Stack p="lg" gap="md">
+        <Title order={1}>You&apos;re already in {preview.groupName}</Title>
+        <Text>No need to join again — you can open the group instead.</Text>
+        {/* Plain `<Link>` wrapping `Button`, not `component={Link}` on a
+            Mantine polymorphic prop -- this page is a Server Component,
+            and that pattern previously broke `next build`'s Server/Client
+            boundary check (see `app/lines/[id]/page.tsx`'s identical
+            comment on its own "Edit" link). */}
+        <Link href={`/groups/${preview.groupId}`} style={{ textDecoration: 'none' }}>
+          <Button>Open group</Button>
+        </Link>
+      </Stack>
+    );
+  }
 
   return (
     <Stack p="lg" gap="md">

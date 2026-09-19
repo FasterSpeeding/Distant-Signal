@@ -25,6 +25,7 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
 import { LoginLink } from '@/components/LoginLink';
+import { TextLink } from '@/components/TextLink';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { worstStatus } from '@/lib/severity';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
@@ -114,6 +115,25 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
   // (`crates/api/src/routes/groups.rs`), so showing any of those controls
   // to an admin would be offering a button whose only outcome is a 403.
   const viewerIsOwner = group.role === 'owner';
+  const willDeleteGroup = viewerIsOwner && group.memberCount === 1;
+  // Who inherits ownership if the current viewer (the owner) leaves and the
+  // group ISN'T deleted outright -- see `LeaveGroupButton`'s own doc
+  // comment. Mirrors `remove_member`'s own successor query
+  // (`crates/api/src/data/groups.rs`) exactly: the longest-standing
+  // remaining admin, or failing that the longest-standing remaining member.
+  // Only ever computed (and only ever passed down) for an owner who isn't
+  // the sole member -- every other viewer gets `null` and the generic copy.
+  const nextOwner =
+    viewerIsOwner && !willDeleteGroup
+      ? [...members]
+          .filter((m) => m.userId !== currentUserId)
+          .sort((a, b) => {
+            const roleRank = (m: GroupMember) => (m.role === 'admin' ? 0 : 1);
+            const rankDiff = roleRank(a) - roleRank(b);
+            return rankDiff !== 0 ? rankDiff : a.joinedAt.localeCompare(b.joinedAt);
+          })[0]
+      : undefined;
+  const nextOwnerLabel = nextOwner ? memberLabel(nextOwner.displayName, nextOwner.displayTag) : null;
   // Only actually used by GroupInviteLinkCard below (canManage-gated), but
   // resolved unconditionally rather than behind an `if (canManage)` --
   // it's a cheap header/env read, and keeping it unconditional means this
@@ -123,23 +143,50 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
 
   return (
     <Stack p="lg" gap="lg">
+      {/* Review §3.2.5: the detail page had no way back to `/groups` short
+          of the browser's own Back button (which fails outright for a
+          visitor who followed a deep link straight here). Mirrors
+          `app/lines/[id]/history/page.tsx`'s own "Back to line" TextLink,
+          placed above the `<h1>` the same way. */}
+      <TextLink href="/groups" underline="always">
+        ← Groups
+      </TextLink>
       <Group justify="space-between" align="baseline">
         <Title order={1}>{group.name}</Title>
-        <Group gap="xs">
+        {/* Review §3.2.1 (design decision): "Delete group" used to sit
+            here too, in the same red-outline style as "Leave group" --
+            visually identical despite wildly different blast radii (one
+            member's own access vs. the whole group, every member, gone).
+            It now lives alone in the "Danger zone" section at the foot of
+            the page, subtly styled, so the one button every viewer might
+            actually want keeps the visual weight here.
+            `groupHeaderActions` (app/globals.css) stacks these full-width
+            with more breathing room between them below `xs`, where they
+            used to sit 12px apart directly against the heading. */}
+        <Group gap="xs" className="groupHeaderActions">
           {canManage && <RenameGroupButton groupId={id} currentName={group.name} />}
-          {viewerIsOwner && <DeleteGroupButton groupId={id} name={group.name} />}
           {currentUserId && (
             <LeaveGroupButton
               groupId={id}
               currentUserId={currentUserId}
-              willDeleteGroup={viewerIsOwner && group.memberCount === 1}
+              willDeleteGroup={willDeleteGroup}
+              nextOwnerLabel={nextOwnerLabel}
             />
           )}
         </Group>
       </Group>
 
       <Stack gap="sm">
-        <Title order={2}>Members</Title>
+        {/* `size="h4"` (review §3.2.5), matching `/lines/[id]`'s own
+            section headings: an `order={2}` `Title` with no `size` renders
+            at near-`h1` scale on mobile, which reads as a second page
+            title rather than a subsection heading. The semantic level
+            (`order={2}`, still correct for a heading one below the page's
+            own `<h1>`) is unchanged -- this only shrinks the rendered
+            size. */}
+        <Title order={2} size="h4">
+          Members
+        </Title>
         {members.map((member) => (
           <MemberRow
             key={member.userId}
@@ -147,6 +194,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
             member={member}
             canManage={canManage}
             viewerIsOwner={viewerIsOwner}
+            currentUserId={currentUserId}
           />
         ))}
         {canManage && <GroupInviteLinkCard groupId={id} inviteLink={group.inviteLink} origin={origin} />}
@@ -156,7 +204,9 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
 
       <Stack gap="sm">
         <Group justify="space-between" align="baseline">
-          <Title order={2}>Shared trains</Title>
+          <Title order={2} size="h4">
+            Shared trains
+          </Title>
           <AddTrainToGroupButton
             groupId={id}
             excludeTrainSubscriptionIds={trains.map((t) => t.trainSubscriptionId)}
@@ -188,7 +238,9 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
           See the design doc §3.4. */}
       <Stack gap="sm">
         <Group justify="space-between" align="baseline">
-          <Title order={2}>Shared custom lines</Title>
+          <Title order={2} size="h4">
+            Shared custom lines
+          </Title>
           <AddCustomLineToGroupButton
             groupId={id}
             excludeLineIds={customLines.map((l) => l.lineId)}
@@ -209,6 +261,24 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
           ))
         )}
       </Stack>
+
+      {/* "Danger zone" (review §3.2.1, design decision) -- the demoted
+          home for "Delete group", now a subtle red text button rather than
+          a second red-outline button beside "Leave group" in the header.
+          Owner-only, matching the button's own gating; the section itself
+          doesn't render at all for anyone else, since there is nothing
+          else in it. */}
+      {viewerIsOwner && (
+        <>
+          <Divider />
+          <Stack gap="sm">
+            <Title order={2} size="h4">
+              Danger zone
+            </Title>
+            <DeleteGroupButton groupId={id} name={group.name} />
+          </Stack>
+        </>
+      )}
     </Stack>
   );
 }
@@ -218,11 +288,13 @@ function MemberRow({
   member,
   canManage,
   viewerIsOwner,
+  currentUserId,
 }: {
   groupId: string;
   member: GroupMember;
   canManage: boolean;
   viewerIsOwner: boolean;
+  currentUserId: string | null;
 }) {
   // `memberLabel`, not a bare `displayName`: a member whose identity
   // provider has no name on file for them (or only an email-shaped one,
@@ -232,13 +304,29 @@ function MemberRow({
   // `lib/memberLabel.ts`.
   const label = memberLabel(member.displayName, member.displayTag);
   const isOwner = member.role === 'owner';
+  const isCurrentUser = currentUserId !== null && member.userId === currentUserId;
   return (
-    <Group justify="space-between" wrap="nowrap">
-      <Group gap="xs">
+    // Plain `div`s with `app/globals.css` classes, not nested Mantine
+    // `Group`s with responsive props -- `.groupMemberRow` stacks the
+    // identity half above the actions half below `xs` (review §3.2.4:
+    // the two ~36px action buttons used to wrap directly on top of each
+    // other, crushed against the name, rather than getting their own
+    // line).
+    <div className="groupMemberRow">
+      <Group gap="xs" wrap="nowrap">
         <Text>{label}</Text>
+        {/* Review §3.2.5: with no name/identity marker of its own, nothing
+            on this page told a viewer which row was THEM -- especially
+            awkward for a placeholder-rendered member ("A member
+            (#a1b2c3)") trying to match their own tag against the list. */}
+        {isCurrentUser && (
+          <Text c="dimmed" size="sm">
+            (you)
+          </Text>
+        )}
         <Badge variant="outline">{member.role}</Badge>
       </Group>
-      <Group gap="xs">
+      <Group gap="xs" wrap="nowrap" className="groupMemberRow__actions">
         {/* `viewerIsOwner`, not `canManage`: `promote_member` and
             `demote_member` are both gated on `GroupRole::is_owner`
             server-side, so an admin who clicked either would only ever get
@@ -253,7 +341,7 @@ function MemberRow({
         )}
         {canManage && !isOwner && <RemoveMemberButton groupId={groupId} userId={member.userId} name={label} />}
       </Group>
-    </Group>
+    </div>
   );
 }
 

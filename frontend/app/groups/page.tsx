@@ -52,13 +52,20 @@ export const metadata: Metadata = {
 };
 
 /** `/groups` -- list of the current user's groups: name, member count,
- * role badge, "Create group" CTA (spec §6). */
+ * role badge, "Create group" CTA (spec §6).
+ *
+ * `maw={640}` on both returns below (review §3.2.8, deliberately on top of
+ * Task 1.1's root-cause `<main>` fix, not instead of it -- see that task's
+ * own note): a list of short name/badge rows stretching the full content
+ * width reads as sparse rather than as a deliberate layout, the same
+ * "measure" concern typography guidance raises for any list of short
+ * lines. */
 export default async function GroupsPage() {
   const groups = await getMyGroups();
 
   if (groups === null) {
     return (
-      <Stack p="lg" gap="md">
+      <Stack p="lg" gap="md" maw={640}>
         <Title order={1}>Groups</Title>
         {/* Server-rendered, same as the two already-correct routes
             (app/train/by-id/[trackingId]/page.tsx,
@@ -79,7 +86,7 @@ export default async function GroupsPage() {
   }
 
   return (
-    <Stack p="lg" gap="lg">
+    <Stack p="lg" gap="lg" maw={640}>
       <Group justify="space-between" align="baseline">
         <Title order={1}>Groups</Title>
         <TextLink href="/groups/new">Create group</TextLink>
@@ -106,16 +113,33 @@ function GroupRow({ group }: { group: GroupSummary }) {
   // a value into a Mantine `component` prop from one previously broke
   // `next build`'s Server/Client boundary check (see `app/layout.tsx`'s
   // own comment on its nav-bar `<Link>` for the same reasoning).
+  //
+  // Review §3.2.5: this used to be a bare link -- `textDecoration: 'none';
+  // color: 'inherit'` -- with nothing telling a visitor it was clickable at
+  // all besides the cursor. `data-group-card-link`/`data-group-card`
+  // (styled in `app/globals.css`, mirroring `a[data-text-link]`'s own
+  // data-attribute pattern above) add a hover/focus border change and a
+  // trailing chevron; the chevron is a plain text glyph rather than an
+  // icon-library import, matching `GroupInviteLinkCard`'s own "⇪"/"✓"
+  // precedent (`@tabler/icons-react` isn't a project dependency -- see
+  // `components/InfoIcon.tsx`'s doc comment for the same check).
   return (
-    <Link href={`/groups/${group.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-      <Card withBorder>
-        <Group justify="space-between">
+    <Link
+      href={`/groups/${group.id}`}
+      style={{ textDecoration: 'none', color: 'inherit' }}
+      data-group-card-link
+    >
+      <Card withBorder data-group-card>
+        <Group justify="space-between" wrap="nowrap">
           <Text fw={500}>{group.name}</Text>
-          <Group gap="xs">
+          <Group gap="xs" wrap="nowrap">
             <Badge variant="light">
               {group.memberCount} member{group.memberCount === 1 ? '' : 's'}
             </Badge>
             <Badge variant="outline">{group.role}</Badge>
+            <Text aria-hidden c="dimmed">
+              ›
+            </Text>
           </Group>
         </Group>
       </Card>
