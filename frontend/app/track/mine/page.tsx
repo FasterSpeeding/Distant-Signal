@@ -1,4 +1,4 @@
-import { ActionIcon, Badge, Card, Divider, Group, Menu, Stack, Text, Title } from '@mantine/core';
+import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import Link from 'next/link';
 import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
@@ -9,11 +9,9 @@ import { ReliabilityDigest } from '@/components/ReliabilityDigest';
 import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
 import { AttachTicketAction } from '@/components/AttachTicketAction';
 import { DeleteTicketButton } from '@/components/DeleteTicketButton';
-import { DeleteTrainButton } from '@/components/DeleteTrainButton';
-import { KebabIcon } from '@/components/KebabIcon';
-import { RenameTrainButton } from '@/components/RenameTrainButton';
 import { RenameTicketButton } from '@/components/RenameTicketButton';
 import { StatusRow } from '@/components/StatusRow';
+import { TrackedTrainRowMenu } from '@/components/TrackedTrainRowMenu';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
@@ -268,37 +266,21 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
             // page) -- also relieves Task 1.5's space contest on this same
             // trailing slot, which otherwise stacks the status badge
             // alongside an ever-growing set of per-row controls.
-            <Menu position="bottom-end" withinPortal>
-              <Menu.Target>
-                <ActionIcon variant="subtle" color="gray" aria-label={`More actions for ${displayName}`}>
-                  <KebabIcon />
-                </ActionIcon>
-              </Menu.Target>
-              <Menu.Dropdown>
-                <RenameTrainButton
-                  trackingId={train.id}
-                  customName={train.customName}
-                  defaultName={defaultName}
-                  trigger={(onClick) => <Menu.Item onClick={onClick}>Rename</Menu.Item>}
-                />
-                {/* `afterDelete="refresh"`, not the component's own
-                    'redirect' default: this row's own page IS
-                    `/track/mine` already, so a stopped-tracking train
-                    should just drop out of this same list on
-                    `router.refresh()`, not navigate to the page it's
-                    already on. */}
-                <DeleteTrainButton
-                  trackingId={train.id}
-                  sharedGroupCount={train.sharedGroupCount}
-                  afterDelete="refresh"
-                  trigger={(onClick) => (
-                    <Menu.Item color="red" onClick={onClick}>
-                      Stop tracking
-                    </Menu.Item>
-                  )}
-                />
-              </Menu.Dropdown>
-            </Menu>
+            //
+            // The Menu/trigger composition itself lives in
+            // TrackedTrainRowMenu (a Client Component): this page is a
+            // Server Component, and RenameTrainButton/DeleteTrainButton's
+            // `trigger` prop is a function -- functions cannot cross the
+            // Server->Client boundary as a prop, only serializable values
+            // can, so the closures that build each Menu.Item have to be
+            // constructed client-side, not passed in from here.
+            <TrackedTrainRowMenu
+              displayName={displayName}
+              trackingId={train.id}
+              customName={train.customName}
+              defaultName={defaultName}
+              sharedGroupCount={train.sharedGroupCount}
+            />
           }
         />
         {tickets.length > 0 && (
