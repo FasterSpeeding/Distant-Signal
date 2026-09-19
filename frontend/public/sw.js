@@ -89,7 +89,17 @@ self.addEventListener('fetch', (event) => {
           // worry about here).
           if (response.ok) {
             const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+            // Fire-and-forget: the response is already on its way back via
+            // the `return response` below regardless of whether this cache
+            // write lands. Without a `.catch()` here, a write failure
+            // (quota exceeded, or the fetch above landing mid-navigation
+            // teardown) is a genuinely unhandled rejection in the service
+            // worker's own global scope -- a swallowed background cache
+            // write should stay swallowed, not bubble.
+            caches
+              .open(CACHE_NAME)
+              .then((cache) => cache.put(request, copy))
+              .catch(() => {});
           }
           return response;
         });
