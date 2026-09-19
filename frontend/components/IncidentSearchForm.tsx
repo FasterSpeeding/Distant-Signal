@@ -4,6 +4,7 @@ import { useEffect, useId, useState, type FormEvent } from 'react';
 import {
   Alert,
   Badge,
+  Box,
   Button,
   Grid,
   Group,
@@ -32,6 +33,27 @@ const MAX_LINE_BADGES = 4;
 
 function calendarDaysAgo(days: number): string {
   return dayjs().subtract(days, 'day').format('YYYY-MM-DD');
+}
+
+/** A `nothingFoundMessage` node, not a plain string: Mantine's own
+ * `Combobox.Empty` (what `nothingFoundMessage` renders into,
+ * `OptionsDropdown.tsx` in `@mantine/core`) is an unstyled `<Box>` with no
+ * ARIA role at all, so a plain string leaves the `role="listbox"` wrapper
+ * with a child that is neither an `option` nor a `group` -- axe's
+ * `aria-required-children` (critical) fires on exactly that, confirmed live
+ * against this form's own Operator field once the TOC catalogue (or a
+ * search) comes back empty. `Combobox.Empty` forwards unrecognised props
+ * straight onto that `<Box>` (it's a thin wrapper, no prop allowlist), so
+ * `role="option"` + `aria-disabled` here is enough to make the listbox
+ * structurally valid without touching Mantine internals -- `aria-disabled`
+ * (state, not `disabled`) keeps it out of the tab order's expectations
+ * without hiding it, matching how a real disabled option would read. */
+function noOptionsFound(label: string) {
+  return (
+    <Box role="option" aria-disabled="true">
+      {label}
+    </Box>
+  );
 }
 
 /** Exactly one of three mutually-exclusive states, mirroring
@@ -495,6 +517,16 @@ export function IncidentSearchForm({
             onChange={setOperators}
             searchable
             clearable
+            // Mantine's `Combobox` hides the whole dropdown outright when it
+            // has zero options and no `nothingFoundMessage` is set
+            // (`hiddenWhenEmpty: !nothingFoundMessage`, OptionsDropdown.tsx)
+            // -- not just "no rows", the `role="listbox"` element itself
+            // never mounts, while the combobox input is left with
+            // `aria-expanded="true"` pointing at nothing. That is reachable
+            // whenever the TOC catalogue is empty (this environment's
+            // fixture data) or a search narrows a real catalogue to zero
+            // matches (production), so it is not a fixture-only edge case.
+            nothingFoundMessage={noOptionsFound('No matching operators')}
             clearButtonProps={{ 'aria-label': 'Clear operator filter', className: 'iconHitArea24' }}
           />
           <Select
@@ -506,6 +538,9 @@ export function IncidentSearchForm({
             onChange={setLineId}
             searchable
             clearable
+            // Same empty-dropdown gap as the Operator field above -- see its
+            // comment.
+            nothingFoundMessage={noOptionsFound('No matching lines')}
             clearButtonProps={{ 'aria-label': 'Clear line filter', className: 'iconHitArea24' }}
           />
           <Stack gap={4}>
