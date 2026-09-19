@@ -122,6 +122,25 @@ export function HistoryRangePicker({
         <SegmentedControl
           aria-labelledby={periodLabelId}
           color="grape"
+          // `SegmentedControl`'s active-label text colour is decided by
+          // Mantine's `getContrastColor`, called directly here (not routed
+          // through `lib/theme.ts`'s `variantColorResolver`, which only
+          // covers Button/Badge/etc.'s "filled" variant) -- and it has the
+          // exact scheme-blind bug that resolver's own big comment documents
+          // for gray/blue: `parseThemeColor` is given no `colorScheme`, so it
+          // always evaluates contrast against `theme.colors.grape[6]`
+          // (primaryShade "light" unconditionally), while the background it
+          // actually paints on is grape 7 -- `app/globals.css`'s light-scheme
+          // substitution for `--mantine-color-grape-filled`, which
+          // `getThemeColor` (also colorScheme-blind) resolves to. Grape 6 is
+          // light enough that autoContrast picks black; black on the
+          // rendered grape 7 is 4.33:1, short of AA's 4.5:1. Pinning
+          // `autoContrast={false}` forces the unconditional-white fallback
+          // instead, matching the white text `variantColorResolver` already
+          // pins for every other grape-filled surface in this app (grape 7
+          // white 4.85:1 in light, grape 8 white 5.82:1 in dark -- both
+          // pass).
+          autoContrast={false}
           value={selection}
           onChange={handleSelectionChange}
           data={[

@@ -550,6 +550,15 @@ export function IncidentSearchForm({
             <SegmentedControl
               aria-labelledby={periodLabelId}
               color="grape"
+              // See `HistoryRangePicker`'s identical `autoContrast={false}`
+              // comment: `SegmentedControl`'s active-label contrast decision
+              // bypasses `lib/theme.ts`'s grape-filled `variantColorResolver`
+              // pin and is scheme-blind in the same way gray/blue's filled
+              // variant used to be, landing on black text at 4.33:1 against
+              // the grape-7 background this app's light scheme actually
+              // renders. Forcing white here matches the pin already applied
+              // everywhere else grape paints a filled surface.
+              autoContrast={false}
               value={preset ?? 'custom'}
               onChange={handlePeriodChange}
               data={[
@@ -588,6 +597,8 @@ export function IncidentSearchForm({
             <SegmentedControl
               aria-labelledby={typeLabelId}
               color="grape"
+              // See the Period `SegmentedControl` above for why.
+              autoContrast={false}
               value={plannedFilter}
               onChange={(value) => setPlannedFilter(value as 'all' | 'planned' | 'realtime')}
               data={[
@@ -604,6 +615,8 @@ export function IncidentSearchForm({
             <SegmentedControl
               aria-labelledby={statusLabelId}
               color="grape"
+              // See the Period `SegmentedControl` above for why.
+              autoContrast={false}
               value={clearedFilter}
               onChange={(value) => setClearedFilter(value as 'all' | 'active' | 'cleared')}
               data={[
