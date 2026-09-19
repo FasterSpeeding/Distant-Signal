@@ -157,4 +157,20 @@ describe('LineHistoryPage', () => {
 
     expect(screen.getByRole('heading', { name: formatDate('2026-08-31T09:00:00Z'), level: 2 })).toBeInTheDocument();
   });
+
+  // Review §2.12: the timezone note appears once for the whole Timeline
+  // section, not once per row -- exercised here with entries spanning two
+  // different days (two separate day groups, each with its own rows) so a
+  // per-row or per-day regression would be caught.
+  it('states the UK-local-time note exactly once across multiple days of rows', async () => {
+    vi.mocked(api.getLineStatusHistory).mockResolvedValue([
+      report('c2c', 'c2c (London, Tilbury & Southend line)'),
+      { ...report('c2c', 'c2c (London, Tilbury & Southend line)'), computedAt: '2026-08-30T09:00:00Z' },
+    ]);
+    renderWithMantine(
+      await HistoryResults({ id: 'c2c', from: '2026-08-26T00:00:00Z', to: '2026-09-02T00:00:00Z' }),
+    );
+
+    expect(screen.getAllByText('Times in UK local time')).toHaveLength(1);
+  });
 });

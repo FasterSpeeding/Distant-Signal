@@ -11,7 +11,7 @@ import {
   resolveRange,
   retentionShortfallDays,
 } from '@/lib/history';
-import { formatDate, formatTime } from '@/lib/dateFormat';
+import { formatDate, formatTime, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 import { GranularityControl } from './GranularityControl';
 import { HistoryRangePicker } from './HistoryRangePicker';
 import { TrendsResults } from './TrendsResults';
@@ -249,6 +249,12 @@ export async function HistoryResults({ id, from, to }: { id: string; from: strin
       <Text size="sm" c="dimmed">
         {entries.length} status {entries.length === 1 ? 'recompute' : 'recomputes'} across {spanCount}{' '}
         {spanCount === 1 ? 'incident' : 'incidents'}, newest first.
+      </Text>
+      {/* Once for this whole Timeline section, not once per row's
+          `formatTime` below — see `TIMES_IN_UK_LOCAL_TIME`'s own doc
+          comment. */}
+      <Text size="xs" c="dimmed">
+        {TIMES_IN_UK_LOCAL_TIME}
       </Text>
       {days.map((day) => (
         <Stack key={day.day} gap="xs">

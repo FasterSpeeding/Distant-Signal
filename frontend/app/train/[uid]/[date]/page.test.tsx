@@ -277,6 +277,19 @@ describe('TrackedTrainByUidPage success path', () => {
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
+
+  // Review §2.12: a real "when was this fetched"/"how often does it
+  // refresh" caption under the summary block, using the app's actual
+  // 30s AutoRefresh cadence rather than a hardcoded, driftable number, plus
+  // the same UK-local-time note as the other two locations this task
+  // covers (incidents detail, line history).
+  it('shows a LastUpdated caption with the real auto-refresh cadence and UK-time note', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
+    await renderPage();
+    expect(screen.getByText(/Updated/)).toBeInTheDocument();
+    expect(screen.getByText(/refreshes every 30s/)).toBeInTheDocument();
+    expect(screen.getByText(/Times in UK local time/)).toBeInTheDocument();
+  });
 });
 
 describe('TrackedTrainByUidPage tracking overlay', () => {

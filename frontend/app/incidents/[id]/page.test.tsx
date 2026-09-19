@@ -127,6 +127,16 @@ describe('IncidentDetailPage', () => {
     expect(screen.getByText('priority changed from 3 to 5')).toBeInTheDocument();
     expect(screen.getByText('First seen')).toBeInTheDocument();
   });
+
+  // Review §2.12: the timezone note appears once for the whole "First
+  // seen"/"Last fetched" section, not once per timestamp, even though the
+  // page also shows several other timestamps (validity periods, history
+  // entries) that are not this note's target section.
+  it('states the UK-local-time note exactly once, next to First seen/Last fetched', async () => {
+    vi.mocked(api.getIncident).mockResolvedValue(detail());
+    renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
+    expect(screen.getAllByText('Times in UK local time')).toHaveLength(1);
+  });
 });
 
 describe('generateMetadata', () => {

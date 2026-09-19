@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { formatDateTime } from '@/lib/dateFormat';
 import { ConnectivityMonitor } from './ConnectivityMonitor';
 
 // Only `useNetwork` is stubbed; `useMounted` keeps its real implementation
@@ -126,5 +127,32 @@ describe('ConnectivityMonitor', () => {
     const status = screen.getByRole('status');
     expect(status).toHaveAttribute('aria-live', 'polite');
     expect(status).toHaveTextContent(BANNER);
+  });
+
+  // Review §2.12/§5: "showing the last update" must name an actual time,
+  // not remain an unverifiable claim. The banner body should carry the
+  // formatted `observedAt` of the last render that was actually reachable,
+  // not just the generic fallback copy.
+  it('names the last known-good time in the offline banner body', () => {
+    const goodAt = '2026-08-19T18:41:00.000Z';
+    renderMonitor({ backendReachable: true, observedAt: goodAt });
+    expect(screen.queryByText(BANNER)).not.toBeInTheDocument();
+
+    act(() => observe(failure()));
+    act(() => observe(failure()));
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent(BANNER);
+    expect(status).toHaveTextContent(formatDateTime(goodAt));
+  });
+
+  // The one honest edge case: if this render has never once observed a
+  // reachable backend, there is no real "last good" time to name, so the
+  // banner falls back to the old generic copy rather than fabricating one.
+  it('falls back to generic copy when no observation has ever been reachable', () => {
+    renderMonitor(failure());
+    act(() => observe(failure()));
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent(BANNER);
+    expect(status).toHaveTextContent('showing the last update.');
   });
 });

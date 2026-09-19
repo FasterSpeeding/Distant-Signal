@@ -168,6 +168,17 @@ describe('TrackedTrainByIdPage success path', () => {
     expect(screen.queryByRole('link', { name: /Real Time Trains/ })).not.toBeInTheDocument();
   });
 
+  // Review §2.12: same LastUpdated caption + UK-time note as the sibling
+  // `/train/[uid]/[date]` page, for the local (non-redirected) render path
+  // this page still owns for an unresolved train.
+  it('shows a LastUpdated caption with the real auto-refresh cadence and UK-time note', async () => {
+    vi.mocked(api.getTrackedTrainById).mockResolvedValue(trackedTrainState());
+    await renderPage('42');
+    expect(screen.getByText(/Updated/)).toBeInTheDocument();
+    expect(screen.getByText(/refreshes every 30s/)).toBeInTheDocument();
+    expect(screen.getByText(/Times in UK local time/)).toBeInTheDocument();
+  });
+
   // Task 2: once resolved with a real trainUid, this page's whole job is to
   // hand off to the canonical /train/{uid}/{date} URL rather than rendering
   // owner content locally.

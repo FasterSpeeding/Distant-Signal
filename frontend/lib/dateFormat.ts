@@ -119,3 +119,15 @@ export function formatTime(value: string | Date): string {
 export function londonDayKey(value: string | Date): string {
   return DAY_KEY.format(asDate(value));
 }
+
+/** One line, stated once per section (never once per row — a caption
+ * repeated next to every timestamp would be noise, not information; see
+ * review §2.12), next to a group of `formatDateTime`/`formatTime`-rendered
+ * network-time values. It exists because those formatters pin
+ * `timeZone: 'Europe/London'` regardless of the viewer's own locale/zone
+ * (this module's header comment), which is invisible in the rendered
+ * string itself — "19:56" reads as "my local 19:56" to a visitor whose
+ * browser is in a different zone unless something says otherwise. Not used
+ * next to `formatLocalDateTime` output, which is already the viewer's own
+ * zone and needs no such disclaimer. */
+export const TIMES_IN_UK_LOCAL_TIME = 'Times in UK local time';
