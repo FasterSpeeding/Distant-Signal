@@ -1,6 +1,5 @@
 import { Alert, Button, Stack, Text, Title } from '@mantine/core';
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { getGroup, getGroupJoinPreview, getSession, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { LoginButton } from '@/components/LoginButton';
@@ -20,14 +19,17 @@ export const revalidate = 0;
  * carry a session cookie, so this is the only way they ever see a real
  * preview instead of a fallback.
  *
- * Same `notFound()`-on-`ApiNotFoundError` handling as the page component's
- * own "invite link not found" branch below -- `generateMetadata` runs
- * independently of the page component, so it needs its own equivalent
- * try/catch rather than relying on the page's. Unlike the page component
- * (which renders an in-page "invalid or expired" message so a human
- * visitor gets a helpful explanation), this just 404s: there's no metadata
- * worth showing for a token that doesn't resolve, and a plain 404 is
- * exactly what an unfurler bot should see for one. */
+ * Falls back to the root layout's site-wide metadata (returns `{}`, which
+ * Next merges over that fallback) on `ApiNotFoundError`, the same error
+ * the page component's own "invite link not found" branch below handles
+ * -- **not** `notFound()`: calling `notFound()` from `generateMetadata`
+ * 404s the whole route, not just the metadata, which pre-empted the page
+ * component's friendly "invalid or expired" render for every real visitor
+ * of an expired/invalid link, not only unfurler bots (confirmed via a live
+ * repro -- the page component's own branch below was unreachable dead code
+ * for this path). An unfurler bot seeing generic site metadata instead of
+ * a group-specific preview is a fine, minor degradation; a human visitor
+ * silently losing the explanation this page exists to give them is not. */
 export async function generateMetadata({
   params,
 }: {
@@ -40,7 +42,7 @@ export async function generateMetadata({
     preview = await getGroupJoinPreview(token);
   } catch (err) {
     if (err instanceof ApiNotFoundError) {
-      notFound();
+      return {};
     }
     throw err;
   }

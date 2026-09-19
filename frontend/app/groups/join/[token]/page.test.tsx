@@ -145,11 +145,18 @@ describe('generateMetadata', () => {
     );
   });
 
-  it('calls notFound() on ApiNotFoundError, matching the page component', async () => {
+  // Regression test: this used to call notFound(), which 404s the WHOLE
+  // route (not just the metadata) -- pre-empting the page component's own
+  // "invite link not found" render below for every real visitor of an
+  // expired/invalid link, not only unfurler bots. Falling back to `{}`
+  // (the root layout's site-wide metadata) instead leaves the page
+  // component free to render its own friendly explanation.
+  it('falls back to site-wide metadata on ApiNotFoundError, without 404ing the route', async () => {
     vi.mocked(getGroupJoinPreview).mockRejectedValue(new ApiNotFoundError('not found'));
     const { notFound } = await import('next/navigation');
     vi.mocked(notFound).mockClear();
-    await expect(generateMetadata({ params: Promise.resolve({ token: 'bad-token' }) })).rejects.toThrow();
-    expect(notFound).toHaveBeenCalled();
+    const metadata = await generateMetadata({ params: Promise.resolve({ token: 'bad-token' }) });
+    expect(metadata).toEqual({});
+    expect(notFound).not.toHaveBeenCalled();
   });
 });
