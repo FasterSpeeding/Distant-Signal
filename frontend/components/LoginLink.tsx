@@ -52,13 +52,18 @@ import { TextLink } from './TextLink';
 export function LoginLink({
   children,
   underline,
+  size,
 }: {
   children: React.ReactNode;
   underline?: 'hover' | 'always';
+  // Passed straight through to `TextLink`'s own `size` -- see that prop's
+  // doc comment for why `AuthStatus`'s nav-bar use of this component now
+  // sets it explicitly (review §2.16).
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
 }) {
   const href = useLoginHref();
   return (
-    <TextLink href={href} underline={underline} prefetch={false}>
+    <TextLink href={href} underline={underline} prefetch={false} size={size}>
       {children}
     </TextLink>
   );

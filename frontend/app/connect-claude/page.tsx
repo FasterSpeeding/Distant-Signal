@@ -1,6 +1,6 @@
 import { Alert, Code, List, ListItem, Stack, Text, Title } from '@mantine/core';
 import { getSession } from '@/lib/api';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginButton } from '@/components/LoginButton';
 
 // This route has no dynamic segment, so without this Next.js treats it as
 // eligible for static generation and tries to prerender it during `next
@@ -43,7 +43,12 @@ export default async function ConnectClaudePage() {
           Log in to Distant Signal first, then come back here to connect your own Claude.ai or Claude Desktop
           account.
         </Text>
-        <LoginLink underline="always">Log in</LoginLink>
+        {/* Review §2.16: a filled `Button`, not the underlined text link
+            this used to be -- the anonymous visitor's one action on this
+            page had noticeably less visual weight than the authenticated
+            branch's own step-by-step instructions below suggest a "real"
+            page should have. */}
+        <LoginButton title="Log in — needs a Distant Signal account">Log in</LoginButton>
       </Stack>
     );
   }

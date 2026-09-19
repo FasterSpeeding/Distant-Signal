@@ -81,7 +81,17 @@ export function OpenDataAttribution() {
       <Text size="xs" c="dimmed">
         Powered by TfL Open Data
       </Text>
-      <Text size="xs" c="dimmed">
+      {/* `size="sm"`, not the `xs` its two plain-text siblings above/below
+          use -- review §2.16 ("auth controls are inconsistently sized")
+          named this line specifically as "a 12px underlined link with a
+          ~16px hit height", and `sm` (14px) is the size the chrome's other
+          text-link-styled controls now converge on (see `AuthStatus.tsx`'s
+          own comment on its "Log in" link for the other leg of this same
+          fix). The two neighbouring lines stay `xs`: they carry required
+          attribution TEXT with no link of their own, so they are not the
+          "control" this finding is about, and bumping them too would just
+          move the inconsistency rather than resolve it. */}
+      <Text size="sm" c="dimmed">
         <a
           href="https://www.nationalrail.co.uk"
           target="_blank"

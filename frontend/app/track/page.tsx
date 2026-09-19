@@ -70,6 +70,19 @@ export default async function TrackPage({
           ? "Find or track the train your saved ticket is for — it'll be attached automatically once you do."
           : 'Pin a specific train to see its live position, delay and next calling point as Network Rail reports it.'}
       </Text>
+      {/* Review §2.16: `TrackTrainForm`'s own "Track this train" button is
+          shown to every visitor, logged in or not (the Tier-2 "show the
+          control, gate on the real 401" pattern `useNeedsLogin.ts`
+          documents), which gives no hint up front that saving a pin needs
+          an account -- same complaint the review makes of the anonymous pin
+          star (§3.4). Unconditional rather than gated on `getSession()`: it
+          stays true for a logged-in visitor too, and this route mounts a
+          client form regardless, so there is no static-rendering property
+          to preserve the way `/lines/new`'s own comment protects. */}
+      <Text size="sm" c="dimmed">
+        Tracking a train needs a Distant Signal account — you&apos;ll be sent to log in when you save if you
+        aren&apos;t already signed in.
+      </Text>
       <TrackTrainForm initialOrigin={originParam?.toUpperCase()} attachTicketId={attachTicketId} />
     </Stack>
   );

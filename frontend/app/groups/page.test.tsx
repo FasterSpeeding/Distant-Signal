@@ -20,11 +20,21 @@ describe('GroupsPage', () => {
     expect(await screen.findByText('Log in to see your groups.')).toBeInTheDocument();
   });
 
-  it('renders a server-rendered LoginLink alongside the modal, not just the client-only prompt', async () => {
+  it('renders a server-rendered login action alongside the modal, not just the client-only prompt', async () => {
     vi.mocked(getMyGroups).mockResolvedValue(null);
     renderWithMantine(await GroupsPage());
     const link = screen.getByRole('link', { name: 'Log in to see your groups' });
     expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2Fgroups');
+  });
+
+  // Review §2.16: this used to be an underlined text link -- promoted to a
+  // filled button so the anonymous visitor's one action here has the same
+  // visual weight as the "Create group" action an authenticated visitor
+  // sees in its place.
+  it('renders the login action as a filled button, not a plain text link', async () => {
+    vi.mocked(getMyGroups).mockResolvedValue(null);
+    renderWithMantine(await GroupsPage());
+    expect(screen.getByRole('button', { name: 'Log in to see your groups' })).toBeInTheDocument();
   });
 
   it('shows an empty-state message with no groups', async () => {

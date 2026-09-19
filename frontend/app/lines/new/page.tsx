@@ -1,4 +1,4 @@
-import { Center, Stack, Title } from '@mantine/core';
+import { Center, Stack, Text, Title } from '@mantine/core';
 import { CustomLineForm } from '../CustomLineForm';
 
 // No `export const revalidate = 0` -- unlike `/lines/page.tsx` (which
@@ -18,6 +18,20 @@ export default function NewCustomLinePage() {
     <Center>
       <Stack p="lg" gap="md" maw={480} w="100%">
         <Title order={1}>New custom line</Title>
+        {/* Review §2.16: `CustomLineForm`'s own "Create line" button is
+            shown to every visitor, logged in or not (the Tier-2 "show the
+            control, gate on the real 401" pattern `useNeedsLogin.ts`
+            documents), which is right for discoverability but gives no
+            hint up front that saving needs an account -- same complaint the
+            review makes of the anonymous pin star (§3.4). Unconditional
+            rather than gated on `getSession()`: it stays true for a logged-
+            in visitor too, and checking session here would turn this
+            otherwise-static route dynamic for no real gain (see this page's
+            own comment above on why it fetches nothing server-side). */}
+        <Text size="sm" c="dimmed">
+          Creating a line needs a Distant Signal account — you&apos;ll be sent to log in when you save if you
+          aren&apos;t already signed in.
+        </Text>
         <CustomLineForm cancelHref="/lines" />
       </Stack>
     </Center>

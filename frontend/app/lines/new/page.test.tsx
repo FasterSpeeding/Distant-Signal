@@ -28,4 +28,12 @@ describe('NewCustomLinePage', () => {
     expect(screen.getByRole('button', { name: 'Create line' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Cancel' })).toHaveAttribute('href', '/lines');
   });
+
+  // Review §2.16: the "Create line" button above is shown to every
+  // visitor, logged in or not, with nothing hinting that saving needs an
+  // account -- this note is that hint.
+  it('hints that creating a line needs an account', () => {
+    renderWithMantine(<NewCustomLinePage />);
+    expect(screen.getByText(/needs a Distant Signal account/)).toBeInTheDocument();
+  });
 });

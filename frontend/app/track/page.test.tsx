@@ -31,6 +31,14 @@ describe('TrackPage', () => {
     expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
   });
 
+  // Review §2.16: the "Track this train" button above is shown to every
+  // visitor, logged in or not, with nothing hinting that saving a pin needs
+  // an account -- this note is that hint.
+  it('hints that tracking a train needs an account', async () => {
+    renderWithMantine(await TrackPage({ searchParams: Promise.resolve({}) }));
+    expect(screen.getByText(/needs a Distant Signal account/)).toBeInTheDocument();
+  });
+
   it('swaps in the ticket-specific subtitle for a valid ?ticketId=', async () => {
     renderWithMantine(await TrackPage({ searchParams: Promise.resolve({ ticketId: '42' }) }));
 

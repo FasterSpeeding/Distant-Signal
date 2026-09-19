@@ -28,7 +28,17 @@ import type { SessionInfo } from '@/lib/types';
  * only the always-on run of bar text that went away. */
 export function AuthStatus({ session }: { session: SessionInfo }) {
   if (!session.authenticated) {
-    return <LoginLink>Log in</LoginLink>;
+    // `size="sm"` (14px), not `LoginLink`'s own Mantine-`Text`-default 16px:
+    // review §2.16 named this as one leg of "auth controls are
+    // inconsistently sized" (a 16px "Log in" beside a ~12px "Log out"), and
+    // 14px is where the OTHER leg -- "Log out", now a `Menu.Item` inside
+    // `AccountMenu`'s dropdown rather than the bar `Button` the review
+    // measured -- already renders by Mantine's own default (see
+    // `TextLink.tsx`'s `size` doc comment for the exact CSS variable this
+    // traces to). Converging here, rather than bumping "Log out" up to
+    // match a 16px "Log in", keeps the footer's own text-link-styled
+    // control (`OpenDataAttribution.tsx`) at the same size too.
+    return <LoginLink size="sm">Log in</LoginLink>;
   }
 
   // `?.trim() ||`, not `??`: an identity provider with no name on file for

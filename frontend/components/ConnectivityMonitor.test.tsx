@@ -14,6 +14,15 @@ vi.mock('@mantine/hooks', async (importOriginal) => ({
   useNetwork: () => network,
 }));
 
+// ConnectivityMonitor now reads the current route (review §2.16, form-page
+// copy) via `usePathname()`, which throws "invariant expected app router to
+// be mounted" outside a real Next.js App Router tree, same as every other
+// component in this app that calls it.
+let pathname = '/stations';
+vi.mock('next/navigation', () => ({
+  usePathname: () => pathname,
+}));
+
 const BANNER = 'Reconnecting…';
 
 type Observation = { backendReachable: boolean; observedAt: string };
@@ -54,6 +63,7 @@ describe('ConnectivityMonitor', () => {
   beforeEach(() => {
     network.online = true;
     observation = 0;
+    pathname = '/stations';
   });
 
   it('always renders its children, banner or not', () => {
@@ -154,5 +164,58 @@ describe('ConnectivityMonitor', () => {
     const status = screen.getByRole('status');
     expect(status).toHaveTextContent(BANNER);
     expect(status).toHaveTextContent('showing the last update.');
+  });
+
+  // Review §2.16: "showing the update from {time}"/"showing the last
+  // update" is untrue on a route whose whole content is a form -- there was
+  // never any live data on screen to have last updated.
+  describe('on a form route', () => {
+    it.each(['/track', '/trains', '/track/mine/add-ticket', '/lines/new', '/lines/some-line/edit'])(
+      'shows entry-safety copy instead of "showing the last update" on %s',
+      (route) => {
+        pathname = route;
+        renderMonitor(failure());
+        act(() => observe(failure()));
+        const status = screen.getByRole('status');
+        expect(status).toHaveTextContent(BANNER);
+        expect(status).toHaveTextContent("Can't reach the server right now — your entries are safe until you submit.");
+        expect(status).not.toHaveTextContent('showing the');
+      },
+    );
+
+    it('still shows entry-safety copy even when a real lastGoodAt is on record', () => {
+      // Regression: the form-route branch must win over the
+      // lastGoodAt/generic split, not just over the generic fallback --
+      // otherwise a visitor who loaded /track right after a good render
+      // would still see the misleading "showing the update from {time}."
+      pathname = '/track';
+      renderMonitor({ backendReachable: true, observedAt: '2026-08-19T18:41:00.000Z' });
+      act(() => observe(failure()));
+      act(() => observe(failure()));
+      const status = screen.getByRole('status');
+      expect(status).toHaveTextContent('your entries are safe until you submit.');
+    });
+  });
+
+  it('keeps the default "showing the last update" copy on a non-form, non-dynamic-segment route that merely starts with a form route\'s name', () => {
+    // `/lines/new` is a form route; `/lines/newsletter` (a made-up
+    // neighbour) must not be swept in by a loose prefix match.
+    pathname = '/lines/newsletter';
+    renderMonitor(failure());
+    act(() => observe(failure()));
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('showing the last update.');
+  });
+
+  // Review §2.16: on a 390px phone the unconstrained `Notification` shrank
+  // to ~200px and its body wrapped onto four lines.
+  it('caps the fixed banner wrapper width so it cannot shrink-wrap on a narrow viewport', () => {
+    renderMonitor(failure());
+    act(() => observe(failure()));
+    const status = screen.getByRole('status');
+    // The width is set on the fixed-position wrapper `<div>`, one ancestor
+    // up from the `Notification` itself (the element carrying `role="status"`).
+    const wrapper = status.parentElement;
+    expect(wrapper).toHaveStyle({ width: 'min(calc(100vw - 32px), 480px)' });
   });
 });

@@ -51,4 +51,21 @@ describe('OpenDataAttribution', () => {
     const { container } = renderWithMantine(<OpenDataAttribution />);
     expect(container.querySelector('footer')).not.toBeNull();
   });
+
+  // Review §2.16 "auth controls are inconsistently sized" named this line
+  // specifically: "a 12px underlined link with a ~16px hit height". Bumped
+  // to `sm` (14px), the size the chrome's other text-link-styled controls
+  // (AuthStatus's "Log in") converge on -- its two plain-text sibling lines
+  // stay at `xs`, since they carry no link of their own.
+  it("renders the NationalRail attribution line (the one with a link) at sm, not the xs its plain-text siblings use", () => {
+    renderWithMantine(<OpenDataAttribution />);
+    const link = screen.getByText('powered by NationalRail');
+    expect(link.parentElement).toHaveStyle({ '--text-fz': 'var(--mantine-font-size-sm)' });
+    expect(screen.getByText('Powered by TfL Open Data')).not.toHaveStyle({
+      '--text-fz': 'var(--mantine-font-size-sm)',
+    });
+    expect(screen.getByText(/Live train movement data/)).not.toHaveStyle({
+      '--text-fz': 'var(--mantine-font-size-sm)',
+    });
+  });
 });
