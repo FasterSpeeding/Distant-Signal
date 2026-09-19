@@ -262,7 +262,7 @@ export async function HistoryResults({ id, from, to }: { id: string; from: strin
       {/* Says out loud what the grouping did, so a short page doesn't read
           as missing data. */}
       <Text size="sm" c="dimmed">
-        {entries.length} status {entries.length === 1 ? 'recompute' : 'recomputes'} across {spanCount}{' '}
+        {entries.length} status {entries.length === 1 ? 'change' : 'changes'} across {spanCount}{' '}
         {spanCount === 1 ? 'incident' : 'incidents'}, newest first.
       </Text>
       {/* Once for this whole Timeline section, not once per row's

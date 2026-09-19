@@ -188,4 +188,19 @@ describe('LineHistoryPage', () => {
 
     expect(screen.getAllByText('Times in UK local time')).toHaveLength(1);
   });
+
+  // Review §2.9: "recompute" is the aggregator's own internal word for
+  // what happened, not a sentence a passenger would recognise.
+  it('describes entries as status changes, not internal "recompute"s', async () => {
+    vi.mocked(api.getLineStatusHistory).mockResolvedValue([
+      report('c2c', 'c2c (London, Tilbury & Southend line)'),
+      { ...report('c2c', 'c2c (London, Tilbury & Southend line)'), computedAt: '2026-08-30T09:00:00Z' },
+    ]);
+    renderWithMantine(
+      await HistoryResults({ id: 'c2c', from: '2026-08-26T00:00:00Z', to: '2026-09-02T00:00:00Z' }),
+    );
+
+    expect(screen.getByText(/2 status changes across/)).toBeInTheDocument();
+    expect(screen.queryByText(/recompute/)).not.toBeInTheDocument();
+  });
 });

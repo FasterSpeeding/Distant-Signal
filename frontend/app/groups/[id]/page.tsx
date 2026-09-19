@@ -23,6 +23,7 @@ import { AddCustomLineToGroupButton } from '@/components/AddCustomLineToGroupBut
 import { RemoveCustomLineGrantButton } from '@/components/RemoveCustomLineGrantButton';
 import { StatusBadge } from '@/components/StatusBadge';
 import { StatusRow } from '@/components/StatusRow';
+import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
 import { LoginLink } from '@/components/LoginLink';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { worstStatus } from '@/lib/severity';
@@ -293,14 +294,21 @@ function SharedTrainRow({
                 the whole way to answer "who shared this?" when the IdP
                 gives this app no showable name for anyone. */}
             Shared by {memberLabel(train.addedByName, train.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
-            {train.status && ` · ${train.status}`}
-            {train.delayMinutes !== null && train.delayMinutes > 0 && ` · ${train.delayMinutes}m late`}
           </Text>
         }
         trailing={
-          canRemove && (
-            <RemoveGroupTrainButton groupId={groupId} trainSubscriptionId={train.trainSubscriptionId} />
-          )
+          <Group gap="xs" wrap="nowrap">
+            {/* Was a raw `train.status` string literal (e.g. "en_route")
+                appended to the subtitle text -- the one place on this page
+                that disagreed with every other status badge in the app.
+                Same shared component `/` and `/track/mine` render off, so
+                this card and those two pages can never drift on wording
+                again (review §2.9). */}
+            <TrackedTrainStatusBadge train={train} />
+            {canRemove && (
+              <RemoveGroupTrainButton groupId={groupId} trainSubscriptionId={train.trainSubscriptionId} />
+            )}
+          </Group>
         }
       />
     </Card>

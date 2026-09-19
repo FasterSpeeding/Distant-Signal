@@ -552,7 +552,7 @@ describe('IncidentSearchForm', () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
       expect(screen.getByText('Priority range')).toBeInTheDocument();
       expect(
-        screen.getAllByText(/raw feed value from the Knowledgebase incident data/i),
+        screen.getAllByText(/raw feed value from national rail's own incident data/i),
       ).toHaveLength(1);
     });
 

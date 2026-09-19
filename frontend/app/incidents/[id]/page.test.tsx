@@ -68,6 +68,23 @@ describe('IncidentDetailPage', () => {
     expect(screen.getByText('Signal failure at Woking')).toBeInTheDocument();
     expect(screen.getByText('Delays expected')).toBeInTheDocument();
     expect(screen.getByText('WOK')).toBeInTheDocument();
+    // Review §2.9: bare CRS pills with nothing on the page to say what
+    // they are -- this heading is what makes them read as station
+    // identifiers rather than three floating, unexplained letters.
+    expect(screen.getByText('Affected stations')).toBeInTheDocument();
+  });
+
+  it('renders no "Affected stations" heading when the incident has none', async () => {
+    vi.mocked(api.getIncident).mockResolvedValue(detail({ affectedStations: [] }));
+    renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
+    expect(screen.queryByText('Affected stations')).not.toBeInTheDocument();
+  });
+
+  // Review §2.9: "fetched" is the poller's own word, not a passenger's.
+  it('labels the fetch timestamp in reader-facing terms, not the poller\'s own word', async () => {
+    vi.mocked(api.getIncident).mockResolvedValue(detail());
+    renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
+    expect(screen.getByText(`Last updated from National Rail: ${formatDateTime('2026-08-31T10:15:00Z')}`)).toBeInTheDocument();
   });
 
   it('renders a link to each currently-affected line', async () => {
@@ -129,10 +146,11 @@ describe('IncidentDetailPage', () => {
   });
 
   // Review §2.12: the timezone note appears once for the whole "First
-  // seen"/"Last fetched" section, not once per timestamp, even though the
-  // page also shows several other timestamps (validity periods, history
-  // entries) that are not this note's target section.
-  it('states the UK-local-time note exactly once, next to First seen/Last fetched', async () => {
+  // seen"/"Last updated from National Rail" section, not once per
+  // timestamp, even though the page also shows several other timestamps
+  // (validity periods, history entries) that are not this note's target
+  // section.
+  it('states the UK-local-time note exactly once, next to First seen/Last updated', async () => {
     vi.mocked(api.getIncident).mockResolvedValue(detail());
     renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
     expect(screen.getAllByText('Times in UK local time')).toHaveLength(1);

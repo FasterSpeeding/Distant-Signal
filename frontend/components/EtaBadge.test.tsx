@@ -26,7 +26,7 @@ describe('EtaBadge', () => {
 
   it('shows a distinct badge for a trust-propagated ETA', () => {
     renderWithMantine(<EtaBadge etaNext="2026-08-28T18:41:00Z" etaSource="trust-propagated" />);
-    expect(screen.getByText('Network Rail propagated')).toBeInTheDocument();
+    expect(screen.getByText('Estimate (Network Rail)')).toBeInTheDocument();
   });
 
   it('the two sources render visibly different badge text', () => {
@@ -34,7 +34,20 @@ describe('EtaBadge', () => {
     const darwinText = screen.getByText('Live departure board').textContent;
     unmount();
     renderWithMantine(<EtaBadge etaNext="2026-08-28T18:41:00Z" etaSource="trust-propagated" />);
-    const trustText = screen.getByText('Network Rail propagated').textContent;
+    const trustText = screen.getByText('Estimate (Network Rail)').textContent;
     expect(darwinText).not.toBe(trustText);
+  });
+
+  // Review §2.9: "propagated" is jargon, so the visible badge no longer
+  // says it -- but the precise technical term must still reach anyone who
+  // needs it: sighted users via the Tooltip, everyone else via this
+  // always-present (but visually hidden) text.
+  it('keeps the precise "propagated" technical description available to screen readers', () => {
+    renderWithMantine(<EtaBadge etaNext="2026-08-28T18:41:00Z" etaSource="trust-propagated" />);
+    expect(
+      screen.getByText(
+        "Estimated by Network Rail's TRUST movement feed, propagated forward from the train's last reported delay",
+      ),
+    ).toBeInTheDocument();
   });
 });

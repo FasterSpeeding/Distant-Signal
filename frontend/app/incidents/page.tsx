@@ -26,7 +26,7 @@ export const revalidate = 0;
  * lands on agree. */
 const METADATA_TITLE = 'Incident Archive — Distant Signal';
 const METADATA_DESCRIPTION =
-  'Search National Rail Knowledgebase incidents across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.';
+  'Search National Rail incident messages across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.';
 
 export const metadata: Metadata = {
   title: METADATA_TITLE,
@@ -67,9 +67,9 @@ export default async function IncidentsPage({
     <Stack p="lg" gap="md">
       <Title order={1}>Incident Archive</Title>
       <Text c="dimmed">
-        Search Knowledgebase incidents across the whole network, independent of which line you were
-        looking at. Defaults to the last 30 days — use &quot;All time&quot; to see everything this app
-        has ever ingested.
+        Search National Rail incident messages across the whole network, independent of which line you
+        were looking at. Defaults to the last 30 days — use &quot;All time&quot; to see everything this
+        app has ever ingested.
       </Text>
       <IncidentSearchForm
         lines={lines}

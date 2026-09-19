@@ -405,7 +405,7 @@ export function IncidentSearchForm({
                   </Badge>
                 )}
                 {row.affectedStations.map((crs) => (
-                  <Badge key={crs} variant="outline" color="gray">
+                  <Badge key={crs} variant="outline" color="gray" title="Affected station">
                     {crs}
                   </Badge>
                 ))}
@@ -456,7 +456,7 @@ export function IncidentSearchForm({
       <Select
         label="Line (optional)"
         placeholder="Any line"
-        description="Incidents attributed to this line by the same matcher that drives its live status page. Incidents archived before this filter was fixed appear here only after a one-off reprocessing pass."
+        description="Incidents attributed to this line, using the same rules as its live status page. Incidents archived before this filter existed were only linked up to their line once, in a one-off catch-up run."
         data={catalogueLines.map((line) => ({ value: line.id, label: line.name }))}
         value={lineId}
         onChange={setLineId}
@@ -542,7 +542,7 @@ export function IncidentSearchForm({
         label="Priority range"
         description={
           <>
-            Raw feed value from the Knowledgebase incident data with no documented
+            Raw feed value from National Rail&apos;s own incident data with no documented
             &quot;major&quot;/&quot;minor&quot; meaning — shown as-is, not a severity scale.
           </>
         }

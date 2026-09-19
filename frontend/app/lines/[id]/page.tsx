@@ -3,8 +3,16 @@ import { notFound } from 'next/navigation';
 import { Badge, Stack, Title, Text, Group, Button, Paper } from '@mantine/core';
 import Link from 'next/link';
 import type { Metadata } from 'next';
-import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition, getAllLines } from '@/lib/api';
+import {
+  ApiNotFoundError,
+  getLineStatus,
+  getCustomLine,
+  getLineDefinition,
+  getAllLines,
+  getAllTocs,
+} from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
+import { categoryLabel, operatorLabel, tocNameLookup } from '@/lib/displayLabels';
 import { StatusBadge } from '@/components/StatusBadge';
 import { RepresentativeInfo } from '@/components/RepresentativeInfo';
 import { IssueList } from '@/components/IssueList';
@@ -258,6 +266,14 @@ export default async function LineDetailPage({
   const summary = lines.find((line) => line.id === id);
   const category = summary?.category;
 
+  // Hour-cached reference data used only to resolve the "Operators" row's
+  // ATOC codes to names below; an empty list degrades to bare codes rather
+  // than the whole page -- same pattern as `app/lines/page.tsx`'s and
+  // `app/stations/[crs]/page.tsx`'s own `getAllTocs()` calls (review §2.9:
+  // a raw ATOC code like "GR" is exactly the kind of internal token this
+  // page must not surface unresolved).
+  const tocs = tocNameLookup(await getAllTocs().catch(() => []));
+
   // `getCustomLine` 404s for a catalogue-line id (the endpoint only ever
   // reads the `custom_lines` table) — that expected 404 is how this page
   // tells a custom line apart from a catalogue one, without needing a
@@ -403,7 +419,7 @@ export default async function LineDetailPage({
           )}
         </Group>
       </Group>
-      {category && <Text c="dimmed">Category: {category}</Text>}
+      {category && <Text c="dimmed">Category: {categoryLabel(category)}</Text>}
       {/* Explains to a granted group member why they can see a line that
           isn't theirs and has no edit controls -- without this the page
           just silently lacks the buttons an owner would have. Deliberately
@@ -429,7 +445,9 @@ export default async function LineDetailPage({
       {/* Hidden rather than rendered empty: with no status row, operators
           come from the line's own definition instead, and a line whose
           definition is also unreachable has nothing honest to put here. */}
-      {operators.length > 0 && <Text c="dimmed">Operators: {operators.join(', ')}</Text>}
+      {operators.length > 0 && (
+        <Text c="dimmed">Operators: {operators.map((code) => operatorLabel(code, tocs)).join(', ')}</Text>
+      )}
       <TextLink href={`/lines/${id}/history`} underline="always">
         View history
       </TextLink>

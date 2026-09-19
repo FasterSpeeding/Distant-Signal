@@ -12,6 +12,7 @@ import { DeleteTicketButton } from '@/components/DeleteTicketButton';
 import { RenameTrainButton } from '@/components/RenameTrainButton';
 import { RenameTicketButton } from '@/components/RenameTicketButton';
 import { StatusRow } from '@/components/StatusRow';
+import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
@@ -242,7 +243,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
           title={
             <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
               <Stack gap={4}>
-                <StatusRow title={displayName} trailing={<RowStatusBadge train={train} />} />
+                <StatusRow title={displayName} trailing={<TrackedTrainStatusBadge train={train} />} />
                 <Text size="sm" c="dimmed">
                   {when}
                 </Text>
@@ -299,7 +300,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
  * (spec §4 forbids a shared train ever carrying ticket data at all), and
  * no delete. What's left in common -- the display name, the when line, the
  * status/delay badges -- is shared directly (`trackedTrainDisplayName`,
- * `RowStatusBadge`) rather than duplicated.
+ * `TrackedTrainStatusBadge`) rather than duplicated.
  *
  * The header links exactly when a `trainUid` is known, and not otherwise.
  * `/train/[uid]/[date]` is public and unscoped, so a uid is the whole
@@ -352,7 +353,7 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
               heading
             )
           }
-          trailing={<RowStatusBadge train={train} />}
+          trailing={<TrackedTrainStatusBadge train={train} />}
         />
         <Text size="sm" c="dimmed">
           {when}
@@ -422,67 +423,3 @@ function UnattachedTicketRow({ ticket, trains }: { ticket: TicketListItem; train
   );
 }
 
-// Short, human badge words for the raw enum tokens this page can receive --
-// `resolutionStatus` (`pending`/`unresolved`) and journey `status`
-// (`awaiting_activation`/`en_route`/`completed`/`cancelled`). Kept local to
-// this file rather than reused from `TrainJourney.tsx`: that component's
-// equivalent branching renders full sentences for a detail page's
-// `Alert`/prose, not a short word for a list-row `Badge`. Falls back to the
-// raw token itself for anything unlisted, so an unexpected value never
-// disappears from the badge.
-const STATUS_LABELS: Record<string, string> = {
-  pending: 'Pending match',
-  schedule_matched: 'Matched to schedule',
-  unresolved: 'Unmatched',
-  awaiting_activation: 'Not yet started',
-  en_route: 'En route',
-  completed: 'Completed',
-  cancelled: 'Cancelled',
-};
-
-/** Structural, not `TrackedTrainListItem`: `SharedTrainListRow` renders
- * the identical badges off a `SharedGroupTrain`, whose `resolutionStatus`/
- * `status` are plain `string`s on the wire rather than the own-list's
- * narrowed unions. Both shapes satisfy this, and neither needs an adapter
- * -- the branching below already treats every value as an opaque token
- * (`STATUS_LABELS` falls back to the raw string for anything unlisted). */
-function RowStatusBadge({
-  train,
-}: {
-  train: { resolutionStatus: string; status: string | null; delayMinutes: number | null };
-}) {
-  // `pending`/`unresolved` show the resolution status itself -- no
-  // journey status exists yet for either. Once `resolved`, the journey
-  // `status` plus a delay badge takes over, reusing the same "Xm
-  // late"/"On time" treatment `TrainJourney.tsx`'s `JourneyDetails`
-  // already uses. No "active only" filter and no attempt to distinguish
-  // a genuinely-finished journey from one that's merely gone quiet -- per
-  // Decision 2/Finding 1 of the design spec, the backend can't honestly
-  // support that distinction today.
-  if (train.resolutionStatus !== 'resolved') {
-    return (
-      <Badge color={train.resolutionStatus === 'unresolved' ? 'red' : 'gray'} variant="light">
-        {STATUS_LABELS[train.resolutionStatus] ?? train.resolutionStatus}
-      </Badge>
-    );
-  }
-  return (
-    <Group gap={6} wrap="nowrap">
-      {train.status && (
-        // Cancelled is the one state this at-a-glance triage page must
-        // make visually distinct -- everything else (en route, completed,
-        // awaiting activation) stays the neutral gray a running/finished
-        // train shares, matching the single-train detail page's red
-        // `Alert` treatment of the same status (`TrainJourney.tsx`).
-        <Badge color={train.status === 'cancelled' ? 'red' : 'gray'} variant="light">
-          {STATUS_LABELS[train.status] ?? train.status}
-        </Badge>
-      )}
-      {train.delayMinutes !== null && (
-        <Badge color={train.delayMinutes > 0 ? 'orange' : 'green'} variant="light">
-          {train.delayMinutes > 0 ? `${train.delayMinutes}m late` : 'On time'}
-        </Badge>
-      )}
-    </Group>
-  );
-}
