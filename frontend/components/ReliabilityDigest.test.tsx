@@ -143,4 +143,10 @@ describe('ReliabilityDigest', () => {
     renderWithMantine(<ReliabilityDigest trains={[train({ serviceDate: '2026-09-01' })]} tickets={[ticket()]} />);
     expect(screen.queryByText(/£/)).not.toBeInTheDocument();
   });
+
+  it('renders a space between the eligible-count interpolation and the following word (review §4.4: explicit {\' \'} guard against dropped whitespace)', () => {
+    renderWithMantine(<ReliabilityDigest trains={[train({ serviceDate: '2026-09-01' })]} tickets={[ticket()]} />);
+    expect(screen.getByText(/1 may have qualified for a partial/)).toBeInTheDocument();
+    expect(screen.queryByText(/1may have/)).not.toBeInTheDocument();
+  });
 });

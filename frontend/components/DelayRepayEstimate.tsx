@@ -54,7 +54,8 @@ function EstimateSummary({ response }: { response: DelayRepayEstimateResponse })
     // assert a specific one of the three the response doesn't support.
     return (
       <Text size="sm">
-        Based on the recorded delay ({delayMinutes} minutes), this operator&apos;s Delay Repay rules may not give
+        Based on the recorded delay ({delayMinutes}
+        {' '}minutes), this operator&apos;s Delay Repay rules may not give
         a payout at that length — but rules vary and this estimate can be wrong, so it&apos;s still worth checking
         directly.
       </Text>

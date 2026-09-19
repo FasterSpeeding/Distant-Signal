@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import TrackedTrainByUidPage, { toJourneyState, trainStatusSummary, generateMetadata } from './page';
 import * as api from '@/lib/api';
@@ -541,5 +541,85 @@ describe('trainStatusSummary', () => {
     expect(
       trainStatusSummary(toJourneyState(publicTrainState({ mayHaveArrived: true }))),
     ).toMatch(/may have arrived/i);
+  });
+});
+
+/** The train detail page shows its departure time twice, from two values
+ * the backend writes independently of each other:
+ *
+ * - the **header**, via `toJourneyState`'s
+ *   `pinScheduledDeparture: train.scheduledDeparture` (the
+ *   `trains.scheduled_departure` column, stored already-zoned and never
+ *   re-converted -- `crates/api/src/data/trains.rs`'s
+ *   `find_or_create_train_with_schedule_match`), rendered by
+ *   `lib/trackingName.ts`'s `trackedTrainDisplayName`;
+ * - the **timetable row**, via `journeyStops[].scheduledDeparture`, which
+ *   `crates/api/src/data/journey.rs` derives by converting the calling
+ *   point's naive London wall-clock `bookedDeparture` through
+ *   `london_to_utc`, rendered by `components/JourneyTimeline.tsx`.
+ *
+ * Both end at the same `lib/dateFormat.ts` `formatTime`, which pins
+ * `Europe/London` -- so given one instant they cannot disagree, and this
+ * test is what says so. It guards the rendering half of the same invariant
+ * `crates/api/src/data/journey.rs`'s
+ * `origin_stops_scheduled_departure_equals_the_pin_instant_it_was_matched_against`
+ * guards on the data half: a header showing 10:00 above a table showing
+ * 09:00 for one train (the BST-offset symptom that prompted this test) can
+ * only come from the two *inputs* naming different instants, never from the
+ * two render paths formatting one instant differently.
+ *
+ * The instant is deliberately on a BST date: 18:32Z is 19:32 London in
+ * summer, so a path that dropped the `Europe/London` pinning and fell back
+ * to the Node process's UTC would render 18:32 and fail. */
+describe('header and timetable departure times', () => {
+  const DEPARTURE = '2026-08-31T18:32:00Z'; // 19:32 London (BST, UTC+1)
+
+  function originStop(scheduledDeparture: string) {
+    return {
+      crs: 'WAT',
+      name: 'London Waterloo',
+      tiploc: null,
+      kind: 'Origin' as const,
+      scheduledArrival: null,
+      scheduledDeparture,
+      actualArrival: null,
+      actualDeparture: null,
+      estimatedArrival: null,
+      estimatedDeparture: null,
+      lastEventType: null,
+      variationStatus: null,
+      delayMinutes: null,
+    };
+  }
+
+  it('renders one instant identically in the page header and the timetable row', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
+      publicTrainState({
+        originName: 'London Waterloo',
+        destinationName: 'Woking',
+        // The two independent inputs, set to the SAME instant -- which is
+        // what a real schedule match always produces (see the Rust-side
+        // test named above).
+        scheduledDeparture: DEPARTURE,
+        journeyStops: [originStop(DEPARTURE)],
+      }),
+    );
+
+    await renderPage();
+
+    const header = screen.getByText(/London Waterloo \(WAT\) → Woking \(WOK\)/);
+    const headerTime = header.textContent?.match(/(\d{2}:\d{2})\s*$/)?.[1];
+
+    const row = screen
+      .getAllByRole('row')
+      .find((r) => within(r).queryByText('London Waterloo') !== null);
+    expect(row).toBeDefined();
+    const rowTime = within(row!).getByText(/^\d{2}:\d{2}$/).textContent;
+
+    expect(headerTime).toBe(rowTime);
+    // Stated absolutely too, so a regression that broke BOTH paths the same
+    // way (e.g. dropping the Europe/London pinning) still fails here rather
+    // than passing on a shared error.
+    expect(headerTime).toBe('19:32');
   });
 });
