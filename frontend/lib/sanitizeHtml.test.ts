@@ -116,4 +116,54 @@ describe('sanitizeRichText', () => {
     expect(result).toContain('Heading');
     expect(result).toContain('<ul><li>One</li></ul>');
   });
+
+  // review §3.5.9: an anchor whose visible text is just its own href reads
+  // as noise ("https://www.nationalrail.co.uk/stations_destinations/
+  // passenger-assist.aspx"), not a destination.
+  describe('raw URL as link text', () => {
+    it('rewrites an anchor whose text is exactly its own href to the hostname', () => {
+      const result = sanitizeRichText(
+        '<p><a href="https://www.nationalrail.co.uk/stations_destinations/passenger-assist.aspx">' +
+          'https://www.nationalrail.co.uk/stations_destinations/passenger-assist.aspx</a></p>',
+      );
+      expect(result).toContain('>nationalrail.co.uk ↗<');
+      expect(result).toContain('title="https://www.nationalrail.co.uk/stations_destinations/passenger-assist.aspx"');
+      // The full URL survives in href, just not repeated as visible text.
+      expect(result).toContain('href="https://www.nationalrail.co.uk/stations_destinations/passenger-assist.aspx"');
+    });
+
+    it('leaves an anchor whose text is genuinely different from its href alone', () => {
+      const result = sanitizeRichText('<a href="https://www.apcoa.co.uk">APCOA car park</a>');
+      expect(result).toContain('>APCOA car park<');
+      expect(result).not.toContain('title=');
+    });
+  });
+
+  // review §3.5.8: a UK phone number written as plain text ("Call 0345 077
+  // 4224 for assistance") is not tappable, unlike the same number rendered
+  // through `renderContact`'s `tel:` link.
+  describe('phone number linkification', () => {
+    it('linkifies a UK landline number in plain text', () => {
+      const result = sanitizeRichText('<p>Call 0345 077 4224 for assistance.</p>');
+      expect(result).toContain('href="tel:03450774224"');
+      expect(result).toContain('>0345 077 4224<');
+      expect(result).toContain('Call');
+      expect(result).toContain('for assistance.');
+    });
+
+    it('linkifies a +44 mobile number', () => {
+      const result = sanitizeRichText('<p>+44 7700 900123</p>');
+      expect(result).toContain('href="tel:+447700900123"');
+    });
+
+    it('does not linkify a short run of digits that is not phone-shaped', () => {
+      const result = sanitizeRichText('<p>Platform 1</p>');
+      expect(result).not.toContain('<a');
+    });
+
+    it('does not double-linkify a number that is already inside an anchor', () => {
+      const result = sanitizeRichText('<a href="tel:03450774224">0345 077 4224</a>');
+      expect(result.match(/<a /g)).toHaveLength(1);
+    });
+  });
 });

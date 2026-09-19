@@ -86,7 +86,7 @@ describe('StationDisruptionPage -- outage behaviour', () => {
   it('renders the station\'s disruptions normally', async () => {
     await renderPage();
     expect(
-      screen.getByRole('heading', { name: 'Disruptions at London Kings Cross (KGX)', level: 1 }),
+      screen.getByRole('heading', { name: 'London Kings Cross (KGX)', level: 1 }),
     ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'East Coast Main Line' })).toBeInTheDocument();
   });
@@ -101,7 +101,7 @@ describe('StationDisruptionPage -- outage behaviour', () => {
 
     await renderPage();
     expect(
-      screen.getByRole('heading', { name: 'Disruptions at London Kings Cross (KGX)', level: 1 }),
+      screen.getByRole('heading', { name: 'London Kings Cross (KGX)', level: 1 }),
     ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'East Coast Main Line' })).toBeInTheDocument();
   });
@@ -117,7 +117,7 @@ describe('StationDisruptionPage -- outage behaviour', () => {
 
     await renderPage();
     expect(
-      screen.getByRole('heading', { name: 'Disruptions at London Kings Cross (KGX)', level: 1 }),
+      screen.getByRole('heading', { name: 'London Kings Cross (KGX)', level: 1 }),
     ).toBeInTheDocument();
   });
 
@@ -315,6 +315,17 @@ describe('StationDisruptionPage -- accessibility & facilities', () => {
     expect(screen.getByText('Step free:')).toBeInTheDocument();
     expect(screen.getByText('Yes')).toBeInTheDocument();
     expect(screen.getByText('Car parks')).toBeInTheDocument();
+    // review §3.5.2, re-verified end to end: the page's own h1 -> the
+    // section's h2 -> its now-promoted h3 group titles, with no level
+    // skipped in between.
+    expect(screen.getByRole('heading', { level: 1, name: 'London Kings Cross (KGX)' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 2, name: 'Accessibility & facilities' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 3, name: 'Step-free access & assistance' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 3, name: 'Getting here' })).toBeInTheDocument();
   });
 
   it('renders a deeply nested shape as labelled rows, no longer as a JSON dump', async () => {

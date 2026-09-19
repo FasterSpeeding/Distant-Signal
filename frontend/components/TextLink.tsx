@@ -41,6 +41,7 @@ export function TextLink({
   prefetch,
   onClick,
   onKeyDown,
+  title,
 }: {
   href: string;
   children: React.ReactNode;
@@ -81,6 +82,11 @@ export function TextLink({
   // and every existing use is unaffected.
   onClick?: (event: React.MouseEvent<HTMLAnchorElement>) => void;
   onKeyDown?: (event: React.KeyboardEvent<HTMLAnchorElement>) => void;
+  // The full destination, for a call site whose visible text is a shortened
+  // stand-in for it (station-accessibility rich text's raw-URL-as-link-text
+  // fix, review §3.5.9: the link reads "nationalrail.co.uk ↗" on screen but
+  // still discloses the exact URL on hover/focus).
+  title?: string;
 }) {
   return (
     // The undecorated resting state comes from the stylesheet rather than
@@ -95,6 +101,7 @@ export function TextLink({
       prefetch={prefetch}
       onClick={onClick}
       onKeyDown={onKeyDown}
+      title={title}
     >
       <Text c="var(--mantine-color-anchor)" component={inline ? 'span' : undefined} size={size}>
         {children}

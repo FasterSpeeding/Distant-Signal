@@ -1,15 +1,19 @@
 import { describe, it, expect } from 'vitest';
 import {
   ACCESSIBILITY_CATEGORIES,
+  computeAtAGlance,
   containsMarkup,
+  dedupeAcrossSection,
   formatDays,
   formatHours,
   hasRenderableValue,
+  hostLabel,
   humanizeKey,
   isEmptyNode,
   isSentence,
   MAX_RENDER_DEPTH,
   renderAccessibilityValue,
+  sortEntriesByKind,
   type AccessibilityNode,
 } from './stationAccessibility';
 
@@ -526,7 +530,8 @@ describe('Patterns E and F', () => {
       renderAccessibilityValue({ numberOfSpaces: 80, cctv: true }),
       'fields',
     );
-    expect(node.fields.map((field) => field.label)).toEqual(['Number of spaces', 'Cctv']);
+    // 'cctv' -> 'CCTV': the acronym map review §3.5.11 asks for.
+    expect(node.fields.map((field) => field.label)).toEqual(['Number of spaces', 'CCTV']);
     expect(expectKind(node.fields[1].node, 'text').text).toBe('Yes');
   });
 
@@ -725,12 +730,12 @@ describe('ACCESSIBILITY_CATEGORIES', () => {
     expect(allKeys).toEqual([
       'stationAccessibility',
       'staffAssistance',
+      'helpAndSupport',
       'toiletsAndChanging',
       'lifts',
       'loungesAndWaiting',
       'platformFacilities',
       'stationFacilities',
-      'helpAndSupport',
       'transportLinks',
       'carParks',
       'dropOffPickUp',
@@ -767,5 +772,199 @@ describe('ACCESSIBILITY_CATEGORIES', () => {
     expect([...ACCESSIBILITY_CATEGORIES.flatMap((c) => c.keys)].sort()).toEqual(
       [...backendAllowlist].sort(),
     );
+  });
+});
+
+describe('hostLabel (review §3.5.9)', () => {
+  it('strips the scheme and a leading www., appending an outbound arrow', () => {
+    expect(hostLabel('https://www.nationalrail.co.uk/stations_destinations/x.aspx')).toBe(
+      'nationalrail.co.uk ↗',
+    );
+  });
+
+  it('keeps a non-www host as-is', () => {
+    expect(hostLabel('http://example.com/path')).toBe('example.com ↗');
+  });
+
+  it('returns null for a URL it cannot parse, rather than throwing', () => {
+    expect(hostLabel('not a url')).toBeNull();
+  });
+});
+
+describe('dedupeAcrossSection (review §3.5.4)', () => {
+  it('drops a later field whose whole rendered content byte-for-byte repeats an earlier one', () => {
+    const seen = new Set<string>();
+    const first = dedupeAcrossSection(renderAccessibilityValue({ helpline: 'Ring the office' }), seen);
+    const second = dedupeAcrossSection(renderAccessibilityValue({ helpline: 'Ring the office' }), seen);
+    expect(expectKind(first, 'fields').fields).toHaveLength(1);
+    // The exact-duplicate field is gone from the second render, but the
+    // node itself survives (not null) so callers keep a stable shape.
+    expect(expectKind(second, 'fields').fields).toHaveLength(0);
+  });
+
+  it('keeps a field that only partially overlaps an earlier one', () => {
+    const seen = new Set<string>();
+    dedupeAcrossSection(
+      renderAccessibilityValue({ helpPoints: { available: false, notes: 'Same notes' } }),
+      seen,
+    );
+    const second = dedupeAcrossSection(
+      renderAccessibilityValue({
+        helpPoints: { available: false, notes: 'Same notes', inductionLoop: 'Yes' },
+      }),
+      seen,
+    );
+    // `notes` (the duplicate) is gone; `inductionLoop` (new information)
+    // survives -- exactly the MAN-fixture "Help points" case this fix
+    // targets.
+    const facility = expectKind(second, 'fields').fields[0].node;
+    expectKind(facility, 'facility');
+    expect(isEmptyNode(facility)).toBe(false);
+    const partLabels = expectKind(facility, 'facility').parts.map((p) => p.label);
+    expect(partLabels).not.toContain(undefined); // the unlabelled `notes` sentence is gone
+    expect(partLabels).toContain('Induction loop');
+  });
+
+  it('never removes a collection item that merely shares content with a sibling item', () => {
+    // The other big source of repeated text in the survey (many platforms
+    // sharing "Lift controls should be accessible to most people") must
+    // NOT be deduplicated away -- each is a distinct physical item.
+    const seen = new Set<string>();
+    const node = dedupeAcrossSection(
+      renderAccessibilityValue({
+        platforms: [
+          { name: 'Platform 1', note: 'Same note' },
+          { name: 'Platform 2', note: 'Same note' },
+        ],
+      }),
+      seen,
+    );
+    const collection = expectKind(expectKind(node, 'fields').fields[0].node, 'collection');
+    expect(collection.items).toHaveLength(2);
+    expect(collection.items.map((item) => item.label)).toEqual(['Platform 1', 'Platform 2']);
+  });
+});
+
+describe('sortEntriesByKind (review §3.5.3)', () => {
+  it('puts a simple text/sentence fact ahead of a large collection, keeping ties in feed order', () => {
+    const entries = [
+      { id: 'lifts', node: { kind: 'list', items: [] } as AccessibilityNode },
+      { id: 'category', node: { kind: 'text', text: 'A' } as AccessibilityNode },
+      { id: 'tokens', node: { kind: 'tokens', tokens: [] } as AccessibilityNode },
+    ];
+    expect(sortEntriesByKind(entries).map((e) => e.id)).toEqual(['category', 'tokens', 'lifts']);
+  });
+});
+
+describe('computeAtAGlance (review §3.5.3)', () => {
+  it('surfaces a station\'s step-free category, lift count and accessible-toilet facts', () => {
+    const facts = computeAtAGlance({
+      stationAccessibility: { stepFreeCategory: { category: 'A, Compliant step-free access' } },
+      lifts: { liftsInfo: [{ name: 'Lift 1' }, { name: 'Lift 2' }] },
+      toiletsAndChanging: {
+        toilets: { accessibleToiletsAvailable: true, changingPlacesToiletsAvailable: false },
+      },
+    });
+    expect(facts).toContainEqual({ label: 'Step-free category', value: 'A, Compliant step-free access' });
+    expect(facts).toContainEqual({ label: 'Lifts', value: '2' });
+    expect(facts).toContainEqual({ label: 'Accessible toilet', value: 'Yes' });
+    expect(facts.find((f) => f.label === 'Changing Places')).toBeUndefined();
+  });
+
+  it('returns no facts at all for a payload with none of the recognised shapes', () => {
+    expect(computeAtAGlance({ cycling: 'Racks on the forecourt' })).toEqual([]);
+  });
+
+  it('never throws on a malformed shape for any of its fields', () => {
+    expect(() =>
+      computeAtAGlance({
+        stationAccessibility: 'not an object' as never,
+        lifts: null as never,
+        carParks: [1, 2, 3] as never,
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe('review §3.5.8: a facility free-text duplicate of its own contact phone number', () => {
+  it('drops the facility\'s notes when they are exactly its contact\'s phone number', () => {
+    const node = expectKind(
+      renderAccessibilityValue({
+        available: true,
+        notes: '0345 077 4224',
+        operatorContactDetails: { primaryTelephoneNumber: '0345 077 4224' },
+      }),
+      'facility',
+    );
+    // The duplicate notes line is gone; the Contact block (with its own
+    // tappable tel: link) is still there.
+    expect(node.parts.some((p) => p.label === 'Contact')).toBe(true);
+    expect(node.parts.some((p) => !p.label)).toBe(false);
+  });
+
+  it('keeps a facility\'s notes that merely contain, but are not exactly, the contact phone number', () => {
+    const node = expectKind(
+      renderAccessibilityValue({
+        available: true,
+        notes: 'Call reception, not the main helpline 0345 077 4224',
+        operatorContactDetails: { primaryTelephoneNumber: '0345 077 4224' },
+      }),
+      'facility',
+    );
+    expect(node.parts.some((p) => !p.label)).toBe(true);
+  });
+});
+
+describe('review §3.5.11: label defects', () => {
+  it('does not relabel a nested field with the same name as its own containing key ("Car parks" x2)', () => {
+    const node = expectKind(
+      renderAccessibilityValue({ accessibleParkingSpacesAvailable: true, carParks: [{ name: 'Long Stay' }] }, 'carParks'),
+      'fields',
+    );
+    // The nested `carParks` array renders unlabelled -- the group entry's
+    // own "Car parks" heading (rendered by the caller, not this node)
+    // already said it once.
+    const collectionField = node.fields.find((f) => f.node.kind === 'collection');
+    expect(collectionField?.label).toBeUndefined();
+  });
+
+  it('drops the redundant "Category:" label when the parent key already ends in "category"', () => {
+    const node = expectKind(
+      renderAccessibilityValue({
+        stepFreeCategory: { category: 'A, Compliant step-free access to all platforms' },
+      }),
+      'fields',
+    );
+    expect(node.fields[0].label).toBe('Step free category');
+    const inner = expectKind(node.fields[0].node, 'fields');
+    expect(inner.fields.map((f) => f.label)).toEqual([undefined]);
+  });
+
+  it('renders "Location" the same way whether it sits in a facility or a plain object', () => {
+    // Short enough that it does NOT qualify as a Pattern E sentence (§4.6's
+    // 12-character/shape rule) -- exactly the case where a facility's own
+    // `location` (always unlabelled by construction) and a Pattern D item's
+    // sibling `location` field (previously only unlabelled when long enough
+    // to read as a sentence) used to disagree.
+    const facilityNode = expectKind(
+      renderAccessibilityValue({ available: true, location: 'Concourse' }),
+      'facility',
+    );
+    expect(facilityNode.parts.find((p) => !p.label)?.node).toEqual({ kind: 'text', text: 'Concourse' });
+
+    const plainNode = expectKind(renderAccessibilityValue({ location: 'Concourse' }), 'fields');
+    expect(plainNode.fields[0].label).toBeUndefined();
+    expect(plainNode.fields[0].node).toEqual({ kind: 'text', text: 'Concourse' });
+  });
+
+  it('expands ATM/CCTV/Wi-Fi as acronyms rather than mechanically capitalising the first letter', () => {
+    expect(humanizeKey('atm')).toBe('ATM');
+    expect(humanizeKey('cctvAvailable')).toBe('CCTV available');
+    expect(humanizeKey('wifi')).toBe('Wi-Fi');
+  });
+
+  it('relabels feed-CMS field names to words a traveller would use', () => {
+    expect(humanizeKey('liftsInfo')).toBe('Lift details');
+    expect(humanizeKey('names')).toBe('Named locations');
   });
 });
