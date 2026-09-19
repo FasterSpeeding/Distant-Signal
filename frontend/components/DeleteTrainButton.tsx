@@ -1,12 +1,16 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { useState } from 'react';
+import { forwardRef, useImperativeHandle, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Modal, Text, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+
+/** Imperative escape hatch for `TrackedTrainRowMenu` -- see this
+ * component's own `ref` doc comment below for why it exists. */
+export type DeleteTrainButtonHandle = { open: () => void };
 
 /** Deletes via the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * — this is a Client Component and cannot reach the `api` service directly.
@@ -70,23 +74,45 @@ import { LoginLink } from './LoginLink';
  * `/track/mine`'s list row (Task 3.6.7's own "overflow kebab" fix), which
  * renders this control as a `Menu.Item` instead of a second free-standing
  * button competing for space on an already-tight row; every other caller
- * omits it and keeps today's exact `Button`. */
-export function DeleteTrainButton({
-  trackingId,
-  sharedGroupCount,
-  afterDelete = 'redirect',
-  trigger,
-}: {
-  trackingId: number;
-  sharedGroupCount: number;
-  afterDelete?: 'redirect' | 'refresh';
-  trigger?: (onClick: () => void) => ReactNode;
-}) {
+ * omits it and keeps today's exact `Button`.
+ *
+ * `ref` exposes `{ open }` via `useImperativeHandle` -- added because
+ * `trigger`'s own fix (render the `Menu.Item` in place) turned out not to
+ * be enough on its own: `TrackedTrainRowMenu` renders this whole component,
+ * confirm `<Modal>` included, as a REACT CHILD of `<Menu.Dropdown>`, and
+ * Mantine's `Popover` (what `Menu.Dropdown` is built on) does something
+ * surprising with a nested `<Modal>` there -- confirmed live, with
+ * `keepMounted` on the `Menu` (the obvious first fix for the plain
+ * "Popover unmounts closed content" case): opening the confirm dialog via
+ * `Menu.Item`'s `onClick` still made it disappear, but this time by
+ * inheriting `display: none` from the closing `Popover`, on a wrapper
+ * `Popover` itself doesn't own (traced with a throwaway script dumping the
+ * shared portal node's DOM: the modal's own portal wrapper picks up
+ * `display: none !important` the moment the `Menu` closes, which happens on
+ * the very same click that opens it). `TrackedTrainRowMenu` uses this `ref`
+ * to call `open()` from a plain, local `Menu.Item` instead of using
+ * `trigger` -- rendering this whole component (Modal included) as a
+ * sibling of `<Menu>`, never a descendant of `<Menu.Dropdown>`, sidesteps
+ * the Popover interaction entirely rather than fighting it. `trigger`
+ * itself is left in place for other simpler embeddings (and is still
+ * exercised by this component's own tests); `ref` is additive, not a
+ * replacement. */
+export const DeleteTrainButton = forwardRef<
+  DeleteTrainButtonHandle,
+  {
+    trackingId: number;
+    sharedGroupCount: number;
+    afterDelete?: 'redirect' | 'refresh';
+    trigger?: (onClick: () => void) => ReactNode;
+  }
+>(function DeleteTrainButton({ trackingId, sharedGroupCount, afterDelete = 'redirect', trigger }, ref) {
   const router = useRouter();
   const [opened, { open, close }] = useDisclosure(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
+
+  useImperativeHandle(ref, () => ({ open }), [open]);
 
   async function handleDelete() {
     setDeleting(true);
@@ -153,4 +179,4 @@ export function DeleteTrainButton({
       </Modal>
     </>
   );
-}
+});

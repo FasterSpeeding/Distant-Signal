@@ -1,12 +1,16 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { useState } from 'react';
+import { forwardRef, useImperativeHandle, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Modal, Text, TextInput, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+
+/** Imperative escape hatch for `TrackedTrainRowMenu` -- see
+ * `DeleteTrainButtonHandle` (`DeleteTrainButton.tsx`) for why this exists. */
+export type RenameTrainButtonHandle = { open: () => void };
 
 /** Renames or clears a tracked train's `customName`, via the same-origin
  * `/api/*` proxy (see `app/api/[...path]/route.ts`) -- this is a Client
@@ -37,18 +41,23 @@ import { LoginLink } from './LoginLink';
  *
  * `trigger`, when given, replaces the default `Button` -- see
  * `DeleteTrainButton.tsx`'s own doc comment on its matching `trigger` prop
- * for why (Task 3.6.7's `/track/mine` list-row overflow-kebab fix). */
-export function RenameTrainButton({
-  trackingId,
-  customName,
-  defaultName,
-  trigger,
-}: {
-  trackingId: number;
-  customName: string | null;
-  defaultName: string;
-  trigger?: (onClick: () => void) => ReactNode;
-}) {
+ * for why (Task 3.6.7's `/track/mine` list-row overflow-kebab fix).
+ *
+ * `ref` exposes `{ open: handleOpen }` -- same escape hatch, and the same
+ * reason, as `DeleteTrainButton`'s own `ref` (see its doc comment): a
+ * `<Modal>` rendered as a descendant of `<Menu.Dropdown>` picks up
+ * `display: none` from the surrounding `Popover` closing on the very click
+ * that opens it. `TrackedTrainRowMenu` uses this to keep the whole
+ * component -- Modal included -- outside `<Menu.Dropdown>`'s subtree. */
+export const RenameTrainButton = forwardRef<
+  RenameTrainButtonHandle,
+  {
+    trackingId: number;
+    customName: string | null;
+    defaultName: string;
+    trigger?: (onClick: () => void) => ReactNode;
+  }
+>(function RenameTrainButton({ trackingId, customName, defaultName, trigger }, ref) {
   const router = useRouter();
   const [opened, { open, close }] = useDisclosure(false);
   const [value, setValue] = useState(customName ?? '');
@@ -61,6 +70,8 @@ export function RenameTrainButton({
     setError(null);
     open();
   }
+
+  useImperativeHandle(ref, () => ({ open: handleOpen }), [customName]);
 
   async function submit(nextCustomName: string | null) {
     setSaving(true);
@@ -130,4 +141,4 @@ export function RenameTrainButton({
       </Modal>
     </>
   );
-}
+});
