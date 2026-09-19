@@ -228,6 +228,57 @@ describe('GroupDetailPage', () => {
     expect(screen.queryByText('A member')).not.toBeInTheDocument();
   });
 
+  // Review §3.2.5: the only way back to `/groups` used to be the browser's
+  // own Back button, which fails outright for a visitor who followed a
+  // deep link straight to a group's detail page.
+  it('links back to /groups above the page heading', async () => {
+    vi.mocked(getGroup).mockResolvedValue({
+      id: 'grp-1',
+      name: 'Family',
+      ownerId: 'user-1',
+      ownerName: 'Alex',
+      ownerTag: null,
+      memberCount: 1,
+      role: 'owner',
+      inviteLink: null,
+    });
+    vi.mocked(getGroupMembers).mockResolvedValue([
+      { userId: 'user-1', displayName: 'Alex', displayTag: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+    ]);
+    vi.mocked(getGroupTrains).mockResolvedValue([]);
+    vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+
+    renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
+    expect(screen.getByRole('link', { name: '← Groups' })).toHaveAttribute('href', '/groups');
+  });
+
+  // Review §3.2.5: nothing marked which row in the member list was the
+  // current viewer's own -- awkward to spot even with a real name, and
+  // outright ambiguous for a placeholder-rendered member matching their
+  // own opaque tag against the list.
+  it('marks the current user\'s own row with "(you)" and no other row', async () => {
+    vi.mocked(getGroup).mockResolvedValue({
+      id: 'grp-1',
+      name: 'Family',
+      ownerId: 'user-1',
+      ownerName: 'Alex',
+      ownerTag: null,
+      memberCount: 2,
+      role: 'owner',
+      inviteLink: null,
+    });
+    vi.mocked(getGroupMembers).mockResolvedValue([
+      { userId: 'user-1', displayName: 'Alex', displayTag: null, role: 'owner', joinedAt: '2026-09-01T00:00:00Z' },
+      { userId: 'user-2', displayName: 'Sam', displayTag: null, role: 'member', joinedAt: '2026-09-02T00:00:00Z' },
+    ]);
+    vi.mocked(getGroupTrains).mockResolvedValue([]);
+    vi.mocked(getSession).mockResolvedValue({ authenticated: true, id: 'user-1', email: null, name: 'Alex' });
+
+    renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
+    expect(screen.getAllByText('(you)')).toHaveLength(1);
+    expect(screen.getByText('Alex').parentElement).toContainElement(screen.getByText('(you)'));
+  });
+
   it('never renders a Remove button for the owner row', async () => {
     vi.mocked(getGroup).mockResolvedValue({
       id: 'grp-1',
@@ -457,6 +508,64 @@ describe('GroupDetailPage', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
       await waitFor(() => screen.getByText(/lose access to every train shared/));
       expect(screen.queryByText(/delete it for good/)).not.toBeInTheDocument();
+    });
+
+    // Review §3.2.1: the owner leaving a group that survives (other members
+    // remain) always transfers ownership -- `remove_member`'s own successor
+    // query picks the longest-standing remaining ADMIN over a longer-standing
+    // plain member, so the copy here must name Adam, not Priya, even though
+    // Priya joined first.
+    it("names the longest-standing admin as the successor when the owner leaves", async () => {
+      await renderAs(OWNER, 'owner');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
+      await waitFor(() => screen.getByText(/Adam will become the new owner/));
+    });
+
+    it('names nobody as successor when the sole owner leaves (the group is deleted instead)', async () => {
+      vi.mocked(getGroup).mockResolvedValue({
+        id: 'grp-1',
+        name: 'Family',
+        ownerId: OWNER.userId,
+        ownerName: OWNER.displayName,
+        ownerTag: null,
+        memberCount: 1,
+        role: 'owner',
+        inviteLink: null,
+      });
+      vi.mocked(getGroupMembers).mockResolvedValue([OWNER]);
+      vi.mocked(getGroupTrains).mockResolvedValue([]);
+      vi.mocked(getSession).mockResolvedValue({
+        authenticated: true,
+        id: OWNER.userId,
+        email: null,
+        name: OWNER.displayName,
+      });
+      renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
+      await waitFor(() => screen.getByText(/delete it for good/));
+      expect(screen.queryByText(/will become the new owner/)).not.toBeInTheDocument();
+    });
+
+    it('names no successor for a non-owner leaving', async () => {
+      await renderAs(PLAIN, 'member');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
+      await waitFor(() => screen.getByText(/lose access to every train shared/));
+      expect(screen.queryByText(/will become the new owner/)).not.toBeInTheDocument();
+    });
+
+    // Review §3.2.1: "Delete group" moved out of the header into its own
+    // "Danger zone" section at the foot of the page.
+    it('renders "Delete group" inside a "Danger zone" heading for an owner', async () => {
+      await renderAs(OWNER, 'owner');
+      expect(screen.getByRole('heading', { name: 'Danger zone' })).toBeInTheDocument();
+    });
+
+    it('renders no "Danger zone" section for a non-owner', async () => {
+      await renderAs(ADMIN, 'admin');
+      expect(screen.queryByRole('heading', { name: 'Danger zone' })).not.toBeInTheDocument();
     });
   });
 

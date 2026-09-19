@@ -37,6 +37,23 @@ describe('GroupsPage', () => {
     expect(screen.getByRole('button', { name: 'Log in to see your groups' })).toBeInTheDocument();
   });
 
+  // Review §3.2.8, deliberately on top of Task 1.1's root-cause `<main>`
+  // fix, not instead of it: a list of short name/badge rows stretching the
+  // full content width reads as sparse rather than deliberate.
+  it('caps the content width at 640px', async () => {
+    vi.mocked(getMyGroups).mockResolvedValue([]);
+    renderWithMantine(await GroupsPage());
+    const stack = screen.getByRole('heading', { name: 'Groups', level: 1 }).closest('.mantine-Stack-root');
+    expect(stack).toHaveStyle({ maxWidth: 'calc(40rem * var(--mantine-scale))' });
+  });
+
+  it('caps the content width at 640px for the anonymous branch too', async () => {
+    vi.mocked(getMyGroups).mockResolvedValue(null);
+    renderWithMantine(await GroupsPage());
+    const stack = screen.getByRole('heading', { name: 'Groups', level: 1 }).closest('.mantine-Stack-root');
+    expect(stack).toHaveStyle({ maxWidth: 'calc(40rem * var(--mantine-scale))' });
+  });
+
   it('shows an empty-state message with no groups', async () => {
     vi.mocked(getMyGroups).mockResolvedValue([]);
     renderWithMantine(await GroupsPage());
@@ -59,6 +76,20 @@ describe('GroupsPage', () => {
     ]);
     renderWithMantine(await GroupsPage());
     expect(screen.getByText('1 member')).toBeInTheDocument();
+  });
+
+  // Review §3.2.5: the card used to be a bare `<Link>` with
+  // `textDecoration: 'none'; color: 'inherit'` and no other signal that it
+  // was clickable besides the cursor.
+  it('signals that each group card is clickable with a hover/focus hook and a trailing chevron', async () => {
+    vi.mocked(getMyGroups).mockResolvedValue([
+      { id: 'grp-1', name: 'Family', role: 'owner', memberCount: 3 },
+    ]);
+    renderWithMantine(await GroupsPage());
+    const link = screen.getByRole('link', { name: /Family/ });
+    expect(link).toHaveAttribute('data-group-card-link', 'true');
+    expect(link.querySelector('[data-group-card]')).not.toBeNull();
+    expect(screen.getByText('›')).toBeInTheDocument();
   });
 });
 

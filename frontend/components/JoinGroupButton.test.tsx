@@ -44,6 +44,20 @@ describe('JoinGroupButton', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
+  // Review §3.2.3: a 409 means "you're already in this group", not a
+  // failure -- routes to the group exactly like the ordinary success path,
+  // rather than surfacing an error alert for something that isn't one.
+  it('a 409 (already a member) routes to the group instead of showing an error', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response('already a member', { status: 409 }));
+
+    renderWithMantine(<JoinGroupButton token="tok123" groupId="grp-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Join group' }));
+
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/groups/grp-1'));
+    expect(screen.queryByText('already a member')).not.toBeInTheDocument();
+  });
+
   it('an expired/revoked token (404) shows the backend error text', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('this invite link is invalid or has expired', { status: 404 }));

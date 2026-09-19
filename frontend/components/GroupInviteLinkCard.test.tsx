@@ -37,6 +37,41 @@ describe('GroupInviteLinkCard', () => {
     expect(screen.queryByRole('button', { name: 'Revoke' })).not.toBeInTheDocument();
   });
 
+  // Review §3.2.2: the card never said the link expires (spec §2.3 gives
+  // every link a 7-day life), so an owner had no way to know a link they'd
+  // shared or bookmarked had gone stale until a joiner's click 404'd.
+  it('shows the invite link\'s expiry date', () => {
+    renderWithMantine(
+      <GroupInviteLinkCard
+        groupId="grp-1"
+        inviteLink={{ token: 'tok123', expiresAt: '2026-09-24T00:00:00Z' }}
+        origin={ORIGIN}
+      />,
+    );
+    expect(screen.getByText('Expires 24 Sept 2026.')).toBeInTheDocument();
+  });
+
+  it('says nothing about expiry when there is no active link', () => {
+    renderWithMantine(<GroupInviteLinkCard groupId="grp-1" inviteLink={null} origin={ORIGIN} />);
+    expect(screen.queryByText(/Expires/)).not.toBeInTheDocument();
+  });
+
+  it('explains that Regenerate invalidates the current link', () => {
+    renderWithMantine(
+      <GroupInviteLinkCard
+        groupId="grp-1"
+        inviteLink={{ token: 'tok123', expiresAt: '2026-09-24T00:00:00Z' }}
+        origin={ORIGIN}
+      />,
+    );
+    expect(screen.getByText(/the old one stops working immediately/)).toBeInTheDocument();
+  });
+
+  it('says nothing about invalidating a link that does not exist yet', () => {
+    renderWithMantine(<GroupInviteLinkCard groupId="grp-1" inviteLink={null} origin={ORIGIN} />);
+    expect(screen.queryByText(/the old one stops working/)).not.toBeInTheDocument();
+  });
+
   it('renders the full join URL built from the token', () => {
     renderWithMantine(
       <GroupInviteLinkCard

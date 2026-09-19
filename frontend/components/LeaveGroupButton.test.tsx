@@ -48,4 +48,31 @@ describe('LeaveGroupButton', () => {
     await waitFor(() => screen.getByText(/delete it for good/));
     expect(screen.queryByText(/lose access to every train shared/)).not.toBeInTheDocument();
   });
+
+  // Review §3.2.1: ownership transfer is the one consequence of leaving a
+  // departing owner would not otherwise guess -- every other member just
+  // sees the group carry on unaffected.
+  it('names the successor when nextOwnerLabel is set', async () => {
+    renderWithMantine(<LeaveGroupButton groupId="grp-1" currentUserId="user-1" nextOwnerLabel="Adam" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
+    await waitFor(() => screen.getByText(/Adam will become the new owner/));
+  });
+
+  it('says nothing about a successor when nextOwnerLabel is not set', async () => {
+    renderWithMantine(<LeaveGroupButton groupId="grp-1" currentUserId="user-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
+    await waitFor(() => screen.getByText(/lose access to every train shared/));
+    expect(screen.queryByText(/will become the new owner/)).not.toBeInTheDocument();
+  });
+
+  // willDeleteGroup takes precedence over nextOwnerLabel: if leaving
+  // deletes the group outright there is no successor to name.
+  it('does not name a successor when willDeleteGroup is also set', async () => {
+    renderWithMantine(
+      <LeaveGroupButton groupId="grp-1" currentUserId="user-1" willDeleteGroup nextOwnerLabel="Adam" />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
+    await waitFor(() => screen.getByText(/delete it for good/));
+    expect(screen.queryByText(/will become the new owner/)).not.toBeInTheDocument();
+  });
 });
