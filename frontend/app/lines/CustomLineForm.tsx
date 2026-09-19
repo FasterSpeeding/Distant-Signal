@@ -262,7 +262,23 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         </Group>
       )}
       <Button
-        variant="subtle"
+        // `variant="transparent"`, not `"subtle"`: `"subtle"` paints a
+        // `--mantine-color-grape-light-hover` background (grape 1,
+        // `#eebefa`) under the pointer/on focus, which Mantine designed to
+        // pair with `"subtle"`'s OWN default text colour
+        // (`--mantine-color-grape-light-color`) -- not with the
+        // `--mantine-color-anchor` override below, which this button needs
+        // for its resting, transparent-background state (see that override's
+        // own comment). Grape 7 anchor text on that grape-1 hover background
+        // is only 3.08:1, short of AA's 4.5:1 -- reproduced live: click the
+        // button (which leaves a real mouse pointer hovering over it,
+        // exactly like clicking with an actual mouse), and axe flags the
+        // hovered/focused state, not the resting one, which is why this
+        // slipped past a scan of the page's initial render. `"transparent"`
+        // keeps the background transparent in every state, so the anchor
+        // colour is always measured against the page background it was
+        // actually chosen for.
+        variant="transparent"
         // Task 3.4.12: Mantine `Button variant="subtle"`'s default text
         // colour measured near-white on this app's near-white dark
         // background -- effectively invisible as a link. Pinned to the
