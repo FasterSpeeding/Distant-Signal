@@ -21,9 +21,54 @@ import type { EtaSource } from '@/lib/types';
  * exposed to assistive tech without an explicit hover/focus, so this
  * doesn't depend on that). The hidden span is a sibling of the `Badge`,
  * not nested inside it, so the badge's own visible text stays a single
- * plain string rather than a string interleaved with hidden content. */
-export function EtaBadge({ etaNext, etaSource }: { etaNext: string | null; etaSource: EtaSource | null }) {
-  if (!etaNext || !etaSource) return null;
+ * plain string rather than a string interleaved with hidden content.
+ *
+ * `mayHaveArrived` (Task 3.6.3): the present-tense "ETA {time}" badge
+ * above reads as live/current, but once the server's own
+ * `may_have_arrived` heuristic (`crates/api/src/data/journey.rs`) has
+ * fired, that time is actually the STALE estimate that tripped it -- no
+ * arrival report has been received for well over an hour in practice
+ * (the heuristic's own threshold is 15 minutes, but a poll gap or a quiet
+ * feed period can leave it considerably staler still by the time anyone
+ * reads this). Showing "ETA 14:34" unchanged under a "may have arrived"
+ * banner elsewhere on the page (`TrainJourney.tsx`'s `StatusMessage`)
+ * contradicts that banner's own wording. This branch swaps the badge for
+ * a single past-tense line instead, using the exact same `etaNext` value
+ * (still the best time this app has for the terminus) and the same
+ * `formatTime` convention every other network-time value on this page
+ * uses -- not a new estimate, just honest tense. `etaSource` is not shown
+ * here: once the estimate is flagged stale, which feed produced it is
+ * secondary to the fact that nothing has confirmed it since.
+ * `destinationCrs`/`destinationName` are optional and both nullable --
+ * an unmatched schedule genuinely has neither -- so the line degrades to
+ * "Was due 14:34 (no arrival report received)" rather than fabricating a
+ * station. */
+export function EtaBadge({
+  etaNext,
+  etaSource,
+  mayHaveArrived = false,
+  destinationCrs = null,
+  destinationName = null,
+}: {
+  etaNext: string | null;
+  etaSource: EtaSource | null;
+  mayHaveArrived?: boolean;
+  destinationCrs?: string | null;
+  destinationName?: string | null;
+}) {
+  if (!etaNext) return null;
+
+  if (mayHaveArrived) {
+    const station = destinationName ?? destinationCrs;
+    const dueLine = station ? `Was due at ${station} ${formatTime(etaNext)}` : `Was due ${formatTime(etaNext)}`;
+    return (
+      <Text size="sm" c="dimmed">
+        {dueLine} (no arrival report received)
+      </Text>
+    );
+  }
+
+  if (!etaSource) return null;
 
   const label = etaSource === 'darwin-estimated' ? 'Live departure board' : 'Estimate (Network Rail)';
   const tooltip =

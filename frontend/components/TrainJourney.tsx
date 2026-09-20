@@ -308,7 +308,19 @@ function JourneyDetails({ state }: { state: TrainJourneyState }) {
         </Group>
       )}
       {state.nextCallingPoint && <Text size="sm">Next calling point: {state.nextCallingPoint}</Text>}
-      <EtaBadge etaNext={state.etaNext} etaSource={state.etaSource} />
+      {/* `mayHaveArrived`/`destinationCrs`/`destinationName` (Task 3.6.3):
+          see `EtaBadge.tsx`'s own doc comment. Same `scheduleDestinationName
+          ?? scheduleDestinationCrs` precedence `StatusMessage` already uses
+          twice above for "destination" -- not `pinDestination*`, which is
+          only what the user originally typed and may not be this train's
+          real terminus. */}
+      <EtaBadge
+        etaNext={state.etaNext}
+        etaSource={state.etaSource}
+        mayHaveArrived={state.mayHaveArrived}
+        destinationCrs={state.scheduleDestinationCrs}
+        destinationName={state.scheduleDestinationName}
+      />
     </Stack>
   );
 }

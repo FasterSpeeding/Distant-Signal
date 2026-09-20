@@ -50,4 +50,50 @@ describe('EtaBadge', () => {
       ),
     ).toBeInTheDocument();
   });
+
+  // Task 3.6.3: a stale ETA under a "may have arrived" alert must not still
+  // read as a live, present-tense time.
+  describe('mayHaveArrived', () => {
+    it('renders "Was due at {station} {time} (no arrival report received)" instead of the present-tense badge', () => {
+      renderWithMantine(
+        <EtaBadge
+          etaNext="2026-08-28T18:41:00Z"
+          etaSource="trust-propagated"
+          mayHaveArrived
+          destinationCrs="WOK"
+          destinationName="Woking"
+        />,
+      );
+      expect(screen.getByText('Was due at Woking 19:41 (no arrival report received)')).toBeInTheDocument();
+      expect(screen.queryByText(/^ETA /)).not.toBeInTheDocument();
+      expect(screen.queryByText('Estimate (Network Rail)')).not.toBeInTheDocument();
+    });
+
+    it('falls back to the bare CRS when no destination name resolved', () => {
+      renderWithMantine(
+        <EtaBadge etaNext="2026-08-28T18:41:00Z" etaSource="trust-propagated" mayHaveArrived destinationCrs="WOK" />,
+      );
+      expect(screen.getByText('Was due at WOK 19:41 (no arrival report received)')).toBeInTheDocument();
+    });
+
+    it('omits the station entirely when neither destination CRS nor name is known', () => {
+      renderWithMantine(<EtaBadge etaNext="2026-08-28T18:41:00Z" etaSource="trust-propagated" mayHaveArrived />);
+      expect(screen.getByText('Was due 19:41 (no arrival report received)')).toBeInTheDocument();
+    });
+
+    it('leaves the ordinary present-tense badge unchanged when mayHaveArrived is false', () => {
+      renderWithMantine(
+        <EtaBadge
+          etaNext="2026-08-28T18:41:00Z"
+          etaSource="trust-propagated"
+          mayHaveArrived={false}
+          destinationCrs="WOK"
+          destinationName="Woking"
+        />,
+      );
+      expect(screen.getByText('ETA 19:41')).toBeInTheDocument();
+      expect(screen.getByText('Estimate (Network Rail)')).toBeInTheDocument();
+      expect(screen.queryByText(/Was due/)).not.toBeInTheDocument();
+    });
+  });
 });

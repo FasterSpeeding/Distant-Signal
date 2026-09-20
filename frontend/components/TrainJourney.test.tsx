@@ -162,6 +162,49 @@ describe('TrainJourney', () => {
     expect(screen.queryByText('May have arrived')).not.toBeInTheDocument();
   });
 
+  // Task 3.6.3: the top-level ETA badge (`JourneyDetails`, not
+  // `StatusMessage`'s own separate "May have arrived" Alert tested above)
+  // must not go on reading "ETA {time}" in the present tense once the
+  // server has flagged that time as stale -- see `EtaBadge.tsx`'s own doc
+  // comment for the full reasoning.
+  it('resolved + en_route with mayHaveArrived: the ETA badge reads "Was due", not the present-tense "ETA"', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'en_route',
+          etaNext: '2026-08-28T18:41:00Z',
+          etaSource: 'trust-propagated',
+          scheduleDestinationCrs: 'WOK',
+          scheduleDestinationName: 'Woking',
+          mayHaveArrived: true,
+        })}
+      />,
+    );
+    expect(screen.getByText(/Was due at Woking 19:41 \(no arrival report received\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/^ETA /)).not.toBeInTheDocument();
+  });
+
+  it('resolved + en_route with mayHaveArrived false: the ETA badge stays present-tense', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'en_route',
+          etaNext: '2026-08-28T18:41:00Z',
+          etaSource: 'trust-propagated',
+          scheduleDestinationCrs: 'WOK',
+          scheduleDestinationName: 'Woking',
+          mayHaveArrived: false,
+        })}
+      />,
+    );
+    expect(screen.getByText(/ETA 19:41/)).toBeInTheDocument();
+    expect(screen.queryByText(/Was due/)).not.toBeInTheDocument();
+  });
+
   it('resolved + cancelled: shows a cancelled banner and retains last known location', () => {
     renderWithMantine(
       <TrainJourney
