@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { Box, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
-import { journeyStopLabel } from './JourneyTimeline';
+import { journeyStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
 
 /** The one place an Origin/Terminate node's diameter is defined --
@@ -50,6 +50,13 @@ interface JourneyProgressProps {
   trainUid: string | null;
   mayHaveArrived: boolean;
   lastReportedLocation: string | null;
+  // See `JourneyTimeline.tsx`'s own doc comment on `JourneyEndpointNames` --
+  // the same tracked-pin origin/destination seed, threaded through here so
+  // this diagram's endpoint labels/captions (`journeyStopLabel`, below)
+  // never disagree with `JourneyTimeline`'s about the same stop. Optional
+  // for the same reason it is there: a caller with no pin data on hand
+  // still compiles, and just gets the by-index fallback.
+  endpointNames?: JourneyEndpointNames;
 }
 
 /** The last scheduled calling point with a confirmed reported event -- an
@@ -183,13 +190,14 @@ function progressCopy(
   trainUid: string | null,
   mayHaveArrived: boolean,
   lastReportedLocation: string | null,
+  endpointNames: JourneyEndpointNames | undefined,
 ): ProgressCopy {
   if (stops.length === 0) {
     return { caption: 'Not yet started.', ariaLabel: 'Journey progress: not yet started' };
   }
 
   const total = stops.length;
-  const markerName = lastIndex >= 0 ? journeyStopLabel(stops[lastIndex]) : null;
+  const markerName = lastIndex >= 0 ? journeyStopLabel(stops[lastIndex], lastIndex, total, endpointNames) : null;
   const stopNumber = lastIndex + 1;
 
   if (status === 'cancelled') {
@@ -206,7 +214,7 @@ function progressCopy(
   }
 
   if (status === 'completed') {
-    const terminusName = journeyStopLabel(stops[total - 1]);
+    const terminusName = journeyStopLabel(stops[total - 1], total - 1, total, endpointNames);
     return {
       caption: `Arrived at ${terminusName}.`,
       ariaLabel: `Journey progress: arrived at ${terminusName}`,
@@ -274,6 +282,7 @@ export function JourneyProgress({
   trainUid,
   mayHaveArrived,
   lastReportedLocation,
+  endpointNames,
 }: JourneyProgressProps) {
   const lastIndex = lastReachedIndex(stops);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -302,6 +311,7 @@ export function JourneyProgress({
     trainUid,
     mayHaveArrived,
     lastReportedLocation,
+    endpointNames,
   );
 
   // Scrolls THIS diagram's own horizontal scroll box, and only it --
@@ -401,9 +411,11 @@ export function JourneyProgress({
               key={`${stop.crs ?? 'unknown'}-${index}`}
               stop={stop}
               index={index}
+              total={stops.length}
               lastIndex={lastIndex}
               status={status}
               mayHaveArrived={mayHaveArrived}
+              endpointNames={endpointNames}
               nodeRef={nodeRefSetter(index)}
             />
           ))}
@@ -432,23 +444,27 @@ export function JourneyProgress({
 function JourneyProgressNode({
   stop,
   index,
+  total,
   lastIndex,
   status,
   mayHaveArrived,
+  endpointNames,
   nodeRef,
 }: {
   stop: JourneyStop;
   index: number;
+  total: number;
   lastIndex: number;
   status: JourneyStatus | null;
   mayHaveArrived: boolean;
+  endpointNames: JourneyEndpointNames | undefined;
   nodeRef: (el: HTMLDivElement | null) => void;
 }) {
   const diameter = nodeDiameter(stop.kind);
   const state = nodeState(index, lastIndex, status);
   const delay = delayState(stop.delayMinutes);
   const endpoint = isEndpoint(stop.kind);
-  const label = journeyStopLabel(stop);
+  const label = journeyStopLabel(stop, index, total, endpointNames);
   // Same departure-first precedence as `JourneyTimeline.tsx`'s own
   // `scheduled` (see `journeyStopLabel`'s doc comment) -- this tooltip
   // shows the exact same time that stop's row shows in the table below.

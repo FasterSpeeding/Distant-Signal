@@ -1,7 +1,7 @@
 import { Alert, Badge, Group, Loader, Stack, Text, Tooltip } from '@mantine/core';
 import { EtaBadge } from './EtaBadge';
 import { JourneyProgress } from './JourneyProgress';
-import { JourneyTimeline } from './JourneyTimeline';
+import { JourneyTimeline, type JourneyEndpointNames } from './JourneyTimeline';
 import { formatTime } from '@/lib/dateFormat';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import type { TrainJourneyState } from '@/lib/types';
@@ -43,6 +43,17 @@ export function TrainJourney({
   state: TrainJourneyState;
   suppressTrainUidHeading?: boolean;
 }) {
+  // See `JourneyTimeline.tsx`'s own doc comment on `JourneyEndpointNames`
+  // (Task 3.6.2) -- the tracked pin's own origin/destination, always known
+  // even when a particular calling point's TIPLOC->CRS->name join didn't
+  // resolve. Computed once here and threaded to both `JourneyProgress` and
+  // `JourneyTimeline` so the two can never show a different label for the
+  // same endpoint stop.
+  const endpointNames: JourneyEndpointNames = {
+    originName: state.pinOriginName ?? state.pinOriginCrs,
+    destinationName: state.pinDestinationName ?? state.pinDestinationCrs,
+  };
+
   return (
     <Stack gap="sm">
       <StatusMessage state={state} suppressTrainUidHeading={suppressTrainUidHeading} />
@@ -55,9 +66,10 @@ export function TrainJourney({
           trainUid={state.trainUid}
           mayHaveArrived={state.mayHaveArrived}
           lastReportedLocation={state.lastReportedLocation}
+          endpointNames={endpointNames}
         />
       )}
-      {state.journeyStops && <JourneyTimeline stops={state.journeyStops} />}
+      {state.journeyStops && <JourneyTimeline stops={state.journeyStops} endpointNames={endpointNames} />}
     </Stack>
   );
 }

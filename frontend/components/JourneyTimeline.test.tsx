@@ -141,4 +141,74 @@ describe('JourneyTimeline', () => {
     expect(screen.queryByText(/^est\./)).not.toBeInTheDocument();
     expect(screen.getByText('09:04')).toBeInTheDocument();
   });
+
+  // Task 3.6.2: a stop whose server-side TIPLOC->CRS->name join didn't
+  // resolve gets a by-index placeholder, never the old "Unknown location"
+  // string.
+  it('falls back to a by-index placeholder ("Stop N") when neither name nor CRS is known', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({ crs: 'RDG', name: 'Reading', kind: 'Origin' }),
+          stop({ crs: null, name: null, kind: 'Intermediate' }),
+          stop({ crs: 'WAT', name: 'London Waterloo', kind: 'Terminate' }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('Stop 2')).toBeInTheDocument();
+    expect(screen.queryByText('Unknown location')).not.toBeInTheDocument();
+  });
+
+  // The first/last row is special-cased: the tracked pin's own
+  // origin/destination is always known, even when this particular stop's
+  // own name/CRS didn't resolve, so it seeds the label instead of falling
+  // through to "Stop 1"/"Stop N".
+  it('seeds the first/last row from the tracked pin origin/destination when the stop itself has no name or CRS', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({ crs: null, name: null, kind: 'Origin' }),
+          stop({ crs: 'RDG', name: 'Reading', kind: 'Intermediate' }),
+          stop({ crs: null, name: null, kind: 'Terminate' }),
+        ]}
+        endpointNames={{ originName: 'London Waterloo', destinationName: 'Woking' }}
+      />,
+    );
+    expect(screen.getByText('London Waterloo')).toBeInTheDocument();
+    expect(screen.getByText('Woking')).toBeInTheDocument();
+    expect(screen.queryByText('Stop 1')).not.toBeInTheDocument();
+    expect(screen.queryByText('Stop 3')).not.toBeInTheDocument();
+  });
+
+  // Genuinely degenerate case: nothing at all resolved, not even the pin's
+  // own origin/destination -- N rows of "Stop 1"/"Stop 2"/... would look
+  // like a real (if terse) timetable, so this collapses to one honest,
+  // dimmed line instead and renders no table at all.
+  it('collapses to a single dimmed line when every stop is unnamed, with no table rendered', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({ crs: null, name: null, kind: 'Origin' }),
+          stop({ crs: null, name: null, kind: 'Intermediate' }),
+          stop({ crs: null, name: null, kind: 'Terminate' }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('3 stops — station names unavailable')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Stop \d/)).not.toBeInTheDocument();
+  });
+
+  it('does not collapse when only some stops are unnamed', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({ crs: 'RDG', name: 'Reading', kind: 'Origin' }),
+          stop({ crs: null, name: null, kind: 'Intermediate' }),
+        ]}
+      />,
+    );
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.queryByText(/station names unavailable/)).not.toBeInTheDocument();
+  });
 });

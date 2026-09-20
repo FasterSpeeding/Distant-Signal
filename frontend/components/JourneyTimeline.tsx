@@ -12,6 +12,21 @@ import {
 import { formatTime } from '@/lib/dateFormat';
 import type { JourneyStop } from '@/lib/types';
 
+/** The tracked pin's origin/destination display names (Task 3.6.2) --
+ * always derivable from `TrainJourneyState.pinOriginCrs`/`pinOriginName`/
+ * `pinDestinationCrs`/`pinDestinationName` even when the server-side
+ * TIPLOC->CRS->name join (`crates/api/src/data/journey.rs`) couldn't
+ * resolve a particular calling point's own name/CRS -- the pin is what the
+ * user tracked, not something read off the timetable. `null` on either
+ * side is still a legitimate value (an NR-primary subscription with no
+ * pinned destination, or one created before any schedule match resolved a
+ * name for the pinned CRS); `journeyStopLabel` treats that exactly like
+ * "no seed available" and falls through to its own generic fallback. */
+export interface JourneyEndpointNames {
+  originName: string | null;
+  destinationName: string | null;
+}
+
 /** Renders the full scheduled timetable as the primary structure of the
  * train detail page, with live actual-vs-scheduled data overlaid per stop
  * once available -- see
@@ -37,7 +52,32 @@ import type { JourneyStop } from '@/lib/types';
  * `"use client"`-tainted import chain that resolves to `undefined` at
  * runtime in that context -- the same reason `AllLinesTable.tsx` and
  * `lines/[id]/history/page.tsx` use the flat exports instead. */
-export function JourneyTimeline({ stops }: { stops: JourneyStop[] }) {
+export function JourneyTimeline({
+  stops,
+  endpointNames,
+}: {
+  stops: JourneyStop[];
+  endpointNames?: JourneyEndpointNames;
+}) {
+  const total = stops.length;
+  // Genuinely degenerate case (Task 3.6.2 point 4): every stop -- including
+  // the two endpoints, even after seeding them from the pin -- has nothing
+  // to display. Rendering N rows of "Stop 1"/"Stop 2"/... would look like a
+  // real, if terse, timetable; it isn't one, so this collapses to a single
+  // honest line instead. `total > 0` guards a genuinely-empty list, which
+  // `TrainJourney.tsx` never renders this component for anyway
+  // (`{state.journeyStops && ...}`) but `every` on `[]` is vacuously `true`.
+  const allUnnamed =
+    total > 0 && stops.every((stop, index) => resolvedStopLabel(stop, index, total, endpointNames) === null);
+
+  if (allUnnamed) {
+    return (
+      <Text size="sm" c="dimmed">
+        {total} {total === 1 ? 'stop' : 'stops'} — station names unavailable
+      </Text>
+    );
+  }
+
   return (
     <TableScrollContainer minWidth={420}>
       <Table verticalSpacing={6} horizontalSpacing="sm" aria-label="Journey timeline">
@@ -51,7 +91,13 @@ export function JourneyTimeline({ stops }: { stops: JourneyStop[] }) {
         </TableThead>
         <TableTbody>
           {stops.map((stop, index) => (
-            <JourneyStopRow key={`${stop.crs ?? 'unknown'}-${index}`} stop={stop} />
+            <JourneyStopRow
+              key={`${stop.crs ?? 'unknown'}-${index}`}
+              stop={stop}
+              index={index}
+              total={total}
+              endpointNames={endpointNames}
+            />
           ))}
         </TableTbody>
       </Table>
@@ -59,13 +105,45 @@ export function JourneyTimeline({ stops }: { stops: JourneyStop[] }) {
   );
 }
 
+/** The calling-point display name for a `JourneyStop` if one can be
+ * resolved without falling back to a generic by-index placeholder --
+ * `null` means "nothing to show here", which is exactly the signal
+ * `JourneyTimeline`'s all-unnamed collapse (above) needs and a
+ * `journeyStopLabel` that always returns a string can't give it. */
+function resolvedStopLabel(
+  stop: JourneyStop,
+  index: number,
+  total: number,
+  endpointNames: JourneyEndpointNames | undefined,
+): string | null {
+  if (stop.name) return stop.name;
+  if (stop.crs) return stop.crs;
+  if (index === 0 && endpointNames?.originName) return endpointNames.originName;
+  if (index === total - 1 && endpointNames?.destinationName) return endpointNames.destinationName;
+  return null;
+}
+
 /** The calling-point display name for a `JourneyStop`: its resolved name,
- * falling back to the bare CRS code, falling back to a generic placeholder
- * when neither is known. Shared with `JourneyProgress.tsx`, which reuses
- * this exact fallback chain for its own node labels/tooltips/captions --
- * see that file's own doc comments for why it must match this one. */
-export function journeyStopLabel(stop: JourneyStop): string {
-  return stop.name ?? stop.crs ?? 'Unknown location';
+ * falling back to the bare CRS code, falling back (at the first/last row
+ * only) to the tracked pin's own origin/destination name -- always known
+ * even when the timetable data isn't (Task 3.6.2) -- and finally to a
+ * by-INDEX placeholder ("Stop 3"), never the old "Unknown location"
+ * string: a server-side TIPLOC/CRS join failure is real and rare now (see
+ * `crates/api/src/data/journey.rs`'s `tiploc_key` doc comment), not
+ * evidence the row itself is bogus, so it still deserves a row, just not a
+ * one-size-fits-all label that reads as an error. Shared with
+ * `JourneyProgress.tsx`, which reuses this exact fallback chain for its own
+ * node labels/tooltips/captions -- see that file's own doc comments for why
+ * it must match this one. `endpointNames`/`index`/`total` are optional-ish
+ * (index/total have no sensible default, but `endpointNames` may be
+ * omitted) purely so a caller with no pin data on hand still compiles. */
+export function journeyStopLabel(
+  stop: JourneyStop,
+  index: number,
+  total: number,
+  endpointNames?: JourneyEndpointNames,
+): string {
+  return resolvedStopLabel(stop, index, total, endpointNames) ?? `Stop ${index + 1}`;
 }
 
 function delayBadge(delayMinutes: number | null) {
@@ -91,8 +169,18 @@ function delayBadge(delayMinutes: number | null) {
   );
 }
 
-function JourneyStopRow({ stop }: { stop: JourneyStop }) {
-  const label = journeyStopLabel(stop);
+function JourneyStopRow({
+  stop,
+  index,
+  total,
+  endpointNames,
+}: {
+  stop: JourneyStop;
+  index: number;
+  total: number;
+  endpointNames?: JourneyEndpointNames;
+}) {
+  const label = journeyStopLabel(stop, index, total, endpointNames);
   const scheduled = stop.scheduledDeparture ?? stop.scheduledArrival;
   const actual = stop.actualDeparture ?? stop.actualArrival;
   const estimated = stop.estimatedDeparture ?? stop.estimatedArrival;

@@ -204,6 +204,30 @@ fn stops_from_calling_points(
         .collect()
 }
 
+/// Fills in each stop's `name` from an already-fetched CRS->name map
+/// (`queries::station_names_for_crs_batch`) -- the second half of the
+/// TIPLOC->CRS->name chain, split out of [`build_journey_stops`] for
+/// exactly the same reason [`stops_from_calling_points`] is: chained
+/// straight onto that function's own output, this is the DB-free unit
+/// test's route to proving the WHOLE chain (a stop whose feed data
+/// supplies only a TIPLOC ends up with a real display `name`), not just
+/// the TIPLOC->CRS half `stops_from_calling_points` alone can exercise.
+///
+/// A CRS the map has no entry for (no `stations` row, or `stop.crs` itself
+/// is `None` because the TIPLOC never resolved) leaves `name` as whatever
+/// it already was -- `None` on a freshly-built stop -- never a fabricated
+/// placeholder; the by-index/pin-endpoint fallback for that case is a
+/// client-side, rendering-time decision (`frontend/components/
+/// JourneyTimeline.tsx`'s `journeyStopLabel`), not something this
+/// server-side pass second-guesses.
+fn apply_station_names(stops: &mut [JourneyStop], names: &HashMap<String, String>) {
+    for stop in stops {
+        if let Some(crs) = &stop.crs {
+            stop.name = names.get(&crs.to_uppercase()).cloned();
+        }
+    }
+}
+
 /// Builds the ordered stop list for `(train_uid, service_date)`, or `None`
 /// if neither the primary (`calling_points_json`) nor fallback
 /// (`schedule_destination_departures`) source has anything -- see the
@@ -310,11 +334,7 @@ pub async fn build_journey_stops(
     // Station names, batched over every distinct CRS this stop list has.
     let stop_crs: Vec<String> = stops.iter().filter_map(|s| s.crs.clone()).collect();
     let names = queries::station_names_for_crs_batch(pool, &stop_crs).await?;
-    for stop in &mut stops {
-        if let Some(crs) = &stop.crs {
-            stop.name = names.get(&crs.to_uppercase()).cloned();
-        }
-    }
+    apply_station_names(&mut stops, &names);
 
     // Live overlay.
     let events = queries::movement_events_for_train(pool, trains_id).await?;
@@ -1110,6 +1130,41 @@ mod tests {
             stops[1].scheduled_arrival,
             Some("2026-09-17T12:30:00Z".parse().unwrap()),
             "13:30 London wall-clock on a BST date (UTC+1) must convert to 12:30 UTC"
+        );
+    }
+
+    /// Task 3.6.2's regression test for the whole TIPLOC->CRS->name chain,
+    /// DB-free: chains [`stops_from_calling_points`] straight into
+    /// [`apply_station_names`] for a stop whose feed data supplies only a
+    /// TIPLOC (no CRS, no name -- exactly what `trains.calling_points`
+    /// actually carries), proving both halves of the join actually run
+    /// server-side rather than leaving a `journeyStopLabel` fallback on the
+    /// frontend to do the whole job. Before this fix landed (Task 0.2's
+    /// fixture correction plus the tiploc-padding fix above), a broken link
+    /// anywhere in this chain surfaced on the train detail page as "Unknown
+    /// location"; this test would have caught it without a live Postgres
+    /// connection.
+    #[test]
+    fn tiploc_to_crs_to_name_resolves_end_to_end_for_a_stop_with_only_a_tiploc() {
+        let service_date: NaiveDate = "2026-09-17".parse().unwrap();
+        let tiploc_to_crs: HashMap<String, String> =
+            [("KNGX".to_string(), "KGX".to_string())].into_iter().collect();
+        let names: HashMap<String, String> =
+            [("KGX".to_string(), "LONDON KINGS CROSS".to_string())].into_iter().collect();
+
+        let raw = vec![raw_cp("KNGX")];
+        let mut stops = stops_from_calling_points(&raw, &tiploc_to_crs, service_date);
+        assert_eq!(stops[0].name, None, "name is not yet resolved by stops_from_calling_points alone");
+
+        apply_station_names(&mut stops, &names);
+
+        assert_eq!(stops[0].crs.as_deref(), Some("KGX"), "the tiploc->crs half of the join");
+        assert_eq!(
+            stops[0].name.as_deref(),
+            Some("LONDON KINGS CROSS"),
+            "the crs->name half of the join -- together, a stop whose only feed \
+             data is a bare tiploc must end up with a real display name, not \
+             fall through to the frontend's generic fallback"
         );
     }
 
