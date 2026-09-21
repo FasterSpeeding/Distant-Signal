@@ -337,6 +337,33 @@ mod tests {
         );
     }
 
+    // Same precise-blast-radius shape again, for Salisbury: the SWR
+    // suburban-gap batch's own swr-romsey-salisbury.toml genuinely shares
+    // this one station with gwr-wessex-main.toml (both run the real
+    // Salisbury-Southampton stretch that file's own header already flagged
+    // as a documented, out-of-scope gap), so a new, narrow
+    // `swr-wessex-main-south` segment covers Salisbury through Southampton
+    // Central - `gwr-wessex-main` itself (Bristol-Westbury-Salisbury)
+    // stays exclusive to gwr-wessex-main.toml except for its own
+    // already-established Westbury sharing.
+    #[test]
+    fn swr_wessex_main_south_is_shared_between_gwr_wessex_main_and_romsey_salisbury() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        assert!(registry.is_shared("swr-wessex-main-south"));
+        let mut users = registry.lines_for_segment("swr-wessex-main-south");
+        users.sort();
+        assert_eq!(users, vec!["gwr-wessex-main", "swr-romsey-salisbury"]);
+        assert_eq!(
+            registry.segment_at("gwr-wessex-main", "SAL"),
+            Some("swr-wessex-main-south")
+        );
+        assert_eq!(
+            registry.segment_at("gwr-wessex-main", "BTH"),
+            Some("gwr-wessex-main")
+        );
+    }
+
     #[test]
     fn segment_at_returns_the_right_segment_for_a_station() {
         let lines = load_all_lines();

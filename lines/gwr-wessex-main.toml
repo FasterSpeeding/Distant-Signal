@@ -215,13 +215,24 @@ role = "major"
 segment = "gwr-wessex-main"
 # Warminster.
 
+# UPDATE (SWR suburban-gap batch): segment changed from `gwr-wessex-main`
+# to a new, narrower `swr-wessex-main-south` - `lines/swr-romsey-
+# salisbury.toml` now fills the real, sourced Southampton/Portsmouth
+# continuation this task's own scope note (above) already flagged, and
+# genuinely shares this exact station with it. A new segment name (rather
+# than extending `gwr-wessex-main` itself south of Salisbury) keeps
+# Bristol/Bath Spa/Westbury and the rest of this file's own northern
+# stretch correctly exclusive - swr-romsey-salisbury.toml's own trains
+# never reach them. Same precise-blast-radius approach used for Ash Vale/
+# Aldershot and Brockenhurst elsewhere in that same batch.
 [[stations]]
 crs = "SAL"
 role = "junction"
-segment = "gwr-wessex-main"
+segment = "swr-wessex-main-south"
 # Salisbury. This task's own scope ends here (the brief's own "Bristol-Bath-
 # Warminster-Salisbury" wording); real GWR services continue on towards
-# Southampton/Portsmouth (see destination_crs_filter comment above). Also
+# Southampton/Portsmouth (see destination_crs_filter comment above; now
+# modelled by swr-romsey-salisbury.toml, see the UPDATE note above). Also
 # swr-west-of-england.toml's own junction station, approached from a
 # completely different direction (east, via Andover) with no sourced
 # evidence of shared track — station overlap only, not a shared segment;
