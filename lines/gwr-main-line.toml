@@ -127,8 +127,10 @@ segment = "gwr-main-line"
 # shows up as a real scheduled stop roughly 32-35 times independently in the
 # audited data, not a one-off/parsing artefact), and independently confirmed
 # as real/open/currently-served by both already being correctly tagged in
-# the sibling gwr-bristol-suburban.toml (its own Bristol-Weymouth group,
-# `gwr-bristol-weymouth` segment) — this file simply never had them added.
+# the sibling gwr-heart-of-wessex.toml (formerly part of the combined
+# gwr-bristol-suburban.toml, before that file's later split; its own
+# Bristol-Weymouth group, `gwr-bristol-weymouth` segment) — this file simply
+# never had them added.
 [[stations]]
 crs = "OLF"
 role = "minor"
