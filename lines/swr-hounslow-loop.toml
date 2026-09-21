@@ -118,21 +118,36 @@ operators = ["SW"]
 # station list verbatim, is fixed identically in the same pass so its own
 # "identical CRS/role/segment values throughout" invariant stays true.
 #
-# EGH and VIR stay on `swr-hounslow-loop` for now (not folded into
+# EGH and VIR were originally left on `swr-hounslow-loop` (not folded into
 # `swr-windsor-lines`): the task behind this fix scoped the mismatch to
-# WTN/FEL/AFS/SNS specifically, and EGH/VIR's own genuine second user is
-# the not-yet-created Waterloo-Reading-line file, not swr-windsor-lines.toml
-# (whose own exclusive branch diverges at Staines, away from Egham/Virginia
-# Water entirely - see its own SNS note). When that file is added, reusing
-# `swr-hounslow-loop` verbatim for its own EGH/VIR rows is the natural next
-# step, the same pattern swr-chertsey-loop.toml already uses.
+# WTN/FEL/AFS/SNS specifically, and EGH/VIR's own genuine second user at the
+# time was the not-yet-created Waterloo-Reading-line file, not
+# swr-windsor-lines.toml (whose own exclusive branch diverges at Staines,
+# away from Egham/Virginia Water entirely - see its own SNS note). The plan
+# was for that future file to reuse `swr-hounslow-loop` verbatim for its own
+# EGH/VIR rows, the same pattern swr-chertsey-loop.toml already uses.
 #
-# It is SHARED (deliberately, not just a same-operator convenience) with
-# swr-chertsey-loop.toml all the way to Virginia Water, because - per the
-# IMPORTANT FINDING above - both files' trains are, in current normal
-# service, literally the same physical workings running the same track;
-# an incident anywhere on this stretch genuinely affects both files' lines
-# and should be flagged as a shared-trunk event between them.
+# REVIEW2 FIX (2026-09-21): that plan turned out to reproduce the same
+# whole-route-segment over-sharing bug fixed elsewhere in this review, once
+# `swr-waterloo-reading.toml` was actually written and did exactly the
+# anticipated reuse - `swr-hounslow-loop` also covers this file's own
+# Barnes Bridge-through-Hounslow loop-shaped stations, none of which
+# `swr-waterloo-reading.toml`'s own trains call at. EGH/VIR now carry a new,
+# narrower `swr-staines-virginia-water` segment name instead, shared
+# between this file, swr-chertsey-loop.toml and swr-waterloo-reading.toml;
+# see the EGH entry's own comment below. `swr-hounslow-loop` itself (Barnes
+# Bridge through Hounslow) remains this file's own exclusive segment,
+# unaffected.
+#
+# `swr-staines-virginia-water` is SHARED (deliberately, not just a
+# same-operator convenience) with swr-chertsey-loop.toml all the way to
+# Virginia Water, because - per the IMPORTANT FINDING above - both files'
+# trains are, in current normal service, literally the same physical
+# workings running the same track; an incident anywhere on this stretch
+# genuinely affects both files' lines and should be flagged as a
+# shared-trunk event between them. It is now ALSO shared with
+# `swr-waterloo-reading.toml` for the same reason - see that file's own
+# top-of-file SEGMENTS comment.
 #
 # This file's own modelled scope ends at Virginia Water (a real junction:
 # Chertsey branch one way, the separate Waterloo-Reading-via-Ascot route
@@ -313,14 +328,27 @@ segment = "swr-windsor-lines"
 [[stations]]
 crs = "EGH"
 role = "minor"
-segment = "swr-hounslow-loop"
-# Egham.
+segment = "swr-staines-virginia-water"
+# Egham. REVIEW2 FIX (2026-09-21): moved off `swr-hounslow-loop` onto a
+# new, narrower `swr-staines-virginia-water` segment name, shared with
+# `swr-waterloo-reading.toml` (see that file's own top-of-file note) and
+# `swr-chertsey-loop.toml`. This file's original plan (see the BUG FIX note
+# above) anticipated `swr-waterloo-reading.toml` reusing `swr-hounslow-loop`
+# verbatim for its own EGH/VIR entries once written - but that name also
+# covers this file's own Barnes Bridge/Chiswick/Kew Bridge/Brentford/Syon
+# Lane/Isleworth/Hounslow loop-shaped stretch, which
+# `swr-waterloo-reading.toml`'s own trains never call at. When that file
+# was actually written it did exactly the anticipated reuse, which turned
+# out to be the same whole-route-segment over-sharing bug fixed elsewhere
+# in this review. Fixed by carving this narrower name instead; BNI through
+# HOU (below) stay on the original `swr-hounslow-loop` name, unaffected.
 
 [[stations]]
 crs = "VIR"
 role = "junction"
-segment = "swr-hounslow-loop"
+segment = "swr-staines-virginia-water"
 # Virginia Water. Junction for the Chertsey branch (this file's own sibling,
 # swr-chertsey-loop.toml, continues from here) and for the separate
-# Waterloo-Reading-via-Ascot/Bracknell route (not modelled by any file yet).
+# Waterloo-Reading-via-Ascot/Bracknell route, now modelled by
+# `swr-waterloo-reading.toml` (see the EGH entry's own REVIEW2 FIX note).
 # This file's own modelled scope ends here - see SEGMENTS above.
