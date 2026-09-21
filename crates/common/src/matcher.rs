@@ -5959,16 +5959,26 @@ mod tests {
     // afk_station_overlap_matches_both_seml_and_hs1_as_independent_exclusive_segments
     // below), so an incident on a `seml-weald` station untouched by any
     // other file should still stay exclusive to this line alone.
+    //
+    // Kent/Sussex batch: this test used to fire at Tonbridge (TON), but
+    // southeastern-hastings-line.toml now also has a station there (see
+    // afk_station_overlap_matches_both_seml_and_hs1_as_independent_exclusive_segments's
+    // own sibling tests for that station-overlap pattern) - TON is no
+    // longer a station this file has all to itself. Moved to Marden (MRN),
+    // a `seml-weald` station still untouched by any other file (grepped
+    // before making this change), to keep testing what this test is
+    // actually meant to test: a genuinely exclusive segment not
+    // propagating anywhere.
     #[test]
     fn seml_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
             "SE-1",
-            "Signal failure at Tonbridge",
+            "Signal failure at Marden",
             "Signal failure causing delays to Southeastern services.",
             &["SE"],
-            &["TON"],
+            &["MRN"],
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
@@ -6071,6 +6081,12 @@ mod tests {
     // and both files' header comments, that's station overlap, not a
     // shared trunk: an AFK incident should match both lines independently,
     // each still scoped ExclusiveSegment, never SharedSegment.
+    //
+    // Kent/Sussex batch: southeastern-maidstone-east.toml and
+    // southeastern-canterbury-west.toml both also terminate/junction at AFK
+    // (their own `maidstone-east-line`/`canterbury-west-line` segments,
+    // neither reusing `seml-weald` or `hs1-ashford`) - same station-overlap
+    // treatment, added here rather than left to silently under-match.
     #[test]
     fn afk_station_overlap_matches_both_seml_and_hs1_as_independent_exclusive_segments() {
         let lines = load_all_lines();
@@ -6088,7 +6104,9 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "southeastern-main-line".to_string(),
-                "southeastern-highspeed".to_string()
+                "southeastern-highspeed".to_string(),
+                "southeastern-maidstone-east".to_string(),
+                "southeastern-canterbury-west".to_string(),
             ])
         );
         for m in &matches {
@@ -6150,6 +6168,11 @@ mod tests {
     // touch e.g. Longfield/Meopham/Sole Street), so it's station overlap,
     // not a shared trunk - both lines match a Ramsgate incident
     // independently, each ExclusiveSegment.
+    //
+    // Kent/Sussex batch: southeastern-canterbury-west.toml also terminates
+    // at RAM (its own `canterbury-west-line` segment, approached from
+    // Ashford/Canterbury West rather than Faversham/Margate) - same
+    // station-overlap treatment, added here.
     #[test]
     fn hs1_northkent_station_overlap_matches_both_chatham_and_hs1_as_independent_exclusive_segments()
      {
@@ -6168,7 +6191,8 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "southeastern-chatham".to_string(),
-                "southeastern-highspeed".to_string()
+                "southeastern-highspeed".to_string(),
+                "southeastern-canterbury-west".to_string(),
             ])
         );
         for m in &matches {
@@ -6298,8 +6322,19 @@ mod tests {
     // swr_shared_trunk_incident_propagates's per-family SharedSegment
     // shape). Every other line in this set keeps its own distinct segment
     // name at LBG and stays ExclusiveSegment.
+    //
+    // Kent/Sussex batch: southeastern-north-kent.toml (its own
+    // `southeastern-north-kent` segment, the Greenwich-line approach) also
+    // calls at LBG - same station-overlap treatment, added here as a ninth
+    // independent match. (southeastern-maidstone-east.toml does NOT touch
+    // LBG - its own London approach is via Herne Hill/Bromley South, the
+    // same Victoria-side alignment southeastern-chatham.toml already
+    // models, which never reaches London Bridge.) The set below and the
+    // function name below now cover nine lines in total, eight of them
+    // independent ExclusiveSegment matches plus the bexleyheath/
+    // dartford-loop SharedSegment pair.
     #[test]
-    fn lbg_station_overlap_spans_eight_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
+    fn lbg_station_overlap_spans_nine_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -6322,6 +6357,7 @@ mod tests {
                 "southern-brighton-main-line".to_string(),
                 "southern-oxted-uckfield".to_string(),
                 "thameslink-southern".to_string(),
+                "southeastern-north-kent".to_string(),
             ])
         );
         for m in &matches {
@@ -6393,7 +6429,7 @@ mod tests {
     // the registry correctly promotes BOTH of those two to SharedSegment
     // (mirrors swr_shared_trunk_incident_propagates's per-family
     // SharedSegment shape; see also
-    // lbg_station_overlap_spans_eight_lines_bexleyheath_and_dartford_loop_share_the_trunk
+    // lbg_station_overlap_spans_nine_lines_bexleyheath_and_dartford_loop_share_the_trunk
     // above for the same pattern at London Bridge).
     #[test]
     fn lew_station_overlap_matches_four_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
@@ -6854,6 +6890,10 @@ mod tests {
     // exercised elsewhere in this module. Confirms an incident at Victoria
     // matches all three lines independently, each still scoped
     // ExclusiveSegment, never SharedSegment.
+    //
+    // Kent/Sussex batch: southeastern-maidstone-east.toml also terminates at
+    // VIC (its own `maidstone-east-victoria` segment) - same station-overlap
+    // treatment, added here as a fourth independent match.
     #[test]
     fn vic_station_overlap_matches_brighton_main_line_chatham_and_oxted_uckfield_as_independent_exclusive_segments()
      {
@@ -6874,6 +6914,7 @@ mod tests {
                 "southern-brighton-main-line".to_string(),
                 "southeastern-chatham".to_string(),
                 "southern-oxted-uckfield".to_string(),
+                "southeastern-maidstone-east".to_string(),
             ])
         );
         for m in &matches {
@@ -7411,6 +7452,11 @@ mod tests {
     // each still scoped ExclusiveSegment, never SharedSegment - mirrors
     // bfr_station_overlap_matches_thameslink_core_and_thameslink_southern_
     // as_independent_exclusive_segments above.
+    //
+    // Kent/Sussex batch: southeastern-maidstone-east.toml also has a station
+    // at Swanley (its own `maidstone-east-victoria` segment, ending there) -
+    // same station-overlap treatment, added here as a third independent
+    // match.
     #[test]
     fn say_station_overlap_matches_chatham_and_thameslink_southern_as_independent_exclusive_segments()
      {
@@ -7429,7 +7475,8 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "southeastern-chatham".to_string(),
-                "thameslink-southern".to_string()
+                "thameslink-southern".to_string(),
+                "southeastern-maidstone-east".to_string(),
             ])
         );
         for m in &matches {
@@ -7554,6 +7601,14 @@ mod tests {
     // Wimbledon at all — its own route runs via Vauxhall and Clapham
     // Junction's separate Windsor-lines platforms, never via Wimbledon — so
     // it is correctly absent here.
+    //
+    // Updated by the SE/SWR-loops batch: swr-new-guildford.toml also reuses
+    // `swr-trunk-waterloo` verbatim for WIM (its own SEGMENTS diagram: WAT -
+    // CLJ - WIM - SUR is the shared Waterloo approach before the
+    // New Guildford line diverges), growing the SWR side to seven.
+    // swr-chertsey-loop.toml and swr-hounslow-loop.toml (same batch) do NOT
+    // call at Wimbledon — both diverge from the Waterloo trunk before
+    // reaching it — so they are correctly absent here.
     #[test]
     fn wim_station_overlap_matches_swr_trunk_and_thameslink_southern_as_independent_segments() {
         let lines = load_all_lines();
@@ -7576,6 +7631,7 @@ mod tests {
                 "swr-kingston-loop".to_string(),
                 "swr-chessington".to_string(),
                 "swr-west-of-england".to_string(),
+                "swr-new-guildford".to_string(),
                 "thameslink-southern".to_string(),
             ])
         );
@@ -8825,12 +8881,21 @@ mod tests {
     // before the Lewisham fork, so it's still common to both). This file
     // and overground-windrush.toml each use their own distinct segment
     // name here and stay independently ExclusiveSegment (mirrors
-    // lbg_station_overlap_spans_eight_lines_bexleyheath_and_dartford_loop_share_the_trunk
+    // lbg_station_overlap_spans_nine_lines_bexleyheath_and_dartford_loop_share_the_trunk
     // above), but southeastern-bexleyheath and southeastern-dartford-loop
     // share the literal segment name at NWX, so the registry correctly
     // promotes both of those two to SharedSegment.
+    //
+    // Kent/Sussex batch: southeastern-north-kent.toml also has a station at
+    // New Cross (its own `southeastern-north-kent` segment, the point this
+    // file's and southeastern-metro-north-kent.toml's own NWX comments both
+    // already flagged as where "a differently-aligned North Kent Line route
+    // ... diverges") - same station-overlap treatment, added here as a
+    // fifth independent match. The set below and the function name now
+    // cover five lines in total, four of them independent ExclusiveSegment
+    // matches plus the bexleyheath/dartford-loop SharedSegment pair.
     #[test]
-    fn nwx_station_overlap_matches_four_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
+    fn nwx_station_overlap_matches_five_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -8849,6 +8914,7 @@ mod tests {
                 "southeastern-bexleyheath".to_string(),
                 "southeastern-dartford-loop".to_string(),
                 "overground-windrush".to_string(),
+                "southeastern-north-kent".to_string(),
             ])
         );
         for m in &matches {
@@ -8908,16 +8974,22 @@ mod tests {
         }
     }
 
-    // Grove Park, Chislehurst and Petts Wood are new to the catalogue - no
-    // other file models them, so an incident there should stay exclusive
-    // to southeastern-main-line alone. Mirrors
+    // Chislehurst and Petts Wood are new to the catalogue - no other file
+    // models them, so an incident there should stay exclusive to
+    // southeastern-main-line alone. Mirrors
     // chatham_deal_branch_stations_are_now_modelled_and_stay_exclusive
     // above.
+    //
+    // Kent/Sussex batch: Grove Park (GRP) is no longer exclusive to this
+    // set - southeastern-bromley-north.toml now also has a station there
+    // (its own `southeastern-bromley-north` segment, the point this file's
+    // own GRP comment already flagged as where "the Bromley North line ...
+    // diverges") - moved to its own case below with that additional match.
     #[test]
     fn seml_grove_park_chislehurst_petts_wood_are_exclusive_to_seml() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
-        for crs in ["GRP", "CIT", "PET"] {
+        for crs in ["CIT", "PET"] {
             let inc = incident(
                 "SE-16",
                 "Signal failure",
@@ -8933,6 +9005,41 @@ mod tests {
                 "{crs} should match only southeastern-main-line"
             );
             assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        }
+    }
+
+    // Kent/Sussex batch: Grove Park (GRP) is a station overlap between this
+    // file's own `seml-london` and southeastern-bromley-north.toml's own
+    // `southeastern-bromley-north` segment - confirms an incident there
+    // matches both lines independently, each still scoped ExclusiveSegment,
+    // never SharedSegment.
+    #[test]
+    fn grp_station_overlap_matches_seml_and_bromley_north_as_independent_exclusive_segments() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SE-16B",
+            "Signal failure at Grove Park",
+            "Signal failure causing delays to Southeastern services.",
+            &["SE"],
+            &["GRP"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "southeastern-main-line".to_string(),
+                "southeastern-bromley-north".to_string(),
+            ])
+        );
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment, not shared",
+                m.line.id
+            );
         }
     }
 
@@ -8969,13 +9076,14 @@ mod tests {
         );
     }
 
-    // Clapham Junction (CLJ) turns out to be a ten-way station overlap: seven
-    // SWR files (swr-south-west-main.toml, swr-portsmouth-direct.toml,
-    // swr-alton.toml, swr-kingston-loop.toml, swr-chessington.toml, and --
-    // added by the Wessex/Thames-Valley/Isle-of-Wight batch --
-    // swr-west-of-england.toml and swr-windsor-lines.toml) all share the
-    // literal `swr-trunk-waterloo` segment name there (a genuine shared
-    // physical trunk out of Waterloo), so those seven should resolve as
+    // Clapham Junction (CLJ) turns out to be a station overlap across
+    // several SWR files (swr-south-west-main.toml, swr-portsmouth-
+    // direct.toml, swr-alton.toml, swr-kingston-loop.toml,
+    // swr-chessington.toml, and -- added by the Wessex/Thames-Valley/
+    // Isle-of-Wight batch -- swr-west-of-england.toml and
+    // swr-windsor-lines.toml) that all share the literal
+    // `swr-trunk-waterloo` segment name there (a genuine shared physical
+    // trunk out of Waterloo), so those seven should resolve as
     // SharedSegment together; the two Overground files each use their own
     // exclusive segment name (`overground-windrush-clapham-branch`,
     // `overground-mildmay-clapham-branch`) and this file's own new
@@ -8985,6 +9093,14 @@ mod tests {
     // Mirrors the mixed shared/exclusive pattern already exercised elsewhere
     // in this file (e.g. the LBG/DVP multi-file overlaps), just with more
     // lines at once.
+    //
+    // Updated by the SE/SWR-loops batch: swr-chertsey-loop.toml,
+    // swr-hounslow-loop.toml and swr-new-guildford.toml (three more new
+    // files) all also reuse `swr-trunk-waterloo` verbatim at CLJ (each
+    // file's own SEGMENTS diagram documents the same Waterloo-Clapham
+    // Junction approach before diverging), growing the SharedSegment side
+    // from seven SWR files to ten. The three Overground/Southern exclusive
+    // matches are unaffected.
     #[test]
     fn clj_station_overlap_matches_swr_trunk_shared_and_overground_and_bml_as_mixed_scope() {
         let lines = load_all_lines();
@@ -9008,6 +9124,9 @@ mod tests {
                 "swr-chessington".to_string(),
                 "swr-west-of-england".to_string(),
                 "swr-windsor-lines".to_string(),
+                "swr-chertsey-loop".to_string(),
+                "swr-hounslow-loop".to_string(),
+                "swr-new-guildford".to_string(),
                 "overground-windrush".to_string(),
                 "overground-mildmay".to_string(),
                 "southern-brighton-main-line".to_string(),
@@ -9022,6 +9141,9 @@ mod tests {
                 "swr-chessington",
                 "swr-west-of-england",
                 "swr-windsor-lines",
+                "swr-chertsey-loop",
+                "swr-hounslow-loop",
+                "swr-new-guildford",
             ]
             .contains(&m.line.id.as_str())
             {
