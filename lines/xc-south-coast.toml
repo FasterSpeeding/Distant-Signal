@@ -315,7 +315,11 @@ crs = "BCU"
 role = "junction"
 segment = "xc-south-coast"
 # Brockenhurst: strictly between Beaulieu Road and Sway; also the Lymington
-# branch junction (that branch is not modelled in this catalogue yet).
+# branch junction. UPDATE (SWR suburban-gap batch): the branch is now
+# modelled in `lines/swr-lymington-branch.toml`, which reuses
+# swr-south-west-main.toml's own `swr-swml-south` segment for this exact
+# station - a different physical/operator approach from this file's own,
+# so still station overlap only here, not a shared segment.
 
 [[stations]]
 crs = "SWY"

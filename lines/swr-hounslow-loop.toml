@@ -90,9 +90,44 @@ operators = ["SW"]
 # `swr-hounslow-loop` (this file's own new segment name): Barnes Junction
 # has no separate CRS code from Barnes (BNS) itself, so per the shared-trunk
 # rule of thumb this line's own exclusive-but-shared segment starts at the
-# next station past the junction, Barnes Bridge - matching how
-# swr-kingston-loop.toml treats New Malden/Norbiton. It is SHARED
-# (deliberately, not just a same-operator convenience) with
+# next station past the junction, Barnes Bridge, and runs to Hounslow -
+# matching how swr-kingston-loop.toml treats New Malden/Norbiton. This is
+# the genuinely loop-shaped diversion: no other file's trains run over
+# Barnes Bridge/Chiswick/Kew Bridge/Brentford/Syon Lane/Isleworth/Hounslow.
+#
+# BUG FIX (real-world-sanity review, cross-checked against the real
+# Waterloo-Reading route diagram): Whitton, Feltham, Ashford (Surrey) and
+# Staines were previously tagged `swr-hounslow-loop` here too, alongside
+# EGH/VIR, as one monolithic segment from Barnes Bridge to Virginia Water.
+# That was wrong for those four specifically - they are not part of the
+# loop-shaped diversion at all. Per the sourcing above, the loop REJOINS
+# the Waterloo-Reading line's own main double track "at a triangular
+# junction between Whitton and Feltham" - i.e. Whitton onward is the SAME
+# physical track a Twickenham-routed Windsor-lines train also uses, and
+# lines/swr-windsor-lines.toml independently lists this exact WTN-FEL-AFS-
+# SNS run (it had been tagging it with its own, differently-named
+# `swr-windsor-lines-branch` segment - the same physical stations, two
+# different segment names in two files, which silently broke shared-trunk
+# propagation between them). Fixed by retagging WTN/FEL/AFS/SNS below with
+# `swr-windsor-lines` - the established, deliberately track-named segment
+# (see swr-kingston-loop.toml's own header: "named for the track rather
+# than for this service, so a future Reading / Windsor & Eton Riverside /
+# Hounslow Loop file can reuse the name") - rather than inventing a new
+# name, since that is precisely the reuse this segment name was created
+# for. swr-chertsey-loop.toml, which explicitly reuses this file's whole
+# station list verbatim, is fixed identically in the same pass so its own
+# "identical CRS/role/segment values throughout" invariant stays true.
+#
+# EGH and VIR stay on `swr-hounslow-loop` for now (not folded into
+# `swr-windsor-lines`): the task behind this fix scoped the mismatch to
+# WTN/FEL/AFS/SNS specifically, and EGH/VIR's own genuine second user is
+# the not-yet-created Waterloo-Reading-line file, not swr-windsor-lines.toml
+# (whose own exclusive branch diverges at Staines, away from Egham/Virginia
+# Water entirely - see its own SNS note). When that file is added, reusing
+# `swr-hounslow-loop` verbatim for its own EGH/VIR rows is the natural next
+# step, the same pattern swr-chertsey-loop.toml already uses.
+#
+# It is SHARED (deliberately, not just a same-operator convenience) with
 # swr-chertsey-loop.toml all the way to Virginia Water, because - per the
 # IMPORTANT FINDING above - both files' trains are, in current normal
 # service, literally the same physical workings running the same track;
@@ -246,30 +281,34 @@ segment = "swr-hounslow-loop"
 [[stations]]
 crs = "WTN"
 role = "minor"
-segment = "swr-hounslow-loop"
+segment = "swr-windsor-lines"
 # Whitton (London). Sits inside the "triangular junction between Whitton
-# and Feltham" where the loop rejoins the Waterloo-Reading line proper.
+# and Feltham" where the loop rejoins the Waterloo-Reading line proper -
+# BUG FIX: retagged from this file's own `swr-hounslow-loop` to the
+# established, track-named `swr-windsor-lines` segment, matching
+# swr-windsor-lines.toml's own identical WTN/FEL/AFS/SNS run (see the
+# SEGMENTS section above for the full reasoning).
 
 [[stations]]
 crs = "FEL"
 role = "minor"
-segment = "swr-hounslow-loop"
-# Feltham.
+segment = "swr-windsor-lines"
+# Feltham. BUG FIX: see WTN above.
 
 [[stations]]
 crs = "AFS"
 role = "minor"
-segment = "swr-hounslow-loop"
+segment = "swr-windsor-lines"
 # Ashford (Surrey). Distinct from Ashford International (Kent, AFK) - see
-# CRS sourcing note above.
+# CRS sourcing note above. BUG FIX: see WTN above.
 
 [[stations]]
 crs = "SNS"
 role = "junction"
-segment = "swr-hounslow-loop"
+segment = "swr-windsor-lines"
 # Staines. Junction for the Windsor & Eton Riverside branch (via Wraysbury/
-# Datchet), per Waterloo to Reading line's own route diagram - real, not
-# modelled by any file yet, see SCOPE BOUNDARIES.
+# Datchet), per Waterloo to Reading line's own route diagram - real, and
+# now modelled by swr-windsor-lines.toml. BUG FIX: see WTN above.
 
 [[stations]]
 crs = "EGH"

@@ -651,13 +651,23 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        // Updated by the SWR suburban-gap batch: swr-shepperton-branch.toml
+        // and swr-epsom-mole-valley.toml (two new files) also reuse
+        // `swr-trunk-waterloo` verbatim through Raynes Park (Shepperton's
+        // own trains run over the same New Malden-ward formation before
+        // diverging at Shacklegate Junction, several stations further on;
+        // the Epsom/Mole Valley line's own route continues straight past
+        // Raynes Park towards Motspur Park) - both genuinely call here, so
+        // both now match too.
         assert_eq!(
             matched_ids,
             HashSet::from([
                 "swr-kingston-loop".to_string(),
                 "swr-chessington".to_string(),
+                "swr-shepperton-branch".to_string(),
+                "swr-epsom-mole-valley".to_string(),
             ]),
-            "only the two lines that actually call at Raynes Park should match"
+            "every line that actually calls at Raynes Park should match"
         );
         for m in &matches {
             assert_eq!(
@@ -676,13 +686,18 @@ mod tests {
     // further down this file, which already owned that station's expected
     // match set and was extended rather than duplicated here.
 
-    /// Kingston is on the loop's own exclusive `swr-kingston-loop` segment,
-    /// past the New Malden junction. Nothing else in the catalogue serves
-    /// it, so the incident must stay local -- including not reaching the
-    /// Chessington branch, which leaves the main line a station earlier and
-    /// never passes through here.
+    /// Kingston itself is on `swr-kingston-loop`, which the SWR
+    /// suburban-gap batch's own swr-shepperton-branch.toml now also reuses
+    /// verbatim (Shepperton's own trains run over this exact New Malden-
+    /// Teddington stretch before diverging at Shacklegate Junction, several
+    /// stations further on) -- so an incident here must now reach BOTH
+    /// files as SharedSegment. See
+    /// `swr_kingston_loop_own_exclusive_segment_incident_does_not_propagate`
+    /// immediately below for the genuinely-still-exclusive case
+    /// (Strawberry Hill, past the point where Shepperton's own trains
+    /// diverge).
     #[test]
-    fn swr_kingston_loop_exclusive_segment_incident_does_not_propagate() {
+    fn swr_kingston_loop_shared_with_shepperton_segment_incident_propagates() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -691,6 +706,39 @@ mod tests {
             "Trespassers on the railway are causing delays at Kingston.",
             &["SW"],
             &["KNG"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "swr-kingston-loop".to_string(),
+                "swr-shepperton-branch".to_string(),
+            ])
+        );
+        for m in &matches {
+            assert_eq!(m.scope, MatchScope::SharedSegment);
+        }
+    }
+
+    /// Strawberry Hill sits past Shacklegate Junction, where Shepperton's
+    /// own off-peak trains diverge away from the loop (per
+    /// swr-kingston-loop.toml's own STW note) -- so unlike Kingston above,
+    /// this station is on the loop's own renamed, genuinely exclusive
+    /// `swr-strawberry-hill` segment. Nothing else in the catalogue serves
+    /// it, so the incident must stay local -- including not reaching the
+    /// Chessington branch, which leaves the main line a station earlier and
+    /// never passes through here, or the Shepperton branch itself.
+    #[test]
+    fn swr_kingston_loop_own_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "SWR-KL-3B",
+            "Trespass incident at Strawberry Hill",
+            "Trespassers on the railway are causing delays at Strawberry Hill.",
+            &["SW"],
+            &["STW"],
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
@@ -733,11 +781,14 @@ mod tests {
     /// swr-kingston-loop.toml's own `swr-windsor-lines` segment name was
     /// coined for (see that file's own SEGMENTS comment: "named for the
     /// track rather than for this service, so a future Reading / Windsor &
-    /// Eton Riverside... file can reuse the name"). So Richmond is now a
-    /// genuine three-way case: swr-kingston-loop and swr-windsor-lines
-    /// share real track and both resolve as SharedSegment, while
-    /// overground-mildmay stays ExclusiveSegment (still separate
-    /// infrastructure, unaffected by the new file).
+    /// Eton Riverside... file can reuse the name"). The SWR suburban-gap
+    /// batch's own swr-waterloo-reading.toml is a further such reuse (its
+    /// own Vauxhall/Richmond-side approach is copied verbatim from
+    /// swr-windsor-lines.toml). So Richmond is now a genuine four-way case:
+    /// swr-kingston-loop, swr-windsor-lines and swr-waterloo-reading share
+    /// real track and all resolve as SharedSegment, while overground-
+    /// mildmay stays ExclusiveSegment (still separate infrastructure,
+    /// unaffected by either new file).
     #[test]
     fn richmond_station_overlap_between_kingston_loop_and_mildmay_stays_exclusive_each_line() {
         let lines = load_all_lines();
@@ -757,6 +808,7 @@ mod tests {
                 "swr-kingston-loop".to_string(),
                 "overground-mildmay".to_string(),
                 "swr-windsor-lines".to_string(),
+                "swr-waterloo-reading".to_string(),
             ])
         );
         for m in &matches {
@@ -8215,6 +8267,15 @@ mod tests {
     // swr-chertsey-loop.toml and swr-hounslow-loop.toml (same batch) do NOT
     // call at Wimbledon — both diverge from the Waterloo trunk before
     // reaching it — so they are correctly absent here.
+    //
+    // Updated again by the SWR suburban-gap batch: swr-shepperton-
+    // branch.toml, swr-hampton-court-branch.toml and swr-epsom-mole-
+    // valley.toml also reuse `swr-trunk-waterloo` verbatim for WIM (each
+    // file's own SEGMENTS diagram runs via Wimbledon before diverging
+    // further out), growing the SWR side to ten. swr-waterloo-reading.toml
+    // (same batch) does NOT call at Wimbledon — like swr-windsor-lines.toml
+    // before it, its own route runs via Vauxhall/Richmond, never via
+    // Wimbledon — so it is correctly absent here too.
     #[test]
     fn wim_station_overlap_matches_swr_trunk_and_thameslink_southern_as_independent_segments() {
         let lines = load_all_lines();
@@ -8238,6 +8299,9 @@ mod tests {
                 "swr-chessington".to_string(),
                 "swr-west-of-england".to_string(),
                 "swr-new-guildford".to_string(),
+                "swr-shepperton-branch".to_string(),
+                "swr-hampton-court-branch".to_string(),
+                "swr-epsom-mole-valley".to_string(),
                 "thameslink-southern".to_string(),
             ])
         );
@@ -9929,6 +9993,13 @@ mod tests {
     // Junction approach before diverging), growing the SharedSegment side
     // from seven SWR files to ten. The three Overground/Southern exclusive
     // matches are unaffected.
+    //
+    // Updated again by the SWR suburban-gap batch: swr-waterloo-
+    // reading.toml, swr-shepperton-branch.toml, swr-hampton-court-
+    // branch.toml and swr-epsom-mole-valley.toml (four more new files) all
+    // also reuse `swr-trunk-waterloo` verbatim at CLJ, growing the
+    // SharedSegment side from ten SWR files to fourteen. The three
+    // Overground/Southern exclusive matches remain unaffected.
     #[test]
     fn clj_station_overlap_matches_swr_trunk_shared_and_overground_and_bml_as_mixed_scope() {
         let lines = load_all_lines();
@@ -9955,6 +10026,10 @@ mod tests {
                 "swr-chertsey-loop".to_string(),
                 "swr-hounslow-loop".to_string(),
                 "swr-new-guildford".to_string(),
+                "swr-waterloo-reading".to_string(),
+                "swr-shepperton-branch".to_string(),
+                "swr-hampton-court-branch".to_string(),
+                "swr-epsom-mole-valley".to_string(),
                 "overground-windrush".to_string(),
                 "overground-mildmay".to_string(),
                 "southern-brighton-main-line".to_string(),
@@ -9972,6 +10047,10 @@ mod tests {
                 "swr-chertsey-loop",
                 "swr-hounslow-loop",
                 "swr-new-guildford",
+                "swr-waterloo-reading",
+                "swr-shepperton-branch",
+                "swr-hampton-court-branch",
+                "swr-epsom-mole-valley",
             ]
             .contains(&m.line.id.as_str())
             {
