@@ -1617,6 +1617,43 @@ pub async fn last_full_coverage_line_stats_fetch(
     Ok(fetched_at)
 }
 
+/// One line's current `full_coverage_line_stats` row, if
+/// `full-coverage-consumer` has ever published one -- unlike
+/// `last_full_coverage_line_stats_fetch` (a bare freshness timestamp for
+/// `poller`-style startup-skip logic), this returns the actual row.
+/// Added for `data::full_coverage_comparison`'s own "live snapshot" section
+/// (this crate had no full-row reader for this table at all before that --
+/// every other caller either upserts it or only needs the freshness
+/// timestamp).
+pub async fn get_full_coverage_line_stats(
+    pool: &PgPool,
+    line_id: &str,
+) -> Result<Option<common::FullCoverageLineStatsRow>> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT service_date, availability, total, delayed, cancelled, skipped, avg_delay_minutes
+         FROM full_coverage_line_stats WHERE line_id = $1",
+    )
+    .bind(line_id)
+    .fetch_optional(pool)
+    .await?;
+    row.map(|row| {
+        Ok(common::FullCoverageLineStatsRow {
+            line_id: line_id.to_string(),
+            service_date: row.try_get("service_date")?,
+            availability: row.try_get("availability")?,
+            stats: common::SampleStats {
+                total: row.try_get::<i32, _>("total")? as usize,
+                delayed: row.try_get::<i32, _>("delayed")? as usize,
+                cancelled: row.try_get::<i32, _>("cancelled")? as usize,
+                skipped: row.try_get::<i32, _>("skipped")? as usize,
+                avg_delay_minutes: row.try_get("avg_delay_minutes")?,
+            },
+        })
+    })
+    .transpose()
+}
+
 /// The latest `StationSample` polled for a single station, or `None` if
 /// `station_samples` has no row for that CRS yet. `station_samples` is
 /// wholesale-replaced per poll (one row per station, no history -- see
