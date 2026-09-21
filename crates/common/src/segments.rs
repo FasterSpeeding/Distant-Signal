@@ -125,12 +125,19 @@ mod tests {
         assert!(registry.is_shared("swr-trunk-waterloo"));
         let mut users = registry.lines_for_segment("swr-trunk-waterloo");
         users.sort();
+        // Updated by the SE/SWR-loops batch: swr-chertsey-loop.toml,
+        // swr-hounslow-loop.toml and swr-new-guildford.toml all also reuse
+        // `swr-trunk-waterloo` verbatim for their own genuine Waterloo
+        // approach.
         assert_eq!(
             users,
             vec![
                 "swr-alton",
+                "swr-chertsey-loop",
                 "swr-chessington",
+                "swr-hounslow-loop",
                 "swr-kingston-loop",
+                "swr-new-guildford",
                 "swr-portsmouth-direct",
                 "swr-south-west-main",
                 "swr-west-of-england",
@@ -210,7 +217,18 @@ mod tests {
         assert!(registry.is_shared("swr-windsor-lines"));
         let mut windsor_users = registry.lines_for_segment("swr-windsor-lines");
         windsor_users.sort();
-        assert_eq!(windsor_users, vec!["swr-kingston-loop", "swr-windsor-lines"]);
+        // Updated by the SE/SWR-loops batch: swr-chertsey-loop.toml and
+        // swr-hounslow-loop.toml both also reuse `swr-windsor-lines`
+        // verbatim for their own genuine shared stretch of this track.
+        assert_eq!(
+            windsor_users,
+            vec![
+                "swr-chertsey-loop",
+                "swr-hounslow-loop",
+                "swr-kingston-loop",
+                "swr-windsor-lines",
+            ]
+        );
 
         // And the trunk is touched together with each line's own exclusive
         // segment -- same shape as `segments_touched_by_finds_shared_and_

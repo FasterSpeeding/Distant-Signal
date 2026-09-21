@@ -425,8 +425,11 @@ crs = "SPR"
 role = "terminus"
 segment = "scotrail-north-clyde-springburn-spur"
 # Springburn is a terminus of a short spur from Bellgrove, with a
-# Cumbernauld Line interchange there (Cumbernauld Line itself not
-# currently modelled in any `lines/*.toml` file).
+# Cumbernauld Line interchange there. The Cumbernauld Line is now modelled
+# by `lines/scotrail-cumbernauld.toml` (added later, reconciled during
+# integration merge), which reuses this exact `scotrail-north-clyde-
+# springburn-spur` segment name for its own SPR row -- a genuine
+# SharedSegment pair, since this segment covers only this one station.
 
 [[stations]]
 crs = "ADR"
