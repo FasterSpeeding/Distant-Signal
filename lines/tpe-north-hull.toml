@@ -47,11 +47,24 @@ operators = [
 # `tpe-north-teesside.toml`'s identical note for the fuller reasoning). LIV
 # and NLW-adjacent Liverpool-area stations are also on `tpe-north.toml`,
 # `tpe-anglo-scottish.toml` and `tpe-south.toml` (station-overlap only,
-# different Liverpool-side branches in each case). SYB (Stalybridge) is also
-# on `northern.toml`/`northern-blackpool.toml`/`northern-glossop-hadfield.toml`
-# and is explicitly named-but-omitted in `tpe-north.toml`'s own header
-# comment as belonging to a different North-route service -- this file is
-# that service. SBY and BUH are also on `northern-leeds-selby.toml` and
+# different Liverpool-side branches in each case).
+#
+# REVIEW2 FIX (2026-09-21): SYB (Stalybridge) was previously claimed here
+# as "also on `northern.toml`/`northern-blackpool.toml`/`northern-glossop-
+# hadfield.toml`" -- verified false by a review pass (a repo-wide grep
+# shows SYB only in `northern.toml`, `northern-huddersfield.toml` (at the
+# time) and `tpe-north-wakefield.toml`, besides this file). That set has
+# since changed again: `northern-huddersfield.toml` was itself corrected in
+# this same review (see that file's own REVIEW2 FIX note) to drop
+# Stalybridge and the rest of the Manchester-end stations, since Northern
+# does not actually operate west of Huddersfield on this corridor (that
+# stretch transferred to TransPennine Express, i.e. to this file, in May
+# 2018). SYB is therefore currently on exactly three files: `northern.toml`,
+# `tpe-north-wakefield.toml` and this one -- re-confirmed via
+# `grep -l 'crs = "SYB"' lines/*.toml` after all other review2 fixes were
+# applied. SYB is explicitly named-but-omitted in `tpe-north.toml`'s own
+# header comment as belonging to a different North-route service -- this
+# file is that service. SBY and BUH are also on `northern-leeds-selby.toml` and
 # `lner-hull.toml`/`hull-trains.toml`; this file's own Selby-Hull stretch
 # runs non-stop through Eastrington/Howden/Wressle/Gilberdyke/Broomfleet/
 # Ferriby/Hessle, all of which `northern-leeds-selby.toml` already models as
