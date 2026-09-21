@@ -54,8 +54,12 @@ delay_threshold_minutes = 4
 #     Mitcham Junction the other (see SUTTON LOOP section below).
 #   - Brighton: "Bedford to Brighton" via London Bridge, calling at East
 #     Croydon, Gatwick Airport, Three Bridges, Balcombe, Haywards Heath,
-#     Wivelsfield, Burgess Hill, Hassocks, Preston Park (see BRIGHTON
-#     section below for which of these are included).
+#     Wivelsfield, Burgess Hill, Hassocks, Preston Park - all of which are
+#     included below (Balcombe and Wivelsfield were researched here at the
+#     time but not originally turned into station rows; a later data-driven
+#     schedule audit found ~52-53% of trains calling, comparable to this
+#     branch's other included minor stops, and corrected the omission - see
+#     BRIGHTON section below).
 #
 # CRS codes cross-checked against a second source for every new station:
 # railwaycodes.org.uk's crs*.shtm tables where they loaded fully (EPH, DMK,
@@ -69,7 +73,13 @@ delay_threshold_minutes = 4
 # from southeastern-chatham.toml (already independently confirmed there);
 # BFR/LBG are reused unchanged from thameslink-core.toml; WIM is reused
 # unchanged from swr-south-west-main.toml/swr-alton.toml; GTW/TBD/HHE/BUG/
-# HSK/PRP/BTN are reused unchanged from southern-brighton-main-line.toml.
+# HSK/PRP/BTN/WVF are reused unchanged from southern-brighton-main-line.toml
+# (WVF is that file's own TASK 5.4 FILL-IN entry, confirmed there against
+# its own Wikipedia infobox and nationalrail.co.uk's stations/wvf/details.html
+# page). BAB (Balcombe) is independently confirmed via its own Wikipedia
+# infobox (CRS BAB; not present in southern-brighton-main-line.toml, whose
+# own header comment excludes it as Thameslink-only, consistent with this
+# file's operator).
 #
 # For the two flagged coordination questions (see BRIGHTON and SEVENOAKS
 # sections below), a genuine non-Wikipedia second source was also sought,
@@ -649,10 +659,34 @@ segment = "thameslink-brighton"
 # catalogue.
 
 [[stations]]
+crs = "BAB"
+role = "minor"
+segment = "thameslink-brighton"
+# Balcombe. Already named as part of this branch's own researched calling
+# pattern in the SOURCING section above, but never turned into a station row
+# until a later data-driven schedule audit caught the omission (~52-53% of
+# trains calling, comparable to this branch's other included minor stops).
+# Confirmed via its own Wikipedia infobox as Thameslink-only ("Thameslink
+# operates all services at the station") - the same reason
+# southern-brighton-main-line.toml's own header comment explicitly excludes
+# it (Southern/Gatwick Express don't call here at all), so no station
+# overlap with that file for this stop specifically.
+
+[[stations]]
 crs = "HHE"
 role = "major"
 segment = "thameslink-brighton"
 # Haywards Heath.
+
+[[stations]]
+crs = "WVF"
+role = "minor"
+segment = "thameslink-brighton"
+# Wivelsfield. Same SOURCING-section omission as Balcombe above, caught by
+# the same audit (~52-53% of trains calling). CRS reused unchanged from
+# southern-brighton-main-line.toml's own TASK 5.4 FILL-IN entry (its own
+# `southern-bml-south` segment) - genuinely Southern-served too, so station
+# overlap only against that file, not a shared segment.
 
 [[stations]]
 crs = "BUG"
