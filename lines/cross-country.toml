@@ -1,8 +1,21 @@
 id = "cross-country"
-name = "CrossCountry"
+name = "CrossCountry: North East - South West"
 mode = "national-rail"
 category = "main-line"
 operators = ["XC"]
+
+# Display name (review2 finding): "CrossCountry" alone is the operator's own
+# brand name doing double duty as a LINE name, which sits oddly next to
+# sibling files like `xc-cardiff.toml`'s "CrossCountry Cardiff Line" -- every
+# other line in the catalogue is named for its route, not its operator. XC's
+# own published route map describes this spine as its North East/Scotland -
+# South West corridor (the "CrossCountry Route"/Voyager network diagram,
+# cross-checked against the operator's own site), so the display name below
+# follows that route wording instead. `id` is left unchanged (`cross-country`
+# is a stable, published identifier per SCHEMA.md and isn't touched by a
+# display-name-only rename), and "CrossCountry"/"Cross Country" stay in
+# `match_keywords` below unchanged -- the brand name is still exactly what
+# Knowledgebase incident text uses.
 
 # North, midpoint(s), south.
 sample_stations = ["NCL", "YRK", "BHM", "BRI", "EXD"]
