@@ -283,6 +283,38 @@ mod tests {
         assert!(!registry.is_exclusive_to("swr-alton-branch", "swr-south-west-main"));
     }
 
+    // Ash Vale and Aldershot are genuine shared trackage between
+    // swr-alton.toml and the SWR suburban-gap batch's own
+    // swr-ascot-aldershot.toml (the latter's own trains join the Alton
+    // line's metals here for their final approach into Aldershot). Rather
+    // than reuse the whole `swr-alton-branch` name (which would also mark
+    // Farnham/Bentley/Alton as "shared" even though
+    // swr-ascot-aldershot.toml never reaches them), the two shared stations
+    // alone carry a new, narrower `swr-ash-vale-junction` segment -
+    // `swr-alton-branch` itself stays exclusive to swr-alton.toml (see the
+    // test immediately above).
+    #[test]
+    fn swr_ash_vale_junction_is_shared_between_alton_and_ascot_aldershot() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        assert!(registry.is_shared("swr-ash-vale-junction"));
+        let mut users = registry.lines_for_segment("swr-ash-vale-junction");
+        users.sort();
+        assert_eq!(users, vec!["swr-alton", "swr-ascot-aldershot"]);
+        assert_eq!(
+            registry.segment_at("swr-alton", "AHV"),
+            Some("swr-ash-vale-junction")
+        );
+        assert_eq!(
+            registry.segment_at("swr-alton", "AHT"),
+            Some("swr-ash-vale-junction")
+        );
+        assert_eq!(
+            registry.segment_at("swr-alton", "FNH"),
+            Some("swr-alton-branch")
+        );
+    }
+
     #[test]
     fn segment_at_returns_the_right_segment_for_a_station() {
         let lines = load_all_lines();
