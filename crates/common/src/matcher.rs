@@ -3991,10 +3991,11 @@ mod tests {
         // above.
         //
         // Updated by the Midlands EMR/WMR/LNWR sanity review: `emr-crewe-
-        // derby.toml` also calls at Stoke-on-Trent, on its own exclusive
-        // `emr-crewe-derby-west` segment (a real coverage gap this task
-        // added; different operator, different physical approach) -- a
-        // third independent ExclusiveSegment match.
+        // derby.toml` and `lnwr-stafford-crewe.toml` (both real coverage
+        // gaps this review added) also call at Stoke-on-Trent, each on its
+        // own exclusive segment (different operators, different physical
+        // approaches from each other and from the two lines above) -- two
+        // more independent ExclusiveSegment matches.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -4012,6 +4013,7 @@ mod tests {
                 "wcml-manchester".to_string(),
                 "xc-manchester".to_string(),
                 "emr-crewe-derby".to_string(),
+                "lnwr-stafford-crewe".to_string(),
             ])
         );
         for m in &matches {
@@ -11173,6 +11175,28 @@ mod tests {
         assert_eq!(
             matched_ids,
             HashSet::from(["lnwr-marston-vale-line".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `lines/lnwr-stafford-crewe.toml` -- Stone (Staffs) is exclusive to
+    // this line's own `lnwr-stafford-crewe` segment.
+    #[test]
+    fn lnwr_stafford_crewe_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LM-SC-1",
+            "Points failure at Stone",
+            "Points failure causing delays to services at Stone.",
+            &["LM"],
+            &["SNE"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["lnwr-stafford-crewe".to_string()])
         );
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
