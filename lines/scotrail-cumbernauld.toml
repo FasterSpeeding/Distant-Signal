@@ -161,15 +161,22 @@ segment = "scotrail-cumbernauld-branch"
 crs = "CMO"
 role = "minor"
 segment = "scotrail-cumbernauld-falkirk-tail"
-# Camelon.
+# Camelon. Also a `scotrail-stirling-dunblane.toml` station (that file's
+# own Edinburgh-Dunblane route reaches Falkirk Grahamston/Camelon from the
+# opposite direction), which reuses this exact segment name -- reconciled
+# during integration merge, a genuine SharedSegment pair. See that file's
+# own Falkirk Grahamston row for the full writeup.
 
 [[stations]]
 crs = "FKG"
 role = "terminus"
 segment = "scotrail-cumbernauld-falkirk-tail"
 # Falkirk Grahamston: distinct station from Falkirk High (on the separate
-# Edinburgh-Glasgow via Falkirk High route) -- no collision with any other
-# `lines/*.toml` file (grepped before adding).
+# Edinburgh-Glasgow via Falkirk High route) -- no *unintentional* collision
+# with any other `lines/*.toml` file at the time this file was written
+# (grepped before adding); the genuine, deliberate share with
+# `scotrail-stirling-dunblane.toml` above was reconciled later, during
+# integration merge.
 
 # === Scope boundaries (documented, not modelled) ===
 #
