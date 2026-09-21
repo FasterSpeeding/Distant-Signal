@@ -68,9 +68,10 @@ delay_threshold_minutes = 10
 # Stockport - Sheffield IS genuine physical track-sharing with
 # `northern-hope-valley.toml`'s Hope Valley Line, but is NOT a shared
 # *segment name* - a coarse-granularity mismatch, the same shape as
-# Ruling 4 below (Peterborough/Ely vs `xc-stansted.toml`) and this file's
-# own sibling `emr-rural-branches.toml`'s Poacher Line ruling. The Hope
-# Valley Line ("Hope Valley Line" Wikipedia article) is the *only* direct
+# Ruling 4 below (Peterborough/Ely vs `xc-stansted.toml`) and
+# `emr-poacher.toml`'s own Poacher Line ruling (formerly bundled with two
+# other branches in `emr-rural-branches.toml`, since split one-line-per-file).
+# The Hope Valley Line ("Hope Valley Line" Wikipedia article) is the *only* direct
 # passenger route between Manchester Piccadilly and Sheffield; that
 # article's own services section separately confirms EMR's Liverpool-
 # Norwich service as one of three operators running over it (alongside

@@ -1129,13 +1129,15 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
-    // `lines/emr-rural-branches.toml` (Batch 7, Task 7.4): Worksop is this
-    // bundled line's Robin Hood Line branch's own exclusive territory - no
-    // other file in this catalogue lists WRK, and that file's own ruling
-    // documents confirming (rather than assuming) no genuine shared trunk
-    // exists for this specific branch beyond the Nottingham station itself.
+    // `lines/emr-robin-hood.toml` (originally Batch 7, Task 7.4, when this
+    // line was still bundled into `emr-rural-branches.toml`; that file has
+    // since been split one-line-per-file): Worksop is this line's own
+    // exclusive territory - no other file in this catalogue lists WRK, and
+    // this file's own ruling documents confirming (rather than assuming) no
+    // genuine shared trunk exists for this line beyond the Nottingham
+    // station itself.
     #[test]
-    fn emr_rural_branches_worksop_incident_stays_on_its_own_branch() {
+    fn emr_robin_hood_worksop_incident_stays_on_its_own_line() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -1147,21 +1149,18 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(
-            matched_ids,
-            HashSet::from(["emr-rural-branches".to_string()])
-        );
+        assert_eq!(matched_ids, HashSet::from(["emr-robin-hood".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
-    // Same file: the brief anticipated no genuine shared-trunk stretch for
-    // any of these three branches beyond station-level overlap. Research
-    // found genuine shared *track* between the Poacher Line (Nottingham-
-    // Skegness) and `emr-regional.toml`'s Liverpool-Norwich service, both of
-    // which run over the same Nottingham-Grantham line metals (the dedicated
-    // "Nottingham-Grantham line" Wikipedia article confirms this) - but this
-    // file's Branch 2 ruling comment explains why the segment *name* is
-    // deliberately NOT shared regardless: `emr-regional.toml`'s
+    // `lines/emr-poacher.toml`: the brief anticipated no genuine shared-trunk
+    // stretch for any of the three rural branches beyond station-level
+    // overlap. Research found genuine shared *track* between the Poacher
+    // Line (Nottingham-Skegness) and `emr-regional.toml`'s Liverpool-Norwich
+    // service, both of which run over the same Nottingham-Grantham line
+    // metals (the dedicated "Nottingham-Grantham line" Wikipedia article
+    // confirms this) - but this file's own ruling comment explains why the
+    // segment *name* is deliberately NOT shared regardless: `emr-regional.toml`'s
     // `emr-regional-east` segment is coarser than the genuine overlap (it
     // also spans that file's deliberately-exclusive Alfreton station and its
     // Peterborough-Ely-Norwich continuation), so reusing it here would
@@ -1170,13 +1169,12 @@ mod tests {
     // `emr_regional_erewash_incident_stays_on_its_own_line` test below by
     // doing exactly that. This test instead confirms the intended, narrower
     // outcome: an incident at Grantham matches both lines independently,
-    // each still classified within its own file (`emr-rural-branches` as
+    // each still classified within its own file (`emr-poacher` as
     // ExclusiveSegment on its own `emr-poacher-skegness` segment,
     // `emr-regional` as ExclusiveSegment on its own `emr-regional-east`
     // segment - neither reports SharedSegment for the other).
     #[test]
-    fn emr_rural_branches_poacher_line_and_emr_regional_both_match_grantham_without_over_propagating()
-     {
+    fn emr_poacher_line_and_emr_regional_both_match_grantham_without_over_propagating() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -1192,7 +1190,7 @@ mod tests {
             .map(|m| (m.line.id.clone(), m.scope))
             .collect();
         assert_eq!(
-            by_id.get("emr-rural-branches"),
+            by_id.get("emr-poacher"),
             Some(&MatchScope::ExclusiveSegment)
         );
         assert_eq!(
@@ -1201,21 +1199,21 @@ mod tests {
         );
     }
 
-    // Same file: the second confirmed shared-trunk exception, and this one
-    // DOES reuse a sibling file's segment name (a clean subset, unlike the
-    // Poacher Line case above - see the Branch 3 ruling comment for why the
-    // two cases are treated differently). The Derwent Valley Line (Derby-
-    // Matlock) diverges from the Midland Main Line at Ambergate Junction,
-    // just south of Ambergate station (Wikipedia's "Ambergate railway
-    // station" article), so Derby-Ambergate is genuine shared trunk with
-    // `emr-midland-main-line.toml`'s `emr-mml-derby` segment, reused
-    // verbatim in this file's Branch 3. Derby (DBY) is the only station
-    // common to both files' own station lists (the intercity MML service
-    // skips Duffield/Belper/Ambergate entirely), so it is the only station
-    // where an incident can demonstrate both lines matching together as
-    // SharedSegment.
+    // `lines/emr-derwent-valley.toml`: the second confirmed shared-trunk
+    // exception, and this one DOES reuse a sibling file's segment name (a
+    // clean subset, unlike the Poacher Line case above - see this file's own
+    // ruling comment for why the two cases are treated differently). The
+    // Derwent Valley Line (Derby-Matlock) diverges from the Midland Main
+    // Line at Ambergate Junction, just south of Ambergate station
+    // (Wikipedia's "Ambergate railway station" article), so Derby-Ambergate
+    // is genuine shared trunk with `emr-midland-main-line.toml`'s
+    // `emr-mml-derby` segment, reused verbatim in this file. Derby (DBY) is
+    // the only station common to both files' own station lists (the
+    // intercity MML service skips Duffield/Belper/Ambergate entirely), so it
+    // is the only station where an incident can demonstrate both lines
+    // matching together as SharedSegment.
     #[test]
-    fn emr_rural_branches_matlock_branch_shared_with_midland_main_line() {
+    fn emr_derwent_valley_shared_with_midland_main_line() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -1231,7 +1229,7 @@ mod tests {
             .map(|m| (m.line.id.clone(), m.scope))
             .collect();
         assert_eq!(
-            by_id.get("emr-rural-branches"),
+            by_id.get("emr-derwent-valley"),
             Some(&MatchScope::SharedSegment)
         );
         assert_eq!(
@@ -1240,12 +1238,12 @@ mod tests {
         );
     }
 
-    // Same file: Matlock itself is this branch's terminus, on the exclusive
+    // Same file: Matlock itself is this line's terminus, on the exclusive
     // `emr-matlock-branch` segment (starts at Whatstandwell, the station
     // after Ambergate Junction) - confirms the exclusive tail behaves
     // correctly alongside the shared-trunk stretch tested above.
     #[test]
-    fn emr_rural_branches_matlock_incident_stays_on_its_own_branch() {
+    fn emr_derwent_valley_matlock_incident_stays_on_its_own_line() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -1259,48 +1257,44 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["emr-rural-branches".to_string()])
+            HashSet::from(["emr-derwent-valley".to_string()])
         );
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
-    // Same file, Task 7.4 (Batch 7): fills the five previously-omitted
-    // Nottingham-Grantham intermediate stations named directly in that
-    // task's spec (Netherfield & Colwick / NET, Radcliffe-on-Trent / RDF,
-    // Aslockton & Whatton / ALK, Elton & Orston / ELO, Bottesford / BTF),
-    // now two-source confirmed and inserted at their true geographic
-    // position around the pre-existing Bingham (BIN) entry - see the
-    // updated comment above `[[stations]] crs = "BIN"` in
-    // `lines/emr-rural-branches.toml` for the full sourcing. All five sit
-    // on `emr-poacher-skegness`, the same segment as their BIN/GRA
-    // neighbours, and (per that file's own Branch 2 ruling) that segment
-    // name is deliberately NOT shared with any sibling line's segment name
-    // even though genuine Nottingham-Grantham track-sharing exists with
-    // `emr-regional` - so unlike
-    // `emr_rural_branches_matlock_branch_shared_with_midland_main_line`
-    // above, there is no cross-file SharedSegment assertion to add here;
-    // see `emr_rural_branches_poacher_line_and_emr_regional_both_match_grantham_without_over_propagating`
+    // `lines/emr-poacher.toml`, originally Task 7.4 (Batch 7): fills the five
+    // previously-omitted Nottingham-Grantham intermediate stations named
+    // directly in that task's spec (Netherfield & Colwick / NET,
+    // Radcliffe-on-Trent / RDF, Aslockton & Whatton / ALK, Elton & Orston /
+    // ELO, Bottesford / BTF), two-source confirmed and inserted at their
+    // true geographic position around the pre-existing Bingham (BIN) entry -
+    // see the comment above `[[stations]] crs = "BIN"` in
+    // `lines/emr-poacher.toml` for the full sourcing. All five sit on
+    // `emr-poacher-skegness`, the same segment as their BIN/GRA neighbours,
+    // and (per that file's own ruling) that segment name is deliberately NOT
+    // shared with any sibling line's segment name even though genuine
+    // Nottingham-Grantham track-sharing exists with `emr-regional` - so
+    // unlike `emr_derwent_valley_shared_with_midland_main_line` above, there
+    // is no cross-file SharedSegment assertion to add here; see
+    // `emr_poacher_line_and_emr_regional_both_match_grantham_without_over_propagating`
     // for why that's already covered at Grantham itself.
     #[test]
-    fn emr_rural_branches_poacher_line_infill_stations_present() {
-        let lines = load_line("emr-rural-branches");
+    fn emr_poacher_infill_stations_present() {
+        let lines = load_line("emr-poacher");
         let line = lines
-            .get("emr-rural-branches")
-            .expect("emr-rural-branches line should exist");
+            .get("emr-poacher")
+            .expect("emr-poacher line should exist");
         for crs in ["NET", "RDF", "ALK", "ELO", "BTF"] {
-            assert!(
-                line.has_station(crs),
-                "emr-rural-branches should now list {crs}"
-            );
+            assert!(line.has_station(crs), "emr-poacher should list {crs}");
         }
     }
 
     // Same file, same task: an incident at one of the newly-added stations
-    // (Bottesford) should behave exactly like the pre-existing Worksop
-    // exclusive-segment case above - matches only this bundled line, as
-    // ExclusiveSegment on `emr-poacher-skegness`.
+    // (Bottesford) should behave exactly like the Worksop exclusive-segment
+    // case above - matches only this line, as ExclusiveSegment on
+    // `emr-poacher-skegness`.
     #[test]
-    fn emr_rural_branches_bottesford_incident_stays_on_its_own_branch() {
+    fn emr_poacher_bottesford_incident_stays_on_its_own_line() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -1312,10 +1306,7 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(
-            matched_ids,
-            HashSet::from(["emr-rural-branches".to_string()])
-        );
+        assert_eq!(matched_ids, HashSet::from(["emr-poacher".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
