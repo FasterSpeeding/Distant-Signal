@@ -1,11 +1,35 @@
 id = "southeastern-north-kent"
-name = "North Kent Line (via Greenwich)"
+name = "North Kent Line"
 mode = "national-rail"
 category = "commuter"
 operators = ["SE"]
 
-sample_stations = ["GNW", "WWA", "ABW", "DFD"]
+sample_stations = ["GNW", "WWA", "ABW", "DFD", "GRV"]
 match_keywords = ["North Kent Line", "Greenwich line"]
+
+# REVIEW FIX (Southeastern real-world-sanity pass): this file previously
+# stopped at Dartford and was named "North Kent Line (via Greenwich)" - an
+# honest name for what it modelled, but not what Southeastern/Wikipedia mean
+# by "North Kent Line": that name properly covers the whole
+# Charlton-Woolwich-Dartford-Gravesend-Strood corridor, not just the
+# Greenwich-to-Dartford stretch. Extended below to its real Dartford ->
+# Gravesend -> Strood extent (Greenhithe, Stone Crossing, Swanscombe,
+# Northfleet were a real, catalogue-wide gap - Bluewater/Ebbsfleet-area
+# classic-line commuters had no line coverage at all), so the plain "North
+# Kent Line" name is now accurate rather than a disambiguating
+# parenthetical, and the "(via Greenwich)" qualifier is dropped.
+#
+# Confirmed via Wikipedia's "North Kent Line" article (lead: branches off
+# "at St Johns junction west of Lewisham" and "runs to Rochester Bridge
+# Junction near Strood, Medway where it links to the Chatham Main Line";
+# full ordered route section lists ...Slade Green, Dartford, Stone
+# Crossing, Greenhithe (for Bluewater), Swanscombe, Northfleet, Gravesend,
+# [closed halts], Higham, Strood, in that order). Every new CRS code
+# independently verified live against
+# https://ds.cursed.solutions/api/stations?q=<name>: Greenhithe for
+# Bluewater = GNH, Stone Crossing = SCG, Swanscombe = SWM, Northfleet = NFL.
+# GRV/HGM/SOO were already verified elsewhere in this catalogue (see the new
+# STATIONS entries below for the segment-sharing rationale).
 
 # ============================================================================
 # SELF-FLAGGED GAP, AND THE REQUIRED OVERLAP CHECK AGAINST THE ALREADY-SPLIT
@@ -253,8 +277,87 @@ segment = "southeastern-north-kent"
 
 [[stations]]
 crs = "DFD"
-role = "terminus"
+role = "junction"
 segment = "southeastern-north-kent"
-# Dartford. Also southeastern-metro-north-kent.toml's own shared terminus
-# (both its Bexleyheath and Dartford Loop branches end here) - station
-# overlap only, see SELF-FLAGGED GAP above.
+# Dartford. REVIEW FIX: no longer this file's own terminus - the real North
+# Kent Line continues past here to Gravesend/Strood (see below), so DFD is
+# now a through/junction station, not the end of the line. Also
+# southeastern-dartford-loop.toml's and southeastern-bexleyheath.toml's own
+# shared terminus (both those files' branches end here, reached via
+# physically different approaches) - station overlap only, see SELF-FLAGGED
+# GAP above.
+
+# --- REVIEW FIX: extension past Dartford to the real Dartford Loop-style
+# North Kent Line terminus at Strood, per the header comment above. Stays on
+# this file's own exclusive `southeastern-north-kent` segment as far as
+# Northfleet - none of these four stations appear in any other file in the
+# catalogue. ---
+[[stations]]
+crs = "SCG"
+role = "minor"
+segment = "southeastern-north-kent"
+# Stone Crossing.
+
+[[stations]]
+crs = "GNH"
+role = "minor"
+segment = "southeastern-north-kent"
+# Greenhithe (for Bluewater) - the nearest station to the Bluewater shopping
+# centre, per its own Wikipedia infobox name.
+
+[[stations]]
+crs = "SWM"
+role = "minor"
+segment = "southeastern-north-kent"
+# Swanscombe.
+
+[[stations]]
+crs = "NFL"
+role = "minor"
+segment = "southeastern-north-kent"
+# Northfleet.
+
+# --- Genuine shared trunk with southeastern-highspeed.toml, not just
+# station overlap: past Northfleet this file rejoins the exact classic
+# North Kent Line track southeastern-highspeed.toml's own "North Kent"
+# Javelin pattern already runs over from Ebbsfleet onward (that file's own
+# header comment: the Javelin pattern "leav[es] HS1 near Ebbsfleet for the
+# classic North Kent Line via Gravesend to Strood" before continuing onto
+# Chatham Main Line metals) - genuinely the same physical rails, not two
+# different alignments converging only at a station, so per SCHEMA.md's
+# shared-trunk rule these three stations reuse that file's own
+# `hs1-northkent` segment name verbatim rather than this file's own
+# exclusive segment. This file's own exclusive segment therefore ends at
+# Northfleet (above), and Strood is this file's own terminus - matching
+# Wikipedia's "North Kent Line" lead, which ends the line at "Rochester
+# Bridge Junction near Strood, Medway where it links to the Chatham Main
+# Line" (already modelled, separately, as southeastern-chatham.toml's own
+# SOO entry on its own exclusive `chatham-medway` segment - that approach is
+# via Longfield/Meopham/Sole Street, a different physical alignment, so SOO
+# stays station-overlap-only against southeastern-chatham.toml, exactly as
+# southeastern-highspeed.toml's own SOO comment already establishes). ---
+[[stations]]
+crs = "GRV"
+role = "minor"
+segment = "hs1-northkent"
+# Gravesend. Also southeastern-highspeed.toml's own station (same segment
+# name, genuine shared trunk - see above).
+
+[[stations]]
+crs = "HGM"
+role = "minor"
+segment = "hs1-northkent"
+# Higham. Also southeastern-highspeed.toml's own station (same segment
+# name, genuine shared trunk - see above).
+
+[[stations]]
+crs = "SOO"
+role = "terminus"
+segment = "hs1-northkent"
+# Strood - this file's own terminus, where the North Kent Line joins the
+# Chatham Main Line at Rochester Bridge Junction (per Wikipedia's own lead
+# sentence, see the header comment above). Also
+# southeastern-highspeed.toml's own station (same segment name, genuine
+# shared trunk) and southeastern-chatham.toml's own station (`chatham-
+# medway` segment, a different physical alignment - station overlap only,
+# see above).
