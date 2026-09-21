@@ -4885,11 +4885,14 @@ mod tests {
         );
     }
 
-    // Same task: Iver (IVR) is not currently in elizabeth-line.toml's own
-    // station list at all, so an incident there has no sibling segment to
-    // stay off of — a clean ExclusiveSegment case, mirroring
-    // `gwr_cornish_main_line_saltash_incident_stays_on_its_own_line`'s
-    // identical judgment call for that file's own infill task.
+    // Same task, later revisited by the London line-definition audit that
+    // fixed lines/elizabeth-line.toml's ZCW/WWA CRS bugs and infilled its
+    // `elizabeth-west` segment: Iver (IVR) is now also on elizabeth-line.toml
+    // (added by that audit, real CIF schedule confirmation + Wikipedia/TfL
+    // timetable), on its own exclusive `elizabeth-west` segment — a genuine
+    // station overlap, not a shared segment, mirroring the MAI/SLO/TWY/WDT
+    // precedent already established above. Both lines therefore stay
+    // ExclusiveSegment.
     #[test]
     fn gwr_thames_valley_iver_incident_stays_on_its_own_line() {
         let lines = load_all_lines();
@@ -4905,9 +4908,16 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["gwr-thames-valley".to_string()])
+            HashSet::from(["gwr-thames-valley".to_string(), "elizabeth-line".to_string()])
         );
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should stay ExclusiveSegment (station overlap, not a shared segment)",
+                m.line.id
+            );
+        }
     }
 
     // Station Catalogue Completeness Task 1.5: fills in four previously
