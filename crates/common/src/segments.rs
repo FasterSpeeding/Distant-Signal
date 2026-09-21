@@ -129,17 +129,27 @@ mod tests {
         // swr-hounslow-loop.toml and swr-new-guildford.toml all also reuse
         // `swr-trunk-waterloo` verbatim for their own genuine Waterloo
         // approach.
+        // Updated again by the SWR suburban-gap batch: swr-waterloo-
+        // reading.toml, swr-shepperton-branch.toml, swr-hampton-court-
+        // branch.toml and swr-epsom-mole-valley.toml (four new files) all
+        // also reuse `swr-trunk-waterloo` verbatim for their own genuine
+        // Waterloo approach - each file's own SEGMENTS section documents
+        // exactly which trunk stations it shares.
         assert_eq!(
             users,
             vec![
                 "swr-alton",
                 "swr-chertsey-loop",
                 "swr-chessington",
+                "swr-epsom-mole-valley",
+                "swr-hampton-court-branch",
                 "swr-hounslow-loop",
                 "swr-kingston-loop",
                 "swr-new-guildford",
                 "swr-portsmouth-direct",
+                "swr-shepperton-branch",
                 "swr-south-west-main",
+                "swr-waterloo-reading",
                 "swr-west-of-england",
                 "swr-windsor-lines",
             ]
@@ -197,11 +207,20 @@ mod tests {
         assert!(!loop_line.has_station("BRS"));
         assert!(!chessington.has_station("BRS"));
 
-        // Each line's post-junction segments are exclusive to it.
-        assert!(registry.is_exclusive_to("swr-kingston-loop", "swr-kingston-loop"));
+        // Each line's post-junction segments are exclusive to it -- except
+        // `swr-kingston-loop` and `swr-epsom-line`, which the SWR
+        // suburban-gap batch's own swr-shepperton-branch.toml and
+        // swr-epsom-mole-valley.toml now genuinely reuse (both files'
+        // own headers document exactly this: Shepperton's trains run over
+        // this line's own NBT-KNG-HMW-TED stretch before diverging at
+        // Shacklegate Junction, and the Epsom/Mole Valley line continues
+        // past Motspur Park on the exact track `swr-epsom-line` was named
+        // for, per swr-chessington.toml's own forward-looking naming note).
+        assert!(!registry.is_exclusive_to("swr-kingston-loop", "swr-kingston-loop"));
+        assert!(registry.is_shared("swr-kingston-loop"));
         assert!(registry.is_exclusive_to("swr-chessington-branch", "swr-chessington"));
-        assert!(registry.is_exclusive_to("swr-epsom-line", "swr-chessington"));
-        assert!(!registry.is_shared("swr-kingston-loop"));
+        assert!(!registry.is_exclusive_to("swr-epsom-line", "swr-chessington"));
+        assert!(registry.is_shared("swr-epsom-line"));
         assert!(!registry.is_shared("swr-chessington-branch"));
 
         // `swr-windsor-lines` (Twickenham inward to Waterloo via Richmond)
@@ -220,12 +239,21 @@ mod tests {
         // Updated by the SE/SWR-loops batch: swr-chertsey-loop.toml and
         // swr-hounslow-loop.toml both also reuse `swr-windsor-lines`
         // verbatim for their own genuine shared stretch of this track.
+        // Updated again by the SWR suburban-gap batch's real-world-sanity
+        // review: swr-hounslow-loop.toml's/swr-chertsey-loop.toml's own
+        // WTN/FEL/AFS/SNS rows were retagged onto this same segment (fixing
+        // a mismatch against swr-windsor-lines.toml's own segment name for
+        // those stations - see swr-hounslow-loop.toml's own SEGMENTS note),
+        // and swr-waterloo-reading.toml (a new file in the same batch) also
+        // reuses this segment verbatim for its own Vauxhall/Richmond-side
+        // approach.
         assert_eq!(
             windsor_users,
             vec![
                 "swr-chertsey-loop",
                 "swr-hounslow-loop",
                 "swr-kingston-loop",
+                "swr-waterloo-reading",
                 "swr-windsor-lines",
             ]
         );
