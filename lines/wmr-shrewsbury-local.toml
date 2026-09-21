@@ -67,6 +67,13 @@ operators = [
 # is omitted for all of them.
 
 sample_stations = ["WVH", "TFC", "SHR"]
+destination_crs_filter = ["WVH", "SHR"]
+# The line's two real termini (per the route research above). This station
+# also feeds `tfw-cambrian.toml`/`tfw-heart-of-wales.toml`/`tfw-marches.toml`
+# (all AW-operated, sharing the SHR sample station), so an explicit filter
+# is needed here to stop those files' own destinations being misattributed
+# to this line.
+
 match_keywords = ["Wolverhampton to Shrewsbury line", "Wolverhampton-Shrewsbury line"]
 # The line's own Wikipedia article title, in both a prose and raw-dash
 # rendering. Grep-checked against every other `lines/*.toml` file's

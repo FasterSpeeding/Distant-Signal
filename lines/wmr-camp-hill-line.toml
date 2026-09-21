@@ -103,16 +103,21 @@ sample_stations = ["MOV", "KIH", "PIR"]
 # `wmr-nuneaton-coventry.toml`'s identical precedent for exclusive-station
 # preference.
 
-destination_crs_filter = ["KNN"]
-# Kings Norton is this file's one real, unambiguous terminus in its
-# current-day scope (see the "termini today" note above); an operator-only
-# filter at MOV/KIH/PIR is already unambiguous given the sampling choice
-# above, matching `wmr-nuneaton-coventry.toml`'s identical reasoning.
+# No `destination_crs_filter`: an earlier draft set `["KNN"]`, but that
+# self-contradicted this file's own reasoning below (MOV/KIH/PIR are
+# already unambiguous once sampled, since no other file's LDBWS sampling
+# competes for them) and dropped every genuine Birmingham New Street-bound
+# departure, since `destination_crs_filter` only counts departures whose
+# destination is IN the list. Operator-only filtering is sufficient given
+# the exclusive sample stations, matching `wmr-nuneaton-coventry.toml`'s
+# identical reasoning.
 
-match_keywords = ["Camp Hill line", "Camp Hill Line"]
+match_keywords = ["Camp Hill Line"]
 # The line's own Wikipedia article title. Grep-checked against every other
 # `lines/*.toml` file's `match_keywords` before adding -- no collision
-# ("Camp Hill" does not otherwise appear in this catalogue's keywords).
+# ("Camp Hill" does not otherwise appear in this catalogue's keywords). An
+# earlier draft also listed a lowercase "Camp Hill line" variant, but
+# matching is case-insensitive so that was a redundant duplicate; dropped.
 
 # Half-hourly WMR core (busier than most of this catalogue's "regional"
 # hourly branches, but this is a brand-new reopening with the same kind of

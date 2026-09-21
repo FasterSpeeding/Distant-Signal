@@ -89,23 +89,26 @@ sample_stations = ["ILN", "LGM"]
 # shared with other EMR files' own sampling, per the precedent
 # `wmr-nuneaton-coventry.toml` sets for preferring line-exclusive stations.
 
-destination_crs_filter = ["NOT"]
-# This file's own scope runs Nottingham-Chesterfield (see the scope
-# boundary below); NOT is the one terminus wholly exclusive to this
-# working's own southbound direction within that scope. A CHD-side filter
-# isn't set: Chesterfield is also `emr-midland-main-line.toml`'s own
-# station and this file's own service continues past it towards
-# Sheffield/Leeds beyond this file's modelled extent (see below), so
-# neither "CHD" alone nor any single further CRS code would cleanly
-# disambiguate a genuine Nottingham-Leeds working from an EMR intercity
-# working merely transiting the same station.
+# No `destination_crs_filter`: an earlier draft set `["NOT"]`, reasoning
+# that NOT was the one terminus wholly exclusive to this working's own
+# southbound direction -- but that dropped every genuine northbound
+# (Leeds/Sheffield-bound) departure, since `destination_crs_filter` only
+# counts departures whose destination is IN the list. Per this catalogue's
+# own precedent (operator-only filtering is sufficient when the sample
+# stations are exclusive), no filter is needed here: ILN and LGM are both
+# confirmed exclusive to this file (see the `sample_stations` comment
+# above), so the `operators = ["NT"]` gate alone already disambiguates any
+# incident sampled from them without dropping legitimate departures in
+# either direction.
 
-match_keywords = ["Erewash Valley Line", "Erewash Valley line"]
+match_keywords = ["Erewash Valley Line"]
 # The line's own name, confirmed in current use by two of the three
 # station-article sources above (see the naming note). Grep-checked against
 # every other `lines/*.toml` file's `match_keywords` before adding -- no
 # collision (only used in comments elsewhere in this catalogue, not in any
-# other file's own `match_keywords`).
+# other file's own `match_keywords`). An earlier draft also listed a
+# lowercase "Erewash Valley line" variant, but matching is case-insensitive
+# so that was a redundant duplicate; dropped.
 
 # Hourly regional stopping service -- same frequency-driven tuning
 # `emr-rural-branches.toml`/`wmr-nuneaton-coventry.toml`/`northern-esk-
@@ -134,9 +137,18 @@ role = "minor"
 segment = "northern-erewash-valley"
 # Ilkeston: reopened 2017. Per the sourcing above, most calls here are this
 # file's own Northern Nottingham-Leeds service; EMR's own limited peak-hour
-# service (`emr-regional.toml`) does not call here at all (that file's own
-# station list has no ILN entry) -- no segment-sharing question arises with
-# that file at this specific station.
+# service also calls here, per a later follow-up audit of
+# `emr-regional.toml` that added an ILN entry to that file's own
+# `emr-regional-east` segment (a small-number-of-peak-services stop, per
+# that file's own comment) -- a genuine overlap this file's earlier
+# comment missed. Same treatment as the Alfreton entry below: genuine
+# physical track-sharing, but NOT a shared segment name (that file's own
+# `emr-regional-east` segment spans its entire Grantham-Peterborough-Ely-
+# Norwich continuation, far more track than this file's own overlap here),
+# so this file's own `northern-erewash-valley` segment name is used
+# uniformly instead. Cost if wrong: bounded, as with the Alfreton case --
+# an Ilkeston incident still matches both lines independently via
+# StationHit regardless of segment name.
 
 [[stations]]
 crs = "LGM"

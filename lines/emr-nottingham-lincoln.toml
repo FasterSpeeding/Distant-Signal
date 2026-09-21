@@ -69,12 +69,16 @@ operators = ["EM"]  # East Midlands Railway
 # `lner-lincoln.toml` -- not duplicated here uncited).
 
 sample_stations = ["NOT", "NCT", "LCN"]
-destination_crs_filter = ["LCN"]
-# Nottingham is shared with too many other EMR files' own sampling to be a
-# useful filter value on its own; Lincoln is this line's one real,
-# unambiguous terminus for the stopping service this file models (the
-# separate LNER St Pancras working isn't modelled here, per the scope note
-# above).
+destination_crs_filter = ["NOT", "LCN"]
+# Both of this line's real termini for the stopping service this file
+# models (the separate LNER St Pancras working isn't modelled here, per the
+# scope note above). Nottingham-only was previously omitted from this
+# filter on the theory it's "shared with too many other EMR files' own
+# sampling to be a useful filter value" -- but `destination_crs_filter`
+# gates on `destination_crs` (the departure's actual destination), not on
+# sample-station overlap, so dropping NOT here silently discarded every
+# genuine westbound (Lincoln-to-Nottingham) departure. Both directions'
+# termini are included now.
 
 match_keywords = ["Nottingham to Lincoln line", "Nottingham-Lincoln line"]
 # The line's own Wikipedia article title, in both a prose and raw-dash

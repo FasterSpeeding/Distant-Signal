@@ -105,11 +105,13 @@ sample_stations = ["DAS", "WIA"]
 # Both exclusive to this line (no other file's LDBWS sampling would compete
 # for them, unlike BHM/TAB/WVH -- grep-checked against `lines/*.toml`).
 
-destination_crs_filter = ["SHR"]
-# The line's own real through-destination beyond Wolverhampton (per source
-# 2 above). BHM is shared with too many other files' own sampling to be a
-# useful filter value on its own, and this line's own exclusive stations
-# (DAS/WIA) already disambiguate any incident local to them regardless.
+# No `destination_crs_filter`: an earlier draft set `["SHR"]`, but that
+# dropped every genuine Birmingham New Street-bound departure, since
+# `destination_crs_filter` only counts departures whose destination is IN
+# the list -- self-contradicting this file's own point that this line's
+# exclusive sample stations (DAS/WIA) already disambiguate any incident
+# local to them regardless. Operator-only filtering is sufficient given
+# those exclusive sample stations.
 
 match_keywords = ["Walsall-Wolverhampton line", "Walsall to Wolverhampton line"]
 # The line's own Wikipedia article title, in both the raw-dash and prose
