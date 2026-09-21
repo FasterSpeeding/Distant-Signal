@@ -73,20 +73,20 @@ delay_threshold_minutes = 10
 # past tense, no current service. Omitted on the same "not currently open
 # AND served" bar this catalogue applies to closed stations generally.
 #
-# Teesside Airport is INCLUDED despite also being suspended, but flagged
-# here as a genuine edge case: the article states it is "currently served
-# by a once-weekly parliamentary service" in its Stations section, but its
-# own "Least-used stations" subsection immediately below states "the
-# station has seen its service suspended since May 2022, with the one
-# operational platform condemned as unsafe" -- i.e. the article
-# contradicts itself internally on current status, most likely because the
-# "once-weekly parliamentary service" line predates the May 2022 update.
-# Given this, Teesside Airport should probably be treated the same as
-# Redcar British Steel (excluded as suspended), but is left IN below with
-# this comment rather than silently dropped, since the "officially open,
-# remains listed" framing in the same paragraph gives some cover either
-# way and the evidence is genuinely mixed -- a documented judgement call,
-# not a confident inclusion.
+# Teesside Airport (TEA) is ALSO excluded, on that identical bar -- reversed
+# from an earlier draft of this file, which included it as a documented
+# judgement call under contradictory sourcing (the article's own Stations
+# section said "currently served by a once-weekly parliamentary service"
+# while its "Least-used stations" subsection said service was suspended
+# since May 2022, platform condemned unsafe). Three independent research
+# passes since then have each checked Teesside Airport's own dedicated
+# Wikipedia article directly (rather than the combined line article) and
+# confirmed the suspension reading: 0 passengers recorded in both 2023/24
+# and 2024/25, the one operational platform still condemned as unsafe, and
+# no funded reopening before 2027. That puts it squarely in the same
+# category as Redcar British Steel above -- not currently open and served --
+# so it is excluded here for internal consistency with this file's own
+# stated bar, rather than left in on a now-resolved ambiguity.
 #
 # --- Segment/overlap decisions ---
 # Thornaby and Middlesbrough are genuinely shared trunk with this file's
@@ -159,13 +159,6 @@ crs = "DND"
 role = "minor"
 segment = "northern-tees-valley"
 # Dinsdale.
-
-[[stations]]
-crs = "TEA"
-role = "minor"
-segment = "northern-tees-valley"
-# Teesside Airport -- see the exclusion-candidate note above; included
-# with a documented caveat rather than a confident sourcing.
 
 [[stations]]
 crs = "ALW"
