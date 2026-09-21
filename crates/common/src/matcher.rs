@@ -796,6 +796,16 @@ mod tests {
     // appears on `west-coast-main-line.toml` (a real station-level overlap
     // the brief didn't call out), which would make an incident there match
     // both lines and defeat the point of this exclusive-segment test.
+    //
+    // Update (Midlands new-lines batch, 2026-09): `lnwr-euston-tring.toml`
+    // was later added and also curates Bushey (its own comment: reused
+    // verbatim from this file, "the physically distinct Watford DC/Lioness
+    // line sharing the same station buildings" — a real station-level
+    // overlap, deliberately kept as station-overlap-only, not a shared
+    // segment, since the two lines run on physically separate tracks). So
+    // this incident now genuinely matches both lines, each staying its own
+    // ExclusiveSegment — mirroring `xc_manchester_station_overlap_with_
+    // wmr_snow_hill_stays_exclusive_each_line`'s shape.
     #[test]
     fn overground_lioness_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -811,9 +821,19 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["overground-lioness".to_string()])
+            HashSet::from([
+                "overground-lioness".to_string(),
+                "lnwr-euston-tring".to_string(),
+            ])
         );
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should stay ExclusiveSegment (station overlap, not a shared segment)",
+                m.line.id
+            );
+        }
     }
 
     // London Overground's Mildmay line (former North London line core +
