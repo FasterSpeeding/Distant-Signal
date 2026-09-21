@@ -5782,12 +5782,14 @@ mod tests {
         }
     }
 
-    // `tfw-marches` (Task 11.5). An incident on a station well away from
-    // both coordination points (the Shrewsbury-Craven Arms shared trunk
-    // with Heart of Wales, and the Chester station-overlap with North
-    // Wales Coast) should match only this line, as
-    // `MatchScope::ExclusiveSegment` -- e.g. Hereford, which sits on
-    // `tfw-marches-south`, a segment no other line in the catalogue uses.
+    // `tfw-marches` (Task 11.5; rescoped to its real Shrewsbury-Crewe
+    // northern extent by the 2026-09-21 real-world-sanity review -- see
+    // `lines/tfw-marches.toml`'s own top-of-file correction note). An
+    // incident on a station well away from this line's one coordination
+    // point (the Shrewsbury-Craven Arms shared trunk with Heart of Wales)
+    // should match only this line, as `MatchScope::ExclusiveSegment` --
+    // e.g. Hereford, which sits on `tfw-marches-south`, a segment no other
+    // line in the catalogue uses.
     #[test]
     fn marches_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -5888,19 +5890,28 @@ mod tests {
         }
     }
 
-    // Chester is on both `tfw-marches` and `tfw-north-wales-coast`, but
-    // Task 11.5 ruled that overlap station-overlap-only rather than a
-    // shared trunk, mirroring `tfw-north-wales-coast.toml`'s own Llandudno
-    // Junction decision against `tfw-conwy-valley.toml`: despite genuine
-    // physical track sharing existing at Saltney Junction on the final
-    // approach into Chester (see the comment above Chester in
-    // `lines/tfw-marches.toml`), `tfw-north-wales-coast.toml` uses one
-    // single whole-line segment name for its entire route, so reusing it
-    // here would incorrectly mark that line's whole route (Rhyl, Bangor,
-    // Holyhead, etc.) as shared with Marches. So the two files use distinct
-    // segment names at Chester, and an incident there should match both
-    // lines independently, each still classified as
+    // Chester is on both `tfw-shrewsbury-chester` and
+    // `tfw-north-wales-coast`, but that overlap is station-overlap-only
+    // rather than a shared trunk, mirroring `tfw-north-wales-coast.toml`'s
+    // own Llandudno Junction decision against `tfw-conwy-valley.toml`:
+    // despite genuine physical track sharing existing at Saltney Junction
+    // on the final approach into Chester (see the comment above Chester in
+    // `lines/tfw-shrewsbury-chester.toml`), `tfw-north-wales-coast.toml`
+    // uses one single whole-line segment name for its entire route, so
+    // reusing it here would incorrectly mark that line's whole route
+    // (Rhyl, Bangor, Holyhead, etc.) as shared with this line. So the two
+    // files use distinct segment names at Chester, and an incident there
+    // should match both lines independently, each still classified as
     // `MatchScope::ExclusiveSegment` (not `SharedSegment`).
+    //
+    // Updated by the 2026-09-21 real-world-sanity review: this station
+    // data used to live in `tfw-marches.toml` (Task 11.5), which
+    // mistakenly modelled the "Marches Line" as running Shrewsbury-Chester.
+    // It has been moved to a new, separately-branded
+    // `lines/tfw-shrewsbury-chester.toml` file -- the real "Marches Line"
+    // (`tfw-marches.toml`) now runs Shrewsbury-Crewe instead and no longer
+    // touches Chester at all. See `lines/tfw-marches.toml`'s own
+    // top-of-file correction note for the full story.
     #[test]
     fn chester_station_overlap_matches_both_lines_as_exclusive() {
         // Chester is also wcml-north-wales.toml's (Batch 1) and
@@ -5925,7 +5936,7 @@ mod tests {
         assert_eq!(
             matched_ids,
             HashSet::from([
-                "tfw-marches".to_string(),
+                "tfw-shrewsbury-chester".to_string(),
                 "tfw-north-wales-coast".to_string(),
                 "wcml-north-wales".to_string(),
                 "merseyrail-wirral".to_string(),
@@ -5940,6 +5951,55 @@ mod tests {
                 m.line.id
             );
         }
+    }
+
+    // `tfw-marches`'s corrected Shrewsbury-Crewe stretch (2026-09-21
+    // real-world-sanity review). An incident on a station on that stretch,
+    // well away from the Shrewsbury/Craven Arms coordination point, should
+    // match only this line, as `MatchScope::ExclusiveSegment` -- e.g.
+    // Nantwich, which sits on `tfw-marches-crewe`, a segment no other line
+    // in the catalogue uses.
+    #[test]
+    fn marches_crewe_stretch_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-16",
+            "Signal failure at Nantwich",
+            "Signal failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["NAN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["tfw-marches".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `tfw-shrewsbury-chester` (new file, 2026-09-21 real-world-sanity
+    // review -- split out of the old, mis-scoped `tfw-marches.toml`). An
+    // incident well away from its own Chester/Shrewsbury station-overlap
+    // points should match only this line, as `MatchScope::ExclusiveSegment`
+    // -- e.g. Ruabon, which sits on `tfw-shrewsbury-chester`, a segment no
+    // other line in the catalogue uses.
+    #[test]
+    fn shrewsbury_chester_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "AW-17",
+            "Signal failure at Ruabon",
+            "Signal failure causing delays to Transport for Wales services.",
+            &["AW"],
+            &["RUA"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["tfw-shrewsbury-chester".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
     // Shrewsbury is a genuine three-way overlap point, introduced by Task
@@ -5962,6 +6022,14 @@ mod tests {
     // different segment name from the TfW trio, so both now also match as
     // SharedSegment with each other but ExclusiveSegment relative to every
     // TfW file here.
+    //
+    // Updated again by the 2026-09-21 real-world-sanity review:
+    // `lines/tfw-shrewsbury-chester.toml` (split out of the old, mis-scoped
+    // `tfw-marches.toml`) also has its own SHR entry, on its own exclusive
+    // `tfw-shrewsbury-chester` segment (station-overlap only, same
+    // reasoning as Cambrian at this station -- see that file's own SHR
+    // comment) -- a sixth line now resolves at this one incident, as a
+    // seventh independent ExclusiveSegment match.
     #[test]
     fn shrewsbury_three_way_overlap_resolves_per_line() {
         let lines = load_all_lines();
@@ -5986,6 +6054,7 @@ mod tests {
                 "tfw-heart-of-wales".to_string(),
                 "wmr-shrewsbury-local".to_string(),
                 "wmr-darlaston-line".to_string(),
+                "tfw-shrewsbury-chester".to_string(),
             ])
         );
         assert_eq!(scopes["tfw-cambrian"], MatchScope::ExclusiveSegment);
@@ -5993,6 +6062,10 @@ mod tests {
         assert_eq!(scopes["tfw-heart-of-wales"], MatchScope::SharedSegment);
         assert_eq!(scopes["wmr-shrewsbury-local"], MatchScope::SharedSegment);
         assert_eq!(scopes["wmr-darlaston-line"], MatchScope::SharedSegment);
+        assert_eq!(
+            scopes["tfw-shrewsbury-chester"],
+            MatchScope::ExclusiveSegment
+        );
     }
 
     // `tfw-valley-rhymney` (originally `tfw-valley-lines-north`, Task 11.6;
