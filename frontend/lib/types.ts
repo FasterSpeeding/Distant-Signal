@@ -413,6 +413,19 @@ export interface Suggestion {
   name: string;
 }
 
+/** A code/name pair from `GET /public/stations/nearby` --
+ * (`crates/api/src/data/reference.rs`'s `NearbyStation`), like `Suggestion`
+ * but for a "near me" physical-distance lookup rather than text search, and
+ * carrying the great-circle distance from the caller's supplied point, in
+ * kilometres. Stations with no recorded coordinates never appear in this
+ * response at all (the backend excludes them), so there is no nullable
+ * distance case to render here. */
+export interface NearbyStation {
+  code: string;
+  name: string;
+  distanceKm: number;
+}
+
 /** `GET /public/auth/session`'s response — always 200, never 401 (an
  * anonymous visitor gets `authenticated: false` with everything else
  * `null`, not an error). `id`/`email`/`name` can all be `null` even when

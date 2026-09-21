@@ -208,4 +208,143 @@ describe('StationSearchForm', () => {
     expect(screen.getByRole('button', { name: 'Look up' })).toBeDisabled();
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
+
+  // "Near me" -- see StationSearchForm's own doc comments on `NearbyState`/
+  // `handleNearMe` for the design this exercises.
+  describe('near me', () => {
+    // `navigator.geolocation` doesn't exist in jsdom by default (confirmed
+    // by reading jsdom's own Navigator implementation), which is exactly
+    // the "unavailable" case one test below relies on -- every other test
+    // here has to install it itself.
+    function stubGeolocation(
+      getCurrentPosition: (
+        success: (position: unknown) => void,
+        error: (err: { code: number }) => void,
+      ) => void,
+    ) {
+      Object.defineProperty(globalThis.navigator, 'geolocation', {
+        value: { getCurrentPosition },
+        configurable: true,
+      });
+    }
+
+    afterEach(() => {
+      // `configurable: true` above makes this safe -- restores jsdom's own
+      // geolocation-less baseline for the next test rather than leaking a
+      // stub across files (`vi.unstubAllGlobals()` only undoes
+      // `vi.stubGlobal`, not a direct `Object.defineProperty`).
+      delete (globalThis.navigator as { geolocation?: unknown }).geolocation;
+    });
+
+    it('hides the button entirely when navigator.geolocation is unavailable', () => {
+      renderWithProvider();
+      expect(screen.queryByRole('button', { name: 'Use my location' })).not.toBeInTheDocument();
+    });
+
+    it('shows a loading state, then the nearest stations with distance, on success', async () => {
+      stubGeolocation((success: (position: unknown) => void) => {
+        success({ coords: { latitude: 51.3191, longitude: -0.561 } });
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) => {
+          expect(url).toContain('/api/stations/nearby?');
+          expect(url).toContain('lat=51.3191');
+          expect(url).toContain('lon=-0.561');
+          return new Response(
+            JSON.stringify([
+              { code: 'WOK', name: 'Woking', distanceKm: 0.4 },
+              { code: 'BSK', name: 'Basingstoke', distanceKm: 12.34 },
+            ]),
+            { status: 200 },
+          );
+        }),
+      );
+      renderWithProvider();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Use my location' }));
+      });
+
+      const list = await screen.findByRole('list', { name: 'Nearby stations' });
+      expect(list).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Woking (WOK) — 0.4 km' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Basingstoke (BSK) — 12.3 km' })).toBeInTheDocument();
+    });
+
+    it('navigates to the station page when a nearby result is chosen', async () => {
+      stubGeolocation((success: (position: unknown) => void) => {
+        success({ coords: { latitude: 51.3191, longitude: -0.561 } });
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify([{ code: 'WOK', name: 'Woking', distanceKm: 0.4 }]), { status: 200 })),
+      );
+      renderWithProvider();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Use my location' }));
+      });
+      await act(async () => {
+        fireEvent.click(await screen.findByRole('button', { name: 'Woking (WOK) — 0.4 km' }));
+      });
+
+      expect(pushMock).toHaveBeenCalledWith('/stations/WOK');
+
+      await act(async () => {
+        resolveNavigation();
+      });
+    });
+
+    it('shows a calm, non-error message when the location prompt is declined', async () => {
+      stubGeolocation((_success: (position: unknown) => void, error: (err: { code: number }) => void) => {
+        error({ code: 1 });
+      });
+      renderWithProvider();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Use my location' }));
+      });
+
+      expect(screen.getByText('Location access was declined. You can still search by name above.')).toBeInTheDocument();
+      // Not rendered as an alarming/error state.
+      expect(screen.queryByText("Couldn't find your location")).not.toBeInTheDocument();
+    });
+
+    it('shows an error state for a genuine geolocation failure other than permission denial', async () => {
+      stubGeolocation((_success: (position: unknown) => void, error: (err: { code: number }) => void) => {
+        error({ code: 2 }); // POSITION_UNAVAILABLE
+      });
+      renderWithProvider();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Use my location' }));
+      });
+
+      expect(screen.getByText("Couldn't find your location")).toBeInTheDocument();
+    });
+
+    it('shows a loading indicator while the geolocation request is in flight', async () => {
+      let deferredSuccess: (position: unknown) => void = () => {};
+      stubGeolocation((success: (position: unknown) => void) => {
+        deferredSuccess = success;
+      });
+      renderWithProvider();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Use my location' }));
+
+      expect(screen.getByRole('button', { name: 'Locating…' })).toBeDisabled();
+      expect(screen.getByText('Finding stations near you…')).toBeInTheDocument();
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+      );
+      await act(async () => {
+        deferredSuccess({ coords: { latitude: 0, longitude: 0 } });
+      });
+
+      expect(screen.getByRole('button', { name: 'Use my location' })).toBeEnabled();
+    });
+  });
 });
