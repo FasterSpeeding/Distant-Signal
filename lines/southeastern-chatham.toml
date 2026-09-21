@@ -129,9 +129,13 @@ excluded_keywords = ["Hastings line"]
 #
 # Branches not covered by this catalogue, noted where they diverge:
 # Bromley North branch (from Bickley), Maidstone East line (from Swanley),
-# North Kent Line (from Strood), Sheerness Line (from Sittingbourne), and
-# the Catford Loop Line alternative Victoria routing (from Shortlands, via
-# Catford/Peckham Rye rather than Herne Hill/Brixton).
+# North Kent Line (from Strood), and the Catford Loop Line alternative
+# Victoria routing (from Shortlands, via Catford/Peckham Rye rather than
+# Herne Hill/Brixton). The Sheerness Line (from Sittingbourne) is no longer
+# an uncovered gap - see southeastern-sheerness-line.toml (Southeastern
+# real-world-sanity review), which reuses this file's own `chatham-london`/
+# `chatham-medway` segment names verbatim for the shared trunk as far as
+# Sittingbourne - see that file's own SEGMENT NAMING comment.
 #
 # FILL-IN (Task 5.1 of the station-catalogue-completeness plan): the four
 # suburban/slow-line stations between Herne Hill and Bromley South (West
@@ -301,7 +305,12 @@ segment = "chatham-medway"
 crs = "SIT"
 role = "junction"
 segment = "chatham-medway"
-# Sheerness Line diverges here; not covered by this catalogue.
+# Sheerness Line diverges here - now covered by
+# southeastern-sheerness-line.toml (Southeastern real-world-sanity review),
+# which reuses this exact `chatham-medway` segment name for its own shared
+# trunk as far as this station - a genuine SharedSegment, not mere station
+# overlap, since that file's real through service runs London Victoria to
+# Sheerness-on-Sea over this same track before diverging here.
 
 [[stations]]
 crs = "TEY"
