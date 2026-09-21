@@ -619,12 +619,19 @@ fn apply_stop_status(stops: &mut [JourneyStop], skipped_stations: &[String]) {
                 stop.skip_source = Some(SkipSource::Trust);
                 StopStatus::Skipped
             }
+            // A confirmed live call always wins over a Darwin-only skip
+            // signal: Darwin's `skipped_stations` is a prediction captured
+            // once at pin time and never refreshed (see `build_journey_stops`'s
+            // doc comment), so if TRUST has since confirmed a genuine
+            // ARRIVAL/DEPARTURE here, that stale prediction must not override
+            // it. This arm is checked before `(false, true)` below so it
+            // takes priority regardless of `darwin_skip`.
+            (false, _) if stop.actual_arrival.is_some() || stop.actual_departure.is_some() => {
+                StopStatus::Called
+            }
             (false, true) => {
                 stop.skip_source = Some(SkipSource::Darwin);
                 StopStatus::Skipped
-            }
-            (false, false) if stop.actual_arrival.is_some() || stop.actual_departure.is_some() => {
-                StopStatus::Called
             }
             (false, false) => StopStatus::Scheduled,
         };
@@ -1898,6 +1905,31 @@ mod tests {
         assert_eq!(stops[0].stop_status, StopStatus::Skipped);
         assert_eq!(stops[0].skip_source, Some(SkipSource::Darwin));
         assert_eq!(stops[0].delay_minutes, None);
+    }
+
+    /// Darwin's own captured snapshot named this CRS as skipped, but TRUST
+    /// has since reported a genuine ARRIVAL there (not a PASS). Because
+    /// `skipped_stations` is captured once at pin time and never refreshed
+    /// (see `apply_stop_status`'s own doc comment), a train predicted to
+    /// skip a station at pin time can still genuinely call there later --
+    /// and that confirmed live call must win over the stale Darwin
+    /// prediction. Must be `Called`, not `Skipped`, with `skip_source`
+    /// staying `None`.
+    #[test]
+    fn apply_stop_status_prefers_a_confirmed_trust_arrival_over_a_stale_darwin_skip() {
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            ..stop_at("SLO", Intermediate)
+        }];
+        let events = vec![event("SLO", "ARRIVAL", "2026-09-14T09:10:30Z")];
+        overlay_movement_events(&mut stops, &events);
+
+        apply_stop_status(&mut stops, &["SLO".to_string()]);
+
+        assert_eq!(stops[0].stop_status, StopStatus::Called);
+        assert_eq!(stops[0].skip_source, None);
     }
 
     /// Both signals agreeing -- a real TRUST PASS AND Darwin's own
