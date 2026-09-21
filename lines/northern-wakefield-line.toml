@@ -134,11 +134,42 @@ delay_threshold_minutes = 10
 # physical approach -- station-overlap only, matching `emr-regional.
 # toml`'s own Ruling 3 for the identical situation at Sheffield/Nottingham.
 #
-# Every station below uses this file's own single exclusive segment,
-# `northern-wakefield-sheffield` -- no genuine, currently-modelled physical
-# track-sharing with any other file's own tagged stations was found on
-# this specific Sheffield-Moorthorpe-Fitzwilliam-Wakefield-Outwood-Leeds
-# stretch.
+# REVIEW2 FIX (2026-09-21): Leeds-Outwood-Wakefield Westgate is now a
+# GENUINE shared trunk with `northern-pontefract-line.toml`, not just
+# station overlap. That file's own Wakefield branch previously terminated
+# (wrongly) at Wakefield Westgate; Knottingley's own Wikipedia article
+# ("There is a half-hourly service from Knottingley to Leeds; one runs via
+# Castleford and the other via Featherstone and Wakefield Westgate")
+# confirms the second, Featherstone/Wakefield-Westgate service also
+# genuinely continues through to Leeds via this exact Outwood approach --
+# the same physical stretch this file already models. WKF, OUT and LDS
+# below move onto a new, narrower `northern-outwood-wakefield-trunk`
+# segment name, shared with `northern-pontefract-line.toml`'s own WKF/OUT
+# entries (see that file's own top-of-file note for the corresponding
+# write-up). SHF-through-SNA stay on this file's own exclusive
+# `northern-wakefield-sheffield` name, unaffected -- carving the narrower
+# name here avoids the same whole-route-segment over-sharing bug already
+# fixed elsewhere in this review (reusing the old, broader
+# `northern-wakefield-sheffield` name for just WKF/OUT would have falsely
+# promoted this file's own unrelated Sheffield-side stations to shared
+# scope with `northern-pontefract-line.toml` too).
+#
+# `northern-pontefract-line.toml`'s own LDS entry can't carry this same new
+# segment name too -- it already carries a different, equally genuine
+# shared fact of its own (`northern-leeds-castleford`, shared with
+# `northern-hallam-line.toml` for that file's own Castleford approach), and
+# this catalogue's convention (confirmed by grep) is one `[[stations]]`
+# entry per CRS code per file, so a station can only carry one `segment`
+# value per file. `northern-outwood-wakefield-trunk` is therefore shared
+# between the two files at WKF/OUT (both files) plus LDS (this file only) --
+# a real, deliberate exception to this catalogue's usual same-name ==
+# same-station-list expectation, made necessary by LDS's own separate
+# shared fact, not an oversight; flagged here for exactly that reason.
+#
+# The remaining stations below (SHF through Sandal & Agbrigg) all use this
+# file's own single exclusive segment, `northern-wakefield-sheffield` -- no
+# genuine, currently-modelled physical track-sharing with any other file's
+# own tagged stations was found on that stretch.
 #
 # CRS codes for every station below verified against
 # https://ds.cursed.solutions/api/stations?q=<name> (one unambiguous result
@@ -214,25 +245,39 @@ segment = "northern-wakefield-sheffield"
 
 [[stations]]
 crs = "WKF"
-role = "major"
-segment = "northern-wakefield-sheffield"
+role = "junction"
+segment = "northern-outwood-wakefield-trunk"
 # Wakefield Westgate -- no longer this file's own terminus (see the
 # route-truncation correction above); the real service continues to Leeds
 # via Outwood. Also an `lner-leeds.toml` station; see the overlap note
-# above.
+# above. REVIEW2 FIX (2026-09-21): moved onto the new
+# `northern-outwood-wakefield-trunk` segment, genuinely shared with
+# `northern-pontefract-line.toml`'s own Wakefield branch here -- see the
+# REVIEW2 FIX note above. Role upgraded from `major` to `junction`: this is
+# where `northern-pontefract-line.toml`'s own Featherstone/Pontefract-bound
+# continuation splits off from this shared trunk, per the shared-trunk rule
+# of thumb.
 
 [[stations]]
 crs = "OUT"
 role = "minor"
-segment = "northern-wakefield-sheffield"
+segment = "northern-outwood-wakefield-trunk"
 # Outwood -- the one intermediate stop between Wakefield Westgate and
-# Leeds on this route; see the route-truncation correction above.
+# Leeds on this route; see the route-truncation correction above. Moved
+# onto `northern-outwood-wakefield-trunk` alongside WKF -- see the
+# REVIEW2 FIX note above.
 
 [[stations]]
 crs = "LDS"
 tiploc = "LEEDS"
 role = "terminus"
-segment = "northern-wakefield-sheffield"
+segment = "northern-outwood-wakefield-trunk"
 # Leeds -- this file's own real terminus; see the route-truncation
 # correction above. Station-overlap only with several other Leeds-
-# terminating files; see the overlap note above.
+# terminating files; see the overlap note above. Also carries the new
+# `northern-outwood-wakefield-trunk` segment name (see the REVIEW2 FIX
+# note above) -- `northern-pontefract-line.toml` cannot tag its own LDS
+# entry with this same name (already spoken for by its own
+# `northern-leeds-castleford` fact), so this specific station's use of the
+# name is exclusive to this file even though the name itself is genuinely
+# shared overall (via WKF/OUT).

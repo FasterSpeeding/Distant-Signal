@@ -2358,7 +2358,12 @@ mod tests {
         //     too, since that segment name is no longer used by only one
         //     file.
         //   - northern-wakefield-line: its own `northern-wakefield-sheffield`
-        //     segment at LDS, used nowhere else -- exclusive.
+        //     segment at LDS, used nowhere else -- exclusive. Superseded
+        //     below (review2 fix, item 10): LDS now carries the narrower
+        //     `northern-outwood-wakefield-trunk` segment instead, genuinely
+        //     shared with `northern-pontefract-line.toml`'s own Wakefield
+        //     branch (at WKF/OUT, not at LDS itself -- see both files' own
+        //     top-of-file comments) -- flips to SharedSegment.
         //
         // Updated again by the Northern NW/TPE sanity review (tpe-north.toml
         // split into four new siblings): tpe-north-teesside, tpe-north-
@@ -2377,6 +2382,11 @@ mod tests {
         // both new): both reuse `northern-leeds-castleford` verbatim for
         // their shared Leeds-Castleford approach -- a genuine SharedSegment
         // pair with each other, independent of every other family here.
+        //
+        // Updated by review2 item 10 (northern-pontefract-line.toml's
+        // Wakefield branch extended to its own real Leeds terminus via
+        // Outwood): `northern-wakefield-line` moves from ExclusiveSegment to
+        // SharedSegment -- see the bullet above.
         assert_eq!(
             matched_ids,
             HashSet::from([
@@ -2409,7 +2419,6 @@ mod tests {
                 | "tpe-north"
                 | "northern-harrogate-line"
                 | "northern-huddersfield"
-                | "northern-wakefield-line"
                 | "tpe-north-teesside"
                 | "tpe-north-scarborough"
                 | "tpe-north-hull"
@@ -2417,7 +2426,9 @@ mod tests {
                 "northern" | "northern-yorkshire-coast" | "northern-airedale"
                 | "northern-settle-carlisle" | "northern-leeds-selby"
                 | "northern-leeds-york" | "northern-hallam-line"
-                | "northern-pontefract-line" => MatchScope::SharedSegment,
+                | "northern-pontefract-line" | "northern-wakefield-line" => {
+                    MatchScope::SharedSegment
+                }
                 other => panic!("unexpected line in Leeds overlap test: {other}"),
             };
             assert_eq!(m.scope, expected, "{} scope mismatch", m.line.id);
@@ -9812,13 +9823,29 @@ mod tests {
                 "scotrail-levenmouth".to_string(),
             ])
         );
+        // REVIEW2 FIX (item 2, 2026-09-21): `scotrail-fife-circle` at GLT
+        // used to show as SharedSegment, but only as a side effect of the
+        // whole-route-segment over-sharing bug this review fixed:
+        // `scotrail-edinburgh-aberdeen.toml` used to reuse the broad
+        // `scotrail-fife-circle` segment name for its own SGL..KDY coastal
+        // stretch, which made the segment NAME shared across two files even
+        // though neither of scotrail-edinburgh-aberdeen's own stations is
+        // GLT (an inland-loop-only station). That file now uses a narrower
+        // `scotrail-fife-circle-coastal` name instead (see
+        // scotrail-fife-circle.toml's own top-of-file comment), so
+        // `scotrail-fife-circle` is once again used by only one file --
+        // correctly ExclusiveSegment here, matching `scotrail-levenmouth`.
+        // `scotrail-levenmouth.toml`'s own GLT entry has always used its own
+        // `scotrail-levenmouth` segment name, not `scotrail-fife-circle`, so
+        // this incident matches both lines by station overlap only, neither
+        // sharing a segment with the other.
         for m in &matches {
-            let expected = if m.line.id == "scotrail-fife-circle" {
-                MatchScope::SharedSegment
-            } else {
-                MatchScope::ExclusiveSegment
-            };
-            assert_eq!(m.scope, expected, "{} should be {:?}", m.line.id, expected);
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment",
+                m.line.id
+            );
         }
     }
 
@@ -10312,11 +10339,17 @@ mod tests {
         );
         assert_eq!(
             bml.segment_for("WVF"),
-            Some("brighton-main-line-south"),
-            "WVF should be on brighton-main-line-south (renamed from \
-             southern-bml-south by the shared-segment structural review, \
-             review2-shared-segments - see southern-brighton-main-line.toml's \
-             own header comment)"
+            Some("brighton-main-line-central"),
+            "WVF should be on brighton-main-line-central (originally \
+             brighton-main-line-south, renamed from southern-bml-south by \
+             the shared-segment structural review, review2-shared-segments; \
+             review2 item 3 later split brighton-main-line-south at Three \
+             Bridges into brighton-main-line-south (GTW/TBD only) and \
+             brighton-main-line-central (HHE onward, including WVF) to \
+             restore byte-identical sharing with thameslink-southern.toml \
+             once that file's own Balcombe/BAB entry was found to diverge - \
+             see southern-brighton-main-line.toml's own header/TBD-entry \
+             comments)"
         );
     }
 
