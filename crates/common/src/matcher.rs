@@ -1415,6 +1415,15 @@ mod tests {
     fn airedale_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
+        // Keighley also gained a station on `lner-leeds.toml` (a later
+        // national-mainlines audit, which reused Keighley's already
+        // in-repo-verified CRS from this file's own KEI entry to model
+        // LNER's own daily Skipton return working). Real station-level
+        // overlap between two different operators' files -- same pattern
+        // `lner_hull_exclusive_segment_incident_does_not_propagate` already
+        // documents for Selby/hull-trains -- so both lines now match, each
+        // staying `ExclusiveSegment` on its own, differently-named segment
+        // (`northern-airedale` vs `lner-leeds-skipton`).
         let inc = incident(
             "NT-4",
             "Signal failure at Keighley",
@@ -1426,9 +1435,16 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["northern-airedale".to_string()])
+            HashSet::from(["northern-airedale".to_string(), "lner-leeds".to_string()])
         );
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment",
+                m.line.id
+            );
+        }
     }
 
     #[test]
@@ -2198,16 +2214,17 @@ mod tests {
     fn hull_trains_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
-        // Howden sits on `ht-kings-cross-hull`, exclusive to `hull-trains` —
-        // no other line in this catalogue has a station at Howden, so this
-        // should stay exclusive and not propagate anywhere else. Per the
-        // task brief (the same standalone-operator exception
-        // `grand-central.toml` already established for its own relationship
-        // to LNER), no shared-trunk test against any `lner-*.toml` file is
-        // required for Hull Trains: `hull-trains.toml`'s station-level
-        // overlap with `lner-hull.toml` (Stevenage, Grantham, Retford,
-        // Doncaster, Selby, Brough, Hull Paragon) is deliberate and
-        // documented, not a forced shared segment.
+        // Howden sits on `ht-kings-cross-hull`, exclusive to `hull-trains`.
+        // A later national-mainlines audit added Howden to `lner-hull.toml`
+        // too (LNER's own daily King's Cross-Hull working genuinely calls
+        // there, at the same position already modelled here) — real
+        // station-level overlap between two different operators' files,
+        // same pattern this test's sibling
+        // `lner_hull_exclusive_segment_incident_does_not_propagate` already
+        // documents for Selby: both lines match, but each stays
+        // `ExclusiveSegment` since neither's own segment name
+        // (`ht-kings-cross-hull` vs `lner-hull`) is literally shared with
+        // the other.
         let inc = incident(
             "HT-1",
             "Signal failure at Howden",
@@ -2217,8 +2234,18 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["hull-trains".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["hull-trains".to_string(), "lner-hull".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment",
+                m.line.id
+            );
+        }
     }
 
     #[test]
