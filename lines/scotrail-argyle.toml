@@ -228,14 +228,26 @@ segment = "scotrail-argyle-core"
 # of the former.
 #
 # Greenfaulds (GRL) and Cumbernauld (CUB) both already have `[[stations]]`
-# entries in `lines/scotrail-cumbernauld.toml`, tagged
-# `scotrail-cumbernauld-branch`. Per the sourcing above, this file's own
-# Whifflet-spur trains genuinely continue over that same track from
-# Coatbridge Central onward -- a real shared trunk, not mere station-name
-# overlap -- so this file now reuses `scotrail-cumbernauld-branch` verbatim
-# for its own Greenfaulds/Cumbernauld entries below, making it a genuine
-# three-way `SegmentRegistry`-shared segment once `scotrail-argyle`'s use
-# is registered. Coatbridge Central itself is retagged `role = "major"`
+# entries in `lines/scotrail-cumbernauld.toml`. Per the sourcing above,
+# this file's own Whifflet-spur trains genuinely continue over that same
+# track from Coatbridge Central onward -- a real shared trunk, not mere
+# station-name overlap -- so this file's own Greenfaulds/Cumbernauld
+# entries below share a segment name with that file for just these two
+# stations.
+#
+# REVIEW2 FIX (2026-09-21): this originally reused `scotrail-cumbernauld.
+# toml`'s broader `scotrail-cumbernauld-branch` segment name verbatim
+# (which in that file also covers Barnhill/Robroyston/Stepps/Gartcosh on
+# its own unrelated Glasgow Queen Street/Springburn approach -- stations
+# this file's own trains never call at), which would have falsely
+# promoted those four stations to shared scope too and was wrongly
+# described as making it "a genuine three-way `SegmentRegistry`-shared
+# segment" (only two files, `scotrail-argyle` and `scotrail-cumbernauld`,
+# actually use it). Fixed by carving a new, narrower `scotrail-cumbernauld-
+# greenfaulds-trunk` segment name for just GRL/CUB, applied in both files;
+# `scotrail-cumbernauld.toml`'s own BNL/RRN/SPS/GRH stations stay on the
+# original `scotrail-cumbernauld-branch` name, unaffected. Coatbridge
+# Central itself is retagged `role = "major"`
 # (a through station, not a terminus) and stays on this file's own
 # exclusive `scotrail-argyle-coatbridge-spur` segment, since the Whifflet-
 # CBC stretch itself is not shared with any other file -- the shared
@@ -327,7 +339,7 @@ segment = "scotrail-argyle-coatbridge-spur"
 [[stations]]
 crs = "GRL"
 role = "junction"
-segment = "scotrail-cumbernauld-branch"
+segment = "scotrail-cumbernauld-greenfaulds-trunk"
 # Greenfaulds: genuine shared trunk with `scotrail-cumbernauld.toml` --
 # see the CORRECTION note above. Junction where this file's own
 # Coatbridge Central approach converges with that file's own Glasgow
@@ -337,7 +349,7 @@ segment = "scotrail-cumbernauld-branch"
 [[stations]]
 crs = "CUB"
 role = "terminus"
-segment = "scotrail-cumbernauld-branch"
+segment = "scotrail-cumbernauld-greenfaulds-trunk"
 # Cumbernauld: terminus of this line's own Whifflet-spur service pattern
 # (Wikipedia "Cumbernauld railway station": the Motherwell-Cumbernauld
 # line terminates here southbound). `scotrail-cumbernauld.toml`'s own CUB

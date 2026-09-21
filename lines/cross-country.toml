@@ -95,26 +95,6 @@ delay_threshold_minutes = 10
 # stations before writing this; same treatment `tpe-borders.toml` already
 # gives its own EDB overlap with `tpe-anglo-scottish.toml`).
 [[stations]]
-crs = "MPT"
-role = "minor"
-segment = "xc-borders"
-
-[[stations]]
-crs = "ALM"
-role = "minor"
-segment = "xc-borders"
-
-[[stations]]
-crs = "BWK"
-role = "major"
-segment = "xc-borders"
-
-[[stations]]
-crs = "DUN"
-role = "minor"
-segment = "xc-borders"
-
-[[stations]]
 crs = "EDB"
 role = "terminus"
 segment = "xc-borders"
@@ -128,6 +108,31 @@ segment = "xc-borders"
 # task's remaining budget didn't cover -- flagged here for a future pass
 # rather than guessed at, same "documented, not modelled" treatment
 # `lner-ecml.toml` already gives its own unmodelled Inverness extension.
+
+[[stations]]
+crs = "DUN"
+role = "minor"
+segment = "xc-borders"
+
+[[stations]]
+crs = "BWK"
+role = "major"
+segment = "xc-borders"
+
+[[stations]]
+crs = "ALM"
+role = "minor"
+segment = "xc-borders"
+
+[[stations]]
+crs = "MPT"
+role = "minor"
+segment = "xc-borders"
+# North-to-south order (review2 fix, 2026-09-21): this block runs
+# EDB/DUN/BWK/ALM/MPT so it reads geographically end-to-end into NCL below,
+# per SCHEMA.md -- Morpeth is the first stop north of Newcastle, Dunbar the
+# last before Edinburgh Waverley. Previously listed south-to-north (MPT..EDB)
+# then jumping back south to NCL, which broke the file's own ordering claim.
 
 [[stations]]
 crs = "NCL"

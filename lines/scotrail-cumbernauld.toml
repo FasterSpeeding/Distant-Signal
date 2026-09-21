@@ -143,7 +143,7 @@ segment = "scotrail-cumbernauld-branch"
 [[stations]]
 crs = "GRL"
 role = "junction"
-segment = "scotrail-cumbernauld-branch"
+segment = "scotrail-cumbernauld-greenfaulds-trunk"
 # Greenfaulds: also a `lines/scotrail-argyle.toml` station as of the
 # real-world-sanity review that corrected that file's own Coatbridge
 # Central entry (previously wrongly modelled as a dead-end terminus off
@@ -155,11 +155,23 @@ segment = "scotrail-cumbernauld-branch"
 # station-name overlap. `role` upgraded from `minor` to `junction` to
 # reflect that this is now a real convergence point, per the shared-trunk
 # rule of thumb.
+#
+# REVIEW2 FIX (2026-09-21): GRL and CUB originally reused this file's
+# broader `scotrail-cumbernauld-branch` segment name verbatim for the
+# `scotrail-argyle.toml` reuse below, but that name also covers this
+# file's own Barnhill/Robroyston/Stepps/Gartcosh stations on the unrelated
+# Glasgow Queen Street/Springburn approach, which `scotrail-argyle.toml`'s
+# Whifflet-spur trains never call at -- reusing it would have falsely
+# promoted BNL/RRN/SPS/GRH to shared scope too. Fixed by carving this new,
+# narrower `scotrail-cumbernauld-greenfaulds-trunk` name for just GRL/CUB,
+# applied in both files; BNL/RRN/SPS/GRH stay on the original
+# `scotrail-cumbernauld-branch` name below, unaffected and still exclusive
+# to this file.
 
 [[stations]]
 crs = "CUB"
 role = "junction"
-segment = "scotrail-cumbernauld-branch"
+segment = "scotrail-cumbernauld-greenfaulds-trunk"
 # Cumbernauld: the physically distinct "Croy Line" (Glasgow Queen Street
 # High Level - Croy - Falkirk High/Stirling, part of the separate
 # Edinburgh-Glasgow via Falkirk High route) also passes through this area,

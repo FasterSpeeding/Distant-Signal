@@ -109,16 +109,19 @@ segment = "scotrail-glasgow-aberdeen-approach"
 [[stations]]
 crs = "LBT"
 role = "junction"
-segment = "scotrail-stirling-dunblane"
+segment = "scotrail-stirling-dunblane-larbert-approach"
 # Larbert: genuine shared trunk with `scotrail-stirling-dunblane.toml`,
-# reusing that file's own segment name -- see the segment-naming
-# coordination note above. That file's own LBT comment already documents
-# the "triangular junction" topology this station sits on.
+# on a narrow segment name carved specifically for this LBT/STG/BEA/DBL
+# stretch -- see the segment-naming coordination note above for why the
+# broader `scotrail-stirling-dunblane` name isn't reused here (it also
+# covers that file's own unrelated Linlithgow/Polmont stations). That
+# file's own LBT comment already documents the "triangular junction"
+# topology this station sits on.
 
 [[stations]]
 crs = "STG"
 role = "junction"
-segment = "scotrail-stirling-dunblane"
+segment = "scotrail-stirling-dunblane-larbert-approach"
 # Stirling: reused from `scotrail-stirling-dunblane.toml`; that file's own
 # STG comment already notes it is "served by this line, the (unmodelled)
 # Croy Line, and the Highland Main Line/Glasgow-Aberdeen Line northbound"
@@ -128,13 +131,13 @@ segment = "scotrail-stirling-dunblane"
 [[stations]]
 crs = "BEA"
 role = "minor"
-segment = "scotrail-stirling-dunblane"
+segment = "scotrail-stirling-dunblane-larbert-approach"
 # Bridge of Allan: reused from `scotrail-stirling-dunblane.toml`.
 
 [[stations]]
 crs = "DBL"
 role = "major"
-segment = "scotrail-stirling-dunblane"
+segment = "scotrail-stirling-dunblane-larbert-approach"
 # Dunblane: NOT a terminus from this file's own perspective (unlike
 # `scotrail-stirling-dunblane.toml`'s own DBL entry, which correctly
 # tags it `terminus` for that file's own Edinburgh-Dunblane stopping
@@ -293,10 +296,19 @@ segment = "scotrail-dundee-aberdeen"
 #    edinburgh-throat` was carved out from the start) would let this file
 #    reuse it cleanly.
 #
-# 2. `scotrail-stirling-dunblane` (LBT/STG/BEA/DBL): reused verbatim from
-#    `scotrail-stirling-dunblane.toml`, per that file's own explicit,
-#    pre-registered invitation in its Croy Line scope-boundary note (see
-#    that file, updated alongside this addition with a RESOLUTION note).
+# 2. `scotrail-stirling-dunblane-larbert-approach` (LBT/STG/BEA/DBL):
+#    genuinely shared trunk with `scotrail-stirling-dunblane.toml`, per
+#    that file's own explicit, pre-registered invitation in its Croy Line
+#    scope-boundary note (see that file, updated alongside this addition
+#    with a RESOLUTION note). REVIEW2 FIX (2026-09-21): this stretch
+#    originally reused that file's broader `scotrail-stirling-dunblane`
+#    segment name verbatim, which also covers that file's own Linlithgow/
+#    Polmont stations on the unrelated Edinburgh side -- this file's own
+#    trains never call there, so reusing the name would have falsely
+#    promoted LIN/PMT to shared scope too. Fixed by carving this new,
+#    narrower `scotrail-stirling-dunblane-larbert-approach` name for just
+#    LBT/STG/BEA/DBL, applied in both files; LIN/PMT stay on the original
+#    `scotrail-stirling-dunblane` name in that file, unaffected.
 #
 # 3. `scotrail-dundee-aberdeen` (DEE through ABD): reused verbatim from
 #    the sibling `scotrail-edinburgh-aberdeen.toml`, which introduces this

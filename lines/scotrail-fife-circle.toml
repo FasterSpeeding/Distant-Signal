@@ -117,12 +117,19 @@ delay_threshold_minutes = 6
 # patterns already include "1tph Edinburgh to Leven via Aberdour and
 # Kirkcaldy" and "1tph Edinburgh to Dundee via Kirkcaldy" -- i.e. this is
 # the same corridor, not a separate bypass). That file reuses this file's
-# own `scotrail-fife-circle-throat` (EDB/HYM) and `scotrail-fife-circle`
-# (SGL through KDY) segment names verbatim for its own matching subset of
-# stations, a safe reuse since it introduces no station under those names
-# that this file doesn't already have. `SegmentRegistry::is_shared` now
-# reports both segments shared between `scotrail-fife-circle` and
-# `scotrail-edinburgh-aberdeen`.
+# own `scotrail-fife-circle-throat` (EDB/HYM) segment name verbatim, and
+# for the SGL-through-KDY stretch uses a new narrower `scotrail-fife-
+# circle-coastal` segment name (review2 fix, 2026-09-21) rather than the
+# broad `scotrail-fife-circle` name: the original reuse of
+# `scotrail-fife-circle` would have falsely promoted this file's own
+# unrelated inland-loop stations (GLT/CDD/LCG/COW/DFL/DFE/ROS, which
+# Edinburgh-Aberdeen trains never touch) to shared scope too, since
+# `SegmentRegistry::is_shared` operates per segment name, not per station.
+# `scotrail-fife-circle` itself (below, from GLT onward) remains this
+# file's own exclusive segment. `SegmentRegistry::is_shared` now reports
+# `scotrail-fife-circle-throat` and `scotrail-fife-circle-coastal` shared
+# between this file and `scotrail-edinburgh-aberdeen`, while
+# `scotrail-fife-circle` (GLT..ROS) stays exclusive to this file.
 
 # === Circular topology: how this file represents it ===
 #
@@ -168,17 +175,17 @@ segment = "scotrail-fife-circle-throat"
 [[stations]]
 crs = "SGL"
 role = "minor"
-segment = "scotrail-fife-circle"
+segment = "scotrail-fife-circle-coastal"
 
 [[stations]]
 crs = "EGY"
 role = "minor"
-segment = "scotrail-fife-circle"
+segment = "scotrail-fife-circle-coastal"
 
 [[stations]]
 crs = "DAM"
 role = "minor"
-segment = "scotrail-fife-circle"
+segment = "scotrail-fife-circle-coastal"
 # Dalmeny: last station before the Forth Bridge crossing into Fife.
 #
 # CORRECTION (Task 3.7 VERIFY pass, station-catalogue-completeness plan,
@@ -194,14 +201,14 @@ segment = "scotrail-fife-circle"
 [[stations]]
 crs = "NQU"
 role = "minor"
-segment = "scotrail-fife-circle"
+segment = "scotrail-fife-circle-coastal"
 # North Queensferry: first station in Fife, immediately north of the
 # Forth Bridge.
 
 [[stations]]
 crs = "INK"
 role = "junction"
-segment = "scotrail-fife-circle"
+segment = "scotrail-fife-circle-coastal"
 # Inverkeithing: where the loop's coastal and inland sides diverge (this
 # traversal takes the coastal side first, then returns via the inland
 # side further down this list).
@@ -209,30 +216,30 @@ segment = "scotrail-fife-circle"
 [[stations]]
 crs = "DAG"
 role = "minor"
-segment = "scotrail-fife-circle"
+segment = "scotrail-fife-circle-coastal"
 
 [[stations]]
 crs = "AUR"
 role = "minor"
-segment = "scotrail-fife-circle"
+segment = "scotrail-fife-circle-coastal"
 # Aberdour.
 
 [[stations]]
 crs = "BTS"
 role = "major"
-segment = "scotrail-fife-circle"
+segment = "scotrail-fife-circle-coastal"
 # Burntisland.
 
 [[stations]]
 crs = "KGH"
 role = "minor"
-segment = "scotrail-fife-circle"
+segment = "scotrail-fife-circle-coastal"
 # Kinghorn.
 
 [[stations]]
 crs = "KDY"
 role = "major"
-segment = "scotrail-fife-circle"
+segment = "scotrail-fife-circle-coastal"
 # Kirkcaldy: the largest town directly on the coastal side of the loop.
 # The coastal side's stations end here; the inland side (back towards
 # Edinburgh via Cowdenbeath/Dunfermline) picks up at the next station.
