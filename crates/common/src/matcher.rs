@@ -2177,12 +2177,34 @@ mod tests {
         //     deliberately declines to reuse `lner-leeds`/`lner-leeds-
         //     harrogate` despite genuine physical track-sharing, mirroring
         //     `hull-trains.toml`'s identical precedent).
-        //   - northern-leeds-selby: its own `northern-leeds-selby` segment
-        //     at LDS, used nowhere else -- exclusive.
+        //   - northern-leeds-selby: at the time this comment was written,
+        //     its own `northern-leeds-selby` segment at LDS, used nowhere
+        //     else -- exclusive. Superseded below (Yorkshire real-world-
+        //     sanity review): LDS now carries the narrower
+        //     `northern-leeds-micklefield` segment instead, shared with the
+        //     new `northern-leeds-york.toml` -- see that file's own
+        //     "Segment split" comment.
         //   - northern-settle-carlisle: reuses `northern-shipley-trunk`
         //     verbatim at LDS (the same Leeds-Shipley approach already
         //     shared between Airedale and Wharfedale) -- joins
         //     northern-airedale as SharedSegment.
+        //
+        // Updated again by the Yorkshire real-world-sanity review
+        // (2026-09-21), which split `northern.toml`'s own incoherent
+        // catch-all fragments into two new, genuine sibling lines (both
+        // also touch LDS) and added a Leeds extension to the renamed
+        // `northern-wakefield-line.toml` (formerly `northern-dearne-
+        // valley.toml`, which never touched LDS before):
+        //   - northern-huddersfield: its own `northern-huddersfield`
+        //     segment at LDS, used nowhere else -- exclusive.
+        //   - northern-leeds-york: shares `northern-leeds-micklefield`
+        //     with `northern-leeds-selby` at LDS (see that file's own
+        //     "Segment split" comment) -- SharedSegment, and flips
+        //     `northern-leeds-selby` from ExclusiveSegment to SharedSegment
+        //     too, since that segment name is no longer used by only one
+        //     file.
+        //   - northern-wakefield-line: its own `northern-wakefield-sheffield`
+        //     segment at LDS, used nowhere else -- exclusive.
         assert_eq!(
             matched_ids,
             HashSet::from([
@@ -2196,6 +2218,9 @@ mod tests {
                 "northern-harrogate-line".to_string(),
                 "northern-leeds-selby".to_string(),
                 "northern-settle-carlisle".to_string(),
+                "northern-huddersfield".to_string(),
+                "northern-leeds-york".to_string(),
+                "northern-wakefield-line".to_string(),
             ])
         );
         for m in &matches {
@@ -2205,9 +2230,11 @@ mod tests {
                 | "northern-calder-valley"
                 | "tpe-north"
                 | "northern-harrogate-line"
-                | "northern-leeds-selby" => MatchScope::ExclusiveSegment,
+                | "northern-huddersfield"
+                | "northern-wakefield-line" => MatchScope::ExclusiveSegment,
                 "northern" | "northern-yorkshire-coast" | "northern-airedale"
-                | "northern-settle-carlisle" => MatchScope::SharedSegment,
+                | "northern-settle-carlisle" | "northern-leeds-selby"
+                | "northern-leeds-york" => MatchScope::SharedSegment,
                 other => panic!("unexpected line in Leeds overlap test: {other}"),
             };
             assert_eq!(m.scope, expected, "{} scope mismatch", m.line.id);

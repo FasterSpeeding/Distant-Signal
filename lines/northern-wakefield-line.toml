@@ -1,9 +1,25 @@
-id = "northern-dearne-valley"
+id = "northern-wakefield-line"
 name = "Wakefield Line (Sheffield service)"
 mode = "national-rail"
 category = "regional"
 operators = ["NT"]
 
+# --- id rename (Yorkshire review, 2026-09-21) ---
+# This file's original id, `northern-dearne-valley`, was kept unchanged when
+# the route/name correction below was first made, matching the (then
+# untested) assumption that `id` should stay stable once a file lands. On
+# review, that assumption doesn't actually apply here: `git log` confirms
+# this file was created and landed in a single commit today
+# (56355fe6, "feat(lines): add Yorkshire/North East line-coverage batch (8
+# files)") and a repo-wide grep turns up no reference to
+# `northern-dearne-valley` anywhere outside this file itself -- no external
+# consumer, dashboard or test has had the chance to depend on it. Renamed to
+# `northern-wakefield-line`, which actually matches this file's own real
+# route/name, rather than perpetuating a misleading id purely out of an
+# unearned caution. (Contrast `northern-yorkshire-coast.toml`, a month-old,
+# already-externally-referenced id kept unchanged in this same review for
+# exactly the opposite, correct reason.)
+#
 # --- Naming correction, found during research (read this first) ---
 # This task's brief named this line "Dearne Valley Line (Sheffield-
 # Meadowhall-Mexborough-Goldthorpe-Thurnscoe-Wakefield)". That description
@@ -33,21 +49,26 @@ operators = ["NT"]
 #   Sheffield-Wakefield stopping service modelled below. Omitted rather
 #   than guessed in.
 #
-# The task's own stable filename/id (`northern-dearne-valley`) is kept
-# unchanged per the plan's own convention for this kind of correction
-# (mirrors `emr-connect.toml`'s identical "kept the id, corrected the
-# route" precedent), but `name` and every source below reflect the real,
-# verified route: the Sheffield fork of the Wakefield line.
+# `id` was originally kept unchanged per the plan's own convention for this
+# kind of correction (mirrors `emr-connect.toml`'s "kept the id, corrected
+# the route" precedent) -- see the id-rename note above for why this review
+# revisited and reversed that call specifically for this file. `name` and
+# every source below reflect the real, verified route: the Sheffield fork
+# of the Wakefield line, now extended to its real Leeds terminus (see the
+# route-truncation correction further below).
 
-sample_stations = ["SHF", "SWN", "WKF"]
-destination_crs_filter = ["WKF"]
-# This file's own scope is Sheffield to Wakefield Westgate only -- see the
-# scope note below. No match_keywords: the real "Wakefield line" brand
-# covers a Y-shaped network with a second (Fitzwilliam-Doncaster) fork this
-# file does not model at all (see the scope note below); using "Wakefield
-# line" here would misattribute an incident on that unmodelled Doncaster
-# fork to this file. Station and operator evidence carries this file
-# instead.
+sample_stations = ["SHF", "SWN", "WKF", "LDS"]
+destination_crs_filter = ["LDS"]
+# Updated (Yorkshire review, 2026-09-21) from `["WKF"]`: this file's own
+# route was truncated at Wakefield Westgate (see the route-truncation
+# correction below) and now runs through to Leeds, its real terminus -- LDS
+# is the correct filter value, not WKF (an intermediate stop, not a
+# terminus, once the Leeds extension is modelled). No match_keywords: the
+# real "Wakefield line" brand covers a Y-shaped network with a second
+# (Fitzwilliam-Doncaster) fork this file does not model at all (see the
+# scope note below); using "Wakefield line" here would misattribute an
+# incident on that unmodelled Doncaster fork to this file. Station and
+# operator evidence carries this file instead.
 
 [severity_overrides]
 minor_delays_pct = 0.30
@@ -66,28 +87,47 @@ delay_threshold_minutes = 10
 # article (independently corroborates the Sheffield/Leeds-via-Moorthorpe
 # service pattern and frequency).
 #
-# --- Scope boundary: Wakefield Westgate northward, and the Doncaster fork,
-# are deliberately not modelled here ---
+# --- Scope boundary: the Doncaster fork is deliberately not modelled here
+# (route-truncation correction, Yorkshire review, 2026-09-21) ---
 # The real "Wakefield line" is Y-shaped: Leeds City-Fitzwilliam is a shared
 # trunk, which then forks at Fitzwilliam into a Doncaster branch (South
 # Elmsall, Adwick, Bentley, Doncaster) and this file's own Sheffield branch
 # (Moorthorpe, Thurnscoe, Goldthorpe, Bolton-upon-Dearne, Swinton,
-# Rotherham Central, Meadowhall, Sheffield). This task's own brief scopes
-# the assignment to "Sheffield...Wakefield" specifically, so this file
-# stops at Wakefield Westgate rather than continuing on to Leeds or
-# forking to Doncaster -- both are real, sourced, documented gaps left for
-# whoever picks up the wider Wakefield Line network. Sandal & Agbrigg and
-# Fitzwilliam themselves ARE included below since Wikipedia's own route
-# description places them on the Sheffield-bound fork's own approach to
-# Wakefield Westgate, not exclusively on the Doncaster fork.
+# Rotherham Central, Meadowhall, Sheffield). This file's original brief
+# scoped the assignment to "Sheffield...Wakefield" specifically, so it used
+# to stop at Wakefield Westgate rather than continuing on to Leeds --
+# WRONG, on review: the real, single Northern service this file models runs
+# through to Leeds as one continuous working (confirmed via Swinton railway
+# station's own Wikipedia article, already cited above: "one per hour to
+# Leeds via Moorthorpe" -- Leeds, not Wakefield, is the service's own real
+# northern terminus), so stopping at Wakefield Westgate truncated a real,
+# single through-service into an artificially shorter one. Fixed below:
+# Outwood (OUT), the one intermediate stop between Wakefield Westgate and
+# Leeds on this route (confirmed via `lner-leeds.toml`'s own header comment,
+# which lists Outwood among the Wakefield Line's own Northern-only local
+# stops, and independently via https://ds.cursed.solutions/api/stations),
+# and Leeds (LDS) itself are now included. The Doncaster fork remains a
+# real, sourced, documented gap left for whoever picks up the wider
+# Wakefield Line network -- out of scope for this Sheffield-branch file.
+# Sandal & Agbrigg and Fitzwilliam themselves ARE included below since
+# Wikipedia's own route description places them on the Sheffield-bound
+# fork's own approach to Wakefield Westgate, not exclusively on the
+# Doncaster fork.
 #
 # --- Segment/overlap decision ---
-# WKF (Wakefield Westgate) is also an `lner-leeds.toml` station (that
-# file's own `lner-leeds` segment, on the King's Cross-Leeds ECML branch).
-# Different physical approach into the same station (this line arrives
-# from Sandal & Agbrigg to the south; LNER's approaches from Doncaster to
-# the east) -- station-overlap only, no segment shared, the same
-# `xc-manchester.toml` precedent cited throughout this catalogue.
+# WKF (Wakefield Westgate) and LDS (Leeds) are also `lner-leeds.toml`
+# stations (that file's own `lner-leeds` segment, on the King's Cross-Leeds
+# ECML branch). Different physical approach into both shared stations (this
+# line arrives at Wakefield from Sandal & Agbrigg to the south and continues
+# to Leeds via Outwood; LNER's own approach reaches Wakefield from Doncaster
+# to the east and Leeds directly via the ECML) -- station-overlap only, no
+# segment shared, the same `xc-manchester.toml` precedent cited throughout
+# this catalogue. LDS is likewise station-overlap-only with every other
+# Leeds-terminating file in this catalogue (`northern-airedale.toml`/
+# `northern-wharfedale.toml`'s `northern-shipley-trunk`,
+# `northern-harrogate-line.toml`, `northern-leeds-selby.toml`, `northern.
+# toml`'s own `northern-yorkshire`), each a physically distinct approach
+# into the same station.
 #
 # SHF (Sheffield) is also a `cross-country.toml`/`emr-midland-main-line.
 # toml`/`emr-regional.toml` station, each via yet another different
@@ -97,7 +137,8 @@ delay_threshold_minutes = 10
 # Every station below uses this file's own single exclusive segment,
 # `northern-wakefield-sheffield` -- no genuine, currently-modelled physical
 # track-sharing with any other file's own tagged stations was found on
-# this specific Sheffield-Moorthorpe-Fitzwilliam-Wakefield stretch.
+# this specific Sheffield-Moorthorpe-Fitzwilliam-Wakefield-Outwood-Leeds
+# stretch.
 #
 # CRS codes for every station below verified against
 # https://ds.cursed.solutions/api/stations?q=<name> (one unambiguous result
@@ -173,8 +214,25 @@ segment = "northern-wakefield-sheffield"
 
 [[stations]]
 crs = "WKF"
+role = "major"
+segment = "northern-wakefield-sheffield"
+# Wakefield Westgate -- no longer this file's own terminus (see the
+# route-truncation correction above); the real service continues to Leeds
+# via Outwood. Also an `lner-leeds.toml` station; see the overlap note
+# above.
+
+[[stations]]
+crs = "OUT"
+role = "minor"
+segment = "northern-wakefield-sheffield"
+# Outwood -- the one intermediate stop between Wakefield Westgate and
+# Leeds on this route; see the route-truncation correction above.
+
+[[stations]]
+crs = "LDS"
+tiploc = "LEEDS"
 role = "terminus"
 segment = "northern-wakefield-sheffield"
-# Wakefield Westgate -- this file's own northern scope boundary; see the
-# scope note above. Also an `lner-leeds.toml` station; see the overlap
-# note above.
+# Leeds -- this file's own real terminus; see the route-truncation
+# correction above. Station-overlap only with several other Leeds-
+# terminating files; see the overlap note above.
