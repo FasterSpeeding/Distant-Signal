@@ -17,8 +17,10 @@ operators = ["XC"]
 # `match_keywords` below unchanged -- the brand name is still exactly what
 # Knowledgebase incident text uses.
 
-# North, midpoint(s), south.
-sample_stations = ["NCL", "YRK", "BHM", "BRI", "EXD"]
+# North, midpoint(s), south. LDS added for the Leeds branch (review2
+# finding, see the YRK/DON/LDS/WKF comments below) -- one sample per
+# reconverging path either side of Sheffield.
+sample_stations = ["NCL", "YRK", "LDS", "BHM", "BRI", "EXD"]
 match_keywords = ["CrossCountry", "Cross Country"]
 # No excluded_keywords: "Cross Country Route" (the Birmingham-Bristol
 # infrastructure name) shows up in messages that genuinely do affect XC, so
@@ -39,6 +41,21 @@ delay_threshold_minutes = 10
 #
 # TIPLOCs are given only where verified; the field is optional and absent
 # values simply mean no TRUST/SCHEDULE correlation hint for that station.
+#
+# Unlike those four arms, the York-Leeds-Wakefield Westgate-Sheffield branch
+# added below (review2 finding, 2026-09-21) is modelled INSIDE this file
+# rather than as a sibling file: it reconverges back onto this file's own
+# spine at Sheffield rather than reaching a distinct terminus, the same
+# "Y-shape" shape `wcml-manchester.toml` models in one file rather than two.
+# See that file's own caveat comment, which applies identically here:
+# `LineDefinition::stations_between` and `routes_from_stations` (in
+# `crates/aggregator/src/aggregation.rs`) do a flat, file-ordered index-range
+# lookup over `stations` and are NOT branch-aware -- calling either across
+# this file's two Sheffield-reconverging paths (e.g. `stations_between("DON",
+# "SHF")`, which would spuriously include LDS/WKF) would produce a
+# geographically wrong result. Not fixed here for the same reason
+# `wcml-manchester.toml` didn't fix it: aggregator logic, not line data,
+# out of this task's scope.
 [[stations]]
 crs = "NCL"
 tiploc = "NWCSTLE"
@@ -59,15 +76,56 @@ segment = "xc-north-east"
 [[stations]]
 crs = "YRK"
 tiploc = "YORK"
-role = "major"
+role = "junction"
 segment = "xc-north-east"
+# Real-world-sanity review finding (2026-09-21): York is where XC's NE-SW
+# spine genuinely forks in two towards Sheffield -- one path via Doncaster
+# (already modelled below), the other via Leeds and Wakefield Westgate
+# (previously entirely absent from every CrossCountry file; added below as
+# a second branch, the same reconverging "Y-shape" technique
+# `wcml-manchester.toml` already uses for its own Stafford-Stockport fork).
+# Confirmed via Wikipedia's "Wakefield Westgate railway station" article
+# (CrossCountry's Scotland/Aberdeen-Plymouth/Penzance service is explicitly
+# named as calling there) cross-checked against `lner-leeds.toml`'s own
+# already-verified LDS/WKF station data, reused verbatim below. Role
+# changed from "major" to "junction" to reflect the fork.
 
+# Branch 1: via Doncaster (the route this file already modelled). DON is
+# the sole station on this exclusive branch before the two paths reconverge
+# at Sheffield -- per SCHEMA.md's shared-trunk rule of thumb, the fork
+# point (YRK) stays on the shared `xc-north-east` trunk above, and this
+# branch's own exclusive segment starts here.
 [[stations]]
 crs = "DON"
 tiploc = "DONC"
-role = "junction"
-segment = "xc-yorkshire"
+role = "minor"
+segment = "xc-yorkshire-doncaster"
 
+# Branch 2: via Leeds and Wakefield Westgate. CRS/TIPLOC for both reused
+# verbatim from `lner-leeds.toml`'s own already-verified entries (LDS
+# tiploc "LEEDS"; WKF has no confirmed TIPLOC there either, so none is
+# invented here). Station-overlap-only with `lner-leeds.toml`,
+# `tpe-north.toml` and the various Northern West Yorkshire files that also
+# touch LDS/WKF -- no segment name shared, matching this catalogue's
+# established cross-operator convention (checked each of those files'
+# own LDS/WKF segment names before writing this; none is named
+# `xc-yorkshire-leeds`).
+[[stations]]
+crs = "LDS"
+tiploc = "LEEDS"
+role = "major"
+segment = "xc-yorkshire-leeds"
+
+[[stations]]
+crs = "WKF"
+role = "minor"
+segment = "xc-yorkshire-leeds"
+
+# Both branches reconverge here. New segment name (not a reuse of the old
+# `xc-yorkshire` name, which previously spanned DON through CHD as one flat
+# stretch) -- same "the merged continuation gets its own name" pattern
+# `wcml-manchester.toml` uses for its own `wcml-manchester-piccadilly`
+# segment after its Stafford-Stockport fork reconverges.
 [[stations]]
 crs = "SHF"
 tiploc = "SHEFFLD"
