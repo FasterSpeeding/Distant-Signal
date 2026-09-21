@@ -37,14 +37,18 @@ match_keywords = ["Dartford Loop line", "Bexleyheath line", "Sidcup line"]
 #     whatsoever with this file (verified against both files' CRS lists).
 #   - "Javelin"/"High Speed 1": southeastern-highspeed.toml likewise shares
 #     no station with this file.
-#   - "North Kent Line": no file in this catalogue models that line yet, so
-#     this is a forward-looking placeholder with zero current risk. If a
-#     North Kent Line file is ever added it WILL share SGR/DFD with this
-#     file, and this entry must then be removed for the same reason as
-#     above.
+#
+# KENT/SUSSEX BATCH FIX: "North Kent Line" is now ALSO removed, for the
+# identical reason. It was kept above on the stated basis that "no file in
+# this catalogue models that line yet... If a North Kent Line file is ever
+# added it WILL share SGR/DFD with this file, and this entry must then be
+# removed for the same reason as above." That file now exists -
+# southeastern-north-kent.toml, part of this same batch - and shares SGR
+# and DFD with this file exactly as predicted. Removed rather than left as
+# a live landmine; see southeastern-north-kent.toml's own header comment for
+# the full writeup.
 excluded_keywords = [
     "Chatham Main Line",
-    "North Kent Line",
     "Javelin",
     "High Speed 1",
 ]

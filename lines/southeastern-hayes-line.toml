@@ -42,11 +42,20 @@ match_keywords = ["Hayes line"]
 #     all with this file.
 #   - "Javelin"/"High Speed 1": southeastern-highspeed.toml likewise shares
 #     no station with this file.
-#   - "North Kent Line": no file in this catalogue models that line yet, so
-#     it is a forward-looking placeholder with zero current risk.
+#
+# KENT/SUSSEX BATCH FIX: "North Kent Line" is now ALSO removed, for the
+# identical reason. It was kept above on the stated basis that "no file in
+# this catalogue models that line yet... a forward-looking placeholder with
+# zero current risk." That file now exists - southeastern-north-kent.toml,
+# part of this same batch - and shares CHX/WAE/LBG with this file (this
+# file's own route runs Charing Cross - Waterloo East - London Bridge -
+# Lewisham - ...; the North Kent Line file's own route runs Charing Cross -
+# Waterloo East - Cannon Street - London Bridge - New Cross - Deptford -
+# Greenwich - ... - Dartford; both physically pass through CHX/WAE/LBG
+# before diverging). Removed rather than left as a live landmine; see
+# southeastern-north-kent.toml's own header comment for the full writeup.
 excluded_keywords = [
     "Chatham Main Line",
-    "North Kent Line",
     "Javelin",
     "High Speed 1",
 ]

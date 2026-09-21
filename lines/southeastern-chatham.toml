@@ -215,7 +215,16 @@ segment = "chatham-london"
 crs = "BKL"
 role = "junction"
 segment = "chatham-london"
-# Bromley North branch diverges here; not covered by this catalogue.
+# KENT/SUSSEX BATCH FIX: this comment previously claimed "Bromley North
+# branch diverges here" - that was a mistake. Confirmed while researching
+# southeastern-bromley-north.toml (part of this same batch): Wikipedia's own
+# "Bromley North Line" article states plainly that branch "connects at Grove
+# Park railway station with the South Eastern Main Line" - Grove Park (GRP,
+# southeastern-main-line.toml's own `seml-london` segment), not Bickley, is
+# the branch's only junction with the rest of the network. Bickley itself is
+# simply a through station on this line with no branch of its own; corrected
+# here rather than left as a standing factual error now that a sibling file
+# exists that would otherwise silently contradict it.
 
 [[stations]]
 crs = "SMY"
