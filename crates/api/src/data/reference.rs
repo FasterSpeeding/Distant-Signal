@@ -112,19 +112,21 @@ pub async fn nearest_stations(
     lon: f64,
     limit: i64,
 ) -> Result<Vec<NearbyStation>> {
-    // Haversine distance in km, Earth radius 6371 km. `LEAST`/`GREATEST`
-    // clamp the `asin` argument to [-1, 1]: without this, floating-point
-    // rounding on a point very close to (or exactly at) a station's own
-    // coordinates can push the intermediate value fractionally past 1,
-    // and `asin` of an out-of-domain input is a Postgres runtime error,
-    // not a merely-inaccurate result.
+    // Haversine distance in km, Earth radius 6371 km. `LEAST` clamps the
+    // `asin` argument to <= 1: without this, floating-point rounding on a
+    // point very close to (or exactly at) a station's own coordinates can
+    // push the intermediate value fractionally past 1, and `asin` of an
+    // out-of-domain input is a Postgres runtime error, not a
+    // merely-inaccurate result. No lower-bound clamp is needed: the
+    // argument is `sqrt(sin(..)^2 + cos(..)*cos(..)*sin(..)^2)`, a sum of
+    // squares under a square root, which is always >= 0.
     let rows: Vec<NearbyStation> = sqlx::query_as(
         "SELECT crs AS code, name, \
-           2 * 6371 * asin(LEAST(1.0, GREATEST(-1.0, sqrt( \
+           2 * 6371 * asin(LEAST(1.0, sqrt( \
              sin(radians(($1::double precision - latitude) / 2)) ^ 2 + \
              cos(radians(latitude)) * cos(radians($1::double precision)) * \
              sin(radians(($2::double precision - longitude) / 2)) ^ 2 \
-           )))) AS distance_km \
+           ))) AS distance_km \
          FROM stations \
          WHERE latitude IS NOT NULL AND longitude IS NOT NULL \
          ORDER BY distance_km ASC \

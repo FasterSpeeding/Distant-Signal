@@ -34,9 +34,9 @@ describe('searchNearbyStations', () => {
     expect(fetchMock.mock.calls[0][1]).toEqual({ signal: controller.signal });
   });
 
-  it('resolves to an empty array on a non-2xx response, rather than throwing', async () => {
+  it('throws on a non-2xx response, so a real failure is never mistaken for "nothing found"', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('bad request', { status: 400 })));
 
-    expect(await searchNearbyStations(0, 0)).toEqual([]);
+    await expect(searchNearbyStations(0, 0)).rejects.toThrow('400');
   });
 });

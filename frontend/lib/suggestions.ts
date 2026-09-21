@@ -26,11 +26,17 @@ export async function searchTocs(q: string, signal?: AbortSignal): Promise<Sugge
  * there is no "empty input" short-circuit -- `lat`/`lon` only ever reach
  * this function already resolved from a real
  * `navigator.geolocation.getCurrentPosition()` fix, so every call here is a
- * genuine lookup. A failed request (network error or non-2xx) resolves to
- * `[]` rather than throwing, matching `searchStations`/`searchTocs`'s own
- * "no results" contract -- callers distinguish "found nothing" from
- * "couldn't ask" using their own request state, not this function's return
- * value. */
+ * genuine lookup.
+ *
+ * Unlike `searchStations`/`searchTocs`, a failed request (network error or
+ * non-2xx) THROWS rather than resolving to `[]`: those two back a passive,
+ * ever-refetching type-ahead dropdown where a transient blip and "no
+ * matches" are both fine to just show as empty, but this backs a single
+ * explicit "Use my location" button click that already has its own
+ * `.catch()`-driven error state (`StationSearchForm.tsx`'s `handleNearMe`)
+ * -- collapsing a real backend/validation failure into an empty result
+ * would render the calm "nothing found near you" copy for what is actually
+ * an error, giving the user no reason to retry. */
 export async function searchNearbyStations(
   lat: number,
   lon: number,
@@ -38,6 +44,8 @@ export async function searchNearbyStations(
 ): Promise<NearbyStation[]> {
   const params = new URLSearchParams({ lat: String(lat), lon: String(lon) });
   const response = await fetch(`/api/stations/nearby?${params.toString()}`, { signal });
-  if (!response.ok) return [];
+  if (!response.ok) {
+    throw new Error(`nearby station lookup failed: ${response.status}`);
+  }
   return response.json() as Promise<NearbyStation[]>;
 }
