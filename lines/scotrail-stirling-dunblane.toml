@@ -245,6 +245,21 @@ segment = "scotrail-stirling-dunblane"
 # route's own core stopping pattern and not modelled as further stations
 # here; see the scope note below.
 
+[[stations]]
+crs = "ALO"
+role = "terminus"
+segment = "scotrail-stirling-dunblane-alloa-branch"
+# Alloa: ADDED (real-world-sanity review, 2026-09-21), closing part of
+# this file's own previously-documented Alloa scope gap (see below). A
+# fresh fetch of Wikipedia's "Alloa railway station" article confirms
+# ScotRail operation, "mostly half-hourly train to Stirling and Glasgow
+# seven days a week", and no intermediate station between Stirling and
+# Alloa ("timetabled to take 9-10 minutes" with a direct connection). Per
+# the shared-trunk rule of thumb, Stirling (already `role = "junction"`
+# above) stays on the shared `scotrail-stirling-dunblane` segment; this
+# short branch gets its own exclusive segment starting at Alloa itself,
+# the only other station on it.
+
 # === Sources (cross-checked per the plan's Global Constraints) ===
 #
 # Route structure, electrification and operator:
@@ -308,6 +323,21 @@ segment = "scotrail-stirling-dunblane"
 #   for whoever eventually writes it: reusing `scotrail-stirling-dunblane`
 #   for that file's own Larbert/Stirling/Bridge of Allan/Dunblane entries
 #   would correctly mark this real shared trunk.
+#
+#   RESOLUTION (real-world-sanity review, 2026-09-21, Part B): `lines/
+#   scotrail-glasgow-aberdeen.toml` now models this exact continuation
+#   (branded, per a fresh source, as the "Glasgow to Aberdeen Line" beyond
+#   Dunblane rather than just "Croy Line" -- the Croy Line's own Wikipedia
+#   article confirms both names describe the same route: "on the Glasgow
+#   to Aberdeen Line toward Dunblane"). That file reuses this exact
+#   `scotrail-stirling-dunblane` segment name for its own Larbert/
+#   Stirling/Bridge of Allan/Dunblane entries, per option (a) above.
+#   Dunblane itself is tagged `role = "major"` there (a through station on
+#   that file's own route to Perth/Dundee/Aberdeen), differing
+#   intentionally from this file's own `role = "terminus"` -- both
+#   describe real, different service patterns at the same physical
+#   station, per this catalogue's established per-file-role convention.
+#   The Alloa branch remains unmodelled by either file.
 # - The Cumbernauld Line (Glasgow Queen Street-Cumbernauld-Falkirk
 #   Grahamston-Camelon, "2 trains per hour... via Cumbernauld" per Falkirk
 #   Grahamston's own page): real, sourced, shares Falkirk Grahamston and
@@ -319,8 +349,15 @@ segment = "scotrail-stirling-dunblane"
 #   reconciliation note above.
 # - The Alloa branch (Stirling-Alloa, reopened 2008, one of Larbert's own
 #   "four hourly northbound trains to Stirling" continuing "one to Alloa"
-#   per Larbert's own page): real, sourced, but a distinct terminus from
-#   Dunblane and not named in this batch's task brief -- not modelled.
+#   per Larbert's own page): now modelled above (ALO, real-world-sanity
+#   review, 2026-09-21) -- see that station's own comment for the
+#   sourcing. Match_keywords are NOT extended for it: this file's own
+#   "Edinburgh to Dunblane Line"/"Edinburgh-Dunblane line" keywords
+#   deliberately don't describe the Alloa branch (a different, if
+#   related, ScotRail-branded service), and no dedicated "Alloa" phrase
+#   was added within this task's budget -- a real, minor incident-matching
+#   gap left for a future pass (station-code-based matching still covers
+#   the ALO entry regardless).
 # - Highland Main Line/Glasgow-Aberdeen continuations north of Dunblane
 #   (Perth, Dundee, Aberdeen, Inverness): `scotrail-highland-main-line.toml`
 #   already covers the Perth-Inverness stretch under its own PTH terminus,
