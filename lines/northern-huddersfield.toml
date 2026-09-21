@@ -43,13 +43,14 @@ operators = ["NT"]
 # Route and CRS verification: Wikipedia's own "Huddersfield line" article
 # (fetched 2026-09-21) gives the full historical route list including
 # Huddersfield-Leeds; each named station was cross-checked against
-# https://ds.cursed.solutions/api/stations?q=<name> to confirm it is still
-# open today. Bradley (on the Huddersfield-Leeds stretch) is a historical
-# stop, CLOSED and correctly omitted below -- it returned no result from
-# the stations API, confirming no live CRS/current service exists for it.
-# The remaining, currently-open stations below all returned exactly one
-# unambiguous result each. TIPLOCs omitted throughout -- none confirmed to
-# a second source this session.
+# https://ds.cursed.solutions/api/stations?q=<name>. Bradley (on the
+# Huddersfield-Leeds stretch) is a historical stop, CLOSED and correctly
+# omitted below -- it returned no result from the stations API, confirming
+# no live CRS/current service exists for it. The stations API returning a
+# result only confirms a CRS code is live in the reference data, not that a
+# station is currently open for passengers -- see the REVIEW3 FIX note on
+# Ravensthorpe below for a case where that distinction mattered. TIPLOCs
+# omitted throughout -- none confirmed to a second source this session.
 #
 # Electrification: per Wikipedia's own article, this line "is currently
 # subject to the Transpennine Route Upgrade" with full electrification
@@ -137,12 +138,18 @@ role = "minor"
 segment = "northern-huddersfield"
 # Mirfield -- also a `grand-central-bradford.toml` station; see the
 # top-of-file note above.
-
-[[stations]]
-crs = "RVN"
-role = "minor"
-segment = "northern-huddersfield"
-# Ravensthorpe.
+#
+# REVIEW3 FIX (2026-09-21): Ravensthorpe (RVN), the next real station
+# towards Dewsbury, is CLOSED as of today and correctly omitted here --
+# a prior fix wrongly kept it on the assumption that the stations API
+# returning a result meant it was open. Ravensthorpe's own Wikipedia
+# article gives an infobox closure date of 13 December 2025, with a
+# planned reopening ~200m to the west in summer 2028 as part of the
+# Transpennine Route Upgrade. The station remaining in the live reference
+# data (so the API still resolves its CRS) does not mean it currently has
+# a passenger service -- this file's own stated convention is to omit
+# closed stations regardless of API presence (see the Bradley note above).
+# Worth re-adding once/if the 2028 reopening happens.
 
 [[stations]]
 crs = "DEW"

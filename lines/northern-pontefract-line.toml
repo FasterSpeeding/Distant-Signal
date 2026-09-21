@@ -62,10 +62,10 @@ operators = ["NT"]
 # both of this file's own two approaches genuinely start/end at Leeds. The
 # Wakefield approach's own Leeds-Outwood-Wakefield Westgate stretch is a
 # genuine shared trunk with `northern-wakefield-line.toml` (which already
-# modelled this exact stretch), not mere station overlap -- OUT and WKF
-# below now carry a new, narrower `northern-outwood-wakefield-trunk`
-# segment name, shared with that file (see its own matching REVIEW2 FIX
-# note). This file's own exclusive Wakefield-approach segment
+# modelled this exact stretch), not mere station overlap -- WKF below now
+# carries a new, narrower `northern-outwood-wakefield-trunk` segment name,
+# shared with that file (see its own matching REVIEW2 FIX note). This
+# file's own exclusive Wakefield-approach segment
 # (`northern-pontefract-wakefield`) now starts one station later, at
 # Wakefield Kirkgate, per the shared-trunk rule of thumb. Leeds (LDS)
 # itself is NOT repeated as a second `[[stations]]` entry for this branch:
@@ -74,8 +74,14 @@ operators = ["NT"]
 # file -- `northern-wakefield-line.toml`'s own LDS entry carries the new
 # shared segment name instead, so the genuine "both approaches meet at
 # Leeds" fact is still represented, just not by literally duplicating this
-# file's own LDS row (documented in more detail on the OUT entry below, and
+# file's own LDS row (documented in more detail on the WKF entry below, and
 # on `northern-wakefield-line.toml`'s own LDS entry).
+#
+# REVIEW3 FIX (2026-09-21): Outwood (OUT) itself is NOT a calling point on
+# this branch and is correctly not modelled as a `[[stations]]` entry --
+# see the full write-up on the WKF entry below. The shared trunk name still
+# reflects genuine physical track-sharing (this branch's real train runs
+# over the Outwood stretch non-stop), it just doesn't imply a stop there.
 #
 # WKK (Wakefield Kirkgate) is also a station on `grand-central-bradford.
 # toml`/`northern-hallam-line.toml` -- a different physical approach, so
@@ -140,23 +146,6 @@ segment = "northern-pontefract-leeds"
 # Glasshoughton.
 
 [[stations]]
-crs = "OUT"
-role = "minor"
-segment = "northern-outwood-wakefield-trunk"
-# Outwood -- REVIEW2 FIX (2026-09-21): this file's own Wakefield branch
-# previously started (wrongly) at Wakefield Westgate. Knottingley's own
-# Wikipedia article ("There is a half-hourly service from Knottingley to
-# Leeds; one runs via Castleford and the other via Featherstone and
-# Wakefield Westgate") confirms this branch's real service continues
-# through to Leeds via Outwood, the same physical stretch
-# `northern-wakefield-line.toml` already models -- genuinely shared, not
-# just station overlap; see the top-of-file segment/overlap note for the
-# full write-up and for why Leeds (LDS) itself isn't repeated as a second
-# `[[stations]]` entry here even though it's this branch's own real
-# terminus too (it's already modelled once, above, as this file's own
-# Castleford-approach terminus).
-
-[[stations]]
 crs = "WKF"
 role = "junction"
 segment = "northern-outwood-wakefield-trunk"
@@ -169,6 +158,23 @@ segment = "northern-outwood-wakefield-trunk"
 # exclusive Featherstone/Pontefract-bound segment
 # (`northern-pontefract-wakefield`) now starts at the next station,
 # Wakefield Kirkgate, per the shared-trunk rule of thumb.
+#
+# REVIEW3 FIX (2026-09-21): Outwood (OUT) is NOT modelled as a calling
+# point on this branch -- a prior fix wrongly added it as a `[[stations]]`
+# entry here. Independent re-verification found three separate sources
+# contradicting that: Wakefield Westgate's own Wikipedia Services section
+# states the Knottingley-originating Leeds train is the ONE of Wakefield
+# Westgate's 3tph Leeds services that does NOT call at Outwood (the other
+# 2tph, Doncaster- and Sheffield-stoppers, do); Outwood's own Services
+# section independently confirms its calling trains are the Doncaster and
+# Sheffield stoppers, not the Knottingley one; and Outwood's routebox only
+# lists a `Wakefield Line` previous/next pair, with no Pontefract-line
+# routebox at all. The physical track WKF-Outwood-LDS genuinely is the
+# same shared trunk `northern-wakefield-line.toml` models (this branch's
+# real Knottingley-Leeds service runs over it non-stop past Outwood), so
+# WKF correctly stays on the shared `northern-outwood-wakefield-trunk`
+# name -- it's the OUT calling-point claim specifically that was wrong,
+# now removed.
 
 [[stations]]
 crs = "WKK"
