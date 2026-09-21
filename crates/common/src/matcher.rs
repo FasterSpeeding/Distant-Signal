@@ -434,6 +434,11 @@ mod tests {
         // `wmr-camp-hill` segment -- an eleventh line, station-overlap-only
         // like `wcml-birmingham`/`wmr-cross-city`/`lnwr-birmingham-crewe`
         // above.
+        //
+        // Updated by the Midlands EMR/WMR/LNWR sanity review: `wmr-malvern-
+        // line.toml` (a new file from that review) also terminates at
+        // Birmingham New Street, on its own exclusive `wmr-malvern-line`
+        // segment -- a twelfth line, same station-overlap-only pattern.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -459,6 +464,7 @@ mod tests {
                 "wmr-chase-line".to_string(),
                 "wmr-darlaston-line".to_string(),
                 "wmr-camp-hill-line".to_string(),
+                "wmr-malvern-line".to_string(),
             ])
         );
         for m in &matches {
@@ -466,6 +472,7 @@ mod tests {
                 "wcml-birmingham"
                 | "wmr-cross-city"
                 | "lnwr-birmingham-crewe"
+                | "wmr-malvern-line"
                 | "wmr-camp-hill-line" => MatchScope::ExclusiveSegment,
                 _ => MatchScope::SharedSegment,
             };
@@ -4189,6 +4196,14 @@ mod tests {
         // above, but tagged with a distinct segment name since it's a
         // different physical branch (added as a second southern terminus once
         // electrification reached it in 2018).
+        //
+        // Updated by the Midlands EMR/WMR/LNWR sanity review: `lines/wmr-
+        // malvern-line.toml` (a new file from that review) also calls at
+        // Bromsgrove, on its own exclusive `wmr-malvern-line` segment --
+        // genuine physical track-sharing but a materially different
+        // calling pattern beyond this point, so station-overlap only (see
+        // that file's own ruling comment). This incident now also matches
+        // it, independently ExclusiveSegment.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -4200,8 +4215,18 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["wmr-cross-city".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["wmr-cross-city".to_string(), "wmr-malvern-line".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment",
+                m.line.id
+            );
+        }
     }
 
     #[test]
@@ -5869,6 +5894,13 @@ mod tests {
     // Wales Coast) should match only this line, as
     // `MatchScope::ExclusiveSegment` -- e.g. Hereford, which sits on
     // `tfw-marches-south`, a segment no other line in the catalogue uses.
+    //
+    // Updated by the Midlands EMR/WMR/LNWR sanity review: `lines/wmr-
+    // malvern-line.toml` (a new file from that review) also terminates at
+    // Hereford, on its own exclusive `wmr-malvern-line` segment (a
+    // physically distinct, Bromsgrove/Worcester-facing approach) --
+    // station-overlap only, so this incident now also matches that line,
+    // independently ExclusiveSegment.
     #[test]
     fn marches_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -5882,8 +5914,18 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["tfw-marches".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["tfw-marches".to_string(), "wmr-malvern-line".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment",
+                m.line.id
+            );
+        }
     }
 
     // Craven Arms is on both `tfw-marches` and `tfw-heart-of-wales`, and
@@ -7588,6 +7630,13 @@ mod tests {
     // already exercised by
     // `stp_station_overlap_matches_thameslink_core_bedford_and_highspeed_as_independent_exclusive_segments`
     // above; this test covers the three remaining overlap stations.
+    //
+    // Updated by the Midlands EMR/WMR/LNWR sanity review: `lines/lnwr-
+    // marston-vale-line.toml` (a new file from that review) also terminates
+    // at Bedford, on its own exclusive `lnwr-marston-vale` segment (a
+    // physically distinct branch, west towards Bletchley) -- station-
+    // overlap only, so BDM specifically now also matches that line as a
+    // fourth ExclusiveSegment line, while LTN/LUT are unaffected.
     #[test]
     fn ltn_lut_bdm_station_overlap_between_emr_and_thameslink_bedford_stays_exclusive_for_thameslink()
      {
@@ -7610,13 +7659,17 @@ mod tests {
                 .iter()
                 .map(|m| (m.line.id.clone(), m.scope))
                 .collect();
+            let mut expected = HashSet::from([
+                "emr-midland-main-line".to_string(),
+                "emr-connect".to_string(),
+                "thameslink-bedford".to_string(),
+            ]);
+            if crs == "BDM" {
+                expected.insert("lnwr-marston-vale-line".to_string());
+            }
             assert_eq!(
                 by_id.keys().cloned().collect::<HashSet<_>>(),
-                HashSet::from([
-                    "emr-midland-main-line".to_string(),
-                    "emr-connect".to_string(),
-                    "thameslink-bedford".to_string(),
-                ]),
+                expected,
                 "unexpected match set for {crs}"
             );
             assert_eq!(
@@ -7634,6 +7687,13 @@ mod tests {
                 Some(&MatchScope::ExclusiveSegment),
                 "{crs}"
             );
+            if crs == "BDM" {
+                assert_eq!(
+                    by_id.get("lnwr-marston-vale-line"),
+                    Some(&MatchScope::ExclusiveSegment),
+                    "{crs}"
+                );
+            }
         }
     }
 
@@ -11074,5 +11134,107 @@ mod tests {
             HashSet::from(["emr-derwent-valley".to_string()])
         );
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `lines/wmr-malvern-line.toml` -- Great Malvern is exclusive to this
+    // line's own `wmr-malvern-line` segment.
+    #[test]
+    fn wmr_malvern_line_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LM-ML-1",
+            "Points failure at Great Malvern",
+            "Points failure causing delays to services at Great Malvern.",
+            &["LM"],
+            &["GMV"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["wmr-malvern-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `lines/lnwr-marston-vale-line.toml` -- Ridgmont is exclusive to this
+    // line's own `lnwr-marston-vale` segment.
+    #[test]
+    fn lnwr_marston_vale_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LM-MV-1",
+            "Points failure at Ridgmont",
+            "Points failure causing delays to services at Ridgmont.",
+            &["LM"],
+            &["RID"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["lnwr-marston-vale-line".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `lines/wmr-stourbridge-town.toml` -- the whole two-station shuttle is
+    // exclusive to this file.
+    #[test]
+    fn wmr_stourbridge_town_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LM-ST-1",
+            "Points failure at Stourbridge Town",
+            "Points failure causing delays to services at Stourbridge Town.",
+            &["LM"],
+            &["SBT"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["wmr-stourbridge-town".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `lines/wmr-nuneaton-coventry.toml` (extended) and `lines/wmr-snow-
+    // hill.toml` (extended) both now reach Leamington Spa, alongside the
+    // two files that already modelled it (`xc-south-coast.toml`,
+    // `chiltern-main-line.toml`) -- four independent physical approaches
+    // into the same station, none sharing a segment name with any other
+    // (see each file's own ruling comment), so all four should match this
+    // incident independently as ExclusiveSegment.
+    #[test]
+    fn leamington_spa_four_way_station_overlap_stays_exclusive_each_line() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "LM-LMS-1",
+            "Signal failure at Leamington Spa",
+            "Signal failure causing delays to services at Leamington Spa.",
+            &["LM"],
+            &["LMS"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "xc-south-coast".to_string(),
+                "chiltern-main-line".to_string(),
+                "wmr-nuneaton-coventry".to_string(),
+                "wmr-snow-hill".to_string(),
+            ])
+        );
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment",
+                m.line.id
+            );
+        }
     }
 }
