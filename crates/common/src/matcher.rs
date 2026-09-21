@@ -420,9 +420,9 @@ mod tests {
         // pattern as the two lines above. It's a real eighth line affected by
         // this incident, still ExclusiveSegment.
         //
-        // Updated by the Midlands batch 2: `lnwr-chase-line.toml` and
+        // Updated by the Midlands batch 2: `wmr-chase-line.toml` and
         // `wmr-darlaston-line.toml` both terminate at Birmingham New Street
-        // too, on the literal `lnwr-chase-line-newstreet` segment name they
+        // too, on the literal `wmr-chase-line-newstreet` segment name they
         // deliberately share (both files were authored together in the same
         // batch and keep this segment's extent byte-identical: BHM/DUD/AST/
         // WTT/PRY/HSD/TAB in both -- see either file's own comment for the
@@ -456,7 +456,7 @@ mod tests {
                 "wcml-birmingham".to_string(),
                 "wmr-cross-city".to_string(),
                 "lnwr-birmingham-crewe".to_string(),
-                "lnwr-chase-line".to_string(),
+                "wmr-chase-line".to_string(),
                 "wmr-darlaston-line".to_string(),
                 "wmr-camp-hill-line".to_string(),
             ])
