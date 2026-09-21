@@ -391,6 +391,39 @@ segment = "gwr-thames-valley"
 # case, no segment shared (see above). This line's Oxford and Newbury
 # branches (below) both diverge from here, in different directions.
 
+# Tilehurst (TLH), Pangbourne (PAN), Goring & Streatley (GOR) and Cholsey
+# (CHO): real, currently-open, currently-served stations directly between
+# Reading and Didcot Parkway, previously missing from this file. A
+# data-driven schedule audit confirms these are the Reading-side half of the
+# very same "2tph to Didcot Parkway" GWR local/semi-fast product this file's
+# own Slough/Maidenhead/Twyford research above already documents from the
+# Paddington side — the Didcot-Oxford half of that same working (via
+# Appleford/Culham/Radley, below) was already catalogued here, but the
+# Reading-Didcot stretch itself had been skipped over. Geographic order
+# (Reading - Tilehurst - Pangbourne - Goring & Streatley - Cholsey - Didcot
+# Parkway) matches each station's real position on this line. All
+# `role = "minor"`, inheriting this line's one `gwr-thames-valley` segment
+# per this file's established convention.
+[[stations]]
+crs = "TLH"
+role = "minor"
+segment = "gwr-thames-valley"
+
+[[stations]]
+crs = "PAN"
+role = "minor"
+segment = "gwr-thames-valley"
+
+[[stations]]
+crs = "GOR"
+role = "minor"
+segment = "gwr-thames-valley"
+
+[[stations]]
+crs = "CHO"
+role = "minor"
+segment = "gwr-thames-valley"
+
 # --- Branch 1: Didcot Parkway - Oxford ---
 [[stations]]
 crs = "DID"

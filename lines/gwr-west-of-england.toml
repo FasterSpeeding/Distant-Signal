@@ -338,6 +338,21 @@ segment = "xc-south-west"
 # Shared trunk with cross-country.toml from here onward — see segment-
 # naming comment above. Row copied verbatim from cross-country.toml.
 
+# Tiverton Parkway (TVP): a real, currently-open, currently-served station
+# directly between Taunton and Exeter St Davids, previously missing from
+# this file. Found by a data-driven schedule audit. It sits on the same
+# physical Bristol-Exeter shared trunk as the TAU/EXD rows either side of it
+# (see segment-naming comment above), so it stays on `xc-south-west` rather
+# than inventing a new segment name for this one stretch — but note
+# cross-country.toml does not currently list this station itself; that is a
+# separate, pre-existing potential gap in that file, out of scope here (this
+# fix is scoped to lines/gwr-west-of-england.toml only, per this task's
+# brief — cross-country.toml is not touched).
+[[stations]]
+crs = "TVP"
+role = "minor"
+segment = "xc-south-west"
+
 [[stations]]
 crs = "EXD"
 role = "major"
