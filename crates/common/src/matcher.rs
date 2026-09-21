@@ -6415,15 +6415,24 @@ mod tests {
     // Same reasoning again for the North Kent pattern: from Strood onward
     // this file's `hs1-northkent` segment runs over the same physical
     // track as southeastern-chatham.toml's `chatham-medway`/
-    // `chatham-coastal`, but the name isn't reused (this file doesn't
-    // touch e.g. Longfield/Meopham/Sole Street), so it's station overlap,
-    // not a shared trunk - both lines match a Ramsgate incident
-    // independently, each ExclusiveSegment.
+    // `chatham-coastal`. Originally the name wasn't reused (this file
+    // doesn't touch e.g. Longfield/Meopham/Sole Street), so it was modelled
+    // as station overlap, not a shared trunk.
+    //
+    // REVIEW FIX (shared-segment structural review, review2-shared-
+    // segments): resolved by splitting the segment at Strood (the actual
+    // physical boundary - this file's own Gravesend approach is genuinely
+    // exclusive, but SOO onward is genuinely the same track as
+    // southeastern-chatham.toml) rather than declining to share the whole
+    // stretch. SOO through RAM is now `strood-ramsgate-corridor`, reused
+    // verbatim by both files - see southeastern-chatham.toml's own header
+    // comment. A Ramsgate incident is therefore now a genuine SharedSegment
+    // between southeastern-chatham and southeastern-highspeed.
     //
     // Kent/Sussex batch: southeastern-canterbury-west.toml also terminates
     // at RAM (its own `canterbury-west-line` segment, approached from
-    // Ashford/Canterbury West rather than Faversham/Margate) - same
-    // station-overlap treatment, added here.
+    // Ashford/Canterbury West rather than Faversham/Margate) - untouched by
+    // this review, stays independently ExclusiveSegment.
     #[test]
     fn hs1_northkent_station_overlap_matches_both_chatham_and_hs1_as_independent_exclusive_segments()
      {
@@ -6447,11 +6456,15 @@ mod tests {
             ])
         );
         for m in &matches {
+            let expected = if m.line.id == "southeastern-canterbury-west" {
+                MatchScope::ExclusiveSegment
+            } else {
+                MatchScope::SharedSegment
+            };
             assert_eq!(
-                m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment, not shared",
-                m.line.id
+                m.scope, expected,
+                "{} should be {:?}",
+                m.line.id, expected
             );
         }
     }
@@ -6576,14 +6589,33 @@ mod tests {
     //
     // Kent/Sussex batch: southeastern-north-kent.toml (its own
     // `southeastern-north-kent` segment, the Greenwich-line approach) also
-    // calls at LBG - same station-overlap treatment, added here as a ninth
-    // independent match. (southeastern-maidstone-east.toml does NOT touch
-    // LBG - its own London approach is via Herne Hill/Bromley South, the
-    // same Victoria-side alignment southeastern-chatham.toml already
-    // models, which never reaches London Bridge.) The set below and the
-    // function name below now cover nine lines in total, eight of them
-    // independent ExclusiveSegment matches plus the bexleyheath/
-    // dartford-loop SharedSegment pair.
+    // calls at LBG - originally station overlap, a ninth independent match.
+    // (southeastern-maidstone-east.toml does NOT touch LBG - its own London
+    // approach is via Herne Hill/Bromley South, the same Victoria-side
+    // alignment southeastern-chatham.toml already models, which never
+    // reaches London Bridge.)
+    //
+    // REVIEW FIX (shared-segment structural review, review2-shared-
+    // segments): a cross-file review found southeastern-main-line.toml,
+    // southeastern-hayes-line.toml and southeastern-north-kent.toml had each
+    // kept their own separate name for this exact Charing Cross/Cannon
+    // Street-Waterloo East-London Bridge-New Cross-St Johns-Lewisham
+    // stretch, even though it is the same physical four-track approach
+    // southeastern-bexleyheath.toml/southeastern-dartford-loop.toml already
+    // correctly share as `southeastern-lewisham-corridor`. All three have
+    // now been fixed to reuse that name too (see each file's own header
+    // comment) - so this set now has FIVE files sharing
+    // `southeastern-lewisham-corridor` at LBG (bexleyheath, dartford-loop,
+    // main-line, hayes-line, north-kent), all SharedSegment together.
+    // thameslink-core keeps its own distinct `thameslink-core` segment name
+    // here (untouched by this review) and stays independently
+    // ExclusiveSegment. southern-brighton-main-line and thameslink-southern
+    // are ALSO now a SharedSegment pair with each other at LBG (their own
+    // separate `brighton-main-line-north` unification - see Group 3 of the
+    // same review, southern-brighton-main-line.toml's own SEGMENT NAMING
+    // comment), independent of the southeastern-lewisham-corridor family.
+    // southern-oxted-uckfield's own `oxted-london-bridge-approach` is
+    // untouched by this review and stays independently ExclusiveSegment.
     #[test]
     fn lbg_station_overlap_spans_nine_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
         let lines = load_all_lines();
@@ -6612,12 +6644,15 @@ mod tests {
             ])
         );
         for m in &matches {
-            let expected = if m.line.id == "southeastern-bexleyheath"
-                || m.line.id == "southeastern-dartford-loop"
-            {
-                MatchScope::SharedSegment
-            } else {
-                MatchScope::ExclusiveSegment
+            let expected = match m.line.id.as_str() {
+                "southeastern-bexleyheath"
+                | "southeastern-dartford-loop"
+                | "southeastern-main-line"
+                | "southeastern-hayes-line"
+                | "southeastern-north-kent"
+                | "southern-brighton-main-line"
+                | "thameslink-southern" => MatchScope::SharedSegment,
+                _ => MatchScope::ExclusiveSegment,
             };
             assert_eq!(
                 m.scope, expected,
@@ -6673,15 +6708,22 @@ mod tests {
     // data-driven line-definition audit): LEW is the Bexleyheath line's own
     // diverging junction, so it stays on `southeastern-lewisham-corridor`
     // in BOTH new files (the same shared trunk each still crosses up to and
-    // including Lewisham). That gives a fourth match here, and - unlike
-    // southeastern-hayes-line/southeastern-main-line, which each use their
-    // own distinct segment name at LEW - southeastern-bexleyheath and
-    // southeastern-dartford-loop share the literal segment name here, so
-    // the registry correctly promotes BOTH of those two to SharedSegment
-    // (mirrors swr_shared_trunk_incident_propagates's per-family
-    // SharedSegment shape; see also
+    // including Lewisham). That originally gave a fourth match here, with
+    // southeastern-hayes-line/southeastern-main-line each using their own
+    // distinct segment name at LEW (station overlap only).
+    //
+    // REVIEW FIX (shared-segment structural review, review2-shared-
+    // segments): southeastern-hayes-line.toml and southeastern-main-
+    // line.toml have both now been fixed to reuse
+    // `southeastern-lewisham-corridor` at LEW too (see each file's own
+    // header comment) - so all FOUR lines here now share the literal
+    // segment name and the registry correctly promotes all four to
+    // SharedSegment (mirrors swr_shared_trunk_incident_propagates's
+    // per-family SharedSegment shape; see also
     // lbg_station_overlap_spans_nine_lines_bexleyheath_and_dartford_loop_share_the_trunk
-    // above for the same pattern at London Bridge).
+    // above for the same pattern at London Bridge). southeastern-north-
+    // kent.toml does not reach LEW at all (its own exclusive Greenwich-line
+    // stretch diverges earlier, at New Cross), so it is not in this set.
     #[test]
     fn lew_station_overlap_matches_four_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
         let lines = load_all_lines();
@@ -6705,17 +6747,11 @@ mod tests {
             ])
         );
         for m in &matches {
-            let expected = if m.line.id == "southeastern-bexleyheath"
-                || m.line.id == "southeastern-dartford-loop"
-            {
-                MatchScope::SharedSegment
-            } else {
-                MatchScope::ExclusiveSegment
-            };
             assert_eq!(
-                m.scope, expected,
-                "{} should be {:?}",
-                m.line.id, expected
+                m.scope,
+                MatchScope::SharedSegment,
+                "{} should be SharedSegment on southeastern-lewisham-corridor",
+                m.line.id
             );
         }
     }
@@ -6758,10 +6794,13 @@ mod tests {
     // (southeastern-bexleyheath.toml/southeastern-dartford-loop.toml, per a
     // data-driven line-definition audit): both new files still list LEW on
     // their shared `southeastern-lewisham-corridor` segment, so this
-    // incident now matches four lines instead of three, with the split pair
-    // promoted to SharedSegment between themselves - same shape as
+    // incident matches four lines. Updated again by the shared-segment
+    // structural review (review2-shared-segments): southeastern-hayes-
+    // line.toml and southeastern-main-line.toml now also reuse
+    // `southeastern-lewisham-corridor` at LEW (see
     // lew_station_overlap_matches_four_lines_bexleyheath_and_dartford_loop_share_the_trunk
-    // above.
+    // above for the full write-up), so all four lines are now promoted to
+    // SharedSegment together, not just the bexleyheath/dartford-loop pair.
     #[test]
     fn sibling_line_names_no_longer_veto_a_shared_station_hit() {
         let lines = load_all_lines();
@@ -6786,17 +6825,11 @@ mod tests {
             "all named/overlapping lines list LEW and must all match; before the fix each vetoed the other and this was empty"
         );
         for m in &matches {
-            let expected = if m.line.id == "southeastern-bexleyheath"
-                || m.line.id == "southeastern-dartford-loop"
-            {
-                MatchScope::SharedSegment
-            } else {
-                MatchScope::ExclusiveSegment
-            };
             assert_eq!(
-                m.scope, expected,
-                "{} should be {:?}",
-                m.line.id, expected
+                m.scope,
+                MatchScope::SharedSegment,
+                "{} should be SharedSegment on southeastern-lewisham-corridor",
+                m.line.id
             );
         }
     }
@@ -6817,12 +6850,18 @@ mod tests {
     // below. HSK remains exclusive to `southern-bml-south`.
     //
     // Updated by Task 5.14 (thameslink-southern.toml): that file's own
-    // Brighton branch also calls at Hassocks, on its own `thameslink-
-    // brighton` segment - deliberately NOT the same name as this line's own
-    // `southern-bml-south` (see thameslink-southern.toml's own PAST EAST
-    // CROYDON header comment for why that lead was documented but not
-    // acted on), so this is a second independent ExclusiveSegment match,
-    // not a SharedSegment one.
+    // Brighton branch also calls at Hassocks, originally on its own
+    // `thameslink-brighton` segment - deliberately NOT the same name as this
+    // line's own `southern-bml-south` at the time (see thameslink-
+    // southern.toml's own PAST EAST CROYDON header comment history for why
+    // that lead was originally documented but not acted on).
+    //
+    // REVIEW FIX (shared-segment structural review, review2-shared-
+    // segments): that decision was reversed by a later cross-file review -
+    // `southern-bml-south` (renamed `brighton-main-line-south`) is now
+    // reused verbatim by thameslink-southern.toml too, so this is now a
+    // genuine SharedSegment pair, not two independent ExclusiveSegment
+    // matches - see both files' own updated header comments.
     #[test]
     fn southern_bml_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -6846,8 +6885,8 @@ mod tests {
         for m in &matches {
             assert_eq!(
                 m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment, not shared",
+                MatchScope::SharedSegment,
+                "{} should be SharedSegment on brighton-main-line-south",
                 m.line.id
             );
         }
@@ -6876,10 +6915,14 @@ mod tests {
     // in `aggregation.rs`, which WOULD fail without `GX` in `operators`.
     //
     // Updated by Task 5.14 (thameslink-southern.toml): that file's own
-    // Brighton branch also calls at Preston Park, on its own
-    // `thameslink-brighton` segment - a second independent ExclusiveSegment
-    // station-overlap match, same reasoning as
-    // southern_bml_exclusive_segment_incident_does_not_propagate above.
+    // Brighton branch also calls at Preston Park - originally its own
+    // `thameslink-brighton` segment, a second independent ExclusiveSegment
+    // station-overlap match.
+    //
+    // REVIEW FIX (shared-segment structural review, review2-shared-
+    // segments): now a genuine SharedSegment pair on `brighton-main-line-
+    // south` - see southern_bml_exclusive_segment_incident_does_not_propagate
+    // above for the full write-up.
     #[test]
     fn southern_bml_station_hit_matches_regardless_of_gx_or_sn_operator_tag() {
         let lines = load_all_lines();
@@ -6903,8 +6946,8 @@ mod tests {
         for m in &matches {
             assert_eq!(
                 m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment, not shared",
+                MatchScope::SharedSegment,
+                "{} should be SharedSegment on brighton-main-line-south",
                 m.line.id
             );
         }
@@ -6953,13 +6996,21 @@ mod tests {
     // incident at Brighton matches all three lines independently, each
     // still scoped ExclusiveSegment, never SharedSegment.
     // Updated by Task 5.14 (thameslink-southern.toml): that file's own
-    // Brighton branch also terminates at Brighton, on its own
-    // `thameslink-brighton` segment - deliberately NOT the same name as
+    // Brighton branch also terminates at Brighton - originally its own
+    // `thameslink-brighton` segment, deliberately NOT the same name as
     // southern-brighton-main-line.toml's own `southern-bml-south` here (see
-    // that file's own PAST EAST CROYDON header comment for why the
+    // that file's own PAST EAST CROYDON header comment history for why the
     // southern-bml-south sharing lead found past East Croydon was
-    // documented but not acted on), so this remains a fourth independent
-    // ExclusiveSegment station-overlap match, not a SharedSegment one.
+    // originally documented but not acted on).
+    //
+    // REVIEW FIX (shared-segment structural review, review2-shared-
+    // segments): that decision was reversed - southern-brighton-main-
+    // line.toml and thameslink-southern.toml now share `brighton-main-
+    // line-south` verbatim (see southern_bml_exclusive_segment_incident_
+    // does_not_propagate above), so those two are now SharedSegment with
+    // each other here. southern-coastway-east.toml's/southern-coastway-
+    // west.toml's own segment names are untouched by this review and stay
+    // independently ExclusiveSegment.
     #[test]
     fn btn_station_overlap_matches_coastway_east_and_brighton_main_line_as_independent_exclusive_segments()
      {
@@ -6984,11 +7035,17 @@ mod tests {
             ])
         );
         for m in &matches {
+            let expected = if m.line.id == "southern-brighton-main-line"
+                || m.line.id == "thameslink-southern"
+            {
+                MatchScope::SharedSegment
+            } else {
+                MatchScope::ExclusiveSegment
+            };
             assert_eq!(
-                m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment, not shared",
-                m.line.id
+                m.scope, expected,
+                "{} should be {:?}",
+                m.line.id, expected
             );
         }
     }
@@ -7143,8 +7200,18 @@ mod tests {
     // ExclusiveSegment, never SharedSegment.
     //
     // Kent/Sussex batch: southeastern-maidstone-east.toml also terminates at
-    // VIC (its own `maidstone-east-victoria` segment) - same station-overlap
-    // treatment, added here as a fourth independent match.
+    // VIC - originally its own `maidstone-east-victoria` segment, a fourth
+    // independent station-overlap match.
+    //
+    // REVIEW FIX (shared-segment structural review, review2-shared-
+    // segments): southeastern-chatham.toml's and southeastern-maidstone-
+    // east.toml's own Victoria approaches turned out to be an IDENTICAL
+    // twelve-station list, so both now share `chatham-maidstone-victoria`
+    // verbatim - a genuine SharedSegment between those two specifically
+    // (see southeastern-chatham.toml's own header comment). southern-
+    // brighton-main-line.toml's own `southern-bml-victoria` and southern-
+    // oxted-uckfield.toml's own `oxted-victoria-approach` are untouched by
+    // this review and stay independently ExclusiveSegment.
     #[test]
     fn vic_station_overlap_matches_brighton_main_line_chatham_and_oxted_uckfield_as_independent_exclusive_segments()
      {
@@ -7169,11 +7236,17 @@ mod tests {
             ])
         );
         for m in &matches {
+            let expected = if m.line.id == "southeastern-chatham"
+                || m.line.id == "southeastern-maidstone-east"
+            {
+                MatchScope::SharedSegment
+            } else {
+                MatchScope::ExclusiveSegment
+            };
             assert_eq!(
-                m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment, not shared",
-                m.line.id
+                m.scope, expected,
+                "{} should be {:?}",
+                m.line.id, expected
             );
         }
     }
@@ -7698,22 +7771,22 @@ mod tests {
     // branch's Catford Loop stretch rejoins the Chatham Main Line at
     // Shortlands and shares track with southeastern-chatham.toml's own
     // approach as far as Swanley - see thameslink-southern.toml's own
-    // header comment), but it is deliberately NOT modelled as a
-    // SharedSegment: southeastern-chatham.toml's own `chatham-london`
-    // segment bundles this stretch together with its own Victoria-Herne
-    // Hill approach (which this file's Sevenoaks branch never touches), so
-    // reusing that name verbatim would incorrectly also mark Victoria/BKJ/
-    // Herne Hill as SharedSegment - exactly the trap
-    // thameslink-cambridge.toml's own OVERLAP (a)/(b) comment warns about.
-    // Confirms an incident at Swanley matches both lines independently,
-    // each still scoped ExclusiveSegment, never SharedSegment - mirrors
-    // bfr_station_overlap_matches_thameslink_core_and_thameslink_southern_
-    // as_independent_exclusive_segments above.
+    // header comment). Originally NOT modelled as a SharedSegment:
+    // southeastern-chatham.toml's own OLD `chatham-london` segment bundled
+    // this stretch together with its own Victoria-Herne Hill approach
+    // (which this file's Sevenoaks branch never touches), so reusing that
+    // name verbatim would have incorrectly also marked Victoria/BKJ/Herne
+    // Hill as SharedSegment.
     //
-    // Kent/Sussex batch: southeastern-maidstone-east.toml also has a station
-    // at Swanley (its own `maidstone-east-victoria` segment, ending there) -
-    // same station-overlap treatment, added here as a third independent
-    // match.
+    // REVIEW FIX (shared-segment structural review, review2-shared-
+    // segments): resolved by splitting southeastern-chatham.toml's segment
+    // at Shortlands instead of declining to share - SRT through SAY is now
+    // `chatham-maidstone-thameslink-swanley`, reused verbatim by this file,
+    // southeastern-chatham.toml AND southeastern-maidstone-east.toml (which
+    // also turned out to run this identical stretch, previously its own
+    // separately-named `maidstone-east-victoria`). All three now genuinely
+    // SharedSegment at Swanley - see southeastern-chatham.toml's own header
+    // comment for the full write-up.
     #[test]
     fn say_station_overlap_matches_chatham_and_thameslink_southern_as_independent_exclusive_segments()
      {
@@ -7739,28 +7812,31 @@ mod tests {
         for m in &matches {
             assert_eq!(
                 m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment, not shared",
+                MatchScope::SharedSegment,
+                "{} should be SharedSegment on chatham-maidstone-thameslink-swanley",
                 m.line.id
             );
         }
     }
 
-    // Task 5.14. REVISED after review: the flagged Task 5.6 coordination
-    // (London Bridge/East Croydon) does NOT clear this batch's two-source
-    // bar after all - an earlier draft reused `southern-bml-north` here and
-    // asserted a genuine SharedSegment pair, but the only non-Wikipedia
-    // source found (thetrainline.com) is not one of COMMON.md's four
-    // approved second-source categories and only shows service-existence,
-    // not physical track sharing. See thameslink-southern.toml's own
-    // BRIGHTON BRANCH header comment for the full writeup. This file's own
-    // Brighton branch now uses its own segment name (`thameslink-brighton`)
-    // at East Croydon instead, so an incident here is a THIRD independent
-    // ExclusiveSegment station-overlap match alongside
-    // southern-brighton-main-line's own `southern-bml-north` and
-    // southern-oxted-uckfield's own `oxted-trunk` - mirrors
-    // bfr_station_overlap_matches_thameslink_core_and_thameslink_southern_
-    // as_independent_exclusive_segments above.
+    // Task 5.14. Originally REVISED after review to decline the flagged
+    // Task 5.6 coordination (London Bridge/East Croydon): an earlier draft
+    // reused `southern-bml-north` here and asserted a genuine SharedSegment
+    // pair, but the only non-Wikipedia source found at the time
+    // (thetrainline.com) is not one of COMMON.md's four approved
+    // second-source categories and only shows service-existence, not
+    // physical track sharing - so the claim was withdrawn.
+    //
+    // REVIEW FIX (shared-segment structural review, review2-shared-
+    // segments): reinstated on different grounds - see thameslink-
+    // southern.toml's own BRIGHTON BRANCH header comment and southern-
+    // brighton-main-line.toml's own SEGMENT NAMING comment for the full
+    // write-up. `brighton-main-line-north` (renamed from
+    // `southern-bml-north`) is now reused verbatim by this file too, so an
+    // incident here is a genuine SharedSegment pair with
+    // southern-brighton-main-line.toml. southern-oxted-uckfield.toml's own
+    // `oxted-trunk` is untouched by this review and stays independently
+    // ExclusiveSegment.
     #[test]
     fn ecr_station_overlap_matches_brighton_main_line_and_oxted_uckfield_as_independent_exclusive_segments()
      {
@@ -7784,11 +7860,15 @@ mod tests {
             ])
         );
         for m in &matches {
+            let expected = if m.line.id == "southern-oxted-uckfield" {
+                MatchScope::ExclusiveSegment
+            } else {
+                MatchScope::SharedSegment
+            };
             assert_eq!(
-                m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment, not shared",
-                m.line.id
+                m.scope, expected,
+                "{} should be {:?}",
+                m.line.id, expected
             );
         }
     }
@@ -9250,10 +9330,12 @@ mod tests {
     // slow-line stations between Herne Hill and Bromley South (West
     // Dulwich, Sydenham Hill, Penge East, Kent House) for unconfirmed
     // fast/slow calling pattern reasons. They're now confirmed and
-    // inserted on the existing `chatham-london` segment - this is a
-    // regression guard that `has_station` picks them up via
-    // `LineDefinition::from_dir` (i.e. the TOML actually parses and the
-    // stations aren't silently dropped or misspelled).
+    // inserted - originally on `chatham-london`, renamed to
+    // `chatham-maidstone-victoria` by the shared-segment structural review
+    // (review2-shared-segments; see southeastern-chatham.toml's own header
+    // comment) - this is a regression guard that `has_station` picks them
+    // up via `LineDefinition::from_dir` (i.e. the TOML actually parses and
+    // the stations aren't silently dropped or misspelled).
     #[test]
     fn chatham_fillin_suburban_stations_are_now_modelled() {
         let lines = load_line("southeastern-chatham");
@@ -9267,8 +9349,8 @@ mod tests {
             );
             assert_eq!(
                 chatham.segment_for(crs),
-                Some("chatham-london"),
-                "{crs} should be on chatham-london"
+                Some("chatham-maidstone-victoria"),
+                "{crs} should be on chatham-maidstone-victoria"
             );
         }
     }
@@ -9326,25 +9408,42 @@ mod tests {
     // stopping-pattern stations between London Bridge and Orpington (New
     // Cross, St Johns, Lewisham, Hither Green, Grove Park, Chislehurst,
     // Petts Wood) pending route-diagram confirmation. They're now
-    // confirmed and inserted on the existing `seml-london` segment - a
-    // regression guard that `has_station`/`segment_for` pick them up via
-    // `LineDefinition::from_dir` (i.e. the TOML actually parses and the
-    // stations aren't silently dropped or misspelled).
+    // confirmed and inserted - originally all on one `seml-london` segment,
+    // split by the shared-segment structural review (review2-shared-
+    // segments) into the genuinely shared CHX-LEW stretch (NWX/SAJ/LEW, now
+    // `southeastern-lewisham-corridor`) and this file's own exclusive
+    // continuation past Lewisham (HGR/GRP/CIT/PET, now
+    // `seml-orpington-branch`) - see southeastern-main-line.toml's own
+    // header comment. This is a regression guard that `has_station`/
+    // `segment_for` pick them up via `LineDefinition::from_dir` (i.e. the
+    // TOML actually parses and the stations aren't silently dropped or
+    // misspelled).
     #[test]
     fn seml_fillin_suburban_stations_are_now_modelled() {
         let lines = load_line("southeastern-main-line");
         let seml = lines
             .get("southeastern-main-line")
             .expect("southeastern-main-line should exist");
-        for crs in ["NWX", "SAJ", "LEW", "HGR", "GRP", "CIT", "PET"] {
+        for crs in ["NWX", "SAJ", "LEW"] {
             assert!(
                 seml.has_station(crs),
                 "southeastern-main-line should now have station {crs}"
             );
             assert_eq!(
                 seml.segment_for(crs),
-                Some("seml-london"),
-                "{crs} should be on seml-london"
+                Some("southeastern-lewisham-corridor"),
+                "{crs} should be on southeastern-lewisham-corridor"
+            );
+        }
+        for crs in ["HGR", "GRP", "CIT", "PET"] {
+            assert!(
+                seml.has_station(crs),
+                "southeastern-main-line should now have station {crs}"
+            );
+            assert_eq!(
+                seml.segment_for(crs),
+                Some("seml-orpington-branch"),
+                "{crs} should be on seml-orpington-branch"
             );
         }
     }
@@ -9366,13 +9465,20 @@ mod tests {
     // promotes both of those two to SharedSegment.
     //
     // Kent/Sussex batch: southeastern-north-kent.toml also has a station at
-    // New Cross (its own `southeastern-north-kent` segment, the point this
-    // file's and southeastern-metro-north-kent.toml's own NWX comments both
-    // already flagged as where "a differently-aligned North Kent Line route
-    // ... diverges") - same station-overlap treatment, added here as a
-    // fifth independent match. The set below and the function name now
-    // cover five lines in total, four of them independent ExclusiveSegment
-    // matches plus the bexleyheath/dartford-loop SharedSegment pair.
+    // New Cross - originally its own `southeastern-north-kent` segment, the
+    // point this file's and southeastern-metro-north-kent.toml's own NWX
+    // comments both already flagged as where "a differently-aligned North
+    // Kent Line route ... diverges" - a fifth independent match.
+    //
+    // REVIEW FIX (shared-segment structural review, review2-shared-
+    // segments): southeastern-main-line.toml and southeastern-north-
+    // kent.toml have both now been fixed to reuse
+    // `southeastern-lewisham-corridor` at NWX too (see each file's own
+    // header comment), so this set now has FOUR lines sharing the literal
+    // segment name (main-line, bexleyheath, dartford-loop, north-kent), all
+    // promoted to SharedSegment together. overground-windrush.toml's own
+    // `overground-windrush-new-cross` is untouched by this review (a
+    // different route entirely) and stays independently ExclusiveSegment.
     #[test]
     fn nwx_station_overlap_matches_five_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
         let lines = load_all_lines();
@@ -9397,12 +9503,10 @@ mod tests {
             ])
         );
         for m in &matches {
-            let expected = if m.line.id == "southeastern-bexleyheath"
-                || m.line.id == "southeastern-dartford-loop"
-            {
-                MatchScope::SharedSegment
-            } else {
+            let expected = if m.line.id == "overground-windrush" {
                 MatchScope::ExclusiveSegment
+            } else {
+                MatchScope::SharedSegment
             };
             assert_eq!(
                 m.scope, expected,
@@ -9550,8 +9654,11 @@ mod tests {
         );
         assert_eq!(
             bml.segment_for("WVF"),
-            Some("southern-bml-south"),
-            "WVF should be on southern-bml-south"
+            Some("brighton-main-line-south"),
+            "WVF should be on brighton-main-line-south (renamed from \
+             southern-bml-south by the shared-segment structural review, \
+             review2-shared-segments - see southern-brighton-main-line.toml's \
+             own header comment)"
         );
     }
 
