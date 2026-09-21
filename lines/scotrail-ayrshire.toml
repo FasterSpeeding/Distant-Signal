@@ -22,14 +22,16 @@ operators = ["SR"]
 # precedent for exactly this trunk+branch shape -- `swr-alton.toml` (a
 # frequent Waterloo trunk plus a modest branch) and `northern-furness.toml`
 # (an hourly, largely single-track rural line) -- rather than
-# `scotrail-glasgow-suburban.toml`'s uniform-density "commuter" or
-# `scotrail-central-belt.toml`'s flagship-intercity "main-line".
+# `scotrail-north-clyde.toml`/`scotrail-argyle.toml`'s uniform-density
+# "commuter" or `scotrail-central-belt.toml`'s flagship-intercity
+# "main-line".
 
 sample_stations = ["GLC", "KWN", "AYR", "GIR", "STR"]
 
 # GLC (Glasgow Central) is also used as a sample station by
-# `scotrail-glasgow-suburban.toml` (Task 10.2), for the physically distinct
-# low-level Argyle Line platforms -- see the station-overlap note below.
+# `scotrail-argyle.toml` (the split successor of `scotrail-glasgow-
+# suburban.toml`, Task 10.2), for the physically distinct low-level Argyle
+# Line platforms -- see the station-overlap note below.
 # LDBWS sampling at GLC does not distinguish platform level, so
 # `destination_crs_filter` disambiguates this line's own high-level
 # services from Argyle Line departures, mirroring
@@ -104,9 +106,10 @@ delay_threshold_minutes = 10
 #
 # TIPLOCs are omitted throughout: none were confirmed against a live source
 # during this task, matching the optional-field convention already used by
-# `scotrail-central-belt.toml`/`scotrail-glasgow-suburban.toml`.
+# `scotrail-central-belt.toml`/`scotrail-argyle.toml`.
 
-# === Segment-naming coordination with `scotrail-glasgow-suburban.toml` (10.2) ===
+# === Segment-naming coordination with `scotrail-argyle.toml` (10.2, later
+#     split into `scotrail-north-clyde.toml`/`scotrail-argyle.toml`) ===
 #
 # GLC (Glasgow Central) appears in both files. Per the Ayrshire Coast Line
 # article, this line's Ayr branch runs "into the high level at Glasgow
