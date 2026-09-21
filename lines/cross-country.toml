@@ -19,8 +19,10 @@ operators = ["XC"]
 
 # North, midpoint(s), south. LDS added for the Leeds branch (review2
 # finding, see the YRK/DON/LDS/WKF comments below) -- one sample per
-# reconverging path either side of Sheffield.
-sample_stations = ["NCL", "YRK", "LDS", "BHM", "BRI", "EXD"]
+# reconverging path either side of Sheffield. EDB added for the new
+# Edinburgh extension above NCL (also review2, lower priority) -- this
+# file's new true northern terminus for most Scotland-bound services.
+sample_stations = ["EDB", "NCL", "YRK", "LDS", "BHM", "BRI", "EXD"]
 match_keywords = ["CrossCountry", "Cross Country"]
 # No excluded_keywords: "Cross Country Route" (the Birmingham-Bristol
 # infrastructure name) shows up in messages that genuinely do affect XC, so
@@ -56,12 +58,85 @@ delay_threshold_minutes = 10
 # geographically wrong result. Not fixed here for the same reason
 # `wcml-manchester.toml` didn't fix it: aggregator logic, not line data,
 # out of this task's scope.
+# Edinburgh extension (review2 finding, lower priority, 2026-09-21): most XC
+# services terminate at Newcastle, but XC's own published route names this
+# corridor "Plymouth - Edinburgh Waverley" (confirmed live via Wikipedia's
+# "CrossCountry" article, 1 tph core service), with further 2-tpd extensions
+# to Glasgow Central and Aberdeen beyond Edinburgh -- those two are NOT
+# modelled below; see the scope-boundary note past EDB for why. Ordered here
+# north of Newcastle, i.e. listed above NCL in file order to keep the whole
+# file geographically ordered end to end per SCHEMA.md's curation rules.
+#
+# Calling pattern independently verified station-by-station via Wikipedia
+# (each station's own article/infobox, live 2026-09-21), not just transcribed
+# from the CrossCountry article's own route table:
+#   - Morpeth, Alnmouth, Berwick-upon-Tweed: confirmed by the CrossCountry
+#     article's own Newcastle-Edinburgh calling list ("Morpeth (1 tp2h),
+#     Alnmouth (1 tp2h), Berwick-upon-Tweed").
+#   - Dunbar: confirmed via its own Wikipedia article, which lists CrossCountry
+#     among its operators with an explicit "3 tpd to Edinburgh Waverley; 2 tpd
+#     to Plymouth; 1 tpd to Birmingham New Street" service pattern.
+#   - Reston: checked and explicitly excluded -- its own Wikipedia article
+#     states "as of 2026 the company [CrossCountry] provides no services to
+#     the station; all train services are run by TransPennine Express and
+#     LNER." Real, open, on this exact corridor, but not an XC calling point,
+#     so correctly left out of this XC-operator file.
+#
+# CRS codes reused verbatim from `lner-ecml.toml`'s own already-verified
+# `ecml-borders` entries (MPT, ALM, BWK, DUN) and `tpe-borders.toml`'s EDB
+# (itself reused from `tpe-anglo-scottish.toml`) -- none of those four carry
+# a confirmed TIPLOC in this catalogue today either, so none is invented
+# here. New exclusive segment `xc-borders`, starting at the first station
+# past the NCL junction below, per SCHEMA.md's shared-trunk rule of thumb.
+# Station-overlap-only with `lner-ecml.toml`'s `ecml-borders`/`ecml-edinburgh`
+# segments and `tpe-borders.toml`'s `tpe-borders` segment at MPT/ALM/BWK/
+# DUN/EDB -- no segment name shared, matching this catalogue's established
+# cross-operator convention (checked both files' own segment names for these
+# stations before writing this; same treatment `tpe-borders.toml` already
+# gives its own EDB overlap with `tpe-anglo-scottish.toml`).
+[[stations]]
+crs = "MPT"
+role = "minor"
+segment = "xc-borders"
+
+[[stations]]
+crs = "ALM"
+role = "minor"
+segment = "xc-borders"
+
+[[stations]]
+crs = "BWK"
+role = "major"
+segment = "xc-borders"
+
+[[stations]]
+crs = "DUN"
+role = "minor"
+segment = "xc-borders"
+
+[[stations]]
+crs = "EDB"
+role = "terminus"
+segment = "xc-borders"
+# Real terminus for most Scotland-bound XC services; a further 2 tpd extend
+# to Glasgow Central and 2 tpd to Aberdeen beyond here (confirmed via the
+# CrossCountry Wikipedia article's own service table). NOT modelled: this
+# task's brief scoped the Edinburgh extension specifically
+# (Berwick/Alnmouth/Dunbar/Edinburgh) as its own lower-priority item, and
+# Glasgow/Aberdeen would need their own fresh station-by-station calling-
+# pattern research (matching HYM/ABD's own intermediate stations) that this
+# task's remaining budget didn't cover -- flagged here for a future pass
+# rather than guessed at, same "documented, not modelled" treatment
+# `lner-ecml.toml` already gives its own unmodelled Inverness extension.
+
 [[stations]]
 crs = "NCL"
 tiploc = "NWCSTLE"
 role = "junction"
 segment = "xc-north-east"
-# Continues north to Edinburgh (EDB), Glasgow Central (GLC) and Aberdeen (ABD)
+# Continues north to Edinburgh Waverley (and beyond, to Glasgow Central and
+# Aberdeen on a handful of daily extensions) -- now modelled above as far as
+# Edinburgh; see the sourcing note there for what's covered and what isn't.
 
 [[stations]]
 crs = "DHM"
