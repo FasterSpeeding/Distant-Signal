@@ -214,10 +214,13 @@ segment = "xc-south-west"
 
 [[stations]]
 crs = "NTA"
-role = "minor"
+role = "junction"
 segment = "xc-south-west"
-# Row copied verbatim from cross-country.toml. Also the real junction for
-# the Riviera/Paignton branch (out of this task's scope, not claimed here).
+# Role corrected minor -> junction (real-world sanity review), matching
+# cross-country.toml's own copy of this row: the real junction for the
+# Riviera/Paignton branch, now modelled in `lines/gwr-riviera-line.toml`
+# and cross-country.toml's own new `gwr-riviera-line` rows -- see that
+# file's segment-naming comment.
 
 [[stations]]
 crs = "TOT"

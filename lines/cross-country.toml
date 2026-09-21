@@ -130,6 +130,65 @@ tiploc = "BRSTLTM"
 role = "junction"
 segment = "xc-bristol"
 
+# Bedminster, Parson Street, Nailsea & Backwell, Yatton, Highbridge &
+# Burnham and Bridgwater: real, currently-open, currently-served stations
+# on the same physical Bristol-Taunton double-track railway XC's own
+# non-stop expresses already run over between BRI and TAU (this file
+# previously jumped straight from one to the other) -- added by the
+# real-world sanity review's GWR "Bristol" service-group pass, in sync with
+# this same review's new `lines/gwr-weston-super-mare.toml` (a GWR local
+# stopping service over this same corridor), which copies these six rows
+# verbatim, mirroring the precedent already set by this file's own Dawlish
+# Warren/Dawlish/Teignmouth/Totnes/Ivybridge additions further down (added
+# "in sync with gwr-cornish-main-line.toml's own copy of this shared-trunk
+# row"). en.wikipedia.org/wiki/Bristol_to_Exeter_line's own route
+# description confirms this ordering (Bristol Temple Meads - Bedminster -
+# Parson Street - Nailsea and Backwell - Yatton - ... - Highbridge and
+# Burnham - ... - Bridgwater - ... - Taunton) and that these are today's
+# real intermediate calling points on this route, not historical ones.
+# CRS codes verified live against ds.cursed.solutions/api/stations
+# (Bedminster=BMT, Parson Street=PSN, Nailsea & Backwell=NLS, Yatton=YAT,
+# Highbridge & Burnham=HIG, Bridgwater=BWT).
+#
+# The Weston-super-Mare loop (Worle, Weston Milton, Weston-super-Mare
+# itself) is NOT added here: Wikipedia's own account of this route
+# describes a single-track loop diverging at Worle Junction and rejoining
+# the main line at Uphill Junction, distinct from the double-track through
+# route XC's own non-stop expresses use -- not the same "one physical
+# double-track railway, different calling pattern" shape as the six
+# stations above. Those three stations are exclusive to
+# `gwr-weston-super-mare.toml`'s own new segment; see that file's own
+# segment-naming comment for the full reasoning.
+[[stations]]
+crs = "BMT"
+role = "minor"
+segment = "xc-south-west"
+
+[[stations]]
+crs = "PSN"
+role = "minor"
+segment = "xc-south-west"
+
+[[stations]]
+crs = "NLS"
+role = "minor"
+segment = "xc-south-west"
+
+[[stations]]
+crs = "YAT"
+role = "minor"
+segment = "xc-south-west"
+
+[[stations]]
+crs = "HIG"
+role = "minor"
+segment = "xc-south-west"
+
+[[stations]]
+crs = "BWT"
+role = "major"
+segment = "xc-south-west"
+
 [[stations]]
 crs = "TAU"
 tiploc = "TAUNTON"
@@ -164,8 +223,46 @@ segment = "xc-south-west"
 
 [[stations]]
 crs = "NTA"
-role = "minor"
+role = "junction"
 segment = "xc-south-west"
+# Newton Abbot: role corrected minor -> junction (real-world sanity review)
+# -- this is where XC's own Torquay/Paignton branch (below) diverges from
+# its Plymouth/Penzance-bound continuation (TOT/IVY/PLY), per the
+# shared-trunk rule of thumb.
+
+# Torre, Torquay and Paignton: real, currently-open, currently-served
+# stations on the Riviera Line branch to Torbay, added by the real-world
+# sanity review's GWR "Bristol"/coverage-gap pass alongside this review's
+# new `lines/gwr-riviera-line.toml`. en.wikipedia.org/wiki/Torquay_railway_
+# station and .../Paignton_railway_station both confirm CrossCountry runs
+# genuine (if limited) through services here from Bristol Temple Meads/
+# Birmingham New Street -- a real, sourced shared corridor with
+# gwr-riviera-line.toml's own GWR local service, not just a station-level
+# coincidence, hence the new shared `gwr-riviera-line` segment name reused
+# verbatim in both files (see that file's own segment-naming comment for
+# the fuller reasoning). Kingskerswell and Preston Platform, the line's two
+# other historical intermediate stops, were checked live against
+# ds.cursed.solutions/api/stations and returned no current CRS -- both
+# confirmed closed (1964 and 1914 respectively per their own Wikipedia
+# articles) and correctly excluded.
+[[stations]]
+crs = "TRR"
+role = "minor"
+segment = "gwr-riviera-line"
+# Torre.
+
+[[stations]]
+crs = "TQY"
+role = "minor"
+segment = "gwr-riviera-line"
+# Torquay.
+
+[[stations]]
+crs = "PGN"
+role = "minor"
+segment = "gwr-riviera-line"
+# Paignton. XC's own branch terminus; the main XC route continues instead
+# via TOT/IVY/PLY below.
 
 [[stations]]
 crs = "TOT"
