@@ -72,23 +72,27 @@ excluded_keywords = ["Hastings line"]
 # strictly between the already-modelled LBG and ORP entries.
 #
 # New Cross/St Johns/Lewisham/Hither Green determination: these four
-# already appear in southeastern-metro-north-kent.toml, on its own
-# `southeastern-lewisham-corridor` segment (CHX/CST/LBG/NWX/SAJ/LEW) and,
-# for Hither Green, its own `senk-dartford-loop` segment. Checked whether
-# they sit on THIS line's own physical alignment toward Orpington or only
-# on the Dartford Loop/Bexleyheath corridor's physically distinct tracks:
-# Hither Green's own Wikipedia article states it is served by "the South
-# Eastern Main Line (to Charing Cross and Cannon Street via New Cross)"
-# AND the Dartford Loop Line, with the Dartford Loop diverging AT Hither
-# Green while the main line continues on to Grove Park/Orpington - i.e.
-# Hither Green itself is the shared station before the fork, not a
+# already appear in the pre-split southeastern-metro-north-kent.toml (since
+# split into southeastern-bexleyheath.toml and
+# southeastern-dartford-loop.toml per a later data-driven line-definition
+# audit), on its own `southeastern-lewisham-corridor` segment
+# (CHX/CST/LBG/NWX/SAJ/LEW, carried unchanged in both of the split's files)
+# and, for Hither Green, its own `senk-dartford-loop` segment (now
+# `dartford-loop-branch`, in southeastern-dartford-loop.toml). Checked
+# whether they sit on THIS line's own physical alignment toward Orpington or
+# only on the Dartford Loop/Bexleyheath corridor's physically distinct
+# tracks: Hither Green's own Wikipedia article states it is served by "the
+# South Eastern Main Line (to Charing Cross and Cannon Street via New
+# Cross)" AND the Dartford Loop Line, with the Dartford Loop diverging AT
+# Hither Green while the main line continues on to Grove Park/Orpington -
+# i.e. Hither Green itself is the shared station before the fork, not a
 # Dartford-Loop-exclusive stop. St Johns' own Wikipedia article confirms
 # it sits "on the slow lines" of the South Eastern Main Line with New
 # Cross as its immediate neighbour toward London and Lewisham as its
-# immediate neighbour south - the same chain southeastern-metro-north-
-# kent.toml's own `southeastern-lewisham-corridor` segment already
-# documents. So all four sit on this line's own alignment and are added
-# here too, as station overlap with southeastern-metro-north-kent.toml
+# immediate neighbour south - the same chain the pre-split senk file's own
+# `southeastern-lewisham-corridor` segment already documents. So all four
+# sit on this line's own alignment and are added here too, as station
+# overlap with southeastern-bexleyheath.toml/southeastern-dartford-loop.toml
 # (not a shared segment - no new segment name, following the
 # xc-south-coast.toml/xc-manchester.toml precedent and this file's own
 # DVP/Thameslink-LBG precedent below).
@@ -165,36 +169,38 @@ segment = "seml-london"
 crs = "NWX"
 role = "junction"
 segment = "seml-london"
-# New Cross. Station overlap with southeastern-metro-north-kent.toml's own
-# `southeastern-lewisham-corridor` segment (see header comment above) - a
-# differently-aligned North Kent Line route (via the Surrey Canal curve
-# toward Greenwich/Woolwich) diverges near here; not covered by this
-# catalogue.
+# New Cross. Station overlap with southeastern-bexleyheath.toml's/
+# southeastern-dartford-loop.toml's own `southeastern-lewisham-corridor`
+# segment (see header comment above) - a differently-aligned North Kent
+# Line route (via the Surrey Canal curve toward Greenwich/Woolwich)
+# diverges near here; not covered by this catalogue.
 
 [[stations]]
 crs = "SAJ"
 role = "minor"
 segment = "seml-london"
-# St Johns. Station overlap with southeastern-metro-north-kent.toml's own
-# `southeastern-lewisham-corridor` segment (see header comment above).
+# St Johns. Station overlap with southeastern-bexleyheath.toml's/
+# southeastern-dartford-loop.toml's own `southeastern-lewisham-corridor`
+# segment (see header comment above).
 
 [[stations]]
 crs = "LEW"
 role = "junction"
 segment = "seml-london"
-# Lewisham. Station overlap with southeastern-metro-north-kent.toml's own
-# `southeastern-lewisham-corridor` segment (see header comment above); the
-# Bexleyheath line diverges here (toward Blackheath), and the Hayes line
-# and North Kent Line also diverge/join here - none covered by this file.
+# Lewisham. Station overlap with southeastern-bexleyheath.toml's/
+# southeastern-dartford-loop.toml's own `southeastern-lewisham-corridor`
+# segment (see header comment above); the Bexleyheath line diverges here
+# (toward Blackheath), and the Hayes line and North Kent Line also
+# diverge/join here - none covered by this file.
 
 [[stations]]
 crs = "HGR"
 role = "junction"
 segment = "seml-london"
-# Hither Green. Station overlap with southeastern-metro-north-kent.toml's
-# own `senk-dartford-loop` segment (see header comment above) - the
-# Dartford Loop line's own exclusive tracks diverge here; this line's own
-# alignment continues on to Grove Park.
+# Hither Green. Station overlap with southeastern-dartford-loop.toml's own
+# `dartford-loop-branch` segment (formerly `senk-dartford-loop`, see header
+# comment above) - the Dartford Loop line's own exclusive tracks diverge
+# here; this line's own alignment continues on to Grove Park.
 
 [[stations]]
 crs = "GRP"
