@@ -1,8 +1,21 @@
 id = "southeastern-dartford-loop"
-name = "Dartford Loop Line"
+name = "Sidcup Line (Dartford Loop)"
 mode = "national-rail"
 category = "commuter"
 operators = ["SE"]
+
+# REVIEW FIX (Southeastern real-world-sanity pass): renamed from "Dartford
+# Loop Line" to "Sidcup Line (Dartford Loop)". Southeastern's own TOC route
+# table lists this corridor as "Metro - Sidcup Line" (confirmed via a fresh
+# check of Wikipedia's "Southeastern (train operating company)" article's
+# Metro Services route list, which shows "Metro - Sidcup Line (also referred
+# to as 'Dartford Loop Line')" alongside the separate "Metro - North Kent
+# Line" and "Metro - Bexleyheath Line" entries), and Wikipedia's own
+# "Dartford loop line" article already states the line is "informally known
+# as the Sidcup line in the context of Southeastern Metro services" - this
+# was already noted in FINDING 1 below, just not reflected in `name` until
+# now. "Dartford Loop" is kept in `match_keywords` (already present, see
+# below) and in the id (stable, never changed per SCHEMA.md).
 
 # All three on this line's own exclusive branch (past the Hither Green
 # junction), the same "sample on the exclusive segment for a clean read"

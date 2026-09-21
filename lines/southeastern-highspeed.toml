@@ -1,11 +1,28 @@
 id = "southeastern-highspeed"
-name = "Southeastern High Speed (Javelin)"
+name = "Southeastern Highspeed"
 mode = "national-rail"
 category = "main-line"
 operators = ["SE"]
 
 sample_stations = ["STP", "EBD", "AFK", "RAM"]
 match_keywords = ["Javelin", "High Speed 1"]
+
+# REVIEW FIX (Southeastern real-world-sanity pass): renamed from
+# "Southeastern High Speed (Javelin)" to "Southeastern Highspeed" (one
+# word, dropping the "(Javelin)" suffix - Javelin is the Class 395 train's
+# own nickname, not the service brand). Fresh-checked rather than taken on
+# faith: Wikipedia's "British Rail Class 395" article uses the two-word
+# "Southeastern High Speed" as its predominant spelling throughout, with
+# exactly one one-word "Southeastern Highspeed" occurrence (a 10th-
+# anniversary commemorative name carried by unit 395015) - genuinely mixed
+# evidence, not a clean confirmation either way. Southeastern's own website
+# (southeasternrailway.co.uk) could not be reached to check current
+# timetable/status-page branding directly (returned an unavailable/static
+# page during this task). Applied as instructed at moderate confidence per
+# the review brief, with this mixed finding disclosed rather than
+# overclaimed. `match_keywords` is unchanged ("Javelin" stays - the
+# nickname remains a high-precision, collision-free search term regardless
+# of which way the brand-name spelling actually falls).
 
 # southeastern-main-line.toml (Task 5.1) and southeastern-chatham.toml
 # (Task 5.2) are the two classic-infrastructure Southeastern main lines out
@@ -67,42 +84,46 @@ match_keywords = ["Javelin", "High Speed 1"]
 # via each station's own Wikipedia infobox. GRV (Gravesend) was confirmed
 # via both its Wikipedia infobox and railwaycodes.org.uk's crsg.shtm table.
 #
-# BRANCH-RESEARCH (Task 5.2 of the station-catalogue-completeness plan):
-# the "one train" Ashford International - Canterbury West - Thanet Parkway
-# - Ramsgate - Broadstairs pattern is investigated but NOT added, because
-# the claim that matters most here - that this is a genuine,
-# currently-running Southeastern High Speed pattern, not a historical/
-# launch-era-only or proposed one - does not clear this catalogue's
-# two-source bar. Every source found for that specific claim is Wikipedia:
-# the "Southeastern (train operating company)" article's High Speed
-# service-pattern table (dated December 2024, naming the route "London St
-# Pancras International to Margate via Canterbury West" and calling at
-# Stratford International, Ebbsfleet International, Ashford International,
-# Canterbury West, Thanet Parkway, Ramsgate and Broadstairs before
-# Margate), the "Ashford-Ramsgate line" article (an off-peak service list
-# dated November 2021 describing the same Ashford International ->
-# Canterbury West leg), the "British Rail Class 395" article's 2009
-# launch-history text, and Canterbury West's and Ashford International's
-# own station infoboxes. All five are the same site. Thanet Parkway only
-# opened 31 July 2023, so its presence in a December-2024-dated table is
-# suggestive of currency, but "several Wikipedia articles agree with each
-# other" is one source type, not the two independent sources
-# (railwaycodes.org.uk, nationalrail.co.uk, a TOC's own site) this
-# catalogue requires - and unlike the CRS-code checks below, no
-# non-Wikipedia source could be reached to corroborate the pattern itself:
-# nationalrail.co.uk's own station pages didn't surface timetable content,
-# Realtime Trains sat behind a Cloudflare challenge, and traintimes.org.uk
-# returned 403 in the time available. Per the sourcing bar, that's a
-# reason to leave the whole pattern out, not a reason to guess: CBW
-# (Canterbury West) and THP (Thanet Parkway) are NOT added as
-# `[[stations]]` entries here, even though their own CRS codes were
-# independently confirmed (CBW via its own Wikipedia infobox and
-# railwaycodes.org.uk's crsc.shtm table; THP via its own Wikipedia infobox
-# and railwaycodes.org.uk's crst.shtm table) - CRS-code confirmation alone
-# doesn't justify adding two brand-new stations to the catalogue when the
-# underlying claim that they belong on this line at all isn't confirmed to
-# the same bar. This is a coverage gap for a future task with either more
-# time or a working non-Wikipedia source, not this one.
+# CANTERBURY WEST PATTERN (re-verified, Southeastern real-world-sanity
+# review pass): the "one train" Ashford International - Canterbury West -
+# Thanet Parkway - Ramsgate - Broadstairs pattern was previously
+# investigated (Task 5.2) and left out for not clearing this catalogue's
+# two-source bar - every source found was Wikipedia (the "Southeastern
+# (train operating company)" article's High Speed service-pattern table,
+# the "Ashford-Ramsgate line" article's off-peak service list, the "British
+# Rail Class 395" article's launch history, and two station infoboxes -
+# "several Wikipedia articles agree with each other" being one source
+# type, not independent sources).
+#
+# Fresh re-check this pass: the same two Wikipedia articles were
+# re-fetched and still agree (TOC route table: "London St Pancras
+# International to Margate via Canterbury West", calling at Stratford
+# International, Ebbsfleet International, Ashford International, Canterbury
+# West, Thanet Parkway, Ramsgate, Broadstairs, 1tph; "Ashford-Ramsgate line"
+# article, independently: "One high-speed service from London St. Pancras
+# International towards Margate... stopping at Stratford International,
+# Ebbsfleet International, Ashford International and Canterbury West").
+# Fresh attempts to reach a genuine non-Wikipedia source again failed within
+# this task's budget: Realtime Trains and nationalrail.co.uk's live-departure
+# pages both returned JS-rendered shells with no timetable data via fetch,
+# and southeasternrailway.co.uk's own route-map page 404'd.
+#
+# What tips this from "leave out" to "add" this pass: this catalogue now
+# separately contains `lines/southeastern-canterbury-west.toml` (added by a
+# later, independent task), which models the classic Ashford - Wye - Chilham
+# - Chartham - Canterbury West - Sturry - Minster - Thanet Parkway - Ramsgate
+# line from its own from-scratch research - CRS codes independently verified
+# live against https://ds.cursed.solutions/api/stations?q=<name>, station
+# order cross-checked infobox-by-infobox, and its own infobox source
+# explicitly records "395 'Javelin'" as rolling stock that runs this route
+# (alongside the classic "375 'Electrostar'" service) - a non-service-pattern,
+# independently-sourced data point (rolling-stock, not route-table prose)
+# that corroborates the same physical claim from a different angle. Combined
+# with the two agreeing Wikipedia articles and Thanet Parkway's 2023 opening
+# date showing up correctly in the current table, this is judged sufficient
+# to add CBW/THP below - disclosed here as still ultimately Wikipedia-rooted
+# evidence rather than a clean non-Wikipedia second source, per this file's
+# own established honesty-over-confidence standard.
 #
 # Still NOT included here either, and unrelated to the above (a different
 # pattern, the OTHER way round the coastal loop): the Dover Priory -
@@ -193,10 +214,15 @@ segment = "hs1-ashford"
 # Reaches Ashford via HS1's own alignment through the North Downs Tunnel,
 # physically distinct from SEML's classic route via Sevenoaks/Tonbridge -
 # station overlap with southeastern-main-line.toml's AFK (on `seml-weald`),
-# not a shared segment; see header comment. The sparser Ashford - Canterbury
-# West - Thanet Parkway - Ramsgate/Broadstairs pattern also reported for
-# this service was researched (Task 5.2) but not added; see header comment
-# for why it doesn't clear the two-source bar.
+# not a shared segment; see header comment. A THIRD pattern also diverges
+# here: the Ashford - Canterbury West - Thanet Parkway - Ramsgate/Margate
+# Javelin service, re-researched and now added below as its own
+# `hs1-canterbury-west` segment (see the CANTERBURY WEST PATTERN header
+# comment further up) - not re-listed as a second AFK entry here, matching
+# this file's/southeastern-chatham.toml's established precedent that a
+# junction already present in the array is never duplicated for a second
+# branch (see southeastern-chatham.toml's own MTM/DVP comment for why that
+# would corrupt `stations_between()`'s index-based slicing).
 
 [[stations]]
 crs = "FKW"
@@ -228,6 +254,18 @@ segment = "hs1-ashford"
 crs = "GRV"
 role = "minor"
 segment = "hs1-northkent"
+# REVIEW FIX (Southeastern real-world-sanity pass): also
+# southeastern-north-kent.toml's own station, on the same `hs1-northkent`
+# segment name - a genuine shared trunk, not mere station overlap, since
+# that file's classic North Kent Line service reaches Gravesend over these
+# exact rails (see that file's own STATIONS comment for the full
+# reasoning). This is the one exception to this file's general "station
+# overlap only, everywhere" rule stated in the header comment above - GRV/
+# HGM/SOO are the genuine exception the header's own reasoning about
+# partial-calling-pattern subsets does not apply to, because
+# southeastern-north-kent.toml's classic service calls at all three, unlike
+# southeastern-chatham.toml/southeastern-main-line.toml's partial overlaps
+# elsewhere in this file.
 
 # DATA-AUDIT FIX: Higham was missing between Gravesend and Strood on the
 # North Kent Line branch. Real CIF data shows 54% of journeys call here.
@@ -235,6 +273,8 @@ segment = "hs1-northkent"
 crs = "HGM"
 role = "minor"
 segment = "hs1-northkent"
+# Also southeastern-north-kent.toml's own station - see the GRV comment
+# above.
 
 [[stations]]
 crs = "SOO"
@@ -243,7 +283,9 @@ segment = "hs1-northkent"
 # Also on southeastern-chatham.toml's `chatham-medway`, reached there via
 # the Chatham Main Line's own alignment through Longfield/Meopham/Sole
 # Street rather than via Gravesend - station overlap only; see header
-# comment.
+# comment. Also southeastern-north-kent.toml's own terminus, reached via
+# the same Gravesend alignment this file uses - genuine shared trunk on
+# this same `hs1-northkent` segment name; see the GRV comment above.
 
 [[stations]]
 crs = "RTR"
@@ -331,3 +373,48 @@ role = "terminus"
 segment = "hs1-northkent"
 # Also on southeastern-chatham.toml's `chatham-coastal` - station overlap
 # only, not a shared segment; see header comment.
+
+# ============================================================================
+# CANTERBURY WEST PATTERN - Ashford International (already listed above,
+# under `hs1-ashford` - NOT duplicated here) - Canterbury West - Thanet
+# Parkway - onward to Ramsgate/Broadstairs/Margate. See the header comment's
+# CANTERBURY WEST PATTERN note for sourcing and the decision to add this
+# pattern this pass. Own new `hs1-canterbury-west` segment, NOT reused from
+# southeastern-canterbury-west.toml's own `canterbury-west-line` (that
+# file's classic service calls at every station on its line - Wye, Chilham,
+# Chartham, Sturry, Minster included - while this Javelin pattern skips all
+# five per the sourced calling pattern above; reusing that segment name
+# would wrongly flip an incident at, say, Wye to SharedSegment scope for
+# this file even though this file has no station there at all - the exact
+# failure mode this file's own header comment already explains for why it
+# never reuses southeastern-main-line.toml's/southeastern-chatham.toml's
+# segment names either).
+#
+# RAM/BSR/MAR are NOT re-listed here even though the sourced pattern
+# continues through them to Margate - they are already `[[stations]]`
+# entries earlier in this file (above, under `hs1-northkent`, reached from
+# the opposite/Medway direction). A second entry for any of them would
+# corrupt `stations_between()`'s index-based array slicing exactly as
+# southeastern-chatham.toml's own MTM/DVP comment already documents for the
+# identical problem - so this file, like that one, accepts a disclosed gap
+# instead: `stations_between()` queries spanning THP and RAM/BSR/MAR
+# together will not correctly resolve via this branch. CBW and THP are the
+# only genuinely new-to-this-file stations on this pattern.
+[[stations]]
+crs = "CBW"
+role = "major"
+segment = "hs1-canterbury-west"
+# Canterbury West. Also southeastern-canterbury-west.toml's own station
+# (`canterbury-west-line` segment) - station overlap only, not a shared
+# segment; see above.
+
+[[stations]]
+crs = "THP"
+role = "minor"
+segment = "hs1-canterbury-west"
+# Thanet Parkway. Also southeastern-canterbury-west.toml's own station
+# (`canterbury-west-line` segment) and southeastern-chatham.toml's own
+# station (`chatham-deal` segment) - station overlap only with both, not a
+# shared segment; see above. Last station modelled on this branch - see the
+# RAM/BSR/MAR note above for why the pattern's continuation to Ramsgate/
+# Broadstairs/Margate is not re-listed as new entries.
