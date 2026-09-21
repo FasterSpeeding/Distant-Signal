@@ -4442,6 +4442,14 @@ mod tests {
     // that exclusive stretch, so this should stay a clean ExclusiveSegment
     // case, mirroring `swr_exclusive_segment_incident_does_not_propagate` /
     // `gwr_cotswold_exclusive_segment_incident_does_not_propagate` above.
+    //
+    // Devon/Cornwall branch-line batch (2026-09): `gwr-maritime-line.toml`
+    // now also lists Truro as its own real junction station (station
+    // overlap only, per this catalogue's established convention -- its own
+    // exclusive `gwr-maritime-line` segment is not shared with
+    // `gwr-cornish-main-line`'s own exclusive segment). An incident at Truro
+    // now genuinely matches both lines, each with its own ExclusiveSegment
+    // scope; the assertion below is updated to expect both.
     #[test]
     fn gwr_cornish_main_line_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -4457,9 +4465,19 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["gwr-cornish-main-line".to_string()])
+            HashSet::from([
+                "gwr-cornish-main-line".to_string(),
+                "gwr-maritime-line".to_string(),
+            ])
         );
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment",
+                m.line.id
+            );
+        }
     }
 
     // Station Catalogue Completeness Task 1.1: fills in seven previously
@@ -4523,6 +4541,19 @@ mod tests {
     // should propagate to all three as a shared-trunk event, mirroring
     // `swr_shared_trunk_incident_propagates`'s / `xc_hub_incident_propagates_
     // to_every_cross_country_arm`'s full-set-assertion shape.
+    //
+    // Devon/Cornwall branch-line batch (2026-09): `gwr-tarka-line.toml`,
+    // `gwr-avocet-line.toml` and `gwr-dartmoor-line.toml` also list Exeter
+    // St Davids, on their own genuine cross-file shared trunk
+    // `gwr-exeter-central-approach` (sourced from Wikipedia's "Exeter
+    // Central railway station": "The SWR and GWR services combine to give
+    // up to five trains per hour each way between Exeter Central and Exeter
+    // St Davids", confirming this stretch carries the Avocet/Tarka/Dartmoor
+    // Line services too) -- a different shared-segment name from
+    // `xc-south-west`, but still genuinely shared (across those three new
+    // files), so all three now also match this same EXD incident with
+    // SharedSegment scope. The assertion below is updated to expect all six
+    // lines.
     #[test]
     fn gwr_trunk_xc_south_west_incident_propagates_across_west_of_england_and_cornish_main_line() {
         let lines = load_all_lines();
@@ -4542,6 +4573,9 @@ mod tests {
                 "gwr-west-of-england".to_string(),
                 "gwr-cornish-main-line".to_string(),
                 "cross-country".to_string(),
+                "gwr-tarka-line".to_string(),
+                "gwr-avocet-line".to_string(),
+                "gwr-dartmoor-line".to_string(),
             ])
         );
         for m in &matches {
