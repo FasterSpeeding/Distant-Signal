@@ -567,11 +567,12 @@ mod tests {
         // Diss is well beyond Shenfield, on Greater Anglia's exclusive
         // territory — the Elizabeth line goes no further than Shenfield —
         // and isn't a junction for any branch in this batch either (unlike
-        // Colchester, which greater-anglia-essex-branches.toml's Sunshine
-        // Coast branch also lists as its own real junction — but as
+        // Colchester, which greater-anglia-sunshine-coast.toml (formerly
+        // part of the bundled greater-anglia-essex-branches.toml, split by
+        // brand) also lists as its own real junction — but as
         // station-level overlap only, each independently ExclusiveSegment,
         // not a shared `geml-mainline` segment; see
-        // essex_branches_colchester_is_station_overlap_only_with_main_line
+        // sunshine_coast_colchester_is_station_overlap_only_with_main_line
         // below). An incident here should stay scoped to
         // greater-anglia-main-line only.
         let lines = load_all_lines();
@@ -3219,14 +3220,16 @@ mod tests {
         // Cambridge (CBG) is on greater-anglia-west-anglia.toml's
         // `waml-mainline` segment, xc-stansted.toml's `xc-stansted` segment
         // (CrossCountry's Birmingham-Stansted service also calls there) and,
-        // since Task 2.6, greater-anglia-norfolk-branches.toml's own
-        // `breckland-line` segment (the Breckland Line's Cambridge terminus,
-        // reached via an entirely different physical corridor — Ely and
-        // Cambridge North, not Elsenham/Audley End — that only converges
-        // with the other two at this station). None of the three files
-        // share a segment name for this station (see
+        // since Task 2.6, greater-anglia-breckland-line.toml's own
+        // `breckland-line` segment (originally part of the bundled
+        // greater-anglia-norfolk-branches.toml, since split by brand --
+        // real-world sanity review; the Breckland Line's Cambridge
+        // terminus, reached via an entirely different physical corridor —
+        // Ely and Cambridge North, not Elsenham/Audley End — that only
+        // converges with the other two at this station). None of the three
+        // files share a segment name for this station (see
         // greater-anglia-west-anglia.toml's and
-        // greater-anglia-norfolk-branches.toml's decision comments —
+        // greater-anglia-breckland-line.toml's decision comments —
         // reusing another file's segment name here would incorrectly mark
         // its whole trunk as shared with this line), so an incident here
         // should match all three lines independently, each still classified
@@ -3258,7 +3261,7 @@ mod tests {
             HashSet::from([
                 "greater-anglia-west-anglia".to_string(),
                 "xc-stansted".to_string(),
-                "greater-anglia-norfolk-branches".to_string(),
+                "greater-anglia-breckland-line".to_string(),
                 "great-northern-kings-lynn".to_string(),
                 "thameslink-cambridge".to_string(),
                 "greater-anglia-ipswich-cambridge".to_string(),
@@ -3335,11 +3338,13 @@ mod tests {
     }
 
     #[test]
-    fn essex_branches_witham_is_station_overlap_only_with_main_line() {
+    fn braintree_branch_witham_is_station_overlap_only_with_main_line() {
         // Witham is on both greater-anglia-main-line.toml's `geml-mainline`
-        // segment and greater-anglia-essex-branches.toml's own
-        // `braintree-branch` segment (the Braintree branch's real junction).
-        // Per that file's segment-decision note, the two files deliberately
+        // segment and greater-anglia-braintree-branch.toml's own
+        // `braintree-branch` segment (the Braintree branch's real junction;
+        // this file was originally bundled as part of
+        // greater-anglia-essex-branches.toml, since split by brand --
+        // real-world sanity review). Per that file's segment-decision note, the two files deliberately
         // do NOT share a segment name here — reusing `geml-mainline` verbatim
         // would (confirmed empirically while drafting that file) incorrectly
         // reclassify unrelated far-flung `geml-mainline` stations (e.g. Diss,
@@ -3364,7 +3369,7 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "greater-anglia-main-line".to_string(),
-                "greater-anglia-essex-branches".to_string()
+                "greater-anglia-braintree-branch".to_string()
             ])
         );
         for m in &matches {
@@ -3378,13 +3383,15 @@ mod tests {
     }
 
     #[test]
-    fn essex_branches_colchester_is_station_overlap_only_with_main_line() {
+    fn sunshine_coast_colchester_is_station_overlap_only_with_main_line() {
         // Colchester is on both greater-anglia-main-line.toml's
-        // `geml-mainline` segment and greater-anglia-essex-branches.toml's
+        // `geml-mainline` segment and greater-anglia-sunshine-coast.toml's
         // own `sunshine-coast-main` segment (the Sunshine Coast line's real
-        // junction). Same reasoning and same non-sharing decision as Witham
-        // above: station-level overlap only, each line classified
-        // independently as ExclusiveSegment.
+        // junction; this file was originally bundled as part of
+        // greater-anglia-essex-branches.toml, since split by brand --
+        // real-world sanity review). Same reasoning and same non-sharing
+        // decision as Witham above: station-level overlap only, each line
+        // classified independently as ExclusiveSegment.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -3400,7 +3407,7 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "greater-anglia-main-line".to_string(),
-                "greater-anglia-essex-branches".to_string()
+                "greater-anglia-sunshine-coast".to_string()
             ])
         );
         for m in &matches {
@@ -3414,10 +3421,12 @@ mod tests {
     }
 
     #[test]
-    fn essex_branches_exclusive_segment_incident_does_not_propagate() {
+    fn crouch_valley_exclusive_segment_incident_does_not_propagate() {
         // Southminster is on `crouch-valley-line`, exclusive to
-        // greater-anglia-essex-branches.toml. Per that file's Southminster-
-        // branch deviation note: the branch's real, verified junction is
+        // greater-anglia-crouch-valley.toml (originally bundled as part of
+        // greater-anglia-essex-branches.toml, since split by brand --
+        // real-world sanity review). Per that file's Southminster-branch
+        // deviation note: the branch's real, verified junction is
         // Wickford on the Shenfield-Southend line, two hops from the GEML
         // via a line not covered by any file in this catalogue — so unlike
         // the Braintree/Sunshine Coast branches above, this segment is not
@@ -3435,17 +3444,19 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["greater-anglia-essex-branches".to_string()])
+            HashSet::from(["greater-anglia-crouch-valley".to_string()])
         );
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
     #[test]
-    fn suffolk_branches_exclusive_segment_incident_does_not_propagate() {
+    fn gainsborough_line_exclusive_segment_incident_does_not_propagate() {
         // Sudbury is the terminus of `gainsborough-line`, exclusive to
-        // greater-anglia-suffolk-branches.toml. It isn't a junction or
-        // overlap point for any other committed line, so an incident here
-        // should stay scoped to greater-anglia-suffolk-branches only.
+        // greater-anglia-gainsborough-line.toml (originally bundled as part
+        // of greater-anglia-suffolk-branches.toml, since split by brand --
+        // real-world sanity review). It isn't a junction or overlap point
+        // for any other committed line, so an incident here should stay
+        // scoped to greater-anglia-gainsborough-line only.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -3459,18 +3470,20 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["greater-anglia-suffolk-branches".to_string()])
+            HashSet::from(["greater-anglia-gainsborough-line".to_string()])
         );
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
     #[test]
-    fn suffolk_branches_marks_tey_is_station_overlap_only_with_main_line() {
+    fn gainsborough_line_marks_tey_is_station_overlap_only_with_main_line() {
         // Marks Tey is on both greater-anglia-main-line.toml's
-        // `geml-mainline` segment and greater-anglia-suffolk-branches.toml's
+        // `geml-mainline` segment and greater-anglia-gainsborough-line.toml's
         // own `gainsborough-line` segment (the Sudbury branch's real
-        // junction). Per that file's segment-decision note (mirroring
-        // Task 2.4's Witham/Colchester precedent), the two files
+        // junction; this file was originally bundled as part of
+        // greater-anglia-suffolk-branches.toml, since split by brand --
+        // real-world sanity review). Per that file's segment-decision note
+        // (mirroring Task 2.4's Witham/Colchester precedent), the two files
         // deliberately do NOT share a segment name here — reusing
         // `geml-mainline` verbatim would incorrectly reclassify unrelated
         // far-flung `geml-mainline` stations (e.g. Diss, Norwich) as shared
@@ -3493,7 +3506,7 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "greater-anglia-main-line".to_string(),
-                "greater-anglia-suffolk-branches".to_string()
+                "greater-anglia-gainsborough-line".to_string()
             ])
         );
         for m in &matches {
@@ -3507,13 +3520,15 @@ mod tests {
     }
 
     #[test]
-    fn suffolk_branches_ipswich_is_station_overlap_only_with_main_line() {
+    fn felixstowe_branch_ipswich_is_station_overlap_only_with_main_line() {
         // Ipswich is on both greater-anglia-main-line.toml's `geml-mainline`
-        // segment and greater-anglia-suffolk-branches.toml's own
+        // segment and greater-anglia-felixstowe-branch.toml's own
         // `felixstowe-branch` segment (where Felixstowe branch passenger
         // services originate; the branch's true physical fork is one stop
-        // further out at Westerfield). Same non-sharing decision as Marks
-        // Tey above: station-level overlap only, each line classified
+        // further out at Westerfield; this file was originally bundled as
+        // part of greater-anglia-suffolk-branches.toml, since split by
+        // brand -- real-world sanity review). Same non-sharing decision as
+        // Marks Tey above: station-level overlap only, each line classified
         // independently as ExclusiveSegment.
         //
         // Updated by the Wales/East Anglia batch: `greater-anglia-east-
@@ -3536,7 +3551,7 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "greater-anglia-main-line".to_string(),
-                "greater-anglia-suffolk-branches".to_string(),
+                "greater-anglia-felixstowe-branch".to_string(),
                 "greater-anglia-east-suffolk".to_string(),
                 "greater-anglia-ipswich-cambridge".to_string(),
             ])
@@ -3552,13 +3567,15 @@ mod tests {
     }
 
     #[test]
-    fn suffolk_branches_manningtree_is_station_overlap_only_with_main_line() {
+    fn mayflower_line_manningtree_is_station_overlap_only_with_main_line() {
         // Manningtree is on both greater-anglia-main-line.toml's
-        // `geml-mainline` segment and greater-anglia-suffolk-branches.toml's
-        // own `mayflower-line` segment (the Mayflower line's real junction).
-        // Same non-sharing decision as Marks Tey and Ipswich above:
-        // station-level overlap only, each line classified independently as
-        // ExclusiveSegment.
+        // `geml-mainline` segment and greater-anglia-mayflower-line.toml's
+        // own `mayflower-line` segment (the Mayflower line's real junction;
+        // this file was originally bundled as part of
+        // greater-anglia-suffolk-branches.toml, since split by brand --
+        // real-world sanity review). Same non-sharing decision as Marks Tey
+        // and Ipswich above: station-level overlap only, each line
+        // classified independently as ExclusiveSegment.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -3574,7 +3591,7 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "greater-anglia-main-line".to_string(),
-                "greater-anglia-suffolk-branches".to_string()
+                "greater-anglia-mayflower-line".to_string()
             ])
         );
         for m in &matches {
@@ -3588,11 +3605,13 @@ mod tests {
     }
 
     #[test]
-    fn norfolk_branches_exclusive_segment_incident_does_not_propagate() {
+    fn bittern_line_exclusive_segment_incident_does_not_propagate() {
         // Sheringham is the terminus of `bittern-line`, exclusive to
-        // greater-anglia-norfolk-branches.toml. It isn't a junction or
-        // overlap point for any other committed line, so an incident here
-        // should stay scoped to greater-anglia-norfolk-branches only.
+        // greater-anglia-bittern-line.toml (originally bundled as part of
+        // greater-anglia-norfolk-branches.toml, since split by brand --
+        // real-world sanity review). It isn't a junction or overlap point
+        // for any other committed line, so an incident here should stay
+        // scoped to greater-anglia-bittern-line only.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -3606,19 +3625,21 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["greater-anglia-norfolk-branches".to_string()])
+            HashSet::from(["greater-anglia-bittern-line".to_string()])
         );
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
     #[test]
-    fn norfolk_branches_great_yarmouth_exclusive_segment_incident_does_not_propagate() {
+    fn wherry_lines_great_yarmouth_exclusive_segment_incident_does_not_propagate() {
         // Great Yarmouth (the Acle route's terminus, and also the physical
         // terminus of the separate, much lower-frequency Berney Arms route —
-        // see greater-anglia-norfolk-branches.toml's Wherry Lines segment
-        // note for why GYM is listed once, under `wherry-acle-branch`) isn't
-        // a junction or overlap point for any other committed line, so an
-        // incident here should stay scoped to greater-anglia-norfolk-branches
+        // see greater-anglia-wherry-lines.toml's (originally bundled as
+        // part of greater-anglia-norfolk-branches.toml, since split by
+        // brand -- real-world sanity review) Wherry Lines segment note for
+        // why GYM is listed once, under `wherry-acle-branch`) isn't a
+        // junction or overlap point for any other committed line, so an
+        // incident here should stay scoped to greater-anglia-wherry-lines
         // only.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
@@ -3633,7 +3654,7 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["greater-anglia-norfolk-branches".to_string()])
+            HashSet::from(["greater-anglia-wherry-lines".to_string()])
         );
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
@@ -3641,26 +3662,31 @@ mod tests {
     #[test]
     fn norfolk_branches_norwich_is_station_overlap_only_with_main_line() {
         // Norwich is on both greater-anglia-main-line.toml's `geml-mainline`
-        // segment (as GEML's terminus) and
-        // greater-anglia-norfolk-branches.toml's own
-        // `norfolk-branches-norwich` segment (the shared origin of the
-        // Bittern, Wherry and Breckland lines). Per that file's
+        // segment (as GEML's terminus) and the shared origin of the
+        // Bittern, Wherry and Breckland lines -- originally the single
+        // bundled greater-anglia-norfolk-branches.toml's own
+        // `norfolk-branches-norwich` segment, since split by brand
+        // (real-world sanity review) into three separate files
+        // (greater-anglia-bittern-line.toml, greater-anglia-wherry-lines.toml,
+        // greater-anglia-breckland-line.toml), each of which now lists NRW
+        // under its own exclusive segment name. Per the original file's
         // segment-decision note (mirroring Task 2.4's Witham/Colchester and
         // Task 2.5's Marks Tey/Ipswich/Manningtree precedent — and a
         // deliberate departure from this task's own brief, which suggested a
-        // SharedSegment-asserting test here), the two files deliberately do
-        // NOT share a segment name — reusing `geml-mainline` verbatim would
-        // incorrectly reclassify unrelated far-flung `geml-mainline`
+        // SharedSegment-asserting test here), none of these files share a
+        // segment name at Norwich with each other or with
+        // greater-anglia-main-line.toml — reusing `geml-mainline` verbatim
+        // would incorrectly reclassify unrelated far-flung `geml-mainline`
         // stations (e.g. Diss, Ingatestone) as shared trunk too, since
         // SegmentRegistry::is_shared marks a segment name shared globally,
         // not per overlapping station, and there is no track beyond Norwich
         // that GEML and these three branches jointly occupy. So an incident
-        // here should match both lines independently, each still classified
+        // here should match all lines independently, each still classified
         // as ExclusiveSegment rather than escalating to SharedSegment.
         //
         // Norwich is also emr-regional.toml's own terminus (its own
         // `emr-regional-east` segment, exclusive catalogue-wide, merged
-        // separately from this batch) -- a third independent ExclusiveSegment
+        // separately from this batch) -- another independent ExclusiveSegment
         // match by the same station-overlap pattern.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
@@ -3677,7 +3703,9 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "greater-anglia-main-line".to_string(),
-                "greater-anglia-norfolk-branches".to_string(),
+                "greater-anglia-bittern-line".to_string(),
+                "greater-anglia-wherry-lines".to_string(),
+                "greater-anglia-breckland-line".to_string(),
                 "emr-regional".to_string(),
             ])
         );
@@ -3692,16 +3720,18 @@ mod tests {
     }
 
     #[test]
-    fn norfolk_branches_ely_is_station_overlap_only_with_xc_stansted() {
-        // Ely is on both greater-anglia-norfolk-branches.toml's own
-        // `breckland-line` segment (the Breckland Line's route to Cambridge)
-        // and xc-stansted.toml's whole-route `xc-stansted` segment
-        // (CrossCountry's Birmingham-Stansted Airport route also approaches
-        // Cambridge via Peterborough and Ely). This overlap wasn't
-        // previously exercised by any regression test, since no other
-        // committed line touched Ely before this file existed. The two
-        // files deliberately do NOT share a segment name here (see
-        // greater-anglia-norfolk-branches.toml's Ely/Cambridge decision
+    fn breckland_line_ely_is_station_overlap_only_with_xc_stansted() {
+        // Ely is on both greater-anglia-breckland-line.toml's own
+        // `breckland-line` segment (the Breckland Line's route to Cambridge;
+        // this file was originally bundled as part of
+        // greater-anglia-norfolk-branches.toml, since split by brand --
+        // real-world sanity review) and xc-stansted.toml's whole-route
+        // `xc-stansted` segment (CrossCountry's Birmingham-Stansted Airport
+        // route also approaches Cambridge via Peterborough and Ely). This
+        // overlap wasn't previously exercised by any regression test, since
+        // no other committed line touched Ely before this file existed. The
+        // two files deliberately do NOT share a segment name here (see
+        // greater-anglia-breckland-line.toml's Ely/Cambridge decision
         // note — reusing `xc-stansted` verbatim would incorrectly mark
         // xc-stansted.toml's entire Midlands trunk as shared with this
         // line), so an incident here should match both lines independently,
@@ -3730,7 +3760,7 @@ mod tests {
         assert_eq!(
             matched_ids,
             HashSet::from([
-                "greater-anglia-norfolk-branches".to_string(),
+                "greater-anglia-breckland-line".to_string(),
                 "xc-stansted".to_string(),
                 "emr-regional".to_string(),
                 "great-northern-kings-lynn".to_string(),
@@ -7241,10 +7271,12 @@ mod tests {
     fn cbg_station_overlap_matches_great_northern_kings_lynn_and_xc_stansted_as_independent_exclusive_segments()
      {
         // Cambridge is also greater-anglia-west-anglia.toml's (`waml-mainline`)
-        // and greater-anglia-norfolk-branches.toml's (`breckland-line`) own
-        // terminus (both Batch 2) -- two more independent ExclusiveSegment
-        // matches by the same station-overlap pattern already established
-        // by west_anglia_cambridge_is_station_overlap_only_with_xc_stansted.
+        // and greater-anglia-breckland-line.toml's (`breckland-line`, orig.
+        // bundled in greater-anglia-norfolk-branches.toml -- since split by
+        // brand, real-world sanity review) own terminus (both Batch 2) --
+        // two more independent ExclusiveSegment matches by the same
+        // station-overlap pattern already established by
+        // west_anglia_cambridge_is_station_overlap_only_with_xc_stansted.
         //
         // Updated by the Wales/East Anglia batch: `greater-anglia-ipswich-
         // cambridge.toml` also terminates at Cambridge (its own
@@ -7268,7 +7300,7 @@ mod tests {
                 "xc-stansted".to_string(),
                 "thameslink-cambridge".to_string(),
                 "greater-anglia-west-anglia".to_string(),
-                "greater-anglia-norfolk-branches".to_string(),
+                "greater-anglia-breckland-line".to_string(),
                 "greater-anglia-ipswich-cambridge".to_string(),
             ])
         );
