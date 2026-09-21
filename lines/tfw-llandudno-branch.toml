@@ -64,11 +64,24 @@ match_keywords = ["Llandudno branch line"]
 # service's actual terminus is Llandudno. Not fixed here, since editing that
 # file is outside this task's scope, but noted for a future pass.)
 #
-# Given that, LLJ below reuses `tfw-conwy-valley.toml`'s exact segment name,
-# `tfw-conwy-valley`, verbatim -- a deliberate, genuine shared-trunk claim.
+# Given that, LLJ below is a deliberate, genuine shared-trunk claim with
+# `tfw-conwy-valley.toml`. Reconciled during integration merge: an earlier
+# draft reused that file's plain `tfw-conwy-valley` segment name verbatim
+# here -- wrong, for the identical over-broad-reuse reason this catalogue's
+# other corrected-scope notes already document elsewhere (that name also
+# covers ten other stations exclusive to `tfw-conwy-valley.toml` --
+# Glan Conwy, Tal-y-Cafn, Dolgarrog, North Llanrwst, Llanrwst, Betws-y-Coed,
+# Pont-y-Pant, Dolwyddelan, Roman Bridge, Blaenau Ffestiniog -- none of
+# which this branch reaches, so reusing the name verbatim would have
+# falsely marked all ten as "shared" with this file too, since sharing is
+# evaluated per segment name catalogue-wide, not per individual station).
+# Fixed by introducing a new, narrower segment name,
+# `tfw-conwy-valley-llandudno-junction`, used ONLY for LLJ in both files --
+# see `tfw-conwy-valley.toml`'s own matching note on its LLJ row.
+#
 # Deganwy and Llandudno themselves are kept on this file's own exclusive
-# segment rather than also being tagged `tfw-conwy-valley`: that file's own
-# station list does not include either of them, and per the
+# segment rather than also being tagged with the shared name: that file's
+# own station list does not include either of them, and per the
 # `gwr-south-wales.toml` Bristol Parkway precedent ("a single-station
 # waypoint, not a multi-station trunk... reusing the shared name for
 # stations the other file doesn't reach would incorrectly widen its own
@@ -81,10 +94,11 @@ match_keywords = ["Llandudno branch line"]
 crs = "LLJ"
 tiploc = "LANDUDJ"
 role = "junction"
-segment = "tfw-conwy-valley"
+segment = "tfw-conwy-valley-llandudno-junction"
 # See the LLJ overlap note above. Station-overlap only with
 # `tfw-north-wales-coast.toml`'s own (different) segment name at this same
-# station; genuinely shared with `tfw-conwy-valley.toml`.
+# station; genuinely shared with `tfw-conwy-valley.toml`, on this
+# file-pair's own narrow segment name.
 
 [[stations]]
 crs = "DGY"

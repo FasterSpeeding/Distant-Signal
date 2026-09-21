@@ -27,14 +27,6 @@ operators = ["AW"]
 # passenger CRS code) with no further stations of its own before reaching
 # Newport or Cardiff Central -- both of which are therefore this file's own
 # two genuine termini, not invented endpoints.
-[severity_overrides]
-minor_delays_pct = 0.25
-delay_threshold_minutes = 7
-# Matches `tfw-vale-of-glamorgan.toml`'s documented middle ground: a real
-# half-hourly-combined inner service (Ebbw Vale Town-Pye Corner) but each
-# individual onward branch (to Newport, to Cardiff Central) is only hourly,
-# so neither this catalogue's tightest commuter defaults nor its loosest
-# rural-branch overrides fit cleanly.
 
 sample_stations = ["EBB", "PYE", "NWP", "CDF"]
 destination_crs_filter = ["EBB", "NWP", "CDF"]
@@ -69,6 +61,16 @@ match_keywords = ["Ebbw Valley Railway", "Ebbw Vale Line"]
 # same-station-different-corridor shape. Station-overlap only in both
 # directions; this file's own segment name is used throughout, including at
 # NWP and CDF.
+
+[severity_overrides]
+minor_delays_pct = 0.25
+delay_threshold_minutes = 7
+# Matches `tfw-vale-of-glamorgan.toml`'s documented middle ground: a real
+# half-hourly-combined inner service (Ebbw Vale Town-Pye Corner) but each
+# individual onward branch (to Newport, to Cardiff Central) is only hourly,
+# so neither this catalogue's tightest commuter defaults nor its loosest
+# rural-branch overrides fit cleanly.
+
 [[stations]]
 crs = "EBB"
 role = "terminus"

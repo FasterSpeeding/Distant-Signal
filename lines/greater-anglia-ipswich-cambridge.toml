@@ -37,10 +37,6 @@ operators = ["LE"]
 # throughout except Ipswich-Stowmarket, unelectrified beyond Stowmarket, an
 # hourly service -- matching this catalogue's other single-track hourly
 # regional branches.
-[severity_overrides]
-minor_delays_pct = 0.30
-reduced_service_pct = 0.35
-delay_threshold_minutes = 10
 
 sample_stations = ["IPS", "BSE", "NMK", "CBG"]
 destination_crs_filter = ["CBG", "IPS"]
@@ -89,6 +85,16 @@ match_keywords = ["Ipswich-Ely line", "Ipswich to Ely line"]
 # each other at this station (per `greater-anglia-west-anglia.toml`'s own
 # CBG/xc-stansted decision, cited there as the precedent). This file follows
 # the same established pattern: station-overlap only, own segment name.
+
+[severity_overrides]
+minor_delays_pct = 0.30
+reduced_service_pct = 0.35
+delay_threshold_minutes = 10
+# Matches `greater-anglia-east-suffolk.toml`'s own overrides for the same
+# reasoning: an hourly single-track branch where one cancellation is a
+# large fraction of the service and a short delay isn't yet a story at
+# config.py's base thresholds.
+
 [[stations]]
 crs = "IPS"
 tiploc = "IPSWICH"

@@ -484,6 +484,11 @@ mod tests {
         // station overlap, not a shared trunk), and the incident does not
         // leak to elizabeth-line or elizabeth-heathrow, the other two XR
         // branches.
+        //
+        // Updated by the Wales/East Anglia batch: `greater-anglia-southend-
+        // victoria.toml` also has its own western terminus/junction at
+        // Shenfield (its own `greater-anglia-southend-victoria` segment) -
+        // a third independent ExclusiveSegment match.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -499,7 +504,8 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "elizabeth-shenfield".to_string(),
-                "greater-anglia-main-line".to_string()
+                "greater-anglia-main-line".to_string(),
+                "greater-anglia-southend-victoria".to_string(),
             ])
         );
         for m in &matches {
@@ -3231,6 +3237,11 @@ mod tests {
         // thameslink-cambridge.toml's (its own `thameslink-cambridge-branch`
         // segment) terminus, both merged separately (Batch 5) -- two more
         // independent ExclusiveSegment matches by the same pattern.
+        //
+        // Updated by the Wales/East Anglia batch: `greater-anglia-ipswich-
+        // cambridge.toml` also terminates at Cambridge (its own
+        // `greater-anglia-ipswich-cambridge` segment) -- a sixth
+        // independent ExclusiveSegment match.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -3250,6 +3261,7 @@ mod tests {
                 "greater-anglia-norfolk-branches".to_string(),
                 "great-northern-kings-lynn".to_string(),
                 "thameslink-cambridge".to_string(),
+                "greater-anglia-ipswich-cambridge".to_string(),
             ])
         );
         for m in &matches {
@@ -3503,6 +3515,12 @@ mod tests {
         // further out at Westerfield). Same non-sharing decision as Marks
         // Tey above: station-level overlap only, each line classified
         // independently as ExclusiveSegment.
+        //
+        // Updated by the Wales/East Anglia batch: `greater-anglia-east-
+        // suffolk.toml` and `greater-anglia-ipswich-cambridge.toml` both
+        // also have Ipswich as their own junction (their own
+        // `greater-anglia-east-suffolk`/`greater-anglia-ipswich-cambridge`
+        // segments) - two more independent ExclusiveSegment matches.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -3518,7 +3536,9 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "greater-anglia-main-line".to_string(),
-                "greater-anglia-suffolk-branches".to_string()
+                "greater-anglia-suffolk-branches".to_string(),
+                "greater-anglia-east-suffolk".to_string(),
+                "greater-anglia-ipswich-cambridge".to_string(),
             ])
         );
         for m in &matches {
@@ -4373,6 +4393,11 @@ mod tests {
     // for the shared-trunk case.
     #[test]
     fn gwr_south_wales_exclusive_segment_incident_does_not_propagate() {
+        // Updated by the Wales/East Anglia batch: `tfw-vale-of-glamorgan.
+        // toml` and `tfw-maesteg.toml` both also terminate at Bridgend
+        // (their own `tfw-vale-of-glamorgan`/`tfw-maesteg` segments) - a
+        // genuine station overlap, not a shared trunk, so both now match
+        // independently as ExclusiveSegment too.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -4384,8 +4409,22 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["gwr-south-wales".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "gwr-south-wales".to_string(),
+                "tfw-vale-of-glamorgan".to_string(),
+                "tfw-maesteg".to_string(),
+            ])
+        );
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment",
+                m.line.id
+            );
+        }
     }
 
     // Station Catalogue Completeness Task 1.3: fills in three previously
@@ -4566,6 +4605,12 @@ mod tests {
         // xc-cardiff stay ExclusiveSegment on their own distinct segment
         // names, same station-overlap-only pattern as this test already
         // established.
+        //
+        // Updated by the Wales/East Anglia batch: `tfw-ebbw-vale.toml` and
+        // `tfw-vale-of-glamorgan.toml` both also terminate at Cardiff
+        // Central (their own `tfw-ebbw-vale`/`tfw-vale-of-glamorgan`
+        // segments) - two more independent ExclusiveSegment matches by the
+        // same station-overlap pattern.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -4586,6 +4631,8 @@ mod tests {
                 "tfw-valley-merthyr".to_string(),
                 "tfw-valley-rhondda".to_string(),
                 "tfw-valley-lines-south".to_string(),
+                "tfw-ebbw-vale".to_string(),
+                "tfw-vale-of-glamorgan".to_string(),
             ])
         );
         for m in &matches {
@@ -5684,6 +5731,16 @@ mod tests {
     // classified as `MatchScope::ExclusiveSegment` (not `SharedSegment` --
     // that scope only applies when a segment name is genuinely shared
     // across line files, which is deliberately not the case here).
+    //
+    // Updated by the Wales/East Anglia batch: `tfw-llandudno-branch.toml`
+    // also calls at Llandudno Junction, genuinely sharing track with
+    // `tfw-conwy-valley.toml` there (TfW's own through-service continues
+    // past the junction to Llandudno) on a dedicated, narrow
+    // `tfw-conwy-valley-llandudno-junction` segment name (reconciled during
+    // integration merge -- see either file's own LLJ note for the full
+    // writeup). So `tfw-conwy-valley` and `tfw-llandudno-branch` are now a
+    // genuine SharedSegment pair here, while `tfw-north-wales-coast` and
+    // `wcml-north-wales` stay independently ExclusiveSegment.
     #[test]
     fn llj_station_overlap_matches_both_lines_as_exclusive() {
         // Llandudno Junction is also wcml-north-wales.toml's own station
@@ -5707,14 +5764,20 @@ mod tests {
                 "tfw-conwy-valley".to_string(),
                 "tfw-north-wales-coast".to_string(),
                 "wcml-north-wales".to_string(),
+                "tfw-llandudno-branch".to_string(),
             ])
         );
         for m in &matches {
+            let expected = if m.line.id == "tfw-conwy-valley" || m.line.id == "tfw-llandudno-branch"
+            {
+                MatchScope::SharedSegment
+            } else {
+                MatchScope::ExclusiveSegment
+            };
             assert_eq!(
-                m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment",
-                m.line.id
+                m.scope, expected,
+                "{} should be {:?}",
+                m.line.id, expected
             );
         }
     }
@@ -7182,6 +7245,11 @@ mod tests {
         // terminus (both Batch 2) -- two more independent ExclusiveSegment
         // matches by the same station-overlap pattern already established
         // by west_anglia_cambridge_is_station_overlap_only_with_xc_stansted.
+        //
+        // Updated by the Wales/East Anglia batch: `greater-anglia-ipswich-
+        // cambridge.toml` also terminates at Cambridge (its own
+        // `greater-anglia-ipswich-cambridge` segment) -- a sixth
+        // independent ExclusiveSegment match.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -7201,6 +7269,7 @@ mod tests {
                 "thameslink-cambridge".to_string(),
                 "greater-anglia-west-anglia".to_string(),
                 "greater-anglia-norfolk-branches".to_string(),
+                "greater-anglia-ipswich-cambridge".to_string(),
             ])
         );
         for m in &matches {

@@ -36,10 +36,6 @@ operators = ["AW"]
 # "regional"`, and severity overrides matching this catalogue's other
 # hourly-ish single-operator branch lines (`tfw-heart-of-wales.toml`,
 # `tfw-conwy-valley.toml`), rather than a commuter line's tighter defaults.
-[severity_overrides]
-minor_delays_pct = 0.30
-reduced_service_pct = 0.35
-delay_threshold_minutes = 10
 
 sample_stations = ["WXC", "WRX", "SHT", "BID"]
 destination_crs_filter = ["WXC", "BID"]
@@ -93,6 +89,15 @@ match_keywords = ["Borderlands line", "Borderlands Line"]
 # ... no shared-segment question arises here today"). Station-overlap only,
 # for the same reason: the Shrewsbury-Chester line and this line meet only
 # at Wrexham General's own platforms, not on shared running track.
+
+[severity_overrides]
+minor_delays_pct = 0.30
+reduced_service_pct = 0.35
+delay_threshold_minutes = 10
+# Matches this catalogue's other hourly-ish single-operator branch lines
+# (`tfw-heart-of-wales.toml`, `tfw-conwy-valley.toml`), rather than a
+# commuter line's tighter defaults.
+
 [[stations]]
 crs = "BID"
 role = "junction"

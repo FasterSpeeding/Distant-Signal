@@ -24,7 +24,10 @@ operators = ["AW"]
 # three branches as distinct segments off a shared trunk, is therefore the
 # straightforwardly correct reading of the source, not just the cleanest
 # option -- matching this catalogue's existing multi-branch-file precedent
-# (e.g. `tfw-valley-lines-north.toml`'s Merthyr/Aberdare/Rhondda branches).
+# (e.g. the former combined `tfw-valley-lines-north.toml`'s Merthyr/
+# Aberdare/Rhondda branches, at the time this file was written; since split
+# into `tfw-valley-merthyr.toml` and `tfw-valley-rhondda.toml` by a later
+# data-driven catalogue audit).
 #
 # ## Route and current station list
 #
@@ -53,15 +56,12 @@ operators = ["AW"]
 # Major/Bridgend continuation is hourly only (Rhoose's own Wikipedia article:
 # "an hourly service westbound to Bridgend and eastbound to Cardiff
 # Central"). `category = "commuter"` for the file as a whole, matching
-# `tfw-valley-lines-north.toml`/`tfw-valley-lines-south.toml`'s treatment of
+# `tfw-valley-lines-south.toml`/`tfw-valley-rhymney.toml`'s treatment of
 # the same TfW Valley Lines / Cardiff-radius network, but the severity
 # overrides below are deliberately a documented middle ground rather than
 # either extreme -- not as tight as those two files' 0.20/5min (this line's
 # outer end is hourly, not 2-4tph throughout), and not as loose as a pure
 # hourly regional line either.
-[severity_overrides]
-minor_delays_pct = 0.25
-delay_threshold_minutes = 7
 
 # Cardiff Central and Bridgend are shared, real stations, not shared track
 # in either case investigated below -- both are genuine multi-line hubs
@@ -74,7 +74,7 @@ sample_stations = ["CDF", "BRY", "BGN", "PEN"]
 # omits it from its own `destination_crs_filter`: both Barry's and
 # Bridgend's own Wikipedia "Services" sections confirm eastbound trains
 # "usually continue beyond Cardiff Central to either Rhymney or Bargoed"
-# (TfW's own Valley Lines through-running, per `tfw-valley-lines-north.toml`,
+# (TfW's own Valley Lines through-running, per `tfw-valley-rhymney.toml`,
 # not modelled here), so a CDF-keyed filter would wrongly exclude those
 # genuine continuing services from LDBWS-based sampling at this line's own
 # stations.
@@ -87,6 +87,10 @@ destination_crs_filter = ["PEN", "BYI", "BGN"]
 # "Vale line" at Bridgend). Grepped `lines/*.toml` before adding both:
 # neither string appears in any other file's `match_keywords`.
 match_keywords = ["Vale of Glamorgan Line", "Vale Line"]
+
+[severity_overrides]
+minor_delays_pct = 0.25
+delay_threshold_minutes = 7
 
 # All CRS codes cross-checked against https://ds.cursed.solutions/api/stations
 # (per this batch's house standard), matching each station's own Wikipedia
@@ -103,8 +107,11 @@ match_keywords = ["Vale of Glamorgan Line", "Vale Line"]
 # ## Overlap: Cardiff Central (CDF) and Bridgend (BGN)
 #
 # CDF already appears in `gwr-south-wales.toml` (its own `gwr-south-wales`
-# segment) and `tfw-valley-lines-north.toml`/`tfw-valley-lines-south.toml`
-# (`tfw-valley-cardiff-hub`, a genuine shared segment between those two
+# segment) and `tfw-valley-lines-south.toml`/`tfw-valley-merthyr.toml`/
+# `tfw-valley-rhondda.toml`/`tfw-valley-rhymney.toml` (the post-split
+# successors of the former combined `tfw-valley-lines-north.toml`, per a
+# later data-driven catalogue audit -- see those files' own split
+# comments) (`tfw-valley-cardiff-hub`, a genuine shared segment among those
 # files for the Valley Lines proper). This line's own City/Coryton/Bay-line
 # sibling files' shared-hub reasoning does not extend here: the Vale of
 # Glamorgan Line's own route out of Cardiff Central runs via Grangetown
@@ -121,10 +128,12 @@ match_keywords = ["Vale of Glamorgan Line", "Vale Line"]
 # ("also the western terminus of the Vale of Glamorgan Line from Cardiff"
 # and the point "where the Maesteg Line diverges from the South Wales Main
 # Line"). Bridgend's own article additionally confirms real through-running
-# from this line onto `tfw-valley-lines-north.toml`'s territory ("trains now
-# running through to and from Aberdare") -- a service-pattern fact noted
-# here, not modelled as a shared segment, since Aberdare is that file's own
-# exclusive stretch. Station-overlap only in every direction at BGN.
+# from this line onto `tfw-valley-merthyr.toml`'s territory (the Aberdare
+# Line's post-split home; formerly part of the combined `tfw-valley-lines-
+# north.toml`) ("trains now running through to and from Aberdare") -- a
+# service-pattern fact noted here, not modelled as a shared segment, since
+# Aberdare is that file's own exclusive stretch. Station-overlap only in
+# every direction at BGN.
 [[stations]]
 crs = "CDF"
 tiploc = "CRDFCEN"

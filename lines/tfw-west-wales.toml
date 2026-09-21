@@ -43,10 +43,6 @@ operators = ["AW", "GW"]
 # two-hourly (per the sourcing above) -- sparser even than
 # `tfw-heart-of-wales.toml`'s 2-3-hourly pattern, so the same
 # proportional-impact reasoning applies at least as strongly.
-[severity_overrides]
-minor_delays_pct = 0.30
-reduced_service_pct = 0.35
-delay_threshold_minutes = 10
 
 sample_stations = ["SWA", "CMN", "MFH", "FGW", "PMD"]
 destination_crs_filter = ["MFH", "FGW", "FGH", "PMD"]
@@ -64,6 +60,11 @@ match_keywords = ["West Wales lines", "West Wales Line"]
 # task's brief and everyday usage favour -- both attested by the article
 # itself (the redirect from the singular is itself evidence the singular
 # form is in real use). Grepped `lines/*.toml`: no collision.
+
+[severity_overrides]
+minor_delays_pct = 0.30
+reduced_service_pct = 0.35
+delay_threshold_minutes = 10
 
 # All CRS codes cross-checked against https://ds.cursed.solutions/api/stations,
 # matching each station's own Wikipedia infobox. Johnston (Pembrokeshire) is

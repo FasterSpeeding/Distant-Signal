@@ -26,14 +26,6 @@ operators = ["LE"]
 # characterisation and a genuinely single-track-for-much-of-its-length,
 # hourly service (double track only Ipswich-Woodbridge and
 # Saxmundham-Halesworth per the article's own "Current route" section).
-[severity_overrides]
-minor_delays_pct = 0.30
-reduced_service_pct = 0.35
-delay_threshold_minutes = 10
-# Matches `greater-anglia-suffolk-branches.toml`'s own overrides for the
-# same reasoning: an hourly single-track branch where one cancellation is a
-# large fraction of the service and a short delay isn't yet a story at
-# config.py's base thresholds.
 
 sample_stations = ["IPS", "SAX", "LWT"]
 destination_crs_filter = ["LWT", "IPS"]
@@ -42,6 +34,15 @@ match_keywords = ["East Suffolk line"]
 # The article's own consistently-used title; the only phrase confirmed by
 # this task's research, so left at one keyword per SCHEMA.md's "don't pad"
 # rule. Grepped `lines/*.toml`: no collision.
+
+[severity_overrides]
+minor_delays_pct = 0.30
+reduced_service_pct = 0.35
+delay_threshold_minutes = 10
+# Matches `greater-anglia-suffolk-branches.toml`'s own overrides for the
+# same reasoning: an hourly single-track branch where one cancellation is a
+# large fraction of the service and a short delay isn't yet a story at
+# config.py's base thresholds.
 
 # All CRS codes cross-checked against https://ds.cursed.solutions/api/stations,
 # matching each station's own Wikipedia infobox. TIPLOCs are omitted
