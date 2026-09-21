@@ -208,7 +208,7 @@ tiploc = "WCHR"
 role = "major"
 segment = "tfw-marches-crewe"
 # Whitchurch (Shropshire) -- distinct from Whitchurch (Cardiff, WHT, on
-# `tfw-valley-lines-south.toml`) and Whitchurch (Hampshire, WCH); confirmed
+# `tfw-coryton-line.toml`) and Whitchurch (Hampshire, WCH); confirmed
 # distinct CRS/TIPLOC values for all three during this review's sourcing
 # pass. A market town of a size
 # comparable to this file's other "major" stops (Abergavenny, Ludlow), and
