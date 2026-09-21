@@ -363,11 +363,11 @@ segment = "scotrail-dundee-aberdeen"
 #
 # === Scope boundaries (documented, not modelled) ===
 #
-# - The Alloa branch (Stirling-Alloa): real, already flagged as
-#   unmodelled by `scotrail-stirling-dunblane.toml`'s own scope-boundary
-#   note -- this file does not touch it either (it diverges from this
-#   file's own route at/around Stirling, a different direction from
-#   Dunblane/Gleneagles/Perth).
+# - The Alloa branch (Stirling-Alloa): now modelled in `scotrail-stirling-
+#   dunblane.toml` (ALO, added alongside this file). Not repeated here:
+#   this file's own route continues past Stirling towards Dunblane/
+#   Gleneagles/Perth, a different direction from the Alloa branch, so
+#   there is no station-level overlap for this file to reconcile.
 # - LNER's Highland Chieftain (calls at Gleneagles/Perth on its way to
 #   Inverness) and Caledonian Sleeper: real, per the sourcing above, but
 #   not `SR`-operated and no `lines/*.toml` file for either currently

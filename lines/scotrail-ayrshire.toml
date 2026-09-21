@@ -204,9 +204,15 @@ segment = "scotrail-ayrshire-glasgow-ayr"
 crs = "PYG"
 role = "junction"
 segment = "scotrail-ayrshire-glasgow-ayr"
-# Paisley Gilmour Street: shared with the Inverclyde Line and Paisley Canal
-# Line (neither currently modelled in any `lines/*.toml` file), on
-# different platforms per the Ayrshire Coast Line article.
+# Paisley Gilmour Street: shared with the Inverclyde Line (still not
+# modelled in any `lines/*.toml` file) on different platforms per the
+# Ayrshire Coast Line article. The Paisley Canal Line is now modelled,
+# in `lines/scotrail-paisley-canal.toml` (real-world-sanity review,
+# 2026-09-21) -- but that line does NOT call at Paisley Gilmour Street at
+# all (its own Wikipedia sourcing: a physically distinct Shields
+# Junction/Corkerhill approach out of Glasgow Central, reaching a
+# different Paisley terminus, Paisley Canal), so no station-level overlap
+# exists here after all.
 
 [[stations]]
 crs = "JHN"
