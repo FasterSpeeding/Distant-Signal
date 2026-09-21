@@ -21,10 +21,12 @@ operators = [
 # `operators` was already correct (the single "LM" ATOC code covers both
 # brands), so only the `id`/filename/`name` needed correcting. The `id` was
 # judged safe to rename rather than just fixing `name`: `git log` shows this
-# file was created earlier the same day as this review (batch 2, commit
-# cb1d4f64) and had no history predating this review session, so no
-# externally-published URL could yet depend on the old
-# `lnwr-chase-line`/id. Renamed to `wmr-chase-line` throughout (this file,
+# file was created in batch 2 (commit cb1d4f64) and had been on `main` for
+# about 3 hours before this rename, but was verified never to have reached
+# production -- the live production API still serves the pre-split
+# `emr-rural-branches` as of this check, confirming no external consumer
+# could yet depend on the old `lnwr-chase-line` id. Renamed to
+# `wmr-chase-line` throughout (this file,
 # its filename, the `wmr-chase-line-newstreet` segment name shared with
 # `wmr-darlaston-line.toml`, that file's own comments, `wmr-camp-hill-
 # line.toml`'s cross-reference comments, and the

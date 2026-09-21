@@ -48,22 +48,27 @@ operators = ["EM"]  # East Midlands Railway
 # models, but confirming the same physical route and Market Rasen calling
 # point).
 #
-# HONEST DISCREPANCY FLAG: the quoted "Lincoln - Matlock" row names Beeston,
-# Long Eaton and Spondon between Nottingham and Derby, with no Attenborough;
-# `emr-crewe-derby.toml`'s own, separately-sourced EMR-table row for its
-# Crewe-Lincoln service names Long Eaton and Attenborough on this same
-# general stretch, with no Spondon. Both are real, currently open stations
-# (confirmed individually via this app's own station-lookup endpoint) on
-# what is almost certainly the same physical Derby-Nottingham direct
-# alignment, but the two EMR-table rows disagree on the exact intermediate
-# calling pattern, and this task's research budget did not extend to
-# resolving which (if either) is complete. Per the "if a fact can't be
-# confirmed, flag rather than guess" rule, this file's own station list
-# below follows only its own row's explicit wording (Beeston, Long Eaton,
-# Spondon; no Attenborough) rather than reconciling it with
-# `emr-crewe-derby.toml`'s different wording -- see the segment-sharing
-# ruling on the Beeston entry below for why this also means no segment name
-# is shared between the two files here.
+# DISCREPANCY, RESOLVED (review2 fix, 2026-09-21): the quoted "Lincoln -
+# Matlock" row names Beeston, Long Eaton and Spondon between Nottingham and
+# Derby, with no Attenborough; `emr-crewe-derby.toml`'s own, separately-
+# sourced EMR-table row for its Crewe-Lincoln service names Long Eaton and
+# Attenborough on this same general stretch, with no Spondon. Both are
+# real, currently open stations (confirmed individually via this app's own
+# station-lookup endpoint) on the same physical Derby-Nottingham direct
+# alignment. A later review pass confirmed via fresh EMR services-table
+# research (each station's own Wikipedia "Services" section) that BOTH
+# files are correct, not in conflict: Spondon's own current service list is
+# "1 train per hour to Matlock via Derby" with no Crewe working, while
+# Attenborough's own current service list is "1 tph to Crewe, via Derby"
+# with no Matlock working -- i.e. these are two genuinely different, real
+# EMR calling patterns on the same corridor (Crewe-Lincoln calls
+# Attenborough, not Spondon; Lincoln-Matlock, this file's own route, calls
+# Spondon, not Attenborough), not a sourcing error in either file. This
+# file's own station list below correctly follows its own row's explicit
+# wording (Beeston, Long Eaton, Spondon; no Attenborough) -- see the
+# segment-sharing ruling on the Beeston entry below for why this also means
+# no segment name is shared between the two files here (that ruling was
+# already correct and is unaffected by this resolution).
 #
 # CRS codes: DBY, DFI, BLP, AMB, WTS, CMF, MTB, MAT are unchanged from the
 # original file (already twice-verified there; see that segment's own

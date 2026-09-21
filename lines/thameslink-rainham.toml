@@ -45,10 +45,23 @@ delay_threshold_minutes = 4
 # Slade Green, Dartford' before continuing to Rainham." That stretch is
 # reused here verbatim from `southeastern-north-kent.toml` -- and note it is
 # a genuinely NARROWER calling pattern than that file's own full North Kent
-# Line stopping service: this Thameslink working skips New Cross, Deptford,
-# Woolwich Dockyard, Belvedere and Erith, all of which
-# `southeastern-north-kent.toml` calls at on the same physical track. Same
-# reasoning already established repeatedly in this catalogue
+# Line stopping service: this Thameslink working skips Woolwich Dockyard,
+# Belvedere and Erith, all of which `southeastern-north-kent.toml` calls at
+# on the same physical track.
+#
+# REVIEW2 FIX (2026-09-21): this note previously also listed New Cross and
+# Deptford among the stations this service "skips". Deptford was wrong --
+# fresh research (its own Wikipedia article's Services section: "Services
+# at Deptford are operated by Southeastern and Thameslink", with the
+# Thameslink service specifically "2 tph to Luton") confirms this service
+# DOES call at Deptford; added as a `[[stations]]` entry below, between
+# London Bridge and Greenwich. New Cross was never a genuine candidate in
+# the first place: it isn't "skipped" so much as not physically on this
+# route at all -- see southeastern-north-kent.toml's own corrected header
+# comment on the Greenwich line's real divergence point (North Kent East
+# Junction, between London Bridge and New Cross, not past New Cross).
+#
+# Same reasoning already established repeatedly in this catalogue
 # (`thameslink-cambridge.toml`'s OVERLAP (a)/(b), `thameslink-bedford.toml`'s
 # EMR ruling): same track, different calling pattern -> station overlap
 # only, this file's own exclusive segment name, not a reuse of
@@ -234,6 +247,25 @@ segment = "thameslink-rainham"
 # see the sourcing note above) ---
 
 [[stations]]
+crs = "DEP"
+role = "minor"
+segment = "thameslink-rainham"
+# Deptford -- REVIEW2 FIX (2026-09-21): added. Its own Wikipedia article's
+# Services section confirms "Services at Deptford are operated by
+# Southeastern and Thameslink..." with the Thameslink service specifically
+# "2 tph to Luton" -- i.e. this exact route. Its own succession box gives
+# London Bridge as the preceding station and Greenwich as the following
+# one, confirming this position. This file's own header comment previously
+# said this service "skips New Cross, Deptford..."; that was stale/wrong
+# for Deptford specifically -- see the header sourcing note, corrected
+# alongside this entry. (New Cross itself genuinely isn't "skipped" so
+# much as not on this physical route at all -- the Greenwich line diverges
+# from the South Eastern Main Line at North Kent East Junction, between
+# London Bridge and New Cross, so New Cross was never a candidate calling
+# point for this service; see southeastern-north-kent.toml's own header
+# comment for the corrected topology.)
+
+[[stations]]
 crs = "GNW"
 role = "major"
 segment = "thameslink-rainham"
@@ -296,12 +328,58 @@ segment = "thameslink-rainham"
 # Rainham (Kent) below. Not a `terminus` role here since through-running
 # continues past it.
 
-# --- Dartford to Gravesend: DISCLOSED GAP, not modelled ---
-# Greenhithe, Swanscombe, Northfleet and Stone Crossing are real
-# intermediate stations on this stretch but do not appear in any committed
-# `lines/*.toml` file catalogue-wide (grepped before drafting) -- not added
-# here as guessed entries, per this batch's "don't invent, disclose the
-# gap" convention. See the sourcing note above.
+# --- Dartford to Gravesend: Stone Crossing, Greenhithe, Swanscombe and
+# Northfleet ---
+#
+# REVIEW2 FIX (2026-09-21): this section previously disclosed these four
+# stations as an unmodelled gap ("do not appear in any committed
+# `lines/*.toml` file catalogue-wide"). That's now stale on two counts:
+# (1) a sibling branch in this same integration added all four to
+# `southeastern-north-kent.toml` (verified via `grep -n 'crs = "SCG"\|crs =
+# "GNH"\|crs = "SWM"\|crs = "NFL"' lines/southeastern-north-kent.toml`,
+# all four present); (2) fresh Wikipedia research (each station's own
+# article's Services section, e.g. Greenhithe's: "Services at Greenhithe
+# are operated by Southeastern and Thameslink... 2 tph to Luton via
+# Woolwich Arsenal and Greenwich") confirms this exact Thameslink service
+# genuinely calls at all four. Added below, CRS-verified live against
+# https://ds.cursed.solutions/api/stations, matching
+# southeastern-north-kent.toml's own codes and DFD-to-Gravesend order.
+#
+# Segment name: kept on this file's own exclusive `thameslink-rainham`
+# name, station-overlap only against southeastern-north-kent.toml, NOT a
+# reuse of that file's `southeastern-north-kent` segment -- consistent
+# with this file's own established treatment of the whole Deptford-
+# Dartford stretch above (that segment name also covers Woolwich Dockyard/
+# Belvedere/Erith, which this Thameslink working skips, so reusing it here
+# would risk the same whole-route-segment over-sharing bug already fixed
+# elsewhere in this review).
+
+[[stations]]
+crs = "SCG"
+role = "minor"
+segment = "thameslink-rainham"
+# Stone Crossing.
+
+[[stations]]
+crs = "GNH"
+role = "minor"
+segment = "thameslink-rainham"
+# Greenhithe (for Bluewater). Also southeastern-north-kent.toml's own
+# station -- station overlap only, see the note above.
+
+[[stations]]
+crs = "SWM"
+role = "minor"
+segment = "thameslink-rainham"
+# Swanscombe. Also southeastern-north-kent.toml's own station -- station
+# overlap only, see the note above.
+
+[[stations]]
+crs = "NFL"
+role = "minor"
+segment = "thameslink-rainham"
+# Northfleet. Also southeastern-north-kent.toml's own station -- station
+# overlap only, see the note above.
 
 # --- Gravesend to Rainham (reused from southeastern-highspeed.toml's own
 # `hs1-northkent` segment) ---
