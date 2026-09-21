@@ -1011,6 +1011,17 @@ mod tests {
     // Nottingham spur's exclusive-segment behaviour is guaranteed testable
     // right now (see the ruling comment in
     // `lines/emr-midland-main-line.toml`).
+    //
+    // Updated by the Midlands EMR/WMR/LNWR sanity review: `emr-derwent-
+    // valley.toml`'s own re-scope (Lincoln/Cleethorpes-Matlock, formerly
+    // Derby-Matlock only) and the new `emr-crewe-derby.toml` both now also
+    // call at Beeston, each on its own exclusive segment - two different
+    // citations of the same general Derby-Nottingham corridor,
+    // deliberately NOT sharing a segment name with `emr-midland-main-
+    // line.toml`'s own `emr-mml-nottingham-spur` or with each other (see
+    // either new file's own ruling comment on its Beeston entry for the
+    // full reasoning). So this incident now also matches both,
+    // independently ExclusiveSegment.
     #[test]
     fn emr_nottingham_spur_incident_stays_on_its_branch() {
         let lines = load_all_lines();
@@ -1026,9 +1037,20 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["emr-midland-main-line".to_string()])
+            HashSet::from([
+                "emr-midland-main-line".to_string(),
+                "emr-derwent-valley".to_string(),
+                "emr-crewe-derby".to_string(),
+            ])
         );
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment",
+                m.line.id
+            );
+        }
     }
 
     // `lines/emr-regional.toml` (Batch 7, Task 7.2): exclusive-segment check
@@ -1297,6 +1319,13 @@ mod tests {
     // intercity MML service skips Duffield/Belper/Ambergate entirely), so it
     // is the only station where an incident can demonstrate both lines
     // matching together as SharedSegment.
+    //
+    // Updated by the Midlands EMR/WMR/LNWR sanity review: `emr-crewe-
+    // derby.toml` (a new file from that review) also reuses `emr-mml-derby`
+    // verbatim for its own Derby entry, so a Derby incident now also
+    // matches it as a third SharedSegment line -- not asserted by name
+    // here (this test only checks specific `by_id` entries, not the full
+    // match set), but consistent with the ruling above.
     #[test]
     fn emr_derwent_valley_shared_with_midland_main_line() {
         let lines = load_all_lines();
@@ -2050,6 +2079,22 @@ mod tests {
         // Lincoln, each via a physically different approach - genuine
         // station overlap, not a shared trunk, so all three now match
         // independently as ExclusiveSegment.
+        //
+        // Updated again by the Midlands EMR/WMR/LNWR sanity review:
+        // `emr-crewe-derby.toml` and the re-scoped `emr-derwent-
+        // valley.toml` (formerly Derby-Matlock only, now Lincoln/
+        // Cleethorpes-Matlock) both deliberately REUSE
+        // `emr-nottingham-lincoln.toml`'s own `emr-nottingham-lincoln`
+        // segment name verbatim for their own Lincoln entries (same
+        // physical Nottingham-Newark Castle-Lincoln stretch, byte-
+        // identical station list in all three files - see either new
+        // file's own comment for the derivation). So those three now
+        // report SharedSegment with EACH OTHER at Lincoln, while
+        // `emr-lincoln-peterborough.toml` (its own exclusive
+        // `emr-lincoln-peterborough` segment - a different, Peterborough/
+        // Doncaster-facing approach) joins `lner-lincoln`/
+        // `northern-sheffield-lincoln` as a fourth independent
+        // ExclusiveSegment match.
         let inc = incident(
             "LNER-6",
             "Signal failure at Lincoln",
@@ -2065,15 +2110,19 @@ mod tests {
                 "lner-lincoln".to_string(),
                 "emr-nottingham-lincoln".to_string(),
                 "northern-sheffield-lincoln".to_string(),
+                "emr-crewe-derby".to_string(),
+                "emr-derwent-valley".to_string(),
+                "emr-lincoln-peterborough".to_string(),
             ])
         );
         for m in &matches {
-            assert_eq!(
-                m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment",
-                m.line.id
-            );
+            let expected = match m.line.id.as_str() {
+                "emr-nottingham-lincoln" | "emr-crewe-derby" | "emr-derwent-valley" => {
+                    MatchScope::SharedSegment
+                }
+                _ => MatchScope::ExclusiveSegment,
+            };
+            assert_eq!(m.scope, expected, "{} should be {:?}", m.line.id, expected);
         }
     }
 
@@ -2602,6 +2651,14 @@ mod tests {
     // by design (station-overlap-only, same precedent as
     // xc-manchester.toml and tpe-anglo-scottish.toml). Genuinely standalone
     // for this assertion.
+    //
+    // Updated by the Midlands EMR/WMR/LNWR sanity review: `emr-barton-
+    // line.toml` and the re-scoped `emr-derwent-valley.toml` (formerly
+    // Derby-Matlock only, now Lincoln/Cleethorpes-Matlock) both also call
+    // at Grimsby Town, each via its own exclusive segment name (genuine
+    // physical overlap, materially different calling pattern - see either
+    // file's own ruling comment). So this incident now also matches both,
+    // independently ExclusiveSegment.
     #[test]
     fn tpe_south_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -2615,8 +2672,22 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["tpe-south".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            matched_ids,
+            HashSet::from([
+                "tpe-south".to_string(),
+                "emr-barton-line".to_string(),
+                "emr-derwent-valley".to_string(),
+            ])
+        );
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment",
+                m.line.id
+            );
+        }
     }
 
     // Task 8.4 (Batch 8): fills the 9 genuinely missing, currently-open,
@@ -3911,6 +3982,12 @@ mod tests {
         // ExclusiveSegment match, same pattern as
         // `emr_regional_stockport_and_hope_valley_both_match_without_over_propagating`
         // above.
+        //
+        // Updated by the Midlands EMR/WMR/LNWR sanity review: `emr-crewe-
+        // derby.toml` also calls at Stoke-on-Trent, on its own exclusive
+        // `emr-crewe-derby-west` segment (a real coverage gap this task
+        // added; different operator, different physical approach) -- a
+        // third independent ExclusiveSegment match.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -3924,7 +4001,11 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["wcml-manchester".to_string(), "xc-manchester".to_string()])
+            HashSet::from([
+                "wcml-manchester".to_string(),
+                "xc-manchester".to_string(),
+                "emr-crewe-derby".to_string(),
+            ])
         );
         for m in &matches {
             assert_eq!(
@@ -10901,5 +10982,97 @@ mod tests {
             matched_ids,
             HashSet::from(["scotrail-glasgow-south-western".to_string()])
         );
+    }
+
+    // Midlands EMR/WMR/LNWR sanity review: new-line regression guards.
+    //
+    // `lines/emr-crewe-derby.toml` -- Uttoxeter is on the exclusive
+    // `emr-crewe-derby-west` segment, west of the shared-with-`emr-mml-
+    // derby` Derby junction, so it should not propagate to any other line.
+    #[test]
+    fn emr_crewe_derby_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "EM-CD-1",
+            "Points failure at Uttoxeter",
+            "Points failure causing delays to services at Uttoxeter.",
+            &["EM"],
+            &["UTT"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["emr-crewe-derby".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `lines/emr-lincoln-peterborough.toml` -- Ruskington is on the
+    // exclusive `emr-lincoln-peterborough` segment, not shared with any
+    // other line. (Sleaford itself, one station further along this same
+    // segment, is ALSO a genuine `emr-poacher.toml` station -- the Poacher
+    // Line's own Grantham-Skegness route also runs via Sleaford, a real
+    // crossing point between the two lines, discovered while writing this
+    // test. Station-overlap only, no segment shared; Ruskington is used
+    // here instead purely so this test demonstrates the single-line case.)
+    #[test]
+    fn emr_lincoln_peterborough_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "EM-LP-1",
+            "Points failure at Ruskington",
+            "Points failure causing delays to services at Ruskington.",
+            &["EM"],
+            &["RKT"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["emr-lincoln-peterborough".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `lines/emr-barton-line.toml` -- Goxhill is exclusive to this line's
+    // own `emr-barton-line` segment.
+    #[test]
+    fn emr_barton_line_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "EM-BL-1",
+            "Points failure at Goxhill",
+            "Points failure causing delays to services at Goxhill.",
+            &["EM"],
+            &["GOX"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(matched_ids, HashSet::from(["emr-barton-line".to_string()]));
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // `lines/emr-derwent-valley.toml` (re-scoped, Midlands EMR/WMR/LNWR
+    // sanity review) -- Market Rasen is exclusive to this line's own
+    // `emr-derwent-valley-grimsby` segment.
+    #[test]
+    fn emr_derwent_valley_market_rasen_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "EM-DV-1",
+            "Points failure at Market Rasen",
+            "Points failure causing delays to services at Market Rasen.",
+            &["EM"],
+            &["MKR"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["emr-derwent-valley".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 }
