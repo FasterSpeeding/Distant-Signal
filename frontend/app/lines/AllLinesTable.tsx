@@ -9,6 +9,7 @@ import {
   Group,
   Stack,
   Table,
+  TableScrollContainer,
   TableThead,
   TableTbody,
   TableTr,
@@ -336,13 +337,25 @@ export function AllLinesTable({
           </Stack>
         )}
       </Stack>
-      <Table>
-        {/* Flat `TableThead`/`TableTr`/... named exports, not the
-            `Table.Thead` dot-notation compound API -- kept consistent with
-            the rest of this codebase's Table usage even though this is a
-            Client Component (see the Server Component variant this was
-            extracted from for why the flat exports matter there). */}
-        <TableThead>
+      {/* `TableScrollContainer` (same pattern, same `minWidth`, as
+          `components/JourneyTimeline.tsx`): below the `sm` breakpoint this
+          table is Name + Status + Pin, and the Status column's badge
+          deliberately doesn't truncate (see the `data-status-badge` comment
+          below, Task 3.4.1) -- on a line with no sample data yet, "NO DATA"
+          plus the fixed-size Pin icon button push the row past 390px. That
+          used to force the whole page to scroll horizontally; scoping the
+          scroll to the table itself keeps the rest of the page fixed,
+          matching e2e/nav.spec.ts's `hasHorizontalOverflow` regression
+          check (Task 1.2), which asserts nothing on the page scrolls
+          sideways. */}
+      <TableScrollContainer minWidth={420}>
+        <Table>
+          {/* Flat `TableThead`/`TableTr`/... named exports, not the
+              `Table.Thead` dot-notation compound API -- kept consistent with
+              the rest of this codebase's Table usage even though this is a
+              Client Component (see the Server Component variant this was
+              extracted from for why the flat exports matter there). */}
+          <TableThead>
           <TableTr>
             {/* `UnstyledButton` inside the `<th>` rather than `onClick` on
                 the `<th>` itself: a bare cell with a click handler is not
@@ -478,7 +491,8 @@ export function AllLinesTable({
             </TableTr>
           ))}
         </TableTbody>
-      </Table>
+        </Table>
+      </TableScrollContainer>
     </Stack>
   );
 }

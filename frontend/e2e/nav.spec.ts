@@ -46,14 +46,20 @@ const SESSION_COOKIE = process.env.E2E_SESSION_COOKIE;
 /** Not `Secure`: the backend only marks the cookie Secure when it is
  * serving over HTTPS (crates/api/src/routes/auth.rs `cookie_secure`), so
  * over a local http:// origin a Secure cookie would simply never be sent.
- * Copied from e2e/accessibility.spec.ts's own `sessionState`. */
+ * `domain` is taken from `E2E_BASE_URL` (not hardcoded) because browsers
+ * treat `localhost` and `127.0.0.1` as different cookie domains -- a
+ * hardcoded `localhost` here silently drops the cookie, and with it the
+ * account menu, whenever the app is served on `127.0.0.1` (as CI's
+ * frontend-e2e job does). Copied from e2e/accessibility.spec.ts's own
+ * `sessionState`. */
 function sessionState(value: string) {
+  const base = new URL(process.env.E2E_BASE_URL ?? 'http://localhost:3000');
   return {
     cookies: [
       {
         name: 'distant_signal_session',
         value,
-        domain: 'localhost',
+        domain: base.hostname,
         path: '/',
         httpOnly: true,
         secure: false,
