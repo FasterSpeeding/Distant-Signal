@@ -113,11 +113,20 @@ tiploc = "SOTON"
 role = "major"
 segment = "swr-swml-south"
 
+# UPDATE (SWR suburban-gap batch): role corrected from "minor" to
+# "junction", and segment changed from `swr-swml-south` to a new, narrower
+# `swr-brockenhurst-junction` - Brockenhurst is the real junction where
+# `swr-lymington-branch.toml` (Lymington Town/Lymington Pier) leaves this
+# line, per that file's own sourcing. A new segment name (rather than
+# reusing `swr-swml-south` wholesale) keeps Winchester/Southampton/
+# Bournemouth/Poole/Weymouth below correctly exclusive to this file - the
+# same precise-blast-radius approach used for AHV/AHT in
+# swr-alton.toml/swr-ascot-aldershot.toml (this same batch).
 [[stations]]
 crs = "BCU"
 tiploc = "BKNHRST"
-role = "minor"
-segment = "swr-swml-south"
+role = "junction"
+segment = "swr-brockenhurst-junction"
 
 [[stations]]
 crs = "BMH"

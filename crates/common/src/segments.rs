@@ -315,6 +315,28 @@ mod tests {
         );
     }
 
+    // Same precise-blast-radius shape as `swr_ash_vale_junction_is_shared_
+    // between_alton_and_ascot_aldershot` above, for Brockenhurst: the SWR
+    // suburban-gap batch's own swr-lymington-branch.toml joins the South
+    // West Main Line here, so this one station carries a new, narrow
+    // `swr-brockenhurst-junction` segment rather than reusing the whole
+    // `swr-swml-south` segment (which would also mark Winchester/
+    // Southampton/Bournemouth/Poole/Weymouth as "shared").
+    #[test]
+    fn swr_brockenhurst_junction_is_shared_between_south_west_main_and_lymington_branch() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        assert!(registry.is_shared("swr-brockenhurst-junction"));
+        let mut users = registry.lines_for_segment("swr-brockenhurst-junction");
+        users.sort();
+        assert_eq!(users, vec!["swr-lymington-branch", "swr-south-west-main"]);
+        assert!(!registry.is_shared("swr-swml-south"));
+        assert_eq!(
+            registry.segment_at("swr-south-west-main", "WEY"),
+            Some("swr-swml-south")
+        );
+    }
+
     #[test]
     fn segment_at_returns_the_right_segment_for_a_station() {
         let lines = load_all_lines();
