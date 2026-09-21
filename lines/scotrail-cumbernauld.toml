@@ -142,9 +142,19 @@ segment = "scotrail-cumbernauld-branch"
 
 [[stations]]
 crs = "GRL"
-role = "minor"
+role = "junction"
 segment = "scotrail-cumbernauld-branch"
-# Greenfaulds.
+# Greenfaulds: also a `lines/scotrail-argyle.toml` station as of the
+# real-world-sanity review that corrected that file's own Coatbridge
+# Central entry (previously wrongly modelled as a dead-end terminus off
+# Whifflet). Wikipedia's "Greenfaulds railway station" article confirms a
+# distinct "Motherwell to Cumbernauld Line" reaches this station via
+# Whifflet/Coatbridge Central, converging here with this file's own
+# Glasgow Queen Street/Springburn/Gartcosh approach and continuing
+# together to Cumbernauld -- a genuine shared trunk, not mere
+# station-name overlap. `role` upgraded from `minor` to `junction` to
+# reflect that this is now a real convergence point, per the shared-trunk
+# rule of thumb.
 
 [[stations]]
 crs = "CUB"
@@ -155,7 +165,10 @@ segment = "scotrail-cumbernauld-branch"
 # Edinburgh-Glasgow via Falkirk High route) also passes through this area,
 # per the routemap template -- not modelled here, see the scope-boundaries
 # note below. Electrification (Class 385) ends here; the continuation to
-# Falkirk Grahamston is diesel-only.
+# Falkirk Grahamston is diesel-only. Also now a shared-trunk station with
+# `lines/scotrail-argyle.toml` (its own Whifflet-spur service pattern
+# terminates here) -- see the GRL entry above and that file's own
+# CORRECTION note for the sourcing.
 
 [[stations]]
 crs = "CMO"

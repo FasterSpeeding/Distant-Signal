@@ -1,5 +1,5 @@
 id = "scotrail-central-belt"
-name = "ScotRail Central Belt (Edinburgh - Glasgow)"
+name = "ScotRail Edinburgh - Glasgow via Falkirk High"
 mode = "national-rail"
 category = "main-line"
 operators = ["SR"]
@@ -21,12 +21,20 @@ operators = ["SR"]
 # metro-frequency treatment.
 
 sample_stations = ["GLQ", "FKK", "HYM", "EDB"]
-match_keywords = ["Falkirk High"]
-# Kept to a single high-precision phrase per the curation rule against
-# padding match_keywords. "Edinburgh to Glasgow" alone was considered and
-# rejected: it also describes the Shotts and Bathgate routings (not
-# modelled as stations in this file -- see below), so it would produce
-# false precision once those routings get their own coverage.
+match_keywords = ["Falkirk High", "via Falkirk High", "Edinburgh to Glasgow via Falkirk"]
+# "Edinburgh to Glasgow" alone was considered and rejected: it also
+# describes the Shotts and Bathgate routings (not modelled as stations in
+# this file -- see below), so it would produce false precision once those
+# routings got their own coverage (now `scotrail-shotts.toml` and
+# `scotrail-bathgate.toml`). "via Falkirk High"/"Edinburgh to Glasgow via
+# Falkirk" ADDED (real-world-sanity review, 2026-09-21): this corridor's
+# real-world branding (ScotRail's own "Route 2a" name, cited above, is not
+# customer-facing) is "Edinburgh - Glasgow via Falkirk High", so these
+# phrases are how a real incident report is likely to describe it. Grepped
+# clean against every other file's own `match_keywords` before adding: no
+# collisions ("Falkirk" alone doesn't appear as a keyword anywhere else;
+# `scotrail-stirling-dunblane.toml` reaches Falkirk Grahamston, a
+# different station, and does not use "Falkirk High" in its own keywords).
 
 # === Three routings, one ordered station list: the modelling decision ===
 #
