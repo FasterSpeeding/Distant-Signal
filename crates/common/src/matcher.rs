@@ -2856,6 +2856,11 @@ mod tests {
         // "chiltern-marylebone" segment tag for Marylebone itself (Task
         // 12.1's comment invited this): both files' services genuinely
         // originate there before diverging at Neasden Junction.
+        //
+        // Updated (real-world sanity review): chiltern-oxford.toml (split
+        // out of the formerly bundled chiltern-aylesbury.toml) also reuses
+        // this same "chiltern-marylebone" tag for its own Marylebone entry
+        // - a third file now genuinely sharing this trunk.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -2869,6 +2874,7 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert!(matched_ids.contains("chiltern-main-line"));
         assert!(matched_ids.contains("chiltern-aylesbury"));
+        assert!(matched_ids.contains("chiltern-oxford"));
         for m in &matches {
             if m.line.id.starts_with("chiltern-") {
                 assert_eq!(
@@ -2901,15 +2907,19 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
+    // Updated (real-world sanity review): the Oxford branch now lives in
+    // its own file, chiltern-oxford.toml, split out of the formerly
+    // bundled chiltern-aylesbury.toml.
     #[test]
     fn chiltern_oxford_branch_incident_does_not_propagate() {
-        // The Oxford branch (folded into chiltern-aylesbury.toml) is a
-        // physically distinct corridor from both this file's own Amersham
-        // branch and chiltern-main-line.toml's Birmingham route (it only
-        // shares Marylebone itself, per the file's own comments) - an
-        // incident here should stay exclusive to chiltern-aylesbury and not
-        // leak onto chiltern-main-line or xc-south-coast (which also calls
-        // at Oxford, station-overlap only).
+        // The Oxford branch (chiltern-oxford.toml) is a physically distinct
+        // corridor from both chiltern-aylesbury.toml's own Amersham/Princes
+        // Risborough branches and chiltern-main-line.toml's Birmingham
+        // route (it only shares Marylebone itself, per the file's own
+        // comments) - an incident here should stay exclusive to
+        // chiltern-oxford and not leak onto chiltern-main-line,
+        // chiltern-aylesbury or xc-south-coast (which also calls at
+        // Oxford, station-overlap only).
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -2921,10 +2931,7 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(
-            matched_ids,
-            HashSet::from(["chiltern-aylesbury".to_string()])
-        );
+        assert_eq!(matched_ids, HashSet::from(["chiltern-oxford".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
@@ -5158,10 +5165,12 @@ mod tests {
     // with that line) — included here too, also staying ExclusiveSegment.
     #[test]
     fn gwr_thames_valley_station_overlap_with_gwr_cotswold_stays_exclusive_each_line() {
-        // Oxford is also chiltern-aylesbury.toml's own terminus (merged
-        // separately, Batch 12), on its exclusive `chiltern-oxford-branch`
-        // segment -- a fourth independent ExclusiveSegment match by the same
-        // station-overlap pattern the other three already establish.
+        // Oxford is also chiltern-oxford.toml's own terminus (originally
+        // merged as part of chiltern-aylesbury.toml, Batch 12, since split
+        // out by the real-world sanity review), on its exclusive
+        // `chiltern-oxford-branch` segment -- a fourth independent
+        // ExclusiveSegment match by the same station-overlap pattern the
+        // other three already establish.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -5179,7 +5188,7 @@ mod tests {
                 "gwr-thames-valley".to_string(),
                 "gwr-cotswold".to_string(),
                 "xc-south-coast".to_string(),
-                "chiltern-aylesbury".to_string(),
+                "chiltern-oxford".to_string(),
             ])
         );
         for m in &matches {
