@@ -110,6 +110,18 @@ role = "terminus"
 segment = "northern-buxton-line"
 
 [[stations]]
+crs = "LVM"
+role = "minor"
+segment = "northern-buxton-line"
+# Levenshulme.
+
+[[stations]]
+crs = "HTC"
+role = "minor"
+segment = "northern-buxton-line"
+# Heaton Chapel.
+
+[[stations]]
 crs = "SPT"
 role = "junction"
 segment = "northern-buxton-line"

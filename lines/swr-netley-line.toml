@@ -160,6 +160,18 @@ segment = "swr-netley-line"
 # Line just east of Southampton Central.
 
 [[stations]]
+crs = "BTE"
+role = "minor"
+segment = "swr-netley-line"
+# Bitterne.
+
+[[stations]]
+crs = "WLS"
+role = "minor"
+segment = "swr-netley-line"
+# Woolston.
+
+[[stations]]
 crs = "SHO"
 role = "minor"
 segment = "swr-netley-line"

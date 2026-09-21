@@ -113,15 +113,19 @@ delay_threshold_minutes = 10
 # not a current station, and omitted (unlike the historical "Ryhope East"
 # name sometimes seen in older sources).
 #
-# Heworth: DOES have a current CRS code (HEW), but is not named by either
-# of Sunderland's own two explicit service-pattern quotes above (neither
-# the fast nor the "all National Rail stations" slow service lists it) --
-# treated here as Tyne and Wear Metro-only for National Rail purposes and
-# omitted, consistent with the Durham Coast Line article's own note that
-# National Rail services "pass through these stations non-stop" for the
-# purpose-built/converted Metro-only stops between Pelaw Junction and
-# Sunderland (Fellgate, Stadium of Light, St Peter's, Brockley Whins, East
-# Boldon, Seaburn) -- none of which are included here for the same reason.
+# Heworth: DOES have a current CRS code (HEW). An earlier pass at this file
+# treated it as Tyne and Wear Metro-only for National Rail purposes, since
+# neither of Sunderland's own two explicit service-pattern quotes above
+# named it by name -- but that reading doesn't survive re-checking those
+# same quotes: the slower, all-stations service is explicitly described as
+# calling "at all National Rail stations en route" between Newcastle and
+# Middlesbrough, and Heworth now carries live National Rail platforms (per
+# the same May 2026 Sunderland-article source already cited above), not
+# just Metro ones. Included below as a genuine current stop for that slower
+# service tier. The purpose-built/converted Metro-only stops between Pelaw
+# Junction and Sunderland (Fellgate, Stadium of Light, St Peter's, Brockley
+# Whins, East Boldon, Seaburn) remain correctly excluded -- those are not
+# National Rail stations at all, unlike Heworth.
 #
 # --- Segment/overlap decisions ---
 # NCL is also a `cross-country.toml`/`tpe-north.toml`/`tpe-borders.toml`/
@@ -147,6 +151,14 @@ segment = "northern-durham-coast"
 # Newcastle -- through-point, not a terminus, for this line's real service
 # (see the through-running note above). Station-overlap only with every
 # other file that lists NCL.
+
+[[stations]]
+crs = "HEW"
+role = "minor"
+segment = "northern-durham-coast"
+# Heworth -- see the exclusion-candidate note above: now carries live
+# National Rail platforms and is called at by the slower, all-stations
+# service tier, not Tyne and Wear Metro-only as an earlier pass assumed.
 
 [[stations]]
 crs = "SUN"
