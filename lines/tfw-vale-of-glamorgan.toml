@@ -81,12 +81,17 @@ sample_stations = ["CDF", "BRY", "BGN", "PEN"]
 destination_crs_filter = ["PEN", "BYI", "BGN"]
 
 # One confirmed branded name ("Vale of Glamorgan Line", the article title
-# itself) plus "Vale Line", the short form used repeatedly in TfW's own
-# route-diagram templates embedded in Barry's and Bridgend's station
-# articles ("Vale Line - main route" / "Vale line - Barry Island branch" /
-# "Vale line" at Bridgend). Grepped `lines/*.toml` before adding both:
-# neither string appears in any other file's `match_keywords`.
-match_keywords = ["Vale of Glamorgan Line", "Vale Line"]
+# itself). An earlier draft also added "Vale Line", the short form used
+# repeatedly in TfW's own route-diagram templates embedded in Barry's and
+# Bridgend's station articles ("Vale Line - main route" / "Vale line -
+# Barry Island branch" / "Vale line" at Bridgend) -- but that string is a
+# literal substring of `tfw-ebbw-vale.toml`'s own "Ebbw Vale Line" keyword,
+# and this catalogue's matcher does substring containment, so it caused a
+# false-positive match against every Ebbw Vale Line incident. Dropped;
+# "Vale of Glamorgan Line" alone is unambiguous and was already confirmed
+# (per the note above) not to collide with any other file's own
+# `match_keywords`.
+match_keywords = ["Vale of Glamorgan Line"]
 
 [severity_overrides]
 minor_delays_pct = 0.25
