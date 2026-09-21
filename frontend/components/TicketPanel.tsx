@@ -1,4 +1,4 @@
-import { Divider, Group, Stack, Text } from '@mantine/core';
+import { Divider, Group, Stack } from '@mantine/core';
 import { getSession, getTicketsForTrackedTrain, getDelayRepayEstimate } from '@/lib/api';
 import { LoginLink } from './LoginLink';
 import { TicketEntryForm } from './TicketEntryForm';

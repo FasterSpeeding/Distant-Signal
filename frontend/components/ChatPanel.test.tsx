@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { ChatPanel } from './ChatPanel';
 import { setAnthropicApiKey } from '@/lib/anthropicKey';
