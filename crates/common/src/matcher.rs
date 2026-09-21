@@ -10149,23 +10149,34 @@ mod tests {
     // share the literal segment name at NWX, so the registry correctly
     // promotes both of those two to SharedSegment.
     //
-    // Kent/Sussex batch: southeastern-north-kent.toml also has a station at
-    // New Cross - originally its own `southeastern-north-kent` segment, the
-    // point this file's and southeastern-metro-north-kent.toml's own NWX
-    // comments both already flagged as where "a differently-aligned North
-    // Kent Line route ... diverges" - a fifth independent match.
+    // Kent/Sussex batch: southeastern-north-kent.toml also USED TO have a
+    // station at New Cross - originally its own `southeastern-north-kent`
+    // segment, the point this file's and southeastern-metro-north-kent.
+    // toml's own NWX comments both already flagged as where "a
+    // differently-aligned North Kent Line route ... diverges" - a fifth
+    // independent match at the time.
     //
     // REVIEW FIX (shared-segment structural review, review2-shared-
     // segments): southeastern-main-line.toml and southeastern-north-
-    // kent.toml have both now been fixed to reuse
-    // `southeastern-lewisham-corridor` at NWX too (see each file's own
-    // header comment), so this set now has FOUR lines sharing the literal
-    // segment name (main-line, bexleyheath, dartford-loop, north-kent), all
-    // promoted to SharedSegment together. overground-windrush.toml's own
-    // `overground-windrush-new-cross` is untouched by this review (a
+    // kent.toml were both fixed to reuse `southeastern-lewisham-corridor`
+    // at NWX too (see each file's own header comment), so this set briefly
+    // had FOUR lines sharing the literal segment name (main-line,
+    // bexleyheath, dartford-loop, north-kent), all promoted to
+    // SharedSegment together.
+    //
+    // REVIEW2 FIX (2026-09-21): southeastern-north-kent.toml's own NWX
+    // entry has been removed entirely - fresh research found the Greenwich
+    // line this file models genuinely diverges from the South Eastern Main
+    // Line at North Kent East Junction, BEFORE New Cross (between London
+    // Bridge and New Cross), not "just past" it, so this file's own trains
+    // never physically call at New Cross at all; see that file's own DEP
+    // entry comment for the full write-up. This set is back down to THREE
+    // lines sharing `southeastern-lewisham-corridor` at NWX (main-line,
+    // bexleyheath, dartford-loop). overground-windrush.toml's own
+    // `overground-windrush-new-cross` is untouched by either review (a
     // different route entirely) and stays independently ExclusiveSegment.
     #[test]
-    fn nwx_station_overlap_matches_five_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
+    fn nwx_station_overlap_matches_four_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -10184,7 +10195,6 @@ mod tests {
                 "southeastern-bexleyheath".to_string(),
                 "southeastern-dartford-loop".to_string(),
                 "overground-windrush".to_string(),
-                "southeastern-north-kent".to_string(),
             ])
         );
         for m in &matches {
