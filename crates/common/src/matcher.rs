@@ -700,7 +700,7 @@ mod tests {
     /// terminus (on `overground-mildmay-west`). The two approach Richmond
     /// over separate infrastructure, so this is deliberately station
     /// overlap only, NOT a shared segment -- the same treatment
-    /// `gwr_bristol_suburban_station_overlap_with_swr_south_west_main_stays_
+    /// `gwr_heart_of_wessex_station_overlap_with_swr_south_west_main_stays_
     /// exclusive_each_line` and the xc-south-coast.toml/Reading precedent
     /// already apply elsewhere. Both lines match, each scoped to its own
     /// exclusive segment.
@@ -4414,22 +4414,23 @@ mod tests {
     // Task 4.4 split `gwr-west-of-england` (Reading-Taunton line) into its own
     // file. Originally its exclusive segment (`gwr-west-of-england`) covered
     // Newbury through Castle Cary with no *cross-file segment-name* sharing
-    // at all. Task 4.6 (gwr-bristol-suburban.toml) found genuine physical
-    // track sharing at Westbury/Castle Cary, but an early draft of that fix
-    // reused the whole `gwr-west-of-england` segment name (including Newbury,
-    // which gwr-bristol-suburban's own service never reaches, and Frome/
-    // Bruton, which are gwr-bristol-suburban's own exclusive territory) —
-    // wrong, since segment sharing is tracked per segment *name*, not per
+    // at all. Task 4.6 (originally gwr-bristol-suburban.toml, later split
+    // into gwr-severn-beach.toml/gwr-heart-of-wessex.toml) found genuine
+    // physical track sharing at Westbury/Castle Cary, but an early draft of
+    // that fix reused the whole `gwr-west-of-england` segment name (including
+    // Newbury, which gwr-heart-of-wessex's own service never reaches, and
+    // Frome/Bruton, which are gwr-heart-of-wessex's own exclusive territory)
+    // — wrong, since segment sharing is tracked per segment *name*, not per
     // individual station, so that draft mislabelled all three as "shared"
     // catalogue-wide. The final-review fix wave introduced a new, narrower
     // segment name, `gwr-westbury-castle-cary`, covering ONLY Westbury (WSB)
     // and Castle Cary (CLC) — the two stations both files' own cited sources
     // actually name as shared. Newbury (NBY) reverts to being a genuinely
     // exclusive station on this line's own `gwr-west-of-england` segment
-    // (gwr-bristol-suburban.toml never reaches it), and Frome/Bruton move
-    // onto gwr-bristol-suburban.toml's own `gwr-bristol-weymouth` segment.
-    // See `gwr_westbury_castle_cary_trunk_incident_propagates_to_bristol_
-    // suburban` below for the corrected shared-segment case, and
+    // (gwr-heart-of-wessex.toml never reaches it), and Frome/Bruton move onto
+    // gwr-heart-of-wessex.toml's own `gwr-bristol-weymouth` segment.
+    // See `gwr_westbury_castle_cary_trunk_incident_propagates_to_heart_of_
+    // wessex` below for the corrected shared-segment case, and
     // `gwr_thames_valley_station_overlap_with_gwr_west_of_england_stays_
     // exclusive_each_line` below for the Newbury case, now back to
     // ExclusiveSegment on both sides (a real station overlap, not a segment
@@ -4761,15 +4762,15 @@ mod tests {
     // Junction) is real shared Berks and Hants line track (see
     // gwr-thames-valley.toml's own segment-naming comment). Kept as station
     // overlap only for this task's file-scope reasons, mirroring the Oxford/
-    // gwr-cotswold.toml case above. An earlier draft of gwr-bristol-
-    // suburban.toml's own Westbury/Castle Cary fix mistakenly reused the
-    // whole `gwr-west-of-england` segment name (not just WSB/CLC), which
-    // pulled NBY into SharedSegment status too even though
-    // gwr-bristol-suburban's own service never reaches it. The final-review
-    // fix wave narrowed that shared segment to a new name,
-    // `gwr-westbury-castle-cary` (WSB/CLC only — see
-    // `gwr_westbury_castle_cary_trunk_incident_propagates_to_bristol_
-    // suburban` below), so NBY is once again a genuinely exclusive station on
+    // gwr-cotswold.toml case above. An earlier draft of the file now split
+    // into gwr-severn-beach.toml/gwr-heart-of-wessex.toml's own Westbury/
+    // Castle Cary fix mistakenly reused the whole `gwr-west-of-england`
+    // segment name (not just WSB/CLC), which pulled NBY into SharedSegment
+    // status too even though gwr-heart-of-wessex's own service never reaches
+    // it. The final-review fix wave narrowed that shared segment to a new
+    // name, `gwr-westbury-castle-cary` (WSB/CLC only — see
+    // `gwr_westbury_castle_cary_trunk_incident_propagates_to_heart_of_
+    // wessex` below), so NBY is once again a genuinely exclusive station on
     // gwr-west-of-england's own `gwr-west-of-england` segment: both lines
     // should now stay `MatchScope::ExclusiveSegment` for their own segment,
     // confirming this is a real station overlap, not a segment-level share.
@@ -4923,7 +4924,7 @@ mod tests {
     // live on gwr-thames-valley.toml's own "Branch 2: Reading-Newbury"
     // section (a different, Reading-based local service, not this file's
     // Reading-Taunton express) and Frome already lives on
-    // gwr-bristol-suburban.toml (reached only via a branch off this line's
+    // gwr-heart-of-wessex.toml (reached only via a branch off this line's
     // direct route) — both untouched by this task. A further five named
     // candidates — Savernake (Low Level), Woodborough, Patney and Chirton,
     // Lavington, and Edington and Bratton — were checked to the same
@@ -4983,9 +4984,12 @@ mod tests {
     // Severn Beach branch — Severn Beach itself (SVB) is not shared with any
     // other catalogued line, so this should stay a clean ExclusiveSegment
     // case, mirroring `swr_exclusive_segment_incident_does_not_propagate` /
-    // `gwr_cotswold_exclusive_segment_incident_does_not_propagate`.
+    // `gwr_cotswold_exclusive_segment_incident_does_not_propagate`. Originally
+    // part of the combined gwr-bristol-suburban.toml; that file was later
+    // split into gwr-severn-beach.toml/gwr-heart-of-wessex.toml, so this test
+    // now asserts against the `gwr-severn-beach` line id.
     #[test]
-    fn gwr_bristol_suburban_severn_beach_exclusive_segment_incident_does_not_propagate() {
+    fn gwr_severn_beach_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -4997,10 +5001,7 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(
-            matched_ids,
-            HashSet::from(["gwr-bristol-suburban".to_string()])
-        );
+        assert_eq!(matched_ids, HashSet::from(["gwr-severn-beach".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
@@ -5012,18 +5013,20 @@ mod tests {
     // `gwr-trunk-paddington` earlier in this batch. An earlier draft reused
     // gwr-west-of-england.toml's own `gwr-west-of-england` segment name
     // verbatim for this — wrong, because that also pulled Newbury (not
-    // reached by gwr-bristol-suburban.toml's service) and Frome/Bruton
-    // (gwr-bristol-suburban.toml's own exclusive territory, not actually
-    // shared) into "shared" status. The final-review fix wave introduced a
-    // new, narrower segment name, `gwr-westbury-castle-cary`, covering ONLY
-    // Westbury (WSB) and Castle Cary (CLC) — the two stations both files'
-    // own cited sources actually name as shared. An incident at either
-    // should still propagate to both lines as a shared-trunk event, mirroring
+    // reached by this line's service) and Frome/Bruton (this line's own
+    // exclusive territory, not actually shared) into "shared" status. The
+    // final-review fix wave introduced a new, narrower segment name,
+    // `gwr-westbury-castle-cary`, covering ONLY Westbury (WSB) and Castle
+    // Cary (CLC) — the two stations both files' own cited sources actually
+    // name as shared. An incident at either should still propagate to both
+    // lines as a shared-trunk event, mirroring
     // `swr_shared_trunk_incident_propagates`'s / `gwr_trunk_xc_south_west_
     // incident_propagates_across_west_of_england_and_cornish_main_line`'s
-    // shape.
+    // shape. WSB/CLC live on gwr-heart-of-wessex.toml since the later split
+    // of the combined gwr-bristol-suburban.toml — see that file's own split
+    // note.
     #[test]
-    fn gwr_westbury_castle_cary_trunk_incident_propagates_to_bristol_suburban() {
+    fn gwr_westbury_castle_cary_trunk_incident_propagates_to_heart_of_wessex() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -5039,7 +5042,7 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "gwr-west-of-england".to_string(),
-                "gwr-bristol-suburban".to_string()
+                "gwr-heart-of-wessex".to_string()
             ])
         );
         for m in &matches {
@@ -5064,9 +5067,12 @@ mod tests {
     // only (see `gwr_thames_valley_station_overlap_with_gwr_cotswold_stays_
     // exclusive_each_line` above). So an incident at Bath Spa should match
     // both lines (real station overlap) but each must stay
-    // `MatchScope::ExclusiveSegment`, never `SharedSegment`.
+    // `MatchScope::ExclusiveSegment`, never `SharedSegment`. Originally part
+    // of the combined gwr-bristol-suburban.toml; BTH lives on
+    // gwr-heart-of-wessex.toml since that file's later split — see its own
+    // split note.
     #[test]
-    fn gwr_bristol_suburban_station_overlap_with_gwr_main_line_stays_exclusive_each_line() {
+    fn gwr_heart_of_wessex_station_overlap_with_gwr_main_line_stays_exclusive_each_line() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -5081,7 +5087,7 @@ mod tests {
         assert_eq!(
             matched_ids,
             HashSet::from([
-                "gwr-bristol-suburban".to_string(),
+                "gwr-heart-of-wessex".to_string(),
                 "gwr-main-line".to_string()
             ])
         );
@@ -5096,19 +5102,21 @@ mod tests {
     }
 
     // A third genuine overlap this task's own research found, caught during
-    // review after an earlier draft of gwr-bristol-suburban.toml's own WEY
-    // comment wrongly claimed SWR's route "is not otherwise catalogued yet":
-    // Weymouth (WEY) is also swr-south-west-main.toml's own terminus (its
-    // own exclusive `swr-swml-south` segment). gwr-bristol-suburban's own
+    // review after an earlier draft of the combined gwr-bristol-suburban.
+    // toml's own WEY comment wrongly claimed SWR's route "is not otherwise
+    // catalogued yet": Weymouth (WEY) is also swr-south-west-main.toml's own
+    // terminus (its own exclusive `swr-swml-south` segment). This line's own
     // Bristol-Weymouth service never runs over any of swr-south-west-
     // main.toml's own claimed stations except WEY itself, so this stays
     // station overlap only, not a shared segment — different segment names
     // (`gwr-bristol-weymouth` vs `swr-swml-south`) mean no incorrect
     // `SharedSegment` cross-propagation. Mirrors
-    // `gwr_bristol_suburban_station_overlap_with_gwr_main_line_stays_exclusive_each_line`
-    // above.
+    // `gwr_heart_of_wessex_station_overlap_with_gwr_main_line_stays_exclusive_each_line`
+    // above. Originally part of the combined gwr-bristol-suburban.toml; WEY
+    // lives on gwr-heart-of-wessex.toml since that file's later split — see
+    // its own split note.
     #[test]
-    fn gwr_bristol_suburban_station_overlap_with_swr_south_west_main_stays_exclusive_each_line() {
+    fn gwr_heart_of_wessex_station_overlap_with_swr_south_west_main_stays_exclusive_each_line() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -5123,7 +5131,7 @@ mod tests {
         assert_eq!(
             matched_ids,
             HashSet::from([
-                "gwr-bristol-suburban".to_string(),
+                "gwr-heart-of-wessex".to_string(),
                 "swr-south-west-main".to_string()
             ])
         );
