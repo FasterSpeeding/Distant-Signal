@@ -659,9 +659,12 @@ segment = "brighton-main-line-north"
 # Croydon, so its own stations have to be listed all the way there (the
 # curation rules require ordering stations end to end). Per the shared-trunk
 # rule of thumb, the exclusive-look continuation past the ECR junction is
-# GTW onward - now `brighton-main-line-south` (renamed from this file's own
-# `thameslink-brighton`, reused verbatim from southern-brighton-main-
-# line.toml - see REVIEW FIX above and that file's own matching entries).
+# GTW onward - now `brighton-main-line-south`/`brighton-main-line-central`
+# (renamed from this file's own `thameslink-brighton`, reused verbatim from
+# southern-brighton-main-line.toml - see REVIEW FIX above and that file's
+# own matching entries), with this file's own Thameslink-only Balcombe stop
+# on its own `thameslink-balcombe` segment in between - see the BAB entry
+# below.
 #
 # East Croydon's own Wikipedia infobox separately lists "4 trains per hour
 # to Brighton" alongside the "4 tph to Bedford via London Bridge" figure
@@ -670,8 +673,21 @@ segment = "brighton-main-line-north"
 # Three Bridges/Horsham/Gatwick Airport, which explicitly ARE "via
 # Redhill" - confirming the Brighton-bound service stays on the same
 # direct/fast alignment southern-brighton-main-line.toml's own
-# `brighton-main-line-south` segment models (GTW, TBD, HHE, BUG, HSK, PRP,
-# BTN) rather than the separate via-Redhill stopping pattern.
+# `brighton-main-line-south`/`brighton-main-line-central` segments model
+# (GTW, TBD, BAB, HHE, BUG, HSK, PRP, BTN) rather than the separate
+# via-Redhill stopping pattern.
+#
+# REVIEW2 FIX (2026-09-21): this file's own Balcombe (BAB) entry, between
+# TBD and HHE, is genuinely Thameslink-only (re-confirmed live via
+# Wikipedia - see the BAB entry below), so it can't sit on a segment name
+# shared with southern-brighton-main-line.toml, which has no BAB entry at
+# all. The old undifferentiated `brighton-main-line-south` (GTW-through-
+# BTN in both files) has been split at Three Bridges:
+# `brighton-main-line-south` now covers only GTW/TBD (still genuinely
+# shared), BAB gets its own exclusive `thameslink-balcombe` segment, and a
+# new `brighton-main-line-central` segment name covers HHE-through-BTN
+# (also still genuinely shared) - see the BAB entry below and
+# southern-brighton-main-line.toml's own matching TBD-entry writeup.
 [[stations]]
 crs = "GTW"
 role = "major"
@@ -690,7 +706,7 @@ segment = "brighton-main-line-south"
 [[stations]]
 crs = "BAB"
 role = "minor"
-segment = "brighton-main-line-south"
+segment = "thameslink-balcombe"
 # Balcombe. Already named as part of this branch's own researched calling
 # pattern in the SOURCING section above, but never turned into a station row
 # until a later data-driven schedule audit caught the omission (~52-53% of
@@ -698,20 +714,30 @@ segment = "brighton-main-line-south"
 # Confirmed via its own Wikipedia infobox as Thameslink-only ("Thameslink
 # operates all services at the station") - the same reason
 # southern-brighton-main-line.toml's own header comment explicitly excludes
-# it (Southern/Gatwick Express don't call here at all); this file's own
-# entry is simply not matched by any other line's own station list at this
-# specific stop, even though the segment name itself is shared.
+# it (Southern/Gatwick Express don't call here at all).
+#
+# REVIEW2 FIX (2026-09-21): this entry originally stayed on the shared
+# `brighton-main-line-south` segment name (on the reasoning that the
+# station simply "isn't matched by any other line's own station list at
+# this specific stop, even though the segment name itself is shared"), but
+# that broke this catalogue's shared-segment invariant: the two files'
+# station lists under the same segment name are supposed to line up, and
+# southern-brighton-main-line.toml genuinely has no BAB entry to line up
+# with (re-confirmed live via Wikipedia: Southern does not call here at
+# all). Given its own exclusive `thameslink-balcombe` segment name instead;
+# see the TBD-adjacent header note above and southern-brighton-main-
+# line.toml's own matching TBD-entry writeup for the full split.
 
 [[stations]]
 crs = "HHE"
 role = "major"
-segment = "brighton-main-line-south"
+segment = "brighton-main-line-central"
 # Haywards Heath.
 
 [[stations]]
 crs = "WVF"
 role = "minor"
-segment = "brighton-main-line-south"
+segment = "brighton-main-line-central"
 # Wivelsfield. Same SOURCING-section omission as Balcombe above, caught by
 # the same audit (~52-53% of trains calling). CRS reused unchanged from
 # southern-brighton-main-line.toml's own TASK 5.4 FILL-IN entry - genuinely
@@ -721,25 +747,25 @@ segment = "brighton-main-line-south"
 [[stations]]
 crs = "BUG"
 role = "minor"
-segment = "brighton-main-line-south"
+segment = "brighton-main-line-central"
 # Burgess Hill.
 
 [[stations]]
 crs = "HSK"
 role = "minor"
-segment = "brighton-main-line-south"
+segment = "brighton-main-line-central"
 # Hassocks.
 
 [[stations]]
 crs = "PRP"
 role = "minor"
-segment = "brighton-main-line-south"
+segment = "brighton-main-line-central"
 # Preston Park.
 
 [[stations]]
 crs = "BTN"
 role = "terminus"
-segment = "brighton-main-line-south"
+segment = "brighton-main-line-central"
 # Brighton - this branch's own terminus. Also southern-coastway-east.toml's
 # and southern-coastway-west.toml's own station (station overlap only with
 # both, per the precedent those files' own header comments already set).

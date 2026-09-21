@@ -143,12 +143,21 @@ match_keywords = ["Brighton Main Line", "Gatwick Express"]
 # header comment was a real shortfall in what this batch's fetch tooling
 # could reach within task budget, not a genuine doubt about the underlying
 # infrastructure fact. `brighton-main-line-north` (LBG, ECR - renamed from
-# `southern-bml-north`) and `brighton-main-line-south` (GTW onward - renamed
+# `southern-bml-north`) and `brighton-main-line-south` (GTW/TBD - renamed
 # from `southern-bml-south`) are now reused verbatim by thameslink-
 # southern.toml's own Brighton branch - see that file's own BRIGHTON BRANCH
 # header comment for the corresponding update. This is flagged plainly as
 # the one unification in this review with the weakest documentary sourcing
 # trail of the four - see the review's own report for the caveat.
+#
+# REVIEW2 FIX (2026-09-21): `brighton-main-line-south` originally ran
+# GTW-through-BTN, but was found to have silently diverged from
+# thameslink-southern.toml's own station list under the same name (that
+# file also has a genuine Balcombe/BAB entry this file doesn't - Southern
+# does not call there, re-confirmed live via Wikipedia). Split at Three
+# Bridges: `brighton-main-line-south` now covers only GTW/TBD, and a new
+# `brighton-main-line-central` segment name covers HHE-through-BTN in both
+# files - see the TBD station entry below for the full writeup.
 #
 # CAVEAT/lead for Task 5.14 (equally unconfirmed): the same Wikipedia
 # "Thameslink" article and East Croydon's own infobox ("2 tph to Three
@@ -159,13 +168,13 @@ match_keywords = ["Brighton Main Line", "Gatwick Express"]
 # direct Quarry Line alignment). That is beyond this task's own scoped
 # stretch (LBG/Windmill Bridge Jn/East Croydon only, per this task's brief)
 # and was not chased down further, let alone verified - noted here so Task
-# 5.14 doesn't miss the lead, not acted on. `brighton-main-line-south`
-# (renamed from `southern-bml-south`; East Croydon to Brighton, below) is
-# now a confirmed SharedSegment with thameslink-southern.toml's own direct/
-# fast-alignment Brighton branch (see REVIEW FIX above) - this specific
-# further-south-via-Redhill caveat remains its own separate, still-
-# unconfirmed lead and is not what the REVIEW FIX unification rests on
-# for now.
+# 5.14 doesn't miss the lead, not acted on. `brighton-main-line-south`/
+# `brighton-main-line-central` (renamed from `southern-bml-south`; East
+# Croydon to Brighton, below) are now a confirmed SharedSegment pair with
+# thameslink-southern.toml's own direct/fast-alignment Brighton branch (see
+# REVIEW FIX above) - this specific further-south-via-Redhill caveat
+# remains its own separate, still-unconfirmed lead and is not what the
+# REVIEW FIX unification rests on for now.
 #
 # UPDATE (review2-se-southern): the "Redhill alignment" this caveat and the
 # STATIONS section below both originally flagged as a separate, unmodelled
@@ -319,8 +328,9 @@ segment = "brighton-main-line-north"
 # Line services bypass Redhill's own junction congestion entirely, diverging
 # from the slow lines somewhere south of Purley/Coulsdon and rejoining
 # around Earlswood/Salfords before Gatwick Airport. This fast alignment is
-# what `brighton-main-line-south`'s existing GTW-onward station list already
-# represents (ECR -> GTW directly, no Purley/Redhill stop). The station list
+# what `brighton-main-line-south`/`brighton-main-line-central`'s existing
+# GTW-onward station list already represents (ECR -> GTW directly, no
+# Purley/Redhill stop). The station list
 # below is the OTHER, calling-pattern alignment that the same "East Croydon
 # to Gatwick Airport" corridor also genuinely covers - both are real,
 # concurrent Brighton Main Line stopping patterns, not a replacement for
@@ -429,17 +439,36 @@ role = "junction"
 segment = "brighton-main-line-south"
 # Three Bridges. The Arun Valley line (toward Horsham/Littlehampton)
 # diverges here; not covered by this catalogue.
+#
+# REVIEW2 FIX (2026-09-21): `brighton-main-line-south` now ends here, not
+# at Brighton. It used to run GTW-through-BTN in both this file and
+# thameslink-southern.toml, but that file also has a Balcombe (BAB) entry
+# between TBD and HHE, which this file genuinely doesn't (re-verified live
+# via a fresh Wikipedia fetch of "Balcombe railway station": "All services
+# at Balcombe are operated by Thameslink using Class 700 electric multiple
+# units" - Southern does not call there at all, confirming this file's own
+# pre-existing header-comment finding, not contradicting it). That made the
+# two files' shared-segment station lists diverge under the same segment
+# name, breaking this catalogue's shared-segment invariant. Fixed by
+# splitting the old `brighton-main-line-south` at Three Bridges:
+# `brighton-main-line-south` now covers only GTW/TBD (still genuinely
+# shared with thameslink-southern.toml, which has no extra station in that
+# stretch), and a new `brighton-main-line-central` segment name covers
+# HHE-through-BTN in both files (also still genuinely shared, no
+# divergence there). Balcombe itself sits between the two, on its own
+# Thameslink-only segment in that file - see thameslink-southern.toml's own
+# BAB entry.
 
 [[stations]]
 crs = "HHE"
 role = "major"
-segment = "brighton-main-line-south"
+segment = "brighton-main-line-central"
 # Haywards Heath.
 
 [[stations]]
 crs = "WVF"
 role = "minor"
-segment = "brighton-main-line-south"
+segment = "brighton-main-line-central"
 # Wivelsfield. TASK 5.4 FILL-IN: confirmed via its own Wikipedia infobox/
 # article ("situated between Haywards Heath and Burgess Hill stations on
 # the main line"; "managed by Southern, which is one of two companies
@@ -452,7 +481,7 @@ segment = "brighton-main-line-south"
 [[stations]]
 crs = "BUG"
 role = "minor"
-segment = "brighton-main-line-south"
+segment = "brighton-main-line-central"
 # Burgess Hill. Wikipedia describes this as a peak-only Gatwick Express
 # calling point (unconfirmed to this batch's bar - see fold-in note above);
 # it is a principal Brighton Main Line station regardless.
@@ -460,17 +489,17 @@ segment = "brighton-main-line-south"
 [[stations]]
 crs = "HSK"
 role = "minor"
-segment = "brighton-main-line-south"
+segment = "brighton-main-line-central"
 # Hassocks. Same peak-only Gatwick Express caveat as Burgess Hill above.
 
 [[stations]]
 crs = "PRP"
 role = "minor"
-segment = "brighton-main-line-south"
+segment = "brighton-main-line-central"
 # Preston Park. Same peak-only Gatwick Express caveat as Burgess Hill above.
 
 [[stations]]
 crs = "BTN"
 role = "terminus"
-segment = "brighton-main-line-south"
+segment = "brighton-main-line-central"
 # Brighton.
