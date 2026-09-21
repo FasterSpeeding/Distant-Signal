@@ -165,15 +165,18 @@ role = "major"
 segment = "swr-trunk-waterloo"
 
 [[stations]]
-crs = "CLJ"
-role = "junction"
-segment = "swr-trunk-waterloo"
-
-[[stations]]
 crs = "QRB"
 role = "minor"
 segment = "swr-windsor-lines"
 # Queenstown Road (Battersea). Reused verbatim from swr-kingston-loop.toml.
+# Ordered before Clapham Junction below to match the real chainage from
+# Waterloo (Queenstown Road then Clapham Junction) -- segment tags for both
+# stations are unchanged, only the array position was corrected.
+
+[[stations]]
+crs = "CLJ"
+role = "junction"
+segment = "swr-trunk-waterloo"
 
 [[stations]]
 crs = "WNT"

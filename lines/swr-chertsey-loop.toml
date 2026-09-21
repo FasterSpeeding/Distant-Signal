@@ -35,10 +35,14 @@ operators = ["SW"]
 # Weybridge's own station article ("Platform 1: 2tph to London Waterloo via
 # Staines and Hounslow") and Virginia Water's own ("2 tph to Weybridge"
 # alongside its separate Waterloo-via-Hounslow/via-Richmond services).
-# Also per Weybridge's own article: "On Sundays... southbound trains run to
-# and from Woking instead of Weybridge" for the equivalent Sunday pattern -
-# noted, not modelled (Woking (WOK) is not on this file's own station list;
-# see SCOPE BOUNDARIES).
+# An earlier draft of this comment also cited a Weybridge-article quote,
+# "On Sundays... southbound trains run to and from Woking instead of
+# Weybridge," as a Sunday variation of THIS line's own service -- that was
+# a misattribution: on closer re-reading, that quote describes a separate,
+# unrelated Woking/Guildford local service that also happens to be
+# mentioned on Weybridge's own article, not this Virginia Water-Chertsey-
+# Weybridge branch. Corrected here; no Sunday substitution is modelled or
+# claimed for this line.
 # CRS codes verified live against https://ds.cursed.solutions/api/stations:
 # Virginia Water=VIR, Chertsey=CHY, Addlestone=ASN, Weybridge=WYB.
 # Grepped clean before starting: no other `lines/*.toml` file lists
@@ -89,8 +93,7 @@ sample_stations = ["CHY", "ASN", "WYB"]
 # (see sample_stations above) - so, per swr-kingston-loop.toml's and
 # swr-chessington.toml's own precedent, the filter is skipped as buying
 # nothing while the mandatory `SW` operator filter already scopes the
-# sample correctly. Also: per the Sunday variation noted in SOURCING above,
-# a WYB-only filter would even be wrong one day a week.
+# sample correctly.
 
 # Commuter line, same tuning as its sibling swr-hounslow-loop.toml and the
 # rest of the SWR suburban siblings.
@@ -101,11 +104,6 @@ delay_threshold_minutes = 4
 # ============================================================================
 # SCOPE BOUNDARIES - not modelled here
 # ============================================================================
-# - The Sunday Woking-Weybridge substitution: Woking (WOK) is not on this
-#   file's own station list (it belongs to the swr-trunk-waterloo network
-#   via swr-alton.toml/swr-south-west-main.toml/swr-portsmouth-direct.toml
-#   instead, a different physical approach) - not modelled as part of this
-#   line.
 # - Everything in swr-hounslow-loop.toml's own SCOPE BOUNDARIES section
 #   (the "via Richmond" pattern, Windsor & Eton Riverside, Reading-via-Ascot)
 #   applies equally here, since this file's own shared stretch is identical.
@@ -124,14 +122,16 @@ role = "major"
 segment = "swr-trunk-waterloo"
 
 [[stations]]
-crs = "CLJ"
-role = "junction"
-segment = "swr-trunk-waterloo"
-
-[[stations]]
 crs = "QRB"
 role = "minor"
 segment = "swr-windsor-lines"
+# Ordered before Clapham Junction to match the real chainage from Waterloo
+# (Queenstown Road then Clapham Junction); segment tags unchanged.
+
+[[stations]]
+crs = "CLJ"
+role = "junction"
+segment = "swr-trunk-waterloo"
 
 [[stations]]
 crs = "WNT"

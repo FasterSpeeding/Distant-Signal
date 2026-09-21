@@ -107,21 +107,28 @@ segment = "northern-bentham-line"
 [[stations]]
 crs = "GGV"
 role = "minor"
-segment = "northern-bentham-line"
-# Gargrave.
+segment = "northern-bentham-trunk"
+# Gargrave -- genuine shared trunk with `northern-settle-carlisle.toml`'s
+# own Leeds-Carlisle working, which coined `northern-bentham-trunk` for
+# this exact Gargrave/Hellifield/Long Preston stretch and explicitly asked
+# for it to be reused once this file existed; see that file's own
+# route-level comment.
 
 [[stations]]
 crs = "HLD"
 role = "minor"
-segment = "northern-bentham-line"
+segment = "northern-bentham-trunk"
 # Hellifield -- one of the few stations on this stretch that kept staffing
 # after the October 1970 unstaffing round; see the top-of-file comment.
+# Shared trunk with `northern-settle-carlisle.toml` -- see the Gargrave
+# entry above.
 
 [[stations]]
 crs = "LPR"
 role = "minor"
-segment = "northern-bentham-line"
-# Long Preston.
+segment = "northern-bentham-trunk"
+# Long Preston. Shared trunk with `northern-settle-carlisle.toml` -- see
+# the Gargrave entry above.
 
 [[stations]]
 crs = "GIG"

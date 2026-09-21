@@ -81,16 +81,18 @@ segment = "swr-trunk-waterloo"
 # Vauxhall. Row copied from swr-kingston-loop.toml.
 
 [[stations]]
-crs = "CLJ"
-role = "junction"
-segment = "swr-trunk-waterloo"
-# Clapham Junction. Row copied from swr-kingston-loop.toml.
-
-[[stations]]
 crs = "QRB"
 role = "minor"
 segment = "swr-windsor-lines"
 # Queenstown Road (Battersea). Row copied from swr-kingston-loop.toml.
+# Ordered before Clapham Junction below to match the real chainage from
+# Waterloo (Queenstown Road then Clapham Junction); segment tags unchanged.
+
+[[stations]]
+crs = "CLJ"
+role = "junction"
+segment = "swr-trunk-waterloo"
+# Clapham Junction. Row copied from swr-kingston-loop.toml.
 
 [[stations]]
 crs = "WNT"
