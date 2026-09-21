@@ -253,7 +253,13 @@ describe('JourneyProgress', () => {
     expect(nodes[3]).toHaveAttribute('data-delay-state', 'unknown');
   });
 
-  it('a PASS event (both actualArrival and actualDeparture set to the same instant) still counts that stop as reached', () => {
+  it('a PASS event at a booked calling point still counts that stop as reached, even with no actualArrival/actualDeparture', () => {
+    // The real backend shape as of the PASS-rendering fix
+    // (`crates/api/src/data/journey.rs`'s `overlay_movement_events`): a PASS
+    // at a genuine booked stop leaves `actualArrival`/`actualDeparture` both
+    // `null` (it did not call there) and records `lastEventType: 'PASS'`
+    // instead -- `lastReachedIndex` must still treat that as "reached",
+    // since the train has genuinely, confirmedly gone past this point.
     const { container } = renderWithMantine(
       <JourneyProgress
         stops={[
@@ -261,8 +267,9 @@ describe('JourneyProgress', () => {
           stop({
             crs: 'B',
             kind: 'Intermediate',
-            actualArrival: '2026-09-12T08:10:00Z',
-            actualDeparture: '2026-09-12T08:10:00Z',
+            actualArrival: null,
+            actualDeparture: null,
+            lastEventType: 'PASS',
           }),
           stop({ crs: 'C', kind: 'Terminate' }),
         ]}

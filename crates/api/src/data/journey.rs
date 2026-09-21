@@ -373,8 +373,37 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
                 stop.scheduled_departure = stop.scheduled_departure.or(event.planned_timestamp);
             }
             Some("PASS") => {
-                stop.actual_arrival = event.actual_timestamp;
-                stop.actual_departure = event.actual_timestamp;
+                // A PASS at a genuine BOOKED calling point (`Intermediate`,
+                // with both a scheduled arrival AND departure -- the CIF
+                // `LI` shape a real public stop has, per
+                // `schedule_query::records::CallingPoint`'s own doc comment)
+                // means the train ran through WITHOUT calling: TRUST is
+                // reporting that this booked stop did not happen, not that
+                // it happened at this instant. Writing `event.actual_timestamp`
+                // into `actual_arrival`/`actual_departure` here used to make
+                // that render identically to a real completed stop
+                // (`frontend/components/JourneyTimeline.tsx`'s
+                // `JourneyStopRow`: `reached = actual !== null`) -- a false
+                // "the train stopped and picked up/set down here" signal.
+                // `last_event_type` below is still set to `"PASS"`
+                // unconditionally, so that fact is never lost -- a follow-up
+                // is expected to render a distinct "Skipped" state off it.
+                //
+                // Every other shape reaching this branch -- `Origin`/
+                // `Terminate` (no two-sided booked stop to begin with; see
+                // `CallingPointKind`'s own doc comment) or an `Intermediate`
+                // entry missing one/both scheduled times (a CIF timing point
+                // with blank public times, i.e. never actually a public
+                // calling point per `schedule_query::parse::parse_calling_point`)
+                // -- keeps the old behavior unchanged: there is no real
+                // "booked but skipped" stop being misrepresented there.
+                let booked_calling_point = stop.kind == Some(schedule_query::CallingPointKind::Intermediate)
+                    && stop.scheduled_arrival.is_some()
+                    && stop.scheduled_departure.is_some();
+                if !booked_calling_point {
+                    stop.actual_arrival = event.actual_timestamp;
+                    stop.actual_departure = event.actual_timestamp;
+                }
                 stop.scheduled_arrival = stop.scheduled_arrival.or(event.planned_timestamp);
                 stop.scheduled_departure = stop.scheduled_departure.or(event.planned_timestamp);
             }
@@ -1544,6 +1573,93 @@ mod tests {
             Some("2026-09-14T07:49:00Z".parse().unwrap())
         );
         assert_eq!(stops[5].actual_departure, None);
+    }
+
+    /// THE FIX THIS EXISTS FOR. A PASS at a genuine booked calling point
+    /// (`Intermediate`, with both a scheduled arrival AND departure) must
+    /// NOT populate `actual_arrival`/`actual_departure` -- doing so used to
+    /// make a train that ran straight through a station render identically
+    /// to one that actually stopped there (`frontend/components/
+    /// JourneyTimeline.tsx`'s `JourneyStopRow`: `reached = actual !== null`).
+    /// `last_event_type` must still record `"PASS"` -- that signal is not
+    /// lost, just no longer laundered into the `actual*` fields -- and
+    /// `scheduled_arrival`/`scheduled_departure` are untouched (both were
+    /// already `Some`, from the real timetable, so the `.or(...)` fallback
+    /// is a no-op here anyway).
+    #[test]
+    fn overlay_movement_events_does_not_set_actual_times_for_a_pass_at_a_booked_stop() {
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            ..stop_at("SLO", Intermediate)
+        }];
+        let events = vec![event("SLO", "PASS", "2026-09-14T09:12:00Z")];
+
+        overlay_movement_events(&mut stops, &events);
+
+        assert_eq!(
+            stops[0].actual_arrival, None,
+            "a PASS at a booked stop must not read as a completed arrival"
+        );
+        assert_eq!(
+            stops[0].actual_departure, None,
+            "a PASS at a booked stop must not read as a completed departure"
+        );
+        assert_eq!(
+            stops[0].last_event_type.as_deref(),
+            Some("PASS"),
+            "the PASS itself must still be recorded, for a follow-up 'Skipped' UI to key off"
+        );
+        assert_eq!(
+            stops[0].scheduled_arrival,
+            Some("2026-09-14T09:10:00Z".parse().unwrap()),
+            "the real timetabled time is untouched"
+        );
+        assert_eq!(
+            stops[0].scheduled_departure,
+            Some("2026-09-14T09:11:00Z".parse().unwrap())
+        );
+    }
+
+    /// The scoping half of the fix above: a PASS at a stop that is NOT a
+    /// genuine two-sided booked call -- here, `Intermediate` but missing a
+    /// scheduled arrival, the CIF shape of a timing point with blank public
+    /// times (`schedule_query::parse::parse_calling_point`), never a real
+    /// public calling point -- keeps the old behavior. There is no "booked
+    /// but skipped" stop being misrepresented here, so nothing to fix.
+    #[test]
+    fn overlay_movement_events_still_sets_actual_times_for_a_pass_at_a_non_booked_point() {
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: None,
+            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            ..stop_at("SLO", Intermediate)
+        }];
+        let events = vec![event("SLO", "PASS", "2026-09-14T09:12:00Z")];
+
+        overlay_movement_events(&mut stops, &events);
+
+        let expected: Option<DateTime<Utc>> = "2026-09-14T09:12:00Z".parse().ok();
+        assert_eq!(stops[0].actual_arrival, expected);
+        assert_eq!(stops[0].actual_departure, expected);
+        assert_eq!(stops[0].last_event_type.as_deref(), Some("PASS"));
+    }
+
+    /// Same scoping, the other direction: an `Origin`/`Terminate` stop (no
+    /// two-sided booked call to begin with -- `CallingPointKind`'s own doc
+    /// comment) also keeps the old behavior on a PASS.
+    #[test]
+    fn overlay_movement_events_still_sets_actual_times_for_a_pass_at_an_origin() {
+        use schedule_query::CallingPointKind::Origin;
+        let mut stops = vec![stop_at("WAT", Origin)];
+        let events = vec![event("WAT", "PASS", "2026-09-14T09:12:00Z")];
+
+        overlay_movement_events(&mut stops, &events);
+
+        let expected: Option<DateTime<Utc>> = "2026-09-14T09:12:00Z".parse().ok();
+        assert_eq!(stops[0].actual_arrival, expected);
+        assert_eq!(stops[0].actual_departure, expected);
     }
 
     /// The inverse, and the reason a "has it finished?" check can't just

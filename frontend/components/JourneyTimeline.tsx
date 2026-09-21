@@ -183,7 +183,20 @@ function JourneyStopRow({
   const label = journeyStopLabel(stop, index, total, endpointNames);
   const scheduled = stop.scheduledDeparture ?? stop.scheduledArrival;
   const actual = stop.actualDeparture ?? stop.actualArrival;
-  const estimated = stop.estimatedDeparture ?? stop.estimatedArrival;
+  // A booked calling point the train ran through without stopping reports
+  // `lastEventType: 'PASS'` with `actual*` left `null` (see
+  // `crates/api/src/data/journey.rs`'s `overlay_movement_events`) -- the
+  // train has already, confirmedly, gone past this point, so an "est." time
+  // (a FUTURE-facing estimate propagated from the train's current delay,
+  // `apply_delay_estimates`) would be actively wrong here, not just
+  // incomplete: this stop is not still ahead of the train. Suppressed for
+  // now rather than replaced with a proper "Skipped" treatment -- that's the
+  // follow-up task building on this fix, which has `lastEventType` to key
+  // off; this interim state just falls back to the same "not reached"
+  // styling an ordinary not-yet-arrived stop gets, which is honest even if
+  // not maximally informative.
+  const passedWithoutCalling = stop.lastEventType === 'PASS' && actual === null;
+  const estimated = passedWithoutCalling ? null : (stop.estimatedDeparture ?? stop.estimatedArrival);
   const reached = actual !== null;
 
   return (

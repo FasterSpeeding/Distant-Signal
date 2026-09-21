@@ -142,6 +142,32 @@ describe('JourneyTimeline', () => {
     expect(screen.getByText('09:04')).toBeInTheDocument();
   });
 
+  // The PASS-rendering fix: a booked calling point the train ran through
+  // without stopping (`crates/api/src/data/journey.rs`'s
+  // `overlay_movement_events`) reports `lastEventType: 'PASS'` with no
+  // `actual*` time -- and, since nothing has confirmed it, `apply_delay_
+  // estimates` would otherwise still fill in a forward-looking "est." time
+  // for it. That would be actively wrong (the stop is already behind the
+  // train, not ahead of it), so it must be suppressed even though the stop
+  // otherwise renders in the same "not reached" style as an ordinary
+  // not-yet-arrived stop -- the follow-up task owns giving it its own
+  // "Skipped" treatment.
+  it('suppresses the estimated time for a booked stop the train passed without calling', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({
+            scheduledArrival: '2026-09-08T08:00:00Z',
+            actualArrival: null,
+            estimatedArrival: '2026-09-08T08:05:00Z',
+            lastEventType: 'PASS',
+          }),
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/^est\./)).not.toBeInTheDocument();
+  });
+
   // Task 3.6.2: a stop whose server-side TIPLOC->CRS->name join didn't
   // resolve gets a by-index placeholder, never the old "Unknown location"
   // string.
