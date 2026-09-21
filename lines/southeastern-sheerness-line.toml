@@ -57,16 +57,30 @@ match_keywords = ["Sheerness line"]
 # This line's own real, physically-through service runs London Victoria to
 # Sheerness-on-Sea over the Chatham Main Line as far as Sittingbourne,
 # where the exclusive branch to Sheppey begins - the same shape
-# swr-alton.toml already models for Woking-Alton. `chatham-london`
-# (VIC-SAY) and `chatham-medway` (FNR-SIT) below are reused VERBATIM from
-# southeastern-chatham.toml, station-for-station identical over the
-# stretch this file also touches (roles copied from that file too, for the
-# same reason), so the matcher correctly treats an incident anywhere on
-# that shared stretch as a genuine SharedSegment event for both files - per
-# the shared-trunk rule of thumb, Sittingbourne (the junction) stays on the
-# shared `chatham-medway` segment, and this file's own exclusive
-# `southeastern-sheerness-line` segment starts at the next station,
-# Kemsley.
+# swr-alton.toml already models for Woking-Alton. `chatham-maidstone-
+# victoria` (VIC-BKJ), `chatham-maidstone-thameslink-swanley` (SRT-SAY),
+# `chatham-medway` (FNR-SOR) and `strood-ramsgate-corridor` (SOO-SIT) below
+# are reused VERBATIM from southeastern-chatham.toml, station-for-station
+# identical over the stretch this file also touches (roles copied from that
+# file too, for the same reason), so the matcher correctly treats an
+# incident anywhere on that shared stretch as a genuine SharedSegment event
+# for both files - per the shared-trunk rule of thumb, Sittingbourne (the
+# junction) stays on the shared `strood-ramsgate-corridor` segment, and this
+# file's own exclusive `southeastern-sheerness-line` segment starts at the
+# next station, Kemsley.
+#
+# UPDATE (shared-segments structural review): this file originally reused
+# `chatham-london` (VIC-SAY) and `chatham-medway` (FNR-SIT) verbatim, the
+# names those stretches carried in southeastern-chatham.toml at the time
+# this file was written. A later, parallel structural review of that file
+# split both names more finely (see southeastern-chatham.toml's own REVIEW
+# FIX comments): `chatham-london` into `chatham-maidstone-victoria`
+# (VIC-BKJ) and `chatham-maidstone-thameslink-swanley` (SRT-SAY), and
+# `chatham-medway` into a narrower `chatham-medway` (FNR-SOR only) plus
+# `strood-ramsgate-corridor` (SOO onward). This file's own segment names
+# below have been updated to match, station-for-station, so the reuse stays
+# genuinely verbatim rather than silently drifting from southeastern-
+# chatham.toml's own current names.
 #
 # category = "regional" (not "commuter"/"main-line"), matching
 # swr-alton.toml's precedent for an identical trunk+modest-branch shape -
@@ -79,62 +93,62 @@ match_keywords = ["Sheerness line"]
 [[stations]]
 crs = "VIC"
 role = "terminus"
-segment = "chatham-london"
+segment = "chatham-maidstone-victoria"
 
 [[stations]]
 crs = "HNH"
 role = "major"
-segment = "chatham-london"
+segment = "chatham-maidstone-victoria"
 
 [[stations]]
 crs = "WDU"
 role = "minor"
-segment = "chatham-london"
+segment = "chatham-maidstone-victoria"
 
 [[stations]]
 crs = "SYH"
 role = "minor"
-segment = "chatham-london"
+segment = "chatham-maidstone-victoria"
 
 [[stations]]
 crs = "PNE"
 role = "minor"
-segment = "chatham-london"
+segment = "chatham-maidstone-victoria"
 
 [[stations]]
 crs = "KTH"
 role = "minor"
-segment = "chatham-london"
+segment = "chatham-maidstone-victoria"
 
 [[stations]]
 crs = "BKJ"
 role = "major"
-segment = "chatham-london"
+segment = "chatham-maidstone-victoria"
 
 [[stations]]
 crs = "SRT"
 role = "junction"
-segment = "chatham-london"
+segment = "chatham-maidstone-thameslink-swanley"
 
 [[stations]]
 crs = "BMS"
 role = "major"
-segment = "chatham-london"
+segment = "chatham-maidstone-thameslink-swanley"
 
 [[stations]]
 crs = "BKL"
 role = "junction"
-segment = "chatham-london"
+segment = "chatham-maidstone-thameslink-swanley"
 
 [[stations]]
 crs = "SMY"
 role = "junction"
-segment = "chatham-london"
+segment = "chatham-maidstone-thameslink-swanley"
 
 [[stations]]
 crs = "SAY"
 role = "junction"
-segment = "chatham-london"
+segment = "chatham-maidstone-thameslink-swanley"
 
 [[stations]]
 crs = "FNR"
@@ -159,41 +173,41 @@ segment = "chatham-medway"
 [[stations]]
 crs = "SOO"
 role = "junction"
-segment = "chatham-medway"
+segment = "strood-ramsgate-corridor"
 
 [[stations]]
 crs = "RTR"
 role = "major"
-segment = "chatham-medway"
+segment = "strood-ramsgate-corridor"
 
 [[stations]]
 crs = "CTM"
 role = "major"
-segment = "chatham-medway"
+segment = "strood-ramsgate-corridor"
 
 [[stations]]
 crs = "GLM"
 role = "major"
-segment = "chatham-medway"
+segment = "strood-ramsgate-corridor"
 
 [[stations]]
 crs = "RAI"
 role = "minor"
-segment = "chatham-medway"
+segment = "strood-ramsgate-corridor"
 
 [[stations]]
 crs = "NGT"
 role = "minor"
-segment = "chatham-medway"
+segment = "strood-ramsgate-corridor"
 
 [[stations]]
 crs = "SIT"
 role = "junction"
-segment = "chatham-medway"
+segment = "strood-ramsgate-corridor"
 # Sittingbourne. The Sheerness Line's own exclusive branch (below) diverges
 # here; per the shared-trunk rule of thumb the junction itself stays on the
-# shared `chatham-medway` segment, matching swr-alton.toml's identical
-# treatment of Woking.
+# shared `strood-ramsgate-corridor` segment, matching swr-alton.toml's
+# identical treatment of Woking.
 
 # --- Sheerness Line's own exclusive branch, diverging from the Chatham
 # Main Line at Sittingbourne (above) ---

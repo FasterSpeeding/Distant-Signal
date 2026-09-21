@@ -188,6 +188,16 @@ delay_threshold_minutes = 4
 # comment, which independently re-verified the same negative finding and
 # kept its own separate segment names instead.
 #
+# REVIEW FIX (shared-segment structural review, review2-shared-segments):
+# this file and southeastern-bexleyheath.toml got this unification right
+# from the start - a later cross-file review found southeastern-main-
+# line.toml, southeastern-hayes-line.toml and southeastern-north-kent.toml
+# had NOT reused this name for their own genuinely-identical copy of this
+# same stretch. Those three files have now been fixed to reuse
+# `southeastern-lewisham-corridor` too (see each file's own header comment)
+# - no change needed here, this file's own segment naming was already
+# correct.
+#
 # Ordered London to Dartford: shared trunk to Lewisham, then this file's own
 # trunk continuing past Lewisham to Hither Green before this line's own
 # Dartford Loop branch proper diverges (Sidcup/Bexley/Crayford, rejoining at
