@@ -69,6 +69,14 @@ operators = ["SW"]
 # "Adding a complex operator" section describes for swr-trunk-waterloo
 # itself.
 #
+# BUG FIX (real-world-sanity review): swr-hounslow-loop.toml's own
+# WTN/FEL/AFS/SNS rows were retagged from `swr-hounslow-loop` to the shared
+# `swr-windsor-lines` segment (see that file's own SEGMENTS note for the
+# full reasoning — they were previously mismatched against
+# swr-windsor-lines.toml's own segment name for the identical stations).
+# Updated identically here to keep this file's own "identical... throughout"
+# claim true.
+#
 # This file's own exclusive segment, `swr-chertsey-branch`, starts at the
 # station AFTER the Virginia Water junction (Chertsey), per the
 # shared-trunk rule of thumb - VIR itself stays on the shared
@@ -186,22 +194,26 @@ segment = "swr-hounslow-loop"
 [[stations]]
 crs = "WTN"
 role = "minor"
-segment = "swr-hounslow-loop"
+segment = "swr-windsor-lines"
+# BUG FIX: retagged from `swr-hounslow-loop` — see the SEGMENTS note above.
 
 [[stations]]
 crs = "FEL"
 role = "minor"
-segment = "swr-hounslow-loop"
+segment = "swr-windsor-lines"
+# BUG FIX: see WTN above.
 
 [[stations]]
 crs = "AFS"
 role = "minor"
-segment = "swr-hounslow-loop"
+segment = "swr-windsor-lines"
+# BUG FIX: see WTN above.
 
 [[stations]]
 crs = "SNS"
 role = "junction"
-segment = "swr-hounslow-loop"
+segment = "swr-windsor-lines"
+# BUG FIX: see WTN above.
 
 [[stations]]
 crs = "EGH"
