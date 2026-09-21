@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build && node scripts/stamp-sw-version.mjs",
     "start": "next start",
+    "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test"
@@ -34,6 +35,8 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.2.10",
     "jsdom": "^25.0.0",
     "postcss": "^8.4.0",
     "postcss-preset-mantine": "^1.17.0",

@@ -1,4 +1,4 @@
-import { Paper, Stack, Text, Title } from '@mantine/core';
+import { Paper, Stack, Text } from '@mantine/core';
 import { getLineDailyStats, getLineHalfHourlyStats, getLineHourlyStats, getLineSixHourlyStats } from '@/lib/api';
 import { londonDayKey } from '@/lib/dateFormat';
 import type { TrendGranularity } from '@/lib/history';

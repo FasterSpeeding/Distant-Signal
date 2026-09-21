@@ -43,9 +43,9 @@ describe('NotificationsToggle', () => {
     // test file (jsdom has neither serviceWorker nor PushManager by
     // default).
     delete global.navigator.serviceWorker;
-    // @ts-expect-error
+    // @ts-expect-error -- see above.
     delete global.window.PushManager;
-    // @ts-expect-error
+    // @ts-expect-error -- see above.
     delete global.Notification;
   });
 
@@ -72,9 +72,9 @@ describe('NotificationsToggle', () => {
     };
     // @ts-expect-error -- test-only global stubs for Web APIs jsdom doesn't implement.
     global.navigator.serviceWorker = { ready: Promise.resolve(fakeRegistration) };
-    // @ts-expect-error
+    // @ts-expect-error -- see above.
     global.window.PushManager = function () {};
-    // @ts-expect-error
+    // @ts-expect-error -- see above.
     global.Notification = { requestPermission: vi.fn().mockResolvedValue('granted') };
   }
 
@@ -127,7 +127,7 @@ describe('NotificationsToggle', () => {
 
   it('does nothing further when the permission prompt is denied', async () => {
     stubPushApiSupport();
-    // @ts-expect-error
+    // @ts-expect-error -- test-only global stub for a Web API jsdom doesn't implement.
     global.Notification = { requestPermission: vi.fn().mockResolvedValue('denied') };
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

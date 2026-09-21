@@ -41,6 +41,9 @@ describe('StatusRow', () => {
     renderWithMantine(
       <StatusRow
         title={
+          // Plain <a>, not next/link: this only tests that StatusRow renders
+          // an arbitrary non-string title node as-is, not real page navigation.
+          // eslint-disable-next-line @next/next/no-html-link-for-pages
           <a href="/lines/wcml" data-testid="custom-title-link">
             West Coast Main Line
           </a>

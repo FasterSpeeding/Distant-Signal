@@ -237,7 +237,6 @@ function FieldsView({ fields, path }: { fields: LabelledNode[]; path?: string })
         // Two different source keys can humanize to the same label, and an
         // unlabelled sentence has no key at all, so neither is a safe React
         // key.
-        // eslint-disable-next-line react/no-array-index-key -- see above
         <LabelledNodeView key={index} field={field} path={path} />
       ))}
     </Stack>
@@ -320,7 +319,6 @@ function AccessibilityNodeView({
       return (
         <Group gap={4} wrap="wrap">
           {node.tokens.map((token, index) => (
-            // eslint-disable-next-line react/no-array-index-key -- feed tokens are not unique
             <Badge key={`${token}-${index}`} variant="light" color="gray" tt="none" fw={400}>
               {token}
             </Badge>
@@ -352,7 +350,6 @@ function AccessibilityNodeView({
       return (
         <Stack gap={0}>
           {node.entries.map((entry, index) => (
-            // eslint-disable-next-line react/no-array-index-key -- entries have no id
             <Text key={index} size="sm">
               {/* Joined from whichever halves exist, not with a fixed
                   comma: an entry whose `openingStatus` the feed left blank
@@ -386,7 +383,6 @@ function AccessibilityNodeView({
           }}
         >
           {node.items.map((item, index) => (
-            // eslint-disable-next-line react/no-array-index-key -- bullets have no id
             <li key={index}>
               <AccessibilityNodeView node={item} path={path} />
             </li>
@@ -404,7 +400,6 @@ function AccessibilityNodeView({
       const items = (
         <Stack gap="sm">
           {visible.map((item, index) => (
-            // eslint-disable-next-line react/no-array-index-key -- feed items have no stable id
             <Stack key={index} gap={4}>
               {item.link ? (
                 <TextLink
@@ -448,7 +443,6 @@ function AccessibilityNodeView({
         <Stack gap="sm">
           {visible.map((item, index) => (
             <AccessibilityNodeView
-              // eslint-disable-next-line react/no-array-index-key -- feed items have no stable id
               key={index}
               node={item}
               // A nested `'raw'` child would otherwise be another bare

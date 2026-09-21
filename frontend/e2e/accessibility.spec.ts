@@ -325,7 +325,7 @@ test.describe('accessibility: /train/[uid]/[date]', () => {
     await expectNoViolations(page);
   });
 
-  test('as the tracking owner', async ({ page, browser }) => {
+  test('as the tracking owner', async ({ browser }) => {
     test.skip(!SESSION_COOKIE, 'set E2E_SESSION_COOKIE');
     // The owner view adds the rename/stop-tracking/share controls and the
     // ticket panel, none of which the anonymous view renders.

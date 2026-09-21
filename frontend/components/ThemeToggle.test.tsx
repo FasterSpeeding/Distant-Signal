@@ -40,7 +40,7 @@ describe('ThemeToggle', () => {
     const { container } = renderWithMantine(<ThemeToggle />, { defaultColorScheme: 'auto' });
 
     // In auto mode (resolved to light), renders the composite sun-moon icon
-    let svgs = container.querySelectorAll('svg');
+    const svgs = container.querySelectorAll('svg');
     // IconSunMoon has both sun rays and a moon path in one SVG
     expect(svgs.length).toBeGreaterThan(0);
 
@@ -56,7 +56,7 @@ describe('ThemeToggle', () => {
     // Start: auto resolves to light, so shows sun-moon icon
     let svgs = container.querySelectorAll('svg');
     expect(svgs.length).toBe(1);
-    let sunMoonSvg = svgs[0];
+    const sunMoonSvg = svgs[0];
     expect(sunMoonSvg.querySelector('circle')).toBeInTheDocument(); // sun circle
     expect(sunMoonSvg.querySelector('path')).toBeInTheDocument(); // moon path
 

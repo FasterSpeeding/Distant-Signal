@@ -41,7 +41,7 @@ describe('PrideToggle', () => {
   });
 
   it('shows a different swatch and sparkle set for rainbow vs. trans', () => {
-    const { container } = renderWithMantine(<PrideToggle />);
+    renderWithMantine(<PrideToggle />);
     const button = screen.getByRole('button');
 
     fireEvent.click(button); // -> rainbow
@@ -133,12 +133,12 @@ describe('PrideToggle', () => {
   });
 
   it('all nine modes render distinct visible swatches', () => {
-    const { container } = renderWithMantine(<PrideToggle />);
+    renderWithMantine(<PrideToggle />);
     const button = screen.getByRole('button');
     const modes = ['rainbow', 'trans', 'nonbinary', 'bisexual', 'pansexual', 'asexual', 'sapphic', 'lesbian'];
     const gradients = new Set<string>();
 
-    for (const mode of modes) {
+    for (const _mode of modes) {
       fireEvent.click(button);
       const swatch = button.querySelector('span[style*="background"]') as HTMLElement;
       expect(swatch).toBeInTheDocument();
