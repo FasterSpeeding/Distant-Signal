@@ -178,7 +178,12 @@ match_keywords = ["Brighton Main Line", "Gatwick Express"]
 #     fast alignment. That's a separate, not-yet-modelled Redhill/Arun
 #     Valley stopping line, not a fill-in gap in this file - adding it here
 #     would be new-line-scope work per this plan's Global Constraints, not
-#     routine infill.
+#     routine infill. NOW MODELLED (real-world sanity review):
+#     thameslink-southern.toml's own HORSHAM BRANCH covers this exact
+#     corridor, with CDS/MHM/ELD/SAF/HOR independently verified to this
+#     catalogue's two-source bar. Still not added here - this file's own
+#     Clapham Junction/Windmill Bridge Jn fast alignment genuinely doesn't
+#     touch any of these stations.
 #   - Balcombe (between Three Bridges and Haywards Heath): confirmed via its
 #     own Wikipedia infobox as Thameslink-only ("Thameslink operates all
 #     services at the station") - this file's operators are Southern/Gatwick

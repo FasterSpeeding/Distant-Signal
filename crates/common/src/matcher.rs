@@ -6610,12 +6610,17 @@ mod tests {
     // independent match. (southeastern-maidstone-east.toml does NOT touch
     // LBG - its own London approach is via Herne Hill/Bromley South, the
     // same Victoria-side alignment southeastern-chatham.toml already
-    // models, which never reaches London Bridge.) The set below and the
-    // function name below now cover nine lines in total, eight of them
-    // independent ExclusiveSegment matches plus the bexleyheath/
-    // dartford-loop SharedSegment pair.
+    // models, which never reaches London Bridge.)
+    //
+    // Updated (real-world sanity review): thameslink-rainham.toml's own
+    // Luton-Rainham route also runs the Thameslink core's full length
+    // through London Bridge (its own `thameslink-rainham` segment) before
+    // diverging towards Greenwich - a tenth independent ExclusiveSegment
+    // match. The set below and the function name now cover ten lines in
+    // total, nine of them independent ExclusiveSegment matches plus the
+    // bexleyheath/dartford-loop SharedSegment pair.
     #[test]
-    fn lbg_station_overlap_spans_nine_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
+    fn lbg_station_overlap_spans_ten_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -6639,6 +6644,7 @@ mod tests {
                 "southern-oxted-uckfield".to_string(),
                 "thameslink-southern".to_string(),
                 "southeastern-north-kent".to_string(),
+                "thameslink-rainham".to_string(),
             ])
         );
         for m in &matches {
@@ -7441,6 +7447,13 @@ mod tests {
     // exclusive to this line - mirrors
     // swr_exclusive_segment_incident_does_not_propagate and
     // elizabeth_branch_incident_stays_on_its_branch above.
+    // Updated (real-world sanity review): Harpenden is also on
+    // thameslink-rainham.toml's own Luton-St Pancras stretch, reused
+    // verbatim from this file (its own `thameslink-rainham` segment) -
+    // station overlap only, both independently ExclusiveSegment. The name
+    // ("...does_not_propagate") now refers to this station staying off
+    // every OTHER curated line (EMR's own Bedford-St Pancras service skips
+    // it - see ltn_lut_bdm_station_overlap_... below), not to zero overlap.
     #[test]
     fn thameslink_bedford_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -7456,9 +7469,19 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["thameslink-bedford".to_string()])
+            HashSet::from([
+                "thameslink-bedford".to_string(),
+                "thameslink-rainham".to_string()
+            ])
         );
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment, not shared",
+                m.line.id
+            );
+        }
     }
 
     // Task 5.12. St Pancras International (STP) is where this file's
@@ -7495,6 +7518,11 @@ mod tests {
         // between those two specifically, while staying independent
         // ExclusiveSegment matches relative to the four Thameslink/HS1
         // lines, which use entirely distinct segment names.
+        //
+        // Updated (real-world sanity review): thameslink-rainham.toml's own
+        // Luton-Rainham route also meets the core at STP (its own
+        // `thameslink-rainham` segment) -- a seventh independent
+        // exclusive-segment match.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -7515,6 +7543,7 @@ mod tests {
                 "thameslink-cambridge".to_string(),
                 "emr-connect".to_string(),
                 "emr-midland-main-line".to_string(),
+                "thameslink-rainham".to_string(),
             ])
         );
         for m in &matches {
@@ -7539,15 +7568,25 @@ mod tests {
     // already exercised by
     // `stp_station_overlap_matches_thameslink_core_bedford_and_highspeed_as_independent_exclusive_segments`
     // above; this test covers the three remaining overlap stations.
+    // Updated (real-world sanity review): thameslink-rainham.toml reuses
+    // thameslink-bedford.toml's own Luton/Luton Airport Parkway stations
+    // verbatim (its own route starts at Luton, one station south of
+    // Bedford) -- so LTN and LUT now also match thameslink-rainham,
+    // ExclusiveSegment, while BDM (Bedford itself, north of Luton, not on
+    // thameslink-rainham's own route) does not gain a fourth match.
     #[test]
     fn ltn_lut_bdm_station_overlap_between_emr_and_thameslink_bedford_stays_exclusive_for_thameslink()
      {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
-        for (crs, station_name) in [
-            ("LTN", "Luton Airport Parkway"),
-            ("LUT", "Luton"),
-            ("BDM", "Bedford"),
+        for (crs, station_name, extra_lines) in [
+            (
+                "LTN",
+                "Luton Airport Parkway",
+                vec!["thameslink-rainham".to_string()],
+            ),
+            ("LUT", "Luton", vec!["thameslink-rainham".to_string()]),
+            ("BDM", "Bedford", vec![]),
         ] {
             let inc = incident(
                 &format!("EMR-TL-{crs}"),
@@ -7561,13 +7600,15 @@ mod tests {
                 .iter()
                 .map(|m| (m.line.id.clone(), m.scope))
                 .collect();
+            let mut expected = HashSet::from([
+                "emr-midland-main-line".to_string(),
+                "emr-connect".to_string(),
+                "thameslink-bedford".to_string(),
+            ]);
+            expected.extend(extra_lines.iter().cloned());
             assert_eq!(
                 by_id.keys().cloned().collect::<HashSet<_>>(),
-                HashSet::from([
-                    "emr-midland-main-line".to_string(),
-                    "emr-connect".to_string(),
-                    "thameslink-bedford".to_string(),
-                ]),
+                expected,
                 "unexpected match set for {crs}"
             );
             assert_eq!(
@@ -7585,6 +7626,13 @@ mod tests {
                 Some(&MatchScope::ExclusiveSegment),
                 "{crs}"
             );
+            for extra in &extra_lines {
+                assert_eq!(
+                    by_id.get(extra.as_str()),
+                    Some(&MatchScope::ExclusiveSegment),
+                    "{crs}: {extra}"
+                );
+            }
         }
     }
 
@@ -7833,6 +7881,11 @@ mod tests {
     // thameslink-cambridge.toml, LBG above) - mirrors
     // stp_station_overlap_matches_thameslink_core_bedford_and_highspeed_as_independent_exclusive_segments
     // above.
+    //
+    // Updated (real-world sanity review): thameslink-rainham.toml's own
+    // Luton-Rainham route also runs the Thameslink core's full length,
+    // including Blackfriars (its own `thameslink-rainham` segment) - a
+    // third independent ExclusiveSegment match.
     #[test]
     fn bfr_station_overlap_matches_thameslink_core_and_thameslink_southern_as_independent_exclusive_segments()
      {
@@ -7851,7 +7904,8 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "thameslink-core".to_string(),
-                "thameslink-southern".to_string()
+                "thameslink-southern".to_string(),
+                "thameslink-rainham".to_string()
             ])
         );
         for m in &matches {
