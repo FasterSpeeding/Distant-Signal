@@ -2566,7 +2566,7 @@ mod tests {
     // pre-flight scan, confirmed unchanged by this task's research) is not
     // shared with any sibling line - an incident here should match only
     // tpe-anglo-scottish, as ExclusiveSegment, same shape as
-    // emr_rural_branches_bottesford_incident_stays_on_its_own_branch
+    // emr_poacher_bottesford_incident_stays_on_its_own_line
     // above. St Helens Central was chosen over Wigan North Western /
     // Manchester Oxford Road / Bolton because those three also appear
     // (station-level only, via wcml / emr-regional / northern-clitheroe /
@@ -4848,7 +4848,7 @@ mod tests {
     // line's segment (confirmed by grepping the catalogue: the segment name
     // is exclusive to this one file), so this stays a clean ExclusiveSegment
     // match with no shared-segment propagation to assert, mirroring
-    // `emr_rural_branches_bottesford_incident_stays_on_its_own_branch`'s
+    // `emr_poacher_bottesford_incident_stays_on_its_own_line`'s
     // identical judgment call for that file's own infill task.
     #[test]
     fn gwr_cornish_main_line_saltash_incident_stays_on_its_own_line() {

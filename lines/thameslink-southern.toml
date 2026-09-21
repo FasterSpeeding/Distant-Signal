@@ -464,8 +464,11 @@ segment = "thameslink-sutton-loop"
 crs = "MIJ"
 role = "junction"
 segment = "thameslink-sutton-loop"
-# Mitcham Junction. Also a junction for Southern's own Wimbledon-Sutton and
-# Epsom Downs branches, neither covered by this catalogue.
+# Mitcham Junction. Also a junction for Southern's own Wimbledon-Sutton
+# branch, not covered by this catalogue. (An earlier version of this
+# comment also named the Epsom Downs branch here -- stale: that branch
+# actually diverges from Sutton, not Mitcham Junction, and is now covered
+# by `southern-epsom-downs.toml`.)
 
 [[stations]]
 crs = "HCB"

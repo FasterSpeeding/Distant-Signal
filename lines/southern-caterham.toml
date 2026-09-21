@@ -18,8 +18,18 @@ operators = ["SN"]
 # southern-epsom-downs.toml for that reason (different junction, different
 # corridor), but ARE kept as genuine siblings of each other (see SEGMENTS),
 # since Purley's own Wikipedia article confirms Platforms 5 and 6 there
-# serve "the branch lines to Tattenham Corner and Caterham" directly - both
-# leave Purley itself, not one via the other.
+# serve "the branch lines to Tattenham Corner and Caterham" directly.
+# CORRECTION (re-checked against both lines' own infoboxes): an earlier
+# draft of this comment claimed the two branches "leave Purley itself, not
+# one via the other" - that has it backwards. The Tattenham Corner line's
+# own infobox route actually shows it joining the Caterham line's track for
+# a short stretch (~200m) immediately south of Purley before diverging
+# again onto its own alignment - a genuine, if very short, shared-track
+# arrangement, not two fully independent departures from the platform. This
+# has no functional/data impact on this file (no CRS-coded station exists
+# at that unstationed junction point, so PUR remains correctly the only
+# station either branch's `[[stations]]` list needs to share), but the
+# prose is corrected here for accuracy.
 #
 # ============================================================================
 # SOURCING

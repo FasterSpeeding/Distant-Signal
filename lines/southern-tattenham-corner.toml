@@ -22,12 +22,20 @@ operators = ["SN"]
 # southern-caterham.toml's own sourcing) and Tattenham Corner (23 mi 37 ch)
 # as the terminus, an 8-mile-14-ch route in total. Operator "Southern"
 # (infobox).
-# Junction confirmed at Purley itself (not, on closer reading, a
-# Caterham-line trackage-sharing arrangement - Purley's own article states
-# plainly it "is a junction, with branches to Caterham and Tattenham
-# Corner" from its own platforms 5/6, i.e. both branches leave Purley
-# independently; see southern-caterham.toml's own SOURCING for the full
-# quote).
+# Junction confirmed at Purley: Purley's own article states plainly it "is
+# a junction, with branches to Caterham and Tattenham Corner" from its own
+# platforms 5/6 (see southern-caterham.toml's own SOURCING for the full
+# quote). CORRECTION (re-checked against both lines' own infoboxes,
+# matching the correction recorded in southern-caterham.toml's own header):
+# an earlier draft of this comment read that as the two branches leaving
+# Purley fully independently, with no Caterham-line trackage-sharing - that
+# has it backwards. This line's own infobox route actually shows it joining
+# the Caterham line's track for a short stretch (~200m) immediately south
+# of Purley before diverging again onto its own alignment towards Reedham.
+# No functional/data impact (no CRS-coded station exists at that
+# unstationed junction point, so PUR remains correctly the only shared
+# stop), so the station list and segment choices below are unaffected -
+# this just corrects the topology description.
 # CRS codes verified live against https://ds.cursed.solutions/api/stations:
 # Reedham (London)=RHM (distinct from Reedham (Norfolk)=REE - confirmed
 # both codes), Coulsdon Town=CDN, Woodmansterne=WME, Chipstead=CHP,
