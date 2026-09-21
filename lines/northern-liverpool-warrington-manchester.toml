@@ -61,13 +61,18 @@ operators = ["NT"]
 # files. MCO and MAN are also on numerous TPE/CrossCountry/Avanti/Northern
 # files (`tpe-north-teesside.toml`, `tpe-north-hull.toml`,
 # `tpe-north-wakefield.toml`, `xc-manchester.toml`, `wcml-manchester.toml`).
-# All station-overlap only, matching this whole catalogue's `xc-manchester.toml`
+# HNX (Hunts Cross, added review2) is also a `merseyrail-northern.toml`
+# station (that file's own City Line service calling here too) -- a
+# legitimate overlap, not a new station to the catalogue. All station-
+# overlap only, matching this whole catalogue's `xc-manchester.toml`
 # precedent ("station overlap is fine, segment-sharing is a deliberate
-# choice"). No existing file in this catalogue currently claims Hough Green,
-# Widnes, Sankey for Penketh, Warrington West, Warrington Central, Padgate,
-# Birchwood, Glazebrook, Irlam, Flixton, Urmston, Humphrey Park, Trafford
-# Park or Deansgate (grepped before starting), so this file's own
-# `northern-clc-warrington` segment is exclusive throughout.
+# choice"). No existing file in this catalogue currently claims Edge Hill,
+# Mossley Hill, West Allerton, Halewood, Hough Green, Widnes, Sankey for
+# Penketh, Warrington West, Warrington Central, Padgate, Birchwood,
+# Glazebrook, Irlam, Flixton, Urmston, Humphrey Park, Trafford Park or
+# Deansgate (grepped before starting), so this file's own
+# `northern-clc-warrington` segment is exclusive throughout, aside from the
+# HNX station overlap noted above.
 #
 # CRS codes: every code below cross-checked against
 # `https://ds.cursed.solutions/api/stations`, 2026-09-21; no discrepancies.
@@ -93,21 +98,71 @@ destination_crs_filter = ["WAC", "MCO", "MAN"]
 # comparable-frequency Northern local line (no `[severity_overrides]`
 # needed).
 
-# Ordered Liverpool Lime Street -> Liverpool South Parkway -> Hough Green ->
-# Widnes -> Sankey for Penketh -> Warrington West -> Warrington Central ->
-# Padgate -> Birchwood -> Glazebrook -> Irlam -> Flixton -> Urmston ->
-# Humphrey Park -> Trafford Park -> Deansgate -> Manchester Oxford Road ->
-# Manchester Piccadilly, per the confirmed route above.
+# Ordered Liverpool Lime Street -> Edge Hill -> Mossley Hill -> West
+# Allerton -> Liverpool South Parkway -> Hunts Cross -> Halewood -> Hough
+# Green -> Widnes -> Sankey for Penketh -> Warrington West -> Warrington
+# Central -> Padgate -> Birchwood -> Glazebrook -> Irlam -> Flixton ->
+# Urmston -> Humphrey Park -> Trafford Park -> Deansgate -> Manchester
+# Oxford Road -> Manchester Piccadilly, per the confirmed route above (Edge
+# Hill/Mossley Hill/West Allerton/Hunts Cross/Halewood added review2,
+# 2026-09-21, each cross-checked via its own Wikipedia succession box and
+# CRS-verified live against https://ds.cursed.solutions/api/stations).
 [[stations]]
 crs = "LIV"
 role = "terminus"
 segment = "northern-clc-warrington"
 
 [[stations]]
+crs = "EDG"
+role = "minor"
+segment = "northern-clc-warrington"
+# Edge Hill -- REVIEW2 FIX (2026-09-21): this file previously jumped
+# straight from Liverpool Lime Street to Liverpool South Parkway, missing
+# several genuinely Northern-served stations on the Liverpool end. Fresh
+# Wikipedia research (Mossley Hill's own succession box: "Preceding
+# Station: Edge Hill ... on the Liverpool to Manchester Line") confirms
+# Edge Hill is the first stop out of Lime Street on this corridor.
+
+[[stations]]
+crs = "MSH"
+role = "minor"
+segment = "northern-clc-warrington"
+# Mossley Hill -- per its own succession box, between Edge Hill and West
+# Allerton on the Liverpool to Manchester Line; also confirms Northern
+# stopping services here "between Liverpool Lime Street and Warrington
+# Central", some continuing to Manchester Oxford Road, matching this
+# file's own service pattern.
+
+[[stations]]
+crs = "WSA"
+role = "minor"
+segment = "northern-clc-warrington"
+# West Allerton -- per its own succession box, between Mossley Hill and
+# Liverpool South Parkway on the Liverpool to Manchester Line (south).
+
+[[stations]]
 crs = "LPY"
 role = "major"
 segment = "northern-clc-warrington"
 # Liverpool South Parkway.
+
+[[stations]]
+crs = "HNX"
+role = "minor"
+segment = "northern-clc-warrington"
+# Hunts Cross -- per its own succession box, between Liverpool South
+# Parkway and Halewood on the City Line route towards Warrington Central.
+# Already a `merseyrail-northern.toml` station (a different, Merseyrail
+# City Line service calling here too) -- a legitimate station overlap, not
+# a new station to the catalogue; station-overlap only, no segment shared,
+# matching this catalogue's usual convention.
+
+[[stations]]
+crs = "HED"
+role = "minor"
+segment = "northern-clc-warrington"
+# Halewood -- per Hunts Cross's own succession box, the next station
+# continuing towards Hough Green/Warrington.
 
 [[stations]]
 crs = "HGN"

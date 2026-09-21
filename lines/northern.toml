@@ -44,16 +44,22 @@ excluded_keywords = ["Northern line", "Northern City Line"]
 # (b) is applied ADDITIVELY on top: the two fragments with enough real
 # stations to deserve their own genuine, complete, correctly-named files
 # now have one each -- `lines/northern-huddersfield.toml` (the real
-# Huddersfield line, Manchester Victoria to Leeds, filling in Mossley,
-# Greenfield, Marsden, Slaithwaite, Deighton, Mirfield, Ravensthorpe,
-# Batley, Morley and Cottingley, none of which this file ever listed) and
-# `lines/northern-leeds-york.toml` (the real, separate Leeds-York local
-# stopper via Cross Gates/Micklefield/Church Fenton/Ulleskelf, distinct from
-# this file's own direct LDS-YRK working). Both station-overlap with this
-# file at their shared endpoints (MCV/SYB/HUD/DEW/LDS/YRK) without segment-
-# sharing, the same "station overlap is fine, segment-sharing is a
-# deliberate choice" precedent used throughout this catalogue -- see each
-# new file's own top-of-file comment for the full reasoning.
+# Huddersfield line's own Northern-operated extent, Huddersfield to Leeds,
+# filling in Deighton, Mirfield, Ravensthorpe, Batley, Morley and
+# Cottingley, none of which this file ever listed -- REVIEW2 FIX,
+# 2026-09-21: that file originally also extended west to Manchester
+# Victoria via Stalybridge/Mossley/Greenfield/Marsden/Slaithwaite, but
+# fresh research found Northern doesn't operate that stretch (transferred
+# to TransPennine Express in 2018, modelled in `tpe-north-wakefield.toml`),
+# so it was trimmed to Huddersfield-Leeds; see that file's own top-of-file
+# note) and `lines/northern-leeds-york.toml` (the real, separate Leeds-York
+# local stopper via Cross Gates/Micklefield/Church Fenton/Ulleskelf,
+# distinct from this file's own direct LDS-YRK working). Both
+# station-overlap with this file at their shared endpoints (SYB/HUD/DEW/
+# LDS/YRK) without segment-sharing, the same "station overlap is fine,
+# segment-sharing is a deliberate choice" precedent used throughout this
+# catalogue -- see each new file's own top-of-file comment for the full
+# reasoning.
 #
 # Northern is a network rather than a single route. This file's own four
 # fragments are each a real anchor/hub point that a genuine sibling file
@@ -66,8 +72,10 @@ excluded_keywords = ["Northern line", "Northern City Line"]
 # `northern-blackpool`/`northern-clitheroe` (share the `northern-manchester`
 # hub), `northern-yorkshire-coast`/`northern-leeds-selby`/
 # `northern-leeds-york` (Leeds/York-area siblings), `northern-huddersfield`
-# (the real Manchester Victoria-Leeds route this file's own Stalybridge-
-# Huddersfield-Dewsbury fragment is a stub of), plus `northern-lakes`,
+# (the real Huddersfield-Leeds route this file's own Stalybridge-
+# Huddersfield-Dewsbury fragment is a stub of -- Manchester Victoria is
+# NOT part of that file's own real, Northern-operated extent; see that
+# file's own REVIEW2 FIX note), plus `northern-lakes`,
 # `northern-furness`, `northern-hope-valley`, `northern-tyne-valley` and
 # many more sharing no station with this file at all.
 #
