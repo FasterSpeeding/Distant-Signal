@@ -402,7 +402,9 @@ mod tests {
         // terminates at Birmingham New Street, on its own exclusive
         // `wcml-birmingham-branch` segment -- station-level overlap with the
         // CrossCountry hub, same precedent xc-south-coast.toml/xc-manchester.toml
-        // already documented for Coventry/Stafford/Crewe. It's a real sixth
+        // already documented for Coventry/Stafford (xc-manchester.toml no
+        // longer lists Crewe at all after its 2026-09-21 route correction --
+        // see that file's own comment). It's a real sixth
         // line affected by this incident, just with a different scope.
         //
         // `wmr-cross-city.toml` (added after this test was first written) also
@@ -2436,8 +2438,13 @@ mod tests {
     // overlap with anything else in the catalogue, including this batch's
     // own tpe-north — the Newcastle boundary between them is ruled a
     // terminus-to-terminus handoff, not a shared trunk (mirrors how
-    // west-coast-main-line.toml and xc-manchester.toml treat their own
-    // Crewe overlap). What this task's own pre-flight scan didn't (and
+    // emr-regional.toml and northern-hope-valley.toml treat their own
+    // Stockport overlap -- station-level only, distinct segment names on
+    // each side; see
+    // `emr_regional_stockport_and_hope_valley_both_match_without_over_propagating`
+    // above. This replaces a prior analogy to xc-manchester.toml's own
+    // Crewe entry, which no longer exists after that file's 2026-09-21
+    // route correction). What this task's own pre-flight scan didn't (and
     // couldn't) anticipate: `lner-ecml.toml` (merged separately, in an
     // earlier batch, and absent from this batch's own isolated worktree)
     // also stops at Berwick-upon-Tweed, via its own distinct `ecml-borders`
@@ -3672,6 +3679,16 @@ mod tests {
         // South Tottenham's own real code and collided with
         // overground-suffragette.toml once that file merged. Fixed at the
         // data level (lines/wcml-manchester.toml), not just here.
+        //
+        // `xc-manchester.toml` also lists SOT as of its 2026-09-21 route
+        // correction (it had previously modelled the wrong Wilmslow/Crewe
+        // corridor; it now correctly runs via Stockport/Macclesfield/
+        // Stoke-on-Trent, the real CrossCountry corridor) -- station-level
+        // overlap only, under its own unrelated `xc-manchester` segment
+        // name, so it legitimately appears here too as a second
+        // ExclusiveSegment match, same pattern as
+        // `emr_regional_stockport_and_hope_valley_both_match_without_over_propagating`
+        // above.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -3683,8 +3700,18 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(matched_ids, HashSet::from(["wcml-manchester".to_string()]));
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["wcml-manchester".to_string(), "xc-manchester".to_string()])
+        );
+        for m in &matches {
+            assert_eq!(
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment",
+                m.line.id
+            );
+        }
     }
 
     #[test]
@@ -4372,33 +4399,43 @@ mod tests {
     }
 
     // Task 9.5 (2026-09-01) fresh route-diagram pass on `xc-manchester.toml`
-    // added the real, currently-open, currently-served intermediate stations
-    // this file's own "minor intermediate calls are omitted" boilerplate had
-    // left out end-to-end: Levenshulme/Heaton Chapel (Manchester-Stockport),
-    // Cheadle Hulme/Handforth (Stockport-Wilmslow), Alderley Edge/Chelford/
-    // Goostrey/Holmes Chapel/Sandbach (Wilmslow-Crewe), Penkridge
-    // (Stafford-Wolverhampton), and Coseley/Tipton/Dudley Port/Sandwell &
-    // Dudley/Smethwick Galton Bridge/Smethwick Rolfe Street
-    // (Wolverhampton-Birmingham New Street). All sixteen inherit this file's
-    // own exclusive `xc-manchester` segment (no sibling line shares that
-    // segment name -- grepped `lines/*.toml`), so per the testing convention
-    // only the has_station assertion applies for most of them; see the
-    // separate overlap test below for Smethwick Galton Bridge specifically,
-    // which is also a station (not segment) overlap with
-    // `wmr-snow-hill.toml`.
+    // added intermediate stations this file's own "minor intermediate calls
+    // are omitted" boilerplate had left out, but got the Manchester-Stafford
+    // end wrong: it modelled Levenshulme/Heaton Chapel/Cheadle
+    // Hulme/Handforth/Wilmslow/Alderley Edge/Chelford/Goostrey/Holmes
+    // Chapel/Sandbach/Crewe, the Crewe-Manchester line via Wilmslow -- a
+    // real route, but run by Avanti West Coast and Northern, not
+    // CrossCountry (Wilmslow's own Wikipedia article lists neither XC).
+    // CORRECTED (2026-09-21, data-driven audit + independent
+    // re-verification, see `lines/xc-manchester.toml`'s own comment for the
+    // full sourcing): CrossCountry's real Manchester Piccadilly corridor
+    // runs via Stockport, Macclesfield and Stoke-on-Trent instead, rejoining
+    // this same Stafford-Wolverhampton-Birmingham stretch, whose own
+    // Penkridge/Coseley/Tipton/Dudley Port/Sandwell & Dudley/Smethwick
+    // Galton Bridge/Smethwick Rolfe Street sourcing was never in question
+    // and is unchanged. All stations inherit this file's own exclusive
+    // `xc-manchester` segment (no sibling line shares that segment name --
+    // grepped `lines/*.toml`), so per the testing convention only the
+    // has_station assertion applies for most of them; see the separate
+    // overlap test below for Smethwick Galton Bridge specifically, which is
+    // also a station (not segment) overlap with `wmr-snow-hill.toml`.
     #[test]
     fn xc_manchester_recognises_newly_added_stations() {
         let lines = load_line("xc-manchester");
         let line = lines
             .get("xc-manchester")
             .expect("xc-manchester should load");
-        for crs in [
-            "LVM", "HTC", "CHU", "HTH", "ALD", "CEL", "GTR", "HCH", "SDB", "PKG", "CSY", "TIP",
-            "DDP", "SAD", "SGB", "SMR",
-        ] {
+        for crs in ["MAC", "SOT", "PKG", "CSY", "TIP", "DDP", "SAD", "SGB", "SMR"] {
             assert!(
                 line.has_station(crs),
                 "{crs} should now be recognised on xc-manchester"
+            );
+        }
+        for crs in ["LVM", "HTC", "CHU", "HTH", "WML", "ALD", "CEL", "GTR", "HCH", "SDB", "CRE"] {
+            assert!(
+                !line.has_station(crs),
+                "{crs} was on the old, physically-wrong Wilmslow/Crewe route and \
+                 should no longer be recognised on xc-manchester"
             );
         }
     }
