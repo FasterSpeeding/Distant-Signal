@@ -5963,19 +5963,22 @@ mod tests {
         }
     }
 
-    // southeastern-metro-north-kent (Batch 5, Task 5.4) covers the
-    // Bexleyheath line and Dartford Loop line, both diverging from a
-    // shared London Bridge-Lewisham trunk (`southeastern-lewisham-
-    // corridor`). Per this file's own header comment (FINDING 2), research
-    // for this task could NOT confirm the gap analysis's premise that
-    // Thameslink genuinely shares that trunk under normal service - so no
-    // sibling file uses `southeastern-lewisham-corridor` yet, and an
+    // southeastern-bexleyheath and southeastern-dartford-loop (a split of
+    // the former southeastern-metro-north-kent, Batch 5 Task 5.4, per a
+    // later data-driven line-definition audit) each cover one of the
+    // Bexleyheath line/Dartford Loop line, both diverging from a shared
+    // London Bridge-Lewisham trunk (`southeastern-lewisham-corridor`,
+    // reused verbatim by both files - see each file's own SEGMENT NAMING
+    // comment). Per the pre-split file's own header comment (FINDING 2),
+    // research for that task could NOT confirm the gap analysis's premise
+    // that Thameslink genuinely shares that trunk under normal service - so
+    // no OTHER sibling file uses `southeastern-lewisham-corridor`, and an
     // incident on this line's own exclusive Bexleyheath branch (past the
     // Lewisham junction) should stay exclusive to this line alone. Mirrors
     // swr_exclusive_segment_incident_does_not_propagate and
     // elizabeth_branch_incident_stays_on_its_branch above.
     #[test]
-    fn senk_bexleyheath_exclusive_segment_incident_does_not_propagate() {
+    fn bexleyheath_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -5989,20 +5992,21 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["southeastern-metro-north-kent".to_string()])
+            HashSet::from(["southeastern-bexleyheath".to_string()])
         );
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
-    // Same for the Dartford Loop branch (the other branch in this one
-    // file, diverging from the shared trunk at Hither Green rather than at
-    // Lewisham itself) - an incident on it should also stay exclusive to
-    // this line, and shouldn't spuriously pull in the Bexleyheath branch's
-    // own segment name either (the two branches use different segment
-    // names, `senk-bexleyheath` vs `senk-dartford-loop`, despite being the
-    // same file/line).
+    // Same for the Dartford Loop branch (diverging from the shared trunk at
+    // Hither Green rather than at Lewisham itself, and now its own separate
+    // file, southeastern-dartford-loop.toml) - an incident on it should
+    // also stay exclusive to this line, and shouldn't spuriously pull in
+    // the Bexleyheath line's own file either (the two branches use
+    // different segment names, `bexleyheath-branch` vs
+    // `dartford-loop-branch`, despite sharing the same file before the
+    // split and the same trunk segment today).
     #[test]
-    fn senk_dartford_loop_exclusive_segment_incident_does_not_propagate() {
+    fn dartford_loop_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -6016,18 +6020,16 @@ mod tests {
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
         assert_eq!(
             matched_ids,
-            HashSet::from(["southeastern-metro-north-kent".to_string()])
+            HashSet::from(["southeastern-dartford-loop".to_string()])
         );
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
     // LBG is also thameslink-core.toml's own terminus (its own segment
     // ends there too) and southeastern-main-line.toml's own `seml-london`
-    // station, but per this file's header comment that's station overlap
-    // only, not a shared trunk - same judgment southeastern-main-line.toml
-    // already made for LBG/Thameslink. Confirms an LBG incident matches
-    // all three lines independently, each still scoped ExclusiveSegment,
-    // never SharedSegment - mirrors
+    // station, but per the pre-split senk file's header comment that's
+    // station overlap only, not a shared trunk - same judgment
+    // southeastern-main-line.toml already made for LBG/Thameslink. Mirrors
     // afk_station_overlap_matches_both_seml_and_hs1_as_independent_exclusive_segments
     // above.
     //
@@ -6039,18 +6041,6 @@ mod tests {
     // Cross/St Johns, so the two runs aren't confirmed to share physical
     // track for that stretch).
     //
-    // NOTE for Task 5.14 (lines/thameslink-southern.toml, not yet
-    // written): this task could not add the shared-segment propagation
-    // test the batch's testing convention otherwise requires (mirrors
-    // swr_shared_trunk_incident_propagates /
-    // xc_hub_incident_propagates_to_every_cross_country_arm) because that
-    // sibling file doesn't exist yet. If Task 5.14's own research
-    // independently confirms genuine Thameslink running over the London
-    // Bridge-Lewisham stretch and it reuses `southeastern-lewisham-
-    // corridor` verbatim, its implementer should add a test here (or in
-    // that task's own matcher tests) asserting an incident on that shared
-    // segment matches BOTH `southeastern-metro-north-kent` and
-    // `thameslink-southern` with `MatchScope::SharedSegment`.
     // Updated by Task 5.6 (southern-brighton-main-line.toml): that file also
     // has a station at LBG (its own `southern-bml-north` segment, named as a
     // courtesy hand-off for Task 5.14's thameslink-southern.toml, not yet a
@@ -6063,6 +6053,7 @@ mod tests {
     // file's own header comment for why this is station overlap, not a
     // shared trunk, with every other line here), so it now joins this set
     // as a sixth independent exclusive-segment match.
+    //
     // Updated by Task 5.14 (thameslink-southern.toml): that file's own
     // Brighton branch also meets London Bridge here. An earlier draft
     // reused southern-brighton-main-line.toml's own `southern-bml-north`
@@ -6075,9 +6066,22 @@ mod tests {
     // here (`thameslink-brighton`), so it joins this set as a seventh
     // independent ExclusiveSegment station-overlap match, same treatment as
     // every other line in this set.
+    //
+    // Updated by the southeastern-metro-north-kent split
+    // (southeastern-bexleyheath.toml/southeastern-dartford-loop.toml, per a
+    // data-driven line-definition audit): the former single senk file's own
+    // LBG entry (`southeastern-lewisham-corridor`) is now duplicated
+    // verbatim across BOTH of these new files (the same shared London
+    // throat both lines still cross before diverging), so this set now has
+    // an eighth independent match - but unlike every other line here, these
+    // two are NOT independent ExclusiveSegment matches of each other: they
+    // share the literal segment name, so the registry correctly promotes
+    // BOTH to SharedSegment for this incident (mirrors
+    // swr_shared_trunk_incident_propagates's per-family SharedSegment
+    // shape). Every other line in this set keeps its own distinct segment
+    // name at LBG and stays ExclusiveSegment.
     #[test]
-    fn lbg_station_overlap_matches_senk_thameslink_core_seml_and_hayes_as_independent_exclusive_segments()
-     {
+    fn lbg_station_overlap_spans_eight_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -6092,7 +6096,8 @@ mod tests {
         assert_eq!(
             matched_ids,
             HashSet::from([
-                "southeastern-metro-north-kent".to_string(),
+                "southeastern-bexleyheath".to_string(),
+                "southeastern-dartford-loop".to_string(),
                 "thameslink-core".to_string(),
                 "southeastern-main-line".to_string(),
                 "southeastern-hayes-line".to_string(),
@@ -6102,11 +6107,17 @@ mod tests {
             ])
         );
         for m in &matches {
+            let expected = if m.line.id == "southeastern-bexleyheath"
+                || m.line.id == "southeastern-dartford-loop"
+            {
+                MatchScope::SharedSegment
+            } else {
+                MatchScope::ExclusiveSegment
+            };
             assert_eq!(
-                m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment, not shared",
-                m.line.id
+                m.scope, expected,
+                "{} should be {:?}",
+                m.line.id, expected
             );
         }
     }
@@ -6137,13 +6148,11 @@ mod tests {
     }
 
     // Task 5.5 (southeastern-hayes-line.toml). Lewisham (LEW) is a station
-    // overlap between this file's own `hayes-london` segment and
-    // southeastern-metro-north-kent.toml's `southeastern-lewisham-corridor`
-    // - two different segment names for the same station, per this file's
-    // own header comment (not a shared trunk, since the Hayes line's own
-    // calling pattern diverges from senk's before Lewisham). Confirms an
-    // incident there matches both lines independently, each still scoped
-    // ExclusiveSegment, never SharedSegment.
+    // overlap between this file's own `hayes-london` segment and the
+    // pre-split senk file's `southeastern-lewisham-corridor` - two
+    // different segment names for the same station, per this file's own
+    // header comment (not a shared trunk, since the Hayes line's own
+    // calling pattern diverges from senk's before Lewisham).
     //
     // Updated by Task 5.3 (southeastern-main-line.toml, station-catalogue-
     // completeness plan): that file's own research confirmed New Cross, St
@@ -6153,8 +6162,23 @@ mod tests {
     // Lewisham too, on its own `seml-london` segment - a third independent
     // exclusive-segment station overlap here, same treatment as every other
     // line in this set.
+    //
+    // Updated by the southeastern-metro-north-kent split
+    // (southeastern-bexleyheath.toml/southeastern-dartford-loop.toml, per a
+    // data-driven line-definition audit): LEW is the Bexleyheath line's own
+    // diverging junction, so it stays on `southeastern-lewisham-corridor`
+    // in BOTH new files (the same shared trunk each still crosses up to and
+    // including Lewisham). That gives a fourth match here, and - unlike
+    // southeastern-hayes-line/southeastern-main-line, which each use their
+    // own distinct segment name at LEW - southeastern-bexleyheath and
+    // southeastern-dartford-loop share the literal segment name here, so
+    // the registry correctly promotes BOTH of those two to SharedSegment
+    // (mirrors swr_shared_trunk_incident_propagates's per-family
+    // SharedSegment shape; see also
+    // lbg_station_overlap_spans_eight_lines_bexleyheath_and_dartford_loop_share_the_trunk
+    // above for the same pattern at London Bridge).
     #[test]
-    fn lew_station_overlap_matches_hayes_line_and_senk_as_independent_exclusive_segments() {
+    fn lew_station_overlap_matches_four_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -6170,16 +6194,23 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "southeastern-hayes-line".to_string(),
-                "southeastern-metro-north-kent".to_string(),
+                "southeastern-bexleyheath".to_string(),
+                "southeastern-dartford-loop".to_string(),
                 "southeastern-main-line".to_string(),
             ])
         );
         for m in &matches {
+            let expected = if m.line.id == "southeastern-bexleyheath"
+                || m.line.id == "southeastern-dartford-loop"
+            {
+                MatchScope::SharedSegment
+            } else {
+                MatchScope::ExclusiveSegment
+            };
             assert_eq!(
-                m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment, not shared",
-                m.line.id
+                m.scope, expected,
+                "{} should be {:?}",
+                m.line.id, expected
             );
         }
     }
@@ -6191,16 +6222,20 @@ mod tests {
     // `match_one` ever looks at `affected_stations`, so an
     // `excluded_keywords` entry naming a sibling line suppresses that file
     // even when the incident lists a CRS genuinely on it. Before this fix,
-    // southeastern-hayes-line.toml excluded "Dartford Loop line" and
-    // southeastern-metro-north-kent.toml excluded "Hayes line", so a real
-    // incident naming BOTH routes and listing a station both files list
-    // (LEW - Lewisham, where the two corridors diverge, and also CHX/LBG)
-    // vetoed BOTH files at once and returned zero Southeastern matches - the
-    // exact multi-line incident these two files were written to model. The
-    // vetoes have been removed from both files' `excluded_keywords`; the
-    // station-CRS path already disambiguates this correctly, as
-    // lew_station_overlap_matches_hayes_line_and_senk_as_independent_exclusive_segments
-    // above shows for the no-line-names-in-text case.
+    // southeastern-hayes-line.toml excluded "Dartford Loop line" and the
+    // pre-split southeastern-metro-north-kent.toml excluded "Hayes line",
+    // so a real incident naming BOTH routes and listing a station both
+    // files list (LEW - Lewisham, where the two corridors diverge, and also
+    // CHX/LBG) vetoed BOTH files at once and returned zero Southeastern
+    // matches - the exact multi-line incident these two files were written
+    // to model. The vetoes have been removed from both files'
+    // `excluded_keywords`; the station-CRS path already disambiguates this
+    // correctly, as
+    // lew_station_overlap_matches_four_lines_bexleyheath_and_dartford_loop_share_the_trunk
+    // above shows for the no-line-names-in-text case. Neither
+    // southeastern-bexleyheath.toml nor southeastern-dartford-loop.toml
+    // (the senk split) excludes the other's own line name either, for the
+    // same reason - see each file's own `excluded_keywords` comment.
     //
     // The veto MECHANISM itself is unchanged and still proven by
     // excluded_keyword_vetoes_match above (a genuinely foreign service on a
@@ -6211,8 +6246,17 @@ mod tests {
     // Updated by Task 5.3 (southeastern-main-line.toml): that file now also
     // lists LEW (see the lew_station_overlap... update above) and its own
     // `excluded_keywords` is just ["Hastings line"], which this incident's
-    // text doesn't contain, so it joins this set as a third match with no
-    // veto risk.
+    // text doesn't contain, so it joins this set as a match with no veto
+    // risk.
+    //
+    // Updated by the southeastern-metro-north-kent split
+    // (southeastern-bexleyheath.toml/southeastern-dartford-loop.toml, per a
+    // data-driven line-definition audit): both new files still list LEW on
+    // their shared `southeastern-lewisham-corridor` segment, so this
+    // incident now matches four lines instead of three, with the split pair
+    // promoted to SharedSegment between themselves - same shape as
+    // lew_station_overlap_matches_four_lines_bexleyheath_and_dartford_loop_share_the_trunk
+    // above.
     #[test]
     fn sibling_line_names_no_longer_veto_a_shared_station_hit() {
         let lines = load_all_lines();
@@ -6230,17 +6274,24 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "southeastern-hayes-line".to_string(),
-                "southeastern-metro-north-kent".to_string(),
+                "southeastern-bexleyheath".to_string(),
+                "southeastern-dartford-loop".to_string(),
                 "southeastern-main-line".to_string(),
             ]),
-            "both named lines list LEW and must both match; before the fix each vetoed the other and this was empty"
+            "all named/overlapping lines list LEW and must all match; before the fix each vetoed the other and this was empty"
         );
         for m in &matches {
+            let expected = if m.line.id == "southeastern-bexleyheath"
+                || m.line.id == "southeastern-dartford-loop"
+            {
+                MatchScope::SharedSegment
+            } else {
+                MatchScope::ExclusiveSegment
+            };
             assert_eq!(
-                m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment, not shared",
-                m.line.id
+                m.scope, expected,
+                "{} should be {:?}",
+                m.line.id, expected
             );
         }
     }
@@ -8535,18 +8586,23 @@ mod tests {
         }
     }
 
-    // New Cross (NWX) is now a three-way station overlap: this file's own
-    // `seml-london`, southeastern-metro-north-kent.toml's
-    // `southeastern-lewisham-corridor`, and overground-windrush.toml's own
+    // New Cross (NWX) is a station overlap between this file's own
+    // `seml-london`, overground-windrush.toml's own
     // `overground-windrush-new-cross` (a different route entirely, the
-    // London Overground Windrush line's own New Cross terminus branch).
-    // Three different segment names for the same physical station -
-    // confirms an incident there matches all three lines independently,
-    // each still scoped ExclusiveSegment, never SharedSegment. Mirrors
-    // lbg_station_overlap_matches_senk_thameslink_core_seml_and_hayes_as_independent_exclusive_segments
-    // above.
+    // London Overground Windrush line's own New Cross terminus branch), and
+    // - since the southeastern-metro-north-kent split
+    // (southeastern-bexleyheath.toml/southeastern-dartford-loop.toml, per a
+    // data-driven line-definition audit) - BOTH of those two new files'
+    // shared `southeastern-lewisham-corridor` trunk segment (NWX sits
+    // before the Lewisham fork, so it's still common to both). This file
+    // and overground-windrush.toml each use their own distinct segment
+    // name here and stay independently ExclusiveSegment (mirrors
+    // lbg_station_overlap_spans_eight_lines_bexleyheath_and_dartford_loop_share_the_trunk
+    // above), but southeastern-bexleyheath and southeastern-dartford-loop
+    // share the literal segment name at NWX, so the registry correctly
+    // promotes both of those two to SharedSegment.
     #[test]
-    fn nwx_station_overlap_matches_seml_senk_and_windrush_as_independent_exclusive_segments() {
+    fn nwx_station_overlap_matches_four_lines_bexleyheath_and_dartford_loop_share_the_trunk() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -8562,29 +8618,40 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "southeastern-main-line".to_string(),
-                "southeastern-metro-north-kent".to_string(),
+                "southeastern-bexleyheath".to_string(),
+                "southeastern-dartford-loop".to_string(),
                 "overground-windrush".to_string(),
             ])
         );
         for m in &matches {
+            let expected = if m.line.id == "southeastern-bexleyheath"
+                || m.line.id == "southeastern-dartford-loop"
+            {
+                MatchScope::SharedSegment
+            } else {
+                MatchScope::ExclusiveSegment
+            };
             assert_eq!(
-                m.scope,
-                MatchScope::ExclusiveSegment,
-                "{} should be ExclusiveSegment, not shared",
-                m.line.id
+                m.scope, expected,
+                "{} should be {:?}",
+                m.line.id, expected
             );
         }
     }
 
     // Hither Green (HGR) is a station overlap between this file's own
-    // `seml-london` and southeastern-metro-north-kent.toml's own
-    // `senk-dartford-loop` (the Dartford Loop line's own exclusive tracks
+    // `seml-london` and southeastern-dartford-loop.toml's own
+    // `dartford-loop-branch` (the Dartford Loop line's own exclusive tracks
     // diverge AT Hither Green, per southeastern-main-line.toml's own header
     // comment - the station itself is shared, the tracks beyond it are
-    // not). Confirms an incident there matches both lines independently,
-    // each still scoped ExclusiveSegment, never SharedSegment.
+    // not). HGR does NOT touch southeastern-bexleyheath.toml at all - that
+    // line's own branch has already diverged from the shared trunk earlier,
+    // at Lewisham (see the senk-split comment on this station in
+    // southeastern-dartford-loop.toml itself). Confirms an incident there
+    // matches both lines independently, each still scoped ExclusiveSegment,
+    // never SharedSegment.
     #[test]
-    fn hgr_station_overlap_matches_seml_and_senk_dartford_loop_as_independent_exclusive_segments() {
+    fn hgr_station_overlap_matches_seml_and_dartford_loop_as_independent_exclusive_segments() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -8600,7 +8667,7 @@ mod tests {
             matched_ids,
             HashSet::from([
                 "southeastern-main-line".to_string(),
-                "southeastern-metro-north-kent".to_string()
+                "southeastern-dartford-loop".to_string()
             ])
         );
         for m in &matches {
