@@ -5727,24 +5727,29 @@ mod tests {
     }
 
     // Llandudno Junction is on both `tfw-conwy-valley` and
-    // `tfw-north-wales-coast`, but Task 11.4 ruled that overlap
-    // station-overlap-only rather than a shared trunk (see the comment
-    // above `conwy_valley_exclusive_segment_incident_does_not_propagate`
+    // `tfw-north-wales-coast`, but that overlap is station-overlap-only
+    // rather than a shared trunk (see the comment above
+    // `conwy_valley_exclusive_segment_incident_does_not_propagate`
     // and the comments in `lines/tfw-north-wales-coast.toml`). So an
     // incident there should match both lines independently, each still
     // classified as `MatchScope::ExclusiveSegment` (not `SharedSegment` --
     // that scope only applies when a segment name is genuinely shared
     // across line files, which is deliberately not the case here).
     //
-    // Updated by the Wales/East Anglia batch: `tfw-llandudno-branch.toml`
-    // also calls at Llandudno Junction, genuinely sharing track with
-    // `tfw-conwy-valley.toml` there (TfW's own through-service continues
-    // past the junction to Llandudno) on a dedicated, narrow
-    // `tfw-conwy-valley-llandudno-junction` segment name (reconciled during
-    // integration merge -- see either file's own LLJ note for the full
-    // writeup). So `tfw-conwy-valley` and `tfw-llandudno-branch` are now a
-    // genuine SharedSegment pair here, while `tfw-north-wales-coast` and
-    // `wcml-north-wales` stay independently ExclusiveSegment.
+    // Updated by the 2026-09-21 real-world-sanity review: the former
+    // `tfw-llandudno-branch.toml` (a later Wales/East Anglia batch
+    // addition, which used to also call at Llandudno Junction on a
+    // dedicated, narrow `tfw-conwy-valley-llandudno-junction` segment name
+    // genuinely shared with `tfw-conwy-valley.toml`) turned out to be
+    // entirely redundant with `tfw-conwy-valley.toml`'s own real extent
+    // (that line's real terminus is Llandudno itself, not Llandudno
+    // Junction -- see `tfw-conwy-valley.toml`'s own top-of-file correction
+    // note) and has been deleted, its station data folded directly into
+    // `tfw-conwy-valley.toml`. `tfw-conwy-valley.toml`'s own LLJ entry
+    // keeps the same `tfw-conwy-valley-llandudno-junction` segment name
+    // unchanged, but since no other file uses that name any more, it now
+    // resolves as `MatchScope::ExclusiveSegment` rather than
+    // `SharedSegment`.
     #[test]
     fn llj_station_overlap_matches_both_lines_as_exclusive() {
         // Llandudno Junction is also wcml-north-wales.toml's own station
@@ -5768,20 +5773,14 @@ mod tests {
                 "tfw-conwy-valley".to_string(),
                 "tfw-north-wales-coast".to_string(),
                 "wcml-north-wales".to_string(),
-                "tfw-llandudno-branch".to_string(),
             ])
         );
         for m in &matches {
-            let expected = if m.line.id == "tfw-conwy-valley" || m.line.id == "tfw-llandudno-branch"
-            {
-                MatchScope::SharedSegment
-            } else {
-                MatchScope::ExclusiveSegment
-            };
             assert_eq!(
-                m.scope, expected,
-                "{} should be {:?}",
-                m.line.id, expected
+                m.scope,
+                MatchScope::ExclusiveSegment,
+                "{} should be ExclusiveSegment",
+                m.line.id
             );
         }
     }
