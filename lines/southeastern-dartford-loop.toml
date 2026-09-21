@@ -26,22 +26,28 @@ match_keywords = ["Dartford Loop line", "Sidcup line"]
 # crates/aggregator/src/matcher.rs is a HARD VETO evaluated BEFORE station
 # matching - adding such an entry would risk exactly the mutual-veto bug
 # the REVIEW FIX below already found and fixed once for this same station
-# group (see SPLIT section). "Chatham Main Line"/"North Kent Line"/
-# "Javelin"/"High Speed 1" are kept per the pre-split file's own review
-# (reproduced from southeastern-metro-north-kent.toml, its content now
-# split between this file and southeastern-bexleyheath.toml):
+# group (see SPLIT section). "Chatham Main Line"/"Javelin"/"High Speed 1"
+# are kept per the pre-split file's own review (reproduced from
+# southeastern-metro-north-kent.toml, its content now split between this
+# file and southeastern-bexleyheath.toml):
 #   - "Chatham Main Line": southeastern-chatham.toml shares no station
 #     whatsoever with this file (verified against both files' CRS lists).
 #   - "Javelin"/"High Speed 1": southeastern-highspeed.toml likewise shares
 #     no station with this file.
-#   - "North Kent Line": no file in this catalogue models that line yet, so
-#     this is a forward-looking placeholder with zero current risk. If a
-#     North Kent Line file is ever added it WILL share CRY/DFD with this
-#     file, and this entry must then be removed for the same reason as
-#     above.
+#
+# KENT/SUSSEX BATCH FIX (reconciled during integration merge): "North Kent
+# Line" was also kept here, on the stated basis that "no file in this
+# catalogue models that line yet... a forward-looking placeholder with zero
+# current risk. If a North Kent Line file is ever added it WILL share
+# CRY/DFD with this file, and this entry must then be removed for the same
+# reason as above." That file now exists -- southeastern-north-kent.toml,
+# added by a later Kent/Sussex batch -- and shares DFD with this file
+# exactly as predicted (CRY is not shared). Removed rather than left as a
+# live landmine, mirroring the identical fix already applied to
+# southeastern-bexleyheath.toml and southeastern-hayes-line.toml; see
+# southeastern-north-kent.toml's own header comment for the full writeup.
 excluded_keywords = [
     "Chatham Main Line",
-    "North Kent Line",
     "Javelin",
     "High Speed 1",
 ]

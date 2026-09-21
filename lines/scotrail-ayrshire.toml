@@ -66,14 +66,15 @@ delay_threshold_minutes = 10
 #     Paisley Joint Railway route as the Inverclyde Line as far as Paisley
 #     Gilmour Street... where it turns south west towards Kilwinning...
 #     [and] branches in two" -- one branch to Troon/Ayr, the other north to
-#     Ardrossan/Largs (not modelled here, see scope note below). Also
-#     confirms "Beyond Ayr, 'Sprinter' DMUs continue south towards Girvan
-#     and Stranraer."
+#     Ardrossan/Largs (not modelled here at the time of writing -- see the
+#     scope note below, and the UPDATE note further down, for its later
+#     addition). Also confirms "Beyond Ayr, 'Sprinter' DMUs continue south
+#     towards Girvan and Stranraer."
 #   - Wikipedia "Ayrshire Coast Line", Services (2025) section: "all trains
 #     calling at Paisley Gilmour Street, Johnstone and Kilwinning" --
 #     confirms these three as genuine all-services stops on the Glasgow-
-#     Kilwinning approach common to both the Ayr branch and the (unmodelled)
-#     Largs/Ardrossan branch.
+#     Kilwinning approach common to both the Ayr branch and the
+#     Largs/Ardrossan branch (now modelled -- see the UPDATE note below).
 #   - Wikipedia "Glasgow South Western Line" (raw wikitext, Route section):
 #     lists the "Stranraer line" stations in order -- Troon, Prestwick
 #     International Airport, Prestwick Town, Ayr, Maybole, Girvan, Barrhill,
@@ -203,8 +204,9 @@ segment = "scotrail-ayrshire-glasgow-ayr"
 crs = "KWN"
 role = "junction"
 segment = "scotrail-ayrshire-glasgow-ayr"
-# Kilwinning: the Largs/Ardrossan Harbour branches split here (not modelled
-# -- see the scope-boundaries note above).
+# Kilwinning: the Largs/Ardrossan Harbour branches split here -- now
+# modelled in `lines/scotrail-largs-ardrossan.toml` -- see the
+# scope-boundaries note above and the UPDATE note further up.
 
 [[stations]]
 crs = "IRV"
