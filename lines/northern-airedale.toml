@@ -134,11 +134,21 @@ match_keywords = ["Airedale Line"]
 #     (https://en.wikipedia.org/wiki/Thwaites_railway_station). Not added,
 #     same "not currently open" reasoning. No other currently-open station
 #     was found on either the Shipley-Keighley or Keighley-Skipton stretch
-#     beyond what's listed below. (The Leeds-Shipley stretch - Kirkstall
-#     Forge, Apperley Bridge, etc. - was out of scope for this task's
-#     completeness check per the task brief, which scoped it to
-#     Shipley-Keighley/Keighley-Skipton plus the two named Bradford-approach
-#     halts; not evaluated here.)
+#     beyond what's listed below. (The Leeds-Shipley stretch was out of
+#     scope for this task's completeness check per the task brief, which
+#     scoped it to Shipley-Keighley/Keighley-Skipton plus the two named
+#     Bradford-approach halts; not evaluated here.)
+#
+# --- [FILL-IN] resolved (data-driven schedule audit, 2026-09-21): Leeds-Shipley gap ---
+# Apperley Bridge (APY) and Kirkstall Forge (KLF) are both real, currently-
+# open stations strictly between Leeds (LDS) and Shipley (SHY), confirmed via
+# real CIF schedule data (67 of 1284 audited services run this exact route)
+# and Wikipedia, which confirms both are served every 30 minutes by Leeds-
+# Bradford Forster Square trains. LDS and SHY are both already tagged
+# `northern-shipley-trunk`, so per this file's own shared-trunk corollary (a
+# station strictly between two already-shared-segment stations on the same
+# stretch inherits that segment too - see the Frizinghall RESOLUTION above)
+# both are added below on `northern-shipley-trunk`, not a new segment.
 #
 # --- RESOLUTION for Task 2.10 (`northern-wharfedale.toml`) ---
 # Frizinghall (FZH) sits strictly between BDQ and SHY, which are both
@@ -170,6 +180,24 @@ crs = "LDS"
 tiploc = "LEEDS"
 role = "terminus"
 segment = "northern-shipley-trunk"
+
+[[stations]]
+crs = "KLF"
+role = "minor"
+segment = "northern-shipley-trunk"
+# Kirkstall Forge - on the Leeds approach to Shipley, strictly between LDS
+# and SHY; inherits `northern-shipley-trunk` per this file's shared-trunk
+# corollary (see the resolved [FILL-IN] comment above). No `tiploc`:
+# not confirmed to the two-source bar this session.
+
+[[stations]]
+crs = "APY"
+role = "minor"
+segment = "northern-shipley-trunk"
+# Apperley Bridge - further along the Leeds approach to Shipley, between
+# Kirkstall Forge and SHY; inherits `northern-shipley-trunk` for the same
+# reason as Kirkstall Forge above. No `tiploc`: not confirmed to the
+# two-source bar this session.
 
 [[stations]]
 crs = "BDQ"
