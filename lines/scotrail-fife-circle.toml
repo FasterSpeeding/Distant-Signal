@@ -108,6 +108,21 @@ delay_threshold_minutes = 6
 # its own independent `[[stations]]` entry there rather than shared with
 # this file -- see that file's own EDB comment for why (the two routes
 # share no track at all, not even the Edinburgh throat).
+#
+# RESOLUTION (real-world-sanity review, 2026-09-21, Part B): `lines/
+# scotrail-edinburgh-aberdeen.toml` now models the Edinburgh-Aberdeen
+# inter-city corridor, and DOES genuinely share this file's own physical
+# track from Edinburgh Waverley out to Kirkcaldy (that file's own fresh
+# sourcing found this Fife Circle Line article's own current service
+# patterns already include "1tph Edinburgh to Leven via Aberdour and
+# Kirkcaldy" and "1tph Edinburgh to Dundee via Kirkcaldy" -- i.e. this is
+# the same corridor, not a separate bypass). That file reuses this file's
+# own `scotrail-fife-circle-throat` (EDB/HYM) and `scotrail-fife-circle`
+# (SGL through KDY) segment names verbatim for its own matching subset of
+# stations, a safe reuse since it introduces no station under those names
+# that this file doesn't already have. `SegmentRegistry::is_shared` now
+# reports both segments shared between `scotrail-fife-circle` and
+# `scotrail-edinburgh-aberdeen`.
 
 # === Circular topology: how this file represents it ===
 #
