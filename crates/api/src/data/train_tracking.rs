@@ -88,8 +88,9 @@ pub async fn create_pin(
 ) -> anyhow::Result<i64> {
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO train_subscriptions \
-            (user_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs, pin_operator) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
+            (user_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs, \
+             pin_operator, pin_skipped_stations) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
          RETURNING id",
     )
     .bind(user_id)
@@ -98,6 +99,7 @@ pub async fn create_pin(
     .bind(pin.scheduled_departure)
     .bind(&pin.destination_crs)
     .bind(&pin.operator)
+    .bind(&pin.skipped_stations)
     .fetch_one(pool)
     .await?;
 
@@ -845,6 +847,13 @@ pub struct PendingSchedulePin {
     pub service_date: chrono::NaiveDate,
     pub pin_origin_crs: Option<String>,
     pub pin_scheduled_departure: Option<DateTime<Utc>>,
+    /// See `common::TrackPinRequest.skipped_stations`'s own doc comment --
+    /// this row's own captured snapshot, carried through the sweep to
+    /// `schedule_matching::attempt_schedule_match` so a pin the SYNCHRONOUS
+    /// attempt at creation time didn't resolve doesn't lose this signal by
+    /// the time the periodic sweep resolves it instead. `NOT NULL DEFAULT
+    /// '{}'` on the column, so this is a bare `Vec`, never an `Option`.
+    pub pin_skipped_stations: Vec<String>,
 }
 
 /// Every row the periodic schedule-match sweep should retry: still
@@ -915,7 +924,7 @@ pub async fn list_pending_pins_for_schedule_match(
     pool: &PgPool,
 ) -> anyhow::Result<Vec<PendingSchedulePin>> {
     let rows = sqlx::query_as::<_, PendingSchedulePin>(
-        "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure \
+        "SELECT id, service_date, pin_origin_crs, pin_scheduled_departure, pin_skipped_stations \
          FROM train_subscriptions WHERE trains_id IS NULL AND resolution_status = 'pending' \
          AND pin_origin_crs IS NOT NULL AND pin_scheduled_departure IS NOT NULL",
     )
@@ -1047,6 +1056,14 @@ pub struct TrackedTrainState {
     /// (`schedule_matching::ScheduleCallingPointDto`) -- this crate does
     /// not deserialize it again on the way out.
     pub schedule_calling_points: Option<serde_json::Value>,
+    /// The shared row's own captured Darwin skip snapshot
+    /// (`trains.skipped_stations`) -- internal plumbing for
+    /// `routes::train::attach_journey_stops`'s `journey::build_journey_stops`
+    /// call, same never-sent-to-the-frontend posture as `trains_id` just
+    /// below (the frontend already gets this signal per-stop, on each
+    /// `JourneyStop`'s own `skipSource`).
+    #[serde(skip_serializing)]
+    pub schedule_skipped_stations: Vec<String>,
     pub status: Option<String>,
     pub last_reported_location: Option<String>,
     pub last_event_type: Option<String>,
@@ -1154,6 +1171,7 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
            tt.resolution_status, tr.train_uid, tr.train_id, \
            tr.destination_crs AS schedule_destination_crs, ssd.name AS schedule_destination_name, \
            tr.calling_points AS schedule_calling_points, \
+           COALESCE(tr.skipped_stations, '{}') AS schedule_skipped_stations, \
            tr.id AS trains_id, \
            cs.status, cs.last_reported_location, cs.last_event_type, \
            cs.delay_minutes, cs.next_calling_point, cs.eta_next, cs.eta_source, \
@@ -1358,6 +1376,7 @@ mod tests {
             scheduled_departure,
             destination_crs: None,
             operator: None,
+            skipped_stations: vec![],
         }
     }
 
@@ -3662,6 +3681,7 @@ mod db_tests {
             Some("WOK"),
             "line-a",
             &serde_json::json!([]),
+            &[],
         )
         .await
         .expect("find_or_create_train_with_schedule_match");

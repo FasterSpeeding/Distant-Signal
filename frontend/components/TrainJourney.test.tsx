@@ -301,6 +301,8 @@ describe('TrainJourney', () => {
               lastEventType: 'DEPARTURE',
               variationStatus: 'ON TIME',
               delayMinutes: 0,
+              stopStatus: 'Unknown',
+              skipSource: null,
             },
             {
               crs: 'WOK',
@@ -316,6 +318,8 @@ describe('TrainJourney', () => {
               lastEventType: 'ARRIVAL',
               variationStatus: 'LATE',
               delayMinutes: 2,
+              stopStatus: 'Unknown',
+              skipSource: null,
             },
           ],
         })}
@@ -352,6 +356,8 @@ describe('TrainJourney', () => {
               lastEventType: null,
               variationStatus: null,
               delayMinutes: null,
+              stopStatus: 'Unknown',
+              skipSource: null,
             },
           ],
         })}
@@ -383,6 +389,8 @@ describe('TrainJourney', () => {
               lastEventType: null,
               variationStatus: null,
               delayMinutes: null,
+              stopStatus: 'Unknown',
+              skipSource: null,
             },
           ],
         })}
@@ -418,6 +426,8 @@ describe('TrainJourney', () => {
               lastEventType: null,
               variationStatus: null,
               delayMinutes: null,
+              stopStatus: 'Unknown',
+              skipSource: null,
             },
           ],
         })}
@@ -454,6 +464,8 @@ describe('TrainJourney', () => {
               lastEventType: null,
               variationStatus: null,
               delayMinutes: null,
+              stopStatus: 'Unknown',
+              skipSource: null,
             },
           ],
         })}
@@ -515,6 +527,8 @@ describe('TrainJourney', () => {
               lastEventType: null,
               variationStatus: null,
               delayMinutes: null,
+              stopStatus: 'Unknown',
+              skipSource: null,
             },
           ],
         })}
@@ -551,6 +565,8 @@ describe('TrainJourney', () => {
               lastEventType: null,
               variationStatus: null,
               delayMinutes: null,
+              stopStatus: 'Unknown',
+              skipSource: null,
             },
           ],
         })}
@@ -582,6 +598,8 @@ describe('TrainJourney', () => {
               lastEventType: 'DEPARTURE',
               variationStatus: 'ON TIME',
               delayMinutes: 0,
+              stopStatus: 'Unknown',
+              skipSource: null,
             },
             {
               crs: 'SUR',
@@ -597,6 +615,8 @@ describe('TrainJourney', () => {
               lastEventType: 'ARRIVAL',
               variationStatus: 'LATE',
               delayMinutes: 2,
+              stopStatus: 'Unknown',
+              skipSource: null,
             },
             {
               crs: 'WOK',
@@ -612,6 +632,8 @@ describe('TrainJourney', () => {
               lastEventType: null,
               variationStatus: null,
               delayMinutes: null,
+              stopStatus: 'Unknown',
+              skipSource: null,
             },
           ],
         })}

@@ -463,6 +463,7 @@ async fn post_track(
         pin.scheduled_departure,
         pin.service_date,
         &app.schedule_crs_line_index,
+        &pin.skipped_stations,
     )
     .await
     {
@@ -940,6 +941,7 @@ async fn attach_journey_stops(
         state.service_date,
         state.schedule_calling_points.as_ref(),
         state.delay_minutes,
+        &state.schedule_skipped_stations,
     )
     .await
     {
@@ -1005,6 +1007,7 @@ async fn attach_journey_stops_public(
         state.service_date,
         state.calling_points.as_ref(),
         state.delay_minutes,
+        &state.skipped_stations,
     )
     .await
     {
@@ -1237,6 +1240,7 @@ mod tests {
             schedule_destination_crs: None,
             schedule_destination_name: None,
             schedule_calling_points: None,
+            schedule_skipped_stations: vec![],
             status: Some("late".to_string()),
             last_reported_location: Some("York".to_string()),
             last_event_type: Some("DEPARTURE".to_string()),
@@ -2396,6 +2400,7 @@ mod db_tests {
             None,
             "line-a",
             &calling_points,
+            &[],
         )
         .await
         .expect("seed a schedule-matched trains row");

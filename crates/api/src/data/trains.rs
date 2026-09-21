@@ -90,12 +90,28 @@ pub async fn find_or_create_train_with_schedule_match(
     destination_crs: Option<&str>,
     matched_line_id: &str,
     calling_points: &serde_json::Value,
+    // Darwin/LDBWS's own explicit per-calling-point skip snapshot for THIS
+    // schedule match's caller (`common::TrackPinRequest.skipped_stations`,
+    // threaded via `schedule_matching::attempt_schedule_match`'s own
+    // `pin_skipped_stations` param) -- feeds
+    // `journey::build_journey_stops`' Darwin-explicit `SkipSource::Darwin`/
+    // `Both` signal (see that module's `StopStatus`). Merged onto the
+    // shared row the same "never clobber a real value already written"
+    // way every other schedule column here is, EXCEPT this one has no
+    // `NULL` to `COALESCE` against (`trains.skipped_stations` is `NOT
+    // NULL DEFAULT '{}'`) -- so an empty incoming array explicitly keeps
+    // whatever the row already has instead, via the `CASE` below, rather
+    // than an unconditional overwrite that would let a second subscriber
+    // with no departure-board pin at all (e.g. the NR-primary path,
+    // `attempt_schedule_match_for_shared_train`, which always passes `&[]`
+    // here) silently erase a first subscriber's real Darwin snapshot.
+    skipped_stations: &[String],
 ) -> anyhow::Result<i64> {
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO trains \
             (train_uid, service_date, origin_crs, scheduled_departure, destination_crs, \
-             matched_line_id, calling_points, schedule_matched_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) \
+             matched_line_id, calling_points, schedule_matched_at, skipped_stations) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8) \
          ON CONFLICT (train_uid, service_date) DO UPDATE SET \
             train_uid            = EXCLUDED.train_uid, \
             origin_crs           = COALESCE(trains.origin_crs, EXCLUDED.origin_crs), \
@@ -103,7 +119,10 @@ pub async fn find_or_create_train_with_schedule_match(
             destination_crs      = COALESCE(trains.destination_crs, EXCLUDED.destination_crs), \
             matched_line_id      = COALESCE(trains.matched_line_id, EXCLUDED.matched_line_id), \
             calling_points       = COALESCE(trains.calling_points, EXCLUDED.calling_points), \
-            schedule_matched_at  = COALESCE(trains.schedule_matched_at, EXCLUDED.schedule_matched_at) \
+            schedule_matched_at  = COALESCE(trains.schedule_matched_at, EXCLUDED.schedule_matched_at), \
+            skipped_stations     = CASE WHEN cardinality(trains.skipped_stations) > 0 \
+                                        THEN trains.skipped_stations \
+                                        ELSE EXCLUDED.skipped_stations END \
          RETURNING id",
     )
     .bind(train_uid)
@@ -113,6 +132,7 @@ pub async fn find_or_create_train_with_schedule_match(
     .bind(destination_crs)
     .bind(matched_line_id)
     .bind(calling_points)
+    .bind(skipped_stations)
     .fetch_one(pool)
     .await?;
     Ok(row.0)
@@ -296,6 +316,18 @@ pub struct PublicTrainState {
     pub next_calling_point: Option<String>,
     pub eta_next: Option<DateTime<Utc>>,
     pub eta_source: Option<String>,
+    /// The shared row's own captured Darwin skip snapshot
+    /// (`trains.skipped_stations`) -- internal plumbing for
+    /// `routes::train::attach_journey_stops_public`'s
+    /// `journey::build_journey_stops` call, never sent to the frontend
+    /// (which already gets this signal per-stop, on each `JourneyStop`'s
+    /// own `skipSource`, rather than as a second copy of the raw CRS list
+    /// here). `#[serde(skip_serializing)]`, same posture as
+    /// `TrackedTrainState::trains_id`'s own doc comment for why an
+    /// internal-only field on an otherwise-public struct stays off the
+    /// wire.
+    #[serde(skip_serializing)]
+    pub skipped_stations: Vec<String>,
     /// See `train_tracking::TrackedTrainState::journey_stops`'s doc
     /// comment -- same contract, populated the same "read row, then
     /// overlay" way by `routes::train::get_by_uid_and_date`. This struct
@@ -366,7 +398,7 @@ pub async fn get_public_train_state(
     let row = sqlx::query_as::<_, PublicTrainState>(
         "SELECT tr.id AS trains_id, tr.train_uid, tr.service_date, tr.origin_crs, so.name AS origin_name, \
                 tr.destination_crs, sd.name AS destination_name, tr.scheduled_departure, \
-                tr.calling_points, tr.train_id, \
+                tr.calling_points, tr.train_id, tr.skipped_stations, \
                 cs.status, cs.last_reported_location, cs.last_event_type, cs.delay_minutes, \
                 cs.next_calling_point, cs.eta_next, cs.eta_source \
          FROM trains tr \
@@ -411,7 +443,7 @@ pub async fn get_public_train_states_for_line(
     let rows = sqlx::query_as::<_, PublicTrainState>(
         "SELECT tr.id AS trains_id, tr.train_uid, tr.service_date, tr.origin_crs, so.name AS origin_name, \
                 tr.destination_crs, sd.name AS destination_name, tr.scheduled_departure, \
-                tr.calling_points, tr.train_id, \
+                tr.calling_points, tr.train_id, tr.skipped_stations, \
                 cs.status, cs.last_reported_location, cs.last_event_type, cs.delay_minutes, \
                 cs.next_calling_point, cs.eta_next, cs.eta_source \
          FROM trains tr \
@@ -601,6 +633,7 @@ mod db_tests {
             None,
             "line-a",
             &calling_points,
+            &[],
         )
         .await
         .expect("first find_or_create_train_with_schedule_match");
@@ -614,6 +647,7 @@ mod db_tests {
             None,
             "line-b",
             &calling_points,
+            &[],
         )
         .await
         .expect("second find_or_create_train_with_schedule_match");
@@ -677,6 +711,7 @@ mod db_tests {
             Some("MKC"),
             "line-a",
             &calling_points,
+            &[],
         )
         .await
         .expect("seed a trains row via schedule match");
@@ -741,6 +776,7 @@ mod db_tests {
             Some("BHM"),
             "line-a",
             &calling_points,
+            &[],
         )
         .await
         .expect("seed resolved trains row");

@@ -21,6 +21,8 @@ function stop(overrides: Partial<JourneyStop>): JourneyStop {
     lastEventType: null,
     variationStatus: null,
     delayMinutes: null,
+    stopStatus: 'Unknown',
+    skipSource: null,
     ...overrides,
   };
 }
@@ -270,6 +272,39 @@ describe('JourneyProgress', () => {
             actualArrival: null,
             actualDeparture: null,
             lastEventType: 'PASS',
+          }),
+          stop({ crs: 'C', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+        lastReportedLocation={null}
+      />,
+    );
+    const nodes = container.querySelectorAll('[data-journey-node]');
+    expect(nodes[1]).toHaveAttribute('data-node-state', 'marker');
+  });
+
+  // The new "Skipped" status (Task follow-up to the PASS-rendering fix)
+  // must not regress the test just above: a skipped stop still carries
+  // `lastEventType: 'PASS'` and still counts as "reached" for progress-
+  // marker purposes, exactly as it did before `stopStatus`/`skipSource`
+  // existed -- the two features are additive, not a replacement of each
+  // other's signal.
+  it('a stop marked Skipped still counts as reached for the progress marker', () => {
+    const { container } = renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'A', kind: 'Origin' }),
+          stop({
+            crs: 'B',
+            kind: 'Intermediate',
+            actualArrival: null,
+            actualDeparture: null,
+            lastEventType: 'PASS',
+            stopStatus: 'Skipped',
+            skipSource: 'Trust',
           }),
           stop({ crs: 'C', kind: 'Terminate' }),
         ]}
@@ -592,6 +627,61 @@ describe('JourneyProgress', () => {
     // 2026-09-12 is within BST (UTC+1) -- 08:15Z renders as 09:15 London
     // time, same `formatTime`/Europe-London posture `JourneyTimeline` uses.
     expect(await screen.findByText('09:15')).toBeInTheDocument();
+  });
+
+  // Same confidence-hedged wording as `JourneyTimeline.tsx`'s own
+  // `skipCaption` -- the two must never disagree about how to word the
+  // same stop's skip status.
+  it('reveals a skipped intermediate node\'s hedged caption via Tooltip on hover', async () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin' }),
+          stop({
+            crs: 'CLJ',
+            name: 'Clapham Junction',
+            kind: 'Intermediate',
+            stopStatus: 'Skipped',
+            skipSource: 'Trust',
+          }),
+          stop({ crs: 'WOK', name: 'Woking', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+        lastReportedLocation={null}
+      />,
+    );
+    const trigger = screen.getByLabelText('Clapham Junction');
+    fireEvent.mouseEnter(trigger);
+    expect(await screen.findByText('Does not appear to have stopped here')).toBeInTheDocument();
+  });
+
+  it('reveals a Darwin-confirmed skip with the confident caption via Tooltip on hover', async () => {
+    renderWithMantine(
+      <JourneyProgress
+        stops={[
+          stop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin' }),
+          stop({
+            crs: 'CLJ',
+            name: 'Clapham Junction',
+            kind: 'Intermediate',
+            stopStatus: 'Skipped',
+            skipSource: 'Darwin',
+          }),
+          stop({ crs: 'WOK', name: 'Woking', kind: 'Terminate' }),
+        ]}
+        resolutionStatus="resolved"
+        status="en_route"
+        trainUid="C21373"
+        mayHaveArrived={false}
+        lastReportedLocation={null}
+      />,
+    );
+    const trigger = screen.getByLabelText('Clapham Junction');
+    fireEvent.mouseEnter(trigger);
+    expect(await screen.findByText('Did not stop here')).toBeInTheDocument();
   });
 
   it('reveals a bare node\'s name even with no scheduled time known', async () => {

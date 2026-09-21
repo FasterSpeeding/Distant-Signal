@@ -426,6 +426,8 @@ describe('toJourneyState', () => {
       lastEventType: null,
       variationStatus: null,
       delayMinutes: null,
+      stopStatus: 'Unknown' as const,
+      skipSource: null,
     };
     const result = toJourneyState({
       trainsId: 1,
@@ -606,6 +608,8 @@ describe('header and timetable departure times', () => {
       lastEventType: null,
       variationStatus: null,
       delayMinutes: null,
+      stopStatus: 'Unknown' as const,
+      skipSource: null,
     };
   }
 

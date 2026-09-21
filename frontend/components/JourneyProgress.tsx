@@ -558,6 +558,16 @@ function JourneyProgressNode({
           <Stack gap={2}>
             <Text size="xs">{label}</Text>
             {scheduled && <Text size="xs">{formatTime(scheduled)}</Text>}
+            {/* See `JourneyTimeline.tsx`'s own `skipCaption` for the
+                confidence-hedged wording convention this mirrors --
+                intentionally the SAME two strings, so this diagram's
+                tooltip never disagrees with the table row below it about
+                how confidently to word the same stop. */}
+            {stop.stopStatus === 'Skipped' && (
+              <Text size="xs" c="dimmed">
+                {stop.skipSource === 'Trust' ? 'Does not appear to have stopped here' : 'Did not stop here'}
+              </Text>
+            )}
           </Stack>
         }
         events={{ hover: true, focus: true, touch: true }}

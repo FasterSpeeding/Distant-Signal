@@ -19,6 +19,8 @@ function stop(overrides: Partial<JourneyStop>): JourneyStop {
     lastEventType: null,
     variationStatus: null,
     delayMinutes: null,
+    stopStatus: 'Unknown',
+    skipSource: null,
     ...overrides,
   };
 }
@@ -142,16 +144,13 @@ describe('JourneyTimeline', () => {
     expect(screen.getByText('09:04')).toBeInTheDocument();
   });
 
-  // The PASS-rendering fix: a booked calling point the train ran through
-  // without stopping (`crates/api/src/data/journey.rs`'s
-  // `overlay_movement_events`) reports `lastEventType: 'PASS'` with no
-  // `actual*` time -- and, since nothing has confirmed it, `apply_delay_
-  // estimates` would otherwise still fill in a forward-looking "est." time
-  // for it. That would be actively wrong (the stop is already behind the
-  // train, not ahead of it), so it must be suppressed even though the stop
-  // otherwise renders in the same "not reached" style as an ordinary
-  // not-yet-arrived stop -- the follow-up task owns giving it its own
-  // "Skipped" treatment.
+  // The PASS-rendering fix, now keyed off the server-computed
+  // `stopStatus` rather than `lastEventType` directly: a booked calling
+  // point the train ran through without stopping has no `actual*` time --
+  // and, since nothing has confirmed it, `apply_delay_estimates` would
+  // otherwise still fill in a forward-looking "est." time for it. That
+  // would be actively wrong (the stop is already behind the train, not
+  // ahead of it), so it's suppressed.
   it('suppresses the estimated time for a booked stop the train passed without calling', () => {
     renderWithMantine(
       <JourneyTimeline
@@ -161,11 +160,72 @@ describe('JourneyTimeline', () => {
             actualArrival: null,
             estimatedArrival: '2026-09-08T08:05:00Z',
             lastEventType: 'PASS',
+            stopStatus: 'Skipped',
+            skipSource: 'Trust',
           }),
         ]}
       />,
     );
     expect(screen.queryByText(/^est\./)).not.toBeInTheDocument();
+  });
+
+  // The "Skipped" treatment itself (Task follow-up to the PASS-rendering
+  // fix above): a `'Trust'`-sourced skip -- an INFERENCE from a real-time
+  // PASS event, not Darwin's own authoritative flag -- must get the softer
+  // wording, never asserted as flatly as a confirmed Darwin skip.
+  it('shows a hedged caption for a TRUST-inferred skip', () => {
+    renderWithMantine(
+      <JourneyTimeline stops={[stop({ crs: 'SLO', name: 'Slough', stopStatus: 'Skipped', skipSource: 'Trust' })]} />,
+    );
+    expect(screen.getByText('Does not appear to have stopped here')).toBeInTheDocument();
+  });
+
+  // Darwin's own explicit per-calling-point flag is treated as
+  // authoritative -- confident, unhedged wording.
+  it('shows a confident caption for a Darwin-confirmed skip', () => {
+    renderWithMantine(
+      <JourneyTimeline stops={[stop({ crs: 'SLO', name: 'Slough', stopStatus: 'Skipped', skipSource: 'Darwin' })]} />,
+    );
+    expect(screen.getByText('Did not stop here')).toBeInTheDocument();
+  });
+
+  // Both signals agreeing is at least as confident as Darwin alone -- same
+  // wording as the Darwin-only case, not a third, different message.
+  it('shows the confident caption when both signals agree', () => {
+    renderWithMantine(
+      <JourneyTimeline stops={[stop({ crs: 'SLO', name: 'Slough', stopStatus: 'Skipped', skipSource: 'Both' })]} />,
+    );
+    expect(screen.getByText('Did not stop here')).toBeInTheDocument();
+  });
+
+  // A skipped stop's `delayMinutes` is already `null` by the time it
+  // reaches the frontend (`apply_stop_status`'s own documented decision) --
+  // this proves the timeline doesn't show a delay badge next to a "did not
+  // stop here" caption even so, i.e. that it doesn't need its own separate
+  // suppression logic.
+  it('shows no delay badge for a skipped stop', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[stop({ crs: 'SLO', name: 'Slough', stopStatus: 'Skipped', skipSource: 'Darwin', delayMinutes: null })]}
+      />,
+    );
+    expect(screen.queryByText(/late|early|on time/i)).not.toBeInTheDocument();
+  });
+
+  // The "not skipped" cases must never show a caption at all -- an
+  // ordinary future stop (`'Scheduled'`) and a genuinely-called one
+  // (`'Called'`) both render exactly as before this feature existed.
+  it('shows no skip caption for a scheduled or a called stop', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({ crs: 'AAA', name: 'Stop A', stopStatus: 'Scheduled', skipSource: null }),
+          stop({ crs: 'BBB', name: 'Stop B', stopStatus: 'Called', skipSource: null }),
+        ]}
+      />,
+    );
+    expect(screen.queryByText('Did not stop here')).not.toBeInTheDocument();
+    expect(screen.queryByText(/does not appear to have stopped here/i)).not.toBeInTheDocument();
   });
 
   // Task 3.6.2: a stop whose server-side TIPLOC->CRS->name join didn't
