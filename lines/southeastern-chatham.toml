@@ -230,6 +230,14 @@ role = "junction"
 segment = "chatham-london"
 # Maidstone East line diverges here; not covered by this catalogue.
 
+# DATA-AUDIT FIX: Farningham Road was missing between Swanley (SAY, above)
+# and Longfield. Real CIF data shows 62% of journeys on this stretch call
+# here.
+[[stations]]
+crs = "FNR"
+role = "minor"
+segment = "chatham-medway"
+
 [[stations]]
 crs = "LGF"
 role = "minor"
@@ -271,6 +279,15 @@ crs = "RAI"
 role = "minor"
 segment = "chatham-medway"
 
+# DATA-AUDIT FIX: Newington was missing between Rainham and Sittingbourne.
+# It's a real, if low-frequency (1tph), Chatham Main Line stop - distinct
+# from southeastern-highspeed.toml's North Kent Javelin pattern, which does
+# not call here.
+[[stations]]
+crs = "NGT"
+role = "minor"
+segment = "chatham-medway"
+
 [[stations]]
 crs = "SIT"
 role = "junction"
@@ -291,6 +308,16 @@ segment = "chatham-medway"
 
 [[stations]]
 crs = "WHI"
+role = "minor"
+segment = "chatham-coastal"
+
+# DATA-AUDIT FIX: Chestfield & Swalecliffe was missing between Whitstable
+# and Herne Bay. Real CIF data shows 65% of journeys call here. Also added
+# to southeastern-highspeed.toml's `hs1-northkent` segment (same physical
+# station, station overlap - not a shared segment, matching this
+# catalogue's existing convention for such overlaps).
+[[stations]]
+crs = "CSW"
 role = "minor"
 segment = "chatham-coastal"
 
@@ -331,6 +358,14 @@ segment = "chatham-coastal"
 # Not a physical terminus - the coastal loop continues on toward Dover via
 # Minster/Sandwich/Deal/Walmer/Martin Mill, confirmed below on the new
 # `chatham-deal` segment (see the route-geography comment above).
+
+# DATA-AUDIT FIX: Thanet Parkway was missing between Ramsgate and Minster -
+# confirmed via Wikipedia that it sits directly between these two, and real
+# CIF data shows 100% (101/101) of journeys call here.
+[[stations]]
+crs = "THP"
+role = "minor"
+segment = "chatham-deal"
 
 [[stations]]
 crs = "MSR"
