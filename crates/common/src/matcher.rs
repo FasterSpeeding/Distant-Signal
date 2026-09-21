@@ -4595,10 +4595,14 @@ mod tests {
     // task's file-scope limits).
     #[test]
     fn gwr_south_wales_station_overlap_with_xc_cardiff_stays_exclusive_each_line() {
-        // Cardiff Central is also the terminus of tfw-valley-lines-south.toml
-        // and of all three of the former tfw-valley-lines-north.toml's
-        // successor files (Batch 11's later data-driven split:
-        // tfw-valley-rhymney.toml, tfw-valley-merthyr.toml,
+        // Cardiff Central is also the terminus of tfw-city-line.toml
+        // (originally part of tfw-valley-lines-south.toml, Task 11.7; split
+        // out into its own file by the 2026-09-21 real-world-sanity review --
+        // that split doesn't change which stations reach CDF, since Cardiff
+        // Central was always the City Line's own share of that file, not the
+        // Coryton or Cardiff Bay Lines') and of all three of the former
+        // tfw-valley-lines-north.toml's successor files (Batch 11's later
+        // data-driven split: tfw-valley-rhymney.toml, tfw-valley-merthyr.toml,
         // tfw-valley-rhondda.toml), tagged on every side with their
         // genuinely shared `tfw-valley-cardiff-hub` segment -- those four
         // resolve SharedSegment *with each other*, while gwr-south-wales/
@@ -4630,7 +4634,7 @@ mod tests {
                 "tfw-valley-rhymney".to_string(),
                 "tfw-valley-merthyr".to_string(),
                 "tfw-valley-rhondda".to_string(),
-                "tfw-valley-lines-south".to_string(),
+                "tfw-city-line".to_string(),
                 "tfw-ebbw-vale".to_string(),
                 "tfw-vale-of-glamorgan".to_string(),
             ])
@@ -4640,7 +4644,7 @@ mod tests {
                 "tfw-valley-rhymney"
                 | "tfw-valley-merthyr"
                 | "tfw-valley-rhondda"
-                | "tfw-valley-lines-south" => MatchScope::SharedSegment,
+                | "tfw-city-line" => MatchScope::SharedSegment,
                 _ => MatchScope::ExclusiveSegment,
             };
             assert_eq!(m.scope, expected, "{} scope mismatch", m.line.id);
@@ -6098,23 +6102,22 @@ mod tests {
 
     // `tfw-valley-rhymney`/`tfw-valley-merthyr`/`tfw-valley-rhondda`
     // (originally `tfw-valley-lines-north`, Task 11.6, later split three
-    // ways) x `tfw-valley-lines-south` (Task 11.7): the Cardiff hub
-    // segment-sharing decision. This test supersedes the batch's earlier
-    // `valley_lines_north_cardiff_hub_is_exclusive_pending_task_11_7`, which
-    // documented the interim state before Task 11.7 existed (back then only
-    // one line file used the `tfw-valley-cardiff-hub` segment name, so the
-    // registry resolved it as `ExclusiveSegment`). Task 11.7 independently
-    // verified genuine same-platform sharing (both files' routes call at
-    // Cardiff Central and/or Cardiff Queen Street) and deliberately reused
-    // `tfw-valley-lines-north.toml`'s `tfw-valley-cardiff-hub` segment name
-    // in `tfw-valley-lines-south.toml` -- see that file's own Cardiff hub
-    // segment-sharing decision comment. The later three-way split of
-    // `tfw-valley-lines-north.toml` carried this same segment name unchanged
-    // into all three successor files, so an incident at Cardiff Queen Street
-    // now correctly propagates to all four line files as
-    // `MatchScope::SharedSegment`, mirroring
+    // ways) x `tfw-coryton-line`/`tfw-cardiff-bay-line` (originally
+    // `tfw-valley-lines-south`, Task 11.7, itself later split three ways by
+    // the 2026-09-21 real-world-sanity review -- see `tfw-city-line.toml`'s
+    // own split-history comment): the Cardiff hub segment-sharing decision.
+    // Task 11.7 independently verified genuine same-platform sharing (all
+    // routes call at Cardiff Central and/or Cardiff Queen Street) and
+    // deliberately reused `tfw-valley-lines-north.toml`'s
+    // `tfw-valley-cardiff-hub` segment name in the former
+    // `tfw-valley-lines-south.toml`. Cardiff Queen Street specifically is
+    // only ever the origin for the Coryton Line and Cardiff Bay Line (not
+    // the City Line, which reaches Cardiff Central instead) -- both true
+    // before and after the south-side split -- so an incident there
+    // propagates to Rhymney/Merthyr/Rhondda (all three touch both CDF and
+    // CDQ) plus `tfw-coryton-line` and `tfw-cardiff-bay-line`, five lines in
+    // total, all `MatchScope::SharedSegment`, mirroring
     // `xc_hub_incident_propagates_to_every_cross_country_arm`.
-    // `tfw-valley-lines-south.toml` itself was not edited by that split.
     #[test]
     fn valley_lines_cardiff_hub_shared_segment_propagates() {
         let lines = load_all_lines();
@@ -6134,7 +6137,8 @@ mod tests {
                 "tfw-valley-rhymney".to_string(),
                 "tfw-valley-merthyr".to_string(),
                 "tfw-valley-rhondda".to_string(),
-                "tfw-valley-lines-south".to_string()
+                "tfw-coryton-line".to_string(),
+                "tfw-cardiff-bay-line".to_string(),
             ])
         );
         for m in &matches {
@@ -6147,13 +6151,17 @@ mod tests {
         }
     }
 
-    // `tfw-valley-lines-south` (Task 11.7). An incident on a station well
-    // into the Coryton Line's own exclusive corridor (its own segment,
-    // `tfw-valley-coryton`, used by no other branch in this file and no
-    // other file in the catalogue) should match only this line, as
-    // `MatchScope::ExclusiveSegment` -- e.g. Birchgrove.
+    // `tfw-coryton-line` (originally part of `tfw-valley-lines-south`, Task
+    // 11.7; split out into its own file by the 2026-09-21 real-world-sanity
+    // review, for consistency with the same real-world-branding split
+    // already applied on the north side of the network -- see
+    // `tfw-city-line.toml`'s own split-history comment). An incident on a
+    // station well into the Coryton Line's own exclusive corridor (its own
+    // segment, `tfw-coryton-line`, used by no other line in the catalogue)
+    // should match only this line, as `MatchScope::ExclusiveSegment` --
+    // e.g. Birchgrove.
     #[test]
-    fn valley_lines_south_exclusive_coryton_segment_does_not_propagate() {
+    fn coryton_line_exclusive_segment_does_not_propagate() {
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -6165,28 +6173,29 @@ mod tests {
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
         let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
-        assert_eq!(
-            matched_ids,
-            HashSet::from(["tfw-valley-lines-south".to_string()])
-        );
+        assert_eq!(matched_ids, HashSet::from(["tfw-coryton-line".to_string()]));
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
     // `tfw-valley-merthyr`/`tfw-valley-rhondda` (originally
     // `tfw-valley-lines-north`, Task 11.6, later split three ways) x
-    // `tfw-valley-lines-south` (Task 11.7): the Radyr junction-sharing
-    // decision (see `tfw-valley-lines-south.toml`'s own comment). Radyr
-    // carries its own dedicated, Radyr-only segment name,
-    // `tfw-valley-radyr-junction`, minted in all three files that touch it
-    // today (fix round 1: this used to reuse `tfw-valley-lines-north.toml`'s
-    // `tfw-valley-taff-trunk` segment name for Radyr alone, which incorrectly
-    // made every other station on that segment register as shared too -- see
+    // `tfw-city-line` (originally part of `tfw-valley-lines-south`, Task
+    // 11.7, split out into its own file by the 2026-09-21 real-world-sanity
+    // review): the Radyr junction-sharing decision (see
+    // `tfw-city-line.toml`'s own comment). Radyr carries its own dedicated,
+    // Radyr-only segment name, `tfw-valley-radyr-junction`, minted in all
+    // three files that touch it today (fix round 1: this used to reuse
+    // `tfw-valley-lines-north.toml`'s `tfw-valley-taff-trunk` segment name
+    // for Radyr alone, which incorrectly made every other station on that
+    // segment register as shared too -- see
     // `valley_taff_trunk_shared_segment_propagates_after_split` below for the
     // regression test guarding against the equivalent mistake post-split) --
     // so an incident at Radyr itself should propagate to all three files
     // that carry it, all `MatchScope::SharedSegment`. (Rhymney does not
     // carry Radyr at all -- it takes its own separate corridor via the
-    // Caerphilly Tunnel -- so it correctly does not appear here.)
+    // Caerphilly Tunnel -- and neither `tfw-coryton-line` nor
+    // `tfw-cardiff-bay-line` ever touch Radyr at all, so none of them
+    // appear here.)
     #[test]
     fn valley_lines_radyr_junction_shared_segment_propagates() {
         let lines = load_all_lines();
@@ -6205,7 +6214,7 @@ mod tests {
             HashSet::from([
                 "tfw-valley-merthyr".to_string(),
                 "tfw-valley-rhondda".to_string(),
-                "tfw-valley-lines-south".to_string()
+                "tfw-city-line".to_string()
             ])
         );
         for m in &matches {
@@ -6239,8 +6248,9 @@ mod tests {
     // correctly propagates to both lines as `MatchScope::SharedSegment` --
     // more accurate than before, not a regression: passengers on both lines
     // are genuinely affected by an incident on their shared approach. This
-    // must still NOT extend to `tfw-valley-lines-south.toml`: the City Line
-    // only touches this trunk at Radyr itself, via its own dedicated
+    // must still NOT extend to `tfw-city-line.toml` (formerly part of
+    // `tfw-valley-lines-south.toml`): the City Line only touches this
+    // trunk at Radyr itself, via its own dedicated
     // `tfw-valley-radyr-junction` segment, not at Pontypridd or any of the
     // other five stations on `tfw-valley-taff-trunk` (Cathays, Llandaf,
     // Taffs Well, Treforest, Treforest Estate).
