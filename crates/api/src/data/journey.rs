@@ -113,6 +113,81 @@ fn tiploc_key(raw_tiploc: &str) -> String {
     schedule_query::normalize_tiploc(raw_tiploc).to_uppercase()
 }
 
+/// Whether -- and to what degree of confidence -- a stop was actually
+/// called at, independent of (but computed from) `actual_arrival`/
+/// `actual_departure`/`last_event_type` on [`JourneyStop`]. Exists because
+/// those fields alone can no longer safely distinguish, for a genuine
+/// booked calling point, "not yet reached" from "the train ran through
+/// without calling" -- both now leave `actual_arrival`/`actual_departure`
+/// `None` (see `overlay_movement_events`'s own doc comment on its `"PASS"`
+/// arm, the fix this type is the planned follow-up to). `apply_stop_status`
+/// (below) is the only place this is computed.
+///
+/// `Unknown` covers every stop this whole distinction does not apply to at
+/// all: an `Origin`/`Terminate` call (no two-sided booked stop to begin
+/// with) or an `Intermediate` entry missing a scheduled arrival or
+/// departure (a CIF timing point with a blank public time, never a real
+/// calling point) -- the exact same `booked_calling_point` gate
+/// `overlay_movement_events`'s `"PASS"` arm already uses, so the two can
+/// never disagree about which stops this applies to. Whether such a stop
+/// was "reached" is still answered by `actual_arrival`/`actual_departure`
+/// alone, exactly as before this type existed.
+///
+/// Plain PascalCase variant names on the wire, no `rename_all` override --
+/// matching `schedule_query::CallingPointKind`'s own convention, the field
+/// this one sits right next to on every `JourneyStop`
+/// (`frontend/lib/types.ts`'s `JourneyStopKind` mirrors it the same way).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum StopStatus {
+    /// Not a genuine booked calling point -- see this type's own doc
+    /// comment.
+    Unknown,
+    /// A booked calling point, not yet reached, with no signal saying it
+    /// will be skipped -- the ordinary state of every future booked stop.
+    Scheduled,
+    /// A booked calling point the train genuinely called at (a real
+    /// ARRIVAL and/or DEPARTURE was reported here).
+    Called,
+    /// A booked calling point the train did NOT call at today. See
+    /// `JourneyStop::skip_source` for which signal(s) say so.
+    Skipped,
+}
+
+/// Which signal(s) support a [`StopStatus::Skipped`] verdict -- carried as
+/// a SIBLING field on [`JourneyStop`] (`skip_source`), never nested inside
+/// `StopStatus` itself. That mirrors this app's existing "surface
+/// provenance as its own field, never collapse it into the primary value"
+/// convention -- `EtaBadge.tsx`'s `etaSource` badge, shown alongside (never
+/// instead of) the ETA it qualifies, is the precedent this follows -- so a
+/// `Skipped` stop's `stop_status` always serializes as the same flat
+/// string regardless of source, and a consumer that only cares "was this
+/// stop skipped" never has to pattern-match a nested value to find out.
+///
+/// The two sources are not equally trustworthy, and this type exists so
+/// that difference is never silently flattened away:
+///
+/// - `Darwin` is Darwin/LDBWS's own explicit per-calling-point
+///   `isCancelled` flag for this specific service
+///   (`common::StationDeparture.skipped_stations`) -- the operator's own
+///   timetable system stating outright that this call will not happen
+///   today. Treated as authoritative.
+/// - `Trust` is inferred purely from a reported TRUST `PASS` event at a
+///   booked stop -- real running data, but an INFERENCE about what a
+///   `PASS` message means for a public calling point, not a first-party
+///   "this call was withdrawn" signal (see
+///   docs/superpowers/specs/2026-09-04-option-b-live-consumer-design.md's
+///   still-open PASS-mapping caveat). A consumer must word this more
+///   softly than the `Darwin` case.
+/// - `Both` is the two signals independently agreeing -- as confident as
+///   `Darwin` alone, just worth surfacing that TRUST's own running data
+///   corroborates it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum SkipSource {
+    Darwin,
+    Trust,
+    Both,
+}
+
 /// One calling point of a train's journey, booked schedule merged with the
 /// latest reported live data for that location -- see this module's own
 /// doc comment and the design doc §2/§3.
@@ -138,7 +213,19 @@ pub struct JourneyStop {
     pub estimated_departure: Option<DateTime<Utc>>,
     pub last_event_type: Option<String>,
     pub variation_status: Option<String>,
+    /// See `apply_stop_status`'s own doc comment for the one exception:
+    /// cleared to `None` for a [`StopStatus::Skipped`] stop even when a
+    /// TRUST `PASS` event supplied a value here first.
     pub delay_minutes: Option<i32>,
+    /// See [`StopStatus`]'s own doc comment. Computed by `apply_stop_status`,
+    /// after the live movement overlay -- always `StopStatus::Unknown` on a
+    /// freshly-built stop, same "None/default until the relevant pass runs"
+    /// contract every other computed field on this struct already has.
+    pub stop_status: StopStatus,
+    /// `Some` only when `stop_status` is [`StopStatus::Skipped`] -- see
+    /// [`SkipSource`]'s own doc comment for why this lives here rather than
+    /// nested inside `stop_status` itself.
+    pub skip_source: Option<SkipSource>,
 }
 
 impl JourneyStop {
@@ -179,6 +266,10 @@ impl JourneyStop {
             last_event_type: None,
             variation_status: None,
             delay_minutes: None,
+            // Overwritten by `apply_stop_status`, later in
+            // `build_journey_stops` -- see that field's own doc comment.
+            stop_status: StopStatus::Unknown,
+            skip_source: None,
         }
     }
 }
@@ -240,6 +331,19 @@ fn apply_station_names(stops: &mut [JourneyStop], names: &HashMap<String, String
 /// `TrackedTrainState`/`PublicTrainState` for `blend_darwin_eta` and the
 /// top-level delay badge -- propagated onto every stop that has no
 /// confirmed actual time yet via `apply_delay_estimates`, below.
+///
+/// `skipped_stations` is the shared `trains` row's own `skipped_stations`
+/// column -- Darwin/LDBWS's explicit per-calling-point skip snapshot,
+/// captured at pin time and merged in by
+/// `data::trains::find_or_create_train_with_schedule_match` (see that
+/// column's own migration comment) -- read by both callers
+/// (`routes::train::attach_journey_stops`/`_public`) off
+/// `TrackedTrainState`/`PublicTrainState` and passed straight through here
+/// for `apply_stop_status` to combine with the TRUST-inferred `"PASS"`
+/// signal. An empty slice (no `trains` row yet, or a row with no captured
+/// snapshot) is a completely ordinary input -- every stop's `stop_status`
+/// then depends on the TRUST signal alone, same as before this parameter
+/// existed.
 pub async fn build_journey_stops(
     pool: &PgPool,
     trains_id: i64,
@@ -247,6 +351,7 @@ pub async fn build_journey_stops(
     service_date: NaiveDate,
     calling_points_json: Option<&serde_json::Value>,
     current_delay_minutes: Option<i32>,
+    skipped_stations: &[String],
 ) -> anyhow::Result<Option<Vec<JourneyStop>>> {
     let mut stops: Vec<JourneyStop> = match calling_points_json {
         Some(json) => {
@@ -298,6 +403,8 @@ pub async fn build_journey_stops(
                     last_event_type: None,
                     variation_status: None,
                     delay_minutes: None,
+                    stop_status: StopStatus::Unknown,
+                    skip_source: None,
                 })
                 .collect();
 
@@ -321,6 +428,8 @@ pub async fn build_journey_stops(
                     last_event_type: None,
                     variation_status: None,
                     delay_minutes: None,
+                    stop_status: StopStatus::Unknown,
+                    skip_source: None,
                 });
             }
             built
@@ -339,6 +448,8 @@ pub async fn build_journey_stops(
     // Live overlay.
     let events = queries::movement_events_for_train(pool, trains_id).await?;
     overlay_movement_events(&mut stops, &events);
+
+    apply_stop_status(&mut stops, skipped_stations);
 
     apply_delay_estimates(&mut stops, current_delay_minutes);
 
@@ -373,8 +484,37 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
                 stop.scheduled_departure = stop.scheduled_departure.or(event.planned_timestamp);
             }
             Some("PASS") => {
-                stop.actual_arrival = event.actual_timestamp;
-                stop.actual_departure = event.actual_timestamp;
+                // A PASS at a genuine BOOKED calling point (`Intermediate`,
+                // with both a scheduled arrival AND departure -- the CIF
+                // `LI` shape a real public stop has, per
+                // `schedule_query::records::CallingPoint`'s own doc comment)
+                // means the train ran through WITHOUT calling: TRUST is
+                // reporting that this booked stop did not happen, not that
+                // it happened at this instant. Writing `event.actual_timestamp`
+                // into `actual_arrival`/`actual_departure` here used to make
+                // that render identically to a real completed stop
+                // (`frontend/components/JourneyTimeline.tsx`'s
+                // `JourneyStopRow`: `reached = actual !== null`) -- a false
+                // "the train stopped and picked up/set down here" signal.
+                // `last_event_type` below is still set to `"PASS"`
+                // unconditionally, so that fact is never lost -- a follow-up
+                // is expected to render a distinct "Skipped" state off it.
+                //
+                // Every other shape reaching this branch -- `Origin`/
+                // `Terminate` (no two-sided booked stop to begin with; see
+                // `CallingPointKind`'s own doc comment) or an `Intermediate`
+                // entry missing one/both scheduled times (a CIF timing point
+                // with blank public times, i.e. never actually a public
+                // calling point per `schedule_query::parse::parse_calling_point`)
+                // -- keeps the old behavior unchanged: there is no real
+                // "booked but skipped" stop being misrepresented there.
+                let booked_calling_point = stop.kind == Some(schedule_query::CallingPointKind::Intermediate)
+                    && stop.scheduled_arrival.is_some()
+                    && stop.scheduled_departure.is_some();
+                if !booked_calling_point {
+                    stop.actual_arrival = event.actual_timestamp;
+                    stop.actual_departure = event.actual_timestamp;
+                }
                 stop.scheduled_arrival = stop.scheduled_arrival.or(event.planned_timestamp);
                 stop.scheduled_departure = stop.scheduled_departure.or(event.planned_timestamp);
             }
@@ -420,6 +560,85 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
             (Some(a), Some(p)) => Some((a - p).num_minutes() as i32),
             _ => None,
         };
+    }
+}
+
+/// Computes each stop's [`StopStatus`] (and, for a skipped one, its
+/// [`SkipSource`]) -- the planned follow-up `overlay_movement_events`'s own
+/// `"PASS"` doc comment points at. Run AFTER `overlay_movement_events`
+/// (needs its `last_event_type`/`actual_arrival`/`actual_departure`), given
+/// the train's own captured Darwin `skipped_stations` snapshot (see
+/// `build_journey_stops`'s own doc comment for where that comes from).
+///
+/// Uses the EXACT SAME `booked_calling_point` gate as
+/// `overlay_movement_events`'s own `"PASS"` arm -- an `Intermediate` stop
+/// with both a scheduled arrival AND departure -- so the two functions can
+/// never disagree about which stops this distinction even applies to.
+/// Every other stop is left at `StopStatus::Unknown` (`skip_source: None`),
+/// the value every freshly-built `JourneyStop` already carries.
+///
+/// `delay_minutes` DECISION: a skipped stop's `delay_minutes` -- when the
+/// TRUST `PASS` event populated it (`overlay_movement_events`'s own comment
+/// explains why it's diffed off that event's own two fields) -- is cleared
+/// to `None` here. It measures how late that PASS instant was against ITS
+/// OWN planned time, which is not a delay any passenger experienced AT this
+/// stop -- no one boarded or alighted here at all -- so showing "+6m late"
+/// next to a "did not stop here" badge would read as contradictory noise,
+/// not useful information. The train's overall delay is still visible
+/// everywhere else on the page (the top-level delay badge, and every OTHER
+/// stop's own `delay_minutes`/`estimated_*`); this only suppresses the one
+/// number that would be misleading in THIS stop's context. A Darwin-only
+/// skip (no TRUST event at all yet) already has `delay_minutes: None` from
+/// `overlay_movement_events` never having run for this stop, so this is a
+/// no-op for that case -- stated explicitly here so it isn't mistaken for
+/// an oversight.
+fn apply_stop_status(stops: &mut [JourneyStop], skipped_stations: &[String]) {
+    for stop in stops.iter_mut() {
+        stop.skip_source = None;
+
+        let booked_calling_point = stop.kind == Some(schedule_query::CallingPointKind::Intermediate)
+            && stop.scheduled_arrival.is_some()
+            && stop.scheduled_departure.is_some();
+        if !booked_calling_point {
+            stop.stop_status = StopStatus::Unknown;
+            continue;
+        }
+
+        let trust_pass = stop.last_event_type.as_deref() == Some("PASS");
+        let darwin_skip = stop
+            .crs
+            .as_deref()
+            .is_some_and(|crs| skipped_stations.iter().any(|s| s.eq_ignore_ascii_case(crs)));
+
+        stop.stop_status = match (trust_pass, darwin_skip) {
+            (true, true) => {
+                stop.skip_source = Some(SkipSource::Both);
+                StopStatus::Skipped
+            }
+            (true, false) => {
+                stop.skip_source = Some(SkipSource::Trust);
+                StopStatus::Skipped
+            }
+            // A confirmed live call always wins over a Darwin-only skip
+            // signal: Darwin's `skipped_stations` is a prediction captured
+            // once at pin time and never refreshed (see `build_journey_stops`'s
+            // doc comment), so if TRUST has since confirmed a genuine
+            // ARRIVAL/DEPARTURE here, that stale prediction must not override
+            // it. This arm is checked before `(false, true)` below so it
+            // takes priority regardless of `darwin_skip`.
+            (false, _) if stop.actual_arrival.is_some() || stop.actual_departure.is_some() => {
+                StopStatus::Called
+            }
+            (false, true) => {
+                stop.skip_source = Some(SkipSource::Darwin);
+                StopStatus::Skipped
+            }
+            (false, false) => StopStatus::Scheduled,
+        };
+
+        if stop.stop_status == StopStatus::Skipped {
+            stop.delay_minutes = None;
+        }
     }
 }
 
@@ -943,6 +1162,8 @@ mod tests {
             last_event_type: None,
             variation_status: None,
             delay_minutes: None,
+            stop_status: StopStatus::Unknown,
+            skip_source: None,
         }
     }
 
@@ -1544,6 +1765,255 @@ mod tests {
             Some("2026-09-14T07:49:00Z".parse().unwrap())
         );
         assert_eq!(stops[5].actual_departure, None);
+    }
+
+    /// THE FIX THIS EXISTS FOR. A PASS at a genuine booked calling point
+    /// (`Intermediate`, with both a scheduled arrival AND departure) must
+    /// NOT populate `actual_arrival`/`actual_departure` -- doing so used to
+    /// make a train that ran straight through a station render identically
+    /// to one that actually stopped there (`frontend/components/
+    /// JourneyTimeline.tsx`'s `JourneyStopRow`: `reached = actual !== null`).
+    /// `last_event_type` must still record `"PASS"` -- that signal is not
+    /// lost, just no longer laundered into the `actual*` fields -- and
+    /// `scheduled_arrival`/`scheduled_departure` are untouched (both were
+    /// already `Some`, from the real timetable, so the `.or(...)` fallback
+    /// is a no-op here anyway).
+    #[test]
+    fn overlay_movement_events_does_not_set_actual_times_for_a_pass_at_a_booked_stop() {
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            ..stop_at("SLO", Intermediate)
+        }];
+        let events = vec![event("SLO", "PASS", "2026-09-14T09:12:00Z")];
+
+        overlay_movement_events(&mut stops, &events);
+
+        assert_eq!(
+            stops[0].actual_arrival, None,
+            "a PASS at a booked stop must not read as a completed arrival"
+        );
+        assert_eq!(
+            stops[0].actual_departure, None,
+            "a PASS at a booked stop must not read as a completed departure"
+        );
+        assert_eq!(
+            stops[0].last_event_type.as_deref(),
+            Some("PASS"),
+            "the PASS itself must still be recorded, for a follow-up 'Skipped' UI to key off"
+        );
+        assert_eq!(
+            stops[0].scheduled_arrival,
+            Some("2026-09-14T09:10:00Z".parse().unwrap()),
+            "the real timetabled time is untouched"
+        );
+        assert_eq!(
+            stops[0].scheduled_departure,
+            Some("2026-09-14T09:11:00Z".parse().unwrap())
+        );
+    }
+
+    /// The scoping half of the fix above: a PASS at a stop that is NOT a
+    /// genuine two-sided booked call -- here, `Intermediate` but missing a
+    /// scheduled arrival, the CIF shape of a timing point with blank public
+    /// times (`schedule_query::parse::parse_calling_point`), never a real
+    /// public calling point -- keeps the old behavior. There is no "booked
+    /// but skipped" stop being misrepresented here, so nothing to fix.
+    #[test]
+    fn overlay_movement_events_still_sets_actual_times_for_a_pass_at_a_non_booked_point() {
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: None,
+            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            ..stop_at("SLO", Intermediate)
+        }];
+        let events = vec![event("SLO", "PASS", "2026-09-14T09:12:00Z")];
+
+        overlay_movement_events(&mut stops, &events);
+
+        let expected: Option<DateTime<Utc>> = "2026-09-14T09:12:00Z".parse().ok();
+        assert_eq!(stops[0].actual_arrival, expected);
+        assert_eq!(stops[0].actual_departure, expected);
+        assert_eq!(stops[0].last_event_type.as_deref(), Some("PASS"));
+    }
+
+    /// Same scoping, the other direction: an `Origin`/`Terminate` stop (no
+    /// two-sided booked call to begin with -- `CallingPointKind`'s own doc
+    /// comment) also keeps the old behavior on a PASS.
+    #[test]
+    fn overlay_movement_events_still_sets_actual_times_for_a_pass_at_an_origin() {
+        use schedule_query::CallingPointKind::Origin;
+        let mut stops = vec![stop_at("WAT", Origin)];
+        let events = vec![event("WAT", "PASS", "2026-09-14T09:12:00Z")];
+
+        overlay_movement_events(&mut stops, &events);
+
+        let expected: Option<DateTime<Utc>> = "2026-09-14T09:12:00Z".parse().ok();
+        assert_eq!(stops[0].actual_arrival, expected);
+        assert_eq!(stops[0].actual_departure, expected);
+    }
+
+    // --- `apply_stop_status` (the "Skipped" follow-up) ---
+
+    /// A booked calling point exactly like
+    /// `overlay_movement_events_does_not_set_actual_times_for_a_pass_at_a_booked_stop`
+    /// -- TRUST reported a PASS, and Darwin's own snapshot says nothing
+    /// (empty `skipped_stations`). `StopStatus::Skipped` from the TRUST
+    /// signal alone, softly-worded provenance (`SkipSource::Trust`), and
+    /// `delay_minutes` -- which the PASS event's own actual-vs-planned diff
+    /// populated -- is cleared per this function's own documented decision.
+    #[test]
+    fn apply_stop_status_marks_a_trust_pass_only_booked_stop_skipped_with_trust_source() {
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            ..stop_at("SLO", Intermediate)
+        }];
+        let events = vec![event("SLO", "PASS", "2026-09-14T09:12:00Z")];
+        overlay_movement_events(&mut stops, &events);
+
+        apply_stop_status(&mut stops, &[]);
+
+        assert_eq!(stops[0].stop_status, StopStatus::Skipped);
+        assert_eq!(stops[0].skip_source, Some(SkipSource::Trust));
+        assert_eq!(
+            stops[0].delay_minutes, None,
+            "a skipped stop's delay_minutes must be suppressed, even though the PASS event \
+             populated it"
+        );
+    }
+
+    /// The Darwin-explicit counterpart: no TRUST event at all for this
+    /// stop (a train that hasn't reached it yet, per real-time data), but
+    /// the train's own captured Darwin snapshot names this CRS as skipped
+    /// today. Must still be `Skipped`, sourced to `SkipSource::Darwin`
+    /// alone -- this is the whole reason `skipped_stations` is threaded
+    /// into this function at all, independent of any TRUST signal.
+    #[test]
+    fn apply_stop_status_marks_a_darwin_only_skip_skipped_with_darwin_source() {
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            ..stop_at("SLO", Intermediate)
+        }];
+
+        apply_stop_status(&mut stops, &["SLO".to_string()]);
+
+        assert_eq!(stops[0].stop_status, StopStatus::Skipped);
+        assert_eq!(stops[0].skip_source, Some(SkipSource::Darwin));
+        assert_eq!(stops[0].delay_minutes, None);
+    }
+
+    /// Darwin's own captured snapshot named this CRS as skipped, but TRUST
+    /// has since reported a genuine ARRIVAL there (not a PASS). Because
+    /// `skipped_stations` is captured once at pin time and never refreshed
+    /// (see `apply_stop_status`'s own doc comment), a train predicted to
+    /// skip a station at pin time can still genuinely call there later --
+    /// and that confirmed live call must win over the stale Darwin
+    /// prediction. Must be `Called`, not `Skipped`, with `skip_source`
+    /// staying `None`.
+    #[test]
+    fn apply_stop_status_prefers_a_confirmed_trust_arrival_over_a_stale_darwin_skip() {
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            ..stop_at("SLO", Intermediate)
+        }];
+        let events = vec![event("SLO", "ARRIVAL", "2026-09-14T09:10:30Z")];
+        overlay_movement_events(&mut stops, &events);
+
+        apply_stop_status(&mut stops, &["SLO".to_string()]);
+
+        assert_eq!(stops[0].stop_status, StopStatus::Called);
+        assert_eq!(stops[0].skip_source, None);
+    }
+
+    /// Both signals agreeing -- a real TRUST PASS AND Darwin's own
+    /// snapshot naming the same CRS -- sources to `SkipSource::Both`, not
+    /// silently collapsed into either single-source variant.
+    #[test]
+    fn apply_stop_status_marks_agreeing_signals_skipped_with_both_source() {
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            ..stop_at("SLO", Intermediate)
+        }];
+        let events = vec![event("SLO", "PASS", "2026-09-14T09:12:00Z")];
+        overlay_movement_events(&mut stops, &events);
+
+        apply_stop_status(&mut stops, &["SLO".to_string()]);
+
+        assert_eq!(stops[0].stop_status, StopStatus::Skipped);
+        assert_eq!(stops[0].skip_source, Some(SkipSource::Both));
+    }
+
+    /// The ordinary, overwhelmingly common case: a booked stop the train
+    /// genuinely called at (a reported ARRIVAL), with no skip signal from
+    /// either source. Must be `Called`, never `Skipped`, and `skip_source`
+    /// stays `None`.
+    #[test]
+    fn apply_stop_status_marks_a_normal_called_stop_called_with_no_skip_source() {
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            ..stop_at("SLO", Intermediate)
+        }];
+        let events = vec![event("SLO", "ARRIVAL", "2026-09-14T09:10:30Z")];
+        overlay_movement_events(&mut stops, &events);
+
+        apply_stop_status(&mut stops, &[]);
+
+        assert_eq!(stops[0].stop_status, StopStatus::Called);
+        assert_eq!(stops[0].skip_source, None);
+        assert!(
+            stops[0].delay_minutes.is_some(),
+            "a genuinely-called stop's real delay_minutes must NOT be cleared -- only a \
+             skipped stop's is"
+        );
+    }
+
+    /// The case this whole feature must not get wrong in the other
+    /// direction: a booked stop with NO signal at all yet (no TRUST event,
+    /// not in Darwin's snapshot) must be `Scheduled` -- "hasn't happened
+    /// yet" is not the same fact as "confirmed skipped", and conflating
+    /// them would falsely accuse an ordinary future stop of being skipped.
+    #[test]
+    fn apply_stop_status_leaves_a_not_yet_reached_booked_stop_as_scheduled_not_skipped() {
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![JourneyStop {
+            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            ..stop_at("SLO", Intermediate)
+        }];
+
+        apply_stop_status(&mut stops, &[]);
+
+        assert_eq!(stops[0].stop_status, StopStatus::Scheduled);
+        assert_eq!(stops[0].skip_source, None);
+    }
+
+    /// The `Unknown` gate: an `Origin`/`Terminate` stop, or an
+    /// `Intermediate` one missing a scheduled time, is never eligible for
+    /// `Skipped` at all -- even a matching Darwin `skipped_stations` entry
+    /// must not flip it, because `overlay_movement_events`'s own
+    /// `booked_calling_point` gate (the one this function mirrors exactly)
+    /// would never have suppressed `actual_arrival`/`actual_departure` for
+    /// it in the first place.
+    #[test]
+    fn apply_stop_status_leaves_a_non_booked_stop_unknown_even_with_a_matching_darwin_entry() {
+        use schedule_query::CallingPointKind::Origin;
+        let mut stops = vec![stop_at("WAT", Origin)];
+
+        apply_stop_status(&mut stops, &["WAT".to_string()]);
+
+        assert_eq!(stops[0].stop_status, StopStatus::Unknown);
+        assert_eq!(stops[0].skip_source, None);
     }
 
     /// The inverse, and the reason a "has it finished?" check can't just
@@ -2325,6 +2795,7 @@ mod db_tests {
             service_date,
             Some(&calling_points),
             None,
+            &[],
         )
         .await
         .expect("build_journey_stops")
@@ -2436,6 +2907,7 @@ mod db_tests {
             service_date,
             Some(&calling_points),
             None,
+            &[],
         )
         .await
         .expect("build_journey_stops")
@@ -2516,7 +2988,7 @@ mod db_tests {
         .await
         .expect("seed schedule_destination_departures");
 
-        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-FB", service_date, None, None)
+        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-FB", service_date, None, None, &[])
             .await
             .expect("build_journey_stops")
             .expect("Some stops from the fallback source");
@@ -2572,7 +3044,7 @@ mod db_tests {
         .ok();
 
         let stops =
-            build_journey_stops(&pool, trains_id, "TEST-JRN-NONE", service_date, None, None)
+            build_journey_stops(&pool, trains_id, "TEST-JRN-NONE", service_date, None, None, &[])
                 .await
                 .expect("build_journey_stops");
 
@@ -2637,7 +3109,7 @@ mod db_tests {
         .await
         .expect("seed train_movement_events");
 
-        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-OV", service_date, None, None)
+        let stops = build_journey_stops(&pool, trains_id, "TEST-JRN-OV", service_date, None, None, &[])
             .await
             .expect("build_journey_stops")
             .expect("Some stops");
@@ -2773,6 +3245,7 @@ mod db_tests {
             service_date,
             Some(&calling_points),
             None,
+            &[],
         )
         .await
         .expect("build_journey_stops")
@@ -2867,7 +3340,7 @@ mod db_tests {
         .expect("seed train_movement_events");
 
         let stops =
-            build_journey_stops(&pool, trains_id, "TEST-JRN-PASS", service_date, None, None)
+            build_journey_stops(&pool, trains_id, "TEST-JRN-PASS", service_date, None, None, &[])
                 .await
                 .expect("build_journey_stops")
                 .expect("Some stops");
@@ -2972,6 +3445,7 @@ mod db_tests {
             service_date,
             None,
             None,
+            &[],
         )
         .await
         .expect("build_journey_stops")
@@ -3110,6 +3584,7 @@ mod db_tests {
             service_date,
             Some(&calling_points),
             None,
+            &[],
         )
         .await
         .expect("build_journey_stops")
@@ -3237,6 +3712,7 @@ mod db_tests {
             service_date,
             Some(&calling_points),
             None,
+            &[],
         )
         .await
         .expect("build_journey_stops")
@@ -3354,6 +3830,7 @@ mod db_tests {
             service_date,
             Some(&calling_points),
             None,
+            &[],
         )
         .await
         .expect("build_journey_stops")
@@ -3469,6 +3946,7 @@ mod db_tests {
             service_date,
             Some(&calling_points),
             Some(6),
+            &[],
         )
         .await
         .expect("build_journey_stops")

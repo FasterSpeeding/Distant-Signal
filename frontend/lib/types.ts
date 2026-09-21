@@ -459,6 +459,31 @@ export interface ScheduleCallingPoint {
 
 export type JourneyStopKind = 'Origin' | 'Intermediate' | 'Terminate';
 
+/** `crates/api/src/data/journey.rs`'s `StopStatus`, plain PascalCase on the
+ * wire (no `rename_all`) -- same convention as `JourneyStopKind` just
+ * above, the field this one sits next to on every `JourneyStop`.
+ * `'Unknown'` covers every stop the booked/two-sided-calling-point
+ * distinction doesn't apply to at all (an `Origin`/`Terminate` stop, or an
+ * `Intermediate` one missing a scheduled time) -- whether such a stop was
+ * reached is still answered by `actualArrival`/`actualDeparture` alone,
+ * same as before this field existed. */
+export type StopStatus = 'Unknown' | 'Scheduled' | 'Called' | 'Skipped';
+
+/** `crates/api/src/data/journey.rs`'s `SkipSource` -- which signal(s)
+ * support a `stopStatus: 'Skipped'` verdict, carried as a SIBLING field on
+ * `JourneyStop` rather than nested inside `stopStatus` itself, mirroring
+ * `EtaBadge.tsx`'s `etaSource` provenance-surfacing convention (see that
+ * component's own doc comment). `'Darwin'` is the operator's own explicit
+ * per-calling-point cancellation flag -- treat as authoritative.
+ * `'Trust'` is inferred purely from a reported TRUST `PASS` event, real
+ * running data but an INFERENCE about what a `PASS` message means for a
+ * booked stop (see
+ * docs/superpowers/specs/2026-09-04-option-b-live-consumer-design.md's
+ * still-open PASS-mapping caveat) -- word this one more softly than the
+ * Darwin case. `'Both'` is the two signals independently agreeing, as
+ * confident as `'Darwin'` alone. */
+export type SkipSource = 'Darwin' | 'Trust' | 'Both';
+
 /** One calling point of a train's journey, booked schedule merged with the
  * latest reported live data for that location --
  * `crates/api/src/data/journey.rs`'s `JourneyStop`, camelCase on the wire.
@@ -483,7 +508,12 @@ export interface JourneyStop {
   estimatedDeparture: string | null; // RFC3339
   lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"
   variationStatus: string | null;
+  // `null` for a `stopStatus: 'Skipped'` stop -- see
+  // `crates/api/src/data/journey.rs`'s `apply_stop_status` for why a
+  // skipped stop's own delay figure is suppressed rather than shown.
   delayMinutes: number | null;
+  stopStatus: StopStatus;
+  skipSource: SkipSource | null;
 }
 
 /** `GET /Train/{trackingId}`'s response shape
@@ -659,6 +689,15 @@ export interface TrackPinRequest {
   scheduled_departure: string; // RFC3339
   destination_crs?: string;
   operator?: string;
+  // CRS codes Darwin's own live departure board reported as skipped today
+  // for the specific service being pinned (`DepartureRow.skippedStations`,
+  // `TrackTrainForm.tsx`) -- carries that signal past the moment the
+  // picker's own live board result expires, so it can end up on the
+  // journey timeline's per-stop `skipSource` once a `trains` row exists.
+  // Omitted (never sent as `[]`) when there's no such signal to carry --
+  // the CIF-picker or manual-entry path, which has no live board at all.
+  // See `common::TrackPinRequest.skipped_stations`'s own doc comment.
+  skipped_stations?: string[];
 }
 
 /** `POST /Train/track`'s response body -- camelCase, like every other

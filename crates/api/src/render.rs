@@ -936,6 +936,7 @@ mod tests {
             next_calling_point: Some("BHM".to_string()),
             eta_next: None,
             eta_source: None,
+            skipped_stations: vec![],
             journey_stops: None,
             may_have_arrived: false,
         };

@@ -146,6 +146,30 @@ export function journeyStopLabel(
   return resolvedStopLabel(stop, index, total, endpointNames) ?? `Stop ${index + 1}`;
 }
 
+/** The caption shown under a skipped stop's name -- hedged appropriately
+ * for `stop.skipSource`'s own confidence level (see
+ * `crates/api/src/data/journey.rs`'s `SkipSource` doc comment). `'Darwin'`
+ * and `'Both'` share the confident wording: Darwin's own explicit
+ * per-calling-point flag is treated as authoritative either way, and
+ * `'Both'` only adds TRUST's own running data corroborating it. `'Trust'`
+ * alone is an INFERENCE about what a real-time `PASS` message means for a
+ * booked stop -- see this module's own `skipped` comment on
+ * `JourneyStopRow` -- and must never be asserted as flatly as the Darwin
+ * case (docs/superpowers/specs/2026-09-04-option-b-live-consumer-design.md's
+ * still-open PASS-mapping caveat). `null` (not actually skipped) renders
+ * nothing -- callers only reach this once `stop.stopStatus === 'Skipped'`. */
+function skipCaption(skipSource: JourneyStop['skipSource']): string | null {
+  switch (skipSource) {
+    case 'Darwin':
+    case 'Both':
+      return 'Did not stop here';
+    case 'Trust':
+      return 'Does not appear to have stopped here';
+    default:
+      return null;
+  }
+}
+
 function delayBadge(delayMinutes: number | null) {
   if (delayMinutes === null) return null;
   if (delayMinutes === 0) {
@@ -183,8 +207,21 @@ function JourneyStopRow({
   const label = journeyStopLabel(stop, index, total, endpointNames);
   const scheduled = stop.scheduledDeparture ?? stop.scheduledArrival;
   const actual = stop.actualDeparture ?? stop.actualArrival;
-  const estimated = stop.estimatedDeparture ?? stop.estimatedArrival;
+  // A booked calling point the train did NOT call at today -- computed
+  // server-side (`crates/api/src/data/journey.rs`'s `apply_stop_status`)
+  // from either signal: a reported TRUST `PASS` at this booked stop, or
+  // Darwin's own explicit per-calling-point skip flag for this service.
+  // Either way `actual*` is left `null` (a PASS no longer populates it --
+  // see `overlay_movement_events`'s own doc comment -- and a Darwin-only
+  // skip never had one to begin with), so a forward-looking "est." time
+  // (`apply_delay_estimates`, propagated from the train's current overall
+  // delay) would be actively wrong here, not just incomplete: this stop is
+  // not still ahead of the train. Suppressed below in favour of the
+  // `skipCaption` line instead.
+  const skipped = stop.stopStatus === 'Skipped';
+  const estimated = skipped ? null : (stop.estimatedDeparture ?? stop.estimatedArrival);
   const reached = actual !== null;
+  const caption = skipped ? skipCaption(stop.skipSource) : null;
 
   return (
     <TableTr>
@@ -195,6 +232,11 @@ function JourneyStopRow({
         >
           {label}
         </Text>
+        {caption && (
+          <Text size="sm" c="dimmed">
+            {caption}
+          </Text>
+        )}
       </TableTd>
       <TableTd>
         {scheduled && (
@@ -217,6 +259,11 @@ function JourneyStopRow({
           )
         )}
       </TableTd>
+      {/* `stop.delayMinutes` is already `null` for a skipped stop
+          (`apply_stop_status`'s own documented decision -- the PASS event's
+          actual-vs-planned diff isn't a delay any passenger experienced AT
+          this stop), so `delayBadge` naturally renders nothing extra here
+          without this cell needing its own `skipped` check. */}
       <TableTd>{delayBadge(stop.delayMinutes)}</TableTd>
     </TableTr>
   );

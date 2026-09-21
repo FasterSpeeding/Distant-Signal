@@ -60,14 +60,24 @@ interface JourneyProgressProps {
 }
 
 /** The last scheduled calling point with a confirmed reported event -- an
- * ARRIVAL, DEPARTURE, or PASS message TRUST has already sent, already
- * merged into `JourneyStop.actualArrival`/`actualDeparture`. This is the
+ * ARRIVAL, DEPARTURE, or PASS message TRUST has already sent. This is the
  * ONLY thing "you are here" is allowed to mean in this component.
  *
- * This deliberately walks `actualArrival`/`actualDeparture` ONLY -- never
- * `estimatedArrival`/`estimatedDeparture`, which are a forward propagation
- * of the train's current overall delay onto stops nothing has confirmed
- * yet, not a report of anything Network Rail said happened there.
+ * This deliberately walks `actualArrival`/`actualDeparture`/`lastEventType`
+ * ONLY -- never `estimatedArrival`/`estimatedDeparture`, which are a forward
+ * propagation of the train's current overall delay onto stops nothing has
+ * confirmed yet, not a report of anything Network Rail said happened there.
+ *
+ * The `lastEventType === 'PASS'` arm exists because a PASS at a genuine
+ * BOOKED calling point no longer populates `actualArrival`/`actualDeparture`
+ * (`crates/api/src/data/journey.rs`'s `overlay_movement_events` -- a PASS
+ * there means the train ran through without calling, so showing it as a
+ * completed stop in `JourneyTimeline.tsx` was a real display bug). That fix
+ * must not regress THIS component: a PASS is still real, reported evidence
+ * that the train has physically gone past that point, so it must still
+ * advance "you are here" exactly as an ARRIVAL/DEPARTURE would -- it just no
+ * longer does so via the `actual*` fields, which now mean "the train called
+ * here", a narrower fact than "the train has been confirmed past here".
  *
  * `docs/superpowers/specs/2026-08-28-train-tracking-design.md` already
  * investigated and explicitly rejected Train Describer (TD) / berth-level
@@ -84,7 +94,11 @@ interface JourneyProgressProps {
  * confirmed yet) is a legitimate, common return value, not an error case. */
 function lastReachedIndex(stops: JourneyStop[]): number {
   for (let i = stops.length - 1; i >= 0; i--) {
-    if (stops[i].actualArrival !== null || stops[i].actualDeparture !== null) {
+    if (
+      stops[i].actualArrival !== null ||
+      stops[i].actualDeparture !== null ||
+      stops[i].lastEventType === 'PASS'
+    ) {
       return i;
     }
   }
@@ -544,6 +558,16 @@ function JourneyProgressNode({
           <Stack gap={2}>
             <Text size="xs">{label}</Text>
             {scheduled && <Text size="xs">{formatTime(scheduled)}</Text>}
+            {/* See `JourneyTimeline.tsx`'s own `skipCaption` for the
+                confidence-hedged wording convention this mirrors --
+                intentionally the SAME two strings, so this diagram's
+                tooltip never disagrees with the table row below it about
+                how confidently to word the same stop. */}
+            {stop.stopStatus === 'Skipped' && (
+              <Text size="xs" c="dimmed">
+                {stop.skipSource === 'Trust' ? 'Does not appear to have stopped here' : 'Did not stop here'}
+              </Text>
+            )}
           </Stack>
         }
         events={{ hover: true, focus: true, touch: true }}

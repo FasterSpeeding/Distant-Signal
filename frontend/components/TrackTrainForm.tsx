@@ -274,6 +274,14 @@ export function TrackTrainForm({
   const [scheduledDeparture, setScheduledDeparture] = useState<string | null>(() =>
     dayjs().format('YYYY-MM-DD HH:mm:ss'),
   );
+  // Darwin's own explicit skipped-calling-point snapshot for whichever
+  // live departure-board row the user picked (`pickDeparture`, below) --
+  // carried through to the pin so the journey timeline can eventually key
+  // its "Skipped" treatment off it (`common::TrackPinRequest.skipped_stations`'s
+  // own doc comment). `[]` (never sent) until an LDBWS row is actually
+  // picked -- the CIF-picker/manual-entry paths have no such signal at
+  // all.
+  const [skippedStations, setSkippedStations] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const needsLoginState = useNeedsLogin();
   const [fieldError, setFieldError] = useState<string | null>(null);
@@ -392,6 +400,7 @@ export function TrackTrainForm({
     const [hh, mm] = row.scheduled.split(':');
     const date = resolveLdbwsDepartureDate(row.scheduled, dayjs());
     setScheduledDeparture(`${date} ${hh}:${mm}:00`);
+    setSkippedStations(row.skippedStations);
   }
 
   /** CIF-derived sibling of `pickDeparture` -- fills only
@@ -417,6 +426,11 @@ export function TrackTrainForm({
    * reliable for this specific data source. */
   function pickCifDeparture(row: ScheduleDepartureRow) {
     if (row.destinationCrs !== null) setDestinationCrs(row.destinationCrs);
+    // The CIF SCHEDULE feed has no per-service skip signal at all (Decision
+    // 2) -- clears any snapshot a previously-picked LDBWS row may have left
+    // behind, so switching pickers can't carry a stale skip list onto a
+    // different service.
+    setSkippedStations([]);
     const [hh, mm] = row.scheduled.split(':');
     // `?? 0`: defends against an old `api` pod (a separate Helm Deployment,
     // rolled independently of `frontend`) omitting `dayOffset` from the JSON
@@ -457,6 +471,7 @@ export function TrackTrainForm({
         scheduled_departure: departure.toISOString(),
         ...(destinationCrs.trim() ? { destination_crs: destinationCrs.trim().toUpperCase() } : {}),
         ...(operator.trim() ? { operator: operator.trim() } : {}),
+        ...(skippedStations.length > 0 ? { skipped_stations: skippedStations } : {}),
       };
 
       const response = await fetch('/api/Train/track', {
