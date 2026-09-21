@@ -1643,6 +1643,13 @@ mod tests {
         assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 
+    // Blackburn is a genuine junction shared by `northern-clitheroe` and
+    // `northern-east-lancashire.toml` (North West England line-coverage
+    // audit, 2026-09-21), but the two files deliberately do not share a
+    // segment name there -- no sourced fact establishes actual
+    // through-running between the two lines' own physical routes beyond
+    // both calling at the same station. Mirrors
+    // `emr_regional_stockport_and_hope_valley_both_match_without_over_propagating`.
     #[test]
     fn clitheroe_exclusive_segment_incident_does_not_propagate() {
         let lines = load_all_lines();
@@ -1655,12 +1662,18 @@ mod tests {
             &["BBN"],
         );
         let matches = lines_affected_by(&inc, &lines, &registry);
-        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        let by_id: HashMap<String, MatchScope> = matches
+            .iter()
+            .map(|m| (m.line.id.clone(), m.scope))
+            .collect();
         assert_eq!(
-            matched_ids,
-            HashSet::from(["northern-clitheroe".to_string()])
+            by_id.get("northern-clitheroe"),
+            Some(&MatchScope::ExclusiveSegment)
         );
-        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+        assert_eq!(
+            by_id.get("northern-east-lancashire"),
+            Some(&MatchScope::ExclusiveSegment)
+        );
     }
 
     // `northern-clitheroe.toml`'s MCV entry joins the existing
@@ -5674,6 +5687,9 @@ mod tests {
         // exclusive segment (`wcml-north-wales-branch`,
         // `merseyrail-wirral-chester`) -- two more independent
         // ExclusiveSegment matches by the same station-overlap pattern.
+        // `northern-mid-cheshire.toml` (North West England line-coverage
+        // audit, 2026-09-21) adds a fifth: its own approach to Chester via
+        // Northwich, again station overlap only, no shared track.
         let lines = load_all_lines();
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
@@ -5692,6 +5708,7 @@ mod tests {
                 "tfw-north-wales-coast".to_string(),
                 "wcml-north-wales".to_string(),
                 "merseyrail-wirral".to_string(),
+                "northern-mid-cheshire".to_string(),
             ])
         );
         for m in &matches {
@@ -9918,5 +9935,273 @@ mod tests {
         // a caller passing a TfL line id, which this catalogue does not
         // contain (see the 2026-09-16 TfL archive spec).
         assert!(!matcher.knows_line("tfl-elizabeth"));
+    }
+
+    // North West England line-coverage audit (2026-09-21):
+    // `lines/northern-glossop-hadfield.toml` and `lines/northern-rose-
+    // hill.toml` genuinely share track from Manchester Piccadilly to Guide
+    // Bridge (segment `northern-guide-bridge`, reused verbatim between the
+    // two files) before diverging -- mirrors `swr_shared_trunk_incident_propagates`.
+    #[test]
+    fn northern_guide_bridge_incident_propagates_to_glossop_hadfield_and_rose_hill() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-16",
+            "Signal failure at Guide Bridge",
+            "Signal failure causing delays to Northern services at Guide Bridge.",
+            &["NT"],
+            &["GUI"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let by_id: HashMap<String, MatchScope> = matches
+            .iter()
+            .map(|m| (m.line.id.clone(), m.scope))
+            .collect();
+        assert_eq!(
+            by_id.get("northern-glossop-hadfield"),
+            Some(&MatchScope::SharedSegment)
+        );
+        assert_eq!(
+            by_id.get("northern-rose-hill"),
+            Some(&MatchScope::SharedSegment)
+        );
+    }
+
+    #[test]
+    fn northern_glossop_hadfield_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-17",
+            "Signal failure at Broadbottom",
+            "Signal failure causing delays on the Glossop/Hadfield Line at Broadbottom.",
+            &["NT"],
+            &["BDB"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["northern-glossop-hadfield".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn northern_rose_hill_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-18",
+            "Signal failure at Rose Hill Marple",
+            "Signal failure causing delays on the Rose Hill Marple Line at Rose Hill Marple.",
+            &["NT"],
+            &["RSH"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["northern-rose-hill".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn northern_buxton_line_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-19",
+            "Signal failure at Whaley Bridge",
+            "Signal failure causing delays on the Buxton Line at Whaley Bridge.",
+            &["NT"],
+            &["WBR"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["northern-buxton-line".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Stockport is now touched by many different files' own separate
+    // segments (wcml-manchester, xc-manchester, northern-hope-valley,
+    // tpe-south, emr-regional, and now northern-buxton-line and
+    // northern-mid-cheshire too) -- station overlap only throughout, per
+    // the precedent already established by `wcml-manchester.toml`'s own
+    // comment. Mirrors
+    // `emr_regional_stockport_and_hope_valley_both_match_without_over_propagating`.
+    #[test]
+    fn northern_buxton_line_and_mid_cheshire_both_match_stockport_without_over_propagating() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-20",
+            "Overhead line damage at Stockport",
+            "Overhead line damage causing delays to Northern services at Stockport.",
+            &["NT"],
+            &["SPT"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let by_id: HashMap<String, MatchScope> = matches
+            .iter()
+            .map(|m| (m.line.id.clone(), m.scope))
+            .collect();
+        assert_eq!(
+            by_id.get("northern-buxton-line"),
+            Some(&MatchScope::ExclusiveSegment)
+        );
+        assert_eq!(
+            by_id.get("northern-mid-cheshire"),
+            Some(&MatchScope::ExclusiveSegment)
+        );
+    }
+
+    #[test]
+    fn northern_mid_cheshire_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-21",
+            "Signal failure at Northwich",
+            "Signal failure causing delays on the Mid-Cheshire Line at Northwich.",
+            &["NT"],
+            &["NWI"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["northern-mid-cheshire".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn northern_east_lancashire_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-22",
+            "Points failure at Accrington",
+            "Points failure causing delays on the East Lancashire Line at Accrington.",
+            &["NT"],
+            &["ACR"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["northern-east-lancashire".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // (Blackburn's own overlap between this line and `northern-clitheroe` is
+    // exercised by `clitheroe_exclusive_segment_incident_does_not_propagate`
+    // above, updated for this file's addition -- not duplicated here.)
+
+    // Kirkham & Wesham is genuinely shared track between
+    // `lines/northern-blackpool-south.toml` and `northern-blackpool.toml`,
+    // but a coarse-granularity mismatch (that file's own segment spans its
+    // entire route, not just this stretch) means no segment name is reused
+    // -- see `northern-blackpool-south.toml`'s own top-of-file comment.
+    // Mirrors `emr_regional_stockport_and_hope_valley_both_match_without_over_propagating`.
+    #[test]
+    fn northern_blackpool_south_kirkham_and_wesham_matches_both_files_without_over_propagating() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-24",
+            "Signal failure at Kirkham & Wesham",
+            "Signal failure causing delays to Northern services at Kirkham & Wesham.",
+            &["NT"],
+            &["KKM"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let by_id: HashMap<String, MatchScope> = matches
+            .iter()
+            .map(|m| (m.line.id.clone(), m.scope))
+            .collect();
+        assert_eq!(
+            by_id.get("northern-blackpool"),
+            Some(&MatchScope::ExclusiveSegment)
+        );
+        assert_eq!(
+            by_id.get("northern-blackpool-south"),
+            Some(&MatchScope::ExclusiveSegment)
+        );
+    }
+
+    #[test]
+    fn northern_blackpool_south_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-25",
+            "Signal failure at Lytham",
+            "Signal failure causing delays on the South Fylde Line at Lytham.",
+            &["NT"],
+            &["LTM"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["northern-blackpool-south".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    // Regression guard for the documented Salwick oddity in
+    // `lines/northern-blackpool-south.toml`: Salwick sits geographically on
+    // the Preston-Kirkham & Wesham stretch shared with
+    // `northern-blackpool.toml`, but that file does not itself list Salwick
+    // as a station, so an incident there must NOT be reported as affecting
+    // `northern-blackpool` -- guards against someone "fixing" this by
+    // relabelling Salwick onto the shared `northern-blackpool` segment
+    // without also adding it to that file.
+    #[test]
+    fn northern_blackpool_south_salwick_stays_exclusive_not_shared_with_blackpool() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-26",
+            "Signal failure at Salwick",
+            "Signal failure causing delays on the South Fylde Line at Salwick.",
+            &["NT"],
+            &["SLW"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["northern-blackpool-south".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
+    }
+
+    #[test]
+    fn northern_bentham_line_exclusive_segment_incident_does_not_propagate() {
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "NT-27",
+            "Signal failure at Bentham",
+            "Signal failure causing delays on the Bentham Line at Bentham.",
+            &["NT"],
+            &["BEN"],
+        );
+        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matched_ids: HashSet<String> = matches.iter().map(|m| m.line.id.clone()).collect();
+        assert_eq!(
+            matched_ids,
+            HashSet::from(["northern-bentham-line".to_string()])
+        );
+        assert_eq!(matches[0].scope, MatchScope::ExclusiveSegment);
     }
 }
