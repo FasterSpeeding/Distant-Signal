@@ -17,6 +17,22 @@ pub struct Suggestion {
     pub name: String,
 }
 
+/// A station returned by [`nearest_stations`]: the same `code`/`name` shape
+/// as [`Suggestion`] plus the great-circle distance from the caller's point,
+/// in kilometres (this app has no other established distance unit anywhere
+/// in its schema or docs -- see `docs/superpowers/specs/2026-08-31-other-uk-
+/// transit-networks-research.md` and `2026-09-05-ireland-vs-northern-
+/// ireland-friction-research.md`, both of which quote UK/Ireland network
+/// distances in km -- so km is the default for a UK-facing app rather than
+/// miles).
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct NearbyStation {
+    pub code: String,
+    pub name: String,
+    pub distance_km: f64,
+}
+
 /// Matches `q` as a case-insensitive substring of either the CRS code or
 /// the station name, ranked in three tiers: exact code match, then
 /// name-prefix match, then any other substring match, alphabetical within
@@ -68,6 +84,54 @@ pub async fn search_stations(pool: &PgPool, q: &str, limit: i64) -> Result<Vec<S
     .bind(&contains)
     .bind(q)
     .bind(&prefix)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Returns the `limit` stations nearest to (`lat`, `lon`), nearest first,
+/// using the standard Haversine great-circle formula evaluated directly in
+/// SQL -- no PostGIS/geo extension is installed anywhere in this codebase,
+/// and at ~2,500 UK stations a full-table scan with `ORDER BY distance
+/// LIMIT n` is well within budget without a bounding box or spatial index
+/// (see docs/superpowers/specs/2026-09-21-near-me-station-lookup-design.md).
+///
+/// Stations with a `NULL` `latitude` or `longitude` (not every RDM/NRE
+/// reference row carries coordinates) are excluded via the `WHERE` clause
+/// rather than surfaced with a nonsense distance.
+///
+/// `lat`/`lon` are the caller's position in degrees; validating they're
+/// finite and within the plausible [-90, 90]/[-180, 180] ranges is the
+/// route layer's job (`routes::reference::normalize_coordinate`), not
+/// this function's -- this function trusts its callers, matching
+/// `search_stations`'s trust of its own already-sanitized `q`.
+pub async fn nearest_stations(
+    pool: &PgPool,
+    lat: f64,
+    lon: f64,
+    limit: i64,
+) -> Result<Vec<NearbyStation>> {
+    // Haversine distance in km, Earth radius 6371 km. `LEAST`/`GREATEST`
+    // clamp the `asin` argument to [-1, 1]: without this, floating-point
+    // rounding on a point very close to (or exactly at) a station's own
+    // coordinates can push the intermediate value fractionally past 1,
+    // and `asin` of an out-of-domain input is a Postgres runtime error,
+    // not a merely-inaccurate result.
+    let rows: Vec<NearbyStation> = sqlx::query_as(
+        "SELECT crs AS code, name, \
+           2 * 6371 * asin(LEAST(1.0, GREATEST(-1.0, sqrt( \
+             sin(radians(($1::double precision - latitude) / 2)) ^ 2 + \
+             cos(radians(latitude)) * cos(radians($1::double precision)) * \
+             sin(radians(($2::double precision - longitude) / 2)) ^ 2 \
+           )))) AS distance_km \
+         FROM stations \
+         WHERE latitude IS NOT NULL AND longitude IS NOT NULL \
+         ORDER BY distance_km ASC \
+         LIMIT $3",
+    )
+    .bind(lat)
+    .bind(lon)
     .bind(limit)
     .fetch_all(pool)
     .await?;
@@ -444,6 +508,123 @@ mod db_tests {
                 .execute(&pool)
                 .await
                 .expect("cleanup filler station");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                nearest_stations_orders_nearest_first_and_excludes_null_coordinates \
+                -- --ignored`"]
+    async fn nearest_stations_orders_nearest_first_and_excludes_null_coordinates() {
+        let pool = connect().await;
+
+        // Woking-ish reference point. ZNA is a few hundred metres away,
+        // ZNB a few km away, ZNC much further, and ZND has no coordinates
+        // at all -- standing in for the real-world case where an RDM
+        // reference row simply never got a lat/lon populated.
+        let fixtures: [(&str, &str, Option<(f64, f64)>); 4] = [
+            ("ZNA", "Near Fixture Station", Some((51.3200, -0.5600))),
+            ("ZNB", "Middling Fixture Station", Some((51.3600, -0.5200))),
+            ("ZNC", "Far Fixture Station", Some((52.4800, -1.9000))),
+            ("ZND", "No Coordinates Fixture Station", None),
+        ];
+        for (crs, name, coords) in fixtures {
+            let (lat, lon) = coords.map_or((None, None), |(lat, lon)| (Some(lat), Some(lon)));
+            sqlx::query(
+                "INSERT INTO stations (crs, name, latitude, longitude) VALUES ($1, $2, $3, $4) \
+                 ON CONFLICT (crs) DO UPDATE SET name = EXCLUDED.name, \
+                 latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude",
+            )
+            .bind(crs)
+            .bind(name)
+            .bind(lat)
+            .bind(lon)
+            .execute(&pool)
+            .await
+            .expect("seed fixture station");
+        }
+
+        let results = nearest_stations(&pool, 51.3191, -0.5610, 20)
+            .await
+            .expect("nearest_stations query");
+        let codes: Vec<&str> = results
+            .iter()
+            .filter(|r| r.code.starts_with('Z') && r.code.len() == 3 && r.code.as_bytes()[1] == b'N')
+            .map(|r| r.code.as_str())
+            .collect();
+        assert_eq!(
+            codes,
+            vec!["ZNA", "ZNB", "ZNC"],
+            "nearest first, and ZND (null coordinates) must never appear"
+        );
+        assert!(
+            results.iter().all(|r| r.code != "ZND"),
+            "a station with null lat/lon must be excluded entirely, not returned with a bogus \
+             distance"
+        );
+        let distances: Vec<f64> = results
+            .iter()
+            .filter(|r| ["ZNA", "ZNB", "ZNC"].contains(&r.code.as_str()))
+            .map(|r| r.distance_km)
+            .collect();
+        assert!(
+            distances.windows(2).all(|w| w[0] <= w[1]),
+            "distances must be non-decreasing: {distances:?}"
+        );
+        assert!(
+            distances[0] < 1.0,
+            "ZNA is a few hundred metres from the reference point: {distances:?}"
+        );
+
+        for (crs, _, _) in fixtures {
+            sqlx::query("DELETE FROM stations WHERE crs = $1")
+                .bind(crs)
+                .execute(&pool)
+                .await
+                .expect("cleanup fixture station");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                nearest_stations_respects_the_limit \
+                -- --ignored`"]
+    async fn nearest_stations_respects_the_limit() {
+        let pool = connect().await;
+
+        let fixtures: [(&str, &str, f64, f64); 3] = [
+            ("ZLA", "Limit Fixture A", 51.30, -0.50),
+            ("ZLB", "Limit Fixture B", 51.31, -0.51),
+            ("ZLC", "Limit Fixture C", 51.32, -0.52),
+        ];
+        for (crs, name, lat, lon) in fixtures {
+            sqlx::query(
+                "INSERT INTO stations (crs, name, latitude, longitude) VALUES ($1, $2, $3, $4) \
+                 ON CONFLICT (crs) DO UPDATE SET name = EXCLUDED.name, \
+                 latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude",
+            )
+            .bind(crs)
+            .bind(name)
+            .bind(lat)
+            .bind(lon)
+            .execute(&pool)
+            .await
+            .expect("seed fixture station");
+        }
+
+        let results = nearest_stations(&pool, 51.30, -0.50, 2)
+            .await
+            .expect("nearest_stations query");
+        assert_eq!(results.len(), 2, "limit=2 must return at most 2 rows");
+
+        for (crs, _, _, _) in fixtures {
+            sqlx::query("DELETE FROM stations WHERE crs = $1")
+                .bind(crs)
+                .execute(&pool)
+                .await
+                .expect("cleanup fixture station");
         }
     }
 

@@ -16,11 +16,23 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 
 use crate::app::{App, Router};
-use crate::data::reference::{self, Suggestion};
+use crate::data::reference::{self, NearbyStation, Suggestion};
 
 /// Caps how many rows a single type-ahead request can return. 20 is
 /// plenty for a dropdown the user is actively narrowing by typing more.
 const SUGGESTION_LIMIT: i64 = 20;
+
+/// Default row count for `/stations/nearby` when the caller doesn't supply
+/// `limit`. Deliberately much smaller than [`SUGGESTION_LIMIT`]: these are
+/// physical distances a person might actually travel to, not a type-ahead
+/// dropdown, so a short list of the genuinely-nearest handful reads better
+/// than a long one.
+const NEARBY_DEFAULT_LIMIT: i64 = 8;
+
+/// Upper bound on `limit` for `/stations/nearby`, to keep an abusive
+/// caller-supplied value from turning the full-table Haversine scan into a
+/// full-table response.
+const NEARBY_MAX_LIMIT: i64 = 50;
 
 pub fn router() -> Router {
     Router::new()
@@ -29,6 +41,7 @@ pub fn router() -> Router {
             "/stations/{crs}/accessibility",
             axum::routing::get(get_station_accessibility),
         )
+        .route("/stations/nearby", axum::routing::get(get_nearby_stations))
         .route("/tocs", axum::routing::get(search_tocs))
         .route("/tocs/all", axum::routing::get(list_all_tocs))
 }
@@ -63,6 +76,96 @@ async fn search_tocs(
         .await
         .map_err(internal_error)?;
     Ok(Json(results))
+}
+
+#[derive(Debug, Deserialize)]
+struct NearbyQuery {
+    lat: Option<String>,
+    lon: Option<String>,
+    limit: Option<String>,
+}
+
+/// `GET /public/stations/nearby?lat=&lon=&limit=` -- nearest stations to a
+/// point, for the frontend's "near me" feature. Unauthenticated and
+/// read-only, same posture as `search_stations`/`search_tocs` above.
+///
+/// `lat`/`lon` are required and validated as plausible coordinates
+/// (`normalize_coordinate`); a missing or invalid value is a `400` naming
+/// the field, matching `trains.rs`'s "malformed input 400s, it is never
+/// silently ignored" posture rather than this module's own
+/// empty-query-means-empty-results convention for the type-ahead routes
+/// (that convention exists because an empty search box is an expected,
+/// frequent state; a "near me" request with no coordinates at all is a
+/// caller bug, not a normal empty state).
+async fn get_nearby_stations(
+    State(app): State<App>,
+    Query(query): Query<NearbyQuery>,
+) -> Result<Json<Vec<NearbyStation>>, (StatusCode, String)> {
+    let Some(lat_raw) = query.lat.as_deref() else {
+        return Err((StatusCode::BAD_REQUEST, "lat is required".to_string()));
+    };
+    let Some(lon_raw) = query.lon.as_deref() else {
+        return Err((StatusCode::BAD_REQUEST, "lon is required".to_string()));
+    };
+    let lat = normalize_coordinate("lat", lat_raw, -90.0, 90.0)?;
+    let lon = normalize_coordinate("lon", lon_raw, -180.0, 180.0)?;
+    let limit = normalize_nearby_limit(query.limit.as_deref())?;
+
+    let results = reference::nearest_stations(&app.database, lat, lon, limit)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(results))
+}
+
+/// Parses `raw` as a finite `f64` within `[min, max]`; anything else
+/// (unparseable, `NaN`/infinite, or out of the plausible coordinate range)
+/// is a `400` naming the field, matching `trains.rs::normalize_crs`/
+/// `normalize_time`'s "malformed input 400s" convention.
+fn normalize_coordinate(
+    label: &str,
+    raw: &str,
+    min: f64,
+    max: f64,
+) -> Result<f64, (StatusCode, String)> {
+    let trimmed = raw.trim();
+    let parsed: f64 = trimmed.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("{label} must be a number"),
+        )
+    })?;
+    if !parsed.is_finite() || parsed < min || parsed > max {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("{label} must be between {min} and {max}"),
+        ));
+    }
+    Ok(parsed)
+}
+
+/// Parses and bounds `limit` for `/stations/nearby`, mirroring
+/// `trains.rs::normalize_limit`'s shape: absent means the default, zero/
+/// negative/unparseable is a `400`, and anything above
+/// [`NEARBY_MAX_LIMIT`] is silently capped rather than rejected (an
+/// over-large limit isn't malformed input, just one this route won't fully
+/// honour).
+fn normalize_nearby_limit(raw: Option<&str>) -> Result<i64, (StatusCode, String)> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(NEARBY_DEFAULT_LIMIT);
+    };
+    let parsed: i64 = raw.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "limit must be a positive whole number".to_string(),
+        )
+    })?;
+    if parsed < 1 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "limit must be a positive whole number".to_string(),
+        ));
+    }
+    Ok(parsed.min(NEARBY_MAX_LIMIT))
 }
 
 async fn list_all_tocs(
@@ -135,6 +238,81 @@ mod tests {
     fn sanitize_query_rejects_empty_or_whitespace_only() {
         assert_eq!(sanitize_query(""), None);
         assert_eq!(sanitize_query("   "), None);
+    }
+
+    #[test]
+    fn normalize_coordinate_accepts_a_value_within_range() {
+        assert_eq!(normalize_coordinate("lat", "51.5", -90.0, 90.0), Ok(51.5));
+        assert_eq!(normalize_coordinate("lon", "-0.14", -180.0, 180.0), Ok(-0.14));
+    }
+
+    #[test]
+    fn normalize_coordinate_trims_whitespace() {
+        assert_eq!(normalize_coordinate("lat", "  51.5  ", -90.0, 90.0), Ok(51.5));
+    }
+
+    #[test]
+    fn normalize_coordinate_rejects_unparseable_input() {
+        let (status, body) = normalize_coordinate("lat", "nope", -90.0, 90.0).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("lat"), "400 body should name the field: {body}");
+    }
+
+    #[test]
+    fn normalize_coordinate_rejects_out_of_range_latitude() {
+        let (status, _) = normalize_coordinate("lat", "91", -90.0, 90.0).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = normalize_coordinate("lat", "-91", -90.0, 90.0).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn normalize_coordinate_rejects_out_of_range_longitude() {
+        let (status, _) = normalize_coordinate("lon", "181", -180.0, 180.0).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = normalize_coordinate("lon", "-181", -180.0, 180.0).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn normalize_coordinate_rejects_non_finite_values() {
+        let (status, _) = normalize_coordinate("lat", "NaN", -90.0, 90.0).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = normalize_coordinate("lat", "inf", -90.0, 90.0).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn normalize_nearby_limit_defaults_when_absent() {
+        assert_eq!(normalize_nearby_limit(None), Ok(NEARBY_DEFAULT_LIMIT));
+        assert_eq!(normalize_nearby_limit(Some("")), Ok(NEARBY_DEFAULT_LIMIT));
+        assert_eq!(normalize_nearby_limit(Some("  ")), Ok(NEARBY_DEFAULT_LIMIT));
+    }
+
+    #[test]
+    fn normalize_nearby_limit_passes_through_a_valid_value() {
+        assert_eq!(normalize_nearby_limit(Some("3")), Ok(3));
+    }
+
+    #[test]
+    fn normalize_nearby_limit_caps_at_the_maximum_instead_of_rejecting() {
+        assert_eq!(normalize_nearby_limit(Some("1000")), Ok(NEARBY_MAX_LIMIT));
+    }
+
+    #[test]
+    fn normalize_nearby_limit_rejects_zero_negative_or_unparseable() {
+        assert_eq!(
+            normalize_nearby_limit(Some("0")).unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            normalize_nearby_limit(Some("-5")).unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            normalize_nearby_limit(Some("nope")).unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[test]
@@ -382,5 +560,120 @@ mod db_tests {
         assert_eq!(status, StatusCode::OK, "body: {body}");
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(json, serde_json::json!([]));
+    }
+
+    async fn seed_with_coords(pool: &PgPool, crs: &str, name: &str, lat: f64, lon: f64) {
+        sqlx::query(
+            "INSERT INTO stations (crs, name, latitude, longitude) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (crs) DO UPDATE SET name = EXCLUDED.name, \
+             latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude",
+        )
+        .bind(crs)
+        .bind(name)
+        .bind(lat)
+        .bind(lon)
+        .execute(pool)
+        .await
+        .expect("seed fixture station with coordinates");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                nearby_stations_route -- --ignored --test-threads=1`"]
+    async fn nearby_stations_route_returns_nearest_first() {
+        let pool = connect().await;
+        seed_with_coords(&pool, "ZGA", "Near Route Fixture", 51.3200, -0.5600).await;
+        seed_with_coords(&pool, "ZGB", "Far Route Fixture", 52.4800, -1.9000).await;
+
+        let (status, body) = get(&pool, "/stations/nearby?lat=51.3191&lon=-0.5610").await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let json: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        let codes: Vec<&str> = json
+            .iter()
+            .filter_map(|v| v.get("code").and_then(|c| c.as_str()))
+            .filter(|c| *c == "ZGA" || *c == "ZGB")
+            .collect();
+        assert_eq!(codes, vec!["ZGA", "ZGB"], "nearest must come first: {body}");
+        assert!(
+            json.iter().all(|v| v.get("distanceKm").is_some()),
+            "each row must carry a camelCase distanceKm: {body}"
+        );
+
+        delete_fixture(&pool, "ZGA").await;
+        delete_fixture(&pool, "ZGB").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                nearby_stations_route -- --ignored --test-threads=1`"]
+    async fn nearby_stations_route_excludes_stations_with_no_coordinates() {
+        let pool = connect().await;
+        seed(&pool, "ZGC", "No Coords Route Fixture", serde_json::json!({})).await;
+
+        let (status, body) = get(&pool, "/stations/nearby?lat=51.3191&lon=-0.5610").await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let json: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert!(
+            json.iter()
+                .all(|v| v.get("code").and_then(|c| c.as_str()) != Some("ZGC")),
+            "a station with null lat/lon must never appear: {body}"
+        );
+
+        delete_fixture(&pool, "ZGC").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                nearby_stations_route -- --ignored --test-threads=1`"]
+    async fn nearby_stations_route_respects_and_caps_the_limit() {
+        let pool = connect().await;
+        for i in 0..3 {
+            seed_with_coords(
+                &pool,
+                &format!("ZH{i}"),
+                &format!("Limit Route Fixture {i}"),
+                51.30 + f64::from(i) * 0.01,
+                -0.50,
+            )
+            .await;
+        }
+
+        let (status, body) = get(&pool, "/stations/nearby?lat=51.30&lon=-0.50&limit=1").await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let json: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(json.len(), 1, "limit=1 must return exactly 1 row: {body}");
+
+        let (status, body) =
+            get(&pool, "/stations/nearby?lat=51.30&lon=-0.50&limit=100000").await;
+        assert_eq!(status, StatusCode::OK, "an over-large limit is capped, not rejected: {body}");
+        let json: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        assert!(
+            json.len() <= NEARBY_MAX_LIMIT as usize,
+            "must never exceed the cap: {body}"
+        );
+
+        for i in 0..3 {
+            delete_fixture(&pool, &format!("ZH{i}")).await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                nearby_stations_route -- --ignored --test-threads=1`"]
+    async fn nearby_stations_route_400s_on_missing_or_invalid_coordinates() {
+        let pool = connect().await;
+
+        let (status, body) = get(&pool, "/stations/nearby").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+
+        let (status, body) = get(&pool, "/stations/nearby?lat=51.3&lon=notanumber").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+
+        let (status, body) = get(&pool, "/stations/nearby?lat=999&lon=-0.5").await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "an out-of-range latitude must 400: {body}"
+        );
     }
 }
