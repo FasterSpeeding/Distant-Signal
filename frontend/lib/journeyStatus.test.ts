@@ -112,10 +112,53 @@ describe('legStatusGroup', () => {
     });
     expect(legStatusGroup(leg)).toBe('delayed');
   });
+
+  // 2026-09-22 UX review, I13: `legStatusGroup` read only `status` and
+  // `delayMinutes`, so a punctual train that had stopped calling at the
+  // traveller's own station rolled the whole journey up as "On track".
+  it('classifies an on-time en_route train whose leg DESTINATION is skipped as skipped, not good', () => {
+    const leg = baseLeg({
+      trackedTrainState: baseTrackedTrainState({ status: 'en_route', delayMinutes: 0 }),
+      legSkip: { originSkipped: false, destinationSkipped: true },
+    });
+    expect(legStatusGroup(leg)).toBe('skipped');
+  });
+
+  it('classifies an on-time en_route train whose leg ORIGIN is skipped as skipped', () => {
+    const leg = baseLeg({
+      trackedTrainState: baseTrackedTrainState({ status: 'en_route', delayMinutes: null }),
+      legSkip: { originSkipped: true, destinationSkipped: false },
+    });
+    expect(legStatusGroup(leg)).toBe('skipped');
+  });
+
+  it('lets a skip outrank a delay on the same leg', () => {
+    const leg = baseLeg({
+      trackedTrainState: baseTrackedTrainState({ status: 'en_route', delayMinutes: 22 }),
+      legSkip: { originSkipped: false, destinationSkipped: true },
+    });
+    expect(legStatusGroup(leg)).toBe('skipped');
+  });
+
+  it('still reports a CANCELLED train as severe even when a skip is also flagged', () => {
+    const leg = baseLeg({
+      trackedTrainState: baseTrackedTrainState({ status: 'cancelled' }),
+      legSkip: { originSkipped: true, destinationSkipped: true },
+    });
+    expect(legStatusGroup(leg)).toBe('severe');
+  });
+
+  it('treats a legSkip with both flags false as no signal at all', () => {
+    const leg = baseLeg({
+      trackedTrainState: baseTrackedTrainState({ status: 'en_route', delayMinutes: null }),
+      legSkip: { originSkipped: false, destinationSkipped: false },
+    });
+    expect(legStatusGroup(leg)).toBe('good');
+  });
 });
 
 describe('legStatusRank', () => {
-  it('orders the five groups good < awaiting < delayed < unmatched < severe', () => {
+  it('orders the six groups good < awaiting < delayed < unmatched < skipped < severe', () => {
     const good = baseLeg({
       trackedTrainState: baseTrackedTrainState({ status: 'en_route', delayMinutes: null }),
     });
@@ -126,12 +169,17 @@ describe('legStatusRank', () => {
       trackedTrainState: baseTrackedTrainState({ status: 'en_route', delayMinutes: 10 }),
     });
     const unmatched = baseLeg({ trackedTrainState: null, matchMode: 'unmatched' });
+    const skipped = baseLeg({
+      trackedTrainState: baseTrackedTrainState({ status: 'en_route', delayMinutes: null }),
+      legSkip: { originSkipped: false, destinationSkipped: true },
+    });
     const severe = baseLeg({ trackedTrainState: baseTrackedTrainState({ status: 'cancelled' }) });
 
     expect(legStatusRank(good)).toBeLessThan(legStatusRank(awaiting));
     expect(legStatusRank(awaiting)).toBeLessThan(legStatusRank(delayed));
     expect(legStatusRank(delayed)).toBeLessThan(legStatusRank(unmatched));
-    expect(legStatusRank(unmatched)).toBeLessThan(legStatusRank(severe));
+    expect(legStatusRank(unmatched)).toBeLessThan(legStatusRank(skipped));
+    expect(legStatusRank(skipped)).toBeLessThan(legStatusRank(severe));
   });
 });
 

@@ -240,7 +240,16 @@ function JourneyStopRow({
   // not still ahead of the train. Suppressed below in favour of the
   // `skipCaption` line instead.
   const skipped = stop.stopStatus === 'Skipped';
-  const estimated = skipped ? null : (stop.estimatedDeparture ?? stop.estimatedArrival);
+  // `isSkippedOnLeg` suppresses the "est." exactly as `skipped` does, and
+  // for the identical reason: a leg-scoped Darwin skip says this train is
+  // no longer calling here either, so a forward-propagated estimate is a
+  // confident, wrong ETA for a stop the train won't make (2026-09-22 UX
+  // review, I13 -- "York 18:00 est. 18:22" on a train that isn't stopping
+  // at York). The two signals reach this row by different routes
+  // (`stop.stopStatus` is whole-route and server-computed; `skippedCrs` is
+  // the leg's own origin/destination check) but they mean the same thing
+  // about this row's time.
+  const estimated = skipped || isSkippedOnLeg ? null : (stop.estimatedDeparture ?? stop.estimatedArrival);
   const reached = actual !== null;
   const caption = skipped ? skipCaption(stop.skipSource) : null;
 
