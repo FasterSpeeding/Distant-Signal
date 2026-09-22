@@ -109,7 +109,11 @@ function mockFetchByUrl(
 ) {
   const {
     search = () => new Response(searchBody(PAGE_ONE), { status: 200 }),
-    track = () => new Response(JSON.stringify({ trackingId: 42 }), { status: 200 }),
+    track = () =>
+      new Response(
+        JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
+        { status: 200 },
+      ),
   } = options;
   return vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
@@ -123,7 +127,11 @@ function mockFetchByUrl(
     if (url === '/api/groups') return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
     if (/\/api\/Train\/tickets\/\d+\/attach$/.test(url))
       return Promise.resolve(new Response(JSON.stringify({ ticketId: 7, trackedTrainId: 42 }), { status: 200 }));
-    if (/\/api\/Train\/by-uid\/.+\/track$/.test(url)) return Promise.resolve(track());
+    // `TrackThisTrainButton` now POSTs `/api/Journeys` (a `knownTrain`-mode
+    // leg) instead of the old by-uid track route -- see
+    // TrackThisTrainButton.test.tsx's own `mockFetchByUrl` for the same
+    // rewire.
+    if (/\/api\/Journeys$/.test(url)) return Promise.resolve(track());
     throw new Error(`unexpected fetch for ${url}`);
   });
 }
