@@ -101,14 +101,19 @@ pub async fn leg_skip_status(
 
     let train_origin_sample = match train_true_origin_crs.as_deref() {
         Some(crs) if !crs.eq_ignore_ascii_case(leg_origin_crs) => {
-            queries::latest_station_sample(pool, crs).await.ok().flatten()
+            queries::latest_station_sample(pool, crs)
+                .await
+                .ok()
+                .flatten()
         }
         _ => None,
     };
 
     find_leg_skip(
         &origin_sample.departures,
-        train_origin_sample.as_ref().map(|s| s.departures.as_slice()),
+        train_origin_sample
+            .as_ref()
+            .map(|s| s.departures.as_slice()),
         match_target,
         leg_origin_crs,
         leg_destination_crs,

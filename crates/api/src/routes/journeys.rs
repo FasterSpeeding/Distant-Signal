@@ -70,7 +70,11 @@ pub fn router() -> Router {
 /// enum (not just believing the doc comments): every field failed to
 /// deserialize with "missing field" until this attribute was added.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "mode", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "mode",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 enum CreateJourneyLegRequest {
     /// The legacy CRS+time GUESS pin, field-for-field identical to
     /// `common::TrackPinRequest` -- what `TrackTrainForm.tsx`'s existing
@@ -152,7 +156,11 @@ struct CreateJourneyRequest {
 /// own doc comment for the full explanation; this plan's `wire_format_tests`
 /// step below reproduces that same regression test against this enum).
 #[derive(Debug, Deserialize)]
-#[serde(tag = "mode", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "mode",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 enum AddJourneyLegRequest {
     KnownTrain {
         train_uid: String,
@@ -278,7 +286,10 @@ mod wire_format_tests {
         )
         .expect("valid pin-mode leg JSON should deserialize");
 
-        let CreateJourneyLegRequest::Pin { skipped_stations, .. } = leg else {
+        let CreateJourneyLegRequest::Pin {
+            skipped_stations, ..
+        } = leg
+        else {
             panic!("expected a Pin-mode leg, got {leg:?}");
         };
         assert_eq!(skipped_stations, vec!["CLJ".to_string(), "WOK".to_string()]);
@@ -296,7 +307,10 @@ mod wire_format_tests {
         )
         .expect("a pin-mode leg omitting skippedStations should still deserialize");
 
-        let CreateJourneyLegRequest::Pin { skipped_stations, .. } = leg else {
+        let CreateJourneyLegRequest::Pin {
+            skipped_stations, ..
+        } = leg
+        else {
             panic!("expected a Pin-mode leg, got {leg:?}");
         };
         assert!(skipped_stations.is_empty());
@@ -308,7 +322,10 @@ mod wire_format_tests {
             r#"{"mode": "knownTrain", "trainUid": "A11111", "serviceDate": "2026-09-22"}"#,
         )
         .expect("valid knownTrain-mode leg JSON should deserialize");
-        assert!(matches!(known_train, CreateJourneyLegRequest::KnownTrain { .. }));
+        assert!(matches!(
+            known_train,
+            CreateJourneyLegRequest::KnownTrain { .. }
+        ));
 
         let window: CreateJourneyLegRequest = serde_json::from_str(
             r#"{
@@ -329,7 +346,10 @@ mod wire_format_tests {
             r#"{"mode": "knownTrain", "trainUid": "A11111", "serviceDate": "2026-09-22"}"#,
         )
         .expect("valid knownTrain-mode leg JSON should deserialize");
-        assert!(matches!(known_train, AddJourneyLegRequest::KnownTrain { .. }));
+        assert!(matches!(
+            known_train,
+            AddJourneyLegRequest::KnownTrain { .. }
+        ));
 
         let window: AddJourneyLegRequest = serde_json::from_str(
             r#"{
@@ -505,8 +525,13 @@ async fn post_journey(
             depart_window,
             arrive_window,
         } => {
-            journeys::validate_window_leg(&origin_crs, &destination_crs, &depart_window, &arrive_window)
-                .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+            journeys::validate_window_leg(
+                &origin_crs,
+                &destination_crs,
+                &depart_window,
+                &arrive_window,
+            )
+            .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
 
             let (journey_id, leg_id) = journeys::create_journey_with_window_leg(
                 &app.database,
@@ -590,8 +615,13 @@ async fn post_journey_leg(
             depart_window,
             arrive_window,
         } => {
-            journeys::validate_window_leg(&origin_crs, &destination_crs, &depart_window, &arrive_window)
-                .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+            journeys::validate_window_leg(
+                &origin_crs,
+                &destination_crs,
+                &depart_window,
+                &arrive_window,
+            )
+            .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
 
             let added = journeys::add_window_leg_to_journey(
                 &app.database,
@@ -620,7 +650,10 @@ async fn post_journey_leg(
 fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusCode, String) {
     move |err| {
         tracing::error!(error = ?err, operation, "journey request failed");
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to {operation}"))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to {operation}"),
+        )
     }
 }
 
@@ -830,7 +863,10 @@ async fn get_leg_candidates(
     let leg = journeys::get_owned_leg(&app.database, journey_id, leg_id, &user.id)
         .await
         .map_err(internal_error("read journey leg"))?
-        .ok_or((StatusCode::NOT_FOUND, "no journey leg with that id".to_string()))?;
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "no journey leg with that id".to_string(),
+        ))?;
 
     let (Some(origin_crs), Some(destination_crs)) =
         (leg.origin_crs.as_deref(), leg.destination_crs.as_deref())
@@ -977,12 +1013,18 @@ async fn post_leg_train(
     journeys::get_owned_leg(&app.database, journey_id, leg_id, &user.id)
         .await
         .map_err(internal_error("read journey leg"))?
-        .ok_or((StatusCode::NOT_FOUND, "no journey leg with that id".to_string()))?;
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "no journey leg with that id".to_string(),
+        ))?;
 
-    let trains_id =
-        crate::data::trains::find_or_create_train(&app.database, &body.train_uid, body.service_date)
-            .await
-            .map_err(internal_error("find or create train"))?;
+    let trains_id = crate::data::trains::find_or_create_train(
+        &app.database,
+        &body.train_uid,
+        body.service_date,
+    )
+    .await
+    .map_err(internal_error("find or create train"))?;
     let tracking_id =
         train_tracking::create_subscription_for_train(&app.database, trains_id, &user.id)
             .await
@@ -997,10 +1039,15 @@ async fn post_leg_train(
     )
     .await;
 
-    let updated =
-        journeys::set_leg_train_subscription(&app.database, journey_id, leg_id, &user.id, tracking_id)
-            .await
-            .map_err(internal_error("set journey leg train"))?;
+    let updated = journeys::set_leg_train_subscription(
+        &app.database,
+        journey_id,
+        leg_id,
+        &user.id,
+        tracking_id,
+    )
+    .await
+    .map_err(internal_error("set journey leg train"))?;
     if !updated {
         // Lost a race against a concurrent deletion of the underlying leg
         // between the read above and this write -- vanishingly unlikely,
@@ -1635,7 +1682,10 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, serde_json::Value::String("no journey leg with that id".to_string()));
+        assert_eq!(
+            body,
+            serde_json::Value::String("no journey leg with that id".to_string())
+        );
 
         cleanup_user(&pool, "TEST-ROUTE-MATCH-LEG-OWNER").await;
         cleanup_user(&pool, "TEST-ROUTE-MATCH-LEG-BYSTANDER").await;
@@ -1697,7 +1747,12 @@ mod db_tests {
         .await;
         let journey_id = created["journeyId"].as_i64().expect("journeyId present");
 
-        let (status, _) = request(router, format!("/Journeys/{journey_id}"), Some(&bystander_token)).await;
+        let (status, _) = request(
+            router,
+            format!("/Journeys/{journey_id}"),
+            Some(&bystander_token),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         cleanup_user(&pool, "TEST-ROUTE-GET-JOURNEY-OWNER").await;
@@ -1720,7 +1775,9 @@ mod db_tests {
             serde_json::json!({ "leg": { "mode": "knownTrain", "trainUid": "A66666", "serviceDate": "2026-09-22" } }),
         )
         .await;
-        let first_tracking_id = first_created["trackingId"].as_i64().expect("trackingId present");
+        let first_tracking_id = first_created["trackingId"]
+            .as_i64()
+            .expect("trackingId present");
 
         let (_, second_created) = post_json(
             router.clone(),
@@ -1729,7 +1786,9 @@ mod db_tests {
             serde_json::json!({ "leg": { "mode": "knownTrain", "trainUid": "A77777", "serviceDate": "2026-09-22" } }),
         )
         .await;
-        let second_tracking_id = second_created["trackingId"].as_i64().expect("trackingId present");
+        let second_tracking_id = second_created["trackingId"]
+            .as_i64()
+            .expect("trackingId present");
 
         let (status, body) = request(router, "/Journeys/mine".to_string(), Some(&token)).await;
         assert_eq!(status, StatusCode::OK);
@@ -1798,12 +1857,11 @@ mod db_tests {
         let leg_id = body["legId"].as_i64().expect("legId present");
         assert!(body["trackingId"].is_null());
 
-        let leg_order: i32 =
-            sqlx::query_scalar("SELECT leg_order FROM journey_legs WHERE id = $1")
-                .bind(leg_id)
-                .fetch_one(&pool)
-                .await
-                .expect("read leg_order");
+        let leg_order: i32 = sqlx::query_scalar("SELECT leg_order FROM journey_legs WHERE id = $1")
+            .bind(leg_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read leg_order");
         assert_eq!(leg_order, 2);
 
         cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-WINDOW").await;
@@ -1848,7 +1906,10 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, serde_json::Value::String("no journey with that id".to_string()));
+        assert_eq!(
+            body,
+            serde_json::Value::String("no journey with that id".to_string())
+        );
 
         cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-OWNER").await;
         cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-BYSTANDER").await;
@@ -1908,7 +1969,6 @@ mod db_tests {
         cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-KNOWN-TRAIN").await;
     }
 
-
     /// The wire contract for `legSkip`'s two states (this plan's `LegSkipResponse`,
     /// above) -- `null` for a leg with no matched train yet, an OBJECT (never
     /// `null`) once one is, regardless of whether either end actually turns
@@ -1957,8 +2017,9 @@ mod db_tests {
             }),
         )
         .await;
-        let unmatched_journey_id =
-            unmatched_created["journeyId"].as_i64().expect("journeyId present");
+        let unmatched_journey_id = unmatched_created["journeyId"]
+            .as_i64()
+            .expect("journeyId present");
 
         let (status, body) = request(
             router.clone(),
@@ -1995,11 +2056,16 @@ mod db_tests {
             }),
         )
         .await;
-        let matched_journey_id =
-            matched_created["journeyId"].as_i64().expect("journeyId present");
+        let matched_journey_id = matched_created["journeyId"]
+            .as_i64()
+            .expect("journeyId present");
 
-        let (status, body) =
-            request(router, format!("/Journeys/{matched_journey_id}"), Some(&token)).await;
+        let (status, body) = request(
+            router,
+            format!("/Journeys/{matched_journey_id}"),
+            Some(&token),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "get matched journey: {body:?}");
         let legs = body["legs"].as_array().expect("legs array");
         assert_eq!(legs.len(), 1);
@@ -2023,7 +2089,6 @@ mod db_tests {
 
         cleanup_user(&pool, "TEST-ROUTE-LEG-SKIP").await;
     }
-
 
     /// Deletes a group row and its cascading `group_members`/`group_trains`/
     /// `group_journeys` rows -- this module's own equivalent of

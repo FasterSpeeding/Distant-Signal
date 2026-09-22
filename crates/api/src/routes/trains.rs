@@ -341,7 +341,9 @@ pub(crate) fn encode_cursor(cursor: &CallingPointDepartureCursor) -> String {
 /// Inverse of `encode_cursor`. A malformed cursor is a `400`, never
 /// silently ignored -- ignoring it would restart the caller at page 1
 /// while their UI appended the result as page 2, duplicating every row.
-pub(crate) fn decode_cursor(raw: &str) -> Result<CallingPointDepartureCursor, (StatusCode, String)> {
+pub(crate) fn decode_cursor(
+    raw: &str,
+) -> Result<CallingPointDepartureCursor, (StatusCode, String)> {
     let invalid = || {
         (
             StatusCode::BAD_REQUEST,

@@ -525,7 +525,9 @@ mod db_tests {
         // ZNB a few km away, ZNC much further, and ZND has no coordinates
         // at all -- standing in for the real-world case where an RDM
         // reference row simply never got a lat/lon populated.
-        let fixtures: [(&str, &str, Option<(f64, f64)>); 4] = [
+        // crs, name, (latitude, longitude).
+        type StationFixture = (&'static str, &'static str, Option<(f64, f64)>);
+        let fixtures: [StationFixture; 4] = [
             ("ZNA", "Near Fixture Station", Some((51.3200, -0.5600))),
             ("ZNB", "Middling Fixture Station", Some((51.3600, -0.5200))),
             ("ZNC", "Far Fixture Station", Some((52.4800, -1.9000))),
@@ -552,7 +554,9 @@ mod db_tests {
             .expect("nearest_stations query");
         let codes: Vec<&str> = results
             .iter()
-            .filter(|r| r.code.starts_with('Z') && r.code.len() == 3 && r.code.as_bytes()[1] == b'N')
+            .filter(|r| {
+                r.code.starts_with('Z') && r.code.len() == 3 && r.code.as_bytes()[1] == b'N'
+            })
             .map(|r| r.code.as_str())
             .collect();
         assert_eq!(

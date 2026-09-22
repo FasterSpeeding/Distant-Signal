@@ -128,12 +128,9 @@ fn normalize_coordinate(
     max: f64,
 ) -> Result<f64, (StatusCode, String)> {
     let trimmed = raw.trim();
-    let parsed: f64 = trimmed.parse().map_err(|_| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("{label} must be a number"),
-        )
-    })?;
+    let parsed: f64 = trimmed
+        .parse()
+        .map_err(|_| (StatusCode::BAD_REQUEST, format!("{label} must be a number")))?;
     if !parsed.is_finite() || parsed < min || parsed > max {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -243,19 +240,28 @@ mod tests {
     #[test]
     fn normalize_coordinate_accepts_a_value_within_range() {
         assert_eq!(normalize_coordinate("lat", "51.5", -90.0, 90.0), Ok(51.5));
-        assert_eq!(normalize_coordinate("lon", "-0.14", -180.0, 180.0), Ok(-0.14));
+        assert_eq!(
+            normalize_coordinate("lon", "-0.14", -180.0, 180.0),
+            Ok(-0.14)
+        );
     }
 
     #[test]
     fn normalize_coordinate_trims_whitespace() {
-        assert_eq!(normalize_coordinate("lat", "  51.5  ", -90.0, 90.0), Ok(51.5));
+        assert_eq!(
+            normalize_coordinate("lat", "  51.5  ", -90.0, 90.0),
+            Ok(51.5)
+        );
     }
 
     #[test]
     fn normalize_coordinate_rejects_unparseable_input() {
         let (status, body) = normalize_coordinate("lat", "nope", -90.0, 90.0).unwrap_err();
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("lat"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("lat"),
+            "400 body should name the field: {body}"
+        );
     }
 
     #[test]
@@ -608,7 +614,13 @@ mod db_tests {
                 nearby_stations_route -- --ignored --test-threads=1`"]
     async fn nearby_stations_route_excludes_stations_with_no_coordinates() {
         let pool = connect().await;
-        seed(&pool, "ZGC", "No Coords Route Fixture", serde_json::json!({})).await;
+        seed(
+            &pool,
+            "ZGC",
+            "No Coords Route Fixture",
+            serde_json::json!({}),
+        )
+        .await;
 
         let (status, body) = get(&pool, "/stations/nearby?lat=51.3191&lon=-0.5610").await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -643,9 +655,12 @@ mod db_tests {
         let json: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
         assert_eq!(json.len(), 1, "limit=1 must return exactly 1 row: {body}");
 
-        let (status, body) =
-            get(&pool, "/stations/nearby?lat=51.30&lon=-0.50&limit=100000").await;
-        assert_eq!(status, StatusCode::OK, "an over-large limit is capped, not rejected: {body}");
+        let (status, body) = get(&pool, "/stations/nearby?lat=51.30&lon=-0.50&limit=100000").await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "an over-large limit is capped, not rejected: {body}"
+        );
         let json: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
         assert!(
             json.len() <= NEARBY_MAX_LIMIT as usize,

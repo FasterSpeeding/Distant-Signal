@@ -1295,14 +1295,17 @@ mod db_tests {
         let json: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
         assert_eq!(json["upserted"], 2);
 
-        let stored: Vec<(
+        // destination_crs, scheduled, train_uid, origin_crs, true_origin_crs,
+        // destination_arrival.
+        type StoredDepartureRow = (
             String,
             chrono::NaiveTime,
             String,
             String,
             Option<String>,
             Option<chrono::NaiveTime>,
-        )> = sqlx::query_as(
+        );
+        let stored: Vec<StoredDepartureRow> = sqlx::query_as(
             "SELECT destination_crs, scheduled, train_uid, origin_crs, true_origin_crs, destination_arrival \
              FROM schedule_destination_departures \
              WHERE service_date = '2099-02-01' \

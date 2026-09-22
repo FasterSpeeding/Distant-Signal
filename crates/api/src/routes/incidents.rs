@@ -122,7 +122,10 @@ fn normalize_limit(raw: Option<&str>) -> Result<i64, (StatusCode, String)> {
 }
 
 /// Parses a caller-supplied RFC3339 timestamp for `from`/`to`.
-fn normalize_rfc3339(label: &str, raw: &str) -> Result<chrono::DateTime<chrono::Utc>, (StatusCode, String)> {
+fn normalize_rfc3339(
+    label: &str,
+    raw: &str,
+) -> Result<chrono::DateTime<chrono::Utc>, (StatusCode, String)> {
     chrono::DateTime::parse_from_rfc3339(raw.trim())
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .map_err(|_| {
@@ -255,22 +258,22 @@ async fn search_incidents(
         .map(|s| normalize_rfc3339("to", s))
         .transpose()?;
 
-    if let (Some(from_bound), Some(to_bound)) = (from, to) {
-        if from_bound > to_bound {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "from must not be after to".to_string(),
-            ));
-        }
+    if let (Some(from_bound), Some(to_bound)) = (from, to)
+        && from_bound > to_bound
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "from must not be after to".to_string(),
+        ));
     }
 
-    if let (Some(min), Some(max)) = (params.priority_min, params.priority_max) {
-        if min > max {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "priority_min must not exceed priority_max".to_string(),
-            ));
-        }
+    if let (Some(min), Some(max)) = (params.priority_min, params.priority_max)
+        && min > max
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "priority_min must not exceed priority_max".to_string(),
+        ));
     }
 
     let limit = normalize_limit(params.limit.as_deref())?;
@@ -722,7 +725,11 @@ mod db_tests {
         .expect("seed fixture incidents row");
     }
 
-    async fn get(pool: &PgPool, lines: Vec<common::LineDefinition>, uri: &str) -> (StatusCode, String) {
+    async fn get(
+        pool: &PgPool,
+        lines: Vec<common::LineDefinition>,
+        uri: &str,
+    ) -> (StatusCode, String) {
         let router: axum::Router = crate::app::Router::new()
             .merge(router())
             .with_state(test_app(pool.clone(), lines));
@@ -911,13 +918,25 @@ mod db_tests {
     async fn incident_search_operator_param_is_comma_parsed_and_matches_on_overlap() {
         let pool = connect().await;
         delete_fixtures(&pool).await;
-        seed_incident(&pool, "route-test-2", &["VT", "SW"], &["WAT"], 1, false, false).await;
+        seed_incident(
+            &pool,
+            "route-test-2",
+            &["VT", "SW"],
+            &["WAT"],
+            1,
+            false,
+            false,
+        )
+        .await;
         seed_incident(&pool, "route-test-3", &["GW"], &["PAD"], 1, false, false).await;
 
         let (status, body) = get(&pool, vec![], "/incidents?operator=SW,XX").await;
         assert_eq!(status, StatusCode::OK);
         let rows = results(&body);
-        let ids: Vec<&str> = rows.iter().map(|r| r["incidentId"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = rows
+            .iter()
+            .map(|r| r["incidentId"].as_str().unwrap())
+            .collect();
         assert_eq!(ids, vec!["route-test-2"]);
         delete_fixtures(&pool).await;
     }
@@ -929,7 +948,10 @@ mod db_tests {
         let pool = connect().await;
         let (status, body) = get(&pool, vec![], "/incidents?line=does-not-exist").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("line"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("line"),
+            "400 body should name the field: {body}"
+        );
     }
 
     #[tokio::test]
@@ -952,7 +974,10 @@ mod db_tests {
         let (status, body) = get(&pool, vec![fixture_line()], "/incidents?line=test-line").await;
         assert_eq!(status, StatusCode::OK);
         let rows = results(&body);
-        let ids: Vec<&str> = rows.iter().map(|r| r["incidentId"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = rows
+            .iter()
+            .map(|r| r["incidentId"].as_str().unwrap())
+            .collect();
         assert_eq!(
             ids,
             vec!["route-test-4"],
@@ -972,7 +997,10 @@ mod db_tests {
         let pool = connect().await;
         let (status, body) = get(&pool, vec![], "/incidents?priority_min=5&priority_max=1").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("priority"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("priority"),
+            "400 body should name the field: {body}"
+        );
     }
 
     #[tokio::test]
@@ -987,7 +1015,10 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("from"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("from"),
+            "400 body should name the field: {body}"
+        );
     }
 
     #[tokio::test]
@@ -997,7 +1028,10 @@ mod db_tests {
         let pool = connect().await;
         let (status, body) = get(&pool, vec![], "/incidents?after=!!!not-base64!!!").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("after"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("after"),
+            "400 body should name the field: {body}"
+        );
     }
 
     #[tokio::test]
@@ -1022,7 +1056,10 @@ mod db_tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, body) = get(&pool, vec![], "/incidents?limit=lots").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("limit"), "400 body should name the field: {body}");
+        assert!(
+            body.contains("limit"),
+            "400 body should name the field: {body}"
+        );
 
         let (status, _) = get(&pool, vec![], "/incidents?limit=99999").await;
         assert_eq!(
@@ -1066,12 +1103,14 @@ mod db_tests {
         assert_eq!(results(&first).len(), 1);
         let cursor = next_cursor(&first).expect("a second page exists");
 
-        let (status, second) = get(&pool, vec![], &format!("/incidents?limit=1&after={cursor}")).await;
+        let (status, second) =
+            get(&pool, vec![], &format!("/incidents?limit=1&after={cursor}")).await;
         assert_eq!(status, StatusCode::OK);
         let second_rows = results(&second);
         assert_eq!(second_rows.len(), 1);
         assert_ne!(
-            second_rows[0]["incidentId"], results(&first)[0]["incidentId"],
+            second_rows[0]["incidentId"],
+            results(&first)[0]["incidentId"],
             "`after` must continue from the cursor, not restart at page 1"
         );
         delete_fixtures(&pool).await;
@@ -1096,9 +1135,15 @@ mod db_tests {
         assert_eq!(row["priority"], 3);
         assert_eq!(row["isPlanned"], true);
         assert_eq!(row["isCleared"], false);
-        assert!(row.get("first_seen_at").is_none(), "no stray snake_case field");
+        assert!(
+            row.get("first_seen_at").is_none(),
+            "no stray snake_case field"
+        );
         assert!(row.get("is_planned").is_none(), "no stray snake_case field");
-        assert!(row.get("description").is_none(), "list rows never include description");
+        assert!(
+            row.get("description").is_none(),
+            "list rows never include description"
+        );
         delete_fixtures(&pool).await;
     }
 
