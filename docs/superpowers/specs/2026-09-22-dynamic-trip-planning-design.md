@@ -1,170 +1,55 @@
 # Dynamic Trip Planning — Design Investigation
 
-**Status: research/design investigation, not an approved implementation
-plan.** This document answers a single question honestly: given a start
-station, a finish station, and optionally some waypoints, can this app work
-out an actual multi-hop *route* across the network — which line(s)/train(s)
-to take and where to change — instead of requiring the user to already know
-every interchange? No code was written to produce this document. Citations
-are file:line against `main` as checked out at investigation time; anything
-not directly verified is flagged **Speculative**.
+**Status: design investigation with a finalized v1 scope, not yet an
+approved implementation plan.** This document answers a single question
+honestly: given a start station, a finish station, and optionally some
+waypoints, can this app work out an actual multi-hop *route* across the
+network — which line(s)/train(s) to take and where to change — instead of
+requiring the user to already know every interchange? No code was written
+to produce this document. Citations are file:line against `main`;
+anything not directly verified against this app's own code is flagged
+**Speculative**.
 
-**Correction (2026-09-22, after this investigation completed): `/journeys/new`
-now exists.** It merged into `main` in a near-simultaneous, independent piece
-of work — a dedicated whole-journey creation page (`frontend/app/journeys/new/page.tsx`,
-`frontend/components/JourneyCreationFlow.tsx`), now the app's primary,
-nav-linked entry point for tracking (`TRACK_JOURNEY_DESTINATION` in
-`frontend/lib/navLinks.ts`, placed first in `PRIMARY_NAV_DESTINATIONS`).
-Every claim below that `/journeys/new` "doesn't exist yet" and would need to
-be built as a prerequisite for a "Plan a trip" entry point (§0.8, §2, §5.3,
-§8) is now **stale** — read those passages as: **a "Plan a trip" mode should
-integrate INTO the existing `/journeys/new`/`JourneyCreationFlow` as a third
-creation mode, alongside its current "pick a known train" and "search a
-time window" modes, not as a reason to build that page from scratch.** The
-underlying architectural reasoning in those sections (why a trip-planning
-result should still create a journey via the existing `POST /Journeys` +
-`POST /Journeys/{id}/legs` machinery, one leg at a time) is unaffected and
-still correct — only the "this page doesn't exist, building it is now in
-scope here" framing needs discarding.
+**v1 scope, confirmed by the product owner 2026-09-22 (not re-litigated
+below):**
 
----
+- **GB National Rail only.** No London Underground/DLR/tram, no Northern
+  Ireland, no Republic of Ireland.
+- **Walking transfers between differently-named stations ARE required.**
+  Same-CRS interchange alone is not acceptable; the planner must be able to
+  route via e.g. a cross-London walk between two different CRS codes.
+- **Multi-criteria ranking IS required**, not deferred: a single
+  `results: 'fastest'` earliest-arrival answer AND a `results: 'options'`
+  Pareto set trading arrival time against interchange count.
 
-## Addendum (2026-09-22): findings from a sibling reference implementation
+These three reverse two of this document's own original recommendations
+(walking transfers and multi-criteria ranking were both originally proposed
+as later-phase cuts) and confirm the third (network scope) as originally
+recommended. The reasoning for why the original, narrower recommendations
+made sense — and why it changed — is preserved inline below (§1, §4) where
+a future reader would otherwise wonder why v1 builds two search algorithms
+and two interchange data sources instead of the simpler thing this
+document first proposed. Everything else in the original narrower scope
+(single service day, ≤2 interchanges, no live-disruption awareness, no
+accessibility/fare data) is unchanged and still current.
 
-A sister project in this same organisation —
-`ssh://git@git-bringer-ssh.fox-prometheus.ts.net/lucy/Distant-Signal-MCP.git`,
-an MCP server over the same National Rail CIF data this app ingests — has
-**already built and shipped** exactly this feature (`plan_journey`, per its
-own `docs/superpowers/specs/2026-07-22-train-mcp-phase2b-journey-planner-design.md`
-and `src/tools/plan-journey.ts` + `src/timetable/plan/{csa,raptor,connections,interchange,constraints}.ts`).
-This is real, measured, working prior art on the identical problem against
-the identical data source, not a hypothetical comparison — and it changes
-three of this document's own conclusions materially enough to record here
-rather than silently keep the superseded reasoning above as if untouched.
-
-**1. The resident-index-vs-bounded-subgraph dilemma (§3) may be a false
-choice — there's a third option, already proven at scale.** The sibling
-project builds the **whole day's** connection set fresh per query and
-discards it, no prefilter, no residency: "That is small enough to build per
-query and discard; the store's seven million calling points are never all
-in memory" (design doc, "The connection set"). Measured on a real weekday
-(2026-10-15): 26,848 schedules, 316,362 public calling points, ~289,514
-connections — built once per `plan_journey` call, shared by both search
-algorithms, then thrown away. **This directly undercuts §3's Option 2
-downside** (a catalogue-guided prefilter can silently miss an obscure real
-route) **without taking on §3's Option 1 cost** (a resident whole-network
-index, this codebase's first-ever such commitment) — if ~290K connection
-objects for one day is genuinely cheap to build-and-discard per request (it
-evidently is, in a sibling project against the same feed), a full,
-unbounded connection set built fresh per query may be entirely viable for
-this app's MVP too, sidestepping the tradeoff §3 spent most of its length
-on. **This needs its own measurement against this app's actual schema**
-(the sibling project's own `TimetableStore` is a from-scratch SQLite-backed
-CIF store, not `schedule-query`'s `ScheduleIndex` — the shapes are
-comparable, not identical, and this app's per-CRS Postgres row fetch
-pattern may have different per-query overhead than a purpose-built
-timetable store's own query path) before treating this as settled, but it
-is a real, working existence proof that the false dichotomy this document
-posed in §3 is not the only shape the problem can take.
-
-**2. Walking/differently-named-station transfers are NOT "fully new" (§2's
-table) — they're an unparsed CIF file member this app's own ingestion
-already touches the delivery for.** Confirmed directly against this app's
-own code (`crates/schedule-reference/src/{parser.rs,discovery.rs,main.rs}`):
-this pipeline already discovers and downloads the `RJTTF*MSN.txt` file per
-delivery, but only parses its `TI` (station name/TIPLOC/CRS) records — not
-column 65, which the sibling project verified (against real extract 904:
-3,295 stations, 2,512 of them at 5 minutes, range 0–9, with two documented
-sentinel sub-cases at 98/99 meaning "not a real rail interchange, a
-bus/coach stand" — `src/timetable/plan/interchange.ts`'s own carefully-reasoned
-handling) carries each station's own minimum same-station change time. This
-is a **small parser addition to an already-fetched file**, not new data
-acquisition. Separately, the `ALF` member (fixed links between *different*
-CRS codes — the sibling project's own count: 4,222 links, 1,772 metro,
-1,600 tube, 557 transfer, 237 walk, 50 bus, 4 tram, 2 ferry, each with its
-own validity window since e.g. Euston↔King's Cross is 5–10 min by tube but
-15 by transfer depending on time of day) is **not currently fetched by this
-app's CIF ingestion at all** (grepped, confirmed absent) — genuinely new
-ingestion work, but of an already-standardised CIF file this codebase's
-existing delivery-discovery mechanism would need only a small extension to
-also pick up, not a from-scratch transfer-graph invention as §2's table
-currently states.
-
-**3. Two concrete API/architecture ideas worth adopting regardless of which
-compute option (§3) is chosen:**
-- **Let the caller pick the algorithm by desired outcome, not expose the
-  algorithm name**: a `results: 'fastest' | 'options'` parameter, `'fastest'`
-  running Connection Scan (single earliest-arrival answer, cheaper), `'options'`
-  running RAPTOR (a Pareto set trading arrival time against number of
-  changes — "fewest changes" falls out of RAPTOR's own round structure
-  rather than needing separate logic). This app's MVP (§4) proposed
-  "earliest arrival only, plus 1-2 cheap alternatives as a byproduct" —
-  the sibling project's two-algorithm split is a cleaner way to reach that
-  same place, deferring the RAPTOR/"options" half to a later phase rather
-  than building it into an MVP that only needs CSA.
-- **Differential testing as the primary correctness mechanism**: "For any
-  query, RAPTOR's earliest arrival must equal Connection Scan's... on a
-  graph of roughly 290,000 edges per day no fixture can be hand-verified."
-  Running two independently-implemented algorithms against the same
-  connection set and asserting agreement is a materially cheaper way to
-  gain confidence at this scale than hand-verifying itineraries — directly
-  relevant once/if this app builds a second algorithm, and worth keeping in
-  mind even for a CSA-only MVP as the reason a second algorithm might be
-  worth building sooner than "later phase" if correctness confidence turns
-  out to matter more than this document originally weighted it.
-
-**Not re-litigated here**: the sibling project's `via`/`avoid`/`viaStop`/`avoidStop`
-route constraints, its rich per-leg output (headcode/"wider working" linkage,
-explicit interchange description), and its failure-attribution UX ("name the
-constraint that made it impossible") are all real, well-reasoned ideas worth
-reading directly from that repo's design doc when this feature reaches an
-implementation-planning stage — not summarised exhaustively here since they
-don't change this document's own MVP-scope recommendation (§4), only enrich
-a later phase's design once one exists.
-
----
-
-**A naming collision, flagged up front, same posture as the two parent
-specs' own front-matter warnings.** Two existing design docs already use the
-phrase "trip search"/"whole-network trip search"
-(`docs/superpowers/specs/2026-09-03-trip-search-design.md`,
-`docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md` and
-its research doc). **Neither is what this document is about.** Both are
-about auto-filling a *single* `TrackTrainForm`/`journey_legs` window-search
-leg's own fields from a live or CIF-derived departure board at one already-known
-station — a nicer picker for a leg the user still originates and terminates
-themselves. Both explicitly say so: *"Neither shape needs a
-journey-planning algorithm (RAPTOR/Connection Scan). That was the original
-research doc's inclusion, not a requirement of `TrackTrainForm` itself...
-[it] was never a multi-leg journey planner"*
-(`2026-09-04-whole-network-trip-search-research.md:316-322`). This
-document is the first one in this codebase to actually take on that
-deferred, harder problem: computing the hops and interchanges themselves,
-not just searching within one already-chosen hop. Recommend calling the new
-product surface **"Plan a trip"** or **"Route planner"** in all
-user-facing copy and code, never "trip search," to avoid exactly the kind
-of collision the two prior naming warnings in this codebase's own spec
-history were trying to prevent.
-
-Required reading consumed in full before this document was written:
-`lines/SCHEMA.md`; `lines/gwr-main-line.toml` (and spot-checks of several
-siblings); `crates/schedule-query/src/resolve.rs`, `records.rs`, `parse.rs`,
-`lib.rs`; `crates/schedule-reference/src/main.rs`;
-`crates/api/src/data/queries.rs` (`search_schedule_calling_point_departures`,
-`search_journey_leg_candidates`, and their surrounding doc comments in
-full); `crates/api/src/routes/reference.rs` (`get_nearby_stations` and its
-tests); `crates/poller-irish-rail-gtfs/src/mapping.rs`;
-`crates/common/src/island_of_ireland.rs`; `crates/poller-tfl/src/main.rs`,
-`schema.rs`, `config.rs`; `crates/api/src/routes/journeys.rs`,
-`crates/api/src/data/journeys.rs` (every public function signature);
-`docs/superpowers/specs/2026-09-22-journey-tracking-design.md`;
-`docs/superpowers/specs/2026-09-22-reusable-repeating-journeys-design.md`;
-`docs/superpowers/specs/2026-09-04-whole-network-trip-search-research.md`
-and its sibling design doc; `docs/superpowers/specs/2026-09-03-trip-search-design.md`.
-A repo-wide grep for `interchange|walking connection|walk_time|footpath|transfer_time`
-and for `template|preset|recurring|recurrence|repeat|cron|rrule` (the latter
-already run by the reusable-journeys doc, reused here) found nothing
-product-facing relevant to routing in either case.
+A sister project in this organisation —
+`Distant-Signal-MCP`, an MCP server over the same National Rail CIF data
+this app ingests — has **already built and shipped** exactly this feature
+(`plan_journey`), and its design and code are cited throughout this
+document as real, working prior art on the identical problem against the
+identical data source. **Provenance note on those citations**: this
+document's original investigation cloned that repository and read
+`src/tools/plan-journey.ts` and `src/timetable/plan/{csa,raptor,connections,
+interchange,constraints}.ts` and `src/timetable/cif/alf.ts` directly. This
+rewrite attempted to re-read those files to describe the algorithm shapes
+in more depth, but the clone no longer exists on disk at the path it was
+checked out to — it was not re-fetched for this pass. Every sibling-project
+claim below is therefore carried forward from the original investigation's
+own file:line citations and direct quotes (which are specific enough to be
+real evidence, not vague gesturing at "a sibling project has this"), not
+independently re-verified against the source a second time. This app's
+*own* code was re-verified directly this pass (see §0.2, §0.4, §0.8 below).
 
 ---
 
@@ -231,9 +116,7 @@ Concretely:
   variant (Permanent/Overlay/New/Cancellation), independently confirmed
   against real production data at **463,947 real `BS` records, 234,941
   distinct UIDs, zero parse errors**
-  (`docs/superpowers/specs/2026-09-04-whole-network-trip-search-research.md:56-64`,
-  reconfirmed by this document's own reading of `resolve.rs`/`records.rs`
-  in full, not re-run here).
+  (`docs/superpowers/specs/2026-09-04-whole-network-trip-search-research.md:56-64`).
 - `ScheduleIndex::schedule_for_uid(uid, date)` → `resolve_for_date`
   (`resolve.rs:97-128`) resolves **one train's one calendar day** to a
   single winning STP variant (`min_by_key` over `StpIndicator`'s
@@ -265,16 +148,74 @@ Concretely:
   index anywhere in this codebase today, by deliberate, twice-documented
   design choice, see §3).
 - The TIPLOC→CRS bridge is a **second, independent, also-whole-network**
-  output of the *same* poll cycle: `common::StanoxCrsRecord`
-  (`{stanox, crs, tiploc, station_name, source_sequence}`), read live via
-  `stanox_crs`, a real **~3,100-row table**, fully rewritten every cycle
-  (`2026-09-01-schedule-ingest-stanox-crs-table-design.md:521`,
-  `queries::upsert_stanox_crs`). Combined with `ScheduleIndex`, this gives
-  — for the whole GB National Rail network, for one calendar day, rebuilt
-  every 30 minutes — every train's ordered `(CRS, scheduled arrival,
-  scheduled departure)` sequence. **This is not a future cost to build; it
-  is a byproduct this app already produces and currently only projects
-  down into narrower per-station/per-line views.**
+  output of the *same* poll cycle, and its own ingestion pipeline is worth
+  describing precisely because it's the exact mechanism a walking-transfers
+  feature needs to extend (§0.4, §8 Phase 1). Re-verified directly against
+  `crates/schedule-reference/src/{parser.rs,discovery.rs,main.rs}` this
+  pass:
+  - `discovery::latest_complete_delivery` (`discovery.rs:38-72`) finds the
+    most recent delivery directory that has **both** a `RJTTF*MCA.txt` and
+    a `RJTTF*MSN.txt` file directly inside it (matched by filename
+    prefix/suffix, not a reconstructed sequence number) — a delivery
+    missing either file is skipped entirely, falling back to the
+    next-most-recent complete one.
+  - `main.rs`'s `poll_once` (`main.rs:101-131`) then reads **`TI`-prefixed
+    lines from the `MCA` file** and **`A`-prefixed lines from the `MSN`
+    file** (`read_prefixed_lines(&delivery.mca_path, "TI")` /
+    `read_prefixed_lines(&delivery.msn_path, "A")`, `main.rs:119-120`) —
+    **correcting an imprecision in this document's own prior draft**,
+    which described the TI/TIPLOC/CRS records it discusses as coming from
+    the MSN file; they in fact come from the MCA file (`parser.rs:17`,
+    "One parsed `TI`... record from a CIF `MCA` file"). The MSN file's own
+    contribution is its `A` records, and today only two of their fields are
+    parsed at all: `parse_msn_a_lines` (`parser.rs:76-93`) reads only bytes
+    `36..43` (TIPLOC) and `49..52` (CRS) off each `A` line, purely to
+    backfill a `TI` record's blank CRS field (the WATRLMN case) — every
+    byte of the `A` line past offset 52 is read into memory (`a_text` is
+    the *whole* matching line, not a truncated one) but never parsed into
+    any structured field today.
+  - **This matters directly for interchange-time data (§0.4, §4).** The
+    sibling `Distant-Signal-MCP` project's own verified extraction of a
+    real MSN `A` record found a minimum-interchange-time value at column
+    65 (range 0–9 minutes, with 98/99 sentinel values meaning "not a real
+    rail interchange, a bus/coach stand"). Since this app's own `a_text`
+    already holds that byte range in memory once per 30-minute cycle —
+    it's simply never read past byte 52 — **surfacing it needs no new file
+    discovery and no new I/O of any kind**, only a new field on
+    `parse_msn_a_lines`' output (or a sibling parse function reading the
+    same already-fetched `a_text`). This is a smaller change than even the
+    original addendum framed it as: not "parse a new part of an
+    already-fetched file" but "parse a few more bytes of a line this
+    process already holds as a `String` in memory."
+  - The resolved STANOX→CRS table (`common::StanoxCrsRecord`
+    `{stanox, crs, tiploc, station_name, source_sequence}`) is a real
+    **~3,100-row table**, fully rewritten every cycle
+    (`2026-09-01-schedule-ingest-stanox-crs-table-design.md:521`,
+    `queries::upsert_stanox_crs`, posted from `schedule-reference` to
+    `api`'s ingest route — `crates/api/src/routes/ingest.rs:365-370`).
+    Combined with `ScheduleIndex`, this gives — for the whole GB National
+    Rail network, for one calendar day, rebuilt every 30 minutes — every
+    train's ordered `(CRS, scheduled arrival, scheduled departure)`
+    sequence. **This is not a future cost to build; it is a byproduct this
+    app already produces and currently only projects down into narrower
+    per-station/per-line views.**
+  - **The `ALF` file (CIF's fixed-links member, needed for walking
+    transfers between *different* CRS codes) is not part of this pipeline
+    at all today.** `discovery.rs`'s `CompleteDelivery` struct has exactly
+    two path fields, `mca_path` and `msn_path` — no third. A repo-wide
+    grep for `ALF` against `crates/` (this pass) finds zero references to
+    the CIF file member anywhere. This is genuinely new ingestion work:
+    extending `CompleteDelivery` to also require and locate a
+    `RJTTF*ALF.txt` file, and a new parser module (mirroring `parser.rs`'s
+    shape) for its fixed-link records. Per the sibling project's own
+    verified count: 4,222 links, 1,772 metro, 1,600 tube, 557 transfer,
+    237 walk, 50 bus, 4 tram, 2 ferry, each with its own validity window
+    (e.g. Euston↔King's Cross is 5–10 min by tube but 15 by transfer
+    depending on time of day) — a genuinely richer record shape than the
+    STANOX/CRS table this pipeline already produces, not a trivial
+    addition, but of an already-standardised CIF file this codebase's
+    existing delivery-discovery mechanism needs only a structural
+    extension, not a reinvention, to pick up.
 - **What it genuinely lacks**, confirmed by reading `records.rs`/`parse.rs`
   in full (also independently reconfirmed by
   `2026-09-04-whole-network-trip-search-research.md:87-121`): no operator,
@@ -307,7 +248,7 @@ subset of §0.2's data (`schedule_destination_departures`, populated by
   multi-station path query.
 - `search_journey_leg_candidates` (`queries.rs`, ~1654-1763) is the
   sibling used by the shipped journey-tracking feature's window-search leg
-  (§0.6) — same shape, no `true_origin_crs`/`stops_at` params, built to
+  (§0.8) — same shape, no `true_origin_crs`/`stops_at` params, built to
   answer "candidates for leg N's own origin→destination, within its own
   time window" for exactly **one** leg at a time.
 
@@ -316,42 +257,50 @@ once per user action today.** There is no code anywhere in
 `crates/api`/`crates/schedule-reference`/`crates/schedule-query` that
 chains one such query's result into a second query's input — no "having
 found a train to the interchange, now search onward from there." **The
-existing multi-leg journey feature (§0.6) achieves "multiple legs" entirely
+existing multi-leg journey feature (§0.8) achieves "multiple legs" entirely
 by asking the *user* to run this single-hop search once per leg, by hand,
 after the user has already decided the interchange themselves.** This is
-the precise gap the task brief describes: the building block for "one hop,
+the precise gap this document addresses: the building block for "one hop,
 time-windowed" exists and is solid; the building block for "chain hops
 together to find a route the user didn't already know" does not exist
 anywhere in this codebase, in any form, today.
 
-### 0.4 "Stations near each other" — geographic only, on demand, not a transfer graph
+### 0.4 "Stations near each other" and walking transfers — geographic primitive exists, no transfer graph exists yet
 
 `GET /public/stations/nearby?lat=&lon=` (`crates/api/src/routes/reference.rs:100-118`,
 `reference::nearest_stations`) answers "nearest stations to an arbitrary
 lat/lon" via a Haversine-distance query, for the frontend's "near me"
 feature — unauthenticated, read-only, capped at `NEARBY_MAX_LIMIT = 50`
-(`reference.rs:35`). It is **seeded by the user's own GPS location today**,
-but nothing about the query itself requires that — the same query, seeded
-with one *station's own* lat/lon instead of a user's, would answer "which
-other stations are near this one," which is exactly the primitive a
-walking-transfer feature (e.g., "Reading is a 4-minute walk from Reading
-West," or the classic London-terminus cluster) would need.
-
-**What does not exist**: any persisted table of *known* walking
-interchanges (no `station_transfers`, no curated "these two differently-named
-CRSs are the same real-world interchange" list), any walk-time estimate
-derived from distance, and — most importantly — **zero integration of this
-route anywhere near a search/candidate/journey code path**. It is used
-exclusively by a "stations near me" feature
+(`reference.rs:35`). It is **seeded by the user's own GPS location today**
 (per the git log's own recent commit, "feat(frontend): add 'Use my
-location' near-me station lookup"), unrelated to routing. A real trip
-planner that wants to say "change at Reading, it's a short walk to the bus
-station" (or, more importantly for rail-only routing, "King's Cross and
-St Pancras are effectively one interchange") has **no existing data model
-to draw on** beyond this raw distance-query building block — it would need
-either a new curated table (mirroring how `lines/*.toml`'s `segment` field
-is itself a curated, hand-maintained hint) or a live radius-search-derived
-heuristic, neither of which exists today.
+location' near-me station lookup"), and is not wired to anything
+transfer-related — but nothing about the query itself requires GPS input;
+the same query, seeded with one *station's own* lat/lon, would answer
+"which other stations are near this one."
+
+**What genuinely does not exist today**: any persisted table of *known*
+walking interchanges (no `station_transfers`, no curated "these two
+differently-named CRSs are the same real-world interchange" list), and any
+walk-time estimate derived from distance. §0.2 above covers the two real
+data sources v1 needs to build this properly, confirmed directly against
+this app's own ingestion this pass:
+
+- **Same-station changes** (e.g. changing platforms at a station both
+  trips call at): needs no new *data source*, only the MSN `A` record's
+  column-65 minimum-interchange-time field this app's ingestion already
+  holds in memory but doesn't parse (§0.2) — a small parser addition.
+- **Cross-station walking transfers** (e.g. King's Cross ↔ St Pancras,
+  differently-named CRSs): needs the `ALF` CIF file member, not fetched by
+  this app's ingestion at all today (§0.2) — genuinely new acquisition
+  work, of an already-standardised file.
+
+The Haversine "nearby stations" query remains a useful independent
+fallback/sanity-check primitive (e.g. flagging an `ALF` link whose two
+stations are implausibly far apart), but is not itself a substitute for
+either of the two CIF-sourced interchange data sources above — it has no
+notion of which nearby stations are *actually* a sanctioned interchange
+(two stations can be geographically close without any real walking route
+or fare-through arrangement between them).
 
 ### 0.5 GTFS (`crates/poller-irish-rail-gtfs`) — a real trip/stop_times shape exists, but only as a one-shot catalogue-population tool, scoped to the Republic of Ireland only
 
@@ -372,9 +321,11 @@ or re-queries the full GTFS trip set afterward — no `transfers.txt` is
 read at all (grepped directly, zero hits for `transfers` anywhere in this
 crate). **This is a one-off ETL helper for the ROI line catalogue, not a
 running schedule-query service** — nothing like `schedule-reference`'s
-30-minute republish cycle exists for it.
+30-minute republish cycle exists for it. This is also, independently, the
+data source for the network this v1 excludes entirely (§0.6), so it is not
+on this feature's critical path at all.
 
-### 0.6 What "the network" actually spans today, and the hard boundary that follows from it
+### 0.6 What "the network" actually spans today, and why v1 is GB National Rail only
 
 Confirmed directly, not assumed: `lines/*.toml`'s `mode` field is **always**
 `"national-rail"` (§0.1) — this includes London Overground, the Elizabeth
@@ -405,32 +356,29 @@ all**. NI Railways and Iarnród Éireann are simply not in the Network Rail
 CIF SCHEDULE feed; they are entirely different national rail
 administrations with entirely different upstream data sources.
 
-**The concrete, load-bearing consequence for this whole document**: a
-route-finding engine built on top of §0.2's already-existing whole-network
-CIF resolve can, realistically, cover **Great Britain National Rail (and
-whatever TfL-branded services are folded into the same CIF feed) —
-and nothing else.** It cannot route across the London Underground network
-at all (no timetable data exists for it in this codebase, of any kind —
-only line status), and it cannot route within or across Northern Ireland
-or the Republic of Ireland without an entirely separate data-modeling
-effort building a *second*, GTFS-based route-finding engine over
-`poller-irish-rail-gtfs`'s already-fetched (but currently discarded after
-one representative-trip extraction) GTFS data — itself a real, but
-separately-scoped and separately-sized, piece of future work. **The task
-brief's framing of "~125+ lines... National Rail, TfL, Northern Ireland,
-Republic of Ireland" should be read, honestly, as roughly two independent
-route-finding problems of very different maturity — one (GB National Rail)
-has almost all its hard data-plumbing already built and sunk-cost-paid;
-the other (Underground + island-of-Ireland) has essentially none of it.**
-This document scopes its MVP (§4) to the former only, and names the
-latter as explicitly out of scope, not silently assumed away.
+**The concrete, load-bearing consequence**: a route-finding engine built on
+top of §0.2's already-existing whole-network CIF resolve can, realistically,
+cover **Great Britain National Rail (and whatever TfL-branded services are
+folded into the same CIF feed) — and nothing else.** It cannot route across
+the London Underground network at all (no timetable data exists for it in
+this codebase, of any kind — only line status), and it cannot route within
+or across Northern Ireland or the Republic of Ireland without an entirely
+separate data-modeling effort building a *second*, GTFS-based route-finding
+engine over `poller-irish-rail-gtfs`'s already-fetched (but currently
+discarded after one representative-trip extraction) GTFS data — itself a
+real, but separately-scoped and separately-sized, piece of future work.
+This is roughly two independent route-finding problems of very different
+maturity — one (GB National Rail) has almost all its hard data-plumbing
+already built and sunk-cost-paid; the other (Underground + island-of-Ireland)
+has essentially none of it. The product owner has confirmed v1 scopes to
+the former only (§4); the latter is named as explicitly out of scope, not
+silently assumed away.
 
-### 0.7 Precedent search — genuinely no prior design for this
+### 0.7 Precedent search, and a naming collision flagged up front
 
 A full read of `docs/superpowers/specs/2026-09-04-whole-network-trip-search-research.md`
-and its design doc, and `docs/superpowers/specs/2026-09-03-trip-search-design.md`
-(§0.3 above already summarizes why these are adjacent-but-different), plus
-a scan of every other spec/plan title in `docs/superpowers/specs/` and
+and its design doc, and `docs/superpowers/specs/2026-09-03-trip-search-design.md`,
+plus a scan of every other spec/plan title in `docs/superpowers/specs/` and
 `docs/superpowers/plans/` for "journey planning," "route finding,"
 "interchange," "connections," or "multi-leg search," turned up **nothing
 that designs or even seriously scopes multi-hop, cross-line route
@@ -447,12 +395,61 @@ composing routes across lines. **This is genuinely greenfield algorithmic
 territory for this codebase**, not a rediscovery of existing, unused
 capability.
 
-### 0.8 The existing journey-tracking feature — the integration target, confirmed live on `main`
+**A naming collision, worth flagging with the same posture as the two
+adjacent specs' own front-matter warnings.** Two existing design docs
+already use the phrase "trip search"/"whole-network trip search"
+(`docs/superpowers/specs/2026-09-03-trip-search-design.md`,
+`docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md` and
+its research doc). **Neither is what this document is about.** Both are
+about auto-filling a *single* `TrackTrainForm`/`journey_legs` window-search
+leg's own fields from a live or CIF-derived departure board at one already-known
+station — a nicer picker for a leg the user still originates and terminates
+themselves. Both explicitly say so: *"Neither shape needs a
+journey-planning algorithm (RAPTOR/Connection Scan). That was the original
+research doc's inclusion, not a requirement of `TrackTrainForm` itself...
+[it] was never a multi-leg journey planner"*
+(`2026-09-04-whole-network-trip-search-research.md:316-322`). This
+document is the first one in this codebase to actually take on that
+deferred, harder problem: computing the hops and interchanges themselves,
+not just searching within one already-chosen hop. Recommend calling the new
+product surface **"Plan a trip"** or **"Route planner"** in all
+user-facing copy and code, never "trip search," to avoid exactly the kind
+of collision the two prior naming warnings in this codebase's own spec
+history were trying to prevent. (Still an open question, §7 — no existing
+precedent settles the exact name or API prefix.)
+
+**Required reading consumed in full before this document was originally
+written**: `lines/SCHEMA.md`; `lines/gwr-main-line.toml` (and spot-checks
+of several siblings); `crates/schedule-query/src/resolve.rs`, `records.rs`,
+`parse.rs`, `lib.rs`; `crates/schedule-reference/src/main.rs`;
+`crates/api/src/data/queries.rs` (`search_schedule_calling_point_departures`,
+`search_journey_leg_candidates`, and their surrounding doc comments in
+full); `crates/api/src/routes/reference.rs` (`get_nearby_stations` and its
+tests); `crates/poller-irish-rail-gtfs/src/mapping.rs`;
+`crates/common/src/island_of_ireland.rs`; `crates/poller-tfl/src/main.rs`,
+`schema.rs`, `config.rs`; `crates/api/src/routes/journeys.rs`,
+`crates/api/src/data/journeys.rs` (every public function signature);
+`docs/superpowers/specs/2026-09-22-journey-tracking-design.md`;
+`docs/superpowers/specs/2026-09-22-reusable-repeating-journeys-design.md`;
+`docs/superpowers/specs/2026-09-04-whole-network-trip-search-research.md`
+and its sibling design doc; `docs/superpowers/specs/2026-09-03-trip-search-design.md`;
+and, for the sibling reference implementation, its own
+`docs/superpowers/specs/2026-07-22-train-mcp-phase2b-journey-planner-design.md`,
+`src/tools/plan-journey.ts`, and
+`src/timetable/plan/{csa,raptor,connections,interchange,constraints}.ts`
+and `src/timetable/cif/alf.ts` (see provenance note at the top of this
+document for this pass's re-verification status). A repo-wide grep for
+`interchange|walking connection|walk_time|footpath|transfer_time` and for
+`template|preset|recurring|recurrence|repeat|cron|rrule` found nothing
+product-facing relevant to routing in either case, this pass's own `ALF`
+grep (§0.2) included.
+
+### 0.8 The existing journey-tracking feature and `/journeys/new` — the integration target, confirmed live on `main`
 
 Full detail in `docs/superpowers/specs/2026-09-22-journey-tracking-design.md`;
 the load-bearing pieces for this document, reconfirmed directly against
 `crates/api/src/routes/journeys.rs`/`crates/api/src/data/journeys.rs` as
-they exist on `main` today (not a WIP branch):
+they exist on `main` today:
 
 ```
 journeys       (id, user_id, custom_name, created_at, updated_at)
@@ -464,8 +461,8 @@ journey_legs   (id, journey_id, leg_order, origin_crs, destination_crs,
 
 Routes (`journeys.rs:24-45`): `POST /Journeys` (create, with an inline
 first leg — three wire-discriminated modes, `mode: "pin" | "knownTrain" |
-"window"`, §0.8's own doc comment at `journeys.rs:47-60` explains the tag
-design), `GET /Journeys/mine`, `GET /Journeys/{id}`, `GET
+"window"`, `journeys.rs:47-60` explains the tag design), `GET
+/Journeys/mine`, `GET /Journeys/{id}`, `GET
 /Journeys/{id}/legs/{leg_id}/candidates` (the single-hop search, §0.3),
 `POST /Journeys/{id}/legs/{leg_id}/train` (commit a chosen candidate —
 `set_leg_train_subscription`, `journeys.rs`(data) `:514`), `POST
@@ -482,21 +479,27 @@ planner would produce per hop: a `knownTrain`-mode leg
 `train_uid`/`service_date` directly, with **no window search needed at
 all** — precisely what a route-planning engine has already determined for
 each hop, unlike a human user who still has to browse `GET
-.../candidates` themselves. §5 below designs exactly this integration.
+.../candidates` themselves.
 
-Frontend note: **`frontend/app/journeys/new/` does not exist yet**
-(confirmed: `find frontend/app/journeys -maxdepth 2` returns only
-`frontend/app/journeys/[id]/page.tsx` — the detail/view page — and the
-existing creation entry points remain `frontend/app/track/page.tsx`
-(`TrackTrainForm`) and `TrackThisTrainButton.tsx`, per the parent spec's
-own §7.2, which recommends but had not yet, as of this reading, shipped
-`/track` → `/journeys/new` becoming the primary creation surface). **A
-"Plan a trip" flow has no existing page to slot into as an "alternative
-mode" on day one** — it would be creating that missing `/journeys/new`
-surface itself, or a sibling `/journeys/plan` page, not modifying an
-established one. See §5.4.
+**`/journeys/new` now exists** — re-verified directly this pass by reading
+`frontend/app/journeys/new/page.tsx` and
+`frontend/components/JourneyCreationFlow.tsx`. It is the app's primary,
+nav-linked entry point for tracking (`TRACK_JOURNEY_DESTINATION` in
+`frontend/lib/navLinks.ts:43`, placed first in `PRIMARY_NAV_DESTINATIONS`).
+Concretely: `JourneyCreationFlow` renders `TrackTrainForm` (unmodified
+except for one new `onCreated` prop) until a first leg exists as a real
+`POST /Journeys` row, then switches to a per-leg summary view with an
+inline "Add a leg" (`AddJourneyLegButton`, gated by the existing
+`journeyCanAddLeg` rule) and an always-available "Done" link to
+`/journeys/{id}`. It creates leg 1 immediately and chains further legs on
+one `POST /Journeys/{id}/legs` call at a time, rather than composing a
+whole draft client-side and submitting it atomically — deliberately, per
+the page's own doc comment, to avoid inventing a new atomic
+multi-leg-create endpoint and its own partial-failure semantics. **A "Plan
+a trip" flow's natural home is a third mode on this same page** (§5.3),
+not a new page built from scratch.
 
-### 0.9 Reusable/repeating journeys (in-flight, per the task brief) — orthogonal, not blocking
+### 0.9 Reusable/repeating journeys (in-flight) — orthogonal, not blocking
 
 `docs/superpowers/specs/2026-09-22-reusable-repeating-journeys-design.md`
 adds `journey_templates`/`journey_template_legs` (a saved, date-less
@@ -515,7 +518,7 @@ design for now.
 
 ---
 
-## 1. The real algorithmic problem, researched honestly
+## 1. The real algorithmic problem, and why v1 builds two search algorithms
 
 Real timetable-based journey planning at national-network scale is a
 well-studied, decades-old research area — this is not a "write some SQL"
@@ -547,7 +550,10 @@ families, and why each does or doesn't fit this app's actual shape:
   already computes**: walking each `ResolvedSchedule.calling_points` in
   order and emitting one connection per adjacent pair is a small,
   mechanical transform of data this app's own poller already builds every
-  cycle.
+  cycle. CSA's raw output is an earliest-arrival *frontier*, not a
+  human-presentable itinerary — recovering the actual leg-by-leg path
+  needs a standard back-pointer/predecessor trace over that scan, itself
+  new code (§2).
 - **RAPTOR (Round-based Public Transit Optimized Router)** (Delling et
   al.), and its multi-criteria sibling **McRAPTOR**. Processes the query in
   "rounds" (round *k* = "reachable using at most *k* trips"), each round
@@ -558,39 +564,25 @@ families, and why each does or doesn't fit this app's actual shape:
   routing heritage traces to this family). McRAPTOR extends it to return a
   Pareto-optimal set of itineraries balancing arrival time against number
   of transfers (and other criteria) simultaneously, instead of a single
-  "best" answer. **This is the more scalable, more feature-complete
-  choice long-term**, but it needs one thing CSA doesn't: grouping trips
-  into "routes" by identical stop pattern, which this app's data doesn't
-  do today (§0.2's `ScheduleIndex` is UID-keyed, not route-pattern-keyed) —
-  a real, if modest, additional preprocessing step.
+  "best" answer — this is what gives v1's `results: 'options'` mode its
+  Pareto set, with "fewest changes" falling out of RAPTOR's own round
+  structure rather than needing separate logic. It needs one thing CSA
+  doesn't: grouping trips into "routes" by identical stop pattern, which
+  this app's data doesn't do today (§0.2's `ScheduleIndex` is UID-keyed,
+  not route-pattern-keyed) — a real, if modest, additional preprocessing
+  step.
 - Both CSA and RAPTOR are **static-timetable, single-service-day**
   algorithms by nature — neither natively reasons about *live* delay data
   changing which connections are actually reachable mid-journey (that's a
   separate, harder "realtime-aware routing" extension neither this
-  document nor a first build should attempt — see §4's MVP scope).
+  document nor v1 should attempt — see §4's scope).
 
-**Superseded by product decisions below (recorded 2026-09-22) — kept for its
-reasoning, not its conclusion.** The product owner has since confirmed
-multi-criteria ranking IS a day-one requirement, not deferred to Phase 2
-(§7 Q4, resolved). This section's original recommendation ("CSA only, defer
-RAPTOR") no longer describes v1. **Revised recommendation: build BOTH
-algorithms from day one, adopting the sibling `Distant-Signal-MCP` project's
-own proven shape (see the Addendum above) — Connection Scan for a single
-`results: 'fastest'` earliest-arrival answer, RAPTOR for a `results:
-'options'` Pareto set trading arrival time against interchange count — and
-use their required agreement on earliest-arrival as the primary correctness
-mechanism (Addendum, point 3), since that mechanism is now available from
-day one rather than "once a second algorithm eventually gets built."** The
-reasoning in points 1-3 below for why CSA fits this codebase's existing
-"transient, rebuilt-per-cycle, never resident" posture still holds and still
-applies to CSA's own role — RAPTOR is additive, not a replacement, and its
-own connections-array input is the *same* structure CSA consumes (per the
-Addendum, both algorithms share one connections build in the sibling
-project). This does mean v1 now needs the sibling project's `raptor.ts`-shaped
-round-based search too, not just `csa.ts`-shaped — a materially larger v1
-than this section originally scoped, reflected in §4's revised MVP below.
+### Why v1 builds both, not CSA alone
 
-**Original CSA-only reasoning, preserved for context:**
+This document's own original recommendation, before the product owner's
+2026-09-22 decisions, was **CSA only**, deferring RAPTOR to a later phase.
+That reasoning is worth preserving, because it explains a real, considered
+tradeoff rather than an oversight later corrected on a whim:
 
 1. CSA's input requirement is the smallest possible delta on top of data
    this app already produces every 30 minutes — no route-pattern grouping
@@ -605,12 +597,37 @@ than this section originally scoped, reflected in §4's revised MVP below.
    lightweight restart-safe poller). CSA's single flat sorted array is a
    more natural fit for "build fresh, use once, discard" than RAPTOR's
    round/route bookkeeping.
-3. For an MVP scoped to single-criterion earliest-arrival ranking (§4), CSA
-   and RAPTOR perform comparably; RAPTOR's real advantage (multi-criteria
-   Pareto sets via McRAPTOR) only pays off once multi-criteria ranking is
-   an actual requirement (§4's Phase 2+), at which point revisiting the
-   engine choice — or layering a simple Pareto filter over repeated CSA
-   runs — is a real, but deferrable, follow-on decision (§7).
+3. For a single-criterion earliest-arrival MVP, CSA and RAPTOR perform
+   comparably; RAPTOR's real advantage (multi-criteria Pareto sets via
+   McRAPTOR) only pays off once multi-criteria ranking is an actual
+   requirement.
+
+**What changed**: the product owner has confirmed multi-criteria ranking is
+a v1 requirement, not a later phase — so point 3's premise no longer holds.
+Rather than build RAPTOR from a standing start, v1 adopts the sibling
+`Distant-Signal-MCP` project's own proven shape for exactly this situation:
+let the caller pick the algorithm by desired outcome, not by name — a
+`results: 'fastest' | 'options'` parameter, `'fastest'` running Connection
+Scan (single earliest-arrival answer, cheaper), `'options'` running RAPTOR
+(the Pareto set described above). Both algorithms consume the *same*
+connections-array build (point 1's reasoning about a minimal, mechanical
+transform still holds — it's shared, not duplicated), so the "transient,
+rebuilt-per-cycle-or-per-query, never resident" posture in point 2 still
+applies to both, not just CSA; RAPTOR is additive to that posture, not a
+departure from it.
+
+This pairing also solves a real, separate problem v1 would otherwise face
+on its own: **correctness confidence at this scale.** On a graph of roughly
+290,000 connections per day (§3), no fixture set can be hand-verified
+exhaustively. The sibling project's own design reasoning — "for any query,
+RAPTOR's earliest arrival must equal Connection Scan's" — makes running two
+independently-implemented algorithms against the same connections array
+and asserting agreement on earliest-arrival the primary correctness
+mechanism, materially cheaper to gain confidence from than hand-verifying
+itineraries one at a time. This is available from day one precisely
+because v1 builds both algorithms together, rather than "once a second
+algorithm eventually gets built" — see §8 Phase 4's differential testing
+task.
 
 **This is genuinely hard, well-precedented engineering, not a quick SQL
 query — but this codebase's specific starting position is unusually good**:
@@ -618,11 +635,22 @@ the single most expensive part of any real implementation (a correct,
 whole-network, STP-overlay-resolved, day-offset-correct national timetable)
 is not a future cost here. It is a sunk, already-running cost (§0.2). What
 remains is: (a) a mechanical connections-array transform of that existing
-data, (b) the scan algorithm itself, (c) a hosting/refresh model for where
-that transform runs (§3), and (d) the product-integration layer (§5) — all
-real work, none of it hypothetical-scale-of-a-month CIF parsing this
-codebase has already separately, correctly concluded is not worth
-re-doing (§0.2's own citations).
+data, (b) the two scan algorithms themselves, (c) the interchange data
+(§0.4) both need, (d) a hosting/refresh model for where the transform runs
+(§3), and (e) the product-integration layer (§5) — all real work, none of
+it hypothetical-scale-of-a-month CIF parsing this codebase has already
+separately, correctly concluded is not worth re-doing (§0.2's own
+citations).
+
+**Not re-litigated here**: the sibling project's `via`/`avoid`/`viaStop`/
+`avoidStop` route constraints, its rich per-leg output (headcode/"wider
+working" linkage, explicit interchange description), and its
+failure-attribution UX ("name the constraint that made it impossible") are
+all real, well-reasoned ideas worth reading directly from that repo's
+design doc when this feature reaches an implementation-planning stage — not
+summarised exhaustively here since they don't change this document's own
+v1-scope recommendation (§4), only enrich a later phase's design once one
+exists.
 
 ---
 
@@ -633,13 +661,14 @@ re-doing (§0.2's own citations).
 | Whole-network, STP-resolved, day-offset-correct calling-point data for one service day | **Reused entirely** — `schedule_query::ScheduleIndex`, already running every 30 min (§0.2) |
 | TIPLOC→CRS resolution | **Reused entirely** — `stanox_crs`, same cycle (§0.2) |
 | One-hop, time-windowed candidate search | **Reused entirely** — `search_schedule_calling_point_departures`/`search_journey_leg_candidates` (§0.3), though the *multi-hop planner itself will not call these Postgres queries* — it needs an in-memory connections array, not per-hop round-trip SQL (§3) |
-| A connections array (`(dep_stop, dep_time, arr_stop, arr_time, trip_id)`, sorted by departure time) | **New** — a mechanical transform of `ScheduleIndex`'s calling points, structurally adjacent to `departures_by_crs`'s own per-schedule walk (§0.2), but nothing today produces this exact shape |
-| The CSA scan itself (multi-hop path search) | **New** — no code anywhere in this repo composes more than one hop (§0.3, §0.7) |
-| Same-CRS interchange ("change trains at a station both trips call at") | **New logic, but needs no new data** — a CRS a departing connection and an arriving connection share is already expressible from the connections array alone |
-| Walking transfers between *different* CRSs (e.g. King's Cross ↔ St Pancras) | **Fully new** — no persisted transfer graph exists (§0.4); `nearby_stations`'s Haversine query is a usable primitive but is not wired to anything transfer-related today |
-| Ranking / itinerary selection (earliest arrival; later, multi-criteria) | **New** — CSA's raw output is "earliest arrival per stop," not a ranked, human-presentable itinerary list; assembling the actual leg-by-leg path (not just the arrival-time frontier) needs a standard CSA back-pointer/predecessor trace, itself new code |
+| A connections array (`(dep_stop, dep_time, arr_stop, arr_time, trip_id)`, sorted by departure time) | **New** — a mechanical transform of `ScheduleIndex`'s calling points, structurally adjacent to `departures_by_crs`'s own per-schedule walk (§0.2), but nothing today produces this exact shape; shared input to both CSA and RAPTOR (§1) |
+| Same-CRS interchange, with a real minimum-change-time ("change trains at a station both trips call at, allowing at least N minutes") | **Small parser addition, no new I/O** — the MSN `A` record's column-65 field is already held in memory by this app's own ingestion, just not parsed past byte 52 today (§0.2, re-verified this pass) |
+| Walking transfers between *different* CRSs (e.g. King's Cross ↔ St Pancras) | **New CIF ingestion work** — the `ALF` file member is not fetched by this app's delivery-discovery mechanism at all today (re-confirmed this pass, §0.2), though it is an already-standardised file that mechanism can be extended, not reinvented, to also pick up |
+| The CSA scan (single earliest-arrival path, `results: 'fastest'`) | **New** — no code anywhere in this repo composes more than one hop (§0.3, §0.7) |
+| The RAPTOR scan (Pareto set, `results: 'options'`) | **New**, and needs one preprocessing step CSA doesn't: grouping trips into routes by identical stop pattern (§1) — `ScheduleIndex` is UID-keyed today, not route-pattern-keyed |
+| Ranking / itinerary selection | **New** — CSA's raw output is "earliest arrival per stop," not a ranked, human-presentable itinerary list; RAPTOR's raw output is a per-round label set, not a sorted-by-preference options list; both need a presentation-layer trace/sort on top |
 | Turning a computed itinerary into a real tracked journey | **Reused entirely, and cleanly** — `POST /Journeys` + `POST /Journeys/{id}/legs`, `knownTrain` mode, exact fit (§0.8, §5) |
-| A "Plan a trip" frontend entry point | **New page** — no `/journeys/new` exists yet to extend (§0.8); this is net-new UI, not a modification of an established flow |
+| A "Plan a trip" frontend entry point | **New mode on an existing page** — `/journeys/new` already exists (§0.8, corrected from this document's original draft); this is a third mode on `JourneyCreationFlow`, not a new page built from scratch |
 | Underground/DLR/tram or Northern Ireland/ROI routing | **Not buildable from any data this codebase has today** (§0.6) — explicitly out of scope, not a smaller version of the same problem |
 
 ---
@@ -648,7 +677,9 @@ re-doing (§0.2's own citations).
 
 This is a real, first-order architecture decision, not a detail — and it's
 where this document's recommendation cuts most directly against this
-codebase's own established, twice-restated precedent.
+codebase's own established, twice-restated precedent, and it remains
+**unresolved** (§7, Open Question 1) independent of the three 2026-09-22
+scope decisions.
 
 **The tension, stated plainly**: every prior CIF-adjacent design in this
 app (§0.2's citations, and independently the whole-network-trip-search
@@ -680,73 +711,85 @@ query against an already-published, small, per-CRS row).
    `ScheduleIndex` that cycle's existing publishes already construct — no
    second parse, same "one pass over the feed, multiple outputs" precedent
    `2026-09-04-whole-network-trip-search-design.md`'s Decision 1 already
-   established for a smaller case) and serves CSA queries directly against
-   that in-memory structure for the rest of the cycle. **This is the
-   option that actually works at national scale within this app's own
-   existing performance envelope**, but it is a genuine, honestly-flagged
+   established for a smaller case) and serves CSA/RAPTOR queries directly
+   against that in-memory structure for the rest of the cycle. **This is
+   the option that most directly works at national scale within this
+   app's own existing performance envelope**, but it is a genuine, honestly-flagged
    departure from this codebase's own repeatedly-stated "no resident
    whole-network index" posture — the first time this app would keep a
    large, whole-network derived structure alive between requests, in a
    service that now needs to be more than a batch poller (an HTTP-serving,
    longer-uptime-dependent process, closer in operational character to
-   `crates/aggregator` than to `schedule-reference`'s current shape — the
-   task brief's own suggested comparison). This is a real, new class of
-   operational commitment (memory provisioning, staleness-during-a-crash
-   risk, restart cost now mattering to a live query path) that should be
-   named to the product owner explicitly, not smuggled in as "just a bigger
-   version of what already exists."
+   `crates/aggregator` than to `schedule-reference`'s current shape). This
+   is a real, new class of operational commitment (memory provisioning,
+   staleness-during-a-crash risk, restart cost now mattering to a live
+   query path) that should be named to the product owner explicitly, not
+   smuggled in as "just a bigger version of what already exists."
 2. **Bound the search scope per query, so only a small subgraph is ever
    built.** Rather than a whole-network resident index, restrict a given
    trip-planning query to lines/stations the existing `lines/*.toml`
    catalogue (§0.1) already identifies as plausibly relevant near the
    origin/destination (a coarse geographic/line-membership prefilter),
-   plus a hard cap on the number of interchanges considered (§4's MVP
-   scope recommends ≤2). This keeps each query's working set small enough
-   to build on demand from the already-published, small, per-CRS Postgres
-   rows (`schedule_destination_departures` and siblings, §0.3), fetched
-   iteratively as the search explores outward — closer in spirit to CSA
-   run over a lazily-materialized subgraph than a full national build.
-   **Real risk this option accepts**: correctness is now bounded by how
-   good the prefilter is — a genuinely obscure but real route (an
-   unusual, low-frequency cross-country connection the catalogue's
-   candidate-narrowing didn't think to include) could be silently missed,
-   which a full whole-network CSA scan would never miss. This is an
-   honest quality/cost tradeoff, not free correctness.
+   plus a hard cap on the number of interchanges considered (§4: ≤2). This
+   keeps each query's working set small enough to build on demand from the
+   already-published, small, per-CRS Postgres rows (`schedule_destination_departures`
+   and siblings, §0.3), fetched iteratively as the search explores outward
+   — closer in spirit to CSA/RAPTOR run over a lazily-materialized subgraph
+   than a full national build. **Real risk this option accepts**:
+   correctness is now bounded by how good the prefilter is — a genuinely
+   obscure but real route (an unusual, low-frequency cross-country
+   connection the catalogue's candidate-narrowing didn't think to include)
+   could be silently missed, which a full whole-network scan would never
+   miss. This is an honest quality/cost tradeoff, not free correctness.
 
-**Recommendation: start with option 2 for the MVP** (§4), explicitly
-because it does not require this codebase to take on its first-ever
-resident whole-network index, and because an MVP scoped to same-day,
-≤2-change itineraries (§4) is exactly the shape where a bounded,
-catalogue-guided subgraph search is both cheap and, in practice, likely to
-find the real, sensible route a human would take (real UK rail journeys
-overwhelmingly resolve via well-known interchanges the line catalogue
-already names). **Revisit option 1 explicitly, as a deliberate,
-separately-reviewed architecture decision, once real usage data shows the
-prefilter missing routes often enough to matter** — this mirrors this
-app's own repeated "ship the honest partial thing, revisit with real data"
-posture (the per-station-stats 53/286 precedent, the LDBWS-fallback-only
-CIF picker precedent) rather than committing to the larger architectural
-change up front on projected need alone.
+**A third possibility, raised by the sibling `Distant-Signal-MCP` project's
+own measured, shipped design, worth naming explicitly because it may
+dissolve this tradeoff rather than choose a side of it**: that project
+builds the **whole day's** connection set fresh per query and discards it
+immediately after — no prefilter, no residency. Its own design doc reports
+this as cheap enough in practice on a real weekday (2026-10-15): 26,848
+schedules, 316,362 public calling points, ~289,514 connections, built once
+per `plan_journey` call and shared by both its algorithms, then thrown
+away. If a comparably-sized build-and-discard is genuinely cheap enough
+against *this app's own* data path too, it would sidestep option 2's
+prefilter-completeness risk without taking on option 1's resident-index
+operational commitment. **This needs its own measurement against this
+app's actual schema before being treated as settled** — the sibling
+project's own `TimetableStore` is a from-scratch SQLite-backed CIF store,
+not `schedule-query`'s `ScheduleIndex`, and this app's per-CRS Postgres row
+fetch pattern may have materially different per-query overhead than a
+purpose-built timetable store's own query path — but it is a real, working
+existence proof that this isn't necessarily a binary choice between a
+resident whole-network index and a lossy geographic prefilter.
+
+**Recommendation: start with option 2 for v1**, explicitly because it does
+not require this codebase to take on its first-ever resident whole-network
+index, and because v1's own scope (same-day, ≤2-change itineraries, §4) is
+exactly the shape where a bounded, catalogue-guided subgraph search is both
+cheap and, in practice, likely to find the real, sensible route a human
+would take (real UK rail journeys overwhelmingly resolve via well-known
+interchanges the line catalogue already names). **Measure the
+build-and-discard option above against real usage before ruling it out**,
+and **revisit option 1 explicitly, as a deliberate, separately-reviewed
+architecture decision, only once real usage data shows the prefilter
+missing routes often enough to matter** — this mirrors this app's own
+repeated "ship the honest partial thing, revisit with real data" posture
+(the per-station-stats 53/286 precedent, the LDBWS-fallback-only CIF picker
+precedent) rather than committing to the larger architectural change up
+front on projected need alone.
 
 ---
 
-## 4. Proposed MVP scope, and what's deliberately deferred
-
-**Revised 2026-09-22 per three product decisions** (§7 Q2, Q4, Q5 all
-resolved) — v1 is materially larger than this section's original draft.
-Two of the three original scope cuts below are now reversed; only the
-network-scope cut (GB National Rail only) was confirmed as originally
-recommended.
+## 4. v1 scope, and what's deliberately still out of scope
 
 Real journey planners (this document takes Citymapper/Google Maps transit
 mode as the honest reference point for "full generality," not a strawman)
 support same-day and future-day search, walking transfers between any two
 stations within a radius, multi-criteria ranking, accessibility
-constraints, live disruption-aware re-routing, and fare information. The
-product owner has now confirmed two of those ARE day-one requirements here
-(walking transfers, multi-criteria ranking) — the remaining cuts below are
-still real and still narrow the problem meaningfully, just not as far as
-originally proposed:
+constraints, live disruption-aware re-routing, and fare information. v1, as
+finalized by the product owner 2026-09-22, is narrower than that reference
+point in some ways and broader than this document's own original proposal
+in others:
 
 - **Single service day only.** The user picks one date; the planner
   searches only within that calendar day (matching `journey_legs.service_date`'s
@@ -754,55 +797,49 @@ originally proposed:
   A journey that would need to continue past midnight into the next
   calendar day (a genuinely late overnight service) is out of scope for
   v1 — flagged, not silently handled by an incorrect date rollover.
-- **RESOLVED — multi-criteria ranking IS a v1 requirement (§7 Q4).**
-  Reversing this document's original recommendation: v1 must return both a
-  `results: 'fastest'` single earliest-arrival answer (Connection Scan) AND
-  a `results: 'options'` Pareto set trading arrival time against
-  interchange count (RAPTOR), per the Addendum's `Distant-Signal-MCP`
-  precedent. §1's engine recommendation is updated accordingly — build
-  both algorithms from day one, use their required agreement on
-  earliest-arrival as the correctness mechanism. This is the single
-  largest scope increase from the original draft: v1 now needs a
-  round-based RAPTOR search, not just a CSA sweep.
+- **Multi-criteria ranking is required, not a later phase.** v1 returns
+  both a `results: 'fastest'` single earliest-arrival answer (Connection
+  Scan) and a `results: 'options'` Pareto set trading arrival time against
+  interchange count (RAPTOR), per §1's revised engine recommendation and
+  the sibling `Distant-Signal-MCP` project's own precedent for that exact
+  split. (This document's original recommendation was "earliest arrival
+  only, plus 1-2 cheap alternatives as a byproduct," deferring RAPTOR — see
+  §1 for why that changed.)
 - **A hard cap of at most 2 interchanges** (i.e., at most 3 legs) per
-  computed itinerary, still recommended unchanged — bounds both the search
-  space (§3) and presentation complexity for the `'fastest'` mode; RAPTOR's
-  own round count for `'options'` mode should use the same cap (per the
-  sibling project's `PLAN_MAX_CHANGES` config precedent, Addendum) rather
-  than a separate, undiscussed limit.
-- **RESOLVED — walking transfers between differently-named stations ARE a
-  v1 requirement (§7 Q2).** Reversing this document's original
-  recommendation: v1 must be able to route via a cross-London (or
-  equivalent) Underground/walk/bus/tram/ferry hop between two different
-  CRS codes, not same-CRS interchange only. Per the Addendum, this is
-  buildable from the sibling project's proven `ALF` fixed-links approach —
-  **new CIF ingestion work now pulled into v1** (this app's
-  `schedule-reference` delivery-discovery mechanism needs extending to also
-  fetch the `ALF` file member, and a new parser + `fixed_links`-shaped
-  table, mirroring `crates/schedule-reference/src/cif/alf.ts`'s reference
-  shape — mode, from-CRS, to-CRS, minutes, validity window, day mask). This
-  is real, non-trivial new scope, not a small addition — it needs its own
-  task(s) in a Phase 1 plan, not a "quick data model tweak" framing.
-  Same-CRS interchange (MSN column 65, also not yet parsed by this app's
-  ingestion per the Addendum) is a smaller, still-necessary companion
-  piece — both interchange data sources are needed together for v1's
-  interchange validity checking (§0's baseline "Interchange" section, once
-  written into this doc's own §0, mirrors the Addendum's findings).
+  computed itinerary — bounds both the search space (§3) and presentation
+  complexity for `'fastest'` mode; RAPTOR's own round count for `'options'`
+  mode uses the same cap (per the sibling project's `PLAN_MAX_CHANGES`
+  config precedent) rather than a separate, undiscussed limit.
+- **Walking transfers between differently-named stations are required, not
+  a later phase.** v1 must be able to route via a cross-London (or
+  equivalent) walk/tube/bus/tram/ferry hop between two different CRS
+  codes, not same-CRS interchange only. Per §0.2/§0.4, this is buildable
+  from the sibling project's proven `ALF` fixed-links approach — genuinely
+  new CIF ingestion work (this app's `schedule-reference` delivery-discovery
+  mechanism needs extending to also fetch the `ALF` file member, plus a new
+  parser and a new `fixed_links`-shaped table: mode, from-CRS, to-CRS,
+  minutes, validity window, day mask). Same-CRS interchange (the MSN
+  column-65 field, also not yet parsed, but needing no new fetch — §0.2) is
+  a smaller, still-necessary companion piece — both interchange data
+  sources are needed together for v1's interchange validity checking.
+  (This document's original recommendation was same-CRS interchange only,
+  deferring cross-station walking transfers — see §0.4 for what's actually
+  needed to support the reversal.)
 - **Optional waypoints are ordered, not a "visit these in any order"
   problem.** The user-supplied waypoint list is treated as fixed
   sub-journey boundaries — start→waypoint₁, waypoint₁→waypoint₂, ...,
-  waypointₙ→finish — each independently solved by the same CSA engine,
+  waypointₙ→finish — each independently solved by the same engines,
   exactly mirroring how the existing multi-leg journey feature already
-  treats leg N's destination as leg N+1's suggested (not enforced) origin
-  (parent spec §3). **Not** a traveling-salesman-style "find the best
-  order to visit these" problem — the task brief's own phrasing
-  ("optionally some waypoints") supports this reading, and solving
-  unordered waypoint visitation is a materially harder, separate problem
-  this document does not recommend attempting.
+  treats leg N's destination as leg N+1's suggested (not enforced) origin.
+  **Not** a traveling-salesman-style "find the best order to visit these"
+  problem — solving unordered waypoint visitation is a materially harder,
+  separate problem this document does not recommend attempting.
 - **GB National Rail (+ whatever's in the same CIF feed) only** — no
   Underground/DLR/tram, no Northern Ireland, no Republic of Ireland (§0.6).
-  This is not a smaller version of "all four networks" — it is the only
-  one of the four with the underlying data this feature needs at all.
+  This was this document's original recommendation, and the product owner
+  has confirmed it, unchanged. This is not a smaller version of "all four
+  networks" — it is the only one of the four with the underlying data this
+  feature needs at all.
 - **No live-disruption awareness.** The planner reasons over the
   *scheduled* timetable only (exactly what §0.2's `ScheduleIndex` already
   gives it) — it does not check whether a candidate leg's real train is
@@ -816,12 +853,15 @@ originally proposed:
   real, named-but-deferred scope, consistent with this being a first
   slice, not a general-purpose planner.
 
-**What this MVP *does* deliver, honestly**: for the large majority of real
-GB National Rail journeys — same-day travel, a route resolvable via a
-same-station interchange, at most two changes — a user who does not
-already know the route gets one back, computed, with a "track this whole
-thing" action (§5), which is real, new capability this app has never had
-before. It is not Citymapper-grade, and should not be marketed as such.
+**What v1 delivers, honestly**: for the large majority of real GB National
+Rail journeys — same-day travel, at most two changes, including changes
+that require a short walk between differently-named stations — a user who
+does not already know the route gets one back, computed, ranked (a single
+fastest answer, or a small set of options trading speed against number of
+changes), with a "track this whole thing" action (§5). This is real, new
+capability this app has never had before. It is not Citymapper-grade
+(no live disruption, no accessibility, no fares, no multi-day), and should
+not be marketed as such.
 
 ---
 
@@ -856,15 +896,15 @@ For an *n*-leg computed itinerary the user picks:
    in order, `leg_order` following naturally from repeated calls.
 3. **`origin_crs`/`destination_crs` on each created leg should be the
    planner's own computed hop boundary, not necessarily the matched
-   train's full origin/terminus** — reusing the parent spec's own §1.1
-   design intent verbatim ("the leg's own intent, kept even once matched...
+   train's full origin/terminus** — reusing the journey-tracking design's
+   own intent verbatim ("the leg's own intent, kept even once matched...
    what makes station-skip detection well-defined"). This matters
    concretely for a route-planner-sourced leg: the traveller boards
    partway through a long-distance service and alights before its true
    terminus at the interchange — the leg's own origin/destination must
    reflect *that*, not the train's full advertised route, for the existing
-   skip-detection and notification logic (parent spec §5.2) to keep
-   meaning what it already means.
+   skip-detection and notification logic to keep meaning what it already
+   means.
 4. **Nothing else is new.** Once created this way, every leg is an
    ordinary `journey_legs` row with `match_mode = 'manual'` (it has a
    concretely bound train, exactly like a human's own known-train pick —
@@ -872,181 +912,228 @@ For an *n*-leg computed itinerary the user picks:
    "planner-picked"; §0.9 already reserves `'auto'` for a different,
    template-driven meaning and this is not that). Delay/cancellation
    notification, the notifier's per-`trains_id` fan-out, group sharing,
-   ticket attachment — **all reused unchanged**, exactly the same
-   "composition of existing primitives" pattern the parent spec's own
-   Phase 1 used for its non-planner legs.
+   ticket attachment — **all reused unchanged**, the same "composition of
+   existing primitives" pattern journey-tracking's own phases repeatedly
+   use.
+5. **A cross-station walking-transfer hop (§4) needs its own, honest
+   representation.** Unlike a same-CRS interchange, a leg that ends by
+   walking from one station to a different, differently-named one has no
+   `train_uid` for that walking segment at all — it is not itself a
+   `journey_legs` row in the existing schema's sense (that table's shape
+   is fundamentally "board a specific train"). The two most likely shapes
+   — a walking hop folded into the presentation layer only (the itinerary
+   shows "walk from X to Y, 8 min" between two ordinary train legs, with no
+   corresponding `journey_legs` row created for it at all), versus a new,
+   minimal leg concept for a non-train hop — are a real design decision
+   for the implementation-planning stage, not resolved here; this document
+   only establishes that the *train* legs on either side of a walk fit the
+   existing model exactly as described above.
 
 ### 5.2 What the planner itself needs to expose, distinct from journey-tracking's own surface
 
-A new, separate read-only endpoint, e.g. `GET /Trips/plan?origin=&destination=&waypoints=&date=&departAfter=`
+A new, separate read-only endpoint, e.g. `GET /Trips/plan?origin=&destination=&waypoints=&date=&departAfter=&results=fastest|options`
 (exact naming a product/API-design decision, not resolved here — see §7),
-returning candidate itineraries (§4's cap: one primary, up to two
-alternatives), each `{legs: [{originCrs, destinationCrs, trainUid,
-scheduledDeparture, scheduledArrival, ...}], totalDuration, changeCount}`
-— enough for the frontend to render a route summary and then, on
-selection, drive §5.1's sequence of existing journey-creation calls. This
-is a **new read path**, computed from §3's CSA engine, that produces
-input to the *existing* write path — not a modification of `POST
-/Journeys` itself, which needs no change at all to accept
-planner-sourced legs (it already accepts arbitrary `knownTrain` legs from
-any caller, § confirmed by reading `journeys.rs`'s own request handling —
-it has no notion of "this leg came from a human search vs. a planner,"
-which is exactly the point: no new schema, no new `journey_legs` column).
+returning candidate itineraries per §4's cap (a single itinerary for
+`results: 'fastest'`, a Pareto set for `results: 'options'`), each
+`{legs: [{originCrs, destinationCrs, trainUid, scheduledDeparture,
+scheduledArrival, ...}], totalDuration, changeCount}` — enough for the
+frontend to render a route summary and then, on selection, drive §5.1's
+sequence of existing journey-creation calls. This is a **new read path**,
+computed from §1/§3's engines, that produces input to the *existing* write
+path — not a modification of `POST /Journeys` itself, which needs no
+change at all to accept planner-sourced legs (it already accepts arbitrary
+`knownTrain` legs from any caller — confirmed by reading `journeys.rs`'s
+own request handling, it has no notion of "this leg came from a human
+search vs. a planner," which is exactly the point: no new schema, no new
+`journey_legs` column, for the train-leg case at least — §5.1 point 5's
+open question about walking hops aside).
 
 ### 5.3 Where this slots into the frontend
 
-Since `frontend/app/journeys/new/` does not exist yet (§0.8), a "Plan a
-trip" flow is not competing with an established manual-entry page — it can
-be designed as one of two **modes on the same, still-to-be-built**
-journey-creation surface: "I know my route" (today's per-leg manual/window
-entry, per the parent spec's own recommended `/track` → `/journeys/new`
-migration) vs. "Plan a route for me" (this document's new flow: origin,
-destination, optional waypoints, date → candidate itineraries → pick one →
-§5.1's creation sequence). Recommend they ship as two tabs/entry points of
-one page rather than two separate pages, since both terminate in the exact
-same `journeys`/`journey_legs` data and both should feel like one coherent
-"track a journey" feature to the user, not two unrelated products. **This
-is a real sequencing dependency worth naming plainly**: if `/journeys/new`
-per the parent spec's Phase 1/§7.2 has not shipped by the time this
-feature is built, this document's frontend work either waits on it or
-builds `/journeys/new` itself as a prerequisite — not something this
-document should assume away.
+Since `/journeys/new`/`JourneyCreationFlow` already exists and is the
+app's primary tracking entry point (§0.8, corrected from this document's
+original draft), a "Plan a trip" flow's natural home is a **third mode**
+on that same component, alongside its current two: "pin a specific train"
+and "search a time window" (both currently surfaced through
+`TrackTrainForm`). Concretely: a mode selector offering "I know my route"
+(today's flow, unchanged) vs. "Plan a route for me" (this document's new
+flow — origin, destination, optional waypoints, date, and a fastest/options
+toggle → candidate itineraries from §5.2's endpoint → pick one → §5.1's
+creation sequence, reusing `JourneyCreationFlow`'s existing
+`handleLegOneCreated`/`handleLegAdded` state machine once the first
+planner-sourced leg is created). This keeps "plan a trip" and "track a
+journey" feeling like one coherent feature terminating in the same
+`journeys`/`journey_legs` data, rather than two separate products — and,
+unlike this document's original draft (written before `/journeys/new`
+shipped), there is no sequencing dependency to name here: the page this
+feature integrates into is real, live on `main`, today.
 
 ---
 
-## 6. Per-requirement analysis (task brief's own asks)
+## 6. Per-requirement analysis
 
 - **"Given a start station, a finish station, and optionally some
   waypoints"** — supported as scoped in §4 (ordered waypoints, single
   day, GB National Rail only).
 - **"Work out an actual route across the network"** — supported via the
-  new CSA engine (§1, §3), built from already-existing data (§0.2); this
-  is the genuinely new algorithmic core this document designs the shape
-  of but does not implement.
+  new CSA/RAPTOR engines (§1, §3), built from already-existing data (§0.2);
+  this is the genuinely new algorithmic core this document designs the
+  shape of but does not implement.
 - **"Which line(s)/train(s) to take and where to change"** — a computed
   itinerary is, by construction, a sequence of `(train_uid, service_date,
-  origin_crs, destination_crs)` hops — the "which train, where to change"
-  answer *is* the itinerary's own shape, with no separate "explain the
-  route in words" step needed (though a human-readable summary, e.g. "Take
-  the 08:14 to Reading, change there for the 08:52 to Bristol," is a
-  frontend presentation detail, not a new backend concept).
+  origin_crs, destination_crs)` hops, plus (per §4/§5.1) any walking
+  transfer between them — the "which train, where to change" answer *is*
+  the itinerary's own shape, with no separate "explain the route in words"
+  step needed (though a human-readable summary, e.g. "Take the 08:14 to
+  Reading, change there for the 08:52 to Bristol," is a frontend
+  presentation detail, not a new backend concept).
 - **Real infrastructure vs. from-scratch**: **substantially real
   infrastructure already exists** (§0.2 is the headline finding — the
   hardest, most expensive part of any such system, whole-network
   STP-resolved timetable data, is already produced in production every 30
-  minutes) — but the *route-finding/pathfinding logic itself*, the
-  *hosting model* for querying it at low enough latency for a user-facing
-  request (§3), and the *walking-transfer data model* (§0.4) are all
-  genuinely greenfield. This is not "mostly there, just wire it up," but
-  it is also nowhere near "parse CIF from scratch" — the honest middle
-  ground this document's own §0.2/§1 finding establishes.
+  minutes) — but the *route-finding/pathfinding logic itself* (now two
+  algorithms, §1), the *hosting model* for querying it at low enough
+  latency for a user-facing request (§3), and the *walking-transfer
+  ingestion* (§0.2, §0.4) are all genuinely greenfield. This is not
+  "mostly there, just wire it up," but it is also nowhere near "parse CIF
+  from scratch" — the honest middle ground this document's own §0.2/§1
+  finding establishes.
 
 ---
 
 ## 7. Open questions for the product owner
 
+The three scope questions this document originally raised about network
+coverage, walking transfers, and multi-criteria ranking were all resolved
+by the product owner on 2026-09-22 and are reflected as final scope
+throughout this document (§4) — not re-listed here. What remains open:
+
 1. **Resident-index architecture commitment (§3)** — is the product owner
    willing to accept this app's first-ever resident, whole-network,
    large-memory derived structure (option 1) if the bounded-subgraph
-   approach (option 2, this document's MVP recommendation) turns out to
-   miss real routes too often in practice? Not resolved here — flagged as
-   the single biggest architecture decision this feature raises, deferred
-   until real usage data exists per §3's own recommended sequencing.
-2. ~~**Walking transfers between differently-named stations**~~ —
-   **RESOLVED 2026-09-22 (product owner): required in v1, not deferred.**
-   Same-CRS-only is NOT acceptable as v1. Per the Addendum, this is
-   buildable via the sibling project's proven `ALF` fixed-links approach —
-   real, new CIF ingestion work, now a Phase 1 task, not a later-phase
-   design pass (§4).
-3. **Naming** — "Plan a trip" / "Route planner," or different
+   approach (option 2, this document's v1 recommendation) turns out to
+   miss real routes too often in practice, or if a measured
+   build-and-discard approach (§3's "third possibility") turns out not to
+   be cheap enough against this app's own data path? Not resolved here —
+   flagged as the single biggest architecture decision this feature
+   raises, deferred until real usage data exists per §3's own recommended
+   sequencing.
+2. **Naming** — "Plan a trip" / "Route planner," or different
    product-facing language, and does the API surface live under a new
    `/Trips/*` prefix (§5.2) or somewhere under the existing `/Journeys/*`
-   namespace? No existing precedent settles this; flagged the same way the
-   two parent specs flagged their own "Journey" naming collisions.
-4. ~~**Multi-criteria ranking priority**~~ — **RESOLVED 2026-09-22 (product
-   owner): required in v1, not deferred.** "Earliest arrival only" is NOT
-   acceptable as v1 — the product owner considers multi-criteria ranking a
-   day-one requirement. §1's engine recommendation has been revised: build
-   both CSA (`'fastest'`) and RAPTOR (`'options'`) from day one (§4), per
-   the Addendum's sibling-project precedent.
-5. ~~**Underground/NI/ROI expectations**~~ — **RESOLVED 2026-09-22 (product
-   owner): GB National Rail only for v1 is accepted.** No Underground/DLR/tram
-   routing, no Northern Ireland/Republic of Ireland routing, in v1 — matches
-   this document's original recommendation, unchanged (§4, §0.6).
-6. **Live-disruption honesty in the UI** — confirm the recommended framing
+   namespace? No existing precedent settles this; flagged the same way
+   adjacent specs have flagged their own "Journey" naming collisions
+   (§0.7).
+3. **Live-disruption honesty in the UI** — confirm the recommended framing
    ("this is a scheduled plan, not live-confirmed," mirroring the existing
    CIF-fallback picker's own disclosed-staleness copy) is acceptable,
    rather than users expecting the planner to already account for today's
    actual delays/cancellations.
-7. **Composition with reusable/recurring journeys (§0.9)** — should a
+4. **Composition with reusable/recurring journeys (§0.9)** — should a
    planner-computed itinerary be save-able as a `journey_template` (so a
    regular commute found once via the planner doesn't need re-planning
    every day)? Real future value, explicitly not designed in this
    document — flagged for a later, separate pass once both features
    individually exist.
+5. **Walking-transfer leg representation (§5.1 point 5)** — does a
+   cross-station walk get its own minimal `journey_legs`-adjacent record,
+   or stay presentation-only with no corresponding database row? Not
+   resolved here; a real design decision for the implementation-planning
+   stage.
 
 ---
 
 ## 8. Proposed phased delivery plan
 
-**Note (2026-09-22): the phasing below predates the three product decisions
-resolved in §4/§7 above and needs revisiting by whoever writes the actual
-implementation plan.** In particular, walking transfers (ALF ingestion) and
-RAPTOR (multi-criteria ranking) — both originally sketched as later phases
-below — are now confirmed v1/Phase-1 requirements, not deferred. Read this
-section for its sequencing logic (what depends on what) rather than trusting
-its phase boundaries as still-current.
+v1's scope (§4) needs, in dependency order: interchange data before
+connections-and-interchange logic can be validated end-to-end; a
+connections array before either search algorithm; CSA before RAPTOR (so
+RAPTOR's differential test has something to check itself against); an API
+surface once at least one engine is queryable; and frontend integration
+last, since it depends on the API surface existing. The phases below
+reflect that dependency order, not a fixed commitment to exactly six
+phases — later phases can be resequenced relative to each other (e.g. the
+API surface could expose `'fastest'` before RAPTOR lands, if shipping a
+CSA-only read path early has independent value) without disturbing the
+phases before them.
 
-**Phase 0 — Connections-array extraction + CSA engine, no product surface
-yet.** A new pure function (structurally sibling to `departures_by_crs`/
+**Phase 1 — CIF ingestion extension: ALF fixed links + MSN interchange
+minutes.** Extend `crates/schedule-reference`'s `discovery.rs` to also
+require and locate an `RJTTF*ALF.txt` file per delivery (mirroring
+`mca_path`/`msn_path`'s existing shape); add a new parser module for `ALF`
+fixed-link records (mode, from-CRS, to-CRS, minutes, validity window, day
+mask — §0.2/§4) and a new field extraction on the MSN `A`-record parse
+(the column-65 minimum-interchange-time value, §0.2) reading bytes this
+app's `poll_once` already holds in memory; add a new table (or extend the
+existing stanox-crs publish path) to carry both outward from
+`schedule-reference` to `api`, mirroring the existing `upsert_stanox_crs`
+pattern (`crates/api/src/routes/ingest.rs:365-370`). **No search
+algorithm, no new route, no frontend** — this phase's own deliverable is
+real, queryable interchange data (same-CRS minimum change time; ALF
+cross-CRS fixed links with validity windows), independently useful and
+independently testable against real `timetable_full.zip` data before
+anything downstream depends on it.
+
+**Phase 2 — Connections-array extraction + interchange-aware connection
+building.** A new pure function (structurally sibling to `departures_by_crs`/
 `departures_by_destination_crs`, likely living in `crates/schedule-query`
 itself, reusing `ScheduleIndex`/`resolve_for_date` unchanged) that walks
 one service day's resolved calling points into a sorted connections array,
-plus the CSA scan itself (earliest-arrival, ≤2-interchange cap, same-CRS
-transfer only, per §4) as a library with real unit tests against
-constructed fixtures (mirroring `resolve.rs`'s own test-fixture
-conventions). **No new route, no new table, no frontend** — this phase
-proves the algorithm correct and its performance characteristics real
-(timing/memory-profiling a bounded-subgraph build, per §3's option 2,
-against real `timetable_full.zip` data — the same kind of real-data
-validation this codebase's other CIF work always insists on, per §0.2's
-own citations). **Complexity: medium-high** — this is the phase with
-genuinely new, unprecedented-in-this-codebase algorithmic logic; everything
-after it is comparatively closer to routine plumbing.
+plus the logic that turns Phase 1's interchange data into synthetic
+"transfer connections" a search algorithm can traverse the same way as a
+real train connection (a same-CRS change respecting its minimum-interchange
+minutes; a cross-CRS `ALF` walk respecting its validity window). **No
+search algorithm yet** — this phase proves the connections array and its
+interchange augmentation are correct in isolation, with real unit tests
+against constructed fixtures (mirroring `resolve.rs`'s own test-fixture
+conventions), before either scan algorithm is built on top.
 
-**Phase 1 — Read-only planning API + a minimal "here's your route"
-frontend view, no tracking tie-in yet.** `GET /Trips/plan` (§5.2, naming
-per Open Question 3), served from Phase 0's engine using §3's bounded-subgraph
-hosting model; a new frontend page (or the "Plan a route for me" tab of a
-new `/journeys/new`, per §5.3, sequencing-dependent on that page's own
-delivery timeline) that takes origin/destination/waypoints/date and shows
-computed itinerary options, with no "track this" action yet — purely
-informational, letting real usage validate the engine's route quality
-(does the ≤2-change, same-CRS-only cap actually find the routes real users
-want?) before committing to the tracking integration's own scope.
-**Complexity: medium** — mostly a new read route and a new display
-component over Phase 0's already-proven engine.
+**Phase 3 — Connection Scan Algorithm (`results: 'fastest'`).** The CSA
+scan itself (earliest-arrival, ≤2-interchange cap, both same-CRS and
+cross-CRS `ALF` transfers per Phase 1/2, per §4) plus the back-pointer
+trace needed to recover an actual leg-by-leg itinerary from CSA's raw
+arrival-time frontier (§1, §2). Timing/memory-profiled against real
+`timetable_full.zip` data under §3's bounded-subgraph hosting model (the
+same kind of real-data validation this codebase's other CIF work always
+insists on, per §0.2's own citations). **Complexity: medium-high** — the
+first genuinely new pathfinding logic in this codebase.
 
-**Phase 2 — "Track this itinerary" integration (§5.1).** Wires a picked
-itinerary into `POST /Journeys` + `POST /Journeys/{id}/legs`, exactly as
-designed in §5.1 — no backend schema change, no change to the existing
-journey-creation routes, purely a new orchestration on the frontend (a
-sequence of already-existing API calls) plus whatever minimal
-itinerary-selection state the frontend needs to hold between Phase 1's
-display and this phase's commit action. **Complexity: low-medium** — this
-is composition of existing, already-reviewed primitives, the same
-"mechanically close to typing" character the parent specs' own later
-phases repeatedly have.
+**Phase 4 — RAPTOR (`results: 'options'`) + differential testing against
+CSA.** The route-pattern-grouping preprocessing step CSA doesn't need
+(§1), the round-based RAPTOR/McRAPTOR scan producing a Pareto set trading
+arrival time against interchange count, and — as the primary correctness
+mechanism for both algorithms, per §1 — a differential test suite
+asserting RAPTOR's earliest-arrival result agrees with CSA's on the same
+query, across a real, varied set of origin/destination/date combinations.
+**Complexity: medium-high** — RAPTOR's own logic plus the differential
+harness that makes trusting either algorithm at national scale tractable.
 
-**Phase 3 (stretch, not committed) — Multi-criteria ranking
-(McRAPTOR-style Pareto set, or a simpler layered-CSA approximation) and/or
-a walking-transfer data model.** Either or both, independently addable
-once Phase 1/2 usage data answers Open Questions 2 and 4 — **not** blocking
-anything in Phases 0-2 shipping first.
+**Phase 5 — Read-only planning API.** `GET /Trips/plan` (§5.2, naming per
+Open Question 2), served from Phase 3/4's engines using §3's
+bounded-subgraph hosting model (or whichever option §3's own open question
+resolves to by this point), supporting both `results` modes. **No
+frontend yet** — this phase's own deliverable is a real, queryable
+endpoint, testable directly (e.g. via existing API integration-test
+conventions) before frontend work depends on its exact response shape.
+**Complexity: medium** — mostly a new read route over Phase 3/4's already-proven engines.
+
+**Phase 6 — Frontend integration: a third `/journeys/new` mode, and
+"track this itinerary."** Adds "Plan a route for me" as a third mode on
+`JourneyCreationFlow` (§5.3) — origin/destination/waypoints/date input,
+Phase 5's endpoint for results, a route-summary display for both
+`'fastest'` and `'options'` responses — and wires a picked itinerary into
+`POST /Journeys` + `POST /Journeys/{id}/legs` exactly as designed in §5.1.
+No backend schema change beyond whatever Open Question 5 (walking-transfer
+leg representation) resolves to; otherwise purely new frontend
+orchestration (a sequence of already-existing API calls, reusing
+`JourneyCreationFlow`'s existing post-creation state machine) plus new
+itinerary-selection state. **Complexity: medium** — composition of
+existing, already-reviewed primitives for the tracking tie-in, plus a
+genuinely new selection/comparison UI for the `'options'` Pareto set.
 
 **Not phased, explicitly out of scope for all of the above**: Underground/
 DLR/tram routing, Northern Ireland/Republic of Ireland routing (§0.6),
 live-disruption-aware re-planning, accessibility constraints, fare/cost
 information, multi-day/overnight itineraries, and composition with
-reusable/recurring journey templates (§0.9, Open Question 7) — each is
-independently addable later, none blocks Phases 0-2.
+reusable/recurring journey templates (§0.9, Open Question 4) — each is
+independently addable later, none blocks Phases 1-6.
