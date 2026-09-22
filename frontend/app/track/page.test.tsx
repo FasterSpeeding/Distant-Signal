@@ -59,6 +59,47 @@ describe('TrackPage', () => {
 
     expect(screen.getByRole('radio', { name: 'I know the train' })).toBeChecked();
   });
+
+  it('pre-fills destination and window bounds for ?mode=window&destination=&departAfter=...', async () => {
+    renderWithMantine(
+      await TrackPage({
+        searchParams: Promise.resolve({
+          mode: 'window',
+          origin: 'wat',
+          destination: 'rdg',
+          departAfter: '08:00',
+          departBefore: '09:00',
+          arriveAfter: '11:00',
+          arriveBefore: '10:00',
+        }),
+      }),
+    );
+
+    // Role/label-based queries, not `getByDisplayValue` -- a
+    // `getByDisplayValue` match only confirms a value appears SOMEWHERE on
+    // the rendered form, not that it landed in the specific field it's
+    // supposed to (a param<->prop transposition bug, e.g. swapping
+    // `departAfter`/`arriveBefore`, would still pass). `Destination
+    // station` is a Mantine `Autocomplete`, which `getByLabelText` doesn't
+    // reliably match -- same `combobox` pattern
+    // `TrackTrainForm.test.tsx`'s own window-mode tests already use. The
+    // four time bounds use `getByLabelText` with their exact accessible
+    // names, confirmed reliable on these `TimeInput` fields elsewhere in
+    // that same suite.
+    expect(screen.getByRole('combobox', { name: /^Destination station$/ })).toHaveValue('RDG');
+    expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('08:00');
+    expect(screen.getByLabelText('Latest departure (optional)')).toHaveValue('09:00');
+    expect(screen.getByLabelText('Earliest arrival (optional)')).toHaveValue('11:00');
+    expect(screen.getByLabelText('Latest arrival (optional)')).toHaveValue('10:00');
+  });
+
+  it('pre-fills the pin-mode destination for a plain ?destination= with no ?mode=', async () => {
+    renderWithMantine(
+      await TrackPage({ searchParams: Promise.resolve({ origin: 'wat', destination: 'rdg' }) }),
+    );
+
+    expect(screen.getByDisplayValue('RDG')).toBeInTheDocument();
+  });
 });
 
 describe('metadata', () => {

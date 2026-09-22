@@ -298,20 +298,39 @@ type Picker =
  * there). */
 export function TrackTrainForm({
   initialOrigin = '',
+  initialDestination = '',
   attachTicketId,
   initialMode = 'pick',
+  initialDepartAfter = '',
+  initialDepartBefore = '',
+  initialArriveAfter = '',
+  initialArriveBefore = '',
 }: {
   initialOrigin?: string;
+  // "Track this journey again" (docs/superpowers/plans/2026-09-22-reusable-journeys-phaseA-track-again-plan.md)
+  // is the first caller of these five props -- pre-fills BOTH the
+  // pin-mode Destination field and the window-mode Destination field from
+  // the same value (only one is ever visible at a time, driven by
+  // `initialMode`), and the window-mode time bounds. All five are inert,
+  // ordinary `useState` initial values, same as `initialOrigin` already
+  // is -- no new prop changes this component's submit behaviour.
+  initialDestination?: string;
   attachTicketId?: number;
   // Review §2.1/I21: the mode toggle used to live only in `useState`, so
   // nothing in the app could send a user straight to window mode -- not
   // even `JourneyLegCard`'s own "Edit search" link. `track/page.tsx` reads
   // this off `?mode=window`, the same pattern its `?origin=` already uses.
   initialMode?: 'pick' | 'window';
+  /** "HH:MM" -- same value contract `TimeFilterInput`'s own `onChange`
+   * already uses for `departFrom`/`departTo`/`arriveFrom`/`arriveTo`. */
+  initialDepartAfter?: string;
+  initialDepartBefore?: string;
+  initialArriveAfter?: string;
+  initialArriveBefore?: string;
 }) {
   const router = useRouter();
   const [originCrs, setOriginCrs] = useState(initialOrigin);
-  const [destinationCrs, setDestinationCrs] = useState('');
+  const [destinationCrs, setDestinationCrs] = useState(initialDestination);
   const [operator, setOperator] = useState('');
   // Defaults to "now" (the repo owner's own stated expectation), not
   // `null` -- computed once via lazy `useState` initializer, in the exact
@@ -376,7 +395,7 @@ export function TrackTrainForm({
   // a new one for leg-window entry.
   const [mode, setMode] = useState<'pick' | 'window'>(initialMode);
   const modeLabelId = useId();
-  const [windowDestinationCrs, setWindowDestinationCrs] = useState('');
+  const [windowDestinationCrs, setWindowDestinationCrs] = useState(initialDestination);
   // A dedicated suggestions hook, not a reuse of the pin-mode Destination
   // field's own `destinationSuggestions`/`destinationSuggestionsLoading`
   // above -- the two Destination fields are separate state
@@ -398,10 +417,10 @@ export function TrackTrainForm({
   // it. Still `clearable` (below), and `submitWindow`'s `?? dayjs()...`
   // fallback stays as defence if a caller ever clears it back to `null`.
   const [windowServiceDate, setWindowServiceDate] = useState<string | null>(() => dayjs().format('YYYY-MM-DD'));
-  const [departFrom, setDepartFrom] = useState('');
-  const [departTo, setDepartTo] = useState('');
-  const [arriveFrom, setArriveFrom] = useState('');
-  const [arriveTo, setArriveTo] = useState('');
+  const [departFrom, setDepartFrom] = useState(initialDepartAfter);
+  const [departTo, setDepartTo] = useState(initialDepartBefore);
+  const [arriveFrom, setArriveFrom] = useState(initialArriveAfter);
+  const [arriveTo, setArriveTo] = useState(initialArriveBefore);
   // Same half-entered-time bookkeeping TrainSearchForm.tsx's own four
   // TimeFilterInput fields already need -- see that component's own
   // `incompleteTimes` doc comment for the full reasoning (a native

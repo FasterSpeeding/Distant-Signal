@@ -8,6 +8,7 @@ import { LastUpdated } from '@/components/LastUpdated';
 import { LoginLink } from '@/components/LoginLink';
 import { ShareJourneyButton } from '@/components/ShareJourneyButton';
 import { TextLink } from '@/components/TextLink';
+import { TrackJourneyAgainButton } from '@/components/TrackJourneyAgainButton';
 import { formatDate } from '@/lib/dateFormat';
 import { legDestinationArrivalLabel, legEndpointName } from '@/lib/journeyLegLabel';
 import { routeLabel } from '@/lib/stationLabel';
@@ -185,6 +186,11 @@ export default async function JourneyDetailPage({
             <AddJourneyLegButton journeyId={journey.id} priorDestinationCrs={priorDestinationCrs} />
           )}
           {journey.isOwner && <ShareJourneyButton journeyId={journey.id} />}
+          {/* Deliberately NOT gated on journey.isOwner -- see
+              docs/superpowers/plans/2026-09-22-reusable-journeys-phaseA-track-again-plan.md's
+              Judgment Call 7. Placed last so the two owner-only controls
+              above stay visually adjacent to each other. */}
+          <TrackJourneyAgainButton journey={journey} />
         </Group>
       </Group>
       {/* 2026-09-22 UX review finding I12/2.6: the header badge above shows

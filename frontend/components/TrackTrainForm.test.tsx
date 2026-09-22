@@ -175,6 +175,39 @@ describe('TrackTrainForm', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalled());
   });
 
+  it('pre-fills the pin-mode destination field from initialDestination', () => {
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" initialDestination="RDG" />);
+    expect(screen.getByRole('combobox', { name: /Destination station \(optional\)/ })).toHaveValue('RDG');
+  });
+
+  it('pre-fills the window-mode destination and time-bound fields together', () => {
+    renderWithMantine(
+      <TrackTrainForm
+        initialMode="window"
+        initialOrigin="WAT"
+        initialDestination="RDG"
+        initialDepartAfter="08:00"
+        initialArriveBefore="10:00"
+      />,
+    );
+    expect(screen.getByRole('combobox', { name: /^Destination station$/ })).toHaveValue('RDG');
+    expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('08:00');
+    expect(screen.getByLabelText('Latest arrival (optional)')).toHaveValue('10:00');
+    // Bounds that weren't passed stay empty, not "undefined" leaking through.
+    expect(screen.getByLabelText('Latest departure (optional)')).toHaveValue('');
+    expect(screen.getByLabelText('Earliest arrival (optional)')).toHaveValue('');
+  });
+
+  it('leaves scheduled departure and window date at their own today/now defaults regardless of the new props', () => {
+    renderWithMantine(
+      <TrackTrainForm initialOrigin="WAT" initialDestination="RDG" initialDepartAfter="08:00" />,
+    );
+    // Judgment Call 4: no initialServiceDate/initialScheduledDeparture prop
+    // exists at all -- "again" never carries the old date/time forward.
+    const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+    expect(picker.value).not.toBe('');
+  });
+
   // Task 3.6.14: this button used to stay `disabled` for as long as the
   // origin/departure weren't valid yet, which Mantine renders as
   // near-invisible light-grey-on-slightly-lighter-grey in dark mode. It's
