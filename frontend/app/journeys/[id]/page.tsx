@@ -6,6 +6,7 @@ import { JourneyLegCard } from '@/components/JourneyLegCard';
 import { JourneyStatusBadge } from '@/components/JourneyStatusBadge';
 import { LastUpdated } from '@/components/LastUpdated';
 import { LoginLink } from '@/components/LoginLink';
+import { SaveAsTemplateButton } from '@/components/SaveAsTemplateButton';
 import { ShareJourneyButton } from '@/components/ShareJourneyButton';
 import { TextLink } from '@/components/TextLink';
 import { formatDate } from '@/lib/dateFormat';
@@ -185,6 +186,7 @@ export default async function JourneyDetailPage({
             <AddJourneyLegButton journeyId={journey.id} priorDestinationCrs={priorDestinationCrs} />
           )}
           {journey.isOwner && <ShareJourneyButton journeyId={journey.id} />}
+          {journey.isOwner && <SaveAsTemplateButton journeyId={journey.id} />}
         </Group>
       </Group>
       {/* 2026-09-22 UX review finding I12/2.6: the header badge above shows
