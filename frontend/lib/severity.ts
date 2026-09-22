@@ -39,6 +39,14 @@ const GROUP_COLOR: Record<SeverityGroup, string> = {
   severe: 'red',
 };
 
+/** The same severity-group -> colour mapping `severityColor` already uses
+ * for a raw severity number, exported directly for a caller that only has
+ * the `SeverityGroup` bucket, not a specific status (e.g. the network
+ * dashboard's counter tiles, keyed by `SEVERITY_GROUPS_BY_RANK` itself --
+ * see `app/status/page.tsx`). Single-sourced so a tile's colour cue can
+ * never drift from `StatusBadge`'s own colour for the same bucket. */
+export const SEVERITY_GROUP_COLORS: Record<SeverityGroup, string> = GROUP_COLOR;
+
 // TfL's `statusSeverity` codes are NOT monotonic with actual severity (e.g.
 // 10 GoodService sits in the middle of the numeric range, while 21 Diverted
 // and 11 PartClosed are severe but numerically high). This rank reflects

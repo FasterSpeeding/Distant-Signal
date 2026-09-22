@@ -47,6 +47,16 @@ export interface NetworkStatusOverview {
    * always just `{ Gb: [...] }`, since `MODE_TO_COUNTRY` is still empty --
    * see `lib/modes.ts`'s own doc comment). */
   byCountry: Partial<Record<Country, LineStatusReport[]>>;
+  /** The most recent `computedAt` across every report in this snapshot, or
+   * `null` for an empty one -- what `app/status/page.tsx` hands to
+   * `LastUpdated` under its own subtitle (2026-09-22 UX review §2.5: "right
+   * now" with no timestamp anywhere on the page, despite being served
+   * through `withStaleFallback`). Each report carries its own `computedAt`
+   * (the aggregator cycle that produced IT), so the network-wide freshest
+   * figure is the max across all of them, not any one report's value --
+   * different lines can legitimately have been computed at slightly
+   * different times within the same aggregator pass. */
+  lastUpdated: string | null;
 }
 
 /** Builds the whole network-status dashboard's data from an already-fetched
@@ -86,5 +96,10 @@ export function buildNetworkStatusOverview(reports: LineStatusReport[]): Network
     .filter((report) => severityGroup(worstStatus(report).statusSeverity) !== 'good')
     .sort(compareWorstFirst);
 
-  return { counts, totalLines: real.length, worstFirst, byMode, byCountry };
+  const lastUpdated =
+    real.length === 0
+      ? null
+      : real.reduce((latest, r) => (new Date(r.computedAt) > new Date(latest) ? r.computedAt : latest), real[0].computedAt);
+
+  return { counts, totalLines: real.length, worstFirst, byMode, byCountry, lastUpdated };
 }

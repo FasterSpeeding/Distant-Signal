@@ -40,31 +40,48 @@ beforeEach(() => {
 });
 
 describe('NetworkStatusPage', () => {
-  it('renders one counter tile per severity group, each linking to /lines?statusGroup=<group>', async () => {
+  it('renders a nonzero counter tile as a real link to /lines?statusGroup=<group>, with a descriptive accessible name', async () => {
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
       report({ id: 'a', name: 'A', lineStatuses: [status({ statusSeverity: 2 })] }),
     ]);
     renderWithMantine(await NetworkStatusPage());
 
-    // A plain count-only regex (e.g. /0/) matches four of the five tiles at
-    // once here, since only 'severe' has a nonzero count -- so each lookup
-    // pairs the count with its bucket's own label (both rendered inside the
-    // same tile) to uniquely identify one link, per the brief's own
-    // fallback note for this test.
-    expect(screen.getByRole('link', { name: /0.*Good Service/ })).toHaveAttribute('href', '/lines?statusGroup=good');
-    expect(screen.getByRole('link', { name: /0.*Informational/ })).toHaveAttribute(
-      'href',
-      '/lines?statusGroup=informational',
-    );
-    expect(screen.getByRole('link', { name: /0.*Planned/ })).toHaveAttribute('href', '/lines?statusGroup=planned');
-    expect(screen.getByRole('link', { name: /0.*Minor Disruption/ })).toHaveAttribute(
-      'href',
-      '/lines?statusGroup=mild',
-    );
-    expect(screen.getByRole('link', { name: /1.*Severe Disruption/ })).toHaveAttribute(
-      'href',
-      '/lines?statusGroup=severe',
-    );
+    const link = screen.getByRole('link', { name: '1 line with Severe Disruption — view in All Lines' });
+    expect(link).toHaveAttribute('href', '/lines?statusGroup=severe');
+  });
+
+  it('does not link a zero-count tile, and shows "none" instead of "0"', async () => {
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({ id: 'a', name: 'A', lineStatuses: [status({ statusSeverity: 2 })] }),
+    ]);
+    renderWithMantine(await NetworkStatusPage());
+
+    // Only 'severe' is nonzero here -- the other four groups' tiles must not
+    // be links at all (2026-09-22 UX review §2.1's own recommendation).
+    expect(screen.queryByRole('link', { name: /Good Service/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Informational/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Planned/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Minor Disruption/ })).not.toBeInTheDocument();
+    // "none" appears once per zero-count tile (four of the five groups).
+    expect(screen.getAllByText('none')).toHaveLength(4);
+  });
+
+  it('orders the counter tiles worst-first (regression: 2026-09-22 UX review §2.2, ascending Good..Severe read the answer last)', async () => {
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({ id: 'a', name: 'A', lineStatuses: [status({ statusSeverity: 2 })] }), // severe
+    ]);
+    renderWithMantine(await NetworkStatusPage());
+    const labels = screen
+      .getAllByText(/Good Service|Informational|Planned|Minor Disruption|Severe Disruption/)
+      // Both the tile's own label and (for the affected line) `StatusBadge`'s
+      // uppercase text match this pattern -- keep only the tile labels,
+      // identified by NOT being all-uppercase (StatusBadge renders
+      // upper-cased text via CSS, but the DOM text content itself is
+      // whatever `severityLabel` returns, so filter on the tile's known
+      // exact label set instead).
+      .filter((el) => ['Good Service', 'Informational', 'Planned', 'Minor Disruption', 'Severe Disruption'].includes(el.textContent ?? ''));
+    expect(labels[0]).toHaveTextContent('Severe Disruption');
+    expect(labels[labels.length - 1]).toHaveTextContent('Good Service');
   });
 
   it('shows the good-service empty state when nothing is affected', async () => {
@@ -75,14 +92,14 @@ describe('NetworkStatusPage', () => {
     expect(screen.getByText('Every line is running a Good Service.')).toBeInTheDocument();
   });
 
-  it('lists affected lines worst-first, unbounded (no five-row cap)', async () => {
+  it('lists affected lines worst-first, unbounded (no five-row cap), as real LineStatusCard links', async () => {
     const reports = Array.from({ length: 8 }, (_, i) =>
       report({ id: `line-${i}`, name: `Line ${i}`, lineStatuses: [status({ statusSeverity: 2 })] }),
     );
     vi.mocked(api.getLineStatusForMode).mockResolvedValue(reports);
     renderWithMantine(await NetworkStatusPage());
     for (const r of reports) {
-      expect(screen.getByRole('link', { name: new RegExp(r.name) })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: new RegExp(r.name) })).toHaveAttribute('href', `/lines/${r.id}`);
     }
   });
 
@@ -92,6 +109,52 @@ describe('NetworkStatusPage', () => {
     ]);
     renderWithMantine(await NetworkStatusPage());
     expect(screen.getByText('0 lines tracked across National Rail and TfL right now.')).toBeInTheDocument();
+  });
+
+  it('names only the modes actually present in the subtitle (regression: 2026-09-22 UX review §2.3, "National Rail and TfL" even with zero TfL lines)', async () => {
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({ id: 'a', name: 'A', modeName: 'national-rail', lineStatuses: [status({ statusSeverity: 10 })] }),
+    ]);
+    renderWithMantine(await NetworkStatusPage());
+    expect(screen.getByText('1 line tracked across National Rail right now.')).toBeInTheDocument();
+  });
+
+  it('shows "No lines tracked" for an empty mode instead of a green "All Good Service" badge (regression: 2026-09-22 UX review §2.3)', async () => {
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({ id: 'a', name: 'A', modeName: 'national-rail', lineStatuses: [status({ statusSeverity: 10 })] }),
+    ]);
+    renderWithMantine(await NetworkStatusPage());
+    expect(screen.getByText('No lines tracked.')).toBeInTheDocument();
+    expect(screen.queryByText('All Good Service')).toBeInTheDocument(); // National Rail's own card, unaffected
+  });
+
+  it('colours the "N affected" badge by the worst severity in the slice, not a fixed yellow (regression: 2026-09-22 UX review §2.3)', async () => {
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({ id: 'a', name: 'A', modeName: 'national-rail', lineStatuses: [status({ statusSeverity: 9 })] }), // mild
+      report({ id: 'b', name: 'B', modeName: 'national-rail', lineStatuses: [status({ statusSeverity: 2 })] }), // severe
+    ]);
+    renderWithMantine(await NetworkStatusPage());
+    const badge = screen.getByText('2 affected');
+    // `Badge`'s colour is expressed as CSS custom properties on the root
+    // element (Mantine v7) -- `--badge-color` reflects the `color` prop
+    // passed in.
+    expect(badge.closest('.mantine-Badge-root')).toHaveStyle({
+      '--badge-color': 'var(--mantine-color-red-light-color)',
+    });
+  });
+
+  it('shows a last-updated line under the subtitle when there is real data (regression: 2026-09-22 UX review §2.5, "right now" with no timestamp)', async () => {
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([
+      report({ id: 'a', name: 'A', computedAt: '2026-09-22T09:05:00Z', lineStatuses: [status({ statusSeverity: 10 })] }),
+    ]);
+    renderWithMantine(await NetworkStatusPage());
+    expect(screen.getByText(/^Updated/)).toBeInTheDocument();
+  });
+
+  it('shows no last-updated line for an empty snapshot', async () => {
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
+    renderWithMantine(await NetworkStatusPage());
+    expect(screen.queryByText(/^Updated/)).not.toBeInTheDocument();
   });
 
   it('still renders the page shell when the status fetch fails outright (no stale entry yet)', async () => {
