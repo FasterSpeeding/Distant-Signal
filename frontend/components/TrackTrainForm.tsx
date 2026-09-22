@@ -2,7 +2,18 @@
 
 import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Autocomplete, Badge, Button, Group, SegmentedControl, SimpleGrid, Stack, Text } from '@mantine/core';
+import {
+  Alert,
+  Autocomplete,
+  Badge,
+  Button,
+  Group,
+  SegmentedControl,
+  SimpleGrid,
+  Stack,
+  Text,
+  VisuallyHidden,
+} from '@mantine/core';
 import { DateTimePicker, DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -1059,6 +1070,14 @@ export function TrackTrainForm({
           { label: 'Search a time window', value: 'window' },
         ]}
       />
+      {/* Review §2.1/M23: the toggle swaps ~400px of form beneath it with
+          no announcement -- sighted users see it happen, screen-reader
+          users get nothing until they tab forward into different fields.
+          `VisuallyHidden` keeps this out of the visual layout entirely; the
+          visible cue (the fields themselves changing) is unaffected. */}
+      <VisuallyHidden role="status" aria-live="polite">
+        {mode === 'window' ? 'Showing time-window search.' : 'Showing pick-a-departure search.'}
+      </VisuallyHidden>
       {mode === 'window' ? (
         <>
           <Autocomplete

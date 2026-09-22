@@ -604,6 +604,19 @@ describe('TrackTrainForm', () => {
       expect(screen.queryByRole('combobox', { name: /^Destination station$/ })).not.toBeInTheDocument();
     });
 
+    // Review §2.1/M23: the toggle swaps ~400px of form with no
+    // announcement for a screen-reader user -- a visually-hidden
+    // `role="status"` region names the mode so they don't have to tab
+    // forward to discover it.
+    it('announces the mode switch via a visually-hidden status region', () => {
+      renderWithMantine(<TrackTrainForm />);
+      expect(screen.getByRole('status')).toHaveTextContent('Showing pick-a-departure search.');
+
+      switchToWindowMode();
+
+      expect(screen.getByRole('status')).toHaveTextContent('Showing time-window search.');
+    });
+
     // Review §2.1/I21: `?mode=window` (wired through `track/page.tsx`) is
     // the one thing that can now send a user straight to this mode -- the
     // toggle used to be the ONLY discovery path, unreachable from anywhere
