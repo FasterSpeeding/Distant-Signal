@@ -7,6 +7,7 @@ mod config;
 mod decision;
 mod queries;
 mod send;
+mod skip_check;
 
 use std::time::Duration;
 
@@ -50,6 +51,8 @@ async fn main() -> anyhow::Result<()> {
     let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
     let mut forward_interval =
         tokio::time::interval(Duration::from_secs(config.forward_queue_poll_interval_secs));
+    let mut skip_check_interval =
+        tokio::time::interval(Duration::from_secs(config.skip_check_poll_interval_secs));
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -75,6 +78,17 @@ async fn main() -> anyhow::Result<()> {
                 .await;
                 if let Err(err) = result {
                     tracing::error!(error = ?err, "notifier forward-queue cycle failed; will retry next interval");
+                }
+            }
+            _ = skip_check_interval.tick() => {
+                let result = run_skip_check_cycle(
+                    &pool,
+                    &config.vapid_private_key,
+                    &config.vapid_subject,
+                )
+                .await;
+                if let Err(err) = result {
+                    tracing::error!(error = ?err, "notifier skip-check cycle failed; will retry next interval");
                 }
             }
         }
@@ -300,6 +314,66 @@ async fn run_forward_queue_cycle(
         notify_train_candidates(pool, &candidates, vapid_private_key, vapid_subject, now).await?;
     }
     queries::advance_cursor(pool, "notifier_forward_queue", max_id).await?;
+    Ok(())
+}
+
+/// The station-skip check's own cycle (Task 9, §5.2) -- a full poll of
+/// today's committed journey legs every `skip_check_poll_interval_secs`,
+/// not cursor/watermark-based (see `config.rs`'s own doc comment on why).
+/// Each leg is judged independently against its own
+/// `journey_leg_notification_state` row -- `decide_skip_notification`'s
+/// escalation-only shape, same discipline as every other notification path
+/// in this crate: state is written only after a successful send.
+async fn run_skip_check_cycle(
+    pool: &PgPool,
+    vapid_private_key: &str,
+    vapid_subject: &str,
+) -> anyhow::Result<()> {
+    let now = Utc::now();
+    let today = now.date_naive();
+    let legs = queries::list_committed_legs_for_today(pool, today).await?;
+
+    for leg in &legs {
+        let is_skipped = skip_check::leg_is_skipped(pool, leg).await?;
+        let was_skipped = queries::skip_notification_state(pool, &leg.user_id, leg.journey_leg_id)
+            .await?
+            .unwrap_or(false);
+
+        // Mirrors notify_train_candidates's own tracing::info! on its
+        // candidates -- also the only production (non-test) read of
+        // CommittedLeg::trains_id, which leg_is_skipped itself never needs
+        // (it matches purely by CRS code, not by the shared physical-train
+        // id), so this line is what keeps that field genuinely wired up
+        // rather than dead outside of queries.rs's own tests.
+        tracing::debug!(
+            journey_leg_id = leg.journey_leg_id,
+            trains_id = leg.trains_id,
+            is_skipped,
+            was_skipped,
+            "skip-check leg evaluated"
+        );
+
+        if decision::decide_skip_notification(was_skipped, is_skipped) != decision::NotifyDecision::NotifyNow
+        {
+            continue;
+        }
+
+        let payload = NotificationPayload {
+            title: "A stop on your journey is being skipped".to_string(),
+            body: format!(
+                "Your service between {} and {} is no longer calling at one of those stops today.",
+                leg.origin_crs, leg.destination_crs
+            ),
+            url: format!("/journeys/{}", leg.journey_id),
+            tag: format!("journey-leg-skip-{}", leg.journey_leg_id),
+        };
+
+        if send_to_all_subscriptions(pool, &leg.user_id, &payload, vapid_private_key, vapid_subject).await? {
+            queries::upsert_skip_notification_state(pool, &leg.user_id, leg.journey_leg_id, true, now)
+                .await?;
+        }
+    }
+
     Ok(())
 }
 
