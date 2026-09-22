@@ -11,8 +11,16 @@ import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 // doc comment on why it's always mounted). So this mock needs both stubs
 // even though none of this file's own tests exercise the login-prompt
 // path directly.
+//
+// `replace` (2026-09-22 UX review §3.2): `AllLinesTable` now mirrors its
+// status-group chip to the URL via `router.replace`, so every test in this
+// file that interacts with the status chips needs a real (mocked)
+// implementation, not just `refresh`'s pre-existing one -- a shared
+// `vi.fn()` here rather than a per-test one since most tests never touch
+// this control and don't need to assert on it.
+const mockRouterReplace = vi.fn();
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ refresh: vi.fn() }),
+  useRouter: () => ({ refresh: vi.fn(), replace: mockRouterReplace }),
   usePathname: () => '/lines',
   useSearchParams: () => new URLSearchParams(''),
 }));
@@ -754,6 +762,10 @@ describe('AllLinesTable country filter', () => {
 // bucketed as 'severe' ("Severe Disruption"); swr has no report at all, so
 // its `worst` is undefined and it can never match a specific bucket.
 describe('status-group filter', () => {
+  beforeEach(() => {
+    mockRouterReplace.mockClear();
+  });
+
   it('shows only lines whose worst status is in the selected group', () => {
     renderWithMantine(
       <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />,
@@ -788,5 +800,51 @@ describe('status-group filter', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'All statuses' }));
     expect(screen.getByRole('link', { name: 'West Coast Main Line' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Great Western Railway' })).toBeInTheDocument();
+  });
+
+  // 2026-09-22 UX review §3.2: the chip used to only ever seed state from
+  // the URL, never write back to it -- so clearing a filter left
+  // `?statusGroup=...` in the address bar disagreeing with an unfiltered
+  // table (and vice versa, sharing/refreshing a filtered link).
+  it('mirrors a chip selection to the URL via router.replace', () => {
+    renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />);
+    fireEvent.click(screen.getByRole('radio', { name: /Severe Disruption/ }));
+    expect(mockRouterReplace).toHaveBeenCalledWith('/lines?statusGroup=severe', { scroll: false });
+  });
+
+  it('clears the statusGroup query param from the URL when the filter is cleared', () => {
+    renderWithMantine(
+      <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="mild" />,
+    );
+    fireEvent.click(screen.getByRole('radio', { name: 'All statuses' }));
+    expect(mockRouterReplace).toHaveBeenCalledWith('/lines', { scroll: false });
+  });
+
+  it('reflects the filter in the browser tab title, and restores the original title when cleared', () => {
+    document.title = 'All Lines — Distant Signal';
+    renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />);
+    fireEvent.click(screen.getByRole('radio', { name: /Severe Disruption/ }));
+    expect(document.title).toBe('Severe Disruption on All Lines — Distant Signal');
+    fireEvent.click(screen.getByRole('radio', { name: 'All statuses' }));
+    expect(document.title).toBe('All Lines — Distant Signal');
+  });
+
+  it('shows a quantified count and a "Show all lines" way out for a filtered view (regression: 2026-09-22 UX review §3.3, no count and no way back)', () => {
+    renderWithMantine(
+      <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="mild" />,
+    );
+    expect(screen.getByText(/1 line with Minor Disruption/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show all lines' }));
+    expect(screen.getByRole('link', { name: 'West Coast Main Line' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Great Western Railway' })).toBeInTheDocument();
+    expect(screen.queryByText(/Show all lines/)).not.toBeInTheDocument();
+  });
+
+  it('shows an honest zero-row message for a filter with no matching lines', () => {
+    renderWithMantine(
+      <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="severe" />,
+    );
+    fireEvent.click(screen.getByRole('radio', { name: /Good Service/ }));
+    expect(screen.getByText(/No lines are Good Service right now\./)).toBeInTheDocument();
   });
 });

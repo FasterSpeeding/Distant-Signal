@@ -52,7 +52,27 @@ export function toCoverageChartPoints(stats: LineDailyCoverageStats[]): ChartPoi
  * surface adds nothing a viewer can act on today. See this repo's
  * 2026-09-03 full-coverage-metrics-scaffolding plan's own Non-goals. */
 export async function CoverageTrendsResults({ id, from, to }: { id: string; from: string; to: string }) {
-  const stats = await getLineDailyCoverageStats(id, londonDayKey(from), londonDayKey(to));
+  // 2026-09-22 UX review §5.1's own recommendation, applied here too:
+  // `TrendsResults`/`LineTrainsResults` both "resolve to real markup
+  // rather than throw" so a fetch failure is scoped to their own panel;
+  // this component previously had no such guard, so an outage here would
+  // propagate past this route's `<Suspense>` (which catches suspension,
+  // not errors) straight to the global error boundary, blanking the whole
+  // page -- title, "Back to line" link, Period control and both tabs --
+  // over a failure in one secondary chart. Both TabsPanels are mounted at
+  // once (`page.tsx`'s own comment on `Tabs`' `keepMounted` default), so
+  // this panel is on the render path even while the Timeline tab is the
+  // one showing.
+  let stats: LineDailyCoverageStats[];
+  try {
+    stats = await getLineDailyCoverageStats(id, londonDayKey(from), londonDayKey(to));
+  } catch {
+    return (
+      <Paper withBorder p="md">
+        <Text c="dimmed">Full-coverage data isn&apos;t available right now.</Text>
+      </Paper>
+    );
+  }
 
   if (stats.length === 0) {
     return (

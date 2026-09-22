@@ -1,6 +1,7 @@
 'use client';
 
-import { useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   Badge,
   Box,
@@ -156,11 +157,19 @@ export function AllLinesTable({
   viewerIsAnonymous?: boolean;
   /** Seeds the new status-group filter below from a query param (e.g.
    * `/lines?statusGroup=severe`, followed from `app/status/page.tsx`'s
-   * counter tiles) -- consumed only as this `useState`'s initial value,
-   * never re-read after mount, exactly like `IncidentSearchForm`'s own
-   * `initialOperator`/`initialLine`/`initialFrom`/`initialTo` props. */
+   * counter tiles) -- consumed only as this `useState`'s initial value on
+   * mount, same as `IncidentSearchForm`'s own `initialOperator`/
+   * `initialLine`/`initialFrom`/`initialTo` props. Unlike those, this one
+   * IS written back to afterwards -- see `setStatusGroupFilterAndUrl`
+   * below (2026-09-22 UX review §3.2: the chip used to only ever seed
+   * state, never update the URL, so tapping a dashboard tile then
+   * clearing the filter left `?statusGroup=severe` in the address bar
+   * disagreeing with an unfiltered table). */
   initialStatusGroup?: SeverityGroup;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [selectedOperators, setSelectedOperators] = useState<string[]>([]);
   const [selectedCountries, setSelectedCountries] = useState<Country[]>([]);
   const [statusGroupFilter, setStatusGroupFilter] = useState<SeverityGroup | null>(initialStatusGroup ?? null);
@@ -172,6 +181,43 @@ export function AllLinesTable({
   const [sort, setSort] = useState<SortState | null>({ field: 'name', direction: 'asc' });
   const countryLabelId = useId();
   const statusLabelId = useId();
+
+  // 2026-09-22 UX review §3.2. `router.replace` (not `push`): a filter
+  // chip changing is not a new place the visitor navigated to in the way a
+  // tile link is, so it does not need its own Back-button stop -- only the
+  // URL itself needs to stay truthful for refresh/share. `scroll: false`
+  // keeps the visitor's scroll position (they're mid-interaction with a
+  // control on the page, not landing on it fresh).
+  function setStatusGroupFilterAndUrl(next: SeverityGroup | null) {
+    setStatusGroupFilter(next);
+    const params = new URLSearchParams(searchParams.toString());
+    if (next) {
+      params.set('statusGroup', next);
+    } else {
+      params.delete('statusGroup');
+    }
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }
+
+  // §3.2's own "let the title reflect it": `app/lines/page.tsx`'s
+  // `generateMetadata` is static (its own comment explains why -- a
+  // pre-filtered link is not the one people paste), so it cannot know
+  // about client-side filter changes at all. This is therefore the one
+  // place that can keep the browser tab's title honest about what's
+  // actually on screen once a chip (or a dashboard tile landing here) has
+  // filtered the table. The unfiltered title is captured once, on mount,
+  // so clearing the filter restores EXACTLY what the server rendered
+  // rather than a hand-rolled guess at it.
+  const unfilteredTitleRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (unfilteredTitleRef.current === null) {
+      unfilteredTitleRef.current = document.title;
+    }
+    document.title = statusGroupFilter
+      ? `${SEVERITY_GROUP_LABELS[statusGroupFilter]} on All Lines — Distant Signal`
+      : unfilteredTitleRef.current;
+  }, [statusGroupFilter]);
 
   const reportsById = useMemo(() => new Map(reports.map((report) => [report.id, report])), [reports]);
   const pinnedSet = useMemo(() => new Set(pinnedLineIds), [pinnedLineIds]);
@@ -343,17 +389,17 @@ export function AllLinesTable({
           </Text>
           <ChipGroup
             value={statusGroupFilter ?? ''}
-            onChange={(value) => setStatusGroupFilter(value === '' ? null : (value as SeverityGroup))}
+            onChange={(value) => setStatusGroupFilterAndUrl(value === '' ? null : (value as SeverityGroup))}
           >
             <Group gap="xs" role="group" aria-labelledby={statusLabelId}>
-              <Chip value="" size="xs" variant={statusGroupFilter === null ? 'filled' : 'outline'}>
+              <Chip value="" size="sm" variant={statusGroupFilter === null ? 'filled' : 'outline'}>
                 All statuses
               </Chip>
               {SEVERITY_GROUPS_BY_RANK.map((group) => (
                 <Chip
                   key={group}
                   value={group}
-                  size="xs"
+                  size="sm"
                   variant={statusGroupFilter === group ? 'filled' : 'outline'}
                 >
                   {SEVERITY_GROUP_LABELS[group]}
@@ -378,7 +424,7 @@ export function AllLinesTable({
                   <Chip
                     key={country}
                     value={country}
-                    size="xs"
+                    size="sm"
                     variant={selectedCountries.includes(country) ? 'filled' : 'outline'}
                   >
                     {COUNTRY_LABELS[country]}
@@ -389,18 +435,57 @@ export function AllLinesTable({
           </Stack>
         )}
       </Stack>
+      {/* 2026-09-22 UX review §3.3: a filtered view gave no count and no way
+          back -- two rows with no "2 lines with Severe Disruption" and no
+          "Clear filter" near the table, and no honest message for the
+          zero-row case a `0`-count dashboard tile can produce. The "Show
+          all lines" control has to be a real click handler, not a link:
+          the chip filter is client state seeded once from the URL (this
+          file's own `initialStatusGroup` doc comment), so a plain `<Link
+          href="/lines">` would change the address bar without the
+          already-mounted table ever re-reading it. */}
+      {statusGroupFilter && (
+        <Text size="sm" c="dimmed">
+          {sortedRows.length === 0
+            ? `No lines are ${SEVERITY_GROUP_LABELS[statusGroupFilter]} right now. `
+            : `${sortedRows.length} line${sortedRows.length === 1 ? '' : 's'} with ${SEVERITY_GROUP_LABELS[statusGroupFilter]}. `}
+          <UnstyledButton
+            onClick={() => setStatusGroupFilterAndUrl(null)}
+            style={{
+              color: 'var(--mantine-color-anchor)',
+              textDecoration: 'underline',
+              textUnderlineOffset: '0.2em',
+              fontSize: 'inherit',
+            }}
+          >
+            Show all lines
+          </UnstyledButton>
+        </Text>
+      )}
       {/* `TableScrollContainer` (same pattern, same `minWidth`, as
-          `components/JourneyTimeline.tsx`): below the `sm` breakpoint this
-          table is Name + Status + Pin, and the Status column's badge
-          deliberately doesn't truncate (see the `data-status-badge` comment
-          below, Task 3.4.1) -- on a line with no sample data yet, "NO DATA"
-          plus the fixed-size Pin icon button push the row past 390px. That
-          used to force the whole page to scroll horizontally; scoping the
-          scroll to the table itself keeps the rest of the page fixed,
-          matching e2e/nav.spec.ts's `hasHorizontalOverflow` regression
-          check (Task 1.2), which asserts nothing on the page scrolls
-          sideways. */}
-      <TableScrollContainer minWidth={420}>
+          `components/JourneyTimeline.tsx`): from the `sm` breakpoint up
+          this table is five columns (Name, Status, Avg Delay, Cancelled,
+          Pin), and the Status column's badge deliberately doesn't truncate
+          (see the `data-status-badge` comment below, Task 3.4.1), so a
+          real minimum width is genuinely needed there. Below `sm` only
+          Name + Status + Pin are visible (Avg Delay/Cancelled fold into
+          the Name cell's own sub-line instead -- see the `hiddenFrom="sm"`
+          summary line below), which fits comfortably under 390px on its
+          own; the same flat `420px` floor applied there anyway forced a
+          390px viewport into an unsignalled ~30px sideways scroll that hid
+          the Pin column entirely (2026-09-22 UX review §3.1 -- this is the
+          "TableScrollContainer is the right tool for a genuinely wide
+          table, the wrong tool for a table 30px too wide" case). The
+          `linesTableScroll` class (app/globals.css) overrides this
+          component's own `--table-min-width` CSS variable back down below
+          `sm`, `!important` because Mantine sets that variable via this
+          exact element's own inline `style` (from the `minWidth` prop),
+          which an ordinary external rule cannot outrank. Scoping the
+          scroll to the table itself (rather than removing it outright)
+          still keeps the rest of the page fixed at every width, matching
+          e2e/nav.spec.ts's `hasHorizontalOverflow` regression check (Task
+          1.2), which asserts nothing on the page scrolls sideways. */}
+      <TableScrollContainer minWidth={420} className="linesTableScroll">
         <Table>
           {/* Flat `TableThead`/`TableTr`/... named exports, not the
               `Table.Thead` dot-notation compound API -- kept consistent with

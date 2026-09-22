@@ -776,3 +776,16 @@ describe('journey progress diagram layout', () => {
     expect(diagram!).toContain('--journey-progress-endpoint-slot: 76px');
   });
 });
+
+describe('AllLinesTable mobile scroll fix (2026-09-22 UX review §3.1)', () => {
+  it('overrides --table-min-width back to 0 below the sm breakpoint, with !important', () => {
+    const queries = css.match(/@media \(max-width: \$mantine-breakpoint-sm\)\s*\{[\s\S]*?\n\}/g);
+    expect(queries).not.toBeNull();
+    const rule = queries!.find((query) => query.includes('.linesTableScroll'));
+    expect(rule).toBeDefined();
+    // `!important` is load-bearing here: Mantine's own `minWidth` prop sets
+    // this same variable as an INLINE style on the same element, which only
+    // an `!important` external rule can outrank.
+    expect(rule!).toMatch(/--table-min-width:\s*0px\s*!important/);
+  });
+});

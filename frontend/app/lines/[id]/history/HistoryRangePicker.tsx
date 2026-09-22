@@ -121,6 +121,13 @@ export function HistoryRangePicker({
         </Text>
         <SegmentedControl
           aria-labelledby={periodLabelId}
+          // 2026-09-22 UX review §5.2: with no width constraint this
+          // stretches to its full-width `Stack` parent -- three short
+          // labels spread ~370px apart at desktop, reading as three
+          // separate controls rather than one. `fit-content` keeps it
+          // exactly as wide as its own three segments regardless of the
+          // page around it.
+          w="fit-content"
           color="grape"
           // `SegmentedControl`'s active-label text colour is decided by
           // Mantine's `getContrastColor`, called directly here (not routed

@@ -167,7 +167,13 @@ describe('LineHistoryPage', () => {
     // string, per this task's plan.
     vi.mocked(api.getLineStatusHistory).mockResolvedValue([report('c2c', 'c2c (London, Tilbury & Southend line)')]);
     renderWithMantine(
-      await HistoryResults({ id: 'c2c', from: '2026-08-26T00:00:00Z', to: '2026-09-02T00:00:00Z' }),
+      await HistoryResults({
+        id: 'c2c',
+        from: '2026-08-26T00:00:00Z',
+        to: '2026-09-02T00:00:00Z',
+        preset: '7d',
+        basePath: '/lines/c2c/history',
+      }),
     );
 
     expect(screen.getByRole('heading', { name: formatDate('2026-08-31T09:00:00Z'), level: 2 })).toBeInTheDocument();
@@ -183,7 +189,13 @@ describe('LineHistoryPage', () => {
       { ...report('c2c', 'c2c (London, Tilbury & Southend line)'), computedAt: '2026-08-30T09:00:00Z' },
     ]);
     renderWithMantine(
-      await HistoryResults({ id: 'c2c', from: '2026-08-26T00:00:00Z', to: '2026-09-02T00:00:00Z' }),
+      await HistoryResults({
+        id: 'c2c',
+        from: '2026-08-26T00:00:00Z',
+        to: '2026-09-02T00:00:00Z',
+        preset: '7d',
+        basePath: '/lines/c2c/history',
+      }),
     );
 
     expect(screen.getAllByText('Times in UK local time')).toHaveLength(1);
@@ -197,7 +209,13 @@ describe('LineHistoryPage', () => {
       { ...report('c2c', 'c2c (London, Tilbury & Southend line)'), computedAt: '2026-08-30T09:00:00Z' },
     ]);
     renderWithMantine(
-      await HistoryResults({ id: 'c2c', from: '2026-08-26T00:00:00Z', to: '2026-09-02T00:00:00Z' }),
+      await HistoryResults({
+        id: 'c2c',
+        from: '2026-08-26T00:00:00Z',
+        to: '2026-09-02T00:00:00Z',
+        preset: '7d',
+        basePath: '/lines/c2c/history',
+      }),
     );
 
     expect(screen.getByText(/2 status changes across/)).toBeInTheDocument();
@@ -225,7 +243,13 @@ describe('LineHistoryPage', () => {
       },
     ]);
     renderWithMantine(
-      await HistoryResults({ id: 'c2c', from: '2026-08-26T00:00:00Z', to: '2026-09-02T00:00:00Z' }),
+      await HistoryResults({
+        id: 'c2c',
+        from: '2026-08-26T00:00:00Z',
+        to: '2026-09-02T00:00:00Z',
+        preset: '7d',
+        basePath: '/lines/c2c/history',
+      }),
     );
 
     expect(screen.getByText('No incidents reported')).toBeInTheDocument();
@@ -240,9 +264,74 @@ describe('LineHistoryPage', () => {
       report('c2c', 'c2c (London, Tilbury & Southend line)'),
     ]);
     renderWithMantine(
-      await HistoryResults({ id: 'c2c', from: '2026-08-26T00:00:00Z', to: '2026-09-02T00:00:00Z' }),
+      await HistoryResults({
+        id: 'c2c',
+        from: '2026-08-26T00:00:00Z',
+        to: '2026-09-02T00:00:00Z',
+        preset: '7d',
+        basePath: '/lines/c2c/history',
+      }),
     );
 
     expect(screen.getByText('No reason given')).toBeInTheDocument();
+  });
+
+  // 2026-09-22 UX review §5.1: this Suspense boundary catches suspension,
+  // not errors -- an unguarded throw here used to propagate all the way to
+  // the route's global error.tsx, blanking the page title, "Back to line"
+  // link, Period control and both tabs. This is a regression test for the
+  // fix, not for the specific (unconfirmed) LNER trigger the review's
+  // screenshot showed -- any fetch failure now resolves to real markup.
+  it('resolves to a Paper instead of throwing when the history fetch fails', async () => {
+    vi.mocked(api.getLineStatusHistory).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    renderWithMantine(
+      await HistoryResults({
+        id: 'lner-ecml',
+        from: '2026-08-26T00:00:00Z',
+        to: '2026-09-02T00:00:00Z',
+        preset: '7d',
+        basePath: '/lines/lner-ecml/history',
+      }),
+    );
+
+    const text = screen.getByText("Couldn't load this line's history right now.");
+    expect(text).toBeInTheDocument();
+    expect(text.closest('.mantine-Paper-root')).not.toBeNull();
+  });
+
+  // 2026-09-22 UX review §5.2: "No history entries in that range." used to
+  // be honest but terminal -- no way out, and no link to the one control
+  // (the Period picker) that would actually change the answer.
+  it('offers a "Try 30 days" way out of an empty range, when not already viewing 30 days', async () => {
+    vi.mocked(api.getLineStatusHistory).mockResolvedValue([]);
+    renderWithMantine(
+      await HistoryResults({
+        id: 'cross-country',
+        from: '2026-08-26T00:00:00Z',
+        to: '2026-09-02T00:00:00Z',
+        preset: '7d',
+        basePath: '/lines/cross-country/history',
+      }),
+    );
+
+    expect(screen.getByText('No history entries in that range.')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: '30 days' });
+    expect(link).toHaveAttribute('href', '/lines/cross-country/history?range=30d');
+  });
+
+  it('withholds the "Try 30 days" suggestion once 30 days is already the active preset', async () => {
+    vi.mocked(api.getLineStatusHistory).mockResolvedValue([]);
+    renderWithMantine(
+      await HistoryResults({
+        id: 'cross-country',
+        from: '2026-08-03T00:00:00Z',
+        to: '2026-09-02T00:00:00Z',
+        preset: '30d',
+        basePath: '/lines/cross-country/history',
+      }),
+    );
+
+    expect(screen.getByText('No history entries in that range.')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '30 days' })).not.toBeInTheDocument();
   });
 });

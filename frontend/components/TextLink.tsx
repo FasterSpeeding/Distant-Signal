@@ -105,6 +105,12 @@ export function TextLink({
   // that merely restates the visible text is noise, and one that
   // *contradicts* it is a 2.5.3 Label-in-Name failure, so the label passed
   // here must always CONTAIN the visible text.
+  //
+  // Two independent UX-review findings landed on this same prop: the
+  // `/operators` grid's repeated "History" links (above) and `/lines/[id]`'s
+  // repeated "View live status" links, one per train row. Both are the same
+  // shape -- N identically-worded links whose distinguishing text is always
+  // a sibling `<Text>` -- so they share one prop rather than two.
   ariaLabel?: string;
 }) {
   return (

@@ -542,7 +542,7 @@ export default async function LineDetailPage({
             Trains running today
           </Title>
           <Suspense fallback={<TrainsLoadingFallback />}>
-            <LineTrainsResults id={id} date={trainsDate} />
+            <LineTrainsResults id={id} date={trainsDate} now={new Date(now)} />
           </Suspense>
         </Stack>
       )}

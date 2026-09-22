@@ -91,7 +91,12 @@ export default function Error({
         <Button onClick={reset} w="fit-content">
           Try again
         </Button>
-        <TextLink href="/">Back to your dashboard</TextLink>
+        {/* 2026-09-22 UX review §5.1: "your dashboard" assumes a logged-in
+            user, but this is the app's ONLY error boundary (this file's own
+            doc comment above) -- it renders for anonymous visitors too,
+            for whom `/` isn't a dashboard and there's no "yours" about it.
+            "The home page" is true for everyone the link goes to. */}
+        <TextLink href="/">Back to the home page</TextLink>
       </Group>
       {error.digest && (
         <Text size="xs" c="dimmed">

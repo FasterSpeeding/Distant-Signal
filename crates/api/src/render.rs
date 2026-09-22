@@ -291,6 +291,27 @@ pub(crate) fn calling_point_departure_json(d: &Value, station_crs: &str) -> Valu
 /// overlay still calls `GET /Train/by-uid/{uid}/{date}` for that one
 /// train.
 ///
+/// The schedule side's own origin/destination, resolved from the first and
+/// last entries of `entry`'s `calling_points` (TIPLOC -> CRS -> name, the
+/// same chain `data::journey::apply_station_names` already runs for the
+/// single-train journey view) by `routes::lines::get_line_trains` before
+/// calling [`line_train_json`]. Added so a line's "Trains running today"
+/// panel (`frontend/app/lines/[id]/LineTrainsResults.tsx`) can name a
+/// route from the schedule alone when `live` is `None` or itself has no
+/// resolved origin/destination -- previously the row's ENTIRE label came
+/// from `live.originCrs`/`live.destinationCrs`, so any live record with no
+/// schedule match rendered as a bare "Unknown station" (2026-09-22 UX
+/// review §4.1). All four fields are independently optional: a TIPLOC with
+/// no `stanox_crs` row, or a CRS with no `stations` row, degrades that one
+/// end rather than the whole entry.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ScheduleRouteEndpoints {
+    pub origin_crs: Option<String>,
+    pub origin_name: Option<String>,
+    pub destination_crs: Option<String>,
+    pub destination_name: Option<String>,
+}
+
 /// Maintenance note: `liveStatus`'s field list is hand-picked from
 /// `PublicTrainState`, not a serialization of the whole struct (a plain
 /// `Json(state)` can't drop `calling_points`/`journey_stops` the way this
@@ -300,10 +321,15 @@ pub(crate) fn calling_point_departure_json(d: &Value, station_crs: &str) -> Valu
 pub(crate) fn line_train_json(
     entry: &Value,
     live: Option<&crate::data::trains::PublicTrainState>,
+    schedule_route: &ScheduleRouteEndpoints,
 ) -> Value {
     json!({
         "uid": entry.get("uid").cloned().unwrap_or(Value::Null),
         "callingPoints": entry.get("calling_points").cloned().unwrap_or(Value::Null),
+        "scheduleOriginCrs": schedule_route.origin_crs,
+        "scheduleOriginName": schedule_route.origin_name,
+        "scheduleDestinationCrs": schedule_route.destination_crs,
+        "scheduleDestinationName": schedule_route.destination_name,
         "liveStatus": live.map(|s| json!({
             "trainsId": s.trains_id,
             "trainId": s.train_id,
@@ -991,10 +1017,27 @@ mod tests {
                 {"tiploc": "EUSTON", "kind": "Origin", "booked_arrival": null, "booked_departure": "08:00:00", "is_half_minute_arrival": false, "is_half_minute_departure": false}
             ],
         });
-        let json = line_train_json(&entry, None);
+        let json = line_train_json(&entry, None, &ScheduleRouteEndpoints::default());
         assert_eq!(json["uid"], "C10001");
         assert_eq!(json["callingPoints"], entry["calling_points"]);
         assert!(json["liveStatus"].is_null());
+        assert!(json["scheduleOriginCrs"].is_null());
+    }
+
+    #[test]
+    fn line_train_json_attaches_the_resolved_schedule_route_endpoints() {
+        let entry = serde_json::json!({"uid": "C10003", "calling_points": []});
+        let schedule_route = ScheduleRouteEndpoints {
+            origin_crs: Some("EUS".to_string()),
+            origin_name: Some("London Euston".to_string()),
+            destination_crs: Some("BHM".to_string()),
+            destination_name: Some("Birmingham New Street".to_string()),
+        };
+        let json = line_train_json(&entry, None, &schedule_route);
+        assert_eq!(json["scheduleOriginCrs"], "EUS");
+        assert_eq!(json["scheduleOriginName"], "London Euston");
+        assert_eq!(json["scheduleDestinationCrs"], "BHM");
+        assert_eq!(json["scheduleDestinationName"], "Birmingham New Street");
     }
 
     #[test]
@@ -1027,7 +1070,7 @@ mod tests {
             may_have_arrived: false,
         };
 
-        let json = line_train_json(&entry, Some(&live));
+        let json = line_train_json(&entry, Some(&live), &ScheduleRouteEndpoints::default());
         assert_eq!(json["uid"], "C10002");
         assert_eq!(json["liveStatus"]["trainsId"], 42);
         assert_eq!(json["liveStatus"]["trainId"], "1A11");
@@ -1054,7 +1097,7 @@ mod tests {
     #[test]
     fn line_train_json_missing_uid_on_the_population_entry_renders_null_not_a_panic() {
         let entry = serde_json::json!({"calling_points": []});
-        let json = line_train_json(&entry, None);
+        let json = line_train_json(&entry, None, &ScheduleRouteEndpoints::default());
         assert!(json["uid"].is_null());
     }
 }

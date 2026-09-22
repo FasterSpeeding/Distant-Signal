@@ -84,4 +84,17 @@ describe('buildNetworkStatusOverview', () => {
     expect(overview.worstFirst).toEqual([]);
     expect(overview.totalLines).toBe(0);
   });
+
+  it('lastUpdated is null for no reports', () => {
+    expect(buildNetworkStatusOverview([]).lastUpdated).toBeNull();
+  });
+
+  it('lastUpdated is the most recent computedAt across every report, not response order', () => {
+    const reports = [
+      report({ id: 'a', name: 'A', computedAt: '2026-09-22T09:00:00Z' }),
+      report({ id: 'b', name: 'B', computedAt: '2026-09-22T09:05:00Z' }),
+      report({ id: 'c', name: 'C', computedAt: '2026-09-22T08:55:00Z' }),
+    ];
+    expect(buildNetworkStatusOverview(reports).lastUpdated).toBe('2026-09-22T09:05:00Z');
+  });
 });
