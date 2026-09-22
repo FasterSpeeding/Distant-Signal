@@ -699,10 +699,12 @@ describe('IssueList', () => {
    * `renderWithMantine`'s wrapper isn't preserved across a bare
    * `rerender` call) instead of two separate mounts.
    *
-   * This repo has no `eslint-plugin-react-hooks` (no ESLint config at
-   * all), so there is no lint-level safety net for this — these tests are
-   * the only thing that would catch a regression if the early return ever
-   * moved back above one of the hooks it now follows. */
+   * This repo now has `eslint-plugin-react-hooks` (via `eslint-config-next`,
+   * `frontend/eslint.config.mjs`), whose `react-hooks/rules-of-hooks` rule
+   * would catch the textual case of a hook call ending up after a return
+   * statement. These tests remain useful belt-and-braces coverage: they
+   * exercise the actual runtime behaviour (a mounted instance transitioning
+   * between hook counts) rather than relying on static analysis alone. */
   it('does not break React hook ordering when a mounted instance goes from all Good Service to a mixed set', () => {
     const goodService: LineStatus = {
       statusSeverity: 10,
