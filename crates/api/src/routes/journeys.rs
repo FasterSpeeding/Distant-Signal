@@ -408,6 +408,17 @@ struct JourneyLegDetailResponse {
     /// `blend_darwin_eta`, all reused unchanged; design doc §4). `None`
     /// for an unmatched (`train_subscription_id IS NULL`) leg.
     tracked_train_state: Option<train_tracking::TrackedTrainState>,
+    /// `null` when the leg has no matched train yet, or no known
+    /// origin/destination to check against (nothing to report -- not
+    /// "checked and clean"). See station_skip.rs and this plan's §5.2.
+    leg_skip: Option<LegSkipResponse>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegSkipResponse {
+    origin_skipped: bool,
+    destination_skipped: bool,
 }
 
 /// `GET /Journeys/{journeyId}` -- design doc §4. No new backend read-model
@@ -449,6 +460,38 @@ async fn get_journey(
             }
             None => None,
         };
+
+        let leg_skip = match (
+            leg.origin_crs.as_deref(),
+            leg.destination_crs.as_deref(),
+            &tracked_train_state,
+        ) {
+            (Some(origin_crs), Some(destination_crs), Some(state)) => {
+                let match_target = state
+                    .pin_destination_crs
+                    .as_deref()
+                    .or(state.next_calling_point.as_deref());
+                let status = match state.trains_id {
+                    Some(trains_id) => {
+                        crate::data::station_skip::leg_skip_status(
+                            &app.database,
+                            trains_id,
+                            origin_crs,
+                            destination_crs,
+                            match_target,
+                        )
+                        .await
+                    }
+                    None => crate::data::station_skip::LegSkipStatus::default(),
+                };
+                Some(LegSkipResponse {
+                    origin_skipped: status.origin_skipped,
+                    destination_skipped: status.destination_skipped,
+                })
+            }
+            _ => None,
+        };
+
         legs.push(JourneyLegDetailResponse {
             id: leg.id,
             origin_crs: leg.origin_crs,
@@ -460,6 +503,7 @@ async fn get_journey(
             arrive_before: leg.arrive_before,
             match_mode: leg.match_mode,
             tracked_train_state,
+            leg_skip,
         });
     }
 
