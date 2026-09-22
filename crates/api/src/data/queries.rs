@@ -1561,6 +1561,198 @@ pub async fn search_schedule_calling_point_departures(
     }))
 }
 
+/// The time-window candidate search behind journey-leg matching (`GET
+/// /Journeys/{journeyId}/legs/{legId}/candidates`,
+/// `crates/api/src/routes/journeys.rs`) --
+/// docs/superpowers/specs/2026-09-22-journey-tracking-design.md §2.1.
+///
+/// A deliberate SIBLING of `search_schedule_calling_point_departures`
+/// above, not an extension of it, even though the design doc names
+/// extending that function as one option. Two reasons:
+///
+/// 1. **Behavioral difference, not just a superset.** A journey leg's
+///    "depart X, arrive Y" is meaningless unless Y is reached strictly
+///    AFTER departing X (§0.5's own named gap) -- so this function's
+///    `EXISTS` branches enforce that ordering UNCONDITIONALLY, for every
+///    origin/destination pair. `search_schedule_calling_point_departures`
+///    above only enforces it for the SAME-station case (a loop-service
+///    check, `stop.origin_crs = main.origin_crs`) and deliberately does
+///    NOT for two different stations -- see that function's own doc
+///    comment, point 2. That is the right behavior for the general-purpose
+///    `/trains` search page (matching a schedule by any calling point, not
+///    a directed leg); widening it in place would be an unrelated,
+///    unreviewed behavior change to that already-shipped public endpoint.
+/// 2. **Merge safety.** Other in-flight, unmerged branches independently
+///    modify `search_schedule_calling_point_departures`'s own `stops_at`/
+///    ordering logic (see this plan's own staleness note). A sibling
+///    function with zero line overlap cannot collide with that work.
+///
+/// Consequently this duplicates ~25 lines of row-to-JSON mapping logic
+/// from `search_schedule_calling_point_departures` rather than factoring
+/// out a shared helper -- deliberately, for the same merge-safety reason.
+/// Worth doing once the in-flight `stops_at` work above has landed and
+/// this function's own shape has proven stable; not attempted here.
+///
+/// No `true_origin_crs`/`stops_at` params, unlike the function above: a
+/// journey leg always names both ends explicitly (`origin_crs`,
+/// `destination_crs`, both required), so there is no "optional filter"
+/// shape to carry over. `depart_after`/`depart_before` bound
+/// `main.scheduled` (the departure at `origin_crs`, both now genuinely
+/// optional, unlike `search_schedule_calling_point_departures`'s
+/// mandatory `scheduled_from` -- that function's caller always supplies a
+/// concrete floor, either an explicit `from` or a `now`-forward default;
+/// a journey-leg window search has no such default to fall back on).
+/// `arrive_after`/`arrive_before` bound the arrival at `destination_crs`,
+/// mirroring `stop_arrival_from`/`stop_arrival_to`'s own two-branch shape
+/// above (the `EXISTS` branch for an intermediate call, `main.destination_crs
+/// = $5` for the true-terminus case) -- same NULL-never-satisfies-a-bound
+/// contract.
+///
+/// `Ok(None)` means no CIF publish has landed for `service_date` at all
+/// (maps to a 404, mirroring the function above). `Ok(Some(page))` with an
+/// empty `page.departures` means the day IS published and the window
+/// matched nothing.
+#[allow(clippy::too_many_arguments)]
+pub async fn search_journey_leg_candidates(
+    pool: &PgPool,
+    origin_crs: &str,
+    destination_crs: &str,
+    service_date: chrono::NaiveDate,
+    depart_after: Option<chrono::NaiveTime>,
+    depart_before: Option<chrono::NaiveTime>,
+    arrive_after: Option<chrono::NaiveTime>,
+    arrive_before: Option<chrono::NaiveTime>,
+    after: Option<&CallingPointDepartureCursor>,
+    limit: i64,
+) -> Result<Option<CallingPointDeparturePage>> {
+    let fetch = limit.saturating_add(1);
+
+    let rows: Vec<(
+        String,
+        String,
+        Option<String>,
+        chrono::NaiveTime,
+        Option<chrono::NaiveTime>,
+        i16,
+    )> = sqlx::query_as(
+        r#"
+            SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset
+            FROM schedule_destination_departures main
+            WHERE main.service_date = $1
+              AND main.origin_crs = $2
+              AND ($3::time IS NULL OR main.scheduled >= $3)
+              AND ($4::time IS NULL OR main.scheduled <= $4)
+              AND (
+                    main.destination_crs = $5
+                    OR EXISTS (
+                        SELECT 1
+                        FROM schedule_destination_departures stop
+                        WHERE stop.service_date = $1
+                          AND stop.train_uid = main.train_uid
+                          AND stop.origin_crs = $5
+                          -- Unconditional, unlike
+                          -- search_schedule_calling_point_departures'
+                          -- same-station-only ordering check -- a journey
+                          -- leg's destination must be reached AFTER its
+                          -- origin regardless of which two stations they
+                          -- are. See this function's own doc comment.
+                          AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled)
+                    )
+              )
+              AND (
+                    ($6::time IS NULL AND $7::time IS NULL)
+                    OR (
+                        main.destination_crs = $5
+                        AND ($6::time IS NULL OR main.destination_arrival >= $6)
+                        AND ($7::time IS NULL OR main.destination_arrival <= $7)
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM schedule_destination_departures stop
+                        WHERE stop.service_date = $1
+                          AND stop.train_uid = main.train_uid
+                          AND stop.origin_crs = $5
+                          AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled)
+                          AND ($6::time IS NULL OR stop.calling_point_arrival >= $6)
+                          AND ($7::time IS NULL OR stop.calling_point_arrival <= $7)
+                    )
+              )
+              AND ($8::time IS NULL
+                   OR (main.scheduled, main.train_uid) > ($8, $9))
+            ORDER BY main.scheduled, main.train_uid
+            LIMIT $10
+            "#,
+    )
+    .bind(service_date)
+    .bind(origin_crs)
+    .bind(depart_after)
+    .bind(depart_before)
+    .bind(destination_crs)
+    .bind(arrive_after)
+    .bind(arrive_before)
+    .bind(after.map(|c| c.scheduled))
+    .bind(after.map(|c| c.train_uid.as_str()))
+    .bind(fetch)
+    .fetch_all(pool)
+    .await?;
+
+    if rows.is_empty() {
+        if !schedule_destination_departures_published_for(pool, service_date).await? {
+            return Ok(None);
+        }
+        return Ok(Some(CallingPointDeparturePage {
+            departures: Vec::new(),
+            next_cursor: None,
+        }));
+    }
+
+    let has_more = rows.len() as i64 > limit;
+    let page_rows = if has_more {
+        &rows[..limit as usize]
+    } else {
+        &rows[..]
+    };
+
+    let next_cursor = if has_more {
+        page_rows.last().map(
+            |(train_uid, _, _, scheduled, _, _)| CallingPointDepartureCursor {
+                scheduled: *scheduled,
+                train_uid: train_uid.clone(),
+            },
+        )
+    } else {
+        None
+    };
+
+    let departures = page_rows
+        .iter()
+        .map(
+            |(
+                train_uid,
+                destination_crs,
+                true_origin_crs,
+                scheduled,
+                destination_arrival,
+                destination_arrival_day_offset,
+            )| {
+                serde_json::json!({
+                    "uid": train_uid,
+                    "destination_crs": destination_crs,
+                    "true_origin_crs": true_origin_crs,
+                    "scheduled": scheduled.format("%H:%M:%S").to_string(),
+                    "destination_arrival": destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
+                    "destination_arrival_day_offset": destination_arrival_day_offset,
+                })
+            },
+        )
+        .collect();
+
+    Ok(Some(CallingPointDeparturePage {
+        departures,
+        next_cursor,
+    }))
+}
+
 /// Upserts one line's full-coverage stats row -- wholesale replaces any
 /// existing row for that `line_id` (a live snapshot, never merged/append).
 pub async fn upsert_full_coverage_line_stats(
@@ -5880,6 +6072,131 @@ mod schedule_destination_departures_query_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_journey_leg_candidates -- --ignored --test-threads=1`"]
+    async fn search_journey_leg_candidates_enforces_ordering_for_different_stations() {
+        let pool = test_pool().await;
+        let date = fixture_date_feb(13);
+        delete_day(&pool, date).await;
+
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                // A train that calls at RDG BEFORE WAT on this diagram --
+                // the "loops back the wrong way" case this function must
+                // exclude for a WAT -> RDG leg search, unlike the
+                // general-purpose search_schedule_calling_point_departures
+                // (see this function's own doc comment).
+                row(date, "SOU", time(8, 0), "T00001", "RDG", None, None),
+                row(date, "SOU", time(8, 30), "T00001", "WAT", None, None),
+                // A genuinely valid candidate: WAT then RDG, in order.
+                row(date, "RDG", time(9, 0), "T00002", "WAT", None, None),
+                row(date, "RDG", time(9, 30), "T00002", "RDG", None, None),
+            ],
+        )
+        .await
+        .expect("seed fixture rows");
+
+        let page = search_journey_leg_candidates(
+            &pool, "WAT", "RDG", date, None, None, None, None, None, 50,
+        )
+        .await
+        .expect("search candidates")
+        .expect("service date is published");
+
+        let uids: Vec<&str> = page
+            .departures
+            .iter()
+            .map(|d| d["uid"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            uids,
+            vec!["T00002"],
+            "T00001 calls at RDG before WAT and must be excluded"
+        );
+
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_journey_leg_candidates -- --ignored --test-threads=1`"]
+    async fn search_journey_leg_candidates_applies_depart_and_arrive_windows() {
+        let pool = test_pool().await;
+        let date = fixture_date_feb(14);
+        delete_day(&pool, date).await;
+
+        upsert_schedule_destination_departures(
+            &pool,
+            &[
+                row(
+                    date,
+                    "RDG",
+                    time(7, 0),
+                    "T00003",
+                    "WAT",
+                    None,
+                    Some(time(7, 30)),
+                ),
+                row(
+                    date,
+                    "RDG",
+                    time(7, 30),
+                    "T00003",
+                    "RDG",
+                    None,
+                    Some(time(7, 30)),
+                ),
+                row(
+                    date,
+                    "RDG",
+                    time(9, 0),
+                    "T00004",
+                    "WAT",
+                    None,
+                    Some(time(9, 30)),
+                ),
+                row(
+                    date,
+                    "RDG",
+                    time(9, 30),
+                    "T00004",
+                    "RDG",
+                    None,
+                    Some(time(9, 30)),
+                ),
+            ],
+        )
+        .await
+        .expect("seed fixture rows");
+
+        let page = search_journey_leg_candidates(
+            &pool,
+            "WAT",
+            "RDG",
+            date,
+            Some(time(8, 0)),
+            None,
+            None,
+            Some(time(9, 35)),
+            None,
+            50,
+        )
+        .await
+        .expect("search candidates")
+        .expect("service date is published");
+
+        let uids: Vec<&str> = page
+            .departures
+            .iter()
+            .map(|d| d["uid"].as_str().unwrap())
+            .collect();
+        assert_eq!(uids, vec!["T00004"]);
+
+        delete_day(&pool, date).await;
     }
 }
 
