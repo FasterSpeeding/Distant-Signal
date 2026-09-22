@@ -417,7 +417,7 @@ async fn get_line_status_history(
 /// total: 0 if every contributing cycle itself had total: 0 (rare given
 /// min_sample_size, not impossible). Pure so it's unit-testable without a
 /// database.
-fn daily_stats_to_json(row: queries::DailyStatsRow) -> Value {
+pub(crate) fn daily_stats_to_json(row: queries::DailyStatsRow) -> Value {
     let avg_delay_minutes = if row.running_count > 0 {
         row.delay_minutes_sum / row.running_count as f64
     } else {
@@ -465,7 +465,7 @@ async fn get_line_daily_stats(
 /// `day`. Originally `hourly_stats_to_json` emitting `hourStart`; renamed
 /// alongside the table/route when the bucket size was halved -- see git
 /// history for the hourly-era version.
-fn half_hourly_stats_to_json(row: queries::HalfHourlyStatsRow) -> Value {
+pub(crate) fn half_hourly_stats_to_json(row: queries::HalfHourlyStatsRow) -> Value {
     let avg_delay_minutes = if row.running_count > 0 {
         row.delay_minutes_sum / row.running_count as f64
     } else {
@@ -518,7 +518,7 @@ async fn get_line_half_hourly_stats(
 /// -- they share this one function the same way they share
 /// `queries::sub_daily_stats_for_range` itself (Decision 2 of
 /// docs/superpowers/specs/2026-09-05-configurable-trend-granularity-design.md).
-fn sub_daily_stats_to_json(row: queries::HalfHourlyStatsRow) -> Value {
+pub(crate) fn sub_daily_stats_to_json(row: queries::HalfHourlyStatsRow) -> Value {
     let avg_delay_minutes = if row.running_count > 0 {
         row.delay_minutes_sum / row.running_count as f64
     } else {
