@@ -51,16 +51,52 @@ describe('/api/[...path] proxy', () => {
     expect((init as { headers: Record<string, string> }).headers.Cookie).toBe('nr_session=abc123');
   });
 
-  it('a path outside both public/ and Train/ still 400s', async () => {
+  it('a path outside public/, Train/, and Journeys/ still 400s', async () => {
     // Not reachable through this app's own links today (every catch-all
     // segment this app generates comes from a literal string, never raw
     // user text) -- this is the traversal-safety net Decision 4 said
     // stays "unchanged in kind"; confirm it still rejects a resolved path
-    // outside the widened two-prefix allowlist, not just the original
+    // outside the widened three-prefix allowlist, not just the original
     // single-prefix one.
     const req = makeRequest('/api/../secret');
     const response = await GET(req, { params: Promise.resolve({ path: ['..', 'secret'] }) });
     expect(response.status).toBe(400);
+  });
+
+  it('forwards a bare POST /api/Journeys (no trailing path) to the bare-root backend /Journeys path', async () => {
+    // Regression for Finding C1: `resolveTargetPath` used to only
+    // special-case `path[0] === 'Train'`, so this resolved to the
+    // non-existent `/public/Journeys` on the backend -- every
+    // `POST /Journeys` call this app's frontend makes (creating a
+    // journey/leg) would 404. `routes::journeys::router()` is `.merge`d
+    // onto the backend's root router exactly like `routes::train::router()`
+    // (`crates/api/src/main.rs`), not nested under `/public`. Unlike every
+    // `/Train/...` call this proxy forwards, this resolves to the BARE
+    // `/Journeys` path with no trailing segment at all, so this also
+    // exercises the guard's "no trailing slash required" case.
+    const req = makeRequest('/api/Journeys', {
+      method: 'POST',
+      headers: { cookie: 'nr_session=abc123' },
+      body: JSON.stringify({ leg: { mode: 'pin' } }),
+    });
+    await POST(req, { params: Promise.resolve({ path: ['Journeys'] }) });
+    const [calledUrl, init] = vi.mocked(fetch).mock.calls[0];
+    expect(calledUrl.toString()).toBe('http://test-api:8080/Journeys');
+    expect((init as RequestInit).method).toBe('POST');
+  });
+
+  it('forwards a GET /api/Journeys/mine to the bare-root backend path', async () => {
+    const req = makeRequest('/api/Journeys/mine');
+    await GET(req, { params: Promise.resolve({ path: ['Journeys', 'mine'] }) });
+    const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+    expect(calledUrl.toString()).toBe('http://test-api:8080/Journeys/mine');
+  });
+
+  it('forwards a GET /api/Journeys/1/legs/2/candidates to the bare-root backend path', async () => {
+    const req = makeRequest('/api/Journeys/1/legs/2/candidates');
+    await GET(req, { params: Promise.resolve({ path: ['Journeys', '1', 'legs', '2', 'candidates'] }) });
+    const [calledUrl] = vi.mocked(fetch).mock.calls[0];
+    expect(calledUrl.toString()).toBe('http://test-api:8080/Journeys/1/legs/2/candidates');
   });
 
   it('forwards a multipart/form-data upload with its original Content-Type (boundary intact)', async () => {
