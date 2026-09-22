@@ -1000,6 +1000,11 @@ mod db_tests {
         (status, value)
     }
 
+    #[test]
+    fn router_builds_without_panicking() {
+        let _ = super::router();
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
