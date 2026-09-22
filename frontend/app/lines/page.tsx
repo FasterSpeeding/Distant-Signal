@@ -71,7 +71,7 @@ export const metadata: Metadata = {
 // fallback below is typed as `Preferences` rather than inferred with
 // `never[]` members. Per-user data fails closed during an outage (design
 // spec Decision 5) instead of being stale-served.
-const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [] };
+const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [], pinnedOperators: [] };
 
 export default async function AllLinesPage() {
   const [lines, preferences, reports, tocs, viewerIsAnonymous] = await Promise.all([

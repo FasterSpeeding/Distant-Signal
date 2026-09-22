@@ -3,6 +3,7 @@ import Link from 'next/link';
 import type { Metadata } from 'next';
 import {
   ApiNotFoundError,
+  getAllOperators,
   getLineStatusForMode,
   getMyTrackedTrains,
   getPreferences,
@@ -17,6 +18,7 @@ import { DISPLAYED_MODES_PARAM, MERGED_TFL_LINE_IDS } from '@/lib/modes';
 import { LineStatusCard } from '@/components/LineStatusCard';
 import { LoginLink } from '@/components/LoginLink';
 import { NotificationsToggle } from '@/components/NotificationsToggle';
+import { OperatorStatusCard } from '@/components/OperatorStatusCard';
 import { TextLink } from '@/components/TextLink';
 import { StatusBadge } from '@/components/StatusBadge';
 import { StatusRow } from '@/components/StatusRow';
@@ -91,7 +93,7 @@ export const metadata: Metadata = {
 // fallback below is typed as `Preferences` rather than inferred with
 // `never[]` members. Per-user data fails closed during an outage (design
 // spec Decision 5) instead of being stale-served.
-const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [] };
+const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [], pinnedOperators: [] };
 
 function worstSeverityAcrossReports(reports: LineStatusReport[]): number {
   let worst = 10; // Good Service
@@ -177,7 +179,7 @@ export default async function DashboardPage() {
   // branch, which simply doesn't use it). Per
   // docs/superpowers/specs/2026-09-01-tracked-trains-home-page-design.md
   // Decision 3.
-  const [preferences, allReports, myTrackedTrains, sharedGroupTrains, sharedCustomLines] =
+  const [preferences, allReports, myTrackedTrains, sharedGroupTrains, sharedCustomLines, allOperators] =
     await Promise.all([
       // Fails closed to "nothing pinned" -- the exact shape getPreferences
       // already returns for a 401 -- rather than being stale-served: this is
@@ -209,6 +211,11 @@ export default async function DashboardPage() {
       // above, with the same null-on-401 / fail-closed treatment for the
       // same reason.
       getSharedGroupCustomLines().catch(() => null),
+      // Same public, unauthenticated, cheap-to-fetch-in-full list
+      // `/operators` itself fetches (~25-40 rows) -- filtered down to the
+      // caller's own pins below, rather than a per-code batch fetch. See
+      // this plan's Judgment Call 6.
+      withStaleFallback('allOperators', () => getAllOperators()).catch(() => []),
     ]);
 
   // Hoisted above the anonymous/authenticated branch so both can read it:
@@ -281,6 +288,17 @@ export default async function DashboardPage() {
     .filter((report) => preferences.pinnedLines.includes(report.id) && !MERGED_TFL_LINE_IDS.includes(report.id))
     .sort((a, b) => {
       const rankDiff = severityRank(worstStatus(b).statusSeverity) - severityRank(worstStatus(a).statusSeverity);
+      return rankDiff !== 0 ? rankDiff : a.name.localeCompare(b.name);
+    });
+
+  // Same worst-first-then-alphabetical sort as `pinnedLineReports` above,
+  // filtered against the caller's `pinnedOperators` rather than
+  // `pinnedLines`. `allOperators` is the whole public catalogue (see its
+  // own fetch comment above); this is the caller's own pinned subset of it.
+  const pinnedOperatorSummaries = allOperators
+    .filter((operator) => preferences.pinnedOperators.includes(operator.code))
+    .sort((a, b) => {
+      const rankDiff = severityRank(b.worstSeverity) - severityRank(a.worstSeverity);
       return rankDiff !== 0 ? rankDiff : a.name.localeCompare(b.name);
     });
 
@@ -397,7 +415,8 @@ export default async function DashboardPage() {
   // link now only renders once its section actually has something to
   // browse PAST (pinned rows already on screen); an empty section keeps
   // just the one link, inline in its own sentence.
-  const bothPinnedSectionsEmpty = pinnedLineReports.length === 0 && pinnedStationEntries.length === 0;
+  const allPinnedSectionsEmpty =
+    pinnedLineReports.length === 0 && pinnedStationEntries.length === 0 && pinnedOperatorSummaries.length === 0;
 
   return (
     <Stack p="lg" gap="xl">
@@ -405,12 +424,12 @@ export default async function DashboardPage() {
         <NotificationsToggle />
       </Group>
 
-      {/* When BOTH pinned sections are empty, the live "Right now" module
+      {/* When ALL THREE pinned sections are empty, the live "Right now" module
           is the only thing on this page with real content -- it leads,
-          ahead of two back-to-back empty prompts, rather than being buried
-          below them (its usual spot, further down, still applies whenever
-          only Lines is empty but Stations has something pinned). */}
-      {bothPinnedSectionsEmpty && <RightNowModule summary={rightNow} />}
+          ahead of otherwise-empty prompts, rather than being buried below
+          them (its usual spot, further down, still applies whenever only
+          Lines is empty but Stations or Operators has something pinned). */}
+      {allPinnedSectionsEmpty && <RightNowModule summary={rightNow} />}
 
       <Stack gap="md">
         <Group justify="space-between">
@@ -492,6 +511,25 @@ export default async function DashboardPage() {
         )}
       </Stack>
 
+      <Stack gap="md">
+        <Group justify="space-between">
+          <Title order={2}>Your Operators</Title>
+          {pinnedOperatorSummaries.length > 0 && <TextLink href="/operators">Browse all operators</TextLink>}
+        </Group>
+        {pinnedOperatorSummaries.length === 0 ? (
+          <Text c="dimmed">
+            You haven&apos;t pinned any operators yet. <Link href="/operators">Browse all operators</Link> to pin
+            some.
+          </Text>
+        ) : (
+          <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
+            {pinnedOperatorSummaries.map((operator) => (
+              <OperatorStatusCard key={operator.code} operator={operator} pinned />
+            ))}
+          </SimpleGrid>
+        )}
+      </Stack>
+
       {/* The anonymous home gives a visitor a genuinely useful live-status
           module; logging in used to REMOVE it, so a user's reward for the
           single action this app most wants them to take was a blank page with
@@ -506,11 +544,12 @@ export default async function DashboardPage() {
           and this is a lines module. Costs nothing -- `allReports` is fetched
           unconditionally above and `notGoodServiceSummary` is pure.
 
-          `!bothPinnedSectionsEmpty`: when Stations also has nothing pinned,
-          this module already rendered once, at the very top of the page
-          (review §3.1.4) -- this is its ordinary spot for the narrower
-          case where Lines is empty but Stations is not. */}
-      {!bothPinnedSectionsEmpty && pinnedLineReports.length === 0 && (
+          `!allPinnedSectionsEmpty`: when Stations and Operators also have
+          nothing pinned, this module already rendered once, at the very top
+          of the page (review §3.1.4) -- this is its ordinary spot for the
+          narrower case where Lines is empty but Stations or Operators is
+          not. */}
+      {!allPinnedSectionsEmpty && pinnedLineReports.length === 0 && (
         <RightNowModule summary={rightNow} />
       )}
 
