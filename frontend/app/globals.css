@@ -1560,6 +1560,23 @@ a[data-text-link='always'] {
   }
 }
 
+/* `app/lines/AllLinesTable.tsx`'s `TableScrollContainer` (review 2026-09-22
+   §3.1). Mantine's own `minWidth` prop sets `--table-min-width` as an
+   INLINE style on this exact element (`TableScrollContainer.tsx`'s
+   `varsResolver`), so an ordinary external rule targeting the same
+   variable on the same element can never win against it -- only
+   `!important` outranks a plain inline style. `420px` is the width five
+   columns (Name/Status/Avg Delay/Cancelled/Pin) genuinely need from `sm`
+   up; below `sm` only three columns are visible (Avg Delay/Cancelled fold
+   into the Name cell's own sub-line), which fit under 390px on their own,
+   so the floor is dropped back to nothing rather than forcing an
+   unsignalled ~30px sideways scroll that hid the Pin column entirely. */
+@media (max-width: $mantine-breakpoint-sm) {
+  .linesTableScroll {
+    --table-min-width: 0px !important;
+  }
+}
+
 /* Skip link: WCAG 2.4.1 (Bypass Blocks). Absolutely positioned off-screen
    by default, visible on keyboard focus. This is the standard pattern for
    skip links: positioned outside the viewport initially, brought into view
