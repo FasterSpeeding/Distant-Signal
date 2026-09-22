@@ -884,6 +884,128 @@ export interface CreateJourneyResponse {
   resolutionStatus: string | null;
 }
 
+/** One row of `GET /JourneyTemplates/mine`
+ * (`crates/api/src/data/journey_templates.rs::JourneyTemplateListItem`,
+ * camelCase). Summarized the same way `app/journeys/[id]/page.tsx`'s
+ * `defaultJourneyTitle` computes a journey's own fallback title —
+ * first leg's origin to last leg's destination — but computed
+ * server-side, since a list row has no per-leg detail to derive it from
+ * client-side. `leg_count` can be `0` only for a hand-edited row; every
+ * template this app's own UI creates has at least one leg. `active`/
+ * `daysOfWeek` are round-tripped for Phase C but unused by anything in
+ * this app today — Phase B never sets `daysOfWeek` and every template's
+ * `active` is always `true`. */
+export interface JourneyTemplateListItem {
+  id: number;
+  customName: string | null;
+  createdAt: string;
+  legCount: number;
+  firstOriginCrs: string | null;
+  firstOriginName: string | null;
+  lastDestinationCrs: string | null;
+  lastDestinationName: string | null;
+  active: boolean;
+  daysOfWeek: number | null;
+}
+
+/** One leg of `GET /JourneyTemplates/{id}`'s response
+ * (`crates/api/src/routes/journey_templates.rs::JourneyTemplateLegDetailResponse`).
+ * No `serviceDate`/`matchMode`/`trackedTrainState` — a template leg is
+ * date-less and never itself bound to a train; contrast with
+ * `JourneyLegDetail`. */
+export interface JourneyTemplateLegDetail {
+  id: number;
+  originCrs: string | null;
+  originName: string | null;
+  destinationCrs: string | null;
+  destinationName: string | null;
+  departAfter: string | null;
+  departBefore: string | null;
+  arriveAfter: string | null;
+  arriveBefore: string | null;
+}
+
+/** `GET /JourneyTemplates/{id}`'s full response. `daysOfWeek`/`active`/
+ * `startsOn`/`endsOn`/`defaultMatchMode`/`autoCommitRule` are real,
+ * round-tripped fields (Phase C scaffolding, per
+ * docs/superpowers/plans/2026-09-22-reusable-journeys-phaseB-durable-templates-plan.md) —
+ * this app's own Phase B UI reads none of them for anything beyond
+ * display; see `app/journeys/templates/[id]/page.tsx`'s own scope note. */
+export interface JourneyTemplateDetail {
+  id: number;
+  customName: string | null;
+  createdAt: string;
+  updatedAt: string;
+  daysOfWeek: number | null;
+  active: boolean;
+  startsOn: string | null;
+  endsOn: string | null;
+  defaultMatchMode: 'manual' | 'auto';
+  autoCommitRule: 'earliest' | 'nearest_to_now' | null;
+  legs: JourneyTemplateLegDetail[];
+}
+
+/** One leg in a `POST /JourneyTemplates` (`mode: 'manual'`) or
+ * `PUT /JourneyTemplates/{id}` request body
+ * (`crates/api/src/routes/journey_templates.rs::TemplateLegRequest`). No
+ * `serviceDate` — see `JourneyTemplateLegDetail`'s own comment. */
+export interface TemplateLegRequest {
+  originCrs: string;
+  destinationCrs: string;
+  departWindow?: TimeWindow;
+  arriveWindow?: TimeWindow;
+}
+
+/** `POST /JourneyTemplates`'s two mutually-exclusive request shapes
+ * (`crates/api/src/routes/journey_templates.rs::CreateJourneyTemplateRequest`).
+ * This app's own frontend only ever sends `fromJourney` (see
+ * `components/SaveAsTemplateButton.tsx`) — `manual` exists on the wire for
+ * a future "start from nothing" UI this plan does not build (see that
+ * plan's Judgment Call 5), and because `PUT`'s body needs the identical
+ * `TemplateLegRequest` shape regardless. */
+export type CreateJourneyTemplateRequest =
+  | {
+      mode: 'manual';
+      customName?: string;
+      legs: TemplateLegRequest[];
+    }
+  | {
+      mode: 'fromJourney';
+      customName?: string;
+      journeyId: number;
+    };
+
+/** `PUT /JourneyTemplates/{id}`'s request body — full-resource replace,
+ * not a per-field patch (see the Phase B plan's Judgment Calls 1/4). */
+export interface PutJourneyTemplateRequest {
+  customName?: string;
+  legs: TemplateLegRequest[];
+}
+
+/** `POST /JourneyTemplates`'s response
+ * (`crates/api/src/routes/journey_templates.rs::CreateJourneyTemplateResponse`). */
+export interface CreateJourneyTemplateResponse {
+  templateId: number;
+}
+
+/** `POST /JourneyTemplates/{id}/materialize`'s request body — always
+ * explicit, never defaulted server-side; the "Run now" button's own date
+ * field (`components/RunTemplateNowButton.tsx`) defaults to today
+ * client-side and lets the caller change it first. */
+export interface MaterializeTemplateRequest {
+  serviceDate: string; // "YYYY-MM-DD"
+}
+
+/** `POST /JourneyTemplates/{id}/materialize`'s response
+ * (`crates/api/src/routes/journey_templates.rs::MaterializeTemplateResponse`).
+ * `journeyId` is where `RunTemplateNowButton` navigates on success — the
+ * same `/journeys/{id}` detail page any other freshly-created journey
+ * lands on. */
+export interface MaterializeTemplateResponse {
+  journeyId: number;
+  legIds: number[];
+}
+
 /** `POST /Train/track`'s request body (`common::TrackPinRequest`). Plain
  * snake_case on the wire -- unlike every other type in this file, which
  * mirrors `crates/api`'s camelCase public JSON, this one matches
