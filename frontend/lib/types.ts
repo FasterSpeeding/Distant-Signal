@@ -702,6 +702,17 @@ export interface JourneyListItem {
   delayMinutes: number | null;
 }
 
+/** `GET /Journeys/{id}`'s per-leg `legSkip` field
+ * (`crates/api/src/routes/journeys.rs::LegSkipResponse`, sourced from
+ * `crates/api/src/data/station_skip.rs`'s `LegSkipStatus`, camelCase on
+ * the wire) -- `null` when the leg has no matched train yet, or no known
+ * origin/destination to check (nothing to report, not "checked and
+ * clean"). See docs/superpowers/specs/2026-09-22-journey-tracking-design.md §5.2. */
+export interface LegSkipStatus {
+  originSkipped: boolean;
+  destinationSkipped: boolean;
+}
+
 /** One leg of `GET /Journeys/{id}`'s response
  * (`crates/api/src/routes/journeys.rs::JourneyLegDetailResponse`).
  * `trackedTrainState` is `null` for an unmatched leg, and otherwise the
@@ -718,6 +729,7 @@ export interface JourneyLegDetail {
   arriveBefore: string | null;
   matchMode: 'unmatched' | 'manual' | 'auto';
   trackedTrainState: TrackedTrainState | null;
+  legSkip: LegSkipStatus | null;
 }
 
 /** `GET /Journeys/{id}`'s full response. */

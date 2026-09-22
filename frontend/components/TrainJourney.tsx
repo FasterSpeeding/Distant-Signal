@@ -39,9 +39,16 @@ import type { TrainJourneyState } from '@/lib/types';
 export function TrainJourney({
   state,
   suppressTrainUidHeading = false,
+  skippedCrs,
 }: {
   state: TrainJourneyState;
   suppressTrainUidHeading?: boolean;
+  /** CRS codes of stops on the journey-view leg this train is bound to
+   * that a live Darwin sample reports as skipped today (§5.2) --
+   * `undefined` for every caller outside the journey view, which has no
+   * leg-scoped skip concept (Judgment Call 7). Threaded straight through
+   * to `JourneyTimeline`. */
+  skippedCrs?: string[];
 }) {
   // See `JourneyTimeline.tsx`'s own doc comment on `JourneyEndpointNames`
   // (Task 3.6.2) -- the tracked pin's own origin/destination, always known
@@ -69,7 +76,9 @@ export function TrainJourney({
           endpointNames={endpointNames}
         />
       )}
-      {state.journeyStops && <JourneyTimeline stops={state.journeyStops} endpointNames={endpointNames} />}
+      {state.journeyStops && (
+        <JourneyTimeline stops={state.journeyStops} endpointNames={endpointNames} skippedCrs={skippedCrs} />
+      )}
     </Stack>
   );
 }
