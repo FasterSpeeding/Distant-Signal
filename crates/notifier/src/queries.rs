@@ -358,6 +358,55 @@ pub async fn upsert_train_notification_state(
 }
 
 #[derive(Debug, sqlx::FromRow)]
+pub struct JourneyLegContext {
+    pub journey_id: i64,
+    pub journey_name: Option<String>,
+    pub leg_order: i32,
+    pub total_legs: i64,
+    pub origin_crs: Option<String>,
+    pub destination_crs: Option<String>,
+}
+
+/// Finds the journey/leg context for a `train_subscriptions.id`, if one
+/// exists -- absent for every legacy tracked train until Phase 1's own
+/// migration wraps it in a one-row journey (§7.1 of the design spec), and
+/// for any train tracked outside the journeys flow, if that path stays
+/// open at all. `notify_train_candidates` falls back to today's exact
+/// copy/URL when this returns `None`, OR when it returns `Some` with
+/// `total_legs == 1` (Judgment Call 5 -- a one-leg journey's notification
+/// copy is indistinguishable in value from today's plain tracked-train
+/// copy, so this plan doesn't change it).
+///
+/// `ORDER BY jl.id LIMIT 1`: a known, accepted edge case -- if the SAME
+/// physical train (`trains_id`) is tracked via two different legs (legal:
+/// `create_subscription_for_train` is idempotent by `(user_id, trains_id)`,
+/// so a second leg pointing at the same trains_id reuses the same
+/// `train_subscriptions` row -- design spec §0.1), this query returns only
+/// the first-created leg's context, so the payload describes only one of
+/// the two legs even though both legs' owners (if different users) are
+/// notified via the existing per-trains_id fan-out. Rare, and no worse
+/// than the ambiguity already inherent in "one physical train, several
+/// subscribers" today.
+pub async fn journey_leg_for_train_subscription(
+    pool: &PgPool,
+    tracked_train_id: i64,
+) -> anyhow::Result<Option<JourneyLegContext>> {
+    let row = sqlx::query_as::<_, JourneyLegContext>(
+        "SELECT j.id AS journey_id, j.custom_name AS journey_name, jl.leg_order, \
+                (SELECT COUNT(*) FROM journey_legs jl2 WHERE jl2.journey_id = jl.journey_id) AS total_legs, \
+                jl.origin_crs, jl.destination_crs \
+         FROM journey_legs jl \
+         JOIN journeys j ON j.id = jl.journey_id \
+         WHERE jl.train_subscription_id = $1 \
+         ORDER BY jl.id LIMIT 1",
+    )
+    .bind(tracked_train_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+#[derive(Debug, sqlx::FromRow)]
 pub struct PushSubscriptionRow {
     pub id: i64,
     pub endpoint: String,
