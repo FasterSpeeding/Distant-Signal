@@ -1,5 +1,5 @@
-//! `/public/preferences`: which lines/stations are pinned to the home
-//! page. Fully session-gated, both read and write -- unlike `/public/lines`,
+//! `/public/preferences`: which lines/stations/operators are pinned to the
+//! home page. Fully session-gated, both read and write -- unlike `/public/lines`,
 //! whose *reads* stay unauthenticated (see
 //! `docs/superpowers/specs/2026-07-09-custom-lines-and-blended-stats-design.md`'s
 //! Non-goals), pinned lines/stations are per-user state with no useful

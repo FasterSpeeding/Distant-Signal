@@ -1,4 +1,5 @@
-//! Queries for user preferences: pinned lines and pinned stations. See
+//! Queries for user preferences: pinned lines, pinned stations, and pinned
+//! operators. See
 //! `docs/superpowers/specs/2026-07-09-frontend-personalization-design.md`.
 
 use anyhow::Result;

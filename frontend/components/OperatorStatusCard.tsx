@@ -13,10 +13,9 @@ import type { OperatorSummary } from '@/lib/types';
  * `/operators/[code]` detail page in this phase for a click to go to (see
  * docs/superpowers/plans/2026-09-22-operator-overview-phase3-operators-list-and-pinning-plan.md's
  * Judgment Call 7). Used by both `/operators`' list page and the
- * homepage's "Your Operators" section -- the same reuse
- * `LineStatusCard` already gets across `/lines`... no, across the
- * homepage's "Your Lines" section (the one other place a status card like
- * this renders). */
+ * homepage's "Your Operators" section -- the same reuse `LineStatusCard`
+ * already gets across the homepage's "Your Lines" section, the one other
+ * place a status card like this renders. */
 export function OperatorStatusCard({
   operator,
   pinned,
