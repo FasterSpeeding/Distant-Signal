@@ -554,6 +554,7 @@ pub async fn list_journeys_for_user(
              FROM journey_legs jl \
              LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
              LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
+             WHERE jl.journey_id IN (SELECT id FROM journeys WHERE user_id = $1) \
          ) \
          SELECT j.id, j.custom_name, j.created_at, \
                 rl.id AS leg_id, rl.origin_crs, rl.destination_crs, rl.match_mode, \

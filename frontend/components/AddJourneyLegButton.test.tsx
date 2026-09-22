@@ -48,7 +48,7 @@ describe('AddJourneyLegButton', () => {
     expect(reopenedOrigin).toHaveValue('WAT');
   });
 
-  it('POSTs a window-mode request with the entered origin/destination/date', async () => {
+  it('POSTs a window-mode request with the entered origin/destination/date/departWindow', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(legResponse());
 
@@ -59,6 +59,8 @@ describe('AddJourneyLegButton', () => {
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     const serviceDate = screen.getByLabelText('Service date');
     fireEvent.change(serviceDate, { target: { value: '2026-09-22' } });
+    const departFrom = screen.getByLabelText('Earliest departure (optional)');
+    fireEvent.change(departFrom, { target: { value: '09:00' } });
 
     fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
 
@@ -72,11 +74,30 @@ describe('AddJourneyLegButton', () => {
             originCrs: 'WAT',
             destinationCrs: 'CLJ',
             serviceDate: '2026-09-22',
+            departWindow: { after: '09:00', before: null },
+            arriveWindow: { after: null, before: null },
           }),
         }),
       );
     });
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+  });
+
+  it('disables submit in window mode until at least one time bound is set', async () => {
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    const destination = await screen.findByLabelText('Destination CRS');
+    fireEvent.change(destination, { target: { value: 'CLJ' } });
+    const serviceDate = screen.getByLabelText('Service date');
+    fireEvent.change(serviceDate, { target: { value: '2026-09-22' } });
+
+    expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
+
+    const arriveTo = screen.getByLabelText('Latest arrival (optional)');
+    fireEvent.change(arriveTo, { target: { value: '18:00' } });
+
+    expect(screen.getByRole('button', { name: 'Add leg' })).not.toBeDisabled();
   });
 
   it('POSTs a knownTrain-mode request when the direct-pick mode is selected', async () => {
@@ -117,6 +138,8 @@ describe('AddJourneyLegButton', () => {
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     const serviceDate = screen.getByLabelText('Service date');
     fireEvent.change(serviceDate, { target: { value: '2026-09-22' } });
+    const departFrom = screen.getByLabelText('Earliest departure (optional)');
+    fireEvent.change(departFrom, { target: { value: '09:00' } });
 
     fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
 

@@ -2,11 +2,12 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, Modal, SegmentedControl, Stack, TextInput } from '@mantine/core';
+import { Alert, Button, Group, Modal, SegmentedControl, Stack, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { TimeFilterInput } from './TimeFilterInput';
 import type { NewJourneyLegRequest, AddJourneyLegResponse } from '@/lib/types';
 
 type LegMode = NewJourneyLegRequest['mode'];
@@ -46,6 +47,28 @@ export function AddJourneyLegButton({
   const [destinationCrs, setDestinationCrs] = useState('');
   const [serviceDate, setServiceDate] = useState('');
   const [trainUid, setTrainUid] = useState('');
+  // Window-mode time bounds -- `validate_window_leg`
+  // (`crates/api/src/data/journeys.rs`) requires at least one of these four
+  // to be set, mirrored client-side below (`isValid`) so a submission that
+  // would 400 is caught before it round-trips. Same before/after convention
+  // `TrackTrainForm.tsx`'s own window-mode fields use -- see that
+  // component's `departFrom`/`departTo`/`arriveFrom`/`arriveTo` and
+  // `TimeFilterInput`'s own doc comment for why these are plain strings.
+  const [departFrom, setDepartFrom] = useState('');
+  const [departTo, setDepartTo] = useState('');
+  const [arriveFrom, setArriveFrom] = useState('');
+  const [arriveTo, setArriveTo] = useState('');
+  // `TimeFilterInput` reports a half-entered time (e.g. "09" with no
+  // minutes) as `value === ''`, indistinguishable from untouched -- see
+  // that component's own doc comment. Tracked the same way
+  // `TrackTrainForm.tsx`'s `windowIncompleteTimes` is, so a half-typed
+  // bound blocks submission instead of silently vanishing from the request.
+  const [incompleteTimes, setIncompleteTimes] = useState({
+    departFrom: false,
+    departTo: false,
+    arriveFrom: false,
+    arriveTo: false,
+  });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
@@ -60,19 +83,39 @@ export function AddJourneyLegButton({
     setDestinationCrs('');
     setServiceDate(dayjs().format('YYYY-MM-DD'));
     setTrainUid('');
+    setDepartFrom('');
+    setDepartTo('');
+    setArriveFrom('');
+    setArriveTo('');
+    setIncompleteTimes({ departFrom: false, departTo: false, arriveFrom: false, arriveTo: false });
     open();
   }
 
   function currentRequest(): NewJourneyLegRequest {
     return mode === 'knownTrain'
       ? { mode: 'knownTrain', trainUid, serviceDate }
-      : { mode: 'window', originCrs, destinationCrs, serviceDate };
+      : {
+          mode: 'window',
+          originCrs,
+          destinationCrs,
+          serviceDate,
+          departWindow: { after: departFrom || null, before: departTo || null },
+          arriveWindow: { after: arriveFrom || null, before: arriveTo || null },
+        };
   }
+
+  const windowTimesComplete = !Object.values(incompleteTimes).some(Boolean);
+  const windowHasABound =
+    departFrom.trim() !== '' || departTo.trim() !== '' || arriveFrom.trim() !== '' || arriveTo.trim() !== '';
 
   const isValid =
     mode === 'knownTrain'
       ? trainUid.trim() !== '' && serviceDate !== ''
-      : originCrs.trim() !== '' && destinationCrs.trim() !== '' && serviceDate !== '';
+      : originCrs.trim() !== '' &&
+        destinationCrs.trim() !== '' &&
+        serviceDate !== '' &&
+        windowTimesComplete &&
+        windowHasABound;
 
   async function handleSubmit() {
     if (!isValid) return;
@@ -143,6 +186,46 @@ export function AddJourneyLegButton({
                 value={destinationCrs}
                 onChange={(event) => setDestinationCrs(event.currentTarget.value)}
               />
+              <Group grow align="flex-start">
+                <TimeFilterInput
+                  label="Earliest departure (optional)"
+                  name="earliest departure"
+                  description="Only trains departing at or after this time."
+                  value={departFrom}
+                  onChange={setDepartFrom}
+                  onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, departFrom: v }))}
+                  error={null}
+                />
+                <TimeFilterInput
+                  label="Latest departure (optional)"
+                  name="latest departure"
+                  description="Only trains departing at or before this time."
+                  value={departTo}
+                  onChange={setDepartTo}
+                  onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, departTo: v }))}
+                  error={null}
+                />
+              </Group>
+              <Group grow align="flex-start">
+                <TimeFilterInput
+                  label="Earliest arrival (optional)"
+                  name="earliest arrival"
+                  description="Only trains arriving at or after this time."
+                  value={arriveFrom}
+                  onChange={setArriveFrom}
+                  onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, arriveFrom: v }))}
+                  error={null}
+                />
+                <TimeFilterInput
+                  label="Latest arrival (optional)"
+                  name="latest arrival"
+                  description="Only trains arriving at or before this time."
+                  value={arriveTo}
+                  onChange={setArriveTo}
+                  onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, arriveTo: v }))}
+                  error={null}
+                />
+              </Group>
             </>
           )}
           {mode === 'knownTrain' && (
