@@ -728,6 +728,36 @@ export interface JourneyDetail {
   legs: JourneyLegDetail[];
 }
 
+/** Body for `POST /Journeys/{journeyId}/legs` (multi-leg chaining, spec
+ * §3) -- two of the three shapes `POST /Journeys` already sends for a
+ * journey's first leg (no `pin` mode -- spec §3 only offers a direct
+ * known-train pick or an open time-window search for "add a leg"),
+ * discriminated by `mode` exactly like the backend's own
+ * `AddJourneyLegRequest` (`crates/api/src/routes/journeys.rs`). */
+export type NewJourneyLegRequest =
+  | {
+      mode: 'knownTrain';
+      trainUid: string;
+      serviceDate: string; // "YYYY-MM-DD"
+    }
+  | {
+      mode: 'window';
+      originCrs: string;
+      destinationCrs: string;
+      serviceDate: string; // "YYYY-MM-DD"
+      departWindow?: TimeWindow;
+      arriveWindow?: TimeWindow;
+    };
+
+/** `POST /Journeys/{journeyId}/legs`'s response
+ * (`crates/api/src/routes/journeys.rs::AddLegResponse`). `trackingId` is
+ * `null` for a `window`-mode leg -- no train bound yet, same convention as
+ * `CreateJourneyResponse.trackingId`. */
+export interface AddJourneyLegResponse {
+  legId: number;
+  trackingId: number | null;
+}
+
 /** `POST /Journeys`'s response
  * (`crates/api/src/routes/journeys.rs::CreateJourneyResponse`). */
 export interface CreateJourneyResponse {
