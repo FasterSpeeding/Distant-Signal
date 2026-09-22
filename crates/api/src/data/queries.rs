@@ -6161,9 +6161,19 @@ mod schedule_destination_departures_query_tests {
         // station" for EVERY named station, not only when `stops_at`
         // repeats `station_crs`. WAT is EARLIER in the journey than CLJ for
         // both L82877 (WAT 07:27, CLJ 07:40) and P00001 (WAT 07:30, CLJ
-        // 07:55), so `station=CLJ&stops_at=WAT` must now match neither --
-        // before this change it matched both (see the design doc's
-        // superseded 2026-09-17 addendum).
+        // 07:55) in their ORIGIN role -- before this change, that role
+        // alone was enough to match both (see the design doc's superseded
+        // 2026-09-17 addendum).
+        //
+        // But L82877's true TERMINUS (`destination_crs`) is ALSO WAT: it
+        // loops back there at 08:46 (see `loop_fixture_rows`), and the
+        // terminus branch has no ordering test of its own -- a terminus is
+        // definitionally later than every departure-bearing calling point.
+        // So `station=CLJ&stops_at=WAT` still matches L82877, through that
+        // branch rather than the ordering rule this test targets. Only
+        // P00001, whose true destination is SOU and not WAT, is excluded
+        // purely by the ordering rule: its own WAT call precedes CLJ and it
+        // never returns to WAT at all.
         let pool = test_pool().await;
         let date = fixture_date_feb(13);
         seed_loop(&pool, date).await;
@@ -6172,9 +6182,10 @@ mod schedule_destination_departures_query_tests {
 
         assert_eq!(
             uids_and_times(&page),
-            Vec::<(String, String)>::new(),
-            "a calling point BEFORE the searched one no longer satisfies stops_at, even when the \
-             two CRS codes differ"
+            vec![("L82877".to_string(), "07:40".to_string())],
+            "P00001's own WAT call BEFORE CLJ no longer satisfies stops_at, and it never returns \
+             to WAT; L82877 still matches, but only through its true TERMINUS at WAT, not \
+             through its earlier origin-role WAT call"
         );
 
         // ... and the day really is published, so the empty result above is
