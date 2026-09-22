@@ -1,3 +1,4 @@
+import { cancelledPercent } from './sampleStats';
 import type { OperatorSummary } from './types';
 
 /** Renders an operator rollup's aggregate delay/cancellation figures, or a
@@ -21,8 +22,11 @@ export function formatOperatorSampleSummary(operator: Pick<OperatorSummary, 'cod
       ? "Not measured by this app — status is TfL's own."
       : 'No delay/cancellation data available for this operator.';
   }
-  const { total, cancelled, avgDelayMinutes } = operator.sampleStats;
-  const cancelledPct = total > 0 ? Math.round((cancelled / total) * 100) : null;
+  const { avgDelayMinutes } = operator.sampleStats;
+  // Same numeric helper `lib/sampleStats.ts`'s own `formatSampleSummary`
+  // calls for a single line -- reused rather than reimplemented so the two
+  // can't independently drift on the rounding rule.
+  const cancelledPct = cancelledPercent(operator.sampleStats);
   const delay = `Avg delay ${avgDelayMinutes.toFixed(1)} min`;
   return cancelledPct === null ? delay : `${delay} · ${cancelledPct}% cancelled`;
 }

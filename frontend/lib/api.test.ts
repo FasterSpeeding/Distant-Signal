@@ -12,6 +12,7 @@ import {
   getLineHalfHourlyCoverageStats,
   getPreferences,
   getAllLines,
+  getAllOperators,
   getAllTocs,
   getCustomLine,
   getLineDefinition,
@@ -476,6 +477,26 @@ describe('api client', () => {
       'http://test-api:8080/public/lines',
       expect.objectContaining({ headers: { Cookie: 'distant_signal_session=abc123' } }),
     );
+  });
+
+  // Final whole-branch review finding: every sibling fetch function here has
+  // its own URL/caching test -- getAllOperators had none. Unauthenticated
+  // and caller-identity-independent (see its own doc comment in lib/api.ts),
+  // so unlike getAllLines above it must NOT forward the incoming request's
+  // cookies.
+  it('getAllOperators fetches the correct URL with no caching and no cookie forwarding', async () => {
+    incomingCookies.header = 'distant_signal_session=abc123';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+    await getAllOperators();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/operators',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    expect((init as RequestInit).headers).toBeUndefined();
   });
 
   it('getAllLines sends no Cookie header when the visitor has no cookies at all', async () => {
