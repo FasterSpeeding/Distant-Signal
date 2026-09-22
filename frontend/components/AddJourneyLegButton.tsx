@@ -36,9 +36,20 @@ type LegMode = NewJourneyLegRequest['mode'];
 export function AddJourneyLegButton({
   journeyId,
   priorDestinationCrs,
+  onAdded,
 }: {
   journeyId: number;
   priorDestinationCrs: string | null;
+  /** `JourneyCreationFlow.tsx`'s (the `/journeys/new` continuous
+   * multi-leg creation page) only caller of this prop: that page keeps
+   * the journey it's building as local client state (`fetch`ed from
+   * `GET /api/Journeys/{id}` after each leg), not as a server-rendered
+   * page `router.refresh()` can re-pull the way this button's other
+   * caller (`app/journeys/[id]/page.tsx`) does -- so it needs the raw
+   * add-leg response back instead. `undefined` (the default) preserves
+   * this component's exact pre-existing behaviour: `router.refresh()`
+   * fires unconditionally on success, same as before this prop existed. */
+  onAdded?: (result: AddJourneyLegResponse) => void;
 }) {
   const router = useRouter();
   const [opened, { open, close }] = useDisclosure(false);
@@ -145,13 +156,18 @@ export function AddJourneyLegButton({
         setSubmitting(false);
         return;
       }
-      // Not read further -- `router.refresh()` re-pulls `GET
-      // /Journeys/{id}` server-side, same "response is only used to
-      // confirm success" convention as `AddTrainToGroupButton.tsx`.
-      const _result: AddJourneyLegResponse = await response.json();
+      // Read only when `onAdded` wants it (see that prop's own doc
+      // comment) -- the default path still just confirms success and lets
+      // `router.refresh()` re-pull `GET /Journeys/{id}` server-side, same
+      // convention as `AddTrainToGroupButton.tsx`.
+      const result: AddJourneyLegResponse = await response.json();
       setSubmitting(false);
       close();
-      router.refresh();
+      if (onAdded) {
+        onAdded(result);
+      } else {
+        router.refresh();
+      }
     } catch {
       setError('Request failed.');
       setSubmitting(false);

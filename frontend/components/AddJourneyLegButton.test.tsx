@@ -151,6 +151,33 @@ describe('AddJourneyLegButton', () => {
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
   });
 
+  // `JourneyCreationFlow` (the `/journeys/new` continuous creation page)
+  // reuses this button to chain leg 2+ onto a journey that only exists as
+  // local client state there -- there is no server-rendered journey page
+  // for `router.refresh()` to re-pull, so it needs the added leg's own
+  // response instead of the refresh this button's other caller
+  // (`app/journeys/[id]/page.tsx`) relies on.
+  it('with onAdded: calls it with the add-leg response instead of router.refresh()', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(legResponse());
+    const onAdded = vi.fn();
+
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" onAdded={onAdded} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    const destination = await screen.findByLabelText('Destination CRS');
+    fireEvent.change(destination, { target: { value: 'CLJ' } });
+    const serviceDate = screen.getByLabelText('Service date');
+    fireEvent.change(serviceDate, { target: { value: '2026-09-22' } });
+    const departFrom = screen.getByLabelText('Earliest departure (optional)');
+    fireEvent.change(departFrom, { target: { value: '09:00' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+
+    await waitFor(() => expect(onAdded).toHaveBeenCalledWith({ legId: 9, trackingId: null }));
+    expect(refreshMock).not.toHaveBeenCalled();
+  });
+
   it('surfaces the server error text on a non-OK response', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('no schedule matched that window', { status: 400 }));

@@ -19,9 +19,35 @@ export interface NavDestination {
   label: string;
 }
 
+/** Journey tracking is this app's MAIN feature going forward -- tracking a
+ * single train is the simple, one-leg case of a journey, not a separate
+ * concept, and `/journeys/new` (`JourneyCreationFlow.tsx`) is the one
+ * continuous flow for building either: fill in leg 1, then optionally keep
+ * adding legs right there, all before ever leaving the page. This constant
+ * is what makes that page THE primary, nav-linked entry point for the
+ * feature -- first in `PRIMARY_NAV_DESTINATIONS` below, ahead of even
+ * "Status", so it reads as the main way to start tracking something rather
+ * than one browsing option among several.
+ *
+ * `/track` (the old single-leg-only form `JourneyCreationFlow` now wraps
+ * as its own leg-1 step) deliberately keeps its own separate existence and
+ * is NOT redirected here -- see that page's own doc comment for why: it is
+ * still the landing target several existing, narrower flows depend on
+ * (a standalone ticket's "find or track the train this ticket is for"
+ * link, `/stations/[crs]`'s "Track a train from here", `/trains`' manual
+ * fallback link, and `trackAgainHref`'s "Track this journey again"), each
+ * of which wants a single pre-filled leg-1 form and nothing past it --
+ * none of those needs the inline "Add a leg" step this page adds, and
+ * redirecting them all through here would cost every one of them their own
+ * pre-fill query params for no benefit. */
+export const TRACK_JOURNEY_DESTINATION: NavDestination = { href: '/journeys/new', label: 'Track a Journey' };
+
 /** Always visible to everyone, logged in or not. Rendered inline in the
  * bar at `md` and up, and in the drawer below it. */
 export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
+  // First, ahead of "Status" -- see `TRACK_JOURNEY_DESTINATION`'s own doc
+  // comment for why creation, not browsing, now leads the primary nav.
+  TRACK_JOURNEY_DESTINATION,
   { href: '/status', label: 'Status' },
   { href: '/lines', label: 'All Lines' },
   // Moved beside "All Lines" and "Station Lookup" (review M7/§2.7): three
@@ -34,7 +60,9 @@ export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
   // (from here via /trains' own manual fallback link, from
   // /stations/[crs], and from TicketEntryForm) but is no longer the first
   // thing a visitor is pointed at -- see
-  // docs/superpowers/specs/2026-09-07-train-listing-page-design.md §4.
+  // docs/superpowers/specs/2026-09-07-train-listing-page-design.md §4, and
+  // `TRACK_JOURNEY_DESTINATION`'s own doc comment for what replaced it as
+  // the primary entry point for tracking specifically.
   { href: '/trains', label: 'Find a Train' },
   { href: '/incidents', label: 'Incident Archive' },
 ];
@@ -61,7 +89,16 @@ export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
  *
  * Labelled "My Trains & Tickets," not "My Tracked Trains," now that
  * `/track/mine` is the single merged page for both (Part B of the
- * upload-first ticket-tracking plan). */
+ * upload-first ticket-tracking plan).
+ *
+ * NOT renamed to something journey-flavoured when `TRACK_JOURNEY_DESTINATION`
+ * was added above, and deliberately so: `/track/mine` already grew its own
+ * "Your journeys" section (2026-09-22 UX review C1, `app/track/mine/page.tsx`)
+ * well before this constant existed, so its scope was already "everything
+ * you're tracking" -- trains, tickets, AND journeys -- not merely trains.
+ * Adding a dedicated CREATION page changes where a journey gets STARTED; it
+ * doesn't change what this page LISTS, so renaming it here would describe a
+ * change that didn't happen on this page. */
 export const TRACKED_TRAINS_DESTINATION: NavDestination = {
   href: '/track/mine',
   label: 'My Trains & Tickets',

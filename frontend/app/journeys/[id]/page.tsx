@@ -10,6 +10,7 @@ import { ShareJourneyButton } from '@/components/ShareJourneyButton';
 import { TextLink } from '@/components/TextLink';
 import { TrackJourneyAgainButton } from '@/components/TrackJourneyAgainButton';
 import { formatDate } from '@/lib/dateFormat';
+import { journeyCanAddLeg, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
 import { legDestinationArrivalLabel, legEndpointName } from '@/lib/journeyLegLabel';
 import { routeLabel } from '@/lib/stationLabel';
 import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
@@ -140,15 +141,16 @@ export default async function JourneyDetailPage({
     throw err;
   }
 
-  const lastLeg = journey.legs.at(-1) ?? null;
-  const priorDestinationCrs =
-    lastLeg?.destinationCrs ?? lastLeg?.trackedTrainState?.scheduleDestinationCrs ?? null;
   // Review §2.5/M16: "Add a leg" used to be offered at the same visual
   // weight as the status badge even while the CURRENT leg still needs a
   // train picked -- there is nothing to chain a new leg onto yet, and it
   // competed for attention with the one action that actually matters on
-  // this page. Hidden until the last leg is matched.
-  const canAddLeg = lastLeg !== null && lastLeg.trackedTrainState !== null;
+  // this page. Hidden until the last leg is matched. Both helpers now live
+  // in `lib/journeyLegChaining.ts`, shared with `JourneyCreationFlow.tsx`'s
+  // own inline "Add a leg" during initial creation -- see that module's own
+  // doc comment for why this moved out of being private to this page.
+  const priorDestinationCrs = journeyPriorDestinationCrs(journey);
+  const canAddLeg = journeyCanAddLeg(journey);
   const multiLeg = journey.legs.length > 1;
   // `revalidate = 0` above means this page is a live, uncached fetch on
   // every request -- so "the instant this request's own `getJourney()`

@@ -4,8 +4,25 @@ import {
   CHAT_DESTINATION,
   GROUPS_DESTINATION,
   navDrawerDestinations,
+  PRIMARY_NAV_DESTINATIONS,
+  TRACK_JOURNEY_DESTINATION,
   TRACKED_TRAINS_DESTINATION,
 } from './navLinks';
+
+describe('TRACK_JOURNEY_DESTINATION', () => {
+  it('points at the /journeys/new creation flow', () => {
+    expect(TRACK_JOURNEY_DESTINATION.href).toBe('/journeys/new');
+  });
+
+  it('leads PRIMARY_NAV_DESTINATIONS, ahead of Status -- the main way to start tracking something', () => {
+    expect(PRIMARY_NAV_DESTINATIONS[0]).toBe(TRACK_JOURNEY_DESTINATION);
+  });
+
+  it('is included in the drawer, for every visitor', () => {
+    const hrefs = navDrawerDestinations(false, false).map((d) => d.href);
+    expect(hrefs).toContain(TRACK_JOURNEY_DESTINATION.href);
+  });
+});
 
 describe('navDrawerDestinations', () => {
   it('excludes Groups and Chat for an anonymous visitor', () => {

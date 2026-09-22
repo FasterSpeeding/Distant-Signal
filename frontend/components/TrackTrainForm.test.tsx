@@ -368,6 +368,35 @@ describe('TrackTrainForm', () => {
     });
   });
 
+  // `JourneyCreationFlow` (the `/journeys/new` continuous creation page)
+  // needs to keep this form's own leg-1 submit machinery but stay on the
+  // SAME page afterwards to offer an inline "Add a leg" -- rather than
+  // being pushed away to `/journeys/{id}` the moment leg 1 exists, the way
+  // every other caller of this form still is. `onCreated`, when given,
+  // preempts that redirect entirely; every other success side effect
+  // (the ticket-attach/group-share follow-ups, above) is unaffected.
+  it('with onCreated: calls it with the create response instead of redirecting', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+    const onCreated = vi.fn();
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" onCreated={onCreated} />);
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-08-28 18:32:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    await waitFor(() => {
+      expect(onCreated).toHaveBeenCalledWith({
+        journeyId: 99,
+        legId: 1,
+        trackingId: 42,
+        resolutionStatus: 'pending',
+      });
+    });
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
   it('on a 401, shows the login prompt modal and preserves the typed field values', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
@@ -744,6 +773,34 @@ describe('TrackTrainForm', () => {
       await waitFor(() => {
         expect(pushMock).toHaveBeenCalledWith('/journeys/99');
       });
+    });
+
+    // Same `onCreated` escape hatch as pin mode's own test above, exercised
+    // for `submitWindow` -- `JourneyCreationFlow` uses this form for BOTH
+    // modes as its leg-1 step, so both submit paths need to honour it.
+    it('with onCreated: calls it with the create response instead of redirecting', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      const onCreated = vi.fn();
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" onCreated={onCreated} />);
+      switchToWindowMode();
+      fireEvent.change(screen.getByRole('combobox', { name: /^Destination station$/ }), {
+        target: { value: 'RDG' },
+      });
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
+
+      fireEvent.click(screen.getByRole('button', { name: /Search for a train/ }));
+
+      await waitFor(() => {
+        expect(onCreated).toHaveBeenCalledWith({
+          journeyId: 99,
+          legId: 1,
+          trackingId: 42,
+          resolutionStatus: 'pending',
+        });
+      });
+      expect(pushMock).not.toHaveBeenCalled();
     });
 
     it('an incomplete (half-entered) time field blocks submission even with a real bound entered elsewhere, with no network call', async () => {

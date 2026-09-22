@@ -305,6 +305,7 @@ export function TrackTrainForm({
   initialDepartBefore = '',
   initialArriveAfter = '',
   initialArriveBefore = '',
+  onCreated,
 }: {
   initialOrigin?: string;
   // "Track this journey again" (docs/superpowers/plans/2026-09-22-reusable-journeys-phaseA-track-again-plan.md)
@@ -327,6 +328,20 @@ export function TrackTrainForm({
   initialDepartBefore?: string;
   initialArriveAfter?: string;
   initialArriveBefore?: string;
+  /** `JourneyCreationFlow.tsx`'s (the `/journeys/new` continuous
+   * multi-leg creation page) only caller of this prop: this form is
+   * reused there verbatim as the "leg 1" step, but that page wants to
+   * stay put afterwards and offer an inline "Add a leg" rather than being
+   * pushed away to `/journeys/{id}` the instant leg 1 exists -- the way
+   * every OTHER caller of this form (`/track` itself, chief among them)
+   * still wants, and gets, by leaving this prop unset. When given, this
+   * replaces `submitTrack`/`submitWindow`'s own final `router.push` with a
+   * call to this instead; every other success side effect (the
+   * ticket-attach/group-share follow-ups below) is unaffected. `undefined`
+   * (the default) preserves this component's exact pre-existing
+   * behaviour -- the redirect fires unconditionally, same as before this
+   * prop existed. */
+  onCreated?: (result: CreateJourneyResponse) => void;
 }) {
   const router = useRouter();
   const [originCrs, setOriginCrs] = useState(initialOrigin);
@@ -647,7 +662,11 @@ export function TrackTrainForm({
           // sharing is Phase 4 (see this plan's own Non-goals).
           await shareTrackedTrainToGroup(groupId, result.trackingId);
         }
-        router.push(`/journeys/${result.journeyId}`);
+        if (onCreated) {
+          onCreated(result);
+        } else {
+          router.push(`/journeys/${result.journeyId}`);
+        }
         return;
       }
       if (response.status === 401) {
@@ -708,7 +727,11 @@ export function TrackTrainForm({
         // submitTrack/pin mode. The journey view itself (Task 17) is where
         // a candidate gets picked next.
         void groupId; // reserved for a future group-share-on-window-search follow-up
-        router.push(`/journeys/${result.journeyId}`);
+        if (onCreated) {
+          onCreated(result);
+        } else {
+          router.push(`/journeys/${result.journeyId}`);
+        }
         return;
       }
       if (response.status === 401) {
