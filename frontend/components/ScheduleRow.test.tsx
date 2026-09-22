@@ -8,6 +8,7 @@ function row(overrides: Partial<ScheduleRowData> = {}): ScheduleRowData {
     key: 'svc-1',
     scheduled: '10:00',
     destinationCrs: 'RDG',
+    destinationName: null,
     operator: 'GW',
     isCancelled: false,
     delayMinutes: 0,
@@ -19,9 +20,20 @@ function row(overrides: Partial<ScheduleRowData> = {}): ScheduleRowData {
 }
 
 describe('ScheduleRow', () => {
-  it('renders the scheduled time, destination and operator', () => {
+  it('renders the scheduled time, destination and operator, falling back to the bare code when no name resolved', () => {
     renderWithMantine(<ScheduleRow row={row({ scheduled: '14:40', destinationCrs: 'BSK', operator: 'SW' })} />);
     expect(screen.getByText('14:40 · BSK · SW')).toBeInTheDocument();
+  });
+
+  // 2026-09-22 UX review follow-up (item 5): the live picker used to show
+  // only the raw CRS code with no name at all -- `destinationName` is now
+  // resolved server-side and rendered via the shared `stationLabel`
+  // "Name (CODE)" convention.
+  it('renders a resolved destination name alongside its code', () => {
+    renderWithMantine(
+      <ScheduleRow row={row({ scheduled: '14:40', destinationCrs: 'BSK', destinationName: 'Basingstoke', operator: 'SW' })} />,
+    );
+    expect(screen.getByText('14:40 · Basingstoke (BSK) · SW')).toBeInTheDocument();
   });
 
   it('shows a green "On time" badge with both colour and text for an on-time service', () => {

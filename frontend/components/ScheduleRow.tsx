@@ -1,6 +1,7 @@
 import { Badge, Box, Group, Text } from '@mantine/core';
 import { StatusRow } from './StatusRow';
 import { PlatformBadge } from './PlatformBadge';
+import { stationLabel } from '@/lib/stationLabel';
 
 /** One live LDBWS departure-board row's display data -- deliberately a
  * plain data shape, not `DepartureRow` (`TrackTrainForm.tsx`'s own wire
@@ -16,6 +17,13 @@ export interface ScheduleRowData {
   key: string;
   scheduled: string; // "HH:MM"
   destinationCrs: string;
+  /** Resolved station name for `destinationCrs`, via a server-side batched
+   * `stations` lookup (2026-09-22 UX review follow-up -- this picker used
+   * to show the bare CRS code with no name at all). `null` when the code
+   * has no reference row; `stationLabel` (below) falls back to the code
+   * itself in that case, the same convention this app uses everywhere a
+   * name might not resolve. */
+  destinationName: string | null;
   /** `undefined` (not rendered) rather than `''`, for a source with no
    * operator field at all (e.g. a CIF-derived row) -- same "omit, don't
    * fabricate" posture as `PlatformBadge`'s own `null` handling. */
@@ -49,7 +57,7 @@ export function ScheduleRow({ row, onSelect }: { row: ScheduleRowData; onSelect?
   const clickable = onSelect !== undefined && !row.isCancelled;
   const title = (
     <Text size="sm" style={{ opacity: row.isCancelled ? 0.6 : 1 }}>
-      {row.scheduled} · {row.destinationCrs}
+      {row.scheduled} · {stationLabel(row.destinationCrs, row.destinationName)}
       {row.operator ? ` · ${row.operator}` : ''}
     </Text>
   );

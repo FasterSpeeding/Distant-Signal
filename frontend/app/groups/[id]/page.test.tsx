@@ -16,6 +16,7 @@ import {
 } from '@/lib/api';
 import type {
   GroupCustomLine,
+  GroupJourney,
   GroupMember,
   GroupRole,
   GroupTrain,
@@ -700,6 +701,170 @@ describe('GroupDetailPage', () => {
 
       expect(screen.queryByRole('button', { name: /^Edit/ })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /Delete line/i })).not.toBeInTheDocument();
+    });
+  });
+
+  // Item 7 of the 2026-09-22 UX review's fix-cycle follow-up: no seed data
+  // ever created a group with an actual shared journey in it, so
+  // `SharedJourneyRow` (page.tsx) had only ever been reviewed in its EMPTY
+  // state -- every test above this point that touches journeys at all
+  // leaves `getGroupJourneys` at its `beforeEach` default of `[]`. Live
+  // visual verification (seeding a real group/journey/share against the
+  // running preview and looking at the rendered page) was attempted but
+  // not possible this session: the preview's own API process (port 8080)
+  // was reachable earlier in this session but had gone down by the time
+  // this item was reached, and standing up a private replacement against
+  // the same shared database was judged too risky for a check-only task.
+  // This describe block is the fallback the task's own instructions name
+  // for that case: a realistic component-level fixture, checked for the
+  // same class of issues (truncation, missing labels, colour-only
+  // signals) the rest of this review cycle found elsewhere. Mirrors
+  // 'shared custom lines' above field-for-field.
+  describe('shared journeys', () => {
+    const SHARER = 'user-sharer';
+
+    function journey(overrides: Partial<GroupJourney> = {}): GroupJourney {
+      return {
+        journeyId: 501,
+        customName: null,
+        legCount: 1,
+        pinOriginCrs: 'WOK',
+        pinDestinationCrs: 'WAT',
+        pinOriginName: 'Woking',
+        pinDestinationName: 'London Waterloo',
+        pinScheduledDeparture: '2026-09-11T08:00:00Z',
+        serviceDate: '2026-09-11',
+        resolutionStatus: 'resolved',
+        trainUid: 'A12345',
+        status: 'en_route',
+        delayMinutes: 5,
+        addedBy: SHARER,
+        addedByName: 'Sam',
+        addedByTag: null,
+        ...overrides,
+      };
+    }
+
+    async function renderAsViewer(viewerId: string, role: GroupRole) {
+      vi.mocked(getGroup).mockResolvedValue({
+        id: 'grp-1',
+        name: 'Family',
+        ownerId: 'user-owner',
+        ownerName: 'Alex',
+        ownerTag: null,
+        memberCount: 3,
+        role,
+        inviteLink: null,
+      });
+      vi.mocked(getGroupMembers).mockResolvedValue([]);
+      vi.mocked(getGroupTrains).mockResolvedValue([]);
+      vi.mocked(getSession).mockResolvedValue({
+        authenticated: true,
+        id: viewerId,
+        email: null,
+        name: null,
+      });
+      renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
+    }
+
+    it('renders an empty state when nothing has been shared', async () => {
+      await renderAsViewer('user-owner', 'owner');
+      expect(
+        screen.getByText('No journeys have been shared into this group yet.'),
+      ).toBeInTheDocument();
+    });
+
+    it('renders a shared journey with its route, attribution, status badge and link out', async () => {
+      vi.mocked(getGroupJourneys).mockResolvedValue([journey()]);
+      await renderAsViewer('user-other', 'member');
+
+      expect(screen.getByRole('heading', { name: 'Shared journeys' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('link', { name: /Woking \(WOK\) → London Waterloo \(WAT\)/ }),
+      ).toHaveAttribute('href', '/journeys/501');
+      expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
+      // Same shared `TrackedTrainStatusBadge` `/` and `/track/mine` use --
+      // the raw `status` enum token must never leak into the page.
+      expect(screen.getByText('En route')).toBeInTheDocument();
+      expect(screen.getByText('5m late')).toBeInTheDocument();
+      expect(screen.queryByText('en_route')).not.toBeInTheDocument();
+    });
+
+    it('appends a "+N more legs" suffix for a multi-leg journey, and omits it for a single leg', async () => {
+      vi.mocked(getGroupJourneys).mockResolvedValue([
+        journey({ journeyId: 501, legCount: 1 }),
+        journey({ journeyId: 502, legCount: 3, customName: 'Scotland trip' }),
+      ]);
+      await renderAsViewer('user-other', 'member');
+
+      expect(screen.getByText(/Woking \(WOK\) → London Waterloo \(WAT\)/)).toBeInTheDocument();
+      expect(screen.queryByText(/\+0 more leg/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Scotland trip \(\+2 more legs\)/)).toBeInTheDocument();
+    });
+
+    it('shows a red "Unmatched" badge, not the raw resolutionStatus, for a leg with no train bound yet', async () => {
+      // `resolutionStatus` is nullable on the wire (a journey's first leg
+      // may have no bound train yet) -- SharedJourneyRow coalesces this to
+      // 'unresolved' before handing it to TrackedTrainStatusBadge, whose
+      // 'unresolved' branch is the one WCAG 1.4.1 colour-plus-text case
+      // (red AND the word "Unmatched", never colour alone).
+      vi.mocked(getGroupJourneys).mockResolvedValue([
+        journey({ resolutionStatus: null, status: null, delayMinutes: null, trainUid: null }),
+      ]);
+      await renderAsViewer('user-other', 'member');
+
+      expect(screen.getByText('Unmatched')).toBeInTheDocument();
+      expect(screen.queryByText('null')).not.toBeInTheDocument();
+    });
+
+    // Same blank-vs-null attribution gap `GroupTrain.addedByName` already
+    // has a regression test for above -- a blank string used to render as
+    // "Shared by " with nothing after it rather than falling back to the
+    // generic placeholder.
+    it('falls back to a placeholder when the sharer\'s display name is blank rather than null', async () => {
+      vi.mocked(getGroupJourneys).mockResolvedValue([journey({ addedByName: '' })]);
+      await renderAsViewer('user-other', 'member');
+
+      expect(screen.getByText(/Shared by a member/)).toBeInTheDocument();
+    });
+
+    it('a plain member who did not share it sees no "Remove from group" control', async () => {
+      vi.mocked(getGroupJourneys).mockResolvedValue([journey()]);
+      await renderAsViewer('user-bystander', 'member');
+
+      expect(screen.queryByRole('button', { name: 'Remove from group' })).not.toBeInTheDocument();
+    });
+
+    it('the member who shared it DOES see "Remove from group", even as a plain member', async () => {
+      vi.mocked(getGroupJourneys).mockResolvedValue([journey()]);
+      await renderAsViewer(SHARER, 'member');
+
+      expect(screen.getByRole('button', { name: 'Remove from group' })).toBeInTheDocument();
+    });
+
+    it('an admin sees "Remove from group" on someone else\'s shared journey', async () => {
+      vi.mocked(getGroupJourneys).mockResolvedValue([journey()]);
+      await renderAsViewer('user-admin', 'admin');
+
+      expect(screen.getByRole('button', { name: 'Remove from group' })).toBeInTheDocument();
+    });
+
+    // Task 1.5 (WCAG 2.5.3), same shrink-guard convention
+    // 'shared custom lines' already applies above: the row pairs a
+    // (potentially long) route/custom name with the status badge and
+    // "Remove from group" button in a `Group wrap="nowrap"` (`StatusRow`)
+    // -- without a shrink guard on both, either could be crushed to
+    // nothing instead of the title truncating.
+    it('gives the status badge and the "Remove from group" button a shrink guard against a long custom name', async () => {
+      vi.mocked(getGroupJourneys).mockResolvedValue([
+        journey({
+          customName: 'An Implausibly Long Journey Name Chosen To Threaten The Row Layout End To End',
+        }),
+      ]);
+      await renderAsViewer(SHARER, 'member');
+
+      expectShrinkGuarded(screen.getByText('En route'));
+      expectShrinkGuarded(screen.getByRole('button', { name: 'Remove from group' }));
     });
   });
 });

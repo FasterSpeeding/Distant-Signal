@@ -2,6 +2,7 @@ import { Paper, Stack, Text } from '@mantine/core';
 import { getLineHalfHourlyStats } from '@/lib/api';
 import type { LineHalfHourlyStats } from '@/lib/types';
 import { TrendsCharts } from './TrendsCharts';
+import { HONESTY_COPY, HONESTY_COPY_DETAILS } from './TrendsResults';
 import type { ChartPoint } from './chartPoint';
 
 // Placeholder, not a validated number -- see
@@ -85,23 +86,34 @@ export async function HalfHourlyTrendsResults({ id, from, to }: { id: string; fr
 
   return (
     <Stack gap="lg">
-      {/* Same honesty-copy posture as TrendsResults.tsx's own comment
-          (marked "Must not be softened or dropped") -- reworded from "that
-          day" to "that half hour" per Decision 2's per-bucket attribution,
-          not a new tradeoff. */}
+      {/* Was this file's own dense, jargon-heavy paragraph ("poll cycles",
+          "coverage", `--` for a dash) -- exactly the leak the 2026-09-22 UX
+          review ([OH] §3.3/I10) flagged and fixed on every OTHER
+          Trends-page methodology explanation (TrendsResults.tsx's own
+          honesty copy, and its NetworkTrendsResults.tsx/
+          OperatorTrendsResults.tsx callers), just never carried over to
+          this component. Reusing TrendsResults.tsx's HONESTY_COPY /
+          HONESTY_COPY_DETAILS constants directly (this component is always
+          granularity="halfHour", so no Record indirection is needed here)
+          rather than re-deriving new half-hourly copy that could drift
+          from theirs. */}
       <Text size="sm" c="dimmed">
-        Rates shown count each distinct train once per half hour, based on its status the first time it was seen
-        that half hour -- not a share of poll cycles. A train that starts on time and only becomes delayed later
-        while still in view will still show here as on time. Half-hour periods with too little coverage show as a
-        gap rather than a misleading flat line. The trains-counted chart below always shows the real count, even for
-        half hours too sparse to trust for a rate -- a low number there is exactly why a half hour may show as a gap
-        above; it counts each train once, in the half hour it was first seen, not how many were simultaneously
-        running.
+        {HONESTY_COPY.halfHour}
       </Text>
       {/* order={3}: this sits under /lines/[id]'s h1 line name -> h2
           "Recent trends (last 24 hours)" -- h3 keeps the chart titles one
           level below that h2, with no skip. */}
       <TrendsCharts points={points} granularity="halfHour" order={3} showVolume />
+      {/* Same collapsed-disclosure pattern as TrendsResults.tsx's own
+          render -- data leads, the fuller mechanical explanation sits
+          behind "How these rates are calculated" rather than printed in
+          full every time. */}
+      <details>
+        <summary>How these rates are calculated</summary>
+        <Text size="sm" c="dimmed" mt="xs">
+          {HONESTY_COPY_DETAILS.halfHour}
+        </Text>
+      </details>
     </Stack>
   );
 }

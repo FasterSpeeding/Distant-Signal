@@ -46,6 +46,25 @@ async fn get_station_departures(
         ));
     };
 
+    // Item 5 (2026-09-22 UX review follow-up): the live picker on `/track`
+    // used to show raw CRS destination codes because this route never
+    // joined station names -- `station_samples.departures` is a JSONB
+    // array, not individual rows, so there is no per-row SQL join target
+    // the way `TRACKED_TRAIN_STATE_SELECT` has for a single-row read.
+    // Instead, collect every row's destination code, resolve them all in
+    // one batched query (`station_names_for_crs_batch`, the same
+    // multi-CRS lookup `routes::lines.rs` already uses), and hand the map
+    // to the renderer -- see `render::station_departure_json`'s own doc
+    // comment.
+    let destination_crs: Vec<String> = sample
+        .departures
+        .iter()
+        .map(|d| d.destination_crs.clone())
+        .collect();
+    let destination_names = queries::station_names_for_crs_batch(&app.database, &destination_crs)
+        .await
+        .map_err(internal_error)?;
+
     // Order preserved exactly as stored -- `parse_departures` never
     // re-sorts (poller-ldbws/src/schema.rs), and RDM's own board is
     // already chronological by convention. No new sort introduced here.
@@ -53,7 +72,7 @@ async fn get_station_departures(
         sample
             .departures
             .iter()
-            .map(station_departure_json)
+            .map(|d| station_departure_json(d, &destination_names))
             .collect(),
     ))
 }
@@ -84,7 +103,23 @@ async fn get_station_schedule_departures(
     };
 
     let rows = departures.as_array().cloned().unwrap_or_default();
-    Ok(Json(rows.iter().map(schedule_departure_json).collect()))
+    // Same batched name-lookup enrichment as `get_station_departures`
+    // above, over this route's own `destination_crs` (nullable here --
+    // absent codes are simply skipped, `station_names_for_crs_batch`
+    // handles an empty input already).
+    let destination_crs: Vec<String> = rows
+        .iter()
+        .filter_map(|d| d.get("destination_crs").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    let destination_names = queries::station_names_for_crs_batch(&app.database, &destination_crs)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(
+        rows.iter()
+            .map(|d| schedule_departure_json(d, &destination_names))
+            .collect(),
+    ))
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {

@@ -258,7 +258,22 @@ describe('TimeFilterInput', () => {
       .filter(Boolean)
       .map((id) => document.getElementById(id)?.textContent);
     expect(describedTexts).toContain('Must be a time like 09:00');
-    expect(describedTexts).toContain('Only trains at RDG at or after this time.');
+    expect(describedTexts).toContain(
+      'Only trains at RDG at or after this time. Uses a 24-hour clock, e.g. 19:00 for 7pm.',
+    );
+  });
+
+  // Chromium's native <input type="time"> picker chrome ignores `lang` for
+  // its own AM/PM-vs-24h display (confirmed via a standalone repro this
+  // session) -- a genuine platform limitation `lang="en-GB"` alone can't
+  // patch. This always-visible hint is the chosen mitigation: it stays
+  // legible even where the picker itself still shows "7:00 PM" for a typed
+  // "19:00".
+  it('always tells the user this field is 24-hour, appended to its own description', () => {
+    renderWithMantine(<Harness initial="" />);
+    expect(
+      screen.getByText('Only trains at RDG at or after this time. Uses a 24-hour clock, e.g. 19:00 for 7pm.'),
+    ).toBeInTheDocument();
   });
 
   it('gives both buttons a target big enough to hit, and keeps them out of the label', () => {
