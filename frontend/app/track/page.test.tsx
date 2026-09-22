@@ -59,6 +59,32 @@ describe('TrackPage', () => {
 
     expect(screen.getByRole('radio', { name: 'I know the train' })).toBeChecked();
   });
+
+  it('pre-fills destination and window bounds for ?mode=window&destination=&departAfter=...', async () => {
+    renderWithMantine(
+      await TrackPage({
+        searchParams: Promise.resolve({
+          mode: 'window',
+          origin: 'wat',
+          destination: 'rdg',
+          departAfter: '08:00',
+          arriveBefore: '10:00',
+        }),
+      }),
+    );
+
+    expect(screen.getByDisplayValue('RDG')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('08:00')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('10:00')).toBeInTheDocument();
+  });
+
+  it('pre-fills the pin-mode destination for a plain ?destination= with no ?mode=', async () => {
+    renderWithMantine(
+      await TrackPage({ searchParams: Promise.resolve({ origin: 'wat', destination: 'rdg' }) }),
+    );
+
+    expect(screen.getByDisplayValue('RDG')).toBeInTheDocument();
+  });
 });
 
 describe('metadata', () => {

@@ -47,9 +47,19 @@ export const metadata: Metadata = {
 export default async function TrackPage({
   searchParams,
 }: {
-  searchParams: Promise<{ origin?: string | string[]; ticketId?: string | string[]; mode?: string | string[] }>;
+  searchParams: Promise<{
+    origin?: string | string[];
+    ticketId?: string | string[];
+    mode?: string | string[];
+    destination?: string | string[];
+    departAfter?: string | string[];
+    departBefore?: string | string[];
+    arriveAfter?: string | string[];
+    arriveBefore?: string | string[];
+  }>;
 }) {
-  const { origin, ticketId, mode } = await searchParams;
+  const { origin, ticketId, mode, destination, departAfter, departBefore, arriveAfter, arriveBefore } =
+    await searchParams;
   // Next.js supplies a `string[]` for a repeated query param (e.g.
   // `?origin=a&origin=b`) -- fall back to the first value rather than
   // letting `.toUpperCase()` throw on an array.
@@ -70,6 +80,17 @@ export default async function TrackPage({
   // "malformed means absent" posture `ticketIdParam` takes above.
   const modeParam = Array.isArray(mode) ? mode[0] : mode;
   const initialMode = modeParam === 'window' ? 'window' : 'pick';
+  // Same "repeated query param -> first value" unwrapping `origin`/
+  // `ticketId`/`mode` already use just below -- applied uniformly to the
+  // five new params `TrackJourneyAgainButton`/`trackAgainHref`
+  // (docs/superpowers/plans/2026-09-22-reusable-journeys-phaseA-track-again-plan.md)
+  // introduce, so a malformed/repeated value degrades the same way a
+  // malformed `?origin=` already does rather than throwing.
+  const destinationParam = Array.isArray(destination) ? destination[0] : destination;
+  const departAfterParam = Array.isArray(departAfter) ? departAfter[0] : departAfter;
+  const departBeforeParam = Array.isArray(departBefore) ? departBefore[0] : departBefore;
+  const arriveAfterParam = Array.isArray(arriveAfter) ? arriveAfter[0] : arriveAfter;
+  const arriveBeforeParam = Array.isArray(arriveBefore) ? arriveBefore[0] : arriveBefore;
 
   return (
     <Stack p="lg" gap="md">
@@ -101,8 +122,13 @@ export default async function TrackPage({
       </Text>
       <TrackTrainForm
         initialOrigin={originParam?.toUpperCase()}
+        initialDestination={destinationParam?.toUpperCase()}
         attachTicketId={attachTicketId}
         initialMode={initialMode}
+        initialDepartAfter={departAfterParam}
+        initialDepartBefore={departBeforeParam}
+        initialArriveAfter={arriveAfterParam}
+        initialArriveBefore={arriveBeforeParam}
       />
     </Stack>
   );
