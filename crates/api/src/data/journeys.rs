@@ -408,29 +408,86 @@ pub struct JourneySummaryRow {
     pub created_at: DateTime<Utc>,
 }
 
-pub async fn get_owned_journey_summary(
+/// Unscoped journey summary fetch -- `journey_id` alone, no `user_id`
+/// filter. Paired with [`journey_readable_by`] (call that FIRST to
+/// authorize the read; this function only fetches once authorization has
+/// already passed) rather than folding both into one query, mirroring
+/// `train_tracking::tracked_train_owner` + `get_by_tracking_id`'s existing
+/// "separate gate, unscoped fetch" split in this codebase. Defensive
+/// `Option` return (mapped to the same 404 by the caller) rather than an
+/// `.expect()`/`.unwrap()` past the DB round-trip -- should always be
+/// `Some` given `journey_readable_by` already confirmed the journey exists,
+/// but a second query is still a second query.
+pub async fn get_journey_summary(
     pool: &PgPool,
     journey_id: i64,
-    user_id: &str,
 ) -> anyhow::Result<Option<JourneySummaryRow>> {
     let row = sqlx::query_as::<_, JourneySummaryRow>(
-        "SELECT id, custom_name, created_at FROM journeys WHERE id = $1 AND user_id = $2",
+        "SELECT id, custom_name, created_at FROM journeys WHERE id = $1",
     )
     .bind(journey_id)
-    .bind(user_id)
     .fetch_optional(pool)
     .await?;
     Ok(row)
 }
 
+/// Whether `user_id` may read journey `journey_id`'s full detail: either
+/// they own it outright, or it's been shared (`group_journeys`, see
+/// `crates/api/src/data/groups.rs`) into at least one group they're
+/// currently a member of. Mirrors `custom_lines::readable_custom_line_ids`'s
+/// "owned OR granted-into-a-group-I'm-in" shape (see
+/// docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md
+/// §3.2) -- the closest existing precedent for widening a private
+/// resource's read gate to group sharing -- but returns a single `bool`
+/// rather than a batched id set: this function has exactly one call site
+/// (`GET /Journeys/{journeyId}`, a single-id read), and no bulk
+/// journey-status list exists in this codebase to justify the extra
+/// complexity a `HashSet<i64>`-returning, `ANY($1)`-parameterized version
+/// would add for zero current callers.
+///
+/// READ-ONLY AUTHORIZATION ONLY. This function must NEVER be used to gate
+/// a write route (rename/add-leg/commit-leg/delete a journey, or anything
+/// under `/Journeys/*` that mutates state) -- every write stays scoped to
+/// `journeys.user_id = caller.id` alone, via `journey_owner` (this file's
+/// existing ownership-only check, unchanged by this feature). Sharing a
+/// journey into a group conveys READ access ONLY, per
+/// docs/superpowers/specs/2026-09-22-journey-tracking-design.md §6 -- the
+/// same hard boundary `custom_line_group_grants`/`group_trains` already
+/// enforce for their own resources ("no group role can edit or delete
+/// someone else's shared resource, only unshare it").
+pub async fn journey_readable_by(
+    pool: &PgPool,
+    journey_id: i64,
+    user_id: &str,
+) -> anyhow::Result<bool> {
+    let (readable,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM journeys j WHERE j.id = $1 AND j.user_id = $2) \
+         OR EXISTS ( \
+             SELECT 1 FROM group_journeys gj \
+             JOIN group_members gm ON gm.group_id = gj.group_id AND gm.user_id = $2 \
+             WHERE gj.journey_id = $1 \
+         )",
+    )
+    .bind(journey_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(readable)
+}
+
 /// Every leg of a journey, `leg_order` ascending -- Phase 1 callers only
 /// ever see one row (this module's own doc comment), but this is already
 /// shaped for a later phase's longer result. Deliberately NOT
-/// ownership-scoped on its own (unlike [`get_owned_leg`]) -- every real
-/// caller (`routes::journeys::get_journey`, Task 12) already confirmed the
-/// journey's ownership via [`get_owned_journey_summary`] one call earlier
-/// in the same request, so re-checking here would be a redundant query,
-/// not a real safety gain.
+/// ownership-scoped on its own (unlike [`get_owned_leg`]) -- the one real
+/// caller (`routes::journeys::get_journey`) already confirmed the journey
+/// is READABLE by the caller via [`journey_readable_by`] one call earlier
+/// in the same request (owner OR group-shared-with, since Task 4 -- see
+/// that function's own doc comment), so re-checking here would be a
+/// redundant query, not a real safety gain. This is also exactly what
+/// makes Task 4's invariant 2 true by construction: nothing downstream of
+/// `journey_readable_by` re-filters a leg's `train_subscriptions` row by
+/// `user_id`, because this function never took a `user_id` to filter by in
+/// the first place.
 pub async fn list_legs_for_journey(pool: &PgPool, journey_id: i64) -> anyhow::Result<Vec<JourneyLegRow>> {
     let rows = sqlx::query_as::<_, JourneyLegRow>(
         "SELECT id, journey_id, origin_crs, destination_crs, service_date, \
@@ -493,6 +550,47 @@ mod db_tests {
             .execute(pool)
             .await
             .expect("cleanup fixture user");
+    }
+
+    /// Bare journey with no legs -- enough for [`journey_readable_by`]'s own
+    /// tests below, which only ever query the `journeys` table itself.
+    /// Reuses the module's own private `insert_journey` (accessible here via
+    /// `use super::*` -- a child module may reach a private item of its
+    /// parent) rather than duplicating that one-line `INSERT`.
+    async fn seed_journey(pool: &PgPool, user_id: &str) -> i64 {
+        insert_journey(pool, user_id, None)
+            .await
+            .expect("seed fixture journey")
+    }
+
+    /// Cleans up exactly one journey (`journey_id`, not "every journey this
+    /// user owns" -- unlike [`cleanup_user`]) plus every listed user's own
+    /// fixture rows. Deletes `journey_legs` for this journey, then the
+    /// journey itself, then each user's `train_subscriptions` rows, then
+    /// each user -- same FK-respecting order as `cleanup_user`.
+    async fn cleanup_journey(pool: &PgPool, journey_id: i64, user_ids: &[&str]) {
+        sqlx::query("DELETE FROM journey_legs WHERE journey_id = $1")
+            .bind(journey_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture journey_legs");
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture journey");
+        for user_id in user_ids {
+            sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1")
+                .bind(user_id)
+                .execute(pool)
+                .await
+                .expect("cleanup fixture tracked_trains");
+            sqlx::query("DELETE FROM users WHERE id = $1")
+                .bind(user_id)
+                .execute(pool)
+                .await
+                .expect("cleanup fixture user");
+        }
     }
 
     fn fixture_pin(origin_crs: &str) -> common::TrackPinRequest {
@@ -737,5 +835,183 @@ mod db_tests {
 
         cleanup_user(&pool, "TEST-JOURNEY-COMMIT-OWNER").await;
         cleanup_user(&pool, "TEST-JOURNEY-COMMIT-OTHER").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                journey_readable_by -- --ignored --test-threads=1`"]
+    async fn journey_readable_by_the_owner_can_always_read_their_own_journey_with_no_grant() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-JOURNEY-READABLE-OWNER-1").await;
+        let journey_id = seed_journey(&pool, "TEST-JOURNEY-READABLE-OWNER-1").await;
+
+        assert!(
+            journey_readable_by(&pool, journey_id, "TEST-JOURNEY-READABLE-OWNER-1")
+                .await
+                .expect("check readability")
+        );
+
+        cleanup_journey(&pool, journey_id, &["TEST-JOURNEY-READABLE-OWNER-1"]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                journey_readable_by -- --ignored --test-threads=1`"]
+    async fn journey_readable_by_a_fellow_group_member_can_read_a_shared_journey() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-JOURNEY-READABLE-OWNER-2").await;
+        seed_user(&pool, "TEST-JOURNEY-READABLE-MEMBER-2").await;
+        let journey_id = seed_journey(&pool, "TEST-JOURNEY-READABLE-OWNER-2").await;
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Journey Readable Test",
+            "TEST-JOURNEY-READABLE-OWNER-2",
+        )
+        .await
+        .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-JOURNEY-READABLE-MEMBER-2")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        crate::data::groups::add_journey_to_group(
+            &pool,
+            &group_id,
+            journey_id,
+            "TEST-JOURNEY-READABLE-OWNER-2",
+        )
+        .await
+        .expect("share journey");
+
+        assert!(
+            journey_readable_by(&pool, journey_id, "TEST-JOURNEY-READABLE-MEMBER-2")
+                .await
+                .expect("check readability")
+        );
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_journey(
+            &pool,
+            journey_id,
+            &["TEST-JOURNEY-READABLE-OWNER-2", "TEST-JOURNEY-READABLE-MEMBER-2"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                journey_readable_by -- --ignored --test-threads=1`"]
+    async fn journey_readable_by_excludes_a_stranger_in_no_shared_group() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-JOURNEY-READABLE-OWNER-3").await;
+        seed_user(&pool, "TEST-JOURNEY-READABLE-STRANGER-3").await;
+        let journey_id = seed_journey(&pool, "TEST-JOURNEY-READABLE-OWNER-3").await;
+
+        // The stranger is a member of SOME group, just not one this
+        // journey was shared into -- the core negative case, protecting
+        // against a query that accidentally checks "is a member of any
+        // group" instead of "is a member of a group THIS journey was
+        // shared into".
+        let unrelated_group_id = crate::data::groups::create_group(
+            &pool,
+            "Unrelated Group",
+            "TEST-JOURNEY-READABLE-STRANGER-3",
+        )
+        .await
+        .expect("create unrelated group");
+
+        assert!(
+            !journey_readable_by(&pool, journey_id, "TEST-JOURNEY-READABLE-STRANGER-3")
+                .await
+                .expect("check readability")
+        );
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&unrelated_group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_journey(
+            &pool,
+            journey_id,
+            &["TEST-JOURNEY-READABLE-OWNER-3", "TEST-JOURNEY-READABLE-STRANGER-3"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                journey_readable_by -- --ignored --test-threads=1`"]
+    async fn journey_readable_by_a_former_member_loses_access_once_removed() {
+        let pool = connect().await;
+        seed_user(&pool, "TEST-JOURNEY-READABLE-OWNER-4").await;
+        seed_user(&pool, "TEST-JOURNEY-READABLE-MEMBER-4").await;
+        let journey_id = seed_journey(&pool, "TEST-JOURNEY-READABLE-OWNER-4").await;
+        let group_id = crate::data::groups::create_group(
+            &pool,
+            "Journey Readable Departure Test",
+            "TEST-JOURNEY-READABLE-OWNER-4",
+        )
+        .await
+        .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind("TEST-JOURNEY-READABLE-MEMBER-4")
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        crate::data::groups::add_journey_to_group(
+            &pool,
+            &group_id,
+            journey_id,
+            "TEST-JOURNEY-READABLE-OWNER-4",
+        )
+        .await
+        .expect("share journey");
+        assert!(
+            journey_readable_by(&pool, journey_id, "TEST-JOURNEY-READABLE-MEMBER-4")
+                .await
+                .expect("readable while a member")
+        );
+
+        crate::data::groups::remove_member(&pool, &group_id, "TEST-JOURNEY-READABLE-MEMBER-4")
+            .await
+            .expect("remove member");
+
+        // Task 2's remove_member cascade should have deleted the
+        // group_journeys row too, so this is doubly protected -- even a
+        // query that only checked group_members (and not group_journeys)
+        // would already deny this, but the point of this test is
+        // end-to-end: departure really does revoke read access.
+        assert!(
+            !journey_readable_by(&pool, journey_id, "TEST-JOURNEY-READABLE-MEMBER-4")
+                .await
+                .expect("no longer readable after leaving")
+        );
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_journey(
+            &pool,
+            journey_id,
+            &["TEST-JOURNEY-READABLE-OWNER-4", "TEST-JOURNEY-READABLE-MEMBER-4"],
+        )
+        .await;
     }
 }
