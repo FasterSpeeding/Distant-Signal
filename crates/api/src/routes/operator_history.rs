@@ -366,11 +366,61 @@ mod db_tests {
             .expect("connect to postgres")
     }
 
+    /// Ported from `operators.rs`'s own `db_tests::seed_toc` (read directly
+    /// while fixing this test after code review: `operators::operator_rollup`
+    /// -- which `get_operator_daily_stats` and its granularity siblings all
+    /// call -- resolves a code to line ids ONLY via a real `tocs` row
+    /// (`reference::get_all_tocs`), never from a `LineDefinition.operators`
+    /// entry alone. A test that seeds only `line_status_daily_stats` and a
+    /// catalogue `LineDefinition` (as this test originally did) still
+    /// resolves to an empty line-id set against a live database, because
+    /// there is no matching `tocs` row for the operator code requested.
+    async fn seed_toc(pool: &PgPool, code: &str, name: &str) {
+        sqlx::query(
+            "INSERT INTO tocs (atoc_code, name, legal_name, fetched_at) VALUES ($1, $2, $2, NOW()) \
+             ON CONFLICT (atoc_code) DO UPDATE SET name = EXCLUDED.name",
+        )
+        .bind(code)
+        .bind(name)
+        .execute(pool)
+        .await
+        .expect("seed fixture toc");
+    }
+
+    /// Ported from `operators.rs`'s own `db_tests::seed_line_status`. Needed
+    /// alongside `seed_toc`: `operator_rollup`'s line-id set is the
+    /// intersection of "has a matching `tocs` row" AND "has a `line_status`
+    /// row whose `operators` column carries that code" (see
+    /// `crates/api/src/data/operators.rs`'s `public_line_status_rows` /
+    /// `all_operator_rollups`) -- a catalogue `LineDefinition.operators`
+    /// entry alone, with no corresponding `line_status` row, still resolves
+    /// to zero matching lines.
+    async fn seed_line_status(pool: &PgPool, line_id: &str, operators: &[&str]) {
+        sqlx::query(
+            "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, source) \
+             VALUES ($1, $1, 'national-rail', $2, '[]'::jsonb, 'aggregator') \
+             ON CONFLICT (line_id) DO UPDATE SET operators = EXCLUDED.operators, statuses = EXCLUDED.statuses",
+        )
+        .bind(line_id)
+        .bind(operators)
+        .execute(pool)
+        .await
+        .expect("seed fixture line_status row");
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 get_operator_daily_stats -- --ignored --test-threads=1`"]
     async fn get_operator_daily_stats_sums_only_that_operators_lines() {
         let pool = connect().await;
+        // Reserved `Z…` fixture-code namespace, matching `operators.rs`'s
+        // own test convention -- deliberately NOT the real "SW" (South
+        // Western Railway) ATOC code, since this test's `seed_toc`/cleanup
+        // pair would upsert-then-delete a real `tocs` row of that code if
+        // one already existed in whatever database this runs against.
+        seed_toc(&pool, "ZR", "Z Test Route Railway").await;
+        seed_line_status(&pool, "TEST-ROUTE-OP-A", &["ZR"]).await;
+        seed_line_status(&pool, "TEST-ROUTE-OP-B", &["ZR"]).await;
         sqlx::query(
             "INSERT INTO line_status_daily_stats \
                 (line_id, day, sample_cycles, total, delayed, cancelled, skipped, running_count, delay_minutes_sum) \
@@ -384,15 +434,15 @@ mod db_tests {
         .expect("seed fixture rows");
 
         let lines = vec![
-            catalogue_line("TEST-ROUTE-OP-A", &["SW"]),
-            catalogue_line("TEST-ROUTE-OP-B", &["SW"]),
+            catalogue_line("TEST-ROUTE-OP-A", &["ZR"]),
+            catalogue_line("TEST-ROUTE-OP-B", &["ZR"]),
         ];
         let router = test_router(test_app(pool.clone(), lines));
 
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/operators/SW/stats/2026-08-01/to/2026-08-01")
+                    .uri("/operators/ZR/stats/2026-08-01/to/2026-08-01")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -412,6 +462,14 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup fixture rows");
+        sqlx::query("DELETE FROM line_status WHERE line_id LIKE 'TEST-ROUTE-OP-%'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture line_status rows");
+        sqlx::query("DELETE FROM tocs WHERE atoc_code = 'ZR'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture toc");
     }
 
     #[tokio::test]
