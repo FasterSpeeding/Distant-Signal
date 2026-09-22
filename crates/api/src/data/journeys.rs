@@ -505,6 +505,89 @@ pub async fn set_leg_train_subscription(
     Ok(result.rows_affected() > 0)
 }
 
+/// Removes one leg from a journey the caller owns -- the 2026-09-22 UX
+/// review's I14/2.4 recovery path for a `pin`/`knownTrain`-mode leg with a
+/// wrong pick: that leg has no persisted window to re-search
+/// (`journey_legs.depart_after` etc. all `NULL`), so `JourneyLegCard.tsx`'s
+/// `hasWindow` gate never offers "Change train" for it, and until this
+/// function existed there was no way to remove it either -- see this
+/// module's own doc comment on Phase 1 never having a delete route at all.
+///
+/// Deliberately still not a general "delete a journey" route (that Non-goal
+/// stands): this only ever removes ONE leg, but when it's the journey's
+/// LAST remaining one, the whole now-empty `journeys` row is deleted too
+/// (`journey_legs.journey_id ... ON DELETE CASCADE`,
+/// `20260922090000_journeys.sql`, takes the leg with it in the same
+/// statement) rather than leaving a zero-leg journey nothing else in this
+/// codebase expects to see (`get_journey_summary`, `list_journeys_for_user`,
+/// every frontend page). The underlying `train_subscriptions` row, if the
+/// leg was matched, is left completely untouched -- the same
+/// orphan-not-cascade posture `set_leg_train_subscription`'s own doc
+/// comment already documents for a re-pick, and the mirror image of
+/// `train_subscription_id ... ON DELETE SET NULL` applying in the other
+/// direction: deleting the SUBSCRIPTION orphans the leg, so deleting the
+/// LEG must not silently delete the user's separate, personal tracked-train
+/// subscription (still visible via `/Train/{trackingId}` and `GET
+/// /Train/mine` regardless of which journeys ever referenced it).
+///
+/// Ownership-checked read first, then a `COUNT` and one of two deletes, all
+/// inside one transaction -- a concurrent second delete of the journey's
+/// last leg between the read and the write is the same vanishingly-unlikely
+/// race `post_leg_train`'s own doc comment already accepts as handled-not-
+/// silently-ignored elsewhere in this file, not specially guarded against
+/// here beyond the transaction itself.
+///
+/// Returns `Ok(None)` for "no such leg, or not this caller's" (route maps
+/// to `404`, matching `get_owned_leg`'s own convention). Returns
+/// `Ok(Some(journey_also_deleted))` on success.
+pub async fn delete_leg(
+    pool: &PgPool,
+    journey_id: i64,
+    leg_id: i64,
+    user_id: &str,
+) -> anyhow::Result<Option<bool>> {
+    let mut tx = pool.begin().await?;
+
+    let owned: Option<(i64,)> = sqlx::query_as(
+        "SELECT jl.id FROM journey_legs jl \
+         JOIN journeys j ON j.id = jl.journey_id \
+         WHERE jl.id = $1 AND jl.journey_id = $2 AND j.user_id = $3",
+    )
+    .bind(leg_id)
+    .bind(journey_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if owned.is_none() {
+        return Ok(None);
+    }
+
+    let (remaining,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM journey_legs WHERE journey_id = $1")
+            .bind(journey_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    let journey_also_deleted = remaining <= 1;
+
+    if journey_also_deleted {
+        // Cascades into `journey_legs` for us (`ON DELETE CASCADE`) --
+        // deleting the leg row explicitly first would be redundant, not
+        // wrong, but this is the one statement, not two.
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        sqlx::query("DELETE FROM journey_legs WHERE id = $1")
+            .bind(leg_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    tx.commit().await?;
+    Ok(Some(journey_also_deleted))
+}
+
 /// One row of `GET /Journeys/mine` -- deliberately lighter than the full
 /// `GET /Journeys/{id}` detail (`routes::journeys::JourneyDetailResponse`),
 /// mirroring `TrackedTrainListItem`'s own "list is lighter than detail"
