@@ -348,6 +348,102 @@ pub async fn set_leg_train_subscription(
     Ok(result.rows_affected() > 0)
 }
 
+/// One row of `GET /Journeys/mine` -- deliberately lighter than the full
+/// `GET /Journeys/{id}` detail (`routes::journeys::JourneyDetailResponse`),
+/// mirroring `TrackedTrainListItem`'s own "list is lighter than detail"
+/// split. Phase 1 never creates more than one leg per journey (this
+/// module's own doc comment), so this surfaces `leg_order = 1`'s own
+/// fields directly rather than a nested array -- a genuine multi-leg
+/// rollup (design doc §3's "worst status across legs" idiom) is a later
+/// phase's job, once a journey can actually have more than one leg.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JourneyListItem {
+    pub id: i64,
+    pub custom_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub leg_id: i64,
+    pub origin_crs: Option<String>,
+    pub destination_crs: Option<String>,
+    pub match_mode: String,
+    pub train_subscription_id: Option<i64>,
+    pub resolution_status: Option<String>,
+    pub status: Option<String>,
+    pub delay_minutes: Option<i32>,
+}
+
+/// Most-recently-created journey first, capped at the same
+/// `train_tracking::MINE_LIST_LIMIT` `GET /Train/mine` already uses --
+/// `pub(crate)` on that constant already permits this cross-module read
+/// (see its own doc comment, which anticipates exactly this: "any list
+/// this list's own cap should agree with").
+pub async fn list_journeys_for_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> anyhow::Result<Vec<JourneyListItem>> {
+    let rows = sqlx::query_as::<_, JourneyListItem>(
+        "SELECT j.id, j.custom_name, j.created_at, \
+                jl.id AS leg_id, jl.origin_crs, jl.destination_crs, jl.match_mode, \
+                jl.train_subscription_id, \
+                ts.resolution_status, cs.status, cs.delay_minutes \
+         FROM journeys j \
+         JOIN journey_legs jl ON jl.journey_id = j.id AND jl.leg_order = 1 \
+         LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
+         LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
+         WHERE j.user_id = $1 \
+         ORDER BY j.created_at DESC \
+         LIMIT $2",
+    )
+    .bind(user_id)
+    .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct JourneySummaryRow {
+    pub id: i64,
+    pub custom_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+pub async fn get_owned_journey_summary(
+    pool: &PgPool,
+    journey_id: i64,
+    user_id: &str,
+) -> anyhow::Result<Option<JourneySummaryRow>> {
+    let row = sqlx::query_as::<_, JourneySummaryRow>(
+        "SELECT id, custom_name, created_at FROM journeys WHERE id = $1 AND user_id = $2",
+    )
+    .bind(journey_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+/// Every leg of a journey, `leg_order` ascending -- Phase 1 callers only
+/// ever see one row (this module's own doc comment), but this is already
+/// shaped for a later phase's longer result. Deliberately NOT
+/// ownership-scoped on its own (unlike [`get_owned_leg`]) -- every real
+/// caller (`routes::journeys::get_journey`, Task 12) already confirmed the
+/// journey's ownership via [`get_owned_journey_summary`] one call earlier
+/// in the same request, so re-checking here would be a redundant query,
+/// not a real safety gain.
+pub async fn list_legs_for_journey(pool: &PgPool, journey_id: i64) -> anyhow::Result<Vec<JourneyLegRow>> {
+    let rows = sqlx::query_as::<_, JourneyLegRow>(
+        "SELECT id, journey_id, origin_crs, destination_crs, service_date, \
+                depart_after, depart_before, arrive_after, arrive_before, \
+                train_subscription_id, match_mode \
+         FROM journey_legs WHERE journey_id = $1 ORDER BY leg_order",
+    )
+    .bind(journey_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod db_tests {
     use super::*;
