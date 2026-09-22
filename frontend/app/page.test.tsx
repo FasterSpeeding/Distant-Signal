@@ -990,6 +990,56 @@ describe('DashboardPage -- Your Operators section', () => {
       within(heading.parentElement as HTMLElement).getByRole('link', { name: 'Browse all operators' }),
     ).toHaveAttribute('href', '/operators');
   });
+
+  // Final whole-branch review finding: the operators fetch used to be
+  // unconditional, even though the anonymous branch never renders anything
+  // pinned-operator-shaped -- pure wasted cost for that visitor.
+  it('never fetches the operators catalogue for an anonymous visitor', async () => {
+    vi.mocked(api.getSession).mockResolvedValue({ authenticated: false, id: null, email: null, name: null });
+    // This mock's call count accumulates across every earlier test in this
+    // file (nothing in this suite resets mocks between tests) -- cleared
+    // here so this assertion is about THIS render, not the file's history.
+    vi.mocked(api.getAllOperators).mockClear();
+    renderWithMantine(await DashboardPage());
+
+    expect(api.getAllOperators).not.toHaveBeenCalled();
+  });
+
+  // Final whole-branch review finding: a failed catalogue fetch used to be
+  // swallowed as `[]`, which read identically to "the catalogue is empty"
+  // once filtered against the caller's pins -- so a caller who HAD pinned
+  // operators was told, falsely, that they hadn't pinned any at all.
+  it('shows a "couldn\'t load" message, not the false empty-state sentence, when the operators fetch fails and the caller has pinned operators', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: [],
+      pinnedStations: [],
+      pinnedOperators: ['VT'],
+    });
+    vi.mocked(api.getAllOperators).mockRejectedValue(new Error('network error'));
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText("Couldn't load operator status right now.")).toBeInTheDocument();
+    expect(screen.queryByText(/haven't pinned any operators yet/)).not.toBeInTheDocument();
+  });
+
+  // Counterpart of the test above: when the caller genuinely has nothing
+  // pinned, a failed fetch has nothing to have lost, so the ordinary
+  // empty-state sentence (not the "couldn't load" one) is still the right
+  // message.
+  it('still shows the ordinary empty-state sentence when the operators fetch fails but the caller has nothing pinned', async () => {
+    vi.mocked(api.getSession).mockResolvedValue(loggedIn);
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: [],
+      pinnedStations: [],
+      pinnedOperators: [],
+    });
+    vi.mocked(api.getAllOperators).mockRejectedValue(new Error('network error'));
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText(/haven't pinned any operators yet/)).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load operator status right now.")).not.toBeInTheDocument();
+  });
 });
 
 // The home page's own copy of the /track/mine fix: a train another member
