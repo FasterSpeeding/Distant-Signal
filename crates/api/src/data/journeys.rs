@@ -522,6 +522,22 @@ pub struct JourneyListItem {
     pub leg_id: i64,
     pub origin_crs: Option<String>,
     pub destination_crs: Option<String>,
+    /// The current leg's own `journey_legs.service_date` -- the date the
+    /// traveller is travelling, NOT `created_at` (the date they set the
+    /// journey up, which can be weeks earlier). A list row cannot name
+    /// which journey it is without it; `/track/mine`'s tracked-train rows
+    /// beside it have printed a real service date since they shipped.
+    pub service_date: chrono::NaiveDate,
+    /// Resolved display names for `origin_crs`/`destination_crs`, via the
+    /// same `LEFT JOIN stations ... ON s.crs = UPPER(...)` mechanism
+    /// `train_tracking::list_tracked_trains_for_user` already uses (see
+    /// its comment for why `UPPER` is mandatory). `None` when the code is
+    /// itself `None`, or when no reference row exists for it --
+    /// `lib/stationLabel.ts`'s `routeLabel` degrades both ends to bare
+    /// codes together in that case, rather than mixing one resolved name
+    /// with one bare code.
+    pub origin_name: Option<String>,
+    pub destination_name: Option<String>,
     pub match_mode: String,
     pub train_subscription_id: Option<i64>,
     pub resolution_status: Option<String>,
@@ -543,7 +559,7 @@ pub async fn list_journeys_for_user(
     let rows = sqlx::query_as::<_, JourneyListItem>(
         "WITH ranked_legs AS ( \
              SELECT jl.id, jl.journey_id, jl.leg_order, jl.origin_crs, jl.destination_crs, \
-                    jl.match_mode, jl.train_subscription_id, \
+                    jl.service_date, jl.match_mode, jl.train_subscription_id, \
                     ts.resolution_status, cs.status, cs.delay_minutes, \
                     ROW_NUMBER() OVER ( \
                         PARTITION BY jl.journey_id \
@@ -557,10 +573,13 @@ pub async fn list_journeys_for_user(
              WHERE jl.journey_id IN (SELECT id FROM journeys WHERE user_id = $1) \
          ) \
          SELECT j.id, j.custom_name, j.created_at, \
-                rl.id AS leg_id, rl.origin_crs, rl.destination_crs, rl.match_mode, \
+                rl.id AS leg_id, rl.origin_crs, rl.destination_crs, rl.service_date, \
+                so.name AS origin_name, sd.name AS destination_name, rl.match_mode, \
                 rl.train_subscription_id, rl.resolution_status, rl.status, rl.delay_minutes \
          FROM journeys j \
          JOIN ranked_legs rl ON rl.journey_id = j.id AND rl.rn = 1 \
+         LEFT JOIN stations so ON so.crs = UPPER(rl.origin_crs) \
+         LEFT JOIN stations sd ON sd.crs = UPPER(rl.destination_crs) \
          WHERE j.user_id = $1 \
          ORDER BY j.created_at DESC \
          LIMIT $2",
@@ -1134,6 +1153,34 @@ mod db_tests {
             our_journey.match_mode, "unmatched",
             "Should show leg 2's match_mode"
         );
+        // 2026-09-22 UX review, C1: `/track/mine` now renders these rows,
+        // and it cannot name a journey without the leg's own service date
+        // (NOT `created_at`, which is when the journey was set up).
+        assert_eq!(
+            our_journey.service_date,
+            "2026-09-22".parse::<NaiveDate>().unwrap(),
+            "Should show leg 2's own service_date, not the journey's created_at"
+        );
+        // Both ends run through the same `LEFT JOIN stations ... ON
+        // s.crs = UPPER(...)` the tracked-train list already uses. The
+        // join is independent per end, so one end CAN resolve while the
+        // other doesn't (this very fixture: `EDB` has a reference row,
+        // `GLG` may not) -- that asymmetry is handled on the display side
+        // by `lib/stationLabel.ts`'s `routeLabel`, which drops BOTH ends
+        // to bare codes rather than printing one resolved name beside one
+        // bare code. What this asserts is only that the join is wired at
+        // all: a real reference row must come back as a name.
+        let edb_has_reference_row: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM stations WHERE crs = 'EDB')")
+                .fetch_one(&pool)
+                .await
+                .expect("check EDB reference row");
+        if edb_has_reference_row {
+            assert!(
+                our_journey.origin_name.is_some(),
+                "origin_name must resolve when the CRS has a stations row"
+            );
+        }
 
         // Verify that the journey appears exactly once
         let journey_count = journeys.iter().filter(|j| j.id == journey_id).count();

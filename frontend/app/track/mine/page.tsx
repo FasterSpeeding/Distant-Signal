@@ -1,6 +1,6 @@
 import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import Link from 'next/link';
-import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains } from '@/lib/api';
+import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains, getMyJourneys } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
 import { LoginLink } from '@/components/LoginLink';
 import { TextLink } from '@/components/TextLink';
@@ -18,7 +18,9 @@ import { routeLabel } from '@/lib/stationLabel';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
-import type { TrackedTrainListItem, TicketListItem } from '@/lib/types';
+import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
+import { journeyListItemStatusGroup } from '@/lib/journeyStatus';
+import type { TrackedTrainListItem, TicketListItem, JourneyListItem } from '@/lib/types';
 
 // See app/page.tsx's own `revalidate = 0` comment for the rationale: this
 // route has no dynamic segment, so without this Next.js treats it as
@@ -71,12 +73,26 @@ export const revalidate = 0;
  * its own non-essential fetches. `null` is a value this page already
  * handles (it's `getSharedGroupTrains()`'s own 401 return), so the failure
  * collapses into the existing "nothing shared with you" branch rather than
- * needing one of its own. */
+ * needing one of its own.
+ *
+ * `getMyJourneys()` is the fourth call, added for the 2026-09-22 UX
+ * review's C1. Before it, a journey created by time-window search was
+ * unreachable the moment the user left its page: this list was built from
+ * `trains`/`shared` alone, an unmatched leg has
+ * `train_subscription_id IS NULL` and so could never produce a row here,
+ * `navLinks.ts` has no journey entry, and the journey page itself is
+ * reached only by a `router.push`. Every other private object in this app
+ * -- trains, tickets, groups, custom lines -- has a list page; the one
+ * whose whole status is "needs you to come back and pick a train" did not.
+ * Gated and null-on-401 exactly like the first two, and `.catch(() => null)`
+ * for the same "auxiliary, don't lose the whole page over it" reason as
+ * `getSharedGroupTrains()`. */
 export default async function MyTrackedTrainsPage() {
-  const [trains, tickets, sharedTrains] = await Promise.all([
+  const [trains, tickets, sharedTrains, journeys] = await Promise.all([
     getMyTrackedTrains(),
     getMyTickets(),
     getSharedGroupTrains().catch(() => null),
+    getMyJourneys().catch(() => null),
   ]);
 
   if (trains === null) {
@@ -127,8 +143,40 @@ export default async function MyTrackedTrainsPage() {
   // something to show, and the empty state ("you haven't tracked any
   // trains") would be both wrong and -- since it's the branch that hides
   // the list entirely -- the very bug this page had.
+  const journeyRows = journeys ?? [];
+  // A journey's CURRENT leg, once matched, owns a real `train_subscriptions`
+  // row -- which is also one of this user's own tracked trains, so
+  // `getMyTrackedTrains()` returns it too. Showing both would put the same
+  // service on screen twice under two different nouns, which is exactly
+  // the confusion the review's I22 names. The journey row wins: it links
+  // to `/journeys/{id}` (the page the user was shown when they created it)
+  // and it knows about the journey's other legs, which the bare train row
+  // does not.
+  //
+  // HONEST LIMIT: `GET /Journeys/mine` surfaces only the current leg's
+  // `trainSubscriptionId`, so an EARLIER, already-completed leg's train
+  // still appears as its own row. That is a degraded case, not a wrong
+  // one -- a completed train genuinely is a tracked train -- and closing
+  // it properly means returning every leg's subscription id from that
+  // endpoint, which belongs with the wider I22 vocabulary work rather
+  // than here.
+  const journeyTrainIds = new Set(
+    journeyRows
+      .map((journey) => journey.trainSubscriptionId)
+      .filter((id): id is number => id !== null),
+  );
+  const standaloneTrains = trains.filter((train) => !journeyTrainIds.has(train.id));
+
+  // `hasOwnContent` still gates the reliability digest ALONE and so still
+  // counts only trains and tickets -- a journey with no train picked yet is
+  // not evidence about the caller's punctuality record, and its matched
+  // legs are already counted via `trains`. `nothingToShow` does count
+  // journeys: a user whose only tracked object is an unmatched journey has
+  // something to show, and the "you haven't tracked any trains" empty
+  // state would both be wrong and (since it's the branch that hides the
+  // list) hide the very row C1 exists to add.
   const hasOwnContent = trains.length > 0 || unattachedTickets.length > 0;
-  const nothingToShow = !hasOwnContent && shared.length === 0;
+  const nothingToShow = !hasOwnContent && shared.length === 0 && journeyRows.length === 0;
 
   return (
     <Stack p="lg" gap="lg">
@@ -147,7 +195,15 @@ export default async function MyTrackedTrainsPage() {
         </Text>
       ) : (
         <>
-          {(trains.length > 0 || shared.length > 0) && (
+          {journeyRows.length > 0 && (
+            <Stack gap="xs">
+              <Title order={2}>Your journeys</Title>
+              {journeyRows.map((journey) => (
+                <JourneyListRow key={journey.id} journey={journey} />
+              ))}
+            </Stack>
+          )}
+          {(standaloneTrains.length > 0 || shared.length > 0) && (
             // ONE list, not a "shared with me" section of its own: the
             // whole point of the fix is that a shared train sits alongside
             // the caller's own, which is also why each shared row carries
@@ -169,7 +225,7 @@ export default async function MyTrackedTrainsPage() {
             // ordered, rather than one list ordered by something neither
             // half chose.
             <Stack gap="xs">
-              {trains.map((train) => (
+              {standaloneTrains.map((train) => (
                 <TrackedTrainListRow key={train.id} train={train} tickets={ticketsByTrain.get(train.id) ?? []} />
               ))}
               {shared.map((row) => (
@@ -197,6 +253,59 @@ export default async function MyTrackedTrainsPage() {
         </>
       )}
     </Stack>
+  );
+}
+
+/** One row of `GET /Journeys/mine`, linking to `/journeys/{id}` -- the
+ * page the user was pushed to when they created it, and until this row
+ * existed the only way back to it (2026-09-22 UX review, C1).
+ *
+ * Route and date go through `routeLabel`/`formatDate`, the same two
+ * helpers the tracked-train rows below already use: a journey row printing
+ * "KGX → YRK, 2026-09-22" directly above a train row printing "London
+ * Kings Cross (KGX) → York (YRK), 22 Sept 2026" would be a fresh instance
+ * of the review's own P5 in the one list where both formats are visible at
+ * once. `GET /Journeys/mine` grew `serviceDate`/`originName`/
+ * `destinationName` for exactly this.
+ *
+ * Built on `StatusRow` rather than a hand-rolled
+ * `Group justify="space-between"`, for the shrink-safe title/trailing
+ * behaviour the primitive encodes (review P2) -- the same reason
+ * `ScheduleRow` is built on it. */
+function JourneyListRow({ journey }: { journey: JourneyListItem }) {
+  const route = routeLabel(
+    journey.originCrs,
+    journey.originName,
+    journey.destinationCrs,
+    journey.destinationName,
+  );
+  const when = formatDate(journey.serviceDate);
+  const title = journey.customName ?? `${route}, ${when}`;
+
+  return (
+    <Card withBorder>
+      <Stack gap={4}>
+        <StatusRow
+          align="flex-start"
+          title={
+            <Link href={`/journeys/${journey.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+              <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
+                {title}
+              </Text>
+            </Link>
+          }
+          trailing={<JourneyStatusGroupBadge group={journeyListItemStatusGroup(journey)} />}
+        />
+        {/* Only when a custom name has replaced the default title -- the
+            same rule the tracked-train rows below follow, so the route and
+            date are never printed twice on one row. */}
+        {journey.customName && (
+          <Text size="sm" c="dimmed">
+            {route}, {when}
+          </Text>
+        )}
+      </Stack>
+    </Card>
   );
 }
 

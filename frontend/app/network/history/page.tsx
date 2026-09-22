@@ -49,8 +49,13 @@ export default async function NetworkHistoryPage({
 
   return (
     <Stack p="lg" gap="md">
-      <TextLink href="/lines" underline="always">
-        Back to all lines
+      {/* Points at `/status`, not `/lines`: `/status` is the page that now
+          links HERE (2026-09-22 UX review, C2 -- this back-link used to
+          name a parent that had never heard of this route), and it is the
+          same network-wide question asked about right now rather than
+          over time. */}
+      <TextLink href="/status" underline="always">
+        Back to network status
       </TextLink>
       <Title order={1}>Network history</Title>
       <HistoryRangePicker basePath={basePath} preset={range.preset} from={range.from} to={range.to} />

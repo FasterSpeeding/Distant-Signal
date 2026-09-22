@@ -28,6 +28,23 @@ const COLOR: Record<LegStatusGroup, string> = {
   severe: 'red',
 };
 
+/** The badge for an ALREADY-CLASSIFIED status group -- the one place a
+ * `LegStatusGroup` becomes a label and a colour. Split out of
+ * `JourneyStatusBadge` below so `/track/mine`'s journey rows, which
+ * classify from `GET /Journeys/mine`'s flat row shape rather than from a
+ * `JourneyLegDetail[]`, render the identical badge instead of a second
+ * copy of `LABEL`/`COLOR` that is free to drift from this one. No
+ * `Tooltip`: it would only restate the badge's own visible text (2026-09-22
+ * UX review, M17) and a `Tooltip` on a non-focusable `Badge` is
+ * keyboard-unreachable anyway. */
+export function JourneyStatusGroupBadge({ group }: { group: LegStatusGroup }) {
+  return (
+    <Badge color={COLOR[group]} variant="light" tt="none">
+      {LABEL[group]}
+    </Badge>
+  );
+}
+
 /** The journey-level summary badge, per spec §3. Renders nothing for a
  * journey with no legs (should not occur in practice). */
 export function JourneyStatusBadge({ legs }: { legs: JourneyLegDetail[] }) {

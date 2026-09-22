@@ -760,6 +760,16 @@ export interface JourneyListItem {
   legId: number;
   originCrs: string | null;
   destinationCrs: string | null;
+  /** The CURRENT leg's own service date ("YYYY-MM-DD") -- when the
+   * traveller travels, not `createdAt` (when they set the journey up). */
+  serviceDate: string;
+  /** Resolved station names for the two CRS codes above, `null` when the
+   * code is itself `null` or has no `stations` reference row. Feed both
+   * pairs to `lib/stationLabel.ts`'s `routeLabel`, which degrades both
+   * ends to bare codes together rather than mixing one name with one
+   * code. */
+  originName: string | null;
+  destinationName: string | null;
   matchMode: 'unmatched' | 'manual' | 'auto';
   trainSubscriptionId: number | null;
   resolutionStatus: string | null;

@@ -124,4 +124,30 @@ describe('OperatorStatusCard', () => {
     const updatedElements = screen.queryAllByText(/Updated/);
     expect(updatedElements).toHaveLength(0);
   });
+  // 2026-09-22 UX review, C2: `/operators/[code]/history` shipped with no
+  // inbound href anywhere in the app.
+  it('links to this operator\'s history page', () => {
+    renderWithMantine(<OperatorStatusCard operator={operator} pinned={false} />);
+    const link = screen.getByRole('link', { name: 'History for Virgin Trains' });
+    expect(link).toHaveAttribute('href', '/operators/VT/history');
+  });
+
+  it('gives the history link a per-operator accessible name, not a bare "History"', () => {
+    renderWithMantine(<OperatorStatusCard operator={operator} pinned={false} />);
+    // The visible text stays "History" (short, scannable, and repeated
+    // down a grid of cards is fine visually); the accessible name carries
+    // the operator so a screen-reader link list is not N identical items.
+    expect(screen.getByText('History')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'History' })).not.toBeInTheDocument();
+  });
+
+  it('percent-encodes an operator code that needs it', () => {
+    renderWithMantine(
+      <OperatorStatusCard operator={{ ...operator, code: 'A/B' }} pinned={false} />
+    );
+    expect(screen.getByRole('link', { name: 'History for Virgin Trains' })).toHaveAttribute(
+      'href',
+      '/operators/A%2FB/history',
+    );
+  });
 });

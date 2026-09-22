@@ -1,4 +1,4 @@
-import type { JourneyLegDetail } from './types';
+import type { JourneyLegDetail, JourneyListItem } from './types';
 
 /** A journey leg's own status classification, independent of
  * `severity.ts`'s `SeverityGroup` -- a leg's status space (has this leg
@@ -59,6 +59,44 @@ export function legStatusGroup(leg: JourneyLegDetail): LegStatusGroup {
   if (state.status === 'awaiting_activation' || state.status === null) return 'awaiting';
   if (state.delayMinutes !== null && state.delayMinutes > 0) return 'delayed';
   return 'good'; // 'en_route' with no reported delay, or 'completed'.
+}
+
+/** The same classification applied to one row of `GET /Journeys/mine`
+ * (`JourneyListItem`), which flattens a single "current leg"'s fields
+ * instead of nesting a `TrackedTrainState` -- see
+ * `crates/api/src/data/journeys.rs::JourneyListItem`. Deliberately reuses
+ * `legStatusGroup` by adapting the flat row onto the shape it already
+ * classifies, rather than restating the branch chain: two copies of this
+ * decision would be free to disagree about what "On track" means on a
+ * list page versus a detail page.
+ *
+ * ONE honest gap, and it is the wire format's, not this function's: the
+ * list row carries no `legSkip`, so a skipped leg reads here as whatever
+ * its delay/status says (typically "On track") and only shows its real
+ * status once opened. Widening `GET /Journeys/mine` to run
+ * `station_skip::leg_skip_status` per row means one or two extra Darwin
+ * sample reads per journey on a list endpoint -- deferred deliberately,
+ * not overlooked. */
+export function journeyListItemStatusGroup(item: JourneyListItem): LegStatusGroup {
+  return legStatusGroup({
+    id: item.legId,
+    originCrs: item.originCrs,
+    destinationCrs: item.destinationCrs,
+    serviceDate: item.serviceDate,
+    departAfter: null,
+    departBefore: null,
+    arriveAfter: null,
+    arriveBefore: null,
+    matchMode: item.matchMode,
+    trackedTrainState:
+      item.trainSubscriptionId === null
+        ? null
+        : ({
+            status: item.status,
+            delayMinutes: item.delayMinutes,
+          } as JourneyLegDetail['trackedTrainState']),
+    legSkip: null,
+  });
 }
 
 /** Higher rank = worse, same convention as `severity.ts`'s `severityRank`. */

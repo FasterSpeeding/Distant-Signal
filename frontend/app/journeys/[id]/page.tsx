@@ -6,6 +6,7 @@ import { JourneyLegCard } from '@/components/JourneyLegCard';
 import { JourneyStatusBadge } from '@/components/JourneyStatusBadge';
 import { LoginLink } from '@/components/LoginLink';
 import { ShareJourneyButton } from '@/components/ShareJourneyButton';
+import { TextLink } from '@/components/TextLink';
 
 export const revalidate = 0;
 
@@ -56,6 +57,14 @@ export default async function JourneyDetailPage({
 
   return (
     <Stack p="lg" gap="md">
+      {/* The way back out. This page is reached by a `router.push` from
+          the create flow and had no breadcrumb at all, so closing the tab
+          lost the journey unless the user had memorised `/journeys/169`
+          (2026-09-22 UX review, C1). `/track/mine` now lists journeys, so
+          this link has a real destination. */}
+      <TextLink href="/track/mine" underline="always">
+        Back to my trains &amp; journeys
+      </TextLink>
       <Group justify="space-between" align="baseline">
         <Title order={1}>{journey.customName ?? 'Tracked journey'}</Title>
         <Group gap="xs">

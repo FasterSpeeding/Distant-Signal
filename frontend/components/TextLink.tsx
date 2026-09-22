@@ -43,6 +43,7 @@ export function TextLink({
   onClick,
   onKeyDown,
   title,
+  ariaLabel,
 }: {
   href: string;
   children: React.ReactNode;
@@ -94,6 +95,17 @@ export function TextLink({
   // fix, review §3.5.9: the link reads "nationalrail.co.uk ↗" on screen but
   // still discloses the exact URL on hover/focus).
   title?: string;
+  // An explicit accessible name, for one of N identically-worded links in
+  // a list -- "History" on every card in `/operators`' grid, where the
+  // distinguishing text (the operator's name) is a sibling element and so
+  // is NOT part of the link's own name. Screen-reader users listing links
+  // then hear N indistinguishable items (2026-09-22 UX review, I26/P3;
+  // WCAG 2.4.9). Left `undefined` everywhere the visible text is already
+  // unique on its page, which is nearly every call site -- an `aria-label`
+  // that merely restates the visible text is noise, and one that
+  // *contradicts* it is a 2.5.3 Label-in-Name failure, so the label passed
+  // here must always CONTAIN the visible text.
+  ariaLabel?: string;
 }) {
   return (
     // The undecorated resting state comes from the stylesheet rather than
@@ -109,6 +121,7 @@ export function TextLink({
       onClick={onClick}
       onKeyDown={onKeyDown}
       title={title}
+      aria-label={ariaLabel}
     >
       <Text c="var(--mantine-color-anchor)" component={inline ? 'span' : undefined} size={size} lh={lh}>
         {children}

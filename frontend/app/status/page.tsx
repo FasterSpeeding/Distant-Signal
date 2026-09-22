@@ -13,6 +13,7 @@ import {
   worstStatus,
 } from '@/lib/severity';
 import { StatusBadge } from '@/components/StatusBadge';
+import { TextLink } from '@/components/TextLink';
 import type { LineStatusReport } from '@/lib/types';
 
 // Same rationale as every other dynamic route in this app (see
@@ -56,6 +57,15 @@ export default async function NetworkStatusPage() {
           {overview.totalLines} line{overview.totalLines === 1 ? '' : 's'} tracked across National Rail
           and TfL right now.
         </Text>
+        {/* `/network/history` shipped with no inbound `href` anywhere in
+            the app -- a repo-wide grep found none outside its own
+            `basePath` constant -- while its own back-link pointed at
+            `/lines`, a page that had never heard of it (2026-09-22 UX
+            review, C2). This page is its natural parent: it is the same
+            question ("how is the whole network doing?") asked over time
+            instead of right now, and `/network/history`'s back-link is
+            repointed here in the same change so the pair agrees. */}
+        <TextLink href="/network/history">Network history and trends</TextLink>
       </Stack>
 
       <SimpleGrid cols={{ base: 2, sm: 3, lg: 5 }} spacing="md">

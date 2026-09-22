@@ -4,7 +4,7 @@ import { renderWithMantine } from '@/test/render';
 import { expectShrinkGuarded, expectNoUnguardedNowrapBadges } from '@/test/shrinkGuard';
 import MyTrackedTrainsPage from './page';
 import * as api from '@/lib/api';
-import type { TrackedTrainListItem, TicketListItem, SharedGroupTrain } from '@/lib/types';
+import type { TrackedTrainListItem, TicketListItem, SharedGroupTrain, JourneyListItem } from '@/lib/types';
 
 vi.mock('@/lib/api');
 // The not-logged-in prompt is AutoOpenLoginPrompt -> LoginPromptModal,
@@ -99,8 +99,13 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
   // it -- default the third fetch to "no shared trains" so each of them
   // still describes exactly the scenario it was written for. The
   // group-shared cases below override this explicitly.
+  // Same reasoning for the fourth fetch, `getMyJourneys` (added for the
+  // 2026-09-22 review's C1): every pre-existing test predates the journeys
+  // section, so default it to "no journeys" and let the journey cases
+  // below override it explicitly.
   beforeEach(() => {
     vi.mocked(api.getSharedGroupTrains).mockResolvedValue([]);
+    vi.mocked(api.getMyJourneys).mockResolvedValue([]);
   });
 
   it('null (not logged in): shows an auto-opened login prompt modal', async () => {
@@ -698,6 +703,119 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       // caller's own trains/tickets only.
       expect(screen.getByText(/PAD → RDG/)).toBeInTheDocument();
       expect(screen.queryByText('Your reliability')).not.toBeInTheDocument();
+    });
+  });
+  // 2026-09-22 UX review, C1: `getMyJourneys()` existed in lib/api.ts with
+  // zero callers, so a journey created by time-window search was
+  // unreachable the moment its page was closed.
+  describe('journeys (C1)', () => {
+    function journey(overrides: Partial<JourneyListItem> = {}): JourneyListItem {
+      return {
+        id: 169,
+        customName: null,
+        createdAt: '2026-09-22T18:13:54Z',
+        legId: 194,
+        originCrs: 'KGX',
+        destinationCrs: 'EDB',
+        serviceDate: '2026-09-22',
+        originName: null,
+        destinationName: null,
+        matchMode: 'unmatched',
+        trainSubscriptionId: null,
+        resolutionStatus: null,
+        status: null,
+        delayMinutes: null,
+        ...overrides,
+      };
+    }
+
+    it('lists an unmatched window-search journey, linking to its own page', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([journey()]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByRole('heading', { name: 'Your journeys' })).toBeInTheDocument();
+      const link = screen.getByRole('link', { name: /KGX → EDB/ });
+      expect(link).toHaveAttribute('href', '/journeys/169');
+      expect(screen.getByText('Needs a train picked')).toBeInTheDocument();
+    });
+
+    it('does not show the "you have not tracked anything" empty state when the only object is a journey', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([journey()]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.queryByText(/haven't tracked any trains/)).not.toBeInTheDocument();
+    });
+
+    it('renders station names and a formatted date when the backend resolved them', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        journey({ originName: 'London Kings Cross', destinationName: 'Edinburgh' }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(
+        screen.getByText(/London Kings Cross \(KGX\) → Edinburgh \(EDB\)/),
+      ).toBeInTheDocument();
+      // `formatDate`, not the raw ISO `serviceDate` the wire carries.
+      expect(screen.queryByText(/2026-09-22/)).not.toBeInTheDocument();
+    });
+
+    it("reflects a matched leg's delay in the journey row's badge", async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        journey({ matchMode: 'auto', trainSubscriptionId: 295, status: 'en_route', delayMinutes: 22 }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText('Delayed')).toBeInTheDocument();
+    });
+
+    it("does not list a journey leg's own train a second time as a standalone tracked train", async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 295 })]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        journey({ matchMode: 'auto', trainSubscriptionId: 295, status: 'en_route', delayMinutes: 0 }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      // The journey row is the one that survives; the bare train row for
+      // the same subscription is suppressed.
+      expect(screen.getByRole('link', { name: /KGX → EDB/ })).toHaveAttribute('href', '/journeys/169');
+      expect(screen.queryByText(/WAT → WOK/)).not.toBeInTheDocument();
+    });
+
+    it('still lists tracked trains that belong to no journey', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 7 })]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        journey({ matchMode: 'auto', trainSubscriptionId: 295 }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+    });
+
+    it('survives a failing journeys fetch without losing the rest of the page', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockRejectedValue(new Error('API request failed: 500'));
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText(/WAT → WOK/)).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Your journeys' })).not.toBeInTheDocument();
     });
   });
 });
