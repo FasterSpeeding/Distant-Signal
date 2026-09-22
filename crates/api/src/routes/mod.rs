@@ -17,6 +17,7 @@ pub mod island_of_ireland;
 pub mod line_status;
 pub mod lines;
 pub mod notifications;
+pub mod operator_history;
 pub mod operators;
 pub mod preferences;
 pub mod reference;
@@ -55,6 +56,7 @@ pub fn public_router() -> Router {
         .merge(incidents::router())
         .merge(lines::router())
         .merge(notifications::router())
+        .merge(operator_history::router())
         .merge(operators::router())
         .merge(preferences::router())
         .merge(reference::router())
