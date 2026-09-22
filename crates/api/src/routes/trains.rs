@@ -1256,16 +1256,23 @@ mod db_tests {
 
     /// Two schedules sharing the required station `ZRB`, both also calling
     /// at the INTERMEDIATE point `OXF` (neither's true destination -- both
-    /// terminate at `BHM`) at the SAME `scheduled` (station) time, but with
-    /// DIFFERENT arrivals at `OXF` itself -- so only `arrival_from`/
-    /// `arrival_to` scoped to `OXF`'s own `calling_point_arrival`, never
-    /// `scheduled`/`to` (station-scoped) nor the schedule-level
-    /// `destination_arrival` (BHM-scoped), can tell them apart.
+    /// terminate at `BHM`) with DIFFERENT arrivals at `OXF` itself -- so
+    /// only `arrival_from`/`arrival_to` scoped to `OXF`'s own
+    /// `calling_point_arrival`, never `scheduled`/`to` (station-scoped) nor
+    /// the schedule-level `destination_arrival` (BHM-scoped), can tell them
+    /// apart. `OXF`'s own `scheduled` (its departure, a two-minute dwell
+    /// after its arrival -- not the arrival itself) is always later than
+    /// `ZRB`'s: two DIFFERENT calling points booked at the literal same
+    /// instant never happens in real CIF timetables, and the `stops_at`
+    /// ordering rule (`(day_offset, scheduled) >`) requires OXF's row to
+    /// genuinely follow ZRB's to be reachable from it at all.
     async fn seed_stops_at_arrival(pool: &PgPool, station_crs: &str) {
         delete_today(pool).await;
         let today = chrono::Utc::now().date_naive();
         let (_, soon, later) = relative_times();
+        let dwell = chrono::Duration::minutes(2);
         for (train_uid, oxf_arrival) in [("T52001", soon), ("T52002", later)] {
+            let oxf_scheduled = oxf_arrival + dwell;
             sqlx::query(
                 "INSERT INTO schedule_destination_departures \
                     (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs, calling_point_arrival) \
@@ -1288,7 +1295,7 @@ mod db_tests {
             )
             .bind(today)
             .bind("BHM")
-            .bind(soon)
+            .bind(oxf_scheduled)
             .bind(train_uid)
             .bind("OXF")
             .bind(Option::<&str>::None)
