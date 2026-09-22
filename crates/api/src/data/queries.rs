@@ -1767,12 +1767,14 @@ pub async fn search_journey_leg_candidates(
     };
 
     let next_cursor = if has_more {
-        page_rows.last().map(
-            |(train_uid, _, _, scheduled, _, _, _, _)| CallingPointDepartureCursor {
-                scheduled: *scheduled,
-                train_uid: train_uid.clone(),
-            },
-        )
+        page_rows
+            .last()
+            .map(
+                |(train_uid, _, _, scheduled, _, _, _, _)| CallingPointDepartureCursor {
+                    scheduled: *scheduled,
+                    train_uid: train_uid.clone(),
+                },
+            )
     } else {
         None
     };
