@@ -480,16 +480,29 @@ origin/destination/windows for today's `service_date` and commits per
   committed the moment scheduling data exists for it — this is the
   parent spec's own named option (a) (§2.3 there), "closest analogue to
   today's point-in-time pin behavior."
-- **`'nearest_to_now'`**: **Speculative on exact mechanics** — meaningful
-  only if materialization runs close to the actual travel time rather than
-  hours ahead (the parent spec's own option (b) framing, "re-decided daily
-  for a recurring commute-style journey"); if materialization instead runs
-  once overnight for the whole day ahead, "nearest to now" and "earliest"
-  degenerate to the same answer, since "now" at 4am is before every
-  candidate in an 08:00 window. Recommend **defaulting to `'earliest'`
-  only** for the first shipped version of `'auto'` and treating
-  `'nearest_to_now'` as a stretch option gated on deciding *when*
-  materialization actually runs (§7).
+- **`'nearest_to_now'`**: **Decision (2026-09-22, product owner): this is
+  the rule to ship**, not `'earliest'` — resolving Open Question #2 (§7)
+  directly. This settles the mechanics this section originally left
+  speculative: since `'nearest_to_now'` only means something different
+  from `'earliest'` when materialization runs close to the window's own
+  bounds rather than hours ahead (as this section's own reasoning already
+  established — overnight-committed "now" is always before an 08:00
+  window, degenerating to `'earliest'`), **a `default_match_mode='auto'`
+  leg must NOT be committed immediately when its day's occurrence is
+  minted.** Instead: mint the `journey_legs` row `'unmatched'` at the same
+  hourly sweep as every other template (§3.1, no change there), but defer
+  running the candidate query and committing until a *second*, later
+  check — a new `auto_commit_lead_minutes` config constant (mirroring
+  `crates/notifier/src/config.rs`'s existing `train_delay_threshold_minutes`
+  pattern per §7 item 8's own precedent), checked on the same hourly
+  cadence: once "now" is within `auto_commit_lead_minutes` of the leg's
+  earliest window bound (`depart_after` if set, else `arrive_after`),
+  run the candidate query and commit to whichever candidate is nearest to
+  "now" at THAT point — not the earliest of all candidates, the one
+  closest to the current time among them. A sensible starting default for
+  `auto_commit_lead_minutes` is proposed as 120 (commit 2 hours ahead of
+  the window), but this is this document's own suggestion, not a second
+  product decision solicited separately — a planning pass can adjust it.
 
 If the candidate query returns **zero** candidates for today (a genuine
 Sunday-engineering-works gap in an otherwise-Monday-Friday commute, a
@@ -683,19 +696,26 @@ either way.
 
 ## 7. Open questions for the product owner
 
-1. **Which "reusable" does the product owner actually want** — the cheap,
-   template-less "duplicate what I'm looking at, once" button (§2.1,
-   ships fast, no schema change), the durable, independently-manageable
-   "saved shape" template entity (§2.2, without any recurrence), or is the
-   real ask always about the *recurring* case and "reusable" was just
-   imprecise language for it? This materially changes Phase A's scope
-   (§8) — recommend confirming before starting any implementation, even
-   though §2.1 is cheap enough to build speculatively.
-2. **Auto-commit rule** (parent spec's own deferred Open Question #1,
-   inherited here): ship `'earliest'` only (§3.2's recommendation), or
-   is `'nearest_to_now'` important enough to also resolve *when*
-   materialization runs (§3.2's dependency) before shipping `'auto'` at
-   all?
+1. ~~**Which "reusable" does the product owner actually want**~~ —
+   **RESOLVED 2026-09-22 (product owner): both, via one durable template.**
+   Not just the cheap one-off button (§2.1) and not just recurrence in
+   isolation — a saved template entity (§2.2) that supports an on-demand
+   "run this again" AND an opt-in "make this recurring" toggle on the same
+   underlying shape. Concretely: **Phase A (§8) still ships first and
+   independently** (it's genuinely free and gives real usage signal before
+   the heavier phases land), but **Phase B (durable templates) and Phase C
+   (recurrence) are both now confirmed in scope**, not speculative/optional
+   follow-ons — a planning pass should treat all three phases as committed
+   work, sequenced for incremental delivery, not "Phase A, then maybe more
+   later."
+2. ~~**Auto-commit rule**~~ — **RESOLVED 2026-09-22 (product owner):
+   `'nearest_to_now'`, not `'earliest'`.** This is the opposite of §3.2's
+   original recommendation (which defaulted to `'earliest'` specifically
+   to dodge this question) — see §3.2's now-updated mechanics: committing
+   must be deferred to a second, closer-to-window check
+   (`auto_commit_lead_minutes`) rather than happening at the same time the
+   day's occurrence is minted, since committing immediately would make
+   `'nearest_to_now'` degenerate into `'earliest'` in practice.
 3. **Occurrence materialization model** — confirm the recommended "one
    fresh `journeys` row per day, kept forever" (§2.5, §3.2) is actually
    wanted, versus a lighter-weight alternative this document did **not**
@@ -747,11 +767,16 @@ one shipping).
 **Phase A — "Track this journey again" (reusable, no new schema).**
 Frontend-only: a button on the journey detail page that pre-fills
 `/journeys/new` from the current journey's already-fetched data (§2.1).
-No backend change at all. **Complexity: low.** Ships independently of
-everything else in this document and resolves the "reusable" half of
-Open Question #1 empirically — real usage of this button is itself useful
-signal for whether the durable-template entity (Phase B) is worth
-building at all.
+No backend change at all. **Complexity: low.** Ships first and
+independently of everything else in this document — cheap enough to land
+immediately regardless of how quickly Phases B/C follow.
+
+**Phases B and C are both confirmed in scope** (Open Question #1,
+resolved 2026-09-22) — the durable-template entity and recurrence are not
+speculative follow-ons gated on Phase A's usage data; they're committed
+work. Phase A shipping first is still the right sequencing (lowest risk,
+immediate value, and a real head start on the frontend patterns Phase B's
+UI will reuse), just not a go/no-go gate for B/C anymore.
 
 **Phase B — Durable journey templates, on-demand only (no recurrence
 yet).** Backend: `journey_templates`/`journey_template_legs` (§2.2, minus
