@@ -385,6 +385,19 @@ export interface OperatorSummary {
   lineIds: string[];
   worstSeverity: number;
   reason: string;
+  /** The id/name of the specific line whose status `worstSeverity`/`reason`
+   * above came from -- lets a card/page say WHICH of an operator's lines is
+   * driving its rollup ("Worst of 4 lines · LNER East Coast Main Line")
+   * instead of presenting one line's reason as the whole operator's status
+   * with no scope (2026-09-22 UX review [OH] §2.3/I11).
+   * `crates/api/src/data/operators.rs`'s `OperatorRollup.worst_line_id`/
+   * `worst_line_name`. Optional (rather than always required) so a payload
+   * from a server that hasn't rolled this field out yet still satisfies
+   * this type -- a caller must treat their absence as "no known worst
+   * line" and fall back accordingly, not assume they're always present the
+   * way `reason` is. */
+  worstLineId?: string;
+  worstLineName?: string;
   sampleStats?: SampleStats;
   computedAt: string | null;
 }
