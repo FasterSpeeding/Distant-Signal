@@ -107,4 +107,26 @@ describe('JourneyLegCard (open leg)', () => {
 
     expect(screen.queryByText('Searching for a train to track — pick one below.')).not.toBeInTheDocument();
   });
+
+  // Review §2.3/I15: the open-leg card is the one that needs the user to
+  // do something -- it used to be visually indistinguishable from a plain
+  // white box. A left accent border now flags it, on both the owner and
+  // non-owner branches (only the OWNER can act, but both are states that
+  // need a train picked).
+  it('gives the open-leg card a left accent border, unlike a plain card', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })));
+    const { container } = renderWithMantine(<JourneyLegCard journeyId={1} isOwner leg={baseLeg()} />);
+    await settleCandidates();
+
+    const card = container.querySelector('.mantine-Card-root');
+    expect(card).toHaveStyle({ borderLeftWidth: '4px' });
+  });
+
+  it('accents the non-owner "waiting for the owner" card the same way', () => {
+    const { container } = renderWithMantine(<JourneyLegCard journeyId={1} isOwner={false} leg={baseLeg()} />);
+
+    const card = container.querySelector('.mantine-Card-root');
+    expect(card).toHaveStyle({ borderLeftWidth: '4px' });
+    expect(screen.getByText('Waiting for the owner to pick a train.')).toBeInTheDocument();
+  });
 });

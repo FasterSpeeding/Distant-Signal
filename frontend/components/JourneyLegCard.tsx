@@ -10,6 +10,33 @@ import { formatDate } from '@/lib/dateFormat';
 import { routeLabel, stationLabel } from '@/lib/stationLabel';
 import type { JourneyLegDetail } from '@/lib/types';
 
+/** Decorative "needs attention" glyph for the open-leg card (review
+ * §2.3/I15). `@tabler/icons-react` isn't a project dependency (see
+ * `InfoIcon.tsx`'s own note) -- inline SVG in the same house style: 16px,
+ * `currentColor`, `aria-hidden` (the card's own text already says "pick a
+ * train"/"waiting for the owner", so this adds no information a screen
+ * reader needs). */
+function AlertIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+  );
+}
+
 /** `"HH:MM:SS"` (the wire shape of a persisted `NaiveTime` bound) →
  * `"HH:MM"`, matching every other displayed time in this app
  * (`lib/dateFormat.ts`'s `formatTime`) rather than leaking the seconds
@@ -90,9 +117,29 @@ export function JourneyLegCard({
     const header = `${routeLabel(leg.originCrs, leg.originName, leg.destinationCrs, leg.destinationName)}, ${formatDate(leg.serviceDate)}`;
     const criteria = windowCriteriaSummary(leg);
     return (
-      <Card withBorder>
+      // Review §2.3/I15: the matched card (below) is dense -- headcode,
+      // route, summary lines, a badge, a diagram, a table -- while THIS
+      // card, the one that actually needs the user to do something, used
+      // to be a plain white box with nothing in its border, background or
+      // icon saying "action required". A left accent border + a light blue
+      // surface + a leading icon borrow the same "needs attention" signal
+      // the app already reserves blue for elsewhere (`JourneyStatusBadge`'s
+      // `unmatched` colour).
+      <Card
+        withBorder
+        style={{
+          borderLeftWidth: 4,
+          borderLeftColor: 'var(--mantine-color-blue-6)',
+          backgroundColor: 'var(--mantine-color-blue-light)',
+        }}
+      >
         <Stack gap="sm">
-          <Text fw={500}>{header}</Text>
+          <Group gap="xs" wrap="nowrap" align="flex-start">
+            <span style={{ color: 'var(--mantine-color-blue-6)', flexShrink: 0, marginTop: 2 }}>
+              <AlertIcon />
+            </span>
+            <Text fw={500}>{header}</Text>
+          </Group>
           {/* Review §2.5/I18: the window the user just entered was never
               shown back to them -- the only place it lived was inside
               `hasWindow`'s own boolean check above, never rendered. */}
