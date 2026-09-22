@@ -78,6 +78,12 @@ export default async function JourneyDetailPage({
   const lastLeg = journey.legs.at(-1) ?? null;
   const priorDestinationCrs =
     lastLeg?.destinationCrs ?? lastLeg?.trackedTrainState?.scheduleDestinationCrs ?? null;
+  // Review §2.5/M16: "Add a leg" used to be offered at the same visual
+  // weight as the status badge even while the CURRENT leg still needs a
+  // train picked -- there is nothing to chain a new leg onto yet, and it
+  // competed for attention with the one action that actually matters on
+  // this page. Hidden until the last leg is matched.
+  const canAddLeg = lastLeg !== null && lastLeg.trackedTrainState !== null;
 
   return (
     <Stack p="lg" gap="md">
@@ -92,8 +98,8 @@ export default async function JourneyDetailPage({
               /Journeys/{id}/legs answers 404 for a non-owner (see
               `post_journey_leg_a_journey_owned_by_someone_else_is_404_not_403`),
               so offering the button to a shared-group viewer would only
-              produce a dead end. */}
-          {journey.isOwner && (
+              produce a dead end. Also gated on `canAddLeg` (M16, above). */}
+          {journey.isOwner && canAddLeg && (
             <AddJourneyLegButton journeyId={journey.id} priorDestinationCrs={priorDestinationCrs} />
           )}
           {journey.isOwner && <ShareJourneyButton journeyId={journey.id} />}
