@@ -137,4 +137,21 @@ describe('TextLink', () => {
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
+
+  it('overrides the accessible name with an explicit aria-label, for a list of otherwise-identical links (regression: 2026-09-22 UX review, repeated "View live status" links)', () => {
+    renderWithMantine(
+      <TextLink href="/train/C12345/2026-09-22" aria-label="View live status for the 06:00 to Edinburgh">
+        View live status
+      </TextLink>,
+    );
+    expect(screen.getByRole('link', { name: 'View live status for the 06:00 to Edinburgh' })).toHaveAttribute(
+      'href',
+      '/train/C12345/2026-09-22',
+    );
+  });
+
+  it('leaves the accessible name as the visible text when no aria-label is given', () => {
+    renderWithMantine(<TextLink href="/lines">All Lines</TextLink>);
+    expect(screen.getByRole('link', { name: 'All Lines' })).not.toHaveAttribute('aria-label');
+  });
 });

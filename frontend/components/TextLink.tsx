@@ -43,6 +43,7 @@ export function TextLink({
   onClick,
   onKeyDown,
   title,
+  'aria-label': ariaLabel,
 }: {
   href: string;
   children: React.ReactNode;
@@ -94,6 +95,15 @@ export function TextLink({
   // fix, review §3.5.9: the link reads "nationalrail.co.uk ↗" on screen but
   // still discloses the exact URL on hover/focus).
   title?: string;
+  // A row-specific accessible name for a link whose visible text is shared
+  // by every row in a list (e.g. "View live status" repeated once per
+  // train) -- without this, a screen-reader user's links list reads N
+  // indistinguishable items, since the distinguishing text is always a
+  // sibling `<Text>`, not part of the link's own name (2026-09-22 UX
+  // review, "groups of identical buttons share one accessible name").
+  // Optional and additive: every existing call site keeps using its
+  // visible `children` as the accessible name, unchanged.
+  'aria-label'?: string;
 }) {
   return (
     // The undecorated resting state comes from the stylesheet rather than
@@ -109,6 +119,7 @@ export function TextLink({
       onClick={onClick}
       onKeyDown={onKeyDown}
       title={title}
+      aria-label={ariaLabel}
     >
       <Text c="var(--mantine-color-anchor)" component={inline ? 'span' : undefined} size={size} lh={lh}>
         {children}

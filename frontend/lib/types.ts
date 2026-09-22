@@ -1345,5 +1345,17 @@ export interface LineTrainLiveStatus {
 export interface LineTrainEntry {
   uid: string;
   callingPoints: LineTrainCallingPoint[] | null;
+  /** The schedule side's own origin/destination -- the first and last
+   * `callingPoints` entries' TIPLOCs, resolved server-side to a CRS and
+   * name (`crates/api/src/render.rs`'s `ScheduleRouteEndpoints`). Present
+   * (though any individual field may still be `null`) on every entry,
+   * regardless of `liveStatus` coverage -- unlike `liveStatus.originCrs`
+   * etc., which is `null` whenever a live record has no schedule match of
+   * its own. Added so `LineTrainsResults` can always name a route from the
+   * schedule when the live side can't (2026-09-22 UX review §4.1). */
+  scheduleOriginCrs: string | null;
+  scheduleOriginName: string | null;
+  scheduleDestinationCrs: string | null;
+  scheduleDestinationName: string | null;
   liveStatus: LineTrainLiveStatus | null;
 }

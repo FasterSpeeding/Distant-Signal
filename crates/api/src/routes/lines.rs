@@ -13,7 +13,7 @@
 //! no longer an `isOwner` flag for the frontend to branch on: any `200`
 //! from this endpoint is by construction the real owner's own line.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -28,7 +28,7 @@ use crate::data::{
     queries,
     trains::{self, PublicTrainState},
 };
-use crate::render::line_train_json;
+use crate::render::{ScheduleRouteEndpoints, line_train_json};
 
 pub fn router() -> Router {
     Router::new()
@@ -258,6 +258,20 @@ async fn get_line_schedule(
 /// this handler never writes: a UID with no existing `trains` row simply
 /// renders `liveStatus: null` (an honest, expected gap -- see the spec's
 /// Open question 2), never triggering a `find_or_create_train` upsert.
+/// The first and last TIPLOCs of one population entry's `calling_points`
+/// array (raw, unnormalized) -- `None` for a missing/empty/malformed array,
+/// or for a calling point whose own `tiploc` key is absent. Used by
+/// `get_line_trains` to know which TIPLOCs need resolving to a schedule-side
+/// origin/destination (see `ScheduleRouteEndpoints`'s own doc comment for
+/// why).
+fn first_and_last_tiploc(entry: &Value) -> (Option<String>, Option<String>) {
+    let Some(points) = entry.get("calling_points").and_then(Value::as_array) else {
+        return (None, None);
+    };
+    let tiploc_of = |p: &Value| p.get("tiploc").and_then(Value::as_str).map(str::to_string);
+    (points.first().and_then(tiploc_of), points.last().and_then(tiploc_of))
+}
+
 async fn get_line_trains(
     State(app): State<App>,
     Path(id): Path<String>,
@@ -304,14 +318,65 @@ async fn get_line_trains(
         .map(|s| (s.train_uid.as_str(), s))
         .collect();
 
+    // Resolves each entry's schedule-side origin/destination (first/last
+    // calling point, TIPLOC -> CRS -> name) so a row can still name its
+    // route when `liveStatus` is null or has no schedule match of its own
+    // -- see `ScheduleRouteEndpoints`'s own doc comment (2026-09-22 UX
+    // review §4.1, "Unknown station" rows). Two batched queries cover every
+    // entry on the line regardless of population size, mirroring
+    // `live_states`'s own one-query-per-line shape above rather than one
+    // per entry.
+    let endpoint_tiplocs: Vec<(Option<String>, Option<String>)> =
+        entries.iter().map(first_and_last_tiploc).collect();
+    let all_tiplocs: Vec<String> = endpoint_tiplocs
+        .iter()
+        .flat_map(|(first, last)| [first.clone(), last.clone()])
+        .flatten()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let tiploc_to_crs = queries::crs_for_tiplocs_batch(&app.database, &all_tiplocs)
+        .await
+        .map_err(internal_error)?;
+    let crs_of = |tiploc: &Option<String>| -> Option<String> {
+        tiploc
+            .as_deref()
+            .and_then(|t| tiploc_to_crs.get(&t.trim().to_uppercase()).cloned())
+    };
+    let endpoint_crs: Vec<(Option<String>, Option<String>)> = endpoint_tiplocs
+        .iter()
+        .map(|(first, last)| (crs_of(first), crs_of(last)))
+        .collect();
+    let all_crs: Vec<String> = endpoint_crs
+        .iter()
+        .flat_map(|(origin, destination)| [origin.clone(), destination.clone()])
+        .flatten()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let crs_to_name = queries::station_names_for_crs_batch(&app.database, &all_crs)
+        .await
+        .map_err(internal_error)?;
+    let name_of = |crs: &Option<String>| -> Option<String> {
+        crs.as_deref()
+            .and_then(|c| crs_to_name.get(&c.to_uppercase()).cloned())
+    };
+
     let result: Vec<Value> = entries
         .iter()
-        .map(|entry| {
+        .zip(endpoint_crs.iter())
+        .map(|(entry, (origin_crs, destination_crs))| {
             let live = entry
                 .get("uid")
                 .and_then(Value::as_str)
                 .and_then(|uid| live_by_uid.get(uid).copied());
-            line_train_json(entry, live)
+            let schedule_route = ScheduleRouteEndpoints {
+                origin_name: name_of(origin_crs),
+                origin_crs: origin_crs.clone(),
+                destination_name: name_of(destination_crs),
+                destination_crs: destination_crs.clone(),
+            };
+            line_train_json(entry, live, &schedule_route)
         })
         .collect();
 
@@ -780,6 +845,50 @@ mod tests {
     #[test]
     fn a_tfl_line_with_an_nr_counterpart_is_suppressed() {
         assert!(is_merged_into_nr_line("tfl-elizabeth"));
+    }
+
+    #[test]
+    fn first_and_last_tiploc_reads_both_ends_of_a_multi_stop_entry() {
+        let entry = serde_json::json!({
+            "uid": "C1",
+            "calling_points": [
+                {"tiploc": "KNGX", "kind": "Origin"},
+                {"tiploc": "PBRO", "kind": "Intermediate"},
+                {"tiploc": "YORK", "kind": "Terminate"},
+            ],
+        });
+        assert_eq!(
+            first_and_last_tiploc(&entry),
+            (Some("KNGX".to_string()), Some("YORK".to_string()))
+        );
+    }
+
+    #[test]
+    fn first_and_last_tiploc_a_single_stop_entry_returns_the_same_tiploc_twice() {
+        let entry = serde_json::json!({
+            "uid": "C1",
+            "calling_points": [{"tiploc": "KNGX", "kind": "Origin"}],
+        });
+        assert_eq!(
+            first_and_last_tiploc(&entry),
+            (Some("KNGX".to_string()), Some("KNGX".to_string()))
+        );
+    }
+
+    #[test]
+    fn first_and_last_tiploc_missing_or_empty_calling_points_is_none_none() {
+        assert_eq!(
+            first_and_last_tiploc(&serde_json::json!({"uid": "C1"})),
+            (None, None)
+        );
+        assert_eq!(
+            first_and_last_tiploc(&serde_json::json!({"uid": "C1", "calling_points": []})),
+            (None, None)
+        );
+        assert_eq!(
+            first_and_last_tiploc(&serde_json::json!({"uid": "C1", "calling_points": null})),
+            (None, None)
+        );
     }
 
     #[test]
