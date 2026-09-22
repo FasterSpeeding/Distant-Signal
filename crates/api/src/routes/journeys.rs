@@ -952,25 +952,44 @@ mod db_tests {
         let token = seed_session(&pool, "TEST-ROUTE-MY-JOURNEYS").await;
         let router = test_router(test_app(pool.clone()));
 
-        post_json(
+        let (_, first_created) = post_json(
             router.clone(),
             "/Journeys".to_string(),
             Some(&token),
             serde_json::json!({ "leg": { "mode": "knownTrain", "trainUid": "A66666", "serviceDate": "2026-09-22" } }),
         )
         .await;
-        post_json(
+        let first_tracking_id = first_created["trackingId"].as_i64().expect("trackingId present");
+
+        let (_, second_created) = post_json(
             router.clone(),
             "/Journeys".to_string(),
             Some(&token),
             serde_json::json!({ "leg": { "mode": "knownTrain", "trainUid": "A77777", "serviceDate": "2026-09-22" } }),
         )
         .await;
+        let second_tracking_id = second_created["trackingId"].as_i64().expect("trackingId present");
 
         let (status, body) = request(router, "/Journeys/mine".to_string(), Some(&token)).await;
         assert_eq!(status, StatusCode::OK);
         let rows = body.as_array().expect("array response");
         assert_eq!(rows.len(), 2);
+        // `list_journeys_for_user` orders `ORDER BY j.created_at DESC` --
+        // the more-recently-created journey (the second POST, A77777) must
+        // come first. Correlating via `trainSubscriptionId`/`trackingId`
+        // (rather than array position alone) is what actually pins this
+        // test to catch a reversed/dropped `ORDER BY`, unlike a bare
+        // `rows.len() == 2` check.
+        assert_eq!(
+            rows[0]["trainSubscriptionId"].as_i64(),
+            Some(second_tracking_id),
+            "most-recently-created journey should be first: {rows:?}"
+        );
+        assert_eq!(
+            rows[1]["trainSubscriptionId"].as_i64(),
+            Some(first_tracking_id),
+            "first-created journey should be last: {rows:?}"
+        );
 
         cleanup_user(&pool, "TEST-ROUTE-MY-JOURNEYS").await;
     }
