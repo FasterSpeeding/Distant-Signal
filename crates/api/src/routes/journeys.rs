@@ -1604,7 +1604,11 @@ mod db_tests {
             Some(&token),
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "candidates on a matched leg: {body:?}");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "candidates on a matched leg: {body:?}"
+        );
         let uids: Vec<&str> = body["results"]
             .as_array()
             .expect("results is an array")

@@ -216,7 +216,10 @@ pub(crate) fn station_departure_json(
 /// "absent from the map renders `null`" contract as
 /// `station_departure_json`'s identical parameter; see its own doc
 /// comment.
-pub(crate) fn schedule_departure_json(d: &Value, destination_names: &HashMap<String, String>) -> Value {
+pub(crate) fn schedule_departure_json(
+    d: &Value,
+    destination_names: &HashMap<String, String>,
+) -> Value {
     let scheduled = d
         .get("scheduled")
         .and_then(Value::as_str)
