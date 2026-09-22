@@ -1838,6 +1838,67 @@ pub async fn daily_stats_for_range(
         .collect()
 }
 
+/// Cross-line sibling of `daily_stats_for_range` -- sums the same
+/// `line_status_daily_stats` rows across every id in `line_ids` instead of
+/// reading one line. Used for an operator's or the whole network's Trends
+/// rollup (docs/superpowers/plans/2026-09-22-operator-overview-phase4-historical-views-plan.md).
+///
+/// Every column here is ALREADY a running sum-per-line-per-day (see that
+/// table's own migration comment) -- summing a sum across several lines
+/// for the same day is exactly as lossless as summing a sum across
+/// several poll cycles for one line, which `sub_daily_stats_for_range`
+/// already relies on (that function's own doc comment: "summing sums is
+/// lossless per [Decision 2's] Correction 4"). Rates are still derived at
+/// READ time from the summed numerator/denominator columns, never
+/// pre-averaged across lines.
+///
+/// An empty `line_ids` slice is valid and returns an empty vec (Postgres'
+/// `= ANY('{}')` is always false, never an error) -- the caller (an
+/// unknown operator code, or a network with zero catalogue lines) needs
+/// no special-case branch for this.
+pub async fn daily_stats_for_range_multi(
+    pool: &PgPool,
+    line_ids: &[String],
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+) -> Result<Vec<DailyStatsRow>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT day,
+                SUM(sample_cycles)::bigint AS sample_cycles,
+                SUM(total)::bigint AS total,
+                SUM(delayed)::bigint AS delayed,
+                SUM(cancelled)::bigint AS cancelled,
+                SUM(skipped)::bigint AS skipped,
+                SUM(running_count)::bigint AS running_count,
+                SUM(delay_minutes_sum)::double precision AS delay_minutes_sum
+         FROM line_status_daily_stats
+         WHERE line_id = ANY($1) AND day BETWEEN $2 AND $3
+         GROUP BY day
+         ORDER BY day",
+    )
+    .bind(line_ids)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(DailyStatsRow {
+                day: row.try_get("day")?,
+                sample_cycles: row.try_get("sample_cycles")?,
+                total: row.try_get("total")?,
+                delayed: row.try_get("delayed")?,
+                cancelled: row.try_get("cancelled")?,
+                skipped: row.try_get("skipped")?,
+                running_count: row.try_get("running_count")?,
+                delay_minutes_sum: row.try_get("delay_minutes_sum")?,
+            })
+        })
+        .collect()
+}
+
 pub struct HalfHourlyStatsRow {
     pub half_hour_start: chrono::DateTime<chrono::Utc>,
     pub sample_cycles: i64,
@@ -1874,6 +1935,51 @@ pub async fn half_hourly_stats_for_range(
          ORDER BY half_hour_start",
     )
     .bind(line_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(HalfHourlyStatsRow {
+                half_hour_start: row.try_get("half_hour_start")?,
+                sample_cycles: row.try_get("sample_cycles")?,
+                total: row.try_get("total")?,
+                delayed: row.try_get("delayed")?,
+                cancelled: row.try_get("cancelled")?,
+                skipped: row.try_get("skipped")?,
+                running_count: row.try_get("running_count")?,
+                delay_minutes_sum: row.try_get("delay_minutes_sum")?,
+            })
+        })
+        .collect()
+}
+
+/// Cross-line sibling of `half_hourly_stats_for_range` -- same relationship
+/// `daily_stats_for_range_multi` has to `daily_stats_for_range`.
+pub async fn half_hourly_stats_for_range_multi(
+    pool: &PgPool,
+    line_ids: &[String],
+    from: chrono::DateTime<chrono::Utc>,
+    to: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<HalfHourlyStatsRow>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT half_hour_start,
+                SUM(sample_cycles)::bigint AS sample_cycles,
+                SUM(total)::bigint AS total,
+                SUM(delayed)::bigint AS delayed,
+                SUM(cancelled)::bigint AS cancelled,
+                SUM(skipped)::bigint AS skipped,
+                SUM(running_count)::bigint AS running_count,
+                SUM(delay_minutes_sum)::double precision AS delay_minutes_sum
+         FROM line_status_half_hourly_stats
+         WHERE line_id = ANY($1) AND half_hour_start BETWEEN $2 AND $3
+         GROUP BY half_hour_start
+         ORDER BY half_hour_start",
+    )
+    .bind(line_ids)
     .bind(from)
     .bind(to)
     .fetch_all(pool)
@@ -1951,6 +2057,62 @@ pub async fn sub_daily_stats_for_range(
          ORDER BY 1",
     )
     .bind(line_id)
+    .bind(from)
+    .bind(to)
+    .bind(bucket_minutes)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(HalfHourlyStatsRow {
+                half_hour_start: row.try_get("half_hour_start")?,
+                sample_cycles: row.try_get("sample_cycles")?,
+                total: row.try_get("total")?,
+                delayed: row.try_get("delayed")?,
+                cancelled: row.try_get("cancelled")?,
+                skipped: row.try_get("skipped")?,
+                running_count: row.try_get("running_count")?,
+                delay_minutes_sum: row.try_get("delay_minutes_sum")?,
+            })
+        })
+        .collect()
+}
+
+/// Cross-line sibling of `sub_daily_stats_for_range` -- same `date_bin`
+/// re-bucketing (1-hour or 6-hour, selected by `bucket_minutes`, always a
+/// literal `60`/`360` from this crate's own route handlers, never raw
+/// request input -- see that function's own doc comment for the full
+/// injection-safety/origin-alignment reasoning, unchanged here), but
+/// summed across every id in `line_ids` in the SAME `GROUP BY` pass rather
+/// than as a separate step -- there is no correctness difference between
+/// "sum across lines, then re-bucket" and "re-bucket, then sum across
+/// lines" for a plain SUM aggregate, so the single combined query is
+/// preferred for one round trip instead of two.
+pub async fn sub_daily_stats_for_range_multi(
+    pool: &PgPool,
+    line_ids: &[String],
+    from: chrono::DateTime<chrono::Utc>,
+    to: chrono::DateTime<chrono::Utc>,
+    bucket_minutes: i64,
+) -> Result<Vec<HalfHourlyStatsRow>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT
+            date_bin($4 * INTERVAL '1 minute', half_hour_start, TIMESTAMPTZ '2000-01-01T00:00:00Z') AS half_hour_start,
+            SUM(sample_cycles)::bigint AS sample_cycles,
+            SUM(total)::bigint AS total,
+            SUM(delayed)::bigint AS delayed,
+            SUM(cancelled)::bigint AS cancelled,
+            SUM(skipped)::bigint AS skipped,
+            SUM(running_count)::bigint AS running_count,
+            SUM(delay_minutes_sum)::double precision AS delay_minutes_sum
+         FROM line_status_half_hourly_stats
+         WHERE line_id = ANY($1) AND half_hour_start BETWEEN $2 AND $3
+         GROUP BY 1
+         ORDER BY 1",
+    )
+    .bind(line_ids)
     .bind(from)
     .bind(to)
     .bind(bucket_minutes)
@@ -2455,11 +2617,41 @@ mod incident_search_query_tests {
      {
         let pool = test_pool().await;
         delete_fixtures(&pool).await;
-        seed_incident(&pool, "archive-test-1", &["VT"], &["WAT"], 1, false, false, at(9)).await;
+        seed_incident(
+            &pool,
+            "archive-test-1",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(9),
+        )
+        .await;
         // Two incidents sharing the SAME first_seen_at -- the tiebreak this
         // test exists to prove.
-        seed_incident(&pool, "archive-test-2", &["VT"], &["WAT"], 1, false, false, at(10)).await;
-        seed_incident(&pool, "archive-test-3", &["VT"], &["WAT"], 1, false, false, at(10)).await;
+        seed_incident(
+            &pool,
+            "archive-test-2",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(10),
+        )
+        .await;
+        seed_incident(
+            &pool,
+            "archive-test-3",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(10),
+        )
+        .await;
 
         let page = search_incidents(
             &pool, None, None, None, None, None, None, None, None, None, 100,
@@ -2467,7 +2659,11 @@ mod incident_search_query_tests {
         .await
         .expect("search");
 
-        let ids: Vec<&str> = page.results.iter().map(|r| r.incident_id.as_str()).collect();
+        let ids: Vec<&str> = page
+            .results
+            .iter()
+            .map(|r| r.incident_id.as_str())
+            .collect();
         assert_eq!(
             ids,
             vec!["archive-test-3", "archive-test-2", "archive-test-1"],
@@ -2484,8 +2680,28 @@ mod incident_search_query_tests {
     async fn search_incidents_operator_filter_matches_on_overlap_not_exact_match() {
         let pool = test_pool().await;
         delete_fixtures(&pool).await;
-        seed_incident(&pool, "archive-test-a", &["VT", "SW"], &["WAT"], 1, false, false, at(9)).await;
-        seed_incident(&pool, "archive-test-b", &["GW"], &["PAD"], 1, false, false, at(9)).await;
+        seed_incident(
+            &pool,
+            "archive-test-a",
+            &["VT", "SW"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(9),
+        )
+        .await;
+        seed_incident(
+            &pool,
+            "archive-test-b",
+            &["GW"],
+            &["PAD"],
+            1,
+            false,
+            false,
+            at(9),
+        )
+        .await;
 
         let page = search_incidents(
             &pool,
@@ -2503,7 +2719,11 @@ mod incident_search_query_tests {
         .await
         .expect("search");
 
-        let ids: Vec<&str> = page.results.iter().map(|r| r.incident_id.as_str()).collect();
+        let ids: Vec<&str> = page
+            .results
+            .iter()
+            .map(|r| r.incident_id.as_str())
+            .collect();
         assert_eq!(
             ids,
             vec!["archive-test-a"],
@@ -2556,7 +2776,11 @@ mod incident_search_query_tests {
         .await
         .expect("search");
 
-        let ids: Vec<&str> = page.results.iter().map(|r| r.incident_id.as_str()).collect();
+        let ids: Vec<&str> = page
+            .results
+            .iter()
+            .map(|r| r.incident_id.as_str())
+            .collect();
         assert_eq!(
             ids,
             vec!["archive-test-c"],
@@ -2565,7 +2789,10 @@ mod incident_search_query_tests {
         );
         assert_eq!(
             page.results[0].affected_lines,
-            vec!["elizabeth-line".to_string(), "elizabeth-shenfield".to_string()],
+            vec![
+                "elizabeth-line".to_string(),
+                "elizabeth-shenfield".to_string()
+            ],
             "the row carries its full line list back out, not just the filtered one"
         );
         delete_fixtures(&pool).await;
@@ -2633,7 +2860,11 @@ mod incident_search_query_tests {
         .await
         .expect("search");
 
-        let ids: Vec<&str> = page.results.iter().map(|r| r.incident_id.as_str()).collect();
+        let ids: Vec<&str> = page
+            .results
+            .iter()
+            .map(|r| r.incident_id.as_str())
+            .collect();
         assert_eq!(
             ids,
             vec!["archive-test-elizabeth"],
@@ -2672,7 +2903,8 @@ mod incident_search_query_tests {
         // filing an incident under a line it no longer describes -- the
         // same class of wrong answer this whole change is fixing.
         let mut edited = incident.clone();
-        edited.summary = "Delays to Avanti West Coast services between Euston and Crewe".to_string();
+        edited.summary =
+            "Delays to Avanti West Coast services between Euston and Crewe".to_string();
         edited.description =
             "A fault with the signalling system on the West Coast Main Line.".to_string();
         edited.operators = vec!["VT".to_string()];
@@ -2857,9 +3089,39 @@ mod incident_search_query_tests {
     async fn search_incidents_from_to_bounds_are_inclusive() {
         let pool = test_pool().await;
         delete_fixtures(&pool).await;
-        seed_incident(&pool, "archive-test-e", &["VT"], &["WAT"], 1, false, false, at(8)).await;
-        seed_incident(&pool, "archive-test-f", &["VT"], &["WAT"], 1, false, false, at(9)).await;
-        seed_incident(&pool, "archive-test-g", &["VT"], &["WAT"], 1, false, false, at(10)).await;
+        seed_incident(
+            &pool,
+            "archive-test-e",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(8),
+        )
+        .await;
+        seed_incident(
+            &pool,
+            "archive-test-f",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(9),
+        )
+        .await;
+        seed_incident(
+            &pool,
+            "archive-test-g",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(10),
+        )
+        .await;
 
         let page = search_incidents(
             &pool,
@@ -2877,7 +3139,11 @@ mod incident_search_query_tests {
         .await
         .expect("search");
 
-        let ids: Vec<&str> = page.results.iter().map(|r| r.incident_id.as_str()).collect();
+        let ids: Vec<&str> = page
+            .results
+            .iter()
+            .map(|r| r.incident_id.as_str())
+            .collect();
         assert_eq!(
             ids,
             vec!["archive-test-f", "archive-test-e"],
@@ -2892,26 +3158,74 @@ mod incident_search_query_tests {
     async fn search_incidents_planned_and_cleared_filters() {
         let pool = test_pool().await;
         delete_fixtures(&pool).await;
-        seed_incident(&pool, "archive-test-h", &["VT"], &["WAT"], 1, true, false, at(9)).await;
-        seed_incident(&pool, "archive-test-i", &["VT"], &["WAT"], 1, false, true, at(9)).await;
+        seed_incident(
+            &pool,
+            "archive-test-h",
+            &["VT"],
+            &["WAT"],
+            1,
+            true,
+            false,
+            at(9),
+        )
+        .await;
+        seed_incident(
+            &pool,
+            "archive-test-i",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            true,
+            at(9),
+        )
+        .await;
 
         let planned_only = search_incidents(
-            &pool, None, None, Some(true), None, None, None, None, None, None, 100,
+            &pool,
+            None,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
         )
         .await
         .expect("search");
         assert_eq!(
-            planned_only.results.iter().map(|r| r.incident_id.as_str()).collect::<Vec<_>>(),
+            planned_only
+                .results
+                .iter()
+                .map(|r| r.incident_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["archive-test-h"]
         );
 
         let cleared_only = search_incidents(
-            &pool, None, None, None, Some(true), None, None, None, None, None, 100,
+            &pool,
+            None,
+            None,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
         )
         .await
         .expect("search");
         assert_eq!(
-            cleared_only.results.iter().map(|r| r.incident_id.as_str()).collect::<Vec<_>>(),
+            cleared_only
+                .results
+                .iter()
+                .map(|r| r.incident_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["archive-test-i"]
         );
         delete_fixtures(&pool).await;
@@ -2923,9 +3237,39 @@ mod incident_search_query_tests {
     async fn search_incidents_priority_range_is_inclusive() {
         let pool = test_pool().await;
         delete_fixtures(&pool).await;
-        seed_incident(&pool, "archive-test-j", &["VT"], &["WAT"], 1, false, false, at(9)).await;
-        seed_incident(&pool, "archive-test-k", &["VT"], &["WAT"], 2, false, false, at(9)).await;
-        seed_incident(&pool, "archive-test-l", &["VT"], &["WAT"], 3, false, false, at(9)).await;
+        seed_incident(
+            &pool,
+            "archive-test-j",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(9),
+        )
+        .await;
+        seed_incident(
+            &pool,
+            "archive-test-k",
+            &["VT"],
+            &["WAT"],
+            2,
+            false,
+            false,
+            at(9),
+        )
+        .await;
+        seed_incident(
+            &pool,
+            "archive-test-l",
+            &["VT"],
+            &["WAT"],
+            3,
+            false,
+            false,
+            at(9),
+        )
+        .await;
 
         let page = search_incidents(
             &pool,
@@ -2944,7 +3288,10 @@ mod incident_search_query_tests {
         .expect("search");
 
         assert_eq!(
-            page.results.iter().map(|r| r.incident_id.as_str()).collect::<Vec<_>>(),
+            page.results
+                .iter()
+                .map(|r| r.incident_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["archive-test-k"]
         );
         delete_fixtures(&pool).await;
@@ -2957,13 +3304,53 @@ mod incident_search_query_tests {
         let pool = test_pool().await;
         delete_fixtures(&pool).await;
         // Matches operator AND planned AND priority range:
-        seed_incident(&pool, "archive-test-m", &["VT"], &["WAT"], 5, true, false, at(9)).await;
+        seed_incident(
+            &pool,
+            "archive-test-m",
+            &["VT"],
+            &["WAT"],
+            5,
+            true,
+            false,
+            at(9),
+        )
+        .await;
         // Fails on operator only:
-        seed_incident(&pool, "archive-test-n", &["GW"], &["WAT"], 5, true, false, at(9)).await;
+        seed_incident(
+            &pool,
+            "archive-test-n",
+            &["GW"],
+            &["WAT"],
+            5,
+            true,
+            false,
+            at(9),
+        )
+        .await;
         // Fails on planned only:
-        seed_incident(&pool, "archive-test-o", &["VT"], &["WAT"], 5, false, false, at(9)).await;
+        seed_incident(
+            &pool,
+            "archive-test-o",
+            &["VT"],
+            &["WAT"],
+            5,
+            false,
+            false,
+            at(9),
+        )
+        .await;
         // Fails on priority range only:
-        seed_incident(&pool, "archive-test-p", &["VT"], &["WAT"], 1, true, false, at(9)).await;
+        seed_incident(
+            &pool,
+            "archive-test-p",
+            &["VT"],
+            &["WAT"],
+            1,
+            true,
+            false,
+            at(9),
+        )
+        .await;
 
         let page = search_incidents(
             &pool,
@@ -2982,7 +3369,10 @@ mod incident_search_query_tests {
         .expect("search");
 
         assert_eq!(
-            page.results.iter().map(|r| r.incident_id.as_str()).collect::<Vec<_>>(),
+            page.results
+                .iter()
+                .map(|r| r.incident_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["archive-test-m"],
             "only the row matching every filter simultaneously must be returned"
         );
@@ -2998,11 +3388,61 @@ mod incident_search_query_tests {
         delete_fixtures(&pool).await;
         // Five incidents, three of them sharing one first_seen_at, forcing
         // the tiebreak to matter mid-pagination.
-        seed_incident(&pool, "archive-test-q1", &["VT"], &["WAT"], 1, false, false, at(9)).await;
-        seed_incident(&pool, "archive-test-q2", &["VT"], &["WAT"], 1, false, false, at(9)).await;
-        seed_incident(&pool, "archive-test-q3", &["VT"], &["WAT"], 1, false, false, at(9)).await;
-        seed_incident(&pool, "archive-test-r", &["VT"], &["WAT"], 1, false, false, at(8)).await;
-        seed_incident(&pool, "archive-test-s", &["VT"], &["WAT"], 1, false, false, at(10)).await;
+        seed_incident(
+            &pool,
+            "archive-test-q1",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(9),
+        )
+        .await;
+        seed_incident(
+            &pool,
+            "archive-test-q2",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(9),
+        )
+        .await;
+        seed_incident(
+            &pool,
+            "archive-test-q3",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(9),
+        )
+        .await;
+        seed_incident(
+            &pool,
+            "archive-test-r",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(8),
+        )
+        .await;
+        seed_incident(
+            &pool,
+            "archive-test-s",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(10),
+        )
+        .await;
 
         let mut cursor: Option<IncidentSearchCursor> = None;
         let mut collected: Vec<String> = Vec::new();
@@ -3022,7 +3462,11 @@ mod incident_search_query_tests {
             )
             .await
             .expect("search");
-            assert_eq!(page.results.len(), 1, "limit=1 must return exactly one row per page");
+            assert_eq!(
+                page.results.len(),
+                1,
+                "limit=1 must return exactly one row per page"
+            );
             collected.push(page.results[0].incident_id.clone());
             match page.next_cursor {
                 Some(next) => cursor = Some(next),
@@ -3050,7 +3494,17 @@ mod incident_search_query_tests {
     async fn search_incidents_with_no_matches_returns_ok_with_an_empty_vec_never_none() {
         let pool = test_pool().await;
         delete_fixtures(&pool).await;
-        seed_incident(&pool, "archive-test-t", &["VT"], &["WAT"], 1, false, false, at(9)).await;
+        seed_incident(
+            &pool,
+            "archive-test-t",
+            &["VT"],
+            &["WAT"],
+            1,
+            false,
+            false,
+            at(9),
+        )
+        .await;
 
         let page = search_incidents(
             &pool,
@@ -3743,6 +4197,175 @@ mod tests {
             "the 00:00 and 05:30 rows both fall in the first six-hour bucket"
         );
         assert_eq!(rows[1].sample_cycles, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                daily_stats_for_range_multi -- --ignored`"]
+    async fn daily_stats_for_range_multi_sums_across_lines_and_excludes_others() {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        sqlx::query(
+            "INSERT INTO line_status_daily_stats \
+                (line_id, day, sample_cycles, total, delayed, cancelled, skipped, running_count, delay_minutes_sum) \
+             VALUES \
+                ('TEST-MULTI-A', '2026-08-01', 10, 100, 5, 1, 2, 97, 120.0), \
+                ('TEST-MULTI-B', '2026-08-01', 8, 80, 3, 0, 1, 79, 60.0), \
+                ('TEST-MULTI-OTHER', '2026-08-01', 20, 200, 20, 20, 20, 160, 500.0) \
+             ON CONFLICT (line_id, day) DO UPDATE SET total = EXCLUDED.total",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture rows");
+
+        let from = chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let to = chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let line_ids = vec!["TEST-MULTI-A".to_string(), "TEST-MULTI-B".to_string()];
+        let rows = daily_stats_for_range_multi(&pool, &line_ids, from, to)
+            .await
+            .expect("daily_stats_for_range_multi");
+
+        sqlx::query("DELETE FROM line_status_daily_stats WHERE line_id LIKE 'TEST-MULTI-%'")
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture rows");
+
+        assert_eq!(
+            rows.len(),
+            1,
+            "one row per day, not one per contributing line"
+        );
+        let row = &rows[0];
+        assert_eq!(row.total, 180, "100 + 80, TEST-MULTI-OTHER excluded");
+        assert_eq!(row.delayed, 8);
+        assert_eq!(row.sample_cycles, 18);
+        assert_eq!(row.delay_minutes_sum, 180.0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                daily_stats_for_range_multi_an_empty_line_id_set -- --ignored`"]
+    async fn daily_stats_for_range_multi_an_empty_line_id_set_returns_empty_not_an_error() {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        let from = chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let to = chrono::NaiveDate::from_ymd_opt(2026, 8, 31).unwrap();
+        let rows = daily_stats_for_range_multi(&pool, &[], from, to)
+            .await
+            .expect("daily_stats_for_range_multi with no line ids");
+        assert!(rows.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                half_hourly_stats_for_range_multi -- --ignored`"]
+    async fn half_hourly_stats_for_range_multi_sums_across_lines() {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        let bucket: chrono::DateTime<chrono::Utc> = "2026-08-01T12:00:00Z".parse().unwrap();
+        sqlx::query(
+            "INSERT INTO line_status_half_hourly_stats \
+                (line_id, half_hour_start, sample_cycles, total, delayed, cancelled, skipped, running_count, delay_minutes_sum) \
+             VALUES \
+                ('TEST-HH-MULTI-A', $1, 5, 50, 2, 0, 1, 49, 30.0), \
+                ('TEST-HH-MULTI-B', $1, 4, 40, 1, 0, 0, 40, 10.0) \
+             ON CONFLICT (line_id, half_hour_start) DO UPDATE SET total = EXCLUDED.total",
+        )
+        .bind(bucket)
+        .execute(&pool)
+        .await
+        .expect("seed fixture rows");
+
+        let line_ids = vec!["TEST-HH-MULTI-A".to_string(), "TEST-HH-MULTI-B".to_string()];
+        let rows = half_hourly_stats_for_range_multi(
+            &pool,
+            &line_ids,
+            bucket - chrono::Duration::minutes(30),
+            bucket + chrono::Duration::minutes(30),
+        )
+        .await
+        .expect("half_hourly_stats_for_range_multi");
+
+        sqlx::query(
+            "DELETE FROM line_status_half_hourly_stats WHERE line_id LIKE 'TEST-HH-MULTI-%'",
+        )
+        .execute(&pool)
+        .await
+        .expect("cleanup fixture rows");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].total, 90);
+        assert_eq!(rows[0].delayed, 3);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                sub_daily_stats_for_range_multi -- --ignored`"]
+    async fn sub_daily_stats_for_range_multi_groups_by_bucket_and_sums_across_lines() {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+
+        let first: chrono::DateTime<chrono::Utc> = "2026-08-01T12:00:00Z".parse().unwrap();
+        let second: chrono::DateTime<chrono::Utc> = "2026-08-01T12:30:00Z".parse().unwrap();
+        sqlx::query(
+            "INSERT INTO line_status_half_hourly_stats \
+                (line_id, half_hour_start, sample_cycles, total, delayed, cancelled, skipped, running_count, delay_minutes_sum) \
+             VALUES \
+                ('TEST-SUBDAY-MULTI-A', $1, 5, 50, 2, 0, 1, 49, 30.0), \
+                ('TEST-SUBDAY-MULTI-B', $2, 4, 40, 1, 0, 0, 40, 10.0) \
+             ON CONFLICT (line_id, half_hour_start) DO UPDATE SET total = EXCLUDED.total",
+        )
+        .bind(first)
+        .bind(second)
+        .execute(&pool)
+        .await
+        .expect("seed fixture rows");
+
+        let line_ids = vec![
+            "TEST-SUBDAY-MULTI-A".to_string(),
+            "TEST-SUBDAY-MULTI-B".to_string(),
+        ];
+        let rows = sub_daily_stats_for_range_multi(
+            &pool,
+            &line_ids,
+            first - chrono::Duration::minutes(30),
+            second + chrono::Duration::minutes(30),
+            60,
+        )
+        .await
+        .expect("sub_daily_stats_for_range_multi");
+
+        sqlx::query(
+            "DELETE FROM line_status_half_hourly_stats WHERE line_id LIKE 'TEST-SUBDAY-MULTI-%'",
+        )
+        .execute(&pool)
+        .await
+        .expect("cleanup fixture rows");
+
+        // Both half-hourly rows fall in the same 1-hour bucket (12:00-13:00) --
+        // one combined row, both lines' contributions summed together.
+        assert_eq!(rows.len(), 1, "both rows fall in the same 1-hour bucket");
+        assert_eq!(rows[0].total, 90);
+        assert_eq!(rows[0].delayed, 3);
     }
 }
 
