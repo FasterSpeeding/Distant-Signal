@@ -7,7 +7,7 @@ import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import type { Preferences } from '@/lib/types';
 
-type PinKind = 'line' | 'station';
+type PinKind = 'line' | 'station' | 'operator';
 
 /** Same star glyph in both states so the shape reads as "star" either way;
  * the pinned/unpinned distinction itself comes from `fill` (none vs
@@ -98,8 +98,18 @@ export function PinToggle({
         return;
       }
       const prefs: Preferences = await prefsResponse.json();
-      const key = kind === 'line' ? 'pinnedLines' : 'pinnedStations';
-      const endpoint = kind === 'line' ? '/api/preferences/pinned-lines' : '/api/preferences/pinned-stations';
+      let key: keyof Preferences;
+      let endpoint: string;
+      if (kind === 'line') {
+        key = 'pinnedLines';
+        endpoint = '/api/preferences/pinned-lines';
+      } else if (kind === 'station') {
+        key = 'pinnedStations';
+        endpoint = '/api/preferences/pinned-stations';
+      } else {
+        key = 'pinnedOperators';
+        endpoint = '/api/preferences/pinned-operators';
+      }
       const current = prefs[key];
       const next = pinned ? current.filter((existing) => existing !== id) : [...current, id];
       const putResponse = await fetch(endpoint, {

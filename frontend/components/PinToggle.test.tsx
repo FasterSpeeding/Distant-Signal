@@ -100,7 +100,7 @@ describe('PinToggle', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url) => {
       if (url === '/api/preferences') {
-        return new Response(JSON.stringify({ pinnedLines: ['swr-alton'], pinnedStations: [] }), { status: 200 });
+        return new Response(JSON.stringify({ pinnedLines: ['swr-alton'], pinnedStations: [], pinnedOperators: [] }), { status: 200 });
       }
       return new Response(null, { status: 204 });
     });
@@ -123,7 +123,7 @@ describe('PinToggle', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url) => {
       if (url === '/api/preferences') {
-        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: ['WOK', 'AON'] }), { status: 200 });
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: ['WOK', 'AON'], pinnedOperators: [] }), { status: 200 });
       }
       return new Response(null, { status: 204 });
     });
@@ -137,6 +137,29 @@ describe('PinToggle', () => {
         expect.objectContaining({
           method: 'PUT',
           body: JSON.stringify(['AON']),
+        }),
+      );
+    });
+  });
+
+  it('unpinning an operator fetches current preferences then PUTs the id removed', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/api/preferences') {
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: ['SW', 'MTR'] }), { status: 200 });
+      }
+      return new Response(null, { status: 204 });
+    });
+
+    renderWithMantine(<PinToggle kind="operator" id="SW" initiallyPinned={true} />);
+    fireEvent.click(screen.getByLabelText('Unpin (currently pinned)'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/preferences/pinned-operators',
+        expect.objectContaining({
+          method: 'PUT',
+          body: JSON.stringify(['MTR']),
         }),
       );
     });
@@ -189,7 +212,7 @@ describe('PinToggle', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url) => {
       if (url === '/api/preferences') {
-        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [] }), { status: 200 });
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 });
       }
       return new Response('no session', { status: 401 });
     });
@@ -222,7 +245,7 @@ describe('PinToggle', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url) => {
       if (url === '/api/preferences') {
-        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [] }), { status: 200 });
+        return new Response(JSON.stringify({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] }), { status: 200 });
       }
       return new Response('no session', { status: 401 });
     });
