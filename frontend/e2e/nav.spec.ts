@@ -121,7 +121,7 @@ test.describe('desktop nav bar (1440x900)', () => {
   test('shows the primary links inline, and no burger', async ({ page }) => {
     await page.goto('/lines');
     const nav = page.locator('nav');
-    for (const label of ['All Lines', 'Station Lookup', 'Find a Train', 'Incident Archive']) {
+    for (const label of ['Status', 'All Lines', 'Station Lookup', 'Find a Train', 'Incident Archive']) {
       await expect(nav.getByRole('link', { name: label })).toBeVisible();
     }
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
@@ -194,6 +194,7 @@ test.describe('phone nav bar (390x844)', () => {
     await nav.getByRole('button', { name: 'Navigation menu' }).click();
     const drawer = page.getByRole('dialog', { name: 'Menu' });
     for (const label of [
+      'Status',
       'All Lines',
       'Station Lookup',
       'Find a Train',
