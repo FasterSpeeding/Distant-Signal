@@ -37,12 +37,12 @@ function toCalendarDay(iso: string): string {
  * date has been hand-edited) and recovers the picker's vertical space on
  * every render that isn't actually using it. */
 export function HistoryRangePicker({
-  lineId,
+  basePath,
   preset,
   from,
   to,
 }: {
-  lineId: string;
+  basePath: string;
   preset: RangePreset | null;
   from: string;
   to: string;
@@ -90,14 +90,14 @@ export function HistoryRangePicker({
     const [start, end] = value;
     if (!start || !end) return;
     router.push(
-      `/lines/${lineId}/history?from=${new Date(start).toISOString()}&to=${new Date(end).toISOString()}`,
+      `${basePath}?from=${new Date(start).toISOString()}&to=${new Date(end).toISOString()}`,
     );
   }
 
   // Presets navigate by name, not by baked-in instants, so a shared link
   // keeps meaning "the last 7 days".
   function handlePreset(next: RangePreset) {
-    router.push(`/lines/${lineId}/history?range=${next}`);
+    router.push(`${basePath}?range=${next}`);
   }
 
   function handleSelectionChange(next: string) {
