@@ -1,8 +1,9 @@
-import { Stack, Title } from '@mantine/core';
+import { Group, Stack, Title } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import { getJourney, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { JourneyLegCard } from '@/components/JourneyLegCard';
 import { LoginLink } from '@/components/LoginLink';
+import { ShareJourneyButton } from '@/components/ShareJourneyButton';
 
 export const revalidate = 0;
 
@@ -45,7 +46,12 @@ export default async function JourneyDetailPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>{journey.customName ?? 'Tracked journey'}</Title>
+      <Group justify="space-between" align="baseline">
+        <Title order={1}>{journey.customName ?? 'Tracked journey'}</Title>
+        <Group gap="xs">
+          <ShareJourneyButton journeyId={journey.id} />
+        </Group>
+      </Group>
       {journey.legs.map((leg) => (
         <JourneyLegCard key={leg.id} journeyId={journey.id} leg={leg} />
       ))}
