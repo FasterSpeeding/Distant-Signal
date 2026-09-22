@@ -1,0 +1,41 @@
+[
+  {
+    "name": "track-window-mode-mobile",
+    "url": "/track",
+    "viewport": { "width": 390, "height": 844 },
+    "browser": "chromium",
+    "authenticated": true,
+    "actions": [
+      { "type": "click", "text": "Search a time window", "exact": true },
+      { "type": "wait", "ms": 500 }
+    ],
+    "fullPage": true,
+    "description": "TrackTrainForm's 'Search a time window' mode at mobile width, reached by clicking the Pick/Search segmented control -- origin/destination stations, date, and the earliest/latest departure and arrival time fields for the new time-window search flow."
+  },
+  {
+    "name": "track-window-mode-tablet",
+    "url": "/track",
+    "viewport": { "width": 768, "height": 1024 },
+    "browser": "chromium",
+    "authenticated": true,
+    "actions": [
+      { "type": "click", "text": "Search a time window", "exact": true },
+      { "type": "wait", "ms": 500 }
+    ],
+    "fullPage": true,
+    "description": "TrackTrainForm's 'Search a time window' mode at tablet width."
+  },
+  {
+    "name": "track-window-mode-desktop",
+    "url": "/track",
+    "viewport": { "width": 1440, "height": 900 },
+    "browser": "chromium",
+    "authenticated": true,
+    "actions": [
+      { "type": "click", "text": "Search a time window", "exact": true },
+      { "type": "wait", "ms": 500 }
+    ],
+    "fullPage": true,
+    "description": "TrackTrainForm's 'Search a time window' mode at desktop width, empty state showing the origin/destination fields, date picker, and the four optional earliest/latest departure/arrival time inputs side by side."
+  }
+]

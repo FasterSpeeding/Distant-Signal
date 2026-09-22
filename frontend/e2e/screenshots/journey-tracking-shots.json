@@ -1,0 +1,122 @@
+[
+  {
+    "name": "journey-167-mobile",
+    "url": "/journeys/167",
+    "viewport": { "width": 390, "height": 844 },
+    "browser": "chromium",
+    "authenticated": true,
+    "waitFor": { "delay": 1500 },
+    "fullPage": true,
+    "description": "Delayed multi-leg journey (KGX to Newcastle, matched leg 22m late plus an unmatched YRK-to-NCL leg awaiting a pick) at mobile width, showing the per-journey status-rollup badge, per-leg delay colour-coding, and the open leg's candidate-list card stacked for a narrow viewport."
+  },
+  {
+    "name": "journey-167-tablet",
+    "url": "/journeys/167",
+    "viewport": { "width": 768, "height": 1024 },
+    "browser": "chromium",
+    "authenticated": true,
+    "waitFor": { "delay": 1500 },
+    "fullPage": true,
+    "description": "Delayed multi-leg journey at tablet width, showing the JourneyTimeline calling-point row, the per-station schedule table, and the second leg's open candidate-list card."
+  },
+  {
+    "name": "journey-167-desktop",
+    "url": "/journeys/167",
+    "viewport": { "width": 1440, "height": 900 },
+    "browser": "chromium",
+    "authenticated": true,
+    "waitFor": { "delay": 1500 },
+    "fullPage": true,
+    "description": "Delayed multi-leg journey at desktop width: header with the 'Needs a train picked' status-rollup badge and 'Add a leg' button, the matched KGX-to-YRK leg with its 22m-late delay badge and the 'last reported at Doncaster could not be matched to a timetabled stop' note, the full per-station schedule table, and the unmatched YRK-to-NCL leg's candidate-list card with three pickable services."
+  },
+  {
+    "name": "journey-167-firefox-desktop",
+    "url": "/journeys/167",
+    "viewport": { "width": 1440, "height": 900 },
+    "browser": "firefox",
+    "authenticated": true,
+    "waitFor": { "delay": 1500 },
+    "fullPage": true,
+    "description": "Cross-browser spot-check of the delayed multi-leg journey page rendered in Firefox at desktop width, to confirm the journey-tracking UI (status badge, delay colour-coding, candidate-list card) isn't Chromium-specific."
+  },
+  {
+    "name": "journey-168-desktop",
+    "url": "/journeys/168",
+    "viewport": { "width": 1440, "height": 900 },
+    "browser": "chromium",
+    "authenticated": true,
+    "waitFor": { "delay": 1500 },
+    "fullPage": true,
+    "description": "On-time single-leg journey (Waterloo to Southampton) at desktop width: the simpler, near-identical-to-old-tracking case, showing the green 'On track' rollup badge and 'On time' leg delay badge alongside the same JourneyTimeline/schedule-table layout as the delayed journey."
+  },
+  {
+    "name": "track-pick-mode-mobile",
+    "url": "/track",
+    "viewport": { "width": 390, "height": 844 },
+    "browser": "chromium",
+    "authenticated": true,
+    "waitFor": { "delay": 1200 },
+    "fullPage": true,
+    "description": "TrackTrainForm's default 'Pick a departure' mode at mobile width -- origin field, the Pick/Search-a-time-window segmented control, and the scheduled-departure/destination/operator fields for the direct-known-train flow."
+  },
+  {
+    "name": "track-pick-mode-tablet",
+    "url": "/track",
+    "viewport": { "width": 768, "height": 1024 },
+    "browser": "chromium",
+    "authenticated": true,
+    "waitFor": { "delay": 1200 },
+    "fullPage": true,
+    "description": "TrackTrainForm's default 'Pick a departure' mode at tablet width."
+  },
+  {
+    "name": "track-pick-mode-desktop",
+    "url": "/track",
+    "viewport": { "width": 1440, "height": 900 },
+    "browser": "chromium",
+    "authenticated": true,
+    "waitFor": { "delay": 1200 },
+    "fullPage": true,
+    "description": "TrackTrainForm's default 'Pick a departure' mode at desktop width, empty state before an origin station has been entered."
+  },
+  {
+    "name": "track-pick-departures-platform-badge",
+    "url": "/track?origin=KGX",
+    "viewport": { "width": 1440, "height": 900 },
+    "browser": "chromium",
+    "authenticated": true,
+    "waitFor": { "delay": 2000 },
+    "fullPage": true,
+    "description": "TrackTrainForm's live departure picker for King's Cross, pre-filled via the ?origin= query param, showing the 18:30 GR service to Edinburgh with a changed-platform badge ('Platform 2 (changed from 1)') next to an orange '+11 MIN' delay badge -- the schedule-row/platform display merged in from the sibling effort."
+  },
+  {
+    "name": "track-mine-journeys",
+    "url": "/track/mine",
+    "viewport": { "width": 1440, "height": 900 },
+    "browser": "chromium",
+    "authenticated": true,
+    "waitFor": { "delay": 1500 },
+    "fullPage": true,
+    "description": "The /track/mine journeys list, showing both seeded journeys (KGX-to-YRK 22m late, WAT-to-SOU on time) as EN ROUTE cards with their delay-status pills."
+  },
+  {
+    "name": "groups-empty-state",
+    "url": "/groups",
+    "viewport": { "width": 1440, "height": 900 },
+    "browser": "chromium",
+    "authenticated": true,
+    "waitFor": { "delay": 1200 },
+    "fullPage": true,
+    "description": "The /groups page's empty state ('You're not in any groups yet') -- no group or shared journey was seeded in this preview environment, so this captures the honest empty state rather than a fabricated SharedJourneyRow."
+  },
+  {
+    "name": "track-window-search-candidates",
+    "url": "/journeys/169",
+    "viewport": { "width": 1440, "height": 900 },
+    "browser": "chromium",
+    "authenticated": true,
+    "waitFor": { "delay": 1500 },
+    "fullPage": true,
+    "description": "The journey landed on after submitting TrackTrainForm's 'Search a time window' mode for KGX to Edinburgh with an 18:00 earliest-departure filter: no single train matched yet, so it shows the open candidate-list card with four pickable KGX-to-EDB services."
+  }
+]

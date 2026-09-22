@@ -1,0 +1,27 @@
+[
+  {
+    "name": "homepage-desktop",
+    "url": "/",
+    "viewport": { "width": 1440, "height": 900 },
+    "browser": "chromium",
+    "waitFor": { "delay": 1000 },
+    "description": "Homepage rendered at desktop width, logged out, to confirm the take-screenshots.mjs smoke test works end-to-end."
+  },
+  {
+    "name": "stations-desktop",
+    "url": "/stations",
+    "viewport": { "width": 1440, "height": 900 },
+    "browser": "chromium",
+    "waitFor": { "delay": 1000 },
+    "description": "Stations list page at desktop width, logged out, part of the smoke test."
+  },
+  {
+    "name": "track-mine-authenticated",
+    "url": "/track/mine",
+    "viewport": { "width": 1440, "height": 900 },
+    "browser": "chromium",
+    "authenticated": true,
+    "waitFor": { "delay": 1500 },
+    "description": "Authenticated /track/mine page (a user's tracked trains and tickets) to confirm the session-cookie auth path works in the smoke test."
+  }
+]

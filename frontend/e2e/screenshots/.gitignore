@@ -1,0 +1,4 @@
+# Screenshot batches and their manifest are disposable, per-run artifacts
+# produced by take-screenshots.mjs against a live app -- not meant to be
+# committed.
+/output/
