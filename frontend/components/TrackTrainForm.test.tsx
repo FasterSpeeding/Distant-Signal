@@ -21,13 +21,14 @@ function renderWithGroups(ui: ReactElement, groups: GroupSummary[] | null) {
 
 /** Routes a mocked `fetch` call by URL: `/api/stations/{crs}/departures`
  * (LDBWS), `/api/stations/{crs}/schedule-departures` (the CIF fallback,
- * this task), suggestion fetches, and everything else (the track-submit
- * call). `departures` defaults to an inert empty-array 200 so a test only
- * needs to override the branch it actually cares about; `scheduleDeparatures`
- * has no default -- a test that expects the CIF fallback to fire but
- * doesn't configure it will throw loudly rather than silently returning
- * something misleading, since most tests never expect a 404 from the
- * `departures` fetch at all. */
+ * this task), suggestion fetches, and everything else (the journey-submit
+ * call, `POST /api/Journeys` since Task 15's `POST /Train/track` ->
+ * `POST /Journeys` rewiring). `departures` defaults to an inert empty-array
+ * 200 so a test only needs to override the branch it actually cares about;
+ * `scheduleDeparatures` has no default -- a test that expects the CIF
+ * fallback to fire but doesn't configure it will throw loudly rather than
+ * silently returning something misleading, since most tests never expect a
+ * 404 from the `departures` fetch at all. */
 function mockFetchByUrl(
   options: {
     departures?: () => Response;
@@ -52,20 +53,25 @@ function mockFetchByUrl(
     if (url.startsWith('/api/stations?') || url.startsWith('/api/tocs?')) {
       return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
     }
-    return Promise.resolve(new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }));
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
+        { status: 200 },
+      ),
+    );
   });
 }
 
-/** Picks out the `POST /api/Train/track` call's parsed body from a mocked
+/** Picks out the `POST /api/Journeys` call's parsed body from a mocked
  * `fetch`. This picker's own departures effect (`useEffect` on
  * `[originCrs, originValid]`) now also fires a `fetch` for any valid
  * origin CRS -- including on initial mount, for `initialOrigin` -- so a
  * plain `fetchMock.mock.calls[0]` is no longer reliably the submit call;
  * every pre-existing test that reads the submitted body needs to find it
  * by URL instead of by position. */
-function trackCallBody(fetchMock: ReturnType<typeof vi.fn>) {
-  const call = fetchMock.mock.calls.find((args: unknown[]) => args[0] === '/api/Train/track');
-  if (!call) throw new Error('no /api/Train/track call recorded');
+function journeyCallBody(fetchMock: ReturnType<typeof vi.fn>) {
+  const call = fetchMock.mock.calls.find((args: unknown[]) => args[0] === '/api/Journeys');
+  if (!call) throw new Error('no /api/Journeys call recorded');
   const [, init] = call as [string, RequestInit];
   return JSON.parse(init!.body as string);
 }
@@ -90,7 +96,17 @@ vi.mock('next/navigation', () => ({
 // so `fireEvent.change` continues to drive the real `onChange` handler --
 // and therefore the real submit logic below -- without exercising Mantine's
 // own (separately tested) calendar widget.
-vi.mock('@mantine/dates', () => ({
+// `...(await importOriginal())`, not a bare replacement object (Task 15):
+// this file now also renders `DatePickerInput` (the window-mode Date
+// field) and, via `TimeFilterInput`, `TimeInput` -- both real `@mantine/
+// dates` exports this component depends on. A bare `{ DateTimePicker:
+// ... }` mock would replace the WHOLE module for every importer, leaving
+// those two `undefined` and crashing window mode's render entirely, not
+// just standing in for the one component this stand-in actually needs to
+// replace. Same pattern `TrainSearchForm.test.tsx`'s own `DatePickerInput`
+// mock already uses.
+vi.mock('@mantine/dates', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@mantine/dates')>()),
   DateTimePicker: ({
     label,
     value,
@@ -174,7 +190,7 @@ describe('TrackTrainForm', () => {
     expect(
       screen.getByText('Enter a valid origin station before tracking — pick one from the suggestions, or a 3-letter CRS code.'),
     ).toBeInTheDocument();
-    expect(fetch).not.toHaveBeenCalledWith('/api/Train/track', expect.anything());
+    expect(fetch).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
   });
 
   it('defaults the scheduled-departure field to the current time on mount, not null', () => {
@@ -249,12 +265,12 @@ describe('TrackTrainForm', () => {
     expect(await screen.findByRole('option', { name: 'No matching stations', hidden: true })).toBeInTheDocument();
   });
 
-  it('selecting an origin suggestion (via onChange) still submits the resolved origin_crs', async () => {
+  it('selecting an origin suggestion (via onChange) still submits the resolved originCrs', async () => {
     // `mockFetchByUrl`, not a blanket `mockImplementation`: this picker's
     // own departures effect (fired once Origin resolves to 'WOK' below)
-    // and the eventual `/api/Train/track` POST both read a `Response`
+    // and the eventual `/api/Journeys` POST both read a `Response`
     // body, and a `Response` body can only be consumed once -- a blanket
-    // factory handing back the SAME track-response shape for every URL
+    // factory handing back the SAME journey-response shape for every URL
     // would also hand the departures fetch a non-array `rows`, which the
     // picker's own filtering now dereferences (`.filter`), so it must be
     // routed by URL instead. Each call still gets its own fresh,
@@ -270,13 +286,14 @@ describe('TrackTrainForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+      expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
     });
-    const body = trackCallBody(fetchMock);
-    expect(body.origin_crs).toBe('WOK');
+    const body = journeyCallBody(fetchMock);
+    expect(body.leg.mode).toBe('pin');
+    expect(body.leg.originCrs).toBe('WOK');
   });
 
-  it('leaving Destination and Operator empty omits both keys from the submitted body', async () => {
+  it('leaving Destination and Operator empty omits both keys from the submitted leg', async () => {
     // See the previous test's comment: routed by URL, not a blanket mock,
     // since the departures effect and the submit POST both read a body
     // and the picker now dereferences `rows` as an array.
@@ -290,14 +307,14 @@ describe('TrackTrainForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+      expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
     });
-    const body = trackCallBody(fetchMock);
-    expect(body).not.toHaveProperty('destination_crs');
-    expect(body).not.toHaveProperty('operator');
+    const body = journeyCallBody(fetchMock);
+    expect(body.leg).not.toHaveProperty('destinationCrs');
+    expect(body.leg).not.toHaveProperty('operator');
   });
 
-  it('on success, POSTs to /api/Train/track and redirects to /train/by-id/{trackingId}', async () => {
+  it('on success, POSTs to /api/Journeys and redirects to /journeys/{journeyId}', async () => {
     // See the earlier "selecting an origin suggestion" test's comment:
     // routed by URL, not a blanket mock.
     const fetchMock = mockFetchByUrl();
@@ -310,10 +327,10 @@ describe('TrackTrainForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+      expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
     });
     await waitFor(() => {
-      expect(pushMock).toHaveBeenCalledWith('/train/by-id/42');
+      expect(pushMock).toHaveBeenCalledWith('/journeys/99');
     });
   });
 
@@ -420,8 +437,13 @@ describe('TrackTrainForm', () => {
       if (/\/api\/stations\/[A-Za-z]{3}\/departures$/.test(url)) {
         return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
       }
-      if (url === '/api/Train/track') {
-        return Promise.resolve(new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }));
+      if (url === '/api/Journeys') {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
+            { status: 200 },
+          ),
+        );
       }
       return Promise.resolve(new Response(JSON.stringify({ ticketId: 99, trackedTrainId: 42 }), { status: 200 }));
     });
@@ -439,7 +461,7 @@ describe('TrackTrainForm', () => {
       );
     });
     await waitFor(() => {
-      expect(pushMock).toHaveBeenCalledWith('/train/by-id/42');
+      expect(pushMock).toHaveBeenCalledWith('/journeys/99');
     });
   });
 
@@ -452,8 +474,13 @@ describe('TrackTrainForm', () => {
       if (/\/api\/stations\/[A-Za-z]{3}\/departures$/.test(url)) {
         return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
       }
-      if (url === '/api/Train/track') {
-        return Promise.resolve(new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }));
+      if (url === '/api/Journeys') {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
+            { status: 200 },
+          ),
+        );
       }
       return Promise.resolve(new Response('ticket is already attached to a tracked train', { status: 409 }));
     });
@@ -465,7 +492,7 @@ describe('TrackTrainForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     await waitFor(() => {
-      expect(pushMock).toHaveBeenCalledWith('/train/by-id/42');
+      expect(pushMock).toHaveBeenCalledWith('/journeys/99');
     });
   });
 
@@ -482,7 +509,7 @@ describe('TrackTrainForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     await waitFor(() => {
-      expect(pushMock).toHaveBeenCalledWith('/train/by-id/42');
+      expect(pushMock).toHaveBeenCalledWith('/journeys/99');
     });
     expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/attach'), expect.anything());
   });
@@ -506,8 +533,8 @@ describe('TrackTrainForm', () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalled();
     });
-    const body = trackCallBody(fetchMock);
-    expect(body.service_date).toBe('2026-08-29');
+    const body = journeyCallBody(fetchMock);
+    expect(body.leg.serviceDate).toBe('2026-08-29');
   });
 
   it('the Now button fills the picker with a well-formed local wall-clock value and enables submit', async () => {
@@ -526,19 +553,24 @@ describe('TrackTrainForm', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalled());
   });
 
-  it('submits successfully after clicking Now, sending a well-formed ISO scheduled_departure', async () => {
+  it('submits successfully after clicking Now, sending a well-formed ISO scheduledDeparture', async () => {
     const fetchMock = vi.mocked(fetch);
     // See the earlier "selecting an origin suggestion" test's comment on
     // why the departures fetch must be routed separately from the submit
-    // POST -- this test additionally needs a specific `trackingId` (99)
-    // in the submit response, so it routes explicitly rather than reusing
-    // `mockFetchByUrl`'s fixed 42.
+    // POST -- this test additionally needs a specific `journeyId`/
+    // `trackingId` (199/99) in the submit response, so it routes explicitly
+    // rather than reusing `mockFetchByUrl`'s fixed 99/42.
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
       if (/\/api\/stations\/[A-Za-z]{3}\/departures$/.test(url)) {
         return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
       }
-      return Promise.resolve(new Response(JSON.stringify({ trackingId: 99, resolutionStatus: 'pending' }), { status: 200 }));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ journeyId: 199, legId: 1, trackingId: 99, resolutionStatus: 'pending' }),
+          { status: 200 },
+        ),
+      );
     });
 
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
@@ -546,13 +578,168 @@ describe('TrackTrainForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+      expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
     });
-    const body = trackCallBody(fetchMock);
-    expect(body.service_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(() => new Date(body.scheduled_departure).toISOString()).not.toThrow();
+    const body = journeyCallBody(fetchMock);
+    expect(body.leg.serviceDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(() => new Date(body.leg.scheduledDeparture).toISOString()).not.toThrow();
     await waitFor(() => {
-      expect(pushMock).toHaveBeenCalledWith('/train/by-id/99');
+      expect(pushMock).toHaveBeenCalledWith('/journeys/199');
+    });
+  });
+
+  // Task 15: the `SegmentedControl`'s second option -- an open time-window
+  // search that posts a `window`-mode leg to `POST /Journeys` instead of a
+  // `pin`-mode one, via `submitWindow` rather than `submitTrack`.
+  describe('window-search mode', () => {
+    function switchToWindowMode() {
+      fireEvent.click(screen.getByRole('radio', { name: 'Search a time window' }));
+    }
+
+    it('defaults to "Pick a departure" mode, showing the pin-mode fields', () => {
+      renderWithMantine(<TrackTrainForm />);
+      expect(screen.getByRole('radio', { name: 'Pick a departure' })).toBeChecked();
+      expect(screen.getByLabelText(/Scheduled departure/)).toBeInTheDocument();
+      expect(screen.queryByRole('combobox', { name: /^Destination station$/ })).not.toBeInTheDocument();
+    });
+
+    it('switching to "Search a time window" swaps the pin fields for the window fields', async () => {
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      // `initialOrigin="WAT"` fires the departures effect on mount -- see
+      // the "pre-fills the origin field" test's comment above for why this
+      // is awaited before the test ends.
+      await waitFor(() => expect(fetch).toHaveBeenCalled());
+      switchToWindowMode();
+
+      expect(screen.getByRole('radio', { name: 'Search a time window' })).toBeChecked();
+      // The window-mode Destination field is required (no "(optional)"
+      // suffix), unlike the pin-mode one -- distinguishes it from the
+      // pin-mode field this same query would otherwise also match.
+      expect(screen.getByRole('combobox', { name: /^Destination station$/ })).toBeInTheDocument();
+      expect(screen.getByLabelText('Earliest departure (optional)')).toBeInTheDocument();
+      expect(screen.getByLabelText('Latest departure (optional)')).toBeInTheDocument();
+      expect(screen.getByLabelText('Earliest arrival (optional)')).toBeInTheDocument();
+      expect(screen.getByLabelText('Latest arrival (optional)')).toBeInTheDocument();
+      // The pin-mode-only fields are gone.
+      expect(screen.queryByLabelText(/Scheduled departure/)).not.toBeInTheDocument();
+      expect(screen.queryByRole('combobox', { name: /Operator/ })).not.toBeInTheDocument();
+    });
+
+    it('an all-blank window is blocked client-side, with no network call', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      // See the previous test's comment on why this is awaited.
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      switchToWindowMode();
+      fireEvent.change(screen.getByRole('combobox', { name: /^Destination station$/ }), {
+        target: { value: 'RDG' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /Search for a train/ }));
+
+      expect(
+        screen.getByText('Enter at least one earliest/latest departure or arrival time to search a window.'),
+      ).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
+    });
+
+    it('an invalid origin/destination is blocked client-side, with no network call', () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrackTrainForm />);
+      switchToWindowMode();
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
+
+      fireEvent.click(screen.getByRole('button', { name: /Search for a train/ }));
+
+      expect(
+        screen.getByText('Enter a valid origin and destination station before searching.'),
+      ).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
+    });
+
+    it('submits a window-mode leg with the entered origin/destination/date/departWindow/arriveWindow, and redirects to /journeys/{journeyId}', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      switchToWindowMode();
+      fireEvent.change(screen.getByRole('combobox', { name: /^Destination station$/ }), {
+        target: { value: 'RDG' },
+      });
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
+      fireEvent.change(screen.getByLabelText('Latest arrival (optional)'), { target: { value: '11:30' } });
+
+      fireEvent.click(screen.getByRole('button', { name: /Search for a train/ }));
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
+      });
+      const body = journeyCallBody(fetchMock);
+      expect(body.leg).toEqual({
+        mode: 'window',
+        originCrs: 'WAT',
+        destinationCrs: 'RDG',
+        serviceDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        departWindow: { after: '09:00', before: null },
+        arriveWindow: { after: null, before: '11:30' },
+      });
+      await waitFor(() => {
+        expect(pushMock).toHaveBeenCalledWith('/journeys/99');
+      });
+    });
+
+    it('an incomplete (half-entered) time field blocks submission even with a real bound entered elsewhere, with no network call', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      // See the earlier "switching to Search a time window" test's comment
+      // on why this is awaited.
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      switchToWindowMode();
+      fireEvent.change(screen.getByRole('combobox', { name: /^Destination station$/ }), {
+        target: { value: 'RDG' },
+      });
+      // A real, complete bound -- `windowHasABound` is true, so
+      // `handleSubmit`'s own explicit checks all pass and it calls
+      // `submitWindow`.
+      fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '12:00' } });
+      const departFromInput = screen.getByLabelText('Earliest departure (optional)') as HTMLInputElement;
+      // Simulate a native `<input type="time">` mid-entry on a DIFFERENT
+      // field: `validity.badInput` true -- see `TimeFilterInput`'s own doc
+      // comment on why a half-entered time reports this way, and
+      // `TrainSearchForm.test.tsx`'s identical technique for its own four
+      // `TimeFilterInput` fields.
+      Object.defineProperty(departFromInput, 'validity', { configurable: true, get: () => ({ badInput: true }) });
+      fireEvent.blur(departFromInput);
+
+      fireEvent.click(screen.getByRole('button', { name: /Search for a train/ }));
+
+      // `canSubmitWindow` (checked inside `submitWindow` itself, not
+      // `handleSubmit`'s own gate) is false here because
+      // `windowTimesComplete` is false -- so `submitWindow` silently
+      // returns before ever calling `fetch`, and no field error is shown
+      // either (`handleSubmit` already cleared it before deferring to
+      // `submitWindow`).
+      expect(fetchMock).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
+      expect(
+        screen.queryByText('Enter at least one earliest/latest departure or arrival time to search a window.'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('on a 401 in window mode, shows the login prompt and preserves the typed window fields', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('no session', { status: 401 }))));
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+      switchToWindowMode();
+      fireEvent.change(screen.getByRole('combobox', { name: /^Destination station$/ }), {
+        target: { value: 'RDG' },
+      });
+      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
+
+      fireEvent.click(screen.getByRole('button', { name: /Search for a train/ }));
+
+      expect(await screen.findByText('Log in to track this train.')).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /^Destination station$/ })).toHaveValue('RDG');
     });
   });
 
@@ -934,10 +1121,10 @@ describe('TrackTrainForm', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
       await waitFor(() => {
-        expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+        expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
       });
-      const body = trackCallBody(fetchMock);
-      expect(body.service_date).toBe(tomorrow);
+      const body = journeyCallBody(fetchMock);
+      expect(body.leg.serviceDate).toBe(tomorrow);
     });
 
     it('shows the picker container with a prompt before Origin is filled in', () => {
@@ -1389,7 +1576,7 @@ describe('TrackTrainForm', () => {
       fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
       expect((await screen.findAllByLabelText('Track into')).length).toBeGreaterThan(0);
-      expect(fetchMock).not.toHaveBeenCalledWith('/api/Train/track', expect.anything());
+      expect(fetchMock).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
       expect(pushMock).not.toHaveBeenCalled();
     });
 
@@ -1403,9 +1590,9 @@ describe('TrackTrainForm', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
       await waitFor(() => {
-        expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+        expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
       });
-      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/train/by-id/42'));
+      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/journeys/99'));
       expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/groups/'), expect.anything());
     });
 
@@ -1415,9 +1602,12 @@ describe('TrackTrainForm', () => {
         if (/\/api\/stations\/[A-Za-z]{3}\/departures$/.test(url)) {
           return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
         }
-        if (url === '/api/Train/track') {
+        if (url === '/api/Journeys') {
           return Promise.resolve(
-            new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }),
+            new Response(
+              JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
+              { status: 200 },
+            ),
           );
         }
         if (url === '/api/groups/grp-1/trains') return Promise.resolve(new Response(null, { status: 204 }));
@@ -1433,7 +1623,7 @@ describe('TrackTrainForm', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
       await waitFor(() => {
-        expect(fetchMock).toHaveBeenCalledWith('/api/Train/track', expect.objectContaining({ method: 'POST' }));
+        expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
       });
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
@@ -1441,12 +1631,12 @@ describe('TrackTrainForm', () => {
           expect.objectContaining({ method: 'POST', body: JSON.stringify({ trainSubscriptionId: 42 }) }),
         );
       });
-      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/train/by-id/42'));
+      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/journeys/99'));
 
       // The share call must happen strictly after the track call -- the
       // share body needs the real trackingId the track call returns.
       const urls = fetchMock.mock.calls.map((args: unknown[]) => String(args[0]));
-      expect(urls.indexOf('/api/Train/track')).toBeLessThan(urls.indexOf('/api/groups/grp-1/trains'));
+      expect(urls.indexOf('/api/Journeys')).toBeLessThan(urls.indexOf('/api/groups/grp-1/trains'));
     });
 
     it('a group-share failure still redirects, without showing a track-failed error', async () => {
@@ -1455,9 +1645,12 @@ describe('TrackTrainForm', () => {
         if (/\/api\/stations\/[A-Za-z]{3}\/departures$/.test(url)) {
           return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
         }
-        if (url === '/api/Train/track') {
+        if (url === '/api/Journeys') {
           return Promise.resolve(
-            new Response(JSON.stringify({ trackingId: 42, resolutionStatus: 'pending' }), { status: 200 }),
+            new Response(
+              JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }),
+              { status: 200 },
+            ),
           );
         }
         if (url === '/api/groups/grp-1/trains') return Promise.reject(new Error('network blip'));
@@ -1472,7 +1665,7 @@ describe('TrackTrainForm', () => {
       fireEvent.click(await screen.findByText('Family'));
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
-      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/train/by-id/42'));
+      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/journeys/99'));
       expect(screen.queryByText("Couldn't create the tracking pin. Try again.")).not.toBeInTheDocument();
     });
 
@@ -1483,7 +1676,7 @@ describe('TrackTrainForm', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
-      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/train/by-id/42'));
+      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/journeys/99'));
       expect(screen.queryAllByLabelText('Track into')).toHaveLength(0);
     });
   });
