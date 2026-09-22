@@ -30,6 +30,11 @@ vi.mock('@/lib/api', async () => {
     getAllTocs: vi.fn().mockResolvedValue([]),
     getLineHalfHourlyStats: vi.fn(),
     getLineHalfHourlyCoverageStats: vi.fn(),
+    // Same rationale as `getAllTocs` above: most tests in this file don't
+    // care about the "Trains running today" panel at all, so an empty list
+    // keeps them all passing unmodified. The panel's own describe block
+    // below overrides this per test.
+    getLineTrains: vi.fn().mockResolvedValue([]),
   };
 });
 // `withStaleFallback` (lib/liveDataCache.ts) reads the session cookie via
@@ -305,6 +310,54 @@ describe('LineDetailPage embedded trends', () => {
 
     expect(await screen.findByRole('heading', { name: 'Full coverage' })).toBeInTheDocument();
     expect(await screen.findByText('Not enough full-coverage data yet for this line.')).toBeInTheDocument();
+  });
+});
+
+// Task 5 of docs/superpowers/sdd/2026-09-22-operator-overview-phase2-per-line-drilldown-plan/
+// -- wires LineTrainsResults into this page. The panel's own rendering
+// (populated list, empty state, error state) is exercised directly in
+// LineTrainsResults.test.tsx; what matters here is only that this page
+// renders the panel and fetches its data for a catalogue line, and that it
+// does neither for a TfL line or a custom line -- both guaranteed 404s from
+// `getLineTrains` (see `isTflLine`/`showTrainsPanel` in page.tsx).
+describe('LineDetailPage Trains running today panel', () => {
+  beforeEach(() => {
+    vi.mocked(api.getAllLines).mockResolvedValue(lines);
+    vi.mocked(api.getLineDefinition).mockResolvedValue({ stations: ['WOK', 'CLJ'], operators: ['SW'] });
+    vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
+    vi.mocked(api.getLineHalfHourlyCoverageStats).mockResolvedValue([]);
+    vi.mocked(api.getCustomLine).mockRejectedValue(new ApiNotFoundError('not found'));
+    // `getLineTrains` is one shared `vi.fn()` for the whole file (from the
+    // top-level `vi.mock('@/lib/api', ...)` factory), and this project's
+    // vitest setup does not auto-clear mocks between tests -- same reason
+    // every other `.toHaveBeenCalled()`/`.not.toHaveBeenCalled()` assertion
+    // in this file (see the `notFound` mock's own `mockClear()` calls
+    // throughout) clears its target mock first, rather than trusting call
+    // counts left over from earlier tests/describes in this same file.
+    vi.mocked(api.getLineTrains).mockClear();
+  });
+
+  it('renders the panel and passes it the line id for a catalogue line', async () => {
+    vi.mocked(api.getLineStatus).mockResolvedValue([report('swr-alton', 'Alton Line')]);
+    vi.mocked(api.getLineTrains).mockResolvedValue([]);
+    await renderPage('swr-alton');
+    expect(screen.getByRole('heading', { name: 'Trains running today' })).toBeInTheDocument();
+    expect(api.getLineTrains).toHaveBeenCalledWith('swr-alton', expect.any(String));
+  });
+
+  it('does not render the panel for a TfL line id, and never calls getLineTrains', async () => {
+    vi.mocked(api.getLineStatus).mockResolvedValue([report('tfl-victoria', 'Victoria line')]);
+    await renderPage('tfl-victoria');
+    expect(screen.queryByRole('heading', { name: 'Trains running today' })).not.toBeInTheDocument();
+    expect(api.getLineTrains).not.toHaveBeenCalled();
+  });
+
+  it('does not render the panel for a custom line, and never calls getLineTrains', async () => {
+    vi.mocked(api.getLineStatus).mockResolvedValue([report('custom-my-commute', 'My Commute')]);
+    vi.mocked(api.getCustomLine).mockResolvedValue(customLine({ isOwner: true }));
+    await renderPage('custom-my-commute');
+    expect(screen.queryByRole('heading', { name: 'Trains running today' })).not.toBeInTheDocument();
+    expect(api.getLineTrains).not.toHaveBeenCalled();
   });
 });
 
