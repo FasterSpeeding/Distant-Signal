@@ -861,6 +861,7 @@ describe('TrackTrainForm', () => {
         serviceId: 'svc-cancelled',
         operator: 'ZA',
         destinationCrs: 'WAT',
+        destinationName: null,
         scheduled: '10:15',
         estimated: 'Cancelled',
         isCancelled: true,
@@ -876,6 +877,7 @@ describe('TrackTrainForm', () => {
         serviceId: 'svc-on-time',
         operator: 'SW',
         destinationCrs: 'BSK',
+        destinationName: 'Basingstoke',
         scheduled: '10:40',
         estimated: 'On time',
         isCancelled: false,
@@ -943,6 +945,23 @@ describe('TrackTrainForm', () => {
       // Clicking the cancelled row's text does not fill any field.
       fireEvent.click(screen.getByText(/10:15/));
       expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('');
+    });
+
+    // 2026-09-22 UX review follow-up (item 5): the live picker used to show
+    // only the raw destination CRS code -- `render::station_departure_json`
+    // now resolves it server-side via a batched `stations` lookup, and this
+    // picker renders it through the shared `stationLabel` convention.
+    it('renders a resolved destination name alongside its code, falling back to the bare code when unresolved', async () => {
+      const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
+      vi.stubGlobal('fetch', fetchMock);
+
+      renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+
+      expect(await screen.findByText(/Basingstoke \(BSK\)/)).toBeInTheDocument();
+      // The cancelled row's destination (WAT) has no resolved name in this
+      // fixture -- falls back to the bare code, same convention as
+      // elsewhere in this app.
+      expect(screen.getByText(/10:15 · WAT/)).toBeInTheDocument();
     });
 
     it('clicking a non-cancelled row fills destinationCrs/operator/scheduledDeparture', async () => {
@@ -1183,9 +1202,15 @@ describe('TrackTrainForm', () => {
       expect(picker.value).toMatch(/^\d{4}-\d{2}-\d{2} 10:40:00$/);
     });
 
-    const scheduleDepartures: { uid: string; scheduled: string; dayOffset: number; destinationCrs: string | null }[] = [
-      { uid: 'C11052', scheduled: '08:22', dayOffset: 0, destinationCrs: 'CRE' },
-      { uid: 'C99999', scheduled: '09:00', dayOffset: 0, destinationCrs: null },
+    const scheduleDepartures: {
+      uid: string;
+      scheduled: string;
+      dayOffset: number;
+      destinationCrs: string | null;
+      destinationName: string | null;
+    }[] = [
+      { uid: 'C11052', scheduled: '08:22', dayOffset: 0, destinationCrs: 'CRE', destinationName: 'Crewe' },
+      { uid: 'C99999', scheduled: '09:00', dayOffset: 0, destinationCrs: null, destinationName: null },
     ];
 
     it('a 404 from LDBWS followed by a CIF 200 renders the CIF picker with its staleness disclaimer, no badges', async () => {
@@ -1206,6 +1231,9 @@ describe('TrackTrainForm', () => {
       expect(screen.getByRole('button', { name: /09:00/ })).toBeInTheDocument();
       expect(screen.queryByText('On time')).not.toBeInTheDocument();
       expect(screen.queryByText('Cancelled')).not.toBeInTheDocument();
+      // 2026-09-22 UX review follow-up (item 5): resolved via the same
+      // server-side batched lookup as the LDBWS branch above.
+      expect(screen.getByText(/08:22 · Crewe \(CRE\)/)).toBeInTheDocument();
     });
 
     it('a 404 from LDBWS followed by a CIF 200 [] renders the shared "no live departures right now" text', async () => {

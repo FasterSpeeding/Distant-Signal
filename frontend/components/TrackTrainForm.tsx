@@ -26,6 +26,7 @@ import { useSuggestions } from '@/lib/useSuggestions';
 import { useGroupSummaries } from '@/lib/useGroupSummaries';
 import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
 import { noMatchOptionContent, withNoMatchPlaceholder } from '@/lib/autocompleteNoMatch';
+import { stationLabel } from '@/lib/stationLabel';
 import type { CreateJourneyResponse } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
@@ -176,6 +177,13 @@ interface DepartureRow {
   serviceId: string;
   operator: string;
   destinationCrs: string;
+  /** Resolved via a batched `stations` lookup, added server-side
+   * (`render::station_departure_json`) so this picker can show a name
+   * instead of a bare CRS code -- 2026-09-22 UX review follow-up. `null`
+   * when the code has no `stations` reference row, same "fall back to the
+   * bare code" convention `stationLabel` applies everywhere else in this
+   * app. */
+  destinationName: string | null;
   scheduled: string;
   estimated: string;
   isCancelled: boolean;
@@ -217,6 +225,11 @@ interface ScheduleDepartureRow {
   scheduled: string;
   dayOffset: number;
   destinationCrs: string | null;
+  /** Same server-side batched-lookup enrichment as `DepartureRow`'s own
+   * `destinationName` -- see its doc comment. `null` both when
+   * `destinationCrs` itself is `null` and when it resolved to no
+   * `stations` row. */
+  destinationName: string | null;
 }
 
 /** `'unavailable'` replaces the old `'not-sampled'` name: it now means
@@ -899,6 +912,7 @@ export function TrackTrainForm({
                 key: row.serviceId,
                 scheduled: row.scheduled,
                 destinationCrs: row.destinationCrs,
+                destinationName: row.destinationName,
                 operator: row.operator,
                 isCancelled: row.isCancelled,
                 delayMinutes: row.delayMinutes,
@@ -950,7 +964,11 @@ export function TrackTrainForm({
               >
                 <Text size="sm">
                   {row.scheduled}
-                  {row.destinationCrs ? ` · ${row.destinationCrs}` : ''}
+                  {/* `stationLabel` -- same "Name (CODE)", bare-code-fallback
+                      convention as everywhere else in this app (item 5,
+                      2026-09-22 UX review follow-up): this used to always
+                      show the raw code alone. */}
+                  {row.destinationCrs ? ` · ${stationLabel(row.destinationCrs, row.destinationName)}` : ''}
                 </Text>
                 {/* A secondary action, deliberately separate from the row's
                     own click-to-select behaviour above: this navigates to

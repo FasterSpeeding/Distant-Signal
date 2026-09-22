@@ -7,6 +7,8 @@
 //! Python original builds its response dict by hand rather than relying
 //! on dataclass field names.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use common::{LineStatus, LineStatusReport, Severity};
 use serde_json::{Value, json};
@@ -137,7 +139,22 @@ pub(crate) fn full_coverage_availability_json(
 /// omitted -- always `None` at the source
 /// (`poller-ldbws/src/schema.rs:104-105`), and `TrackPinRequest` has no
 /// field for it anyway.
-pub(crate) fn station_departure_json(d: &common::StationDeparture) -> Value {
+/// `destination_names` is a `crs -> name` lookup (see
+/// `queries::station_names_for_crs_batch`, the same batched
+/// `LEFT JOIN stations` stand-in `routes::lines.rs`'s own multi-CRS
+/// callers already use) -- `station_samples.departures` is a JSONB array,
+/// not individual rows, so there is no per-row SQL join target the way
+/// `TRACKED_TRAIN_STATE_SELECT` has for `train_tracking`'s single-row
+/// reads; the caller (`routes::departures::get_station_departures`)
+/// collects every row's `destination_crs`, resolves them all in one query,
+/// and passes the resulting map in here. A code with no reference row is
+/// simply absent from the map, and `destinationName` renders `null` --
+/// the frontend's `stationLabel` falls back to the bare code, the same
+/// convention this app uses everywhere else a name might not resolve.
+pub(crate) fn station_departure_json(
+    d: &common::StationDeparture,
+    destination_names: &HashMap<String, String>,
+) -> Value {
     // `true` only when BOTH a planned and a current platform are known AND
     // they differ -- a platform seen for the first time (`planned_platform:
     // None`, see `common::StationDeparture`'s own doc comment) is not a
@@ -151,6 +168,7 @@ pub(crate) fn station_departure_json(d: &common::StationDeparture) -> Value {
         "serviceId": d.service_id,
         "operator": d.operator,
         "destinationCrs": d.destination_crs,
+        "destinationName": destination_names.get(&d.destination_crs.to_uppercase()),
         "scheduled": d.scheduled,
         "estimated": d.estimated,
         "isCancelled": d.is_cancelled,
@@ -194,17 +212,29 @@ pub(crate) fn station_departure_json(d: &common::StationDeparture) -> Value {
 /// new failure mode. This is the field `TrackTrainForm.tsx::pickCifDeparture`
 /// reads to combine the picked departure's bare `"HH:MM"` with the correct
 /// calendar date -- see that function's own doc comment.
-pub(crate) fn schedule_departure_json(d: &Value) -> Value {
+/// `destination_names` -- same batched `crs -> name` lookup and same
+/// "absent from the map renders `null`" contract as
+/// `station_departure_json`'s identical parameter; see its own doc
+/// comment.
+pub(crate) fn schedule_departure_json(d: &Value, destination_names: &HashMap<String, String>) -> Value {
     let scheduled = d
         .get("scheduled")
         .and_then(Value::as_str)
         .map(|s| s.chars().take(5).collect::<String>());
     let day_offset = d.get("day_offset").and_then(Value::as_u64).unwrap_or(0);
+    let destination_crs = d
+        .get("destination_crs")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let destination_name = destination_crs
+        .as_deref()
+        .and_then(|crs| destination_names.get(&crs.to_uppercase()));
     json!({
         "uid": d.get("uid").cloned().unwrap_or(Value::Null),
         "scheduled": scheduled,
         "dayOffset": day_offset,
-        "destinationCrs": d.get("destination_crs").cloned().unwrap_or(Value::Null),
+        "destinationCrs": destination_crs,
+        "destinationName": destination_name,
     })
 }
 
@@ -713,13 +743,14 @@ mod tests {
             platform: Some("6".to_string()),
             planned_platform: Some("6".to_string()),
         };
-        let json = station_departure_json(&departure);
+        let json = station_departure_json(&departure, &HashMap::new());
         assert_eq!(
             json,
             serde_json::json!({
                 "serviceId": "svc-1",
                 "operator": "SW",
                 "destinationCrs": "BSK",
+                "destinationName": null,
                 "scheduled": "14:40",
                 "estimated": "14:47",
                 "isCancelled": false,
@@ -764,7 +795,7 @@ mod tests {
             platform: None,
             planned_platform: None,
         };
-        let json = station_departure_json(&departure);
+        let json = station_departure_json(&departure, &HashMap::new());
         assert_eq!(json["cancelReason"], "fleet issue");
         // `delay_reason: None` must serialize as JSON `null` -- a present
         // key with a null value, not an omitted key -- because this is a
@@ -805,7 +836,7 @@ mod tests {
             platform: Some("9".to_string()),
             planned_platform: Some("6".to_string()),
         };
-        let json = station_departure_json(&departure);
+        let json = station_departure_json(&departure, &HashMap::new());
         assert_eq!(json["platform"], "9");
         assert_eq!(json["plannedPlatform"], "6");
         assert_eq!(json["platformChanged"], true);
@@ -832,7 +863,7 @@ mod tests {
             platform: Some("6".to_string()),
             planned_platform: None,
         };
-        let json = station_departure_json(&departure);
+        let json = station_departure_json(&departure, &HashMap::new());
         assert_eq!(json["platform"], "6");
         assert!(json["plannedPlatform"].is_null());
         assert_eq!(json["platformChanged"], false);
@@ -846,7 +877,7 @@ mod tests {
             "day_offset": 0,
             "destination_crs": "CRE",
         });
-        let json = schedule_departure_json(&raw);
+        let json = schedule_departure_json(&raw, &HashMap::new());
         assert_eq!(
             json,
             serde_json::json!({
@@ -854,12 +885,74 @@ mod tests {
                 "scheduled": "08:22",
                 "dayOffset": 0,
                 "destinationCrs": "CRE",
+                "destinationName": null,
             })
         );
         assert!(
             json.get("destination_crs").is_none(),
             "no stray snake_case field"
         );
+    }
+
+    #[test]
+    fn station_departure_json_resolves_a_destination_name_from_the_lookup_map() {
+        let departure = common::StationDeparture {
+            service_id: "svc-5".to_string(),
+            operator: "SW".to_string(),
+            destination_crs: "bsk".to_string(),
+            scheduled: "14:40".to_string(),
+            estimated: "14:47".to_string(),
+            is_cancelled: false,
+            delay_minutes: 0,
+            cancel_reason: None,
+            delay_reason: None,
+            headcode: None,
+            skipped_stations: vec![],
+            platform: None,
+            planned_platform: None,
+        };
+        // Lower-case `destination_crs` on the departure, upper-case key in
+        // the lookup map -- `station_names_for_crs_batch` always upper-cases
+        // its keys (see its own doc comment), so the lookup here has to
+        // match on the SAME normalized case regardless of what case the
+        // source row happened to carry.
+        let names = HashMap::from([("BSK".to_string(), "Basingstoke".to_string())]);
+        let json = station_departure_json(&departure, &names);
+        assert_eq!(json["destinationName"], "Basingstoke");
+    }
+
+    #[test]
+    fn station_departure_json_destination_name_is_null_for_an_unresolved_code() {
+        let departure = common::StationDeparture {
+            service_id: "svc-6".to_string(),
+            operator: "SW".to_string(),
+            destination_crs: "ZZZ".to_string(),
+            scheduled: "14:40".to_string(),
+            estimated: "14:47".to_string(),
+            is_cancelled: false,
+            delay_minutes: 0,
+            cancel_reason: None,
+            delay_reason: None,
+            headcode: None,
+            skipped_stations: vec![],
+            platform: None,
+            planned_platform: None,
+        };
+        let json = station_departure_json(&departure, &HashMap::new());
+        assert!(json["destinationName"].is_null());
+    }
+
+    #[test]
+    fn schedule_departure_json_resolves_a_destination_name_from_the_lookup_map() {
+        let raw = serde_json::json!({
+            "uid": "C11052",
+            "scheduled": "08:22:00",
+            "day_offset": 0,
+            "destination_crs": "cre",
+        });
+        let names = HashMap::from([("CRE".to_string(), "Crewe".to_string())]);
+        let json = schedule_departure_json(&raw, &names);
+        assert_eq!(json["destinationName"], "Crewe");
     }
 
     #[test]
@@ -876,7 +969,7 @@ mod tests {
             "day_offset": 1,
             "destination_crs": "SNF",
         });
-        let json = schedule_departure_json(&raw);
+        let json = schedule_departure_json(&raw, &HashMap::new());
         assert_eq!(json["dayOffset"], 1);
     }
 
@@ -892,7 +985,7 @@ mod tests {
             "scheduled": "08:22:00",
             "destination_crs": "CRE",
         });
-        let json = schedule_departure_json(&raw);
+        let json = schedule_departure_json(&raw, &HashMap::new());
         assert_eq!(json["dayOffset"], 0);
     }
 
@@ -1004,7 +1097,7 @@ mod tests {
             "scheduled": "14:05:00",
             "destination_crs": null,
         });
-        let json = schedule_departure_json(&raw);
+        let json = schedule_departure_json(&raw, &HashMap::new());
         assert!(json["destinationCrs"].is_null());
     }
 
