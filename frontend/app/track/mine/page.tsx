@@ -195,6 +195,9 @@ export default async function MyTrackedTrainsPage() {
         </Text>
       ) : (
         <>
+          <TextLink href="/journeys/templates" underline="always">
+            Manage your journey templates
+          </TextLink>
           {journeyRows.length > 0 && (
             <Stack gap="xs">
               <Title order={2}>Your journeys</Title>
