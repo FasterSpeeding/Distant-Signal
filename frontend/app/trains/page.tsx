@@ -19,13 +19,15 @@ import { TrainSearchForm } from '@/components/TrainSearchForm';
  * Title matches the page's own `<h1>` ("Find a Train"), which is also the
  * nav label for this route.
  *
- * "another station along its route" is deliberate and must not be tightened
- * into "a later stop" or "a station it stops at next": `stops_at` is an
- * unordered membership test against the whole calling-point list (see
- * `crates/api/src/data/queries.rs`, which spells this out, and
- * `TrainSearchForm`'s own equally careful field description: "Any station
- * this train calls at along its route, not necessarily its destination").
- * A stop EARLIER than the searched station matches too. */
+ * "another station along its route" is deliberately generic rather than
+ * spelling out the ordering rule in this short SEO/OG blurb: `stops_at`
+ * requires that named station to fall LATER in the journey than `station`
+ * (2026-09-22; see `crates/api/src/data/queries.rs`, which spells the rule
+ * out in full, and `TrainSearchForm`'s own field description). The wording
+ * here is still accurate under that rule -- every match genuinely is
+ * "another station along its route" -- it just does not additionally claim
+ * the ordering, which belongs in the field's own, more detailed
+ * description rather than this page-level summary. */
 const METADATA_TITLE = 'Find a Train — Distant Signal';
 const METADATA_DESCRIPTION =
   'Search scheduled UK trains by any station they call at, narrowing by origin, another station along its route, and date. Open any result for its live status, or track it to get updates.';

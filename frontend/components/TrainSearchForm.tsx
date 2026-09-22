@@ -183,12 +183,13 @@ function resolvedDate(rawDate: string): string {
  * (the schedule's TRUE destination): structurally the same single-station
  * `Autocomplete` (the same `useSuggestions`/`searchStations` pair the other
  * single-station fields above use), but a train matches as long as it calls
- * at this station ANYWHERE on its route, true destination or not -- with
- * the one exception that a call at the station Station itself named only
- * counts if it falls LATER in the journey, so that naming one station in
- * both fields asks "does this working come BACK here" (a loop/circular
- * service) instead of matching every train out of that station by
- * construction. See
+ * at this station, true destination or not -- PROVIDED that call falls
+ * LATER in the journey than Station (2026-09-22; this used to be a
+ * same-station-only rule, so naming the same station in both fields was the
+ * only way to ask "does this working come BACK here" -- a loop/circular
+ * service -- but a later-only reading is now what "Stops at" means for
+ * every station named, loop or not: a search for "stops at X" should only
+ * return trains you can actually ride from Station to X). See
  * docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md. An
  * earlier version of this field accepted several stations at once (a
  * Mantine `TagsInput`, matching ALL of them); that shipped and was then
@@ -649,7 +650,7 @@ export function TrainSearchForm({
       <Autocomplete
         label="Stops at (optional)"
         placeholder="e.g. Reading or RDG"
-        description="Another station this train calls at, its destination included. Enter the same station as Departing from to find loop services that come back to it."
+        description="A station this train reaches later in its journey than Station, its destination included."
         value={stopsAt}
         onChange={setStopsAt}
         data={withNoMatchPlaceholder(

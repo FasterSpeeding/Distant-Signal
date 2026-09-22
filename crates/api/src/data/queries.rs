@@ -1270,11 +1270,12 @@ async fn schedule_destination_departures_published_for(
 /// further flooring done by this function. `to_time` is an INCLUSIVE upper
 /// bound. Both carry the exact same reasoning as the predecessor query.
 ///
-/// **`stops_at`: "calls at this station somewhere ELSE on its route" (a
-/// plain membership test, not relational division).** `None` means "no
-/// filter" (every row matches). `Some(crs)` means the schedule must call
-/// at that CRS on the SAME `service_date` at a calling point that is not
-/// the one this result row is itself anchored at -- either
+/// **`stops_at`: "calls at this station LATER in the journey than the
+/// searched calling point" (a plain membership test with an ordering
+/// constraint, not relational division).** `None` means "no filter" (every
+/// row matches). `Some(crs)` means the schedule must call at that CRS on
+/// the SAME `service_date`, strictly after the calling point this result
+/// row is itself anchored at -- either
 ///
 /// * some other departure-bearing row of the same `train_uid` carries it
 ///   (a correlated `EXISTS` on `origin_crs`, the same column `station_crs`
@@ -1287,30 +1288,46 @@ async fn schedule_destination_departures_published_for(
 ///   never gets a row of its own in this table at all (see the table's own
 ///   migration comment).
 ///
-/// Both halves changed in the "loop service" fix, and both for the same
-/// reason -- a CRS does not identify one PLACE IN A JOURNEY, exactly the
-/// mistake `journey::assign_events_to_stops` was fixed for.
+/// Both halves changed in the "loop service" fix (2026-09-17), and both for
+/// the same reason -- a CRS does not identify one PLACE IN A JOURNEY,
+/// exactly the mistake `journey::assign_events_to_stops` was fixed for. The
+/// ordering rule below was then widened (2026-09-22, superseding part of
+/// the 2026-09-17 fix -- see this function's own history and
+/// docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md's
+/// "Addendum (2026-09-22)") from applying only when `stops_at` repeats
+/// `station_crs` to applying unconditionally, on the product decision that
+/// "stops at X" should always mean "you can actually get there from where
+/// you searched" -- no special-cased exception for a `stops_at` value that
+/// differs from `station_crs`.
 ///
-/// 1. A call at the SAME STATION the search is anchored at counts only if
-///    it comes LATER in the journey, by `(day_offset, scheduled)`. That is
-///    what makes `stops_at == station_crs` a real question instead of a
-///    tautology: a row is a member of its own calling-point list by
-///    construction, so the old unrestricted `EXISTS` made "departing from
-///    WAT AND stopping at WAT" match every single train out of Waterloo --
-///    byte-for-byte the same result set as supplying no `stops_at` at all
-///    (live-confirmed against a real Postgres before the fix). What a
-///    caller typing the same station twice actually means is "come BACK
-///    here": a loop/circular working such as South Western Railway's
-///    Kingston Loop (train L82877, 2026-09-14 -- Waterloo 07:27 round via
-///    Clapham Junction, Kingston and Richmond, terminating back at
-///    Waterloo 08:46).
+/// 1. EVERY call this branch matches -- same station as the search anchor
+///    or a different one -- counts only if it comes LATER in the journey,
+///    by `(day_offset, scheduled)`. This is what makes `stops_at ==
+///    station_crs` a real question instead of a tautology: a row is a
+///    member of its own calling-point list by construction, so an
+///    unrestricted `EXISTS` made "departing from WAT AND stopping at WAT"
+///    match every single train out of Waterloo -- byte-for-byte the same
+///    result set as supplying no `stops_at` at all (live-confirmed against
+///    a real Postgres before the 2026-09-17 fix). What a caller typing the
+///    same station twice means is "come BACK here": a loop/circular
+///    working such as South Western Railway's Kingston Loop (train
+///    L82877, 2026-09-14 -- Waterloo 07:27 round via Clapham Junction,
+///    Kingston and Richmond, terminating back at Waterloo 08:46). The same
+///    reasoning now extends to any other named station too: a rider typing
+///    "stops at Reading" wants trains that genuinely go on to reach
+///    Reading from where they searched, not ones that already passed
+///    through Reading before reaching the search origin.
 ///
 ///    LATER, not merely OTHER, and the difference is not academic. A
 ///    working that passes back through its own origin and carries on
 ///    (`WAT -> ... -> WAT -> ... -> SOU`) offers two WAT departures, and
 ///    only the FIRST of them comes back; a bare "some other row at this
 ///    CRS" test would return both, half of them being trains the caller
-///    would board expecting a return that never happens.
+///    would board expecting a return that never happens. The same logic
+///    applies across two different stations: a working that calls at X
+///    AFTER the searched station is exactly what a caller wants, but one
+///    that called at X BEFORE ever reaching the searched station is not
+///    reachable from there at all.
 ///
 ///    The comparison is `(day_offset, scheduled)`, not `scheduled` alone:
 ///    a real overnight schedule crosses midnight and its later calls carry
@@ -1327,9 +1344,10 @@ async fn schedule_destination_departures_published_for(
 ///    does not carry `day_offset`, so a revisit at the same clock minute
 ///    exactly a day later loses its row at ingest and is then correctly,
 ///    but vacuously, excluded here. Pre-existing, and vanishingly rare.)
-///    Nothing of the sort holds ACROSS stations, where two calling points
-///    genuinely can share a booked minute -- a second, practical reason to
-///    scope the ordering rule to same-station calls and no further.
+///    Two DIFFERENT stations, by contrast, genuinely can share a booked
+///    minute -- the ordering comparison still resolves it (neither ties
+///    the other under `>`), it just is not backed by the same uniqueness
+///    guarantee.
 ///
 ///    This is also the only part of this query that reads `day_offset` at
 ///    all: `scheduled_from`/`to_time`, the `ORDER BY` and the keyset
@@ -1338,17 +1356,7 @@ async fn schedule_destination_departures_published_for(
 ///    question about how a midnight-crossing rail day should paginate --
 ///    but do not read this rule as evidence that they follow suit.
 ///
-/// 2. A call at a DIFFERENT station from the anchor still counts wherever
-///    in the route it falls, INCLUDING before it. `stops_at` has always
-///    meant "calls at X somewhere on its route" and deliberately still
-///    does; it is not, and does not become, a "you can get there from the
-///    station you searched" filter. So for every search naming two
-///    different stations this function returns exactly what it returned
-///    before the loop fix -- item 1 cannot fire (`stop.origin_crs = $5`
-///    and `main.origin_crs = $2` are then different values) -- though item
-///    3 below does widen those searches.
-///
-/// 3. ADMITTING the true terminus closes the gap this filter shipped with
+/// 2. ADMITTING the true terminus closes the gap this filter shipped with
 ///    and its design note flagged ("a `stops_at` value naming a schedule's
 ///    true TERMINATING calling point never matches"). That gap contradicts
 ///    the filter's own stated purpose -- "does this train call at Reading,
@@ -1372,7 +1380,7 @@ async fn schedule_destination_departures_published_for(
 /// `main`'s own `scheduled`/`origin_crs` (`station_crs` and the
 /// arrival-bound calling point are frequently two different rows of the
 /// same schedule). It mirrors `stops_at`'s own two branches above, same
-/// same-station ordering rule and all, so that these bounds are asked
+/// unconditional ordering rule and all, so that these bounds are asked
 /// about the very calling point `stops_at` matched on:
 ///
 /// * against `calling_point_arrival` on the correlated `EXISTS` branch,
@@ -1453,15 +1461,18 @@ pub async fn search_schedule_calling_point_departures(
                         WHERE stop.service_date = $1
                           AND stop.train_uid = main.train_uid
                           AND stop.origin_crs = $5
-                          -- A call at the SAME station this result row is
-                          -- anchored at counts only if it comes LATER:
-                          -- otherwise the row satisfies itself and
-                          -- stops_at = the searched station is true by
-                          -- construction. A call at any OTHER station
-                          -- counts wherever it falls, as it always has.
-                          AND (stop.origin_crs <> main.origin_crs
-                               OR (stop.day_offset, stop.scheduled)
-                                  > (main.day_offset, main.scheduled))
+                          -- A call at the calling point `stops_at` named --
+                          -- same station this result row is anchored at, or
+                          -- a different one -- counts only if it comes
+                          -- LATER: otherwise it is not reachable from the
+                          -- searched calling point at all (2026-09-22:
+                          -- this used to be gated to the same-station case
+                          -- only -- see the design doc's superseded
+                          -- 2026-09-17 addendum -- but "stops at X" now
+                          -- means "later than the search origin" for every
+                          -- X, not just a same-station loop match).
+                          AND (stop.day_offset, stop.scheduled)
+                              > (main.day_offset, main.scheduled)
                     )
               )
               AND (
@@ -1477,9 +1488,8 @@ pub async fn search_schedule_calling_point_departures(
                         WHERE stop.service_date = $1
                           AND stop.train_uid = main.train_uid
                           AND stop.origin_crs = $5
-                          AND (stop.origin_crs <> main.origin_crs
-                               OR (stop.day_offset, stop.scheduled)
-                                  > (main.day_offset, main.scheduled))
+                          AND (stop.day_offset, stop.scheduled)
+                              > (main.day_offset, main.scheduled)
                           AND ($7::time IS NULL OR stop.calling_point_arrival >= $7)
                           AND ($8::time IS NULL OR stop.calling_point_arrival <= $8)
                     )
@@ -4892,9 +4902,13 @@ mod schedule_destination_departures_query_tests {
     ///   cannot keep.
     ///
     /// Clapham Junction appears in two schedules and is the true origin of
-    /// neither -- it is what proves the same-station rule is keyed on the
+    /// neither -- it is what proves the ordering rule is keyed on the
     /// calling point the SEARCH is anchored at, not on the schedule's true
-    /// origin.
+    /// origin. It also doubles (2026-09-22) as the fixture for the ordering
+    /// rule's other direction: both schedules call WAT BEFORE CLJ, so
+    /// `station=CLJ&stops_at=WAT` now has to exclude them, exactly as
+    /// `station=WAT&stops_at=WAT` already excluded a WAT call that never
+    /// comes back.
     fn loop_fixture_rows(service_date: chrono::NaiveDate) -> Vec<ScheduleDestinationDeparturesRow> {
         // Each call is (crs, booked departure, day_offset, this call's own
         // booked arrival).
@@ -5186,10 +5200,12 @@ mod schedule_destination_departures_query_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 search_calling_point -- --ignored --test-threads=1`"]
     async fn search_calling_point_stops_at_still_matches_a_genuine_intermediate_stop() {
-        // The ordinary, unchanged case: a different station from the one
-        // searched, matched on its own departure-bearing row. KNG is
-        // called at by the loop only, so this also proves the same-station
-        // rule does not leak into searches where the two CRS codes differ.
+        // The ordinary case: a different station from the one searched,
+        // matched on its own departure-bearing row, which falls LATER in
+        // the journey than the search station. KNG is called at by the
+        // loop only, so this also proves the ordering rule (see the test
+        // below for the case where it excludes instead) does not depend on
+        // the two CRS codes being equal.
         let pool = test_pool().await;
         let date = fixture_date_feb(6);
         seed_loop(&pool, date).await;
@@ -5199,22 +5215,48 @@ mod schedule_destination_departures_query_tests {
         assert_eq!(
             uids_and_times(&page),
             vec![("L82877".to_string(), "07:27".to_string())],
-            "stops_at naming a genuine intermediate call still matches exactly as before"
+            "stops_at naming a genuine LATER intermediate call still matches"
         );
 
-        // And in the other direction along the route: WAT is EARLIER in
-        // the journey than CLJ, and still counts. The "must come later"
-        // rule is scoped to calls at the SEARCHED station -- `stops_at`
-        // naming a different one stays "calls at X anywhere on its route",
-        // and does not quietly become "and you can get there from here".
-        let backwards = loop_search(&pool, date, "CLJ", Some("WAT"), None, None).await;
+        delete_day(&pool, date).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                search_calling_point -- --ignored --test-threads=1`"]
+    async fn search_calling_point_stops_at_excludes_a_different_station_reached_before_the_searched_one()
+     {
+        // The reversed half of the ordering rule (2026-09-22): `stops_at`
+        // now means "comes later in the journey than the searched
+        // station" for EVERY named station, not only when `stops_at`
+        // repeats `station_crs`. WAT is EARLIER in the journey than CLJ for
+        // both L82877 (WAT 07:27, CLJ 07:40) and P00001 (WAT 07:30, CLJ
+        // 07:55), so `station=CLJ&stops_at=WAT` must now match neither --
+        // before this change it matched both (see the design doc's
+        // superseded 2026-09-17 addendum).
+        let pool = test_pool().await;
+        let date = fixture_date_feb(13);
+        seed_loop(&pool, date).await;
+
+        let page = loop_search(&pool, date, "CLJ", Some("WAT"), None, None).await;
+
         assert_eq!(
-            uids_and_times(&backwards),
+            uids_and_times(&page),
+            Vec::<(String, String)>::new(),
+            "a calling point BEFORE the searched one no longer satisfies stops_at, even when the \
+             two CRS codes differ"
+        );
+
+        // ... and the day really is published, so the empty result above is
+        // the filter's doing and not a missing-day artifact.
+        let unfiltered = loop_search(&pool, date, "CLJ", None, None, None).await;
+        assert_eq!(
+            uids_and_times(&unfiltered),
             vec![
                 ("L82877".to_string(), "07:40".to_string()),
                 ("P00001".to_string(), "07:55".to_string()),
             ],
-            "a calling point BEFORE the searched one still satisfies stops_at"
+            "both CLJ departures exist; only the stops_at filter removed them"
         );
 
         delete_day(&pool, date).await;

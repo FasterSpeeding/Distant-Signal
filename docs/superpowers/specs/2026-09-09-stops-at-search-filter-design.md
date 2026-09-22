@@ -133,6 +133,13 @@ place: **a CRS code does not identify one position in a journey.**
 
 ### The fix, in two halves
 
+**Superseded (2026-09-22).** The second paragraph of item 1 below -- "a
+call at any OTHER station is untouched ... including before `station`" --
+describes behavior this document's own foot no longer has. See "Addendum
+(2026-09-22): the same-station rule stops being same-station-only" at the
+end of this document for what changed, and why the paragraph is kept
+rather than deleted.
+
 1. **A call at the station `station` itself named counts only if it comes
    LATER in the journey**, compared as `(day_offset, scheduled)`. A call at
    any OTHER station is untouched and still counts wherever in the route it
@@ -222,3 +229,123 @@ validation, the `400` for an arrival bound with no `stops_at`, and the
 field's `description` changed, to say that the named station is another
 one the train calls at, its destination included, and that naming the same
 station as "Departing from" finds loop services that come back to it.
+
+**This description of the frontend copy is itself superseded by the
+2026-09-22 addendum below** -- the field description changed again, and no
+longer needs to call out the loop case specially.
+
+## Addendum (2026-09-22): the same-station rule stops being same-station-only
+
+### The reversal
+
+**Product decision, not a bug fix.** Item 1 of the 2026-09-17 addendum
+above deliberately scoped the "must come later in the journey" ordering
+rule to the case where `stops_at` repeats `station` -- a call at any OTHER
+named station was left as a plain, unordered "calls at X somewhere on its
+route", including before `station`. That was a considered choice at the
+time (see the paragraph's own reasoning), not an oversight. It has now
+been reversed by explicit product decision: **"stops at X" should always
+mean X comes later in the journey than the search origin station, for
+every station, not just the loop case.**
+
+The reasoning: a rider typing "stops at Reading" into this search wants
+trains that genuinely continue on to Reading from where they searched --
+that they can actually board at the search origin and ride to Reading.
+"This train calls at Reading at some point on its overall route, possibly
+hours before it ever reached the station you searched" answers a
+different, less useful question, and silently returning those trains mixed
+in with the ones a rider can actually use was the gap: `stops_at` never
+promised "and you can get there from here" in the old wording specifically
+so that it would NOT make that promise, but making it was always what a
+searcher actually wanted. There is no longer a semantic reason for the
+same-station (loop) case and the different-station case to disagree with
+each other on this question, so they no longer do.
+
+### The fix
+
+One line: the `EXISTS` subquery's ordering test,
+
+```sql
+AND (stop.origin_crs <> main.origin_crs
+     OR (stop.day_offset, stop.scheduled)
+        > (main.day_offset, main.scheduled))
+```
+
+loses its `stop.origin_crs <> main.origin_crs OR` escape hatch, on BOTH
+branches that carry it (the plain membership `EXISTS` and its
+`arrival_from`/`arrival_to` mirror), leaving
+
+```sql
+AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled)
+```
+
+unconditional. The ordering test already worked correctly for the
+same-station case (that is the whole 2026-09-17 fix); this simply extends
+it to every case, same comparison and same `(day_offset, scheduled)`
+reasoning (overnight midnight-crossing services, tie-impossibility from the
+table's primary key) as before -- none of that reasoning was scoped to
+same-station calls in the first place, it just was not being applied
+elsewhere.
+
+The terminus branch (`main.destination_crs = $stops_at`) is UNCHANGED: it
+never carried an ordering test (the terminus is downstream of every
+departure-bearing row of the same schedule by construction, per item 2 of
+the 2026-09-17 addendum), and still does not need one.
+
+### What this actually changes for a caller
+
+For `stops_at` naming the SAME station as `station` (the loop case):
+nothing -- that case was already fully ordered by the 2026-09-17 fix.
+
+For `stops_at` naming a DIFFERENT station: a schedule that calls at that
+station BEFORE ever reaching `station` no longer matches. Worked example
+from this fix's own test fixture (`crates/api/src/data/queries.rs`'s
+`loop_fixture_rows`): `station=CLJ&stops_at=WAT` used to match both
+`L82877` (Waterloo 07:27, Clapham Junction 07:40) and `P00001` (Waterloo
+07:30, Clapham Junction 07:55), because both call WAT somewhere on their
+route. Both calls are BEFORE Clapham Junction, so neither train is
+reachable at WAT from a rider standing on the Clapham Junction platform;
+the search now correctly returns neither.
+
+### What did NOT change (again)
+
+Same-valued CRS as `station` still finds loop services exactly as before.
+The terminus-matching branch, the arrival-bound pair's NULL-never-satisfies
+rule, the single-valued parameter shape, and the `400` for an arrival bound
+with no `stops_at` are all untouched. Only the ordering test's scope
+widened.
+
+### Tests
+
+`crates/api/src/data/queries.rs`: `loop_fixture_rows`'s Clapham Junction
+calling point (present on `L82877` and `P00001`, true origin of neither)
+now doubles as the fixture for the reversed direction --
+`search_calling_point_stops_at_excludes_a_different_station_reached_before_the_searched_one`
+pins `station=CLJ&stops_at=WAT` returning empty. The old "calls at WAT
+before CLJ still matches" half of
+`search_calling_point_stops_at_still_matches_a_genuine_intermediate_stop`
+was removed from that test (it pinned the now-reversed behavior) and that
+test is now scoped to its still-true forward-direction case only.
+
+`crates/api/src/routes/trains.rs`:
+`trains_search_station_and_stops_at_naming_one_station_finds_loop_services`'s
+`station=ZRB&stops_at=KNG` assertion is updated -- `T53003`'s SECOND ZRB
+departure used to match (its only KNG call is BEFORE it) and is now
+excluded, dropping the expected match count from four rows to three. A new
+dedicated test,
+`trains_search_stops_at_a_different_station_excludes_a_call_before_the_search_origin`,
+isolates the reversal on its own minimal fixture, independent of the loop
+fixture's other cases.
+
+### Frontend copy
+
+`frontend/components/TrainSearchForm.tsx`'s "Stops at" field `description`
+no longer needs to carve out the loop case as a special example, now that
+the rule is uniform: it reads "A station this train reaches later in its
+journey than Station, its destination included." (was: "Another station
+this train calls at, its destination included. Enter the same station as
+Departing from to find loop services that come back to it.") The
+surrounding doc comments in that file and in `frontend/app/trains/page.tsx`
+that explained (and, in one case, warned future editors NOT to write) the
+old "a stop earlier than the searched station matches too" behavior are
+updated to describe the new, uniform rule instead.

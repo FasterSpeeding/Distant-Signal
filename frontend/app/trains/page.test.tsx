@@ -119,19 +119,20 @@ describe('metadata', () => {
     );
   });
 
-  it("doesn't imply the stops-at filter is ordered, because it isn't", () => {
-    // `stops_at` is a plain membership test against the whole calling-point
-    // list (crates/api/src/data/queries.rs says so in as many words), so a
-    // stop EARLIER than the searched station matches too. Wording like "a
-    // station they stop at later" would promise a relational constraint
-    // the query does not enforce -- TrainSearchForm's own field
-    // description is equally careful about this.
-    //
-    // Targeted at the actual mistake rather than at the word "later"
-    // anywhere: a future rewording that legitimately says "after" or
-    // "later" about something else (departures after a given time, say)
-    // shouldn't fail this case for the wrong reason.
-    expect(metadata.description).not.toMatch(/stops? at .*later|later stop|stop it makes after/i);
+  it('keeps the page-level summary deliberately generic about ordering, leaving the specific rule to the field description', () => {
+    // Before 2026-09-22, `stops_at` was an unordered membership test for
+    // any station other than the same-station loop case, so wording here
+    // like "a station they stop at later" would have overclaimed a
+    // relational constraint the query did not enforce. That is no longer
+    // true: `stops_at` now always means "later in the journey than
+    // Station", for every named station (see
+    // crates/api/src/data/queries.rs and TrainSearchForm's own field
+    // description) -- so this case no longer forbids "later"/"after"
+    // wording in the page-level blurb; that wording would be accurate now.
+    // What still holds, and is what this asserts, is that this short
+    // SEO/OG summary stays generic ("along its route") rather than
+    // spelling the ordering rule out itself -- that level of detail
+    // belongs to the field description, not this page-level blurb.
     expect(metadata.description).toMatch(/along its route/);
   });
 

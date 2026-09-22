@@ -45,15 +45,23 @@
 //! needs "true destination equals X" (as opposed to "calls at X") has no
 //! equivalent filter any more -- see that design doc's own open question.
 //!
-//! **`stops_at` naming the same station as `station` asks for a LOOP.** A
-//! row is trivially a member of its own calling-point list, so
+//! **`stops_at` always means "later in the journey than `station`", for
+//! ANY named station, not only when it repeats `station`.** A row is
+//! trivially a member of its own calling-point list, so
 //! `station=WAT&stops_at=WAT` used to return every train out of Waterloo
 //! -- identical to supplying no `stops_at` at all. A call at the station
-//! `station` itself named now counts only if it comes LATER in the
-//! journey, which is the question a caller typing one station into both
-//! fields actually means: does this working come BACK, as a loop/circular
-//! service does. A call at any OTHER station is unchanged -- still "calls
-//! at X somewhere on its route", including before `station`.
+//! `station` itself named counts only if it comes LATER in the journey,
+//! which is the question a caller typing one station into both fields
+//! actually means: does this working come BACK, as a loop/circular service
+//! does. **(2026-09-22, superseding the original loop-service fix's other
+//! half)** a call at a DIFFERENT station now applies the exact same
+//! ordering test: `stops_at=X` only matches a call at X that falls later
+//! than `station`, so a train that already passed through X before ever
+//! reaching `station` is excluded -- "stops at X" means you can actually
+//! get there from where you searched, full stop, with no special-cased
+//! exception for the non-loop case. See
+//! docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md's
+//! "Addendum (2026-09-22)".
 //!
 //! **The schedule's TRUE terminus now satisfies `stops_at` too**, having
 //! never done so before: it is arrival-only, so it has no row of its own
@@ -1154,10 +1162,12 @@ mod db_tests {
              somewhere else entirely"
         );
 
-        // The ordinary filter over the same fixture is untouched: all three
-        // trains call at KNG, so all four ZRB departures must still be
-        // returned -- "comes back" is not asked of them, KNG is a different
-        // station from the one searched.
+        // The same ordering rule now applies to a DIFFERENT stops_at
+        // station too (2026-09-22): all three trains call at KNG, but
+        // T53003's SECOND ZRB departure (offset 6) calls KNG EARLIER
+        // (offset 5) -- it already passed through KNG before this
+        // departure, so it is no longer reachable from it and must be
+        // excluded, leaving three matches instead of four.
         let (status, body) = get(&pool, "/trains/search?station=ZRB&stops_at=KNG").await;
         assert_eq!(status, StatusCode::OK);
         let mut uids: Vec<String> = results(&body)
@@ -1171,10 +1181,74 @@ mod db_tests {
                 "T53001".to_string(),
                 "T53002".to_string(),
                 "T53003".to_string(),
-                "T53003".to_string(),
             ],
-            "including T53003's SECOND ZRB departure, which calls KNG earlier in its route -- \
-             the later-than rule applies only to the searched station"
+            "T53003's SECOND ZRB departure is excluded: its only KNG call is BEFORE it, so \
+             the later-than rule now applies to every stops_at station, not just the \
+             same-station loop case"
+        );
+
+        delete_today(&pool).await;
+    }
+
+    /// Two schedules built to isolate the 2026-09-22 reversal on its own,
+    /// away from `seed_loop`'s same-station loop case: `T54001` calls `FOO`
+    /// BEFORE `station_crs`, so it already passed through `FOO` before
+    /// ever reaching the search origin; `T54002` calls `station_crs` first
+    /// and `FOO` after, so it remains reachable from there. Neither
+    /// train's true destination is `FOO`.
+    async fn seed_stops_at_ordering(pool: &PgPool, station_crs: &str) {
+        delete_today(pool).await;
+        let today = chrono::Utc::now().date_naive();
+        let (_, soon, _) = relative_times();
+        let five = chrono::Duration::minutes(5);
+        for (train_uid, calling_points) in [
+            ("T54001", vec![("FOO", 0), (station_crs, 1)]),
+            ("T54002", vec![(station_crs, 0), ("FOO", 1)]),
+        ] {
+            for (origin_crs, offset) in calling_points {
+                sqlx::query(
+                    "INSERT INTO schedule_destination_departures \
+                        (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+                     VALUES ($1, $2, $3, $4, $5, $6)",
+                )
+                .bind(today)
+                .bind("EEE")
+                .bind(soon + five * offset)
+                .bind(train_uid)
+                .bind(origin_crs)
+                .bind(station_crs)
+                .execute(pool)
+                .await
+                .expect("seed stops_at ordering fixture row");
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_stops_at_a_different_station_excludes_a_call_before_the_search_origin() {
+        // The 2026-09-22 reversal, isolated from the same-station loop case
+        // `trains_search_station_and_stops_at_naming_one_station_finds_loop_services`
+        // already covers: `stops_at` naming a DIFFERENT station from
+        // `station` now also requires that station's call to come LATER --
+        // "stops at X" means you can actually get there from where you
+        // searched, not that the train passed through X at some point.
+        let pool = connect().await;
+        seed_stops_at_ordering(&pool, "ZRB").await;
+
+        let (status, body) = get(&pool, "/trains/search?station=ZRB&stops_at=FOO").await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = results(&body);
+        let uids: Vec<&str> = rows
+            .iter()
+            .map(|row| row["uid"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            uids,
+            vec!["T54002"],
+            "T54001 called FOO BEFORE ever reaching ZRB and is now excluded; T54002 calls FOO \
+             AFTER ZRB and still matches: {rows:?}"
         );
 
         delete_today(&pool).await;
