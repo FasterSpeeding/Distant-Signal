@@ -303,6 +303,10 @@ export function TrackTrainForm({
   // is -- no new prop changes this component's submit behaviour.
   initialDestination?: string;
   attachTicketId?: number;
+  // Review §2.1/I21: the mode toggle used to live only in `useState`, so
+  // nothing in the app could send a user straight to window mode -- not
+  // even `JourneyLegCard`'s own "Edit search" link. `track/page.tsx` reads
+  // this off `?mode=window`, the same pattern its `?origin=` already uses.
   initialMode?: 'pick' | 'window';
   /** "HH:MM" -- same value contract `TimeFilterInput`'s own `onChange`
    * already uses for `departFrom`/`departTo`/`arriveFrom`/`arriveTo`. */

@@ -81,7 +81,7 @@ export default async function TrackPage({
   const modeParam = Array.isArray(mode) ? mode[0] : mode;
   const initialMode = modeParam === 'window' ? 'window' : 'pick';
   // Same "repeated query param -> first value" unwrapping `origin`/
-  // `ticketId`/`mode` already use just below -- applied uniformly to the
+  // `ticketId`/`mode` already use just above -- applied uniformly to the
   // five new params `TrackJourneyAgainButton`/`trackAgainHref`
   // (docs/superpowers/plans/2026-09-22-reusable-journeys-phaseA-track-again-plan.md)
   // introduce, so a malformed/repeated value degrades the same way a
@@ -91,6 +91,14 @@ export default async function TrackPage({
   const departBeforeParam = Array.isArray(departBefore) ? departBefore[0] : departBefore;
   const arriveAfterParam = Array.isArray(arriveAfter) ? arriveAfter[0] : arriveAfter;
   const arriveBeforeParam = Array.isArray(arriveBefore) ? arriveBefore[0] : arriveBefore;
+  // Malformed means absent, same posture `ticketIdParam` above already
+  // takes for its own format check -- a native `<input type="time">`
+  // sanitizes an invalid value to an empty DISPLAY while React state would
+  // still hold the raw garbage, so an unvalidated value here could reach
+  // `TrackTrainForm`'s state (and from there, submit) in a shape no normal
+  // user interacting with the form could ever produce by hand.
+  const validTimeParam = (v: string | undefined): string | undefined =>
+    v && /^\d{2}:\d{2}$/.test(v) ? v : undefined;
 
   return (
     <Stack p="lg" gap="md">
@@ -125,10 +133,10 @@ export default async function TrackPage({
         initialDestination={destinationParam?.toUpperCase()}
         attachTicketId={attachTicketId}
         initialMode={initialMode}
-        initialDepartAfter={departAfterParam}
-        initialDepartBefore={departBeforeParam}
-        initialArriveAfter={arriveAfterParam}
-        initialArriveBefore={arriveBeforeParam}
+        initialDepartAfter={validTimeParam(departAfterParam)}
+        initialDepartBefore={validTimeParam(departBeforeParam)}
+        initialArriveAfter={validTimeParam(arriveAfterParam)}
+        initialArriveBefore={validTimeParam(arriveBeforeParam)}
       />
     </Stack>
   );
