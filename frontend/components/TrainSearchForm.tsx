@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
@@ -209,22 +210,32 @@ export function TrainSearchForm({
   initialOrigin = '',
   initialStopsAt = '',
   initialDate = '',
+  initialFrom = '',
+  initialTo = '',
+  initialArrivalFrom = '',
+  initialArrivalTo = '',
   attachTicketId,
 }: {
   initialStation?: string;
   initialOrigin?: string;
   initialStopsAt?: string;
   initialDate?: string;
+  initialFrom?: string;
+  initialTo?: string;
+  initialArrivalFrom?: string;
+  initialArrivalTo?: string;
   attachTicketId?: number;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
   const [stationCrs, setStationCrs] = useState(initialStation);
   const [originCrs, setOriginCrs] = useState(initialOrigin);
   const [stopsAt, setStopsAt] = useState(initialStopsAt);
   const [dateValue, setDateValue] = useState<string | null>(initialDate || null);
-  const [fromTime, setFromTime] = useState('');
-  const [toTime, setToTime] = useState('');
-  const [arrivalFrom, setArrivalFrom] = useState('');
-  const [arrivalTo, setArrivalTo] = useState('');
+  const [fromTime, setFromTime] = useState(initialFrom);
+  const [toTime, setToTime] = useState(initialTo);
+  const [arrivalFrom, setArrivalFrom] = useState(initialArrivalFrom);
+  const [arrivalTo, setArrivalTo] = useState(initialArrivalTo);
   /** Which of the four time filters are currently HALF-entered -- an hour
    * segment filled in with the minutes left blank, or vice versa.
    *
@@ -334,9 +345,15 @@ export function TrainSearchForm({
     return params;
   }
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    if (!canSearch) return;
+  /** The actual `GET /public/trains/search` call for page 1, shared by the
+   * explicit Search button (`handleSubmit`) and the auto-run-on-mount
+   * effect below, so a search fired either way behaves identically -- same
+   * loading state, same 404-vs-error handling, same `Results` shape
+   * installed on success. Mirrors `IncidentSearchForm.tsx`'s own identically
+   * named, identically shared `runSearch` -- see
+   * docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
+   * §3.3. */
+  async function runSearch() {
     setSearching(true);
     // Captured synchronously, BEFORE the `await` below -- this is what makes
     // it "the date that was actually searched" rather than a live read that
@@ -368,6 +385,54 @@ export function TrainSearchForm({
       setSearching(false);
     }
   }
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!canSearch) return;
+    // Keep this /trains history entry's URL in sync with the last search
+    // that actually ran, so following a result to `/train/[uid]/[date]` and
+    // pressing Back can restore both the form and the results, rather than
+    // re-delivering the stale URL /trains first loaded with (see
+    // docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
+    // §3.1). `replace`, not `push`: this should keep /trains a single
+    // history entry whose URL stays current, not add a new Back-button stop
+    // on every search -- mirrors `StationSearchForm.tsx`'s own use of
+    // `next/navigation`, for a different navigation shape. Deliberately NOT
+    // done from the mount effect below (§3.3) -- only an explicit search
+    // press writes to the URL, matching how this component already only
+    // wrote a *fetch* URL from `searchParams()`, never from a mount-time
+    // default.
+    router.replace(`${pathname}?${searchParams().toString()}`, { scroll: false });
+    await runSearch();
+  }
+
+  // Restores not just the form's fields (the `initialX` props above already
+  // do that) but the RESULTS too, when this page is entered with a station
+  // already in the URL -- most notably after Back-navigation from
+  // `/train/[uid]/[date]` once `handleSubmit` above has kept the URL
+  // current. Structurally identical to `IncidentSearchForm.tsx`'s own
+  // mount-only auto-run effect: an empty dependency array, deliberately NOT
+  // re-run on every later filter edit (that stays the Search button's own
+  // job), gated on `initialStation` specifically -- the one *required*
+  // precondition this form's own `stationValid`/`canSearch` already treat
+  // specially -- rather than "any initial value is present". See
+  // docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
+  // §3.3.
+  //
+  // Known, accepted limitation (§3.4): if the visitor had pressed "Load
+  // more" one or more times before leaving, only PAGE 1 of that result set
+  // is reconstructed here -- `nextCursor` is server-issued opaque pagination
+  // state with no representation in `searchParams()`/the URL at all, so
+  // there is nothing for this effect to resume from. This re-runs the FIRST
+  // page of the same search, not a resume of exactly where "Load more" had
+  // gotten to -- a correct, if smaller, restoration rather than a wrong one,
+  // and not a bug to fix in this pass.
+  useEffect(() => {
+    if (CRS_PATTERN.test(initialStation.trim())) void runSearch();
+    // Intentionally empty: this is a mount-only effect, not one that tracks
+    // the filter state it reads -- see the comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleLoadMore() {
     if (!hasRows(results)) return;
