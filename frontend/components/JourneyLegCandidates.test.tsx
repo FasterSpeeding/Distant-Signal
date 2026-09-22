@@ -90,6 +90,30 @@ describe('JourneyLegCandidates', () => {
     expect(await screen.findAllByRole('button', { name: 'Track this train' })).toHaveLength(2);
     expect(screen.getByText('10:32 · BRI → PAD')).toBeInTheDocument();
     expect(screen.getByText('11:02 · BRI → PAD')).toBeInTheDocument();
+    // Review §2.5/M15: names the count and the fact the pick isn't final,
+    // replacing the caller's old unconditional "Searching…" copy.
+    expect(
+      screen.getByText("2 trains match your search — pick the one you'll be on. You can change it later."),
+    ).toBeInTheDocument();
+  });
+
+  it('singularizes the match count for exactly one candidate', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        candidates: () =>
+          new Response(JSON.stringify({ results: [CANDIDATES_FIXTURE.results[0]], nextCursor: null }), {
+            status: 200,
+          }),
+      }),
+    );
+    renderWithMantine(
+      <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
+    );
+
+    expect(
+      await screen.findByText("1 train matches your search — pick the one you'll be on. You can change it later."),
+    ).toBeInTheDocument();
   });
 
   it('POSTs the picked train and calls onPicked on success', async () => {

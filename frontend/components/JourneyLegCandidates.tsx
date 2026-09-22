@@ -110,6 +110,18 @@ export function JourneyLegCandidates({
   }
   return (
     <Stack gap="xs">
+      {/* Review §2.5/M15: the intro line this list used to inherit from its
+          caller ("Searching for a train to track — pick one below") was
+          near-identical to the loading state above, for the opposite
+          situation — an unbounded "still working" tone on a list that has
+          already finished and is just waiting to be picked from. Also
+          answers "what happens when I click", which used to be invisible
+          until after the (irreversible-looking) click: a picked leg can
+          still be changed later via "Change train" (`JourneyLegCard.tsx`). */}
+      <Text size="sm" c="dimmed">
+        {results.length} train{results.length === 1 ? '' : 's'} {results.length === 1 ? 'matches' : 'match'} your
+        search — pick the one you&apos;ll be on. You can change it later.
+      </Text>
       {pickError && <Alert color="red">{pickError}</Alert>}
       {results.map((row) => (
         <Group key={row.uid} justify="space-between" wrap="wrap">
