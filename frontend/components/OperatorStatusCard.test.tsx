@@ -124,4 +124,87 @@ describe('OperatorStatusCard', () => {
     const updatedElements = screen.queryAllByText(/Updated/);
     expect(updatedElements).toHaveLength(0);
   });
+
+  it('anchors the footer row to the card bottom so pin stars align across a row (review M6)', () => {
+    const { container } = renderWithMantine(<OperatorStatusCard operator={operator} pinned={false} />);
+    const footer = container.querySelector('[data-card-footer]') as HTMLElement;
+    expect(footer).toBeInTheDocument();
+    expect(footer.style.marginTop).toBe('auto');
+  });
+
+  it('hides the pin star when showPin is false (review M9)', () => {
+    const { container } = renderWithMantine(
+      <OperatorStatusCard operator={operator} pinned={false} showPin={false} />
+    );
+    expect(container.querySelector('[aria-label*="Pin"]')).not.toBeInTheDocument();
+  });
+
+  it('shows the pin star by default', () => {
+    const { container } = renderWithMantine(<OperatorStatusCard operator={operator} pinned={false} />);
+    expect(container.querySelector('[aria-label*="Pin"]')).toBeInTheDocument();
+  });
+
+  describe('rollup scope line (review I11)', () => {
+    it('says which line is driving a bad status, linked to it', () => {
+      renderWithMantine(
+        <OperatorStatusCard
+          operator={{ ...operator, worstLineId: 'ecml', worstLineName: 'East Coast Main Line' }}
+          pinned={false}
+        />
+      );
+      expect(screen.getByText(/Worst of 2 lines/)).toBeInTheDocument();
+      const link = screen.getByText('East Coast Main Line').closest('a');
+      expect(link).toHaveAttribute('href', '/lines/ecml');
+    });
+
+    it('falls back to an unlinked scope line when worstLineId/worstLineName are absent', () => {
+      renderWithMantine(<OperatorStatusCard operator={operator} pinned={false} />);
+      expect(screen.getByText(/Worst of 2 lines/)).toBeInTheDocument();
+    });
+
+    it('says "all running normally" instead of "Worst of" when the worst severity is Good Service', () => {
+      renderWithMantine(
+        <OperatorStatusCard operator={{ ...operator, worstSeverity: 10 }} pinned={false} />
+      );
+      expect(screen.getByText('2 lines, all running normally')).toBeInTheDocument();
+      expect(screen.queryByText(/Worst of/)).not.toBeInTheDocument();
+    });
+
+    it('uses singular "line" for a single-line operator', () => {
+      renderWithMantine(
+        <OperatorStatusCard
+          operator={{ ...operator, worstSeverity: 10, lineIds: ['ecml'] }}
+          pinned={false}
+        />
+      );
+      expect(screen.getByText('1 line, all running normally')).toBeInTheDocument();
+    });
+  });
+
+  describe('deduped reason (review M10)', () => {
+    it('collapses the reason into a cross-reference when dedupedLineId matches the worst line', () => {
+      renderWithMantine(
+        <OperatorStatusCard
+          operator={{ ...operator, worstLineId: 'ecml', worstLineName: 'East Coast Main Line' }}
+          pinned={false}
+          dedupedLineId="ecml"
+        />
+      );
+      expect(screen.queryByText('Signal failure')).not.toBeInTheDocument();
+      expect(screen.getByText(/See/)).toBeInTheDocument();
+      const link = screen.getByText('East Coast Main Line').closest('a');
+      expect(link).toHaveAttribute('href', '/lines/ecml');
+    });
+
+    it('renders the ordinary reason when dedupedLineId does not match the worst line', () => {
+      renderWithMantine(
+        <OperatorStatusCard
+          operator={{ ...operator, worstLineId: 'ecml', worstLineName: 'East Coast Main Line' }}
+          pinned={false}
+          dedupedLineId="wcml"
+        />
+      );
+      expect(screen.getByText('Signal failure')).toBeInTheDocument();
+    });
+  });
 });
