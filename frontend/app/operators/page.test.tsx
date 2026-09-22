@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cleanup, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import OperatorsPage, { metadata } from './page';
 import * as api from '@/lib/api';

@@ -34,7 +34,7 @@ importScripts('/sw-cache-rules.js');
 // Decision 5. Changing this string on every deploy is what makes this
 // file's own bytes differ deploy-to-deploy, which both the browser's
 // native SW-update check and the activate purge below depend on.
-const CACHE_NAME = 'distant-signal-__BUILD_ID__';
+const CACHE_NAME = 'distant-signal-AIwdgj6s1RsW5zeC8ulzk';
 
 // Precached eagerly on install. Deliberately NOT every /_next/static/*
 // file -- there is no way for this hand-written file to know the current

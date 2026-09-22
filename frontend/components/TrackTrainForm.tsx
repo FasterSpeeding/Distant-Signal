@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import {
   Alert,
   Autocomplete,
-  Badge,
   Button,
   Group,
   SegmentedControl,

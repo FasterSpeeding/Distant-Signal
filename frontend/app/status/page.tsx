@@ -15,7 +15,6 @@ import {
   type SeverityGroup,
   worstStatus,
 } from '@/lib/severity';
-import { StatusBadge } from '@/components/StatusBadge';
 import { TextLink } from '@/components/TextLink';
 import { LineStatusCard } from '@/components/LineStatusCard';
 import { LastUpdated } from '@/components/LastUpdated';
