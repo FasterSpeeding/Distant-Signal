@@ -1,20 +1,23 @@
 -- =========================================================================
--- FABRICATED DEMO DATA — integration-preview screenshot/UX review only.
+-- FABRICATED DEMO DATA — local dev-seeding convenience, not a fixture any
+-- code path depends on.
 -- =========================================================================
 --
--- Written 2026-09-22 to make the `integration-preview` branch's pages render
--- non-empty content for a screenshot audit. NONE of this is real railway
--- data. There is no live feed, no RDM/LDBWS credentials and no network
--- access in this environment, so every "live" value below (train positions,
--- delays, platforms, incidents, line status) is invented to exercise the UI,
--- not observed. Do not treat any of it as evidence about real services, and
--- do not let it reach a real database.
+-- Originally written 2026-09-22 to make a local instance's pages render
+-- non-empty content for a screenshot-driven UX review. Kept in the repo
+-- afterward as a documented convenience for anyone who wants a running
+-- local instance with realistic-looking data without needing live
+-- RDM/LDBWS feed credentials. NONE of this is real railway data — every
+-- "live" value below (train positions, delays, platforms, incidents, line
+-- status) is invented to exercise the UI, not observed. Do not treat any of
+-- it as evidence about real services, and do not run it against anything
+-- but a disposable local/dev database.
 --
 -- Deliberately idempotent (ON CONFLICT everywhere) so it can be re-run.
 --
--- Apply with:
+-- Apply with (from the repo root):
 --   PGPASSWORD=postgres psql -h localhost -U postgres -d postgres \
---     -v ON_ERROR_STOP=1 -f preview-seed.sql
+--     -v ON_ERROR_STOP=1 -f scripts/dev-seed.sql
 --
 -- Design notes that determine whether rows are actually VISIBLE in the UI:
 --   * `line_status.line_id` MUST match an id from a real `lines/*.toml`
