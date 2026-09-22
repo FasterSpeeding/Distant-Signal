@@ -58,6 +58,7 @@ export function JourneyTimeline({
   stops,
   endpointNames,
   skippedCrs,
+  legDestinationCrs,
 }: {
   stops: JourneyStop[];
   endpointNames?: JourneyEndpointNames;
@@ -69,6 +70,19 @@ export function JourneyTimeline({
    * plain list rather than two named booleans so `JourneyStopRow` doesn't
    * need to know which end it's rendering. */
   skippedCrs?: string[];
+  /** The CRS the TRAVELLER themselves gets off at on this leg
+   * (`JourneyLegDetail.destinationCrs`) -- distinct from the underlying
+   * train's own overall terminus, which may run on past it (2026-09-22 UX
+   * review finding I16/2.7: "the traveller gets off at York, which is a
+   * plain-weight row indistinguishable from Peterborough"). `undefined`
+   * for every caller outside the journey view (a bare `/train/[uid]` page
+   * has no "leg" concept at all -- the train's own terminus already gets
+   * the bold `Origin`/`Terminate` treatment `stop.kind` drives below). When
+   * given and it resolves to a real row, that row is bolded regardless of
+   * `stop.kind`, gets a small "You get off here" marker, and every row
+   * PAST it is dimmed -- the rest of the train's route is real information
+   * but not what this leg's traveller needs to read first. */
+  legDestinationCrs?: string | null;
 }) {
   const total = stops.length;
   // Genuinely degenerate case (Task 3.6.2 point 4): every stop -- including
@@ -89,16 +103,42 @@ export function JourneyTimeline({
     );
   }
 
+  // 2026-09-22 UX review finding I21/M21/2.10: Delay and Platform are
+  // empty on EVERY row of every journey in the review's screenshots --
+  // Platform genuinely is origin-only by design (`PlatformBadge`'s own doc
+  // comment on the last cell below), and Delay is `null` per stop whenever
+  // the backend hasn't got a per-stop diff yet even though the train's own
+  // overall delay is known. Two permanently-blank columns read as "broken"
+  // and cost real width on a 390px card (I5/2.8) -- hide either column
+  // outright when NO row in this stop list has anything to show in it,
+  // rather than rendering an always-empty header cell down every row.
+  const showDelayColumn = stops.some((stop) => stop.delayMinutes !== null);
+  const showPlatformColumn = stops.some((stop) => stop.platform !== null);
+
+  // The leg's own destination row, if `legDestinationCrs` resolves to one
+  // of these stops -- case-insensitive, matching `isSkippedOnLeg`'s own
+  // comparison below. `-1` (not found, or no leg destination to look for
+  // at all -- a bare `/train/[uid]` caller) means every row below takes
+  // the "not past it" branch, i.e. no dimming, exactly today's behaviour.
+  const legDestinationIndex = legDestinationCrs
+    ? stops.findIndex((stop) => stop.crs?.toUpperCase() === legDestinationCrs.toUpperCase())
+    : -1;
+
   return (
-    <TableScrollContainer minWidth={420}>
+    <TableScrollContainer minWidth={showDelayColumn || showPlatformColumn ? 420 : 320}>
       <Table verticalSpacing={6} horizontalSpacing="sm" aria-label="Journey timeline">
         <TableThead>
           <TableTr>
             <TableTh>Station</TableTh>
             <TableTh>Scheduled</TableTh>
-            <TableTh>Actual / est.</TableTh>
-            <TableTh>Delay</TableTh>
-            <TableTh>Platform</TableTh>
+            {/* "Actual" not "Actual / est." (2.8): the shorter header
+                still says what the column is once "est." is also visibly
+                prefixed on every estimated cell it applies to, and the
+                extra ~40px it was costing is exactly what pushed this
+                table past 390px on its own. */}
+            <TableTh>Actual</TableTh>
+            {showDelayColumn && <TableTh>Delay</TableTh>}
+            {showPlatformColumn && <TableTh>Platform</TableTh>}
           </TableTr>
         </TableThead>
         <TableTbody>
@@ -110,6 +150,10 @@ export function JourneyTimeline({
               total={total}
               endpointNames={endpointNames}
               skippedCrs={skippedCrs}
+              showDelayColumn={showDelayColumn}
+              showPlatformColumn={showPlatformColumn}
+              isLegDestination={legDestinationIndex !== -1 && index === legDestinationIndex}
+              isPastLegDestination={legDestinationIndex !== -1 && index > legDestinationIndex}
             />
           ))}
         </TableTbody>
@@ -212,12 +256,20 @@ function JourneyStopRow({
   total,
   endpointNames,
   skippedCrs,
+  showDelayColumn,
+  showPlatformColumn,
+  isLegDestination,
+  isPastLegDestination,
 }: {
   stop: JourneyStop;
   index: number;
   total: number;
   endpointNames?: JourneyEndpointNames;
   skippedCrs?: string[];
+  showDelayColumn: boolean;
+  showPlatformColumn: boolean;
+  isLegDestination: boolean;
+  isPastLegDestination: boolean;
 }) {
   const label = journeyStopLabel(stop, index, total, endpointNames);
   // Leg-scoped, live-Darwin-sample-derived signal (§5.2) -- distinct from
@@ -243,15 +295,23 @@ function JourneyStopRow({
   const estimated = skipped ? null : (stop.estimatedDeparture ?? stop.estimatedArrival);
   const reached = actual !== null;
   const caption = skipped ? skipCaption(stop.skipSource) : null;
+  // 2026-09-22 UX review finding I16/2.7: the train's own `Origin`/
+  // `Terminate` kind already bolds its two ends, but on a multi-leg
+  // journey the TRAVELLER's own destination for THIS leg can be an
+  // ordinary `Intermediate` row further up the train's route (a York
+  // passenger on a KGX->Edinburgh service) -- indistinguishable, before
+  // this, from every other intermediate stop. `isLegDestination` bolds it
+  // regardless of `stop.kind` and adds the marker below; rows past it are
+  // real information (the rest of the TRAIN's journey) but not what this
+  // leg's own traveller needs to read first, so they're dimmed rather than
+  // removed.
+  const bold = stop.kind === 'Origin' || stop.kind === 'Terminate' || isLegDestination;
 
   return (
     <TableTr>
       <TableTd>
         <Group gap={6} wrap="nowrap">
-          <Text
-            fw={stop.kind === 'Origin' || stop.kind === 'Terminate' ? 700 : 400}
-            c={reached ? undefined : 'dimmed'}
-          >
+          <Text fw={bold ? 700 : 400} c={isPastLegDestination ? 'dimmed' : reached ? undefined : 'dimmed'}>
             {label}
           </Text>
           {isSkippedOnLeg && (
@@ -260,6 +320,11 @@ function JourneyStopRow({
             </Badge>
           )}
         </Group>
+        {isLegDestination && (
+          <Text size="sm" c="grape" fw={500}>
+            You get off here
+          </Text>
+        )}
         {caption && (
           <Text size="sm" c="dimmed">
             {caption}
@@ -275,7 +340,9 @@ function JourneyStopRow({
       </TableTd>
       <TableTd>
         {actual ? (
-          <Text size="sm">{formatTime(actual)}</Text>
+          <Text size="sm" c={isPastLegDestination ? 'dimmed' : undefined}>
+            {formatTime(actual)}
+          </Text>
         ) : (
           estimated && (
             // Visually distinguished from a confirmed actual time -- muted
@@ -291,17 +358,25 @@ function JourneyStopRow({
           (`apply_stop_status`'s own documented decision -- the PASS event's
           actual-vs-planned diff isn't a delay any passenger experienced AT
           this stop), so `delayBadge` naturally renders nothing extra here
-          without this cell needing its own `skipped` check. */}
-      <TableTd>{delayBadge(stop.delayMinutes)}</TableTd>
+          without this cell needing its own `skipped` check. Column itself
+          omitted entirely (`showDelayColumn`) when no row in the whole
+          list has a delay figure at all (2.10/M21) -- an always-empty
+          column reads as broken, not as "nothing to report". */}
+      {showDelayColumn && <TableTd>{delayBadge(stop.delayMinutes)}</TableTd>}
       {/* `null` for every stop except (today) the ORIGIN -- see
           `JourneyStop.platform`'s own doc comment in `lib/types.ts` for
           why Darwin genuinely has no platform signal for the rest of the
           route. `PlatformBadge` itself renders nothing for a `null`
           platform, so this cell is simply empty for those stops -- no
-          placeholder text invented to fill it. */}
-      <TableTd>
-        <PlatformBadge platform={stop.platform} plannedPlatform={stop.plannedPlatform} platformChanged={stop.platformChanged} />
-      </TableTd>
+          placeholder text invented to fill it. Column itself omitted
+          (`showPlatformColumn`) when NO stop in the list has a known
+          platform (2.10/M21) -- the common case for anything but a leg
+          whose origin platform was captured at pin time. */}
+      {showPlatformColumn && (
+        <TableTd>
+          <PlatformBadge platform={stop.platform} plannedPlatform={stop.plannedPlatform} platformChanged={stop.platformChanged} />
+        </TableTd>
+      )}
     </TableTr>
   );
 }
