@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import { getAllLines, getAllTocs, getLineStatusForMode, getPreferences, getSession } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { DISPLAYED_MODES_PARAM } from '@/lib/modes';
+import { isSeverityGroup } from '@/lib/severity';
 import type { Preferences } from '@/lib/types';
 import { TextLink } from '@/components/TextLink';
 import { AllLinesTable } from './AllLinesTable';
@@ -73,7 +74,15 @@ export const metadata: Metadata = {
 // spec Decision 5) instead of being stale-served.
 const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [] };
 
-export default async function AllLinesPage() {
+export default async function AllLinesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ statusGroup?: string | string[] }>;
+}) {
+  const { statusGroup } = await searchParams;
+  const statusGroupParam = Array.isArray(statusGroup) ? statusGroup[0] : statusGroup;
+  const initialStatusGroup = isSeverityGroup(statusGroupParam) ? statusGroupParam : undefined;
+
   const [lines, preferences, reports, tocs, viewerIsAnonymous] = await Promise.all([
     withStaleFallback('allLines', () => getAllLines()),
     // Per-user, so it fails closed to "nothing pinned" (the shape a 401
@@ -114,6 +123,7 @@ export default async function AllLinesPage() {
           pinnedLineIds={preferences.pinnedLines}
           tocs={tocs}
           viewerIsAnonymous={viewerIsAnonymous}
+          initialStatusGroup={initialStatusGroup}
         />
       </Stack>
     </Stack>

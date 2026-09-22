@@ -48,8 +48,8 @@ const preferences: Preferences = { pinnedLines: [], pinnedStations: [] };
 const reports: LineStatusReport[] = [];
 const tocs: Suggestion[] = [{ code: 'VT', name: 'Avanti West Coast' }];
 
-async function renderPage() {
-  return renderWithMantine(await AllLinesPage());
+async function renderPage(searchParams: Record<string, string | string[]> = {}) {
+  return renderWithMantine(await AllLinesPage({ searchParams: Promise.resolve(searchParams) }));
 }
 
 describe('AllLinesPage', () => {
@@ -173,5 +173,77 @@ describe('metadata', () => {
       description:
         "Every National Rail and TfL line this app tracks — plus your own custom lines once you're logged in — in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available.",
     });
+  });
+});
+
+describe('statusGroup deep link', () => {
+  beforeEach(() => {
+    __resetStaleCacheForTests();
+    vi.stubGlobal('fetch', vi.fn());
+    // Fixture with multiple lines: wcml (mild) and gwr (severe)
+    const statusGroupTestLines: LineSummary[] = [
+      { id: 'wcml', name: 'West Coast Main Line', category: 'Long Distance', operators: ['VT'], source: 'catalogue' },
+      { id: 'gwr', name: 'Great Western Railway', category: 'Long Distance', operators: ['GW'], source: 'catalogue' },
+    ];
+    const statusGroupTestReports: LineStatusReport[] = [
+      {
+        $type: 'DistantSignal.LineStatusReport',
+        id: 'wcml',
+        name: 'West Coast Main Line',
+        modeName: 'national-rail',
+        operators: [],
+        computedAt: '2026-07-15T09:00:00Z',
+        lineStatuses: [
+          {
+            statusSeverity: 9,
+            statusSeverityDescription: 'Minor Delays',
+            reason: '',
+            dataQuality: 'knowledgebase',
+            sampleAvailability: { state: 'no-coverage' },
+            fullCoverageAvailability: { state: 'not-enabled' },
+            validityPeriods: [],
+            sampleStats: { total: 10, delayed: 2, cancelled: 1, skipped: 0, avgDelayMinutes: 5 },
+          },
+        ],
+      },
+      {
+        $type: 'DistantSignal.LineStatusReport',
+        id: 'gwr',
+        name: 'Great Western Railway',
+        modeName: 'national-rail',
+        operators: [],
+        computedAt: '2026-07-15T09:00:00Z',
+        lineStatuses: [
+          {
+            statusSeverity: 2,
+            statusSeverityDescription: 'Suspended',
+            reason: '',
+            dataQuality: 'knowledgebase',
+            sampleAvailability: { state: 'no-coverage' },
+            fullCoverageAvailability: { state: 'not-enabled' },
+            validityPeriods: [],
+            sampleStats: { total: 10, delayed: 5, cancelled: 3, skipped: 0, avgDelayMinutes: 20 },
+          },
+        ],
+      },
+    ];
+    vi.mocked(api.getAllLines).mockResolvedValue(statusGroupTestLines);
+    vi.mocked(api.getPreferences).mockResolvedValue(preferences);
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue(statusGroupTestReports);
+    vi.mocked(api.getAllTocs).mockResolvedValue(tocs);
+  });
+
+  it('pre-selects the AllLinesTable status filter from a valid ?statusGroup= value', async () => {
+    // wcml has statusSeverity 9 ("Minor Delays") = 'mild'; gwr has
+    // statusSeverity 2 ("Suspended") = 'severe'. Rendering with
+    // statusGroup=severe should pre-filter to show only gwr.
+    await renderPage({ statusGroup: 'severe' });
+    expect(screen.getByRole('link', { name: 'Great Western Railway' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'West Coast Main Line' })).not.toBeInTheDocument();
+  });
+
+  it('ignores an unrecognized ?statusGroup= value rather than erroring', async () => {
+    await renderPage({ statusGroup: 'not-a-real-group' });
+    expect(screen.getByRole('heading', { name: 'All Lines', level: 1 })).toBeInTheDocument();
   });
 });
