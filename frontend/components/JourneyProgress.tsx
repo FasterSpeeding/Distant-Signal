@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { Box, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
-import { journeyStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
+import { journeyStopLabel, resolvedStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
 import { PlatformBadge } from './PlatformBadge';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
 
@@ -102,6 +102,51 @@ function lastReachedIndex(stops: JourneyStop[]): number {
     ) {
       return i;
     }
+  }
+  return -1;
+}
+
+/** The index of the calling point whose own station name/CRS is the one
+ * `TrainJourneyState.lastReportedLocation` names -- `-1` when the reported
+ * location matches no listed stop, or when there is no reported location
+ * at all.
+ *
+ * This exists to close a self-contradiction, not to invent a position
+ * (2026-09-22 UX review, C3). The summary block above this diagram prints
+ * "Last reported: Doncaster (departure)" straight off
+ * `lastReportedLocation`, while `lastReachedIndex` walks only the
+ * per-stop `actualArrival`/`actualDeparture`/`lastEventType` overlay. When
+ * a movement report reached `train_current_state` but the per-stop overlay
+ * didn't pick it up -- a TIPLOC/CRS key that didn't join, a schedule
+ * refresh that dropped the actuals, an ingest ordering gap -- the two
+ * disagree, and the page said BOTH "Last reported: Doncaster" and
+ * "Last reported at Doncaster -- that report couldn't be matched to a
+ * timetabled stop" about a Doncaster sitting in the table below with a
+ * real time.
+ *
+ * The `lastReachedIndex` doc comment's rule is untouched and still
+ * governs: a marker may only ever sit ON a calling point, never between
+ * two, never on a timer. This adds one more piece of CONFIRMED,
+ * report-derived evidence for which calling point that is -- the same
+ * report the summary line is already printing -- rather than a second,
+ * weaker notion of position. `resolvedStopLabel` (not `journeyStopLabel`)
+ * so a reported location can never match the by-index "Stop 3"
+ * placeholder; `stop.crs` is compared too so a report that names a CRS
+ * matches a row that resolved a full name, and vice versa. Scanned
+ * backwards, matching `lastReachedIndex`'s own convention for a route that
+ * calls at the same station twice. */
+function reportedLocationIndex(
+  stops: JourneyStop[],
+  lastReportedLocation: string | null,
+  endpointNames: JourneyEndpointNames | undefined,
+): number {
+  const target = lastReportedLocation?.trim().toLowerCase();
+  if (!target) return -1;
+  for (let i = stops.length - 1; i >= 0; i--) {
+    const label = resolvedStopLabel(stops[i], i, stops.length, endpointNames);
+    if (label && label.trim().toLowerCase() === target) return i;
+    const crs = stops[i].crs;
+    if (crs && crs.trim().toLowerCase() === target) return i;
   }
   return -1;
 }
@@ -206,6 +251,12 @@ function progressCopy(
   mayHaveArrived: boolean,
   lastReportedLocation: string | null,
   endpointNames: JourneyEndpointNames | undefined,
+  /** `true` when `lastIndex` came from `reportedLocationIndex` rather than
+   * from the per-stop `actual*` overlay -- the evidence is the same
+   * movement report, but the wording stays the summary block's own ("last
+   * reported at X") rather than claiming the stronger "currently at X",
+   * which this app reserves for a stop the overlay itself confirmed. */
+  markerFromReportedLocation: boolean,
 ): ProgressCopy {
   if (stops.length === 0) {
     return { caption: 'Not yet started.', ariaLabel: 'Journey progress: not yet started' };
@@ -277,6 +328,12 @@ function progressCopy(
   }
 
   // en_route with a confirmed marker.
+  if (markerFromReportedLocation) {
+    return {
+      caption: `Last reported at ${markerName}.`,
+      ariaLabel: `Journey progress: last reported at ${markerName}, stop ${stopNumber} of ${total}`,
+    };
+  }
   return {
     caption: `Currently at ${markerName}.`,
     ariaLabel: mayHaveArrived
@@ -299,7 +356,19 @@ export function JourneyProgress({
   lastReportedLocation,
   endpointNames,
 }: JourneyProgressProps) {
-  const lastIndex = lastReachedIndex(stops);
+  // Two sources for the ONE marker index, in strict precedence order. The
+  // per-stop `actual*`/PASS overlay wins whenever it has anything at all;
+  // only when it is empty does the summary block's own
+  // `lastReportedLocation` get to name a listed stop instead (C3 -- see
+  // `reportedLocationIndex`). `-1` still means "no marker", but now only
+  // when NEITHER source confirmed a calling point, which is the state the
+  // "couldn't be matched to a timetabled stop" caption below actually
+  // describes.
+  const confirmedIndex = lastReachedIndex(stops);
+  const reportedIndex =
+    confirmedIndex === -1 ? reportedLocationIndex(stops, lastReportedLocation, endpointNames) : -1;
+  const markerFromReportedLocation = confirmedIndex === -1 && reportedIndex !== -1;
+  const lastIndex = markerFromReportedLocation ? reportedIndex : confirmedIndex;
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const nodeRefs = useRef<Array<HTMLDivElement | null>>([]);
   // One stable callback-ref per index, cached across renders, so a re-render
@@ -327,6 +396,7 @@ export function JourneyProgress({
     mayHaveArrived,
     lastReportedLocation,
     endpointNames,
+    markerFromReportedLocation,
   );
 
   // Scrolls THIS diagram's own horizontal scroll box, and only it --

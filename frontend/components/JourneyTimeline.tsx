@@ -122,8 +122,14 @@ export function JourneyTimeline({
  * resolved without falling back to a generic by-index placeholder --
  * `null` means "nothing to show here", which is exactly the signal
  * `JourneyTimeline`'s all-unnamed collapse (above) needs and a
- * `journeyStopLabel` that always returns a string can't give it. */
-function resolvedStopLabel(
+ * `journeyStopLabel` that always returns a string can't give it.
+ *
+ * Exported (not just module-private) for `JourneyProgress.tsx`'s
+ * `reportedLocationIndex`, which must match a reported station NAME
+ * against these rows WITHOUT the by-index "Stop 3" placeholder
+ * `journeyStopLabel` appends -- a placeholder is not a station name and
+ * must never be what a name match lands on. */
+export function resolvedStopLabel(
   stop: JourneyStop,
   index: number,
   total: number,

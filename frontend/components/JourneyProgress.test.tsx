@@ -1141,6 +1141,124 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
     expect(screen.queryByText(/waiting for its first movement report/)).not.toBeInTheDocument();
   });
 
+  // 2026-09-22 UX review, C3. The page said "Last reported: Doncaster
+  // (departure)" in its summary block AND "Last reported at Doncaster --
+  // that report couldn't be matched to a timetabled stop" under the
+  // diagram, with Doncaster sitting in the table below with a real time.
+  // Both cannot be true; the second is the one that was wrong.
+  describe('a lastReportedLocation that IS a listed stop (C3)', () => {
+    const doncasterRoute = [
+      stop({ crs: 'KGX', name: 'London Kings Cross', kind: 'Origin' }),
+      stop({ crs: 'PBO', name: 'Peterborough' }),
+      stop({ crs: 'DON', name: 'Doncaster' }),
+      stop({ crs: 'YRK', name: 'York' }),
+      stop({ crs: 'EDB', name: 'Edinburgh', kind: 'Terminate' }),
+    ];
+
+    it('never renders the "couldn\'t be matched" caption when the reported location names a row in the same card', () => {
+      renderWithMantine(
+        <JourneyProgress
+          stops={doncasterRoute}
+          resolutionStatus="resolved"
+          status="en_route"
+          trainUid="P9E010"
+          mayHaveArrived={false}
+          lastReportedLocation="Doncaster"
+        />,
+      );
+      expect(screen.queryByText(/couldn't be matched to a timetabled stop/)).not.toBeInTheDocument();
+      expect(screen.getByText('Last reported at Doncaster.')).toBeInTheDocument();
+    });
+
+    it('places the marker on the reported stop rather than drawing no marker at all', () => {
+      const { container } = renderWithMantine(
+        <JourneyProgress
+          stops={doncasterRoute}
+          resolutionStatus="resolved"
+          status="en_route"
+          trainUid="P9E010"
+          mayHaveArrived={false}
+          lastReportedLocation="Doncaster"
+        />,
+      );
+      const states = Array.from(container.querySelectorAll('[data-journey-node]')).map((n) =>
+        n.getAttribute('data-node-state'),
+      );
+      expect(states).toEqual(['reached', 'reached', 'marker', 'not-reached', 'not-reached']);
+    });
+
+    it('matches a reported location given as a bare CRS code too', () => {
+      renderWithMantine(
+        <JourneyProgress
+          stops={doncasterRoute}
+          resolutionStatus="resolved"
+          status="en_route"
+          trainUid="P9E010"
+          mayHaveArrived={false}
+          lastReportedLocation="don"
+        />,
+      );
+      expect(screen.getByText('Last reported at Doncaster.')).toBeInTheDocument();
+    });
+
+    it('says "Currently at", not "Last reported at", when the per-stop overlay confirmed the same stop itself', () => {
+      const overlaid = doncasterRoute.map((s, i) =>
+        i === 2 ? { ...s, actualDeparture: '2026-09-22T17:57:00Z' } : s,
+      );
+      renderWithMantine(
+        <JourneyProgress
+          stops={overlaid}
+          resolutionStatus="resolved"
+          status="en_route"
+          trainUid="P9E010"
+          mayHaveArrived={false}
+          lastReportedLocation="Doncaster"
+        />,
+      );
+      expect(screen.getByText('Currently at Doncaster.')).toBeInTheDocument();
+    });
+
+    it('still shows the "couldn\'t be matched" caption when the reported location matches NO listed stop', () => {
+      renderWithMantine(
+        <JourneyProgress
+          stops={doncasterRoute}
+          resolutionStatus="resolved"
+          status="en_route"
+          trainUid="P9E010"
+          mayHaveArrived={false}
+          lastReportedLocation="Hitchin South Junction"
+        />,
+      );
+      expect(
+        screen.getByText(
+          "Last reported at Hitchin South Junction — that report couldn't be matched to a timetabled stop, so no position is shown on the line.",
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('never matches the by-index "Stop N" placeholder a nameless row falls back to', () => {
+      renderWithMantine(
+        <JourneyProgress
+          stops={[
+            stop({ crs: null, name: null, kind: 'Origin' }),
+            stop({ crs: null, name: null }),
+            stop({ crs: null, name: null, kind: 'Terminate' }),
+          ]}
+          resolutionStatus="resolved"
+          status="en_route"
+          trainUid="P9E010"
+          mayHaveArrived={false}
+          lastReportedLocation="Stop 2"
+        />,
+      );
+      expect(
+        screen.getByText(
+          "Last reported at Stop 2 — that report couldn't be matched to a timetabled stop, so no position is shown on the line.",
+        ),
+      ).toBeInTheDocument();
+    });
+  });
+
   it('resolved + en_route with no confirmed timetable match and no lastReportedLocation: a generic but still honest caption', () => {
     renderWithMantine(
       <JourneyProgress
